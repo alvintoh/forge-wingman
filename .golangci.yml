@@ -1,0 +1,8 @@
+# exhaustive and errcheck are REQUIRED gates (docs/tech-design-v1.md, Language): they
+# stand in for a type system on FR-7..FR-12's gate classes. errcheck is in the
+# standard set; exhaustive is enabled explicitly.
+version: "2"
+linters:
+  default: standard
+  enable:
+    - exhaustive

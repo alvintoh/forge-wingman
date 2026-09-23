@@ -1,0 +1,16 @@
+# `make ui`. The frontend waits for the backend's health check, so the first
+# /api call from the browser never races the Go server starting.
+processes:
+  surface:
+    command: go run ./cmd/surface
+    readiness_probe:
+      http_get:
+        host: 127.0.0.1
+        port: 8080
+        path: /healthz
+  web:
+    command: bun run dev
+    working_dir: ./web
+    depends_on:
+      surface:
+        condition: process_healthy
