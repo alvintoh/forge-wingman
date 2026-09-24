@@ -28,7 +28,6 @@ jobs:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
           token_format: access_token
-      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
       - name: Firestore write and delete
         env:
@@ -44,13 +43,21 @@ jobs:
 
       - name: Write to completions
         env:
+          TOKEN: ${{ steps.auth.outputs.access_token }}
           PROJECT: ${{ steps.auth.outputs.project_id }}
           RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+        # The JSON API create the runner will use: ifGenerationMatch=0 needs only create.
         run: |
-          echo "infra-smoke ${RUN_ID}" > smoke.txt
-          gcloud storage cp smoke.txt "gs://${PROJECT}-completions/smoke/${RUN_ID}.txt"
+          curl --fail-with-body -sS -X POST \
+            "https://storage.googleapis.com/upload/storage/v1/b/${PROJECT}-completions/o?uploadType=media&name=smoke%2F${RUN_ID}.txt&ifGenerationMatch=0" \
+            -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: text/plain" \
+            --data-binary "infra-smoke ${RUN_ID}"
 
       - name: List projections
         env:
+          TOKEN: ${{ steps.auth.outputs.access_token }}
           PROJECT: ${{ steps.auth.outputs.project_id }}
-        run: gcloud storage ls "gs://${PROJECT}-projections/"
+        run: |
+          curl --fail-with-body -sS \
+            "https://storage.googleapis.com/storage/v1/b/${PROJECT}-projections/o" \
+            -H "Authorization: Bearer ${TOKEN}"
