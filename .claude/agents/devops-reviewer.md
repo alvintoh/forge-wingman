@@ -1,7 +1,7 @@
 ---
 name: devops-reviewer
 domain: devops
-description: Review deployment and infrastructure — infrastructure as code, access control, state management, and secrets.
+description: Review deployment, infrastructure and the CI pipeline — infrastructure as code, quality gates, access control, state management, and secrets.
 stacks: [github-actions, gcp, opentofu]
 owns-readme: Deployment & CI/CD (infra subsection)
 layer: specialized
@@ -25,6 +25,11 @@ Review and suggest improvements — do NOT rewrite unless a change is small and 
 - Pin versions; keep deploys reproducible and rollback-able.
 - Keep environments parity-close; parameterise per-env config rather than forking it.
 - Place a new file where its siblings say it belongs, BEFORE writing it: read two or three nearest neighbours and note what they do NOT contain — if every comparable file delegates its logic elsewhere, yours must too (grep the sibling set, e.g. `grep "^export type" <dir>/`; being the only file exporting a given kind of thing is the signal). Framework-routed entry points stay where the framework mandates and stay THIN; domain logic and shared types live in the project's own tree. Name the precedent file you matched in your report.
+- Gates exist to keep broken code off the main branch; run checks on every commit and every pull request.
+- Use three levels: a fast pre-commit check on staged files, a pre-push check on the full project, and a comprehensive remote check.
+- Hard-block on generated-file and structural convention violations; soft-warn on the rest.
+- Order checks most-fundamental-first: type checking, then linting, then formatting.
+- Require passing checks before merge, and require branches to be up to date first.
 
 ## Stack-specific practices
 
