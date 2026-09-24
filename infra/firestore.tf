@@ -8,4 +8,8 @@ resource "google_firestore_database" "default" {
   deletion_policy         = "PREVENT"
 
   depends_on = [google_project_service.this]
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
