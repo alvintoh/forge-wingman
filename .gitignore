@@ -3,3 +3,6 @@
 *.out
 .env
 .env.*
+
+# OpenTofu working directory; the lock file stays tracked.
+.terraform/
