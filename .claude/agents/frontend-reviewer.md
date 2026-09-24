@@ -1,5 +1,5 @@
 ---
-name: frontend
+name: frontend-reviewer
 domain: frontend
 description: Review client-side application code — components, state, accessibility, and security — and diagnose UI defects.
 stacks: [react, tailwind, typescript, bun, accessibility, typography, css]
@@ -31,6 +31,10 @@ Review and suggest improvements — do NOT rewrite unless a change is small and 
   - **Probe for ANY message, not the one you expect.** Grepping for the expected error string reports "clean" when a DIFFERENT message is showing; capture all text around the control and classify what appears.
 - Accessibility baseline: semantic elements, full keyboard navigation, visible focus, alt text, labelled controls, sufficient contrast.
 - Security baseline: never expose secrets to the client; set appropriate security headers.
+- Reuse before creating: before hand-rolling a scalar/date/unit constant or generic helper, grep the shared constants / `*.utils` modules and import the existing one; a sibling file's local copy is a shared constant to reuse from its canonical home, not a pattern to mirror.
+- Place a new file where its siblings say it belongs, BEFORE writing it: read two or three nearest neighbours and note what they do NOT contain — if every comparable file delegates its logic elsewhere, yours must too (grep the sibling set, e.g. `grep "^export type" <dir>/`; being the only file exporting a given kind of thing is the signal). Framework-routed entry points stay where the framework mandates and stay THIN; domain logic and shared types live in the project's own tree. Name the precedent file you matched in your report.
+- Calibrate test count to behaviors: one test per distinct branch + genuine boundary (empty/null, error path, off-by-one), then stop — don't re-prove a branch with another input value or assert what the types already guarantee.
+- No ticket ids in source or test names; keep comments lean — doc-comments on exported APIs and genuine *why* notes only, never restating what the code plainly does.
 
 ## Stack-specific practices
 
