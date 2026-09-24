@@ -91,13 +91,20 @@ fails silently at 06:02 to boring-and-stable. **"Latest" is also not writable**,
 what goes in `go.mod` is a FLOOR plus the toolchain that builds it:
 
 ```
-go 1.22              // language floor - ServeMux method and wildcard patterns
+go 1.27              // language floor - the toolchain's minor, the only one CI builds
 toolchain go1.27.1   // what builds it; raise deliberately
 ```
 
-**The floor is 1.22 and the reason is load-bearing:** `net/http`'s `ServeMux`
-gained method and wildcard routing there, which is the whole argument for using
-the stdlib instead of a third-party router. On 1.21 that routing does not exist.
+**The floor matches the toolchain's minor, because a floor is only true if
+something builds at it.** CI reads `go-version-file: go.mod` and so compiles with
+the toolchain alone; a lower floor would promise versions nothing ever tests.
+This is an application shipped in its own image, not a library, so no importer
+needs an older floor. *Updated (2026-09-24):* the floor was `1.22`, justified by
+`net/http`'s `ServeMux` gaining method and wildcard routing there, which is the
+whole argument for using the stdlib instead of a third-party router. That reason
+still sets a hard minimum (on 1.21 the routing does not exist) but it never argued
+against a higher floor, and `1.22` was never built by anything. Raise the floor
+with the toolchain, in the same change.
 Pinned does not mean stale — Dependabot or Renovate raises dependencies
 deliberately, with CI proving each one. *(Recorded 2026-09-22: the owner's machine
 was on go1.21.3, six releases behind and below the floor, and nothing in the design
