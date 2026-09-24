@@ -116,7 +116,7 @@ there pending measurement.
   server-side `count()`, `sum()` and `avg()`, billed as about one read however many
   documents match — so **spend per window is a single aggregation query**, which
   matters because FR-22 runs it on every poll. What Firestore lacks is `GROUP BY`, so
-  the two *grouped* views — rewrite rate by model over time, and stage progression —
+  the two *grouped* views — rewrite rate by model over time, and level progression —
   read the window and fold it in application code: ~900 documents for a 90-day chart,
   ~50-100 lines, cacheable. Runs by gate class is six `count()` queries. **That
   remains the real cost of the decision; it is just smaller and narrower than first

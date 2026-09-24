@@ -17,14 +17,15 @@ version: 1
 
 ## General
 
-**The shape, named: three deployables sharing one store.** Not microservices —
+**The shape, named: four deployables sharing one store** (the fourth, the webhook, since `adr/0013`). Not microservices —
 there is no service mesh, no inter-service call, and nothing to orchestrate. Not a
 monolith either. Each deployable has a different *trigger* and a different
 *attendance model*, which is the only reason they are separate.
 
 | Container | Forced by | Trigger | Attendance |
 |---|---|---|---|
-| **dispatcher** | FR-1 poll, FR-15 sizing, FR-22 selection, FR-23 notice | Cloud Scheduler, ≤15 min | unattended |
+| **dispatcher** | FR-1 poll, FR-15 sizing, FR-22 selection, FR-23 notice | the webhook, or Cloud Scheduler ≤15 min as backstop | unattended |
+| **webhook** | `adr/0013` — enqueue in seconds | Linear `AgentSessionEvent`, public, signature-verified | unattended |
 | **runner** | FR-2 worktree-per-run, FR-3/4 phases | dispatched per run | unattended |
 | **surface** | FR-20 browse + statistics, FR-24 retry, FR-25 keyboard | HTTP, behind IAP | interactive |
 | **store** | FR-6 record + completions, NFR-7 90-day bound | — | foundational |
@@ -32,9 +33,9 @@ monolith either. Each deployable has a different *trigger* and a different
 The dispatcher and runner **cannot share an execution unit**: a ~30-minute run
 in-process blocks the next poll and breaks FR-1's 15-minute promise.
 
-### Two containers that deliberately do NOT exist
+### ~~Two containers~~ One container that deliberately does NOT exist
 
-**No inbound webhook receiver.** FR-1's own note settles it — *"the 15-minute
+**Superseded (2026-09-24) by `adr/0013`:** the webhook receiver now exists, and the poll stays as its backstop. ~~No inbound webhook receiver.~~ FR-1's own note settles it — *"the 15-minute
 tolerance is deliberate: it permits a polled implementation and therefore needs no
 always-on inbound endpoint."* An endpoint would be a fourth deployable, a public
 attack surface and a signature to verify, all to buy latency the requirement
@@ -148,13 +149,13 @@ Escape returning focus to the row that opened it.
 
 ## Backend
 
-### Dispatcher — Cloud Run job, fired by Cloud Scheduler
+### Dispatcher — Cloud Run job, woken by the webhook or Cloud Scheduler
 
 One Go binary entrypoint (`cmd/dispatcher`). Per poll:
 
 1. **Identity first.** FR-12 verifies the active git and `gh` identity match the
    configured personal account and refuses to start otherwise.
-2. **Poll Linear** for issues in the Forge team **delegated to the Forge Wingman
+2. **Read the webhook's new-ticket rows, then poll Linear as the backstop** (`adr/0013`) for issues in the Forge team **delegated to the Forge Wingman
    app** — an app cannot be an assignee in Linear, so delegation is the trigger and
    the human assignee is left intact. Requires an OAuth app installed with
    `actor=app` and the `app:assignable` scope; see FR-1.
@@ -172,8 +173,13 @@ One Go binary entrypoint (`cmd/dispatcher`). Per poll:
 8. **Notify** per FR-23 — link-only, and only for the five recurring classes
    (FR-11, FR-12, FR-18, NFR-1).
 
-**Why a Job and not a service:** nothing calls it. Its trigger is a schedule, and a
-service would mean an idle container or a public endpoint, both for nothing.
+**Why a Job and not a service:** nothing calls it over HTTP. It is started by the schedule or by the webhook's run request (`adr/0013`), and the public endpoint lives in the webhook service, not here.
+
+### Webhook — Cloud Run service, public, signature-verified
+
+One Go binary entrypoint (`cmd/webhook`), built in Phase 3. It verifies Linear's
+`Linear-Signature`, writes a new-ticket row keyed on the issue id, starts a dispatcher
+execution and returns inside Linear's 5-second limit. It decides nothing — `adr/0013`.
 
 ### Runner — a Go binary invoked by a GitHub Actions reusable workflow
 
@@ -185,7 +191,7 @@ language. A reusable workflow living in each target repo, called with the run id
 |---|---|
 | fresh VM, fresh checkout | FR-2 isolation, free — nothing to build |
 | create the worktree and branch | FR-2 |
-| project the rule stack into prompts | FR-19 — full for plan, trimmed for build |
+| fetch the projection for the current rule-stack sha from Cloud Storage; refuse if absent | FR-19 — full for plan, trimmed for build; `adr/0012` |
 | `opencode run` for the plan phase, `edit`/`bash` denied | FR-3 |
 | `opencode run` for the build phase | FR-4 — every edited file must appear in the plan's list |
 | open the PR, state decided at creation | FR-5 — never transitioned afterwards |
@@ -307,7 +313,7 @@ optimize routing and prompt caching"* (verified 2026-09-21). Three consequences:
   no identity, so this does not blur two run records — they stay linked by run id.
 - **Keyed per PHASE as well**, because FR-19 emits a full projection for plan and
   a trimmed one for build. Two different prefixes are two different caches.
-- **It stretches the ALLOWANCE, not the cash.** At stage 5 the rule stack is about
+- **It stretches the ALLOWANCE, not the cash.** At level 5 the rule stack is about
   $4.82/month uncached and $0.96 cached — a rounding error against NFR-1's $20.
   What matters is that NFR-1 names the allowance windows as the binding
   constraint, so a 5x cut on the largest token line is roughly 5x more runs before
@@ -329,6 +335,7 @@ OTEL-native, so Go exports to it — if tracing is ever wanted beyond the record
 |---|---|---|
 | run records | **Firestore** — 1 GiB, 50k reads / 20k writes **per day** | $0, three orders of headroom |
 | completions | **Cloud Storage**, `age: 90` + `Delete` lifecycle rule | $0 within 5 GB-months |
+| projections | **Cloud Storage**, `projections/<sha>/`, published on every push to the rule stack, never expired | $0 — ~0.3 MB a push; `adr/0012` |
 | dispatcher | Cloud Run **job** | $0 — seconds, 96×/day |
 | surface | Cloud Run **service**, scale to zero | $0 at a few requests/day |
 | runner | **GitHub Actions**, per target repo | $0 public; metered private |
@@ -367,7 +374,7 @@ It is the only diagram in this product that names technology.
 
 | # | Item | Blocks |
 |---|---|---|
-| 1 | FR-19's three-trap probe has not been run; the trimmed projection is unproven | nothing — the probe is its own ticket, criteria recorded under FR-19 |
-| 2 | Run duration is assumed at ~30 min and **has never been measured** — it decides whether stage 2 is free or metered | nothing; FR-6 records it and NFR-4 says measure before tuning |
+| 1 | **Superseded (2026-09-23):** the probe ran — series 8 verdict in `three-trap-probe-v1.md`; its two protocol lines are not yet in the projection. ~~FR-19's three-trap probe has not been run; the trimmed projection is unproven~~ | Phase 2's first ticket |
+| 2 | **Superseded (2026-09-23):** probe cells ran **0.9–8.1 min, median 5.5**, so the ~30 min figure is falsified — but a full plan-build-PR run is still unmeasured, and it decides whether level 2 is free or metered. ~~Run duration is assumed at ~30 min and has never been measured~~ | nothing; FR-6 records it and NFR-4 says measure before tuning |
 | 3 | FR-20's PR actions need a scoped GitHub credential for the operator; the scope set is enumerated but not created | the retry-and-act phase only |
-| 4 | **The decision seam's provider is admissible but unproven.** Jev fits FR-15's shape exactly and NFR-2 no longer bars it, but it has not been scored against the held-out set and it is six days old | nothing at stage 0 — FR-15's deterministic signals run first and free, and the classifier decides only the remainder |
+| 4 | **The decision seam's provider is admissible but unproven.** Jev fits FR-15's shape exactly and NFR-2 no longer bars it, but it has not been scored against the held-out set and it is six days old | nothing at level 0 — FR-15's deterministic signals run first and free, and the classifier decides only the remainder |

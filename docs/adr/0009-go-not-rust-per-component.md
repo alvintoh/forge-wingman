@@ -124,7 +124,7 @@ objection against Rust explicitly withdrawn as mismeasured.
   build break.
 - **One Go module, two entrypoints** (`cmd/dispatcher`, `cmd/surface`) plus the
   runner binary, sharing the data layer and the run-record types. One Firestore
-  binding, first-party.
+  binding, first-party. *(Since `adr/0013`, a third entrypoint — `cmd/webhook`, also Go.)*
 - **The compile loop is the win being banked, so protect it** — sub-second
   incremental rebuilds through the tuning phase are a stated reason for this
   decision, and a build that creeps toward tens of seconds has eroded it.

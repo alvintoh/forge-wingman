@@ -116,7 +116,7 @@ cost — $10/month flat versus per-token — which FR-6 measures.
   below-threshold route is *plan it, and route to human review*, which is
   fail-safe. That is the shape of the answer, but it is not yet written into the
   design.
-- **Nothing here blocks stage 0.** FR-15's deterministic signals cost nothing and
+- **Nothing here blocks level 0.** FR-15's deterministic signals cost nothing and
   run first; the classifier decides only the remainder.
 
 ## Revisit
