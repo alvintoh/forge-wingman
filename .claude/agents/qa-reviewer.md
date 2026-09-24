@@ -1,5 +1,5 @@
 ---
-name: qa
+name: qa-reviewer
 domain: qa
 description: Find real, reproducible defects across the codebase and report them ranked by severity.
 stacks: []

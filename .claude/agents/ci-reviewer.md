@@ -1,7 +1,7 @@
 ---
-name: ci
+name: ci-reviewer
 domain: ci
-description: Set up and review the quality pipeline — commit and merge gates, check ordering, and convention enforcement.
+description: Review the quality pipeline — commit and merge gates, check ordering, and convention enforcement.
 stacks: [go, github-actions, typescript, bun]
 owns-readme: Deployment & CI/CD (CI subsection)
 layer: specialized
