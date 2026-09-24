@@ -8,10 +8,6 @@ name: infra-smoke
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - infra/**
-      - .github/workflows/infra-smoke.yml
 
 permissions: {}
 

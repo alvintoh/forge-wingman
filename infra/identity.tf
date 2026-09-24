@@ -23,8 +23,9 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     "attribute.repository_owner_id" = "assertion.repository_owner_id"
   }
 
-  # Without a condition any repository on GitHub could mint a token against this pool.
-  attribute_condition = "assertion.repository_id == \"${var.github_repository_id}\" && assertion.repository_owner_id == \"${var.github_owner_id}\""
+  # Without a condition any repository on GitHub could mint a token against this pool; main-only keeps a
+  # branch that rewrites a workflow from getting one.
+  attribute_condition = "assertion.repository_id == \"${var.github_repository_id}\" && assertion.repository_owner_id == \"${var.github_owner_id}\" && assertion.ref == \"refs/heads/main\""
 
   oidc {
     issuer_uri = "https://token.actions.githubusercontent.com"
