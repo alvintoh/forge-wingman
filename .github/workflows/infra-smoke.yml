@@ -1,0 +1,53 @@
+# Proves the runner's keyless credential end to end: GitHub OIDC -> Workload Identity
+# Federation -> the runner service account, then one call against each store it may use.
+# Needs two repository variables, both OpenTofu outputs from infra/:
+#   GCP_WIF_PROVIDER     workload_identity_provider
+#   GCP_SERVICE_ACCOUNT  runner_service_account
+# The project and bucket names derive from the service account, as infra/storage.tf names them.
+name: infra-smoke
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Firestore write and delete
+        env:
+          TOKEN: ${{ steps.auth.outputs.access_token }}
+          PROJECT: ${{ steps.auth.outputs.project_id }}
+          DOC_ID: ${{ github.run_id }}
+        run: |
+          base="https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents/smoke"
+          curl --fail-with-body -sS -X POST "${base}?documentId=${DOC_ID}" \
+            -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+            -d '{"fields":{"source":{"stringValue":"infra-smoke"}}}'
+          curl --fail-with-body -sS -X DELETE "${base}/${DOC_ID}" -H "Authorization: Bearer ${TOKEN}"
+
+      - name: Write to completions
+        env:
+          PROJECT: ${{ steps.auth.outputs.project_id }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          echo "infra-smoke ${RUN_ID}" > smoke.txt
+          gcloud storage cp smoke.txt "gs://${PROJECT}-completions/smoke/${RUN_ID}.txt"
+
+      - name: List projections
+        env:
+          PROJECT: ${{ steps.auth.outputs.project_id }}
+        run: gcloud storage ls "gs://${PROJECT}-projections/"
