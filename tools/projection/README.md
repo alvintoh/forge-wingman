@@ -21,7 +21,7 @@ published sha is guaranteed to contain exactly what was projected.
 
 ```sh
 SHA=$(git -C <rule-stack> rev-parse HEAD); SRC=$(mktemp -d); OUT=$(mktemp -d)
-git -C <rule-stack> archive HEAD | tar -x -C "$SRC"
+git -C <rule-stack> archive "$SHA" | tar -x -C "$SRC"
 python3 tools/projection/gen_projection.py "$SRC" --out "$OUT"
 gcloud storage cp "$OUT"/projection-{plan,build}.md "gs://forge-wingman-projections/projections/$SHA/"
 printf %s "$SHA" | gcloud storage cp - gs://forge-wingman-projections/projections/current

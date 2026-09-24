@@ -189,12 +189,17 @@ def _own_heading(root, rel):
 
 
 def main():
-    root = Path(sys.argv[1] if len(sys.argv) > 1 else os.environ["RULE_STACK_ROOT"])
+    # Every check here is an assert, which python -O strips; refuse rather than emit unchecked.
+    if not __debug__:
+        sys.exit("refusing to run under python -O: the projection's checks are asserts")
     # --out is REQUIRED, deliberately. Defaulting to "." would write ~350 KB of
     # generated rule stack into whatever repo you happen to be standing in, and
     # the projections are build output that no repo should hold.
     assert "--out" in sys.argv, "pass --out DIR; the projections are build output, not repo content"
-    out = Path(sys.argv[sys.argv.index("--out") + 1])
+    i = sys.argv.index("--out")
+    out = Path(sys.argv[i + 1])
+    rest = sys.argv[1:i] + sys.argv[i + 2:]
+    root = Path(rest[0] if rest else os.environ["RULE_STACK_ROOT"])
 
     full = build(root, trimmed=False)
     trim = build(root, trimmed=True)
