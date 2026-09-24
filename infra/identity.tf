@@ -41,6 +41,8 @@ resource "google_project_iam_member" "runner_datastore" {
   project = var.project_id
   role    = "roles/datastore.user"
   member  = google_service_account.runner.member
+
+  depends_on = [google_project_service.this]
 }
 
 resource "google_storage_bucket_iam_member" "runner_completions" {

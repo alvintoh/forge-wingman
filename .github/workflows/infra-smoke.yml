@@ -31,7 +31,7 @@ jobs:
         env:
           TOKEN: ${{ steps.auth.outputs.access_token }}
           PROJECT: ${{ steps.auth.outputs.project_id }}
-          DOC_ID: ${{ github.run_id }}
+          DOC_ID: ${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           base="https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents/smoke"
           curl --fail-with-body -sS -X POST "${base}?documentId=${DOC_ID}" \
@@ -42,7 +42,7 @@ jobs:
       - name: Write to completions
         env:
           PROJECT: ${{ steps.auth.outputs.project_id }}
-          RUN_ID: ${{ github.run_id }}
+          RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           echo "infra-smoke ${RUN_ID}" > smoke.txt
           gcloud storage cp smoke.txt "gs://${PROJECT}-completions/smoke/${RUN_ID}.txt"
