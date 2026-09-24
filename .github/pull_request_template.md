@@ -1,8 +1,8 @@
+**Ticket:** ref <TEAM-n> <!-- "ref", never "closes": Linear auto-closes on merge -->
+
 ## Summary
 <!-- First line: an imperative summary of WHAT changed. Then the problem, and why
      this approach. (Google eng-practices, "Writing good CL descriptions".) -->
-
-**Ticket:** ref <TEAM-n> <!-- "ref", never "closes": Linear auto-closes on merge -->
 
 ## Verification
 <!-- The acceptance criteria first, one row each copied from the ticket, then every
