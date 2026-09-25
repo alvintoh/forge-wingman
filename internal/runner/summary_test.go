@@ -66,6 +66,12 @@ func TestParseSummaryRejects(t *testing.T) {
 		{"a sha that is not one", func(s *Summary) { s.RuleStackSHA = "main" }},
 		{"no start time", func(s *Summary) { s.StartedAt = time.Time{} }},
 		{"a start time in the future", func(s *Summary) { s.StartedAt = finalizeNow.Add(time.Hour) }},
+		{"a built run with no branch", func(s *Summary) { s.Branch = "" }},
+		{"a built run with no model", func(s *Summary) { s.Model = "" }},
+		{"a built run with no completions", func(s *Summary) { s.CompletionsObject = "" }},
+		{"an agent failure with no completions", func(s *Summary) {
+			s.Outcome, s.StopReason, s.Phase, s.CompletionsObject = OutcomeAgentFailed, StopAgentExit, PhaseBuild, ""
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -141,6 +147,9 @@ func TestEncodeFitsTheLimitAndStaysOnOneLine(t *testing.T) {
 func TestParseSummaryAcceptsEveryBuildEnding(t *testing.T) {
 	for e := range buildEndings {
 		s := Summary{Outcome: e.outcome, StopReason: e.reason, Phase: e.phase, StartedAt: finalizeNow}
+		if e.phase == PhaseBuild || e.phase == PhaseCommit {
+			s.Branch, s.Model, s.CompletionsObject = BranchName(Tracer.ID, "1-1"), "opencode/big-pickle", "completions/1-1.jsonl"
+		}
 		raw, err := s.Encode()
 		if err != nil {
 			t.Fatal(err)

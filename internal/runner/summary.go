@@ -158,6 +158,18 @@ func (s Summary) validate(recordID string, t Ticket, now time.Time) error {
 			truncate(string(s.Outcome), logErrorLimit), truncate(string(s.StopReason), logErrorLimit),
 			truncate(string(s.Phase), logErrorLimit))
 	}
+	// A build names its branch once the worktree exists, its model as the agent
+	// starts, and its completions once the agent's events are uploaded, so an ending
+	// past each point that lacks the field did not come from a build.
+	if (s.Phase == PhaseBuild || s.Phase == PhaseCommit) && s.Branch == "" {
+		return errors.New("an ending past the worktree names no branch")
+	}
+	if (s.Phase == PhaseBuild || s.Phase == PhaseCommit) && s.Model == "" {
+		return errors.New("an ending past the worktree names no model")
+	}
+	if (s.Phase == PhaseCommit || s.Outcome == OutcomeAgentFailed) && s.CompletionsObject == "" {
+		return errors.New("an ending after the agent ran names no completions")
+	}
 	if s.Model != "" && (len(s.Model) > maxModelBytes || !modelPattern.MatchString(s.Model)) {
 		return errors.New("model is not provider/model")
 	}

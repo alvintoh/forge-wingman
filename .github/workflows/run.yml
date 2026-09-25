@@ -112,8 +112,7 @@ jobs:
 
       - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
 
-      # record exits 1 after writing the record of any run that did not succeed, and
-      # outputs recorded=true once the record is written.
+      # record exits 1 after writing the record of any run that did not succeed.
       - id: finalize
         name: Finalize the run record
         env:
@@ -129,8 +128,9 @@ jobs:
           -record-id "$RECORD_ID" -summary "$SUMMARY" -pr-url "$PR_URL"
           -run-result "$RUN_RESULT" -pr-result "$PR_RESULT" -pr-duration-s "$PR_DURATION"
 
-      # A summary too large to pass as an argument fails the step before record runs.
-      - if: failure() && steps.finalize.outcome == 'failure' && steps.finalize.outputs.recorded != 'true'
+      # A summary too large to pass as an argument fails the step before record runs,
+      # so record never reports started; any later failure leaves the record as it is.
+      - if: failure() && steps.finalize.outcome == 'failure' && steps.finalize.outputs.started != 'true'
         name: Record an unreadable summary
         env:
           GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}

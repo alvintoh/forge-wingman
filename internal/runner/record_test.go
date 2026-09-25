@@ -15,6 +15,7 @@ func encoded(t *testing.T, s Summary) string {
 	}
 	if s.Phase == "" {
 		s.Phase = PhaseCommit
+		s.Branch, s.Model, s.CompletionsObject = BranchName(Tracer.ID, "1-1"), "opencode/big-pickle", "completions/1-1.jsonl"
 	}
 	raw, err := s.Encode()
 	if err != nil {

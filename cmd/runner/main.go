@@ -171,6 +171,11 @@ func record(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	// started tells run.yml's fallback that the summary arrived, so a later failure
+	// is not mistaken for one too large to pass in.
+	if err := writeOutputs(e.output, map[string]string{"started": "true"}); err != nil {
+		return err
+	}
 	if !ownRecordID(*recordID, e.runID, e.attempt) {
 		logger.Warn("recordIDRejected", "length", len(*recordID))
 		*recordID = e.recordID
@@ -199,9 +204,6 @@ func record(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		logger.Warn("summaryRejected", "record", *recordID, "err", rec.StopDetail)
 	}
 	logger.Info("recordFinalized", "record", *recordID, "outcome", string(rec.Outcome), "reason", string(rec.StopReason))
-	if err := writeOutputs(e.output, map[string]string{"recorded": "true"}); err != nil {
-		return err
-	}
 	if !rec.Succeeded() {
 		return errRunFailed
 	}
