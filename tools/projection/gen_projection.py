@@ -70,6 +70,8 @@ MUST_SURVIVE_BUILD = {
         "Stage by explicit PATH",
 }
 
+# The runner replaces this and reads projection-build.md by name: internal/runner/prompt.go
+# and internal/runner/projection.go must change with them.
 TICKET_SENTINEL = "<<<TICKET>>>"
 
 # ---- how the UNATTENDED agent resolves conflicts the rules leave open --------
