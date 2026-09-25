@@ -19,9 +19,8 @@ it, matched on the token's `job_workflow_ref` from `main`. Those bindings follow
 the repository NAME (`github_repository`) while the provider's condition follows
 its numeric id, so a rename or transfer fails closed until the variable is updated.
 
-The runner also keeps its older binding, `runner_wif`, which any job of the
-repository on `main` satisfies. Removing it is the contract step: a separate
-change, made only once `infra-smoke` on `main` has passed on the workflow bindings.
+No binding admits a job by repository alone, so a job in any other workflow of
+this repository — the model's included — cannot become the runner.
 
 | Service account | Workflows | Grants |
 |---|---|---|
