@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -44,14 +45,6 @@ func (f fakeObjects) CreateObject(_ context.Context, name string, r io.Reader) e
 
 type fakeRecords map[string]Record
 
-func (f fakeRecords) GetRecord(_ context.Context, id string) (Record, error) {
-	r, ok := f[id]
-	if !ok {
-		return Record{}, ErrRecordNotFound
-	}
-	return r, nil
-}
-
 func (f fakeRecords) PutRecord(_ context.Context, id string, r Record) error {
 	f[id] = r
 	return nil
@@ -79,16 +72,34 @@ func (a *fakeAgent) Run(_ context.Context, dir, prompt string, stdout, _ io.Writ
 	return a.err
 }
 
-func testDeps(projections fakeObjects, agent *fakeAgent) (BuildDeps, fakeObjects, fakeRecords) {
-	completions, records := fakeObjects{}, fakeRecords{}
+// reports holds every summary a build reported; a build must report exactly one.
+type reports []Summary
+
+func (r *reports) last(t *testing.T) Summary {
+	t.Helper()
+	if len(*r) != 1 {
+		t.Fatalf("%d summaries reported, want 1", len(*r))
+	}
+	s := (*r)[0]
+	if !buildEndings[ending{s.Outcome, s.StopReason, s.Phase}] {
+		t.Fatalf("reported %s/%s at %q, which the record job rejects", s.Outcome, s.StopReason, s.Phase)
+	}
+	return s
+}
+
+func testDeps(projections fakeObjects, agent *fakeAgent) (BuildDeps, fakeObjects, *reports) {
+	completions, reported := fakeObjects{}, &reports{}
 	return BuildDeps{
 		Projections: projections,
 		Completions: completions,
-		Records:     records,
 		Agent:       agent,
-		Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Now:         time.Now,
-	}, completions, records
+		Report: func(s Summary) error {
+			*reported = append(*reported, s)
+			return nil
+		},
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Now:    time.Now,
+	}, completions, reported
 }
 
 func testConfig(t *testing.T, repo string) BuildConfig {
@@ -118,7 +129,7 @@ func TestBuildFailsClosedWithoutAProjection(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			agent := &fakeAgent{}
-			deps, completions, records := testDeps(tt.objects, agent)
+			deps, completions, reported := testDeps(tt.objects, agent)
 			c := testConfig(t, t.TempDir())
 
 			_, err := Build(context.Background(), deps, c)
@@ -131,16 +142,10 @@ func TestBuildFailsClosedWithoutAProjection(t *testing.T) {
 			if len(completions) != 0 {
 				t.Fatalf("completions uploaded: %v", completions)
 			}
-			rec, ok := records[c.RecordID]
-			if !ok {
-				t.Fatal("no record written")
-			}
-			if rec.Outcome != OutcomeStopped || rec.StopReason != tt.wantReason || rec.Phase != PhaseProjection {
-				t.Fatalf("record = %s/%s at %s, want stopped/%s at projection",
-					rec.Outcome, rec.StopReason, rec.Phase, tt.wantReason)
-			}
-			if rec.TicketID != "t-1" || rec.SizedBy != "hardcoded" {
-				t.Fatalf("record lost the ticket: %+v", rec)
+			sum := reported.last(t)
+			if sum.Outcome != OutcomeStopped || sum.StopReason != tt.wantReason || sum.Phase != PhaseProjection {
+				t.Fatalf("summary = %s/%s at %s, want stopped/%s at projection",
+					sum.Outcome, sum.StopReason, sum.Phase, tt.wantReason)
 			}
 		})
 	}
@@ -158,7 +163,7 @@ func TestBuildCommitsAndBundlesTheAgentsEdits(t *testing.T) {
 		},
 		events: `{"type":"step_finish","part":{"tokens":{"input":10,"output":2,"cache":{"read":90}},"cost":0.5}}` + "\n",
 	}
-	deps, completions, records := testDeps(objects, agent)
+	deps, completions, reported := testDeps(objects, agent)
 	c := testConfig(t, repo)
 
 	res, err := Build(context.Background(), deps, c)
@@ -172,9 +177,9 @@ func TestBuildCommitsAndBundlesTheAgentsEdits(t *testing.T) {
 		t.Fatalf("prompt order wrong: %q", agent.prompt)
 	}
 
-	rec := records[c.RecordID]
+	rec := reported.last(t)
 	if rec.Outcome != OutcomeBuilt || rec.RuleStackSHA != testSHA || rec.Branch != res.Branch {
-		t.Fatalf("record = %+v", rec)
+		t.Fatalf("summary = %+v", rec)
 	}
 	if !slices.Equal(rec.EditedFiles, []string{"version.go"}) {
 		t.Fatalf("edited files = %q", rec.EditedFiles)
@@ -182,8 +187,8 @@ func TestBuildCommitsAndBundlesTheAgentsEdits(t *testing.T) {
 	if rec.DiffLines.Added == 0 {
 		t.Fatalf("diff lines = %+v, want the added file counted", rec.DiffLines)
 	}
-	if rec.Tokens.Input != 10 || rec.Tokens.CacheRead != 90 || rec.Models["build"] != "p/m" {
-		t.Fatalf("record usage = %+v, models %v", rec.Tokens, rec.Models)
+	if rec.Tokens.Input != 10 || rec.Tokens.CacheRead != 90 || rec.Model != "p/m" {
+		t.Fatalf("summary usage = %+v, model %q", rec.Tokens, rec.Model)
 	}
 	if got := completions[rec.CompletionsObject]; !bytes.Equal(got, []byte(agent.events)) {
 		t.Fatalf("completions object %q = %q", rec.CompletionsObject, got)
@@ -197,19 +202,19 @@ func TestBuildCommitsAndBundlesTheAgentsEdits(t *testing.T) {
 	}
 }
 
-func TestBuildRecordsAFailedAgent(t *testing.T) {
+func TestBuildReportsAFailedAgent(t *testing.T) {
 	objects := fakeObjects{
 		DefaultPointer: []byte(testSHA),
 		"projections/" + testSHA + "/" + buildProjectionFile: []byte("# Rules\n" + ticketSentinel),
 	}
 	agent := &fakeAgent{events: "{}\n", err: errors.New("exit status 1")}
-	deps, completions, records := testDeps(objects, agent)
+	deps, completions, reported := testDeps(objects, agent)
 	c := testConfig(t, initRepo(t))
 
 	if _, err := Build(context.Background(), deps, c); err == nil {
 		t.Fatal("Build succeeded with a failed agent")
 	}
-	rec := records[c.RecordID]
+	rec := reported.last(t)
 	if rec.Outcome != OutcomeAgentFailed || rec.StopReason != StopAgentExit {
 		t.Fatalf("record = %s/%s", rec.Outcome, rec.StopReason)
 	}
@@ -252,14 +257,14 @@ func TestBuildStopsOnAnInvalidModel(t *testing.T) {
 	for _, model := range []string{"", "big-pickle", "opencode/big pickle", "-x/y", "opencode/big-pickle;rm"} {
 		t.Run(model, func(t *testing.T) {
 			agent := &fakeAgent{}
-			deps, _, records := testDeps(validObjects(), agent)
+			deps, _, reported := testDeps(validObjects(), agent)
 			c := testConfig(t, initRepo(t))
 			c.Model = model
 			if _, err := Build(context.Background(), deps, c); err == nil {
 				t.Fatal("Build accepted the model")
 			}
-			if agent.calls != 0 || records[c.RecordID].StopReason != StopModelInvalid {
-				t.Fatalf("calls %d, reason %s", agent.calls, records[c.RecordID].StopReason)
+			if agent.calls != 0 || reported.last(t).StopReason != StopModelInvalid {
+				t.Fatalf("calls %d, reason %s", agent.calls, reported.last(t).StopReason)
 			}
 		})
 	}
@@ -302,7 +307,7 @@ func (blockingAgent) Run(ctx context.Context, _, _ string, stdout, _ io.Writer) 
 }
 
 func TestBuildStopsTheAgentAtItsDeadline(t *testing.T) {
-	deps, completions, records := testDeps(validObjects(), nil)
+	deps, completions, reported := testDeps(validObjects(), nil)
 	deps.Agent = blockingAgent{}
 	c := testConfig(t, initRepo(t))
 	c.AgentTimeout = 100 * time.Millisecond
@@ -310,7 +315,7 @@ func TestBuildStopsTheAgentAtItsDeadline(t *testing.T) {
 	if _, err := Build(context.Background(), deps, c); err == nil {
 		t.Fatal("Build succeeded past the agent deadline")
 	}
-	rec := records[c.RecordID]
+	rec := reported.last(t)
 	if rec.StopReason != StopAgentTimeout {
 		t.Fatalf("reason = %s", rec.StopReason)
 	}
@@ -336,11 +341,11 @@ func TestBuildUploadsCompletionsEvenWhenUsageCannotBeSummed(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			agent := &fakeAgent{events: longLine, err: tt.agentErr}
-			deps, completions, records := testDeps(validObjects(), agent)
+			deps, completions, reported := testDeps(validObjects(), agent)
 			c := testConfig(t, initRepo(t))
 
 			_, _ = Build(context.Background(), deps, c)
-			rec := records[c.RecordID]
+			rec := reported.last(t)
 			if got := completions[rec.CompletionsObject]; string(got) != longLine {
 				t.Fatalf("completions = %q", got)
 			}
@@ -356,7 +361,7 @@ func TestBuildRefusesToBundleASecret(t *testing.T) {
 	agent := &fakeAgent{edit: func(dir string) error {
 		return os.WriteFile(filepath.Join(dir, "cfg.go"), []byte(`var k = "`+secret+`"`), 0o600)
 	}}
-	deps, _, records := testDeps(validObjects(), agent)
+	deps, _, reported := testDeps(validObjects(), agent)
 	c := testConfig(t, initRepo(t))
 	c.Secret = secret
 
@@ -364,7 +369,7 @@ func TestBuildRefusesToBundleASecret(t *testing.T) {
 	if err == nil || res.Changed {
 		t.Fatal("Build bundled a branch holding the secret")
 	}
-	rec := records[c.RecordID]
+	rec := reported.last(t)
 	if rec.StopReason != StopSecretInBranch || strings.Contains(rec.StopDetail, secret) {
 		t.Fatalf("reason %s, detail %q", rec.StopReason, rec.StopDetail)
 	}
@@ -379,8 +384,8 @@ func (panickingAgent) Run(context.Context, string, string, io.Writer, io.Writer)
 	panic("boom")
 }
 
-func TestBuildRecordsAPanicThenRepanics(t *testing.T) {
-	deps, _, records := testDeps(validObjects(), nil)
+func TestBuildReportsAPanicThenRepanics(t *testing.T) {
+	deps, _, reported := testDeps(validObjects(), nil)
 	deps.Agent = panickingAgent{}
 	c := testConfig(t, initRepo(t))
 
@@ -388,8 +393,8 @@ func TestBuildRecordsAPanicThenRepanics(t *testing.T) {
 		if recover() == nil {
 			t.Fatal("Build swallowed the panic")
 		}
-		rec := records[c.RecordID]
-		if rec.Outcome != OutcomeInfraFailure || rec.StopReason != StopPanic || rec.BuildOutcome != OutcomeInfraFailure {
+		rec := reported.last(t)
+		if rec.Outcome != OutcomeInfraFailure || rec.StopReason != StopPanic {
 			t.Fatalf("record = %s/%s", rec.Outcome, rec.StopReason)
 		}
 	}()
@@ -400,5 +405,60 @@ func TestBranchNameMatchesThePRJobsPattern(t *testing.T) {
 	pattern := regexp.MustCompile(`^wingman/tracer-1-42-[0-9]+$`)
 	if got := BranchName(Tracer.ID, "42-3"); !pattern.MatchString(got) {
 		t.Fatalf("branch %q does not match the pr job's pattern", got)
+	}
+}
+
+func TestBuildDependsOnNoRecordStore(t *testing.T) {
+	store := reflect.TypeFor[RecordStore]()
+	deps := reflect.TypeFor[BuildDeps]()
+	for f := range deps.Fields() {
+		if f.Type.Implements(store) {
+			t.Errorf("BuildDeps.%s can write run records", f.Name)
+		}
+	}
+}
+
+func TestBuildReportsASummaryTheRecordJobAccepts(t *testing.T) {
+	agent := &fakeAgent{
+		edit: func(dir string) error {
+			return os.WriteFile(filepath.Join(dir, "version.go"), []byte("package x\n"), 0o600)
+		},
+		events: `{"type":"step_finish","part":{"tokens":{"input":10,"output":2},"cost":0.5}}` + "\n",
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	c := testConfig(t, initRepo(t))
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := reported.last(t).Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.ContainsAny(raw, "\r\n") {
+		t.Fatalf("summary spans lines: %q", raw)
+	}
+	got, err := ParseSummary(raw, c.RecordID, c.Ticket, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != OutcomeBuilt || got.Branch != BranchName(c.Ticket.ID, c.RecordID) || got.Tokens.Cost != 0.5 {
+		t.Fatalf("summary = %+v", got)
+	}
+}
+
+func TestBuildFailsWhenTheSummaryCannotBeReported(t *testing.T) {
+	deps, _, _ := testDeps(validObjects(), &fakeAgent{})
+	deps.Report = func(Summary) error { return errors.New("GITHUB_OUTPUT unwritable") }
+	_, err := Build(context.Background(), deps, testConfig(t, initRepo(t)))
+	if !errors.Is(err, ErrSummaryUnreported) {
+		t.Fatalf("err = %v, want it marked unreported", err)
+	}
+
+	deps, _, _ = testDeps(fakeObjects{}, &fakeAgent{})
+	deps.Report = func(Summary) error { return errors.New("GITHUB_OUTPUT unwritable") }
+	_, err = Build(context.Background(), deps, testConfig(t, initRepo(t)))
+	var stopped *StopError
+	if !errors.As(err, &stopped) || !errors.Is(err, ErrSummaryUnreported) {
+		t.Fatalf("err = %v, want a stop marked unreported", err)
 	}
 }

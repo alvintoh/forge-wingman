@@ -1,0 +1,31 @@
+name: oidc-claims
+description: Prints the non-secret claims of this job's GitHub OIDC token, as Workload Identity Federation receives it.
+inputs:
+  workload_identity_provider:
+    description: the provider the token is minted for, as projects/.../providers/<id>
+    required: true
+  expected_job_workflow_ref:
+    description: fail unless the token's job_workflow_ref is exactly this
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        PROVIDER: ${{ inputs.workload_identity_provider }}
+        EXPECTED: ${{ inputs.expected_job_workflow_ref }}
+      run: |
+        token=$(curl -fsS -G "$ACTIONS_ID_TOKEN_REQUEST_URL" \
+          -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          --data-urlencode "audience=https://iam.googleapis.com/${PROVIDER}" | jq -r .value)
+        echo "::add-mask::$token"
+        payload=$(cut -d. -f2 <<<"$token" | tr '_-' '/+')
+        while (( ${#payload} % 4 )); do payload+="="; done
+        claims=$(base64 -d <<<"$payload" | jq '{job_workflow_ref, workflow_ref, sub, ref, repository}')
+        echo "$claims"
+        actual=$(jq -r .job_workflow_ref <<<"$claims")
+        if [[ -n "$EXPECTED" && "$actual" != "$EXPECTED" ]]; then
+          echo "job_workflow_ref is ${actual}, expected ${EXPECTED}"
+          exit 1
+        fi

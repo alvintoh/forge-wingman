@@ -15,11 +15,11 @@ import (
 )
 
 const (
-	recordWriteTimeout  = 30 * time.Second
+	uploadTimeout       = 30 * time.Second
 	stopDetailLimit     = 2048
 	logErrorLimit       = 200
 	defaultAgentTimeout = 50 * time.Minute
-	// bundleName is also named by run.yml's bundle verify, upload and fetch steps.
+	// bundleName is also named by model.yml's bundle verify and upload and run.yml's fetch.
 	bundleName = "wingman.bundle"
 )
 
@@ -30,12 +30,12 @@ type Agent interface {
 	Run(ctx context.Context, dir, prompt string, stdout, stderr io.Writer) error
 }
 
-// BuildDeps are the stores and the agent a build talks to.
+// BuildDeps are the stores and the agent a build talks to, and where it reports.
 type BuildDeps struct {
 	Projections ObjectReader
 	Completions ObjectCreator
-	Records     RecordStore
 	Agent       Agent
+	Report      func(Summary) error
 	Logger      *slog.Logger
 	Now         func() time.Time
 }
@@ -59,7 +59,7 @@ type BuildResult struct {
 	Changed    bool
 }
 
-// StopError ends a build with an outcome the record keeps. Build has already
+// StopError ends a build with an outcome the summary reports. Build has already
 // logged it by the time it is returned.
 type StopError struct {
 	Outcome Outcome
@@ -82,34 +82,30 @@ func BranchName(ticketID, recordID string) string {
 // Build fetches the projection, runs the agent in a fresh worktree, and commits
 // and bundles what it changed.
 //
-// The run record is written on every return path, a panic included. The agent
+// The summary is reported on every return path, a panic included. The agent
 // never runs unless the model is well formed and the projection was found and valid.
 func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, err error) {
-	rec := newRecord(c.RecordID, c.Ticket, d.Now())
+	sum := Summary{DurationsMS: map[string]int64{}, StartedAt: d.Now()}
 	defer func() {
 		p := recover()
 		var s *StopError
 		switch {
 		case p != nil:
-			rec.Outcome, rec.StopReason = OutcomeInfraFailure, StopPanic
-			rec.StopDetail = truncate(fmt.Sprint(p), stopDetailLimit)
+			sum.Outcome, sum.StopReason = OutcomeInfraFailure, StopPanic
+			sum.StopDetail = truncate(fmt.Sprint(p), stopDetailLimit)
 		case errors.As(err, &s):
-			rec.Outcome, rec.StopReason = s.Outcome, s.Reason
-			rec.StopDetail = truncate(detail(s.Err), stopDetailLimit)
-			d.Logger.Error("runStopped", "reason", string(s.Reason), "phase", string(rec.Phase),
+			sum.Outcome, sum.StopReason = s.Outcome, s.Reason
+			sum.StopDetail = truncate(detail(s.Err), stopDetailLimit)
+			d.Logger.Error("runStopped", "reason", string(s.Reason), "phase", string(sum.Phase),
 				"err", truncate(s.Err.Error(), logErrorLimit))
 		case err != nil:
-			rec.Outcome = OutcomeInfraFailure
+			sum.Outcome = OutcomeInfraFailure
 		}
-		rec.BuildOutcome = rec.Outcome
-		rec.UpdatedAt = d.Now()
-		wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordWriteTimeout)
-		defer cancel()
-		if werr := d.Records.PutRecord(wctx, c.RecordID, rec); werr != nil {
-			d.Logger.Error("recordWriteFailed", "err", truncate(werr.Error(), logErrorLimit))
-			err = errors.Join(err, fmt.Errorf("writing record %s: %w", c.RecordID, werr))
+		if rerr := d.Report(sum); rerr != nil {
+			d.Logger.Error("summaryReportFailed", "err", truncate(rerr.Error(), logErrorLimit))
+			err = errors.Join(err, fmt.Errorf("%w: %w", ErrSummaryUnreported, rerr))
 		} else {
-			d.Logger.Info("recordWritten", "outcome", string(rec.Outcome))
+			d.Logger.Info("summaryReported", "outcome", string(sum.Outcome))
 		}
 		if p != nil {
 			panic(p)
@@ -117,11 +113,11 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 	}()
 
 	timed := func(p Phase, f func() error) error {
-		rec.Phase = p
+		sum.Phase = p
 		d.Logger.Info("phaseStarted", "phase", string(p))
 		start := d.Now()
 		ferr := f()
-		rec.DurationsMS[string(p)] = d.Now().Sub(start).Milliseconds()
+		sum.DurationsMS[string(p)] = d.Now().Sub(start).Milliseconds()
 		return ferr
 	}
 
@@ -140,7 +136,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		case err != nil:
 			return stopWith(OutcomeInfraFailure, StopProjectionRead, err)
 		}
-		rec.RuleStackSHA = p.SHA
+		sum.RuleStackSHA = p.SHA
 		d.Logger.Info("projectionFetched", "sha", p.SHA)
 		prompt, err = BuildPrompt(p.Text, c.Ticket)
 		if err != nil {
@@ -158,7 +154,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		if err != nil {
 			return stopWith(OutcomeInfraFailure, StopWorktree, err)
 		}
-		rec.Branch = wt.Branch
+		sum.Branch = wt.Branch
 		d.Logger.Info("worktreeCreated", "path", wt.Dir, "branch", wt.Branch)
 		return nil
 	}); err != nil {
@@ -166,8 +162,8 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 	}
 
 	if err := timed(PhaseBuild, func() error {
-		rec.Models[string(PhaseBuild)] = c.Model
-		return runAgent(ctx, d, c, wt.Dir, prompt, &rec)
+		sum.Model = c.Model
+		return runAgent(ctx, d, c, wt.Dir, prompt, &sum)
 	}); err != nil {
 		return BuildResult{}, err
 	}
@@ -187,15 +183,15 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		if err != nil {
 			return stopWith(OutcomeInfraFailure, StopCommit, err)
 		}
-		rec.EditedFiles = files
+		sum.EditedFiles = files
 		if len(files) > 0 {
-			if rec.DiffLines, err = wt.DiffLines(ctx); err != nil {
+			if sum.DiffLines, err = wt.DiffLines(ctx); err != nil {
 				return stopWith(OutcomeInfraFailure, StopCommit, err)
 			}
 		}
 		d.Logger.Info("changesCommitted", "files", len(files))
 		if len(files) == 0 {
-			rec.Outcome = OutcomeNoChanges
+			sum.Outcome = OutcomeNoChanges
 			return nil
 		}
 		if err := wt.CheckSecret(ctx, c.Secret); err != nil {
@@ -209,7 +205,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 			return stopWith(OutcomeInfraFailure, StopCommit, err)
 		}
 		res.Changed = true
-		rec.Outcome = OutcomeBuilt
+		sum.Outcome = OutcomeBuilt
 		return nil
 	}); err != nil {
 		return BuildResult{}, err
@@ -219,7 +215,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 
 // runAgent runs the agent under its own deadline with its events captured in a
 // file, uploads them to the completions bucket, then totals their usage.
-func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, dir, prompt string, rec *Record) error {
+func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, dir, prompt string, sum *Summary) error {
 	events := filepath.Join(c.TempDir, "completions-"+c.RecordID+".jsonl")
 	stderrPath := filepath.Join(c.TempDir, "opencode-"+c.RecordID+".stderr")
 	out, err := os.Create(events)
@@ -242,7 +238,7 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, dir, prompt strin
 	timedOut := errors.Is(agentCtx.Err(), context.DeadlineExceeded)
 	cancel()
 
-	completions := "completions/" + c.RecordID + ".jsonl"
+	completions := completionsObject(c.RecordID)
 	for _, u := range []struct {
 		name string
 		f    *os.File
@@ -250,24 +246,24 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, dir, prompt strin
 		if _, err := u.f.Seek(0, io.SeekStart); err != nil {
 			return stopWith(OutcomeInfraFailure, StopCompletions, err)
 		}
-		uctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordWriteTimeout)
+		uctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), uploadTimeout)
 		err := d.Completions.CreateObject(uctx, u.name, u.f)
 		cancel()
 		if err != nil {
 			return stopWith(OutcomeInfraFailure, StopCompletions, fmt.Errorf("uploading %s: %w", u.name, err))
 		}
 	}
-	rec.CompletionsObject = completions
+	sum.CompletionsObject = completions
 
 	if _, err := out.Seek(0, io.SeekStart); err != nil {
-		rec.UsageWarning = err.Error()
+		sum.UsageWarning = err.Error()
 	} else if usage, err := SumUsage(out); err != nil {
-		rec.UsageWarning = err.Error()
+		sum.UsageWarning = err.Error()
 	} else {
-		rec.Tokens = usage
+		sum.Tokens = usage
 	}
-	d.Logger.Info("agentFinished", "steps", rec.Tokens.Steps, "input", rec.Tokens.Input, "output", rec.Tokens.Output,
-		"cacheRead", rec.Tokens.CacheRead, "cost", rec.Tokens.Cost, "usageWarning", rec.UsageWarning != "")
+	d.Logger.Info("agentFinished", "steps", sum.Tokens.Steps, "input", sum.Tokens.Input, "output", sum.Tokens.Output,
+		"cacheRead", sum.Tokens.CacheRead, "cost", sum.Tokens.Cost, "usageWarning", sum.UsageWarning != "")
 
 	switch {
 	case timedOut:

@@ -1,8 +1,9 @@
-# One run of the hardcoded tracer ticket: the model builds in `run`, a job holding no
-# token that can open or ready a PR; `pr` opens the draft from the bundled branch with
-# fixed steps only; `record` finalizes the run record whatever happened.
-# Needs the GCP_WIF_PROVIDER and GCP_SERVICE_ACCOUNT variables (see infra-smoke.yml) and
-# the OPENCODE_API_KEY secret. Workload Identity Federation trusts main only, so
+# One run of the hardcoded tracer ticket: the model builds in `model` (model.yml), a job
+# holding no token that can open or ready a PR and no credential that can write a run
+# record; `pr` opens the draft from the bundled branch with fixed steps only; `record`
+# validates the model's summary and writes the run record whatever happened.
+# Needs the GCP_WIF_PROVIDER, GCP_SERVICE_ACCOUNT and GCP_MODEL_SERVICE_ACCOUNT variables
+# (infra/README.md) and the OPENCODE_API_KEY secret. Workload Identity Federation trusts main only, so
 # dispatch from main.
 name: run
 
@@ -21,74 +22,20 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  run:
+  model:
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+    uses: ./.github/workflows/model.yml
     permissions:
       contents: read
       id-token: write
-    outputs:
-      record_id: ${{ steps.build.outputs.record_id }}
-      branch: ${{ steps.build.outputs.branch }}
-      changed: ${{ steps.build.outputs.changed }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: false
-
-      - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
-
-      - name: Install opencode
-        env:
-          OPENCODE_VERSION: 1.18.30
-          OPENCODE_SHA256: 55007246858165496ff85ba1c2b648f7421e8e2013bf4189a680c9ff8e699d17
-        run: |
-          curl -fsSL -o "$RUNNER_TEMP/opencode.tar.gz" \
-            "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-x64.tar.gz"
-          echo "${OPENCODE_SHA256}  $RUNNER_TEMP/opencode.tar.gz" | sha256sum --check --strict
-          mkdir -p "$RUNNER_TEMP/bin"
-          tar -xzf "$RUNNER_TEMP/opencode.tar.gz" -C "$RUNNER_TEMP/bin" opencode
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-          test "$("$RUNNER_TEMP/bin/opencode" --version)" = "${OPENCODE_VERSION}"
-
-      - id: auth
-        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
-        with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
-
-      - id: build
-        name: Build
-        env:
-          GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}
-          MODEL: ${{ inputs.model }}
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
-        run: '"$RUNNER_TEMP/runner" build -model "$MODEL"'
-
-      # wingman.bundle here and in the pr job is bundleName in internal/runner/build.go.
-      - if: steps.build.outputs.changed == 'true'
-        env:
-          GIT_CONFIG_NOSYSTEM: "1"
-          GIT_CONFIG_GLOBAL: /dev/null
-        run: git -c core.hooksPath=/dev/null -c core.fsmonitor=false bundle verify --quiet "$RUNNER_TEMP/wingman.bundle"
-
-      - if: steps.build.outputs.changed == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: bundle
-          path: ${{ runner.temp }}/wingman.bundle
-          if-no-files-found: error
-          retention-days: 1
+    with:
+      model: ${{ inputs.model }}
+    secrets:
+      OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
 
   pr:
-    needs: run
-    if: needs.run.outputs.changed == 'true'
+    needs: model
+    if: needs.model.outputs.changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -110,7 +57,7 @@ jobs:
 
       - name: Push the branch
         env:
-          BRANCH: ${{ needs.run.outputs.branch }}
+          BRANCH: ${{ needs.model.outputs.branch }}
         run: |
           [[ "$BRANCH" =~ ^wingman/tracer-1-${GITHUB_RUN_ID}-[0-9]+$ ]] || { echo "unexpected branch name"; exit 1; }
           git -c transfer.fsckObjects=true fetch "$RUNNER_TEMP/wingman.bundle" "refs/heads/${BRANCH}:refs/heads/${BRANCH}"
@@ -121,7 +68,7 @@ jobs:
         name: Open the draft PR
         env:
           GH_TOKEN: ${{ github.token }}
-          BRANCH: ${{ needs.run.outputs.branch }}
+          BRANCH: ${{ needs.model.outputs.branch }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           url=$(gh pr create --draft --base main --head "$BRANCH" \
@@ -136,11 +83,11 @@ jobs:
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
-          BRANCH: ${{ needs.run.outputs.branch }}
+          BRANCH: ${{ needs.model.outputs.branch }}
         run: gh workflow run ci.yml --ref "$BRANCH"
 
   record:
-    needs: [run, pr]
+    needs: [model, pr]
     if: always() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -163,15 +110,36 @@ jobs:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
-      - name: Finalize the run record
+      - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
+
+      # record exits 1 after writing the record of any run that did not succeed.
+      - id: finalize
+        name: Finalize the run record
         env:
           GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}
-          RECORD_ID: ${{ needs.run.outputs.record_id }}
+          RECORD_ID: ${{ needs.model.outputs.record_id }}
+          SUMMARY: ${{ needs.model.outputs.summary }}
           PR_URL: ${{ needs.pr.outputs.url }}
-          RUN_RESULT: ${{ needs.run.result }}
+          RUN_RESULT: ${{ needs.model.result }}
           PR_RESULT: ${{ needs.pr.result }}
           PR_DURATION: ${{ needs.pr.outputs.duration_s || '0' }}
         run: >-
-          go run ./cmd/runner record
+          "$RUNNER_TEMP/runner" record
+          -record-id "$RECORD_ID" -summary "$SUMMARY" -pr-url "$PR_URL"
+          -run-result "$RUN_RESULT" -pr-result "$PR_RESULT" -pr-duration-s "$PR_DURATION"
+
+      # A summary too large to pass as an argument fails the step before record runs,
+      # so record never reports started; any later failure leaves the record as it is.
+      - if: failure() && steps.finalize.outcome == 'failure' && steps.finalize.outputs.started != 'true'
+        name: Record an unreadable summary
+        env:
+          GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}
+          RECORD_ID: ${{ needs.model.outputs.record_id }}
+          PR_URL: ${{ needs.pr.outputs.url }}
+          RUN_RESULT: ${{ needs.model.result }}
+          PR_RESULT: ${{ needs.pr.result }}
+          PR_DURATION: ${{ needs.pr.outputs.duration_s || '0' }}
+        run: >-
+          "$RUNNER_TEMP/runner" record -summary-unreadable
           -record-id "$RECORD_ID" -pr-url "$PR_URL"
           -run-result "$RUN_RESULT" -pr-result "$PR_RESULT" -pr-duration-s "$PR_DURATION"

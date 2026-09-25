@@ -1,0 +1,82 @@
+# The model account's grants, called from infra-smoke.yml so its token carries this
+# file's job_workflow_ref, as model.yml's does: projection read and completions create
+# succeed; overwriting a completion, writing Firestore and becoming the runner are refused.
+name: model-smoke
+
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  model:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/oidc-claims
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          expected_job_workflow_ref: ${{ github.repository }}/.github/workflows/model-smoke.yml@${{ github.ref }}
+
+      - id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_MODEL_SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      # projections/current is DefaultPointer in internal/runner/projection.go.
+      - name: Read the projection pointer
+        env:
+          TOKEN: ${{ steps.auth.outputs.access_token }}
+          PROJECT: ${{ steps.auth.outputs.project_id }}
+        run: |
+          curl --fail-with-body -sS -o /dev/null \
+            "https://storage.googleapis.com/storage/v1/b/${PROJECT}-projections/o/projections%2Fcurrent?alt=media" \
+            -H "Authorization: Bearer ${TOKEN}"
+
+      - name: Create a completion, then fail to overwrite it
+        env:
+          TOKEN: ${{ steps.auth.outputs.access_token }}
+          PROJECT: ${{ steps.auth.outputs.project_id }}
+          RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          url="https://storage.googleapis.com/upload/storage/v1/b/${PROJECT}-completions/o?uploadType=media&name=smoke%2F${RUN_ID}-model.txt"
+          curl --fail-with-body -sS -o /dev/null -X POST "${url}&ifGenerationMatch=0" \
+            -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: text/plain" --data-binary "model-smoke ${RUN_ID}"
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "${url}" \
+            -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: text/plain" --data-binary "overwrite")
+          echo "overwrite: ${code}"
+          test "${code}" = 403
+
+      - name: Fail to write Firestore
+        env:
+          TOKEN: ${{ steps.auth.outputs.access_token }}
+          PROJECT: ${{ steps.auth.outputs.project_id }}
+          DOC_ID: ${{ github.run_id }}-${{ github.run_attempt }}-model
+        run: |
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+            "https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents/smoke?documentId=${DOC_ID}" \
+            -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+            -d '{"fields":{"source":{"stringValue":"model-smoke"}}}')
+          echo "firestore write: ${code}"
+          test "${code}" = 403
+
+      - name: Fail to become the runner
+        env:
+          TOKEN: ${{ steps.auth.outputs.access_token }}
+          RUNNER_SA: ${{ vars.GCP_SERVICE_ACCOUNT }}
+        run: |
+          test -n "${RUNNER_SA}" || { echo "GCP_SERVICE_ACCOUNT is not set"; exit 1; }
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+            "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${RUNNER_SA}:generateAccessToken" \
+            -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+            -d '{"scope":["https://www.googleapis.com/auth/cloud-platform"]}')
+          echo "runner token: ${code}"
+          test "${code}" = 403

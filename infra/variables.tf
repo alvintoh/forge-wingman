@@ -18,3 +18,10 @@ variable "github_owner_id" {
   type    = string
   default = "24959836"
 }
+
+# Workload Identity bindings match on job_workflow_ref, which names the repository;
+# the provider's condition still pins the numeric ids above.
+variable "github_repository" {
+  type    = string
+  default = "alvintoh/forge-wingman"
+}

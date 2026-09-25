@@ -6,6 +6,10 @@ output "runner_service_account" {
   value = google_service_account.runner.email
 }
 
+output "model_service_account" {
+  value = google_service_account.model.email
+}
+
 output "completions_bucket" {
   value = google_storage_bucket.completions.name
 }
