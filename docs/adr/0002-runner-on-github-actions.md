@@ -53,6 +53,10 @@ repository, 4 vCPU / 16 GB on a public one, with a 6-hour job ceiling against
 
 ## Consequences
 
+- **Concurrency has a platform ceiling: 20 concurrent jobs per account on the Free
+  plan** (GitHub's Actions limits, verified 2026-09-25). FR-27 declares it as the
+  platform cap its admission loop never exceeds; each run occupies one job at a time.
+
 - **FR-2's isolation is free.** A fresh VM per job means no two runs can share a
   worktree or a branch, with nothing built to guarantee it.
 - **FR-12 gets stronger.** The requirement exists because `gh` defaults to a work

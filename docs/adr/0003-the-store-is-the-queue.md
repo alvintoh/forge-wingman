@@ -28,21 +28,41 @@ contents are re-published on every poll.
 
 ## Decision
 
-**No broker. The run record in Firestore is the queue**, and selection is a query:
+> [!NOTE]
+> **Updated (2026-09-25) for FR-27, concurrent dispatch by default.** Selection was
+> `… LIMIT 1`, one run per poll. It is now an **admission loop** over the same query,
+> and each claim also books the run's reservation. The decision itself — no broker,
+> the store is the queue — is unchanged.
+
+**No broker. The run record in Firestore is the queue**, and selection walks it in
+priority order:
 
 ```
-state == "queued"  ORDER BY linear_priority  LIMIT 1
+state == "queued"  ORDER BY linear_priority
+  → admit each run whose FR-22 and FR-27 conditions hold, until N runs are in flight
 ```
 
-The claim is a **Firestore transaction** conditioned on the row still being
-`queued`, so two overlapping polls cannot dispatch one run. No document returned
-means another poll won — the same read-then-conditional-write discipline a lease
-needs, with the store enforcing it.
+Each claim is a **Firestore transaction** that reads the run row and a single
+`dispatch/ledger` document, and commits only if the row is still `queued` and the
+ledger's reserved total plus this run's estimate fits every ceiling. It flips the
+row to claimed and adds the reservation in one write, so two overlapping polls can
+neither dispatch one run nor jointly overbook a window. No document returned means
+another poll won — the same read-then-conditional-write discipline a lease needs,
+with the store enforcing it. The record job settles the reservation to actual
+cost when the run ends.
+
+**The ledger also holds N**, the discovered concurrency limit (FR-27's AIMD rule),
+so the value that governs admission lives beside the reservations it bounds and
+changes in the same transactional store.
 
 ## Consequences
 
-- **FR-22 becomes a `WHERE` clause** rather than a component. A deferral is a
-  recorded field, and the next poll re-reads it with no redelivery to configure.
+- **FR-22 and FR-27 become an admission loop over one query** rather than a
+  component. A deferral is a recorded field naming the binding condition, and the
+  next poll re-reads it with no redelivery to configure.
+- **The ledger serialises claims**, deliberately: every claim transaction touches
+  one document. At this product's volume that contention is invisible, and it is
+  what makes a reservation sum exact rather than approximate.
 - **One fewer deployable, one fewer thing with its own failure modes.**
 - **The dead-letter requirement is answered by requirements already present.**
   FR-13 bounds retry at one escalation; a second failure terminates with a record

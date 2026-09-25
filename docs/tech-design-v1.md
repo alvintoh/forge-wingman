@@ -50,8 +50,14 @@ poll**, not a delivery. Pub/Sub has no priority ordering and Cloud Tasks cannot
 re-rank, so either would be fought rather than used. The store is the queue:
 
 ```
-the next run  =  state == "queued"  ORDER BY linear_priority  LIMIT 1
+admission  =  state == "queued"  ORDER BY linear_priority
+              → admit while FR-22 and FR-27 hold, up to N in flight
 ```
+
+*Updated (2026-09-25):* this read `the next run = … LIMIT 1`. FR-27 made parallel
+runs the default, so the query is walked rather than truncated; `adr/0003` records
+the claim transaction and the `dispatch/ledger` document that makes reservations
+exact.
 
 **Where the DLQ went.** `engineering-defaults` requires a DLQ and bounded retry on
 every async consumer. With no queue there is no dead-letter topic, and the
@@ -171,14 +177,18 @@ One Go binary entrypoint (`cmd/dispatcher`). Per poll:
    the ACs touch more than one module, whether tests cover the named area. The
    classifier decides only the remainder, and a manual Linear label always overrides.
 4. **Enqueue or reject** — a ticket above L is rejected with the reason recorded.
-5. **Select** the next run per FR-22, in Linear priority order, dispatching only if
-   the estimated cost breaches no ceiling. A deferral records the *binding* ceiling.
-6. **Claim** the selected run with a Firestore transaction — claim only if still
-   `queued`, so no two polls can dispatch the same run. "No document returned"
-   means another poll won.
+5. **Admit** runs in Linear priority order while every FR-22 and FR-27 condition
+   holds — budget reservations, size, interference, the review WIP limit, platform
+   caps, the circuit breaker — up to N in flight. A run that waits records the
+   *binding* condition.
+6. **Claim** each admitted run with a Firestore transaction over the run row and
+   `dispatch/ledger`: claim only if still `queued` and the reservation still fits,
+   so no two polls dispatch the same run or overbook a window. "No document
+   returned" means another poll won.
 7. **Dispatch** by `workflow_dispatch` against the target repository.
 8. **Notify** per FR-23 — link-only, and only for the five recurring classes
-   (FR-11, FR-12, FR-18, NFR-1).
+   (FR-11, FR-12, FR-18, NFR-1, FR-26's infrastructure stop). The same classes trip
+   FR-27's circuit breaker, so no further run is admitted until a manual reset.
 
 **Why a Job and not a service:** nothing calls it over HTTP. It is started by the schedule or by the webhook's run request (`adr/0013`), and the public endpoint lives in the webhook service, not here.
 
