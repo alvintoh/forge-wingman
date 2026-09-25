@@ -59,6 +59,8 @@ type ending struct {
 var buildEndings = func() map[ending]bool {
 	m := map[ending]bool{
 		{OutcomeInfraFailure, StopSetup, ""}:                       true,
+		{OutcomeStopped, StopIdentityMismatch, ""}:                 true,
+		{OutcomeStopped, StopTicketMissing, ""}:                    true,
 		{OutcomeStopped, StopModelInvalid, PhaseProjection}:        true,
 		{OutcomeStopped, StopProjectionMissing, PhaseProjection}:   true,
 		{OutcomeStopped, StopProjectionInvalid, PhaseProjection}:   true,
@@ -124,10 +126,10 @@ func capFiles(files []string) []string {
 	return out
 }
 
-// ParseSummary decodes and validates a summary written by run recordID's build of
-// ticket t. The build shares a machine with the model, so every field is checked
+// ParseSummary decodes and validates a summary written by attempt attemptID's build
+// of ticket t. The build shares a machine with the model, so every field is checked
 // against what this run could have produced.
-func ParseSummary(raw, recordID string, t Ticket, now time.Time) (Summary, error) {
+func ParseSummary(raw, attemptID string, t Ticket, now time.Time) (Summary, error) {
 	if raw == "" {
 		return Summary{}, ErrSummaryMissing
 	}
@@ -143,7 +145,7 @@ func ParseSummary(raw, recordID string, t Ticket, now time.Time) (Summary, error
 	if dec.More() {
 		return Summary{}, errors.New("trailing data after summary")
 	}
-	if err := s.validate(recordID, t, now); err != nil {
+	if err := s.validate(attemptID, t, now); err != nil {
 		return Summary{}, err
 	}
 	s.StopDetail = truncate(s.StopDetail, stopDetailLimit)
@@ -152,7 +154,7 @@ func ParseSummary(raw, recordID string, t Ticket, now time.Time) (Summary, error
 	return s, nil
 }
 
-func (s Summary) validate(recordID string, t Ticket, now time.Time) error {
+func (s Summary) validate(attemptID string, t Ticket, now time.Time) error {
 	if !buildEndings[ending{s.Outcome, s.StopReason, s.Phase}] {
 		return fmt.Errorf("outcome %q, stop reason %q at phase %q is not a build ending",
 			truncate(string(s.Outcome), logErrorLimit), truncate(string(s.StopReason), logErrorLimit),
@@ -189,7 +191,7 @@ func (s Summary) validate(recordID string, t Ticket, now time.Time) error {
 			return fmt.Errorf("diff line count %d is out of range", n)
 		}
 	}
-	if s.CompletionsObject != "" && s.CompletionsObject != completionsObject(recordID) {
+	if s.CompletionsObject != "" && s.CompletionsObject != completionsObject(attemptID) {
 		return errors.New("completions object is not this run's")
 	}
 	for p, ms := range s.DurationsMS {
@@ -203,7 +205,7 @@ func (s Summary) validate(recordID string, t Ticket, now time.Time) error {
 	if s.RuleStackSHA != "" && !shaPattern.MatchString(s.RuleStackSHA) {
 		return errors.New("rule-stack sha is not a commit sha")
 	}
-	if s.Branch != "" && s.Branch != BranchName(t.ID, recordID) {
+	if s.Branch != "" && s.Branch != BranchName(t.BranchSegment(), attemptID) {
 		return errors.New("branch is not this run's")
 	}
 	if s.StartedAt.IsZero() || s.StartedAt.After(now.Add(maxClockSkew)) || s.StartedAt.Before(now.Add(-maxSummaryAge)) {
@@ -232,6 +234,6 @@ func repoRelative(f string) bool {
 	return !slices.Contains(strings.Split(f, "/"), "..")
 }
 
-func completionsObject(recordID string) string {
-	return "completions/" + recordID + ".jsonl"
+func completionsObject(attemptID string) string {
+	return "completions/" + attemptID + ".jsonl"
 }

@@ -16,7 +16,7 @@ func validSummary() Summary {
 		CompletionsObject: "completions/1-1.jsonl",
 		DurationsMS:       map[string]int64{"build": 10},
 		RuleStackSHA:      testSHA,
-		Branch:            BranchName(Tracer.ID, "1-1"),
+		Branch:            BranchName(testTicket.BranchSegment(), "1-1"),
 		StartedAt:         finalizeNow.Add(-time.Hour),
 	}
 }
@@ -26,7 +26,7 @@ func TestParseSummaryAcceptsWhatABuildReports(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ParseSummary(raw, "1-1", Tracer, finalizeNow); err != nil {
+	if _, err := ParseSummary(raw, "1-1", testTicket, finalizeNow); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -60,7 +60,7 @@ func TestParseSummaryRejects(t *testing.T) {
 		{"a start time over a week old", func(s *Summary) { s.StartedAt = finalizeNow.Add(-8 * 24 * time.Hour) }},
 		{"another run's completions", func(s *Summary) { s.CompletionsObject = "completions/1-2.jsonl" }},
 		{"a completions path escape", func(s *Summary) { s.CompletionsObject = "completions/../x.jsonl" }},
-		{"another run's branch", func(s *Summary) { s.Branch = "wingman/tracer-1-9-1" }},
+		{"another run's branch", func(s *Summary) { s.Branch = "wingman/abc-12-9-1" }},
 		{"a duration for another phase", func(s *Summary) { s.DurationsMS = map[string]int64{"pr": 1} }},
 		{"a negative duration", func(s *Summary) { s.DurationsMS = map[string]int64{"build": -1} }},
 		{"a sha that is not one", func(s *Summary) { s.RuleStackSHA = "main" }},
@@ -81,7 +81,7 @@ func TestParseSummaryRejects(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := ParseSummary(raw, "1-1", Tracer, finalizeNow); err == nil {
+			if _, err := ParseSummary(raw, "1-1", testTicket, finalizeNow); err == nil {
 				t.Fatalf("accepted %s", raw)
 			}
 		})
@@ -102,7 +102,7 @@ func TestParseSummaryRejectsMalformedJSON(t *testing.T) {
 			`"edited_files":[`+strings.Repeat(`"a",`, maxEditedFiles)+`"a"]`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := ParseSummary(raw, "1-1", Tracer, finalizeNow); err == nil {
+			if _, err := ParseSummary(raw, "1-1", testTicket, finalizeNow); err == nil {
 				t.Fatal("accepted")
 			}
 		})
@@ -117,7 +117,7 @@ func TestParseSummaryCapsAndCleansStrings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := ParseSummary(raw, "1-1", Tracer, finalizeNow)
+	got, err := ParseSummary(raw, "1-1", testTicket, finalizeNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestEncodeFitsTheLimitAndStaysOnOneLine(t *testing.T) {
 	if len(raw) > maxSummaryBytes || strings.ContainsAny(raw, "\r\n") {
 		t.Fatalf("summary of %d bytes, multiline %v", len(raw), strings.ContainsAny(raw, "\r\n"))
 	}
-	if _, err := ParseSummary(raw, "1-1", Tracer, finalizeNow); err != nil {
+	if _, err := ParseSummary(raw, "1-1", testTicket, finalizeNow); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -148,13 +148,13 @@ func TestParseSummaryAcceptsEveryBuildEnding(t *testing.T) {
 	for e := range buildEndings {
 		s := Summary{Outcome: e.outcome, StopReason: e.reason, Phase: e.phase, StartedAt: finalizeNow}
 		if e.phase == PhaseBuild || e.phase == PhaseCommit {
-			s.Branch, s.Model, s.CompletionsObject = BranchName(Tracer.ID, "1-1"), "opencode/big-pickle", "completions/1-1.jsonl"
+			s.Branch, s.Model, s.CompletionsObject = BranchName(testTicket.BranchSegment(), "1-1"), "opencode/big-pickle", "completions/1-1.jsonl"
 		}
 		raw, err := s.Encode()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := ParseSummary(raw, "1-1", Tracer, finalizeNow); err != nil {
+		if _, err := ParseSummary(raw, "1-1", testTicket, finalizeNow); err != nil {
 			t.Errorf("%s/%s at %q: %v", e.outcome, e.reason, e.phase, err)
 		}
 	}
@@ -178,7 +178,7 @@ func TestParseSummaryRejectsEndingsABuildCannotReach(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := ParseSummary(raw, "1-1", Tracer, finalizeNow); err == nil {
+		if _, err := ParseSummary(raw, "1-1", testTicket, finalizeNow); err == nil {
 			t.Errorf("accepted %s/%s at %q", e.outcome, e.reason, e.phase)
 		}
 	}

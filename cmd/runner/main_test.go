@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -24,7 +25,7 @@ func TestLoadEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e.recordID != "42-2" || e.project != "p" || e.tempDir != "/tmp/r" {
+	if e.attemptID != "42-2" || e.project != "p" || e.tempDir != "/tmp/r" {
 		t.Fatalf("env = %+v", e)
 	}
 
@@ -36,7 +37,7 @@ func TestLoadEnv(t *testing.T) {
 	}
 }
 
-func TestOwnRecordID(t *testing.T) {
+func TestOwnAttemptID(t *testing.T) {
 	for _, tt := range []struct {
 		id   string
 		want bool
@@ -54,8 +55,8 @@ func TestOwnRecordID(t *testing.T) {
 		{"42-1/../x", false},
 		{"421-1", false},
 	} {
-		if got := ownRecordID(tt.id, "42", 3); got != tt.want {
-			t.Errorf("ownRecordID(%q) = %v, want %v", tt.id, got, tt.want)
+		if got := ownAttemptID(tt.id, "42", 3); got != tt.want {
+			t.Errorf("ownAttemptID(%q) = %v, want %v", tt.id, got, tt.want)
 		}
 	}
 }
@@ -104,7 +105,7 @@ func TestSetupFailedReportsAValidSummary(t *testing.T) {
 	if !ok {
 		t.Fatalf("GITHUB_OUTPUT = %q", out)
 	}
-	sum, perr := runner.ParseSummary(raw, "42-1", runner.Tracer, time.Now())
+	sum, perr := runner.ParseSummary(raw, "42-1", runner.Ticket{}, time.Now())
 	if perr != nil || sum.StopReason != runner.StopSetup || sum.StopDetail == "" {
 		t.Fatalf("summary %+v, err %v", sum, perr)
 	}
@@ -134,5 +135,89 @@ func TestWriteOutputsRefusesAMultilineValue(t *testing.T) {
 func TestWriteSummaryWithNoOutputIsUnreported(t *testing.T) {
 	if err := writeSummary("", runner.SetupSummary(errors.New("x"), time.Now())); !errors.Is(err, errNoOutput) {
 		t.Fatalf("err = %v, want errNoOutput", err)
+	}
+}
+
+func TestSubcommandsRefuseARunIDBeforeOpeningFirestore(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	env := map[string]string{"GOOGLE_CLOUD_PROJECT": "p", "RUNNER_TEMP": t.TempDir(), "GITHUB_RUN_ID": "42",
+		"GITHUB_RUN_ATTEMPT": "1", "WINGMAN_ACCOUNT": "octo", "GITHUB_REPOSITORY_OWNER": "octo"}
+	body := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(body, []byte("Add a file."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"ticket", "-run-id", "runs/x"},
+		{"record", "-run-id", ""},
+		{"pr-meta", "-run-id", "../x", "-template", "../../.github/pull_request_template.md"},
+		{"seed", "-run-id", "a b", "-id", "ABC-12", "-title", "t", "-size", "S", "-body-file", body},
+	} {
+		err := run(context.Background(), logger, args, func(k string) string { return env[k] })
+		if err == nil || !strings.Contains(err.Error(), "cannot name a record") {
+			t.Errorf("%v: err = %v", args, err)
+		}
+	}
+}
+
+func TestTicketAndPRMetaRefuseAMismatchedIdentity(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	env := map[string]string{"GOOGLE_CLOUD_PROJECT": "p", "RUNNER_TEMP": t.TempDir(), "GITHUB_RUN_ID": "42",
+		"GITHUB_RUN_ATTEMPT": "1", "WINGMAN_ACCOUNT": "work-account", "GITHUB_REPOSITORY_OWNER": "octo"}
+	for _, sub := range []string{"ticket", "pr-meta"} {
+		err := run(context.Background(), logger, []string{sub, "-run-id", "run-1"}, func(k string) string { return env[k] })
+		if !errors.Is(err, runner.ErrIdentityMismatch) {
+			t.Errorf("%s: err = %v, want ErrIdentityMismatch", sub, err)
+		}
+	}
+}
+
+type recordReader map[string]runner.Record
+
+func (r recordReader) GetRecord(_ context.Context, id string) (runner.Record, error) {
+	rec, ok := r[id]
+	if !ok {
+		return runner.Record{}, runner.ErrRecordNotFound
+	}
+	return rec, nil
+}
+
+func TestTicketFromRecordFailsTheRunAndLogsWhy(t *testing.T) {
+	records := recordReader{"ticketless": {RunID: "ticketless"}}
+	for runID, reason := range map[string]runner.StopReason{
+		"absent":     runner.StopRecordMissing,
+		"ticketless": runner.StopTicketMissing,
+	} {
+		var log strings.Builder
+		logger := slog.New(slog.NewTextHandler(&log, nil))
+		_, err := ticketFromRecord(context.Background(), logger, records, runID)
+		if !errors.Is(err, errRunFailed) || exitCode(err) != 1 {
+			t.Errorf("%s: err = %v, exit %d; want errRunFailed, exit 1", runID, err, exitCode(err))
+		}
+		if !strings.Contains(log.String(), "ticketUnavailable") || !strings.Contains(log.String(), string(reason)) {
+			t.Errorf("%s: log = %q, want ticketUnavailable naming %s", runID, log.String(), reason)
+		}
+	}
+}
+
+func TestRecordsClientNeedsAProject(t *testing.T) {
+	if _, err := recordsClient(context.Background(), "", "run-1"); err == nil ||
+		!strings.Contains(err.Error(), "GOOGLE_CLOUD_PROJECT") {
+		t.Fatalf("err = %v, want GOOGLE_CLOUD_PROJECT is not set", err)
+	}
+}
+
+func TestWriteMultilineOutputUsesADelimiter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "out")
+	if err := writeMultilineOutput(path, "body", "a\nb"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(got), "\n"), "\n")
+	delim, ok := strings.CutPrefix(lines[0], "body<<")
+	if !ok || len(lines) != 4 || lines[1] != "a" || lines[2] != "b" || lines[3] != delim {
+		t.Fatalf("GITHUB_OUTPUT = %q", got)
 	}
 }

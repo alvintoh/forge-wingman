@@ -9,11 +9,6 @@ import (
 	"strconv"
 )
 
-const (
-	commitAuthorName  = "github-actions[bot]"
-	commitAuthorEmail = "41898282+github-actions[bot]@users.noreply.github.com"
-)
-
 // ErrPorcelain reports `git status --porcelain -z` output that does not parse.
 var ErrPorcelain = errors.New("malformed porcelain output")
 

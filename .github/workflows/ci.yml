@@ -19,13 +19,25 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache: false
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13.2
+          skip-cache: true
+      # The store's tests run against it; unset, they skip.
+      - name: Start the Firestore emulator
+        run: |
+          docker run -d --rm -p 8080:8080 \
+            gcr.io/google.com/cloudsdktool/google-cloud-cli:586.0.0-emulators@sha256:7617d937e9360d769de4ef66266a8caae503c1dbbd050c93404d3f30045c5125 \
+            gcloud emulators firestore start --host-port=0.0.0.0:8080
+          for _ in $(seq 60); do curl -fs http://localhost:8080 >/dev/null && exit 0; sleep 2; done
+          echo "the emulator did not start"; exit 1
       - run: go test -race -shuffle=on -cover ./...
+        env:
+          FIRESTORE_EMULATOR_HOST: localhost:8080
 
   web:
     runs-on: ubuntu-latest
@@ -35,6 +47,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
+        with:
+          no-cache: true
       - run: bun install --frozen-lockfile
       - run: bun run lint
       - run: bun run fmt:check

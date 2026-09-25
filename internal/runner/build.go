@@ -42,13 +42,14 @@ type BuildDeps struct {
 
 // BuildConfig identifies one build.
 type BuildConfig struct {
-	RecordID     string
+	AttemptID    string
 	Repo         string
 	TempDir      string
 	Pointer      string
 	Model        string
 	AgentTimeout time.Duration
 	Secret       string
+	Identity     Identity
 	Ticket       Ticket
 }
 
@@ -74,16 +75,18 @@ func stopWith(o Outcome, r StopReason, err error) *StopError {
 	return &StopError{Outcome: o, Reason: r, Err: err}
 }
 
-// BranchName is the branch a run of ticket builds on.
-func BranchName(ticketID, recordID string) string {
-	return "wingman/" + ticketID + "-" + recordID
+// BranchName is the branch attempt attemptID builds a ticket on, from the
+// ticket's BranchSegment.
+func BranchName(segment, attemptID string) string {
+	return "wingman/" + segment + "-" + attemptID
 }
 
-// Build fetches the projection, runs the agent in a fresh worktree, and commits
-// and bundles what it changed.
+// Build checks the identity and the ticket, fetches the projection, runs the
+// agent in a fresh worktree, and commits and bundles what it changed.
 //
 // The summary is reported on every return path, a panic included. The agent
-// never runs unless the model is well formed and the projection was found and valid.
+// never runs unless the identity matches, the ticket is buildable, the model is
+// well formed and the projection was found and valid.
 func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, err error) {
 	sum := Summary{DurationsMS: map[string]int64{}, StartedAt: d.Now()}
 	defer func() {
@@ -121,6 +124,13 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		return ferr
 	}
 
+	if err := c.Identity.CheckModel(); err != nil {
+		return BuildResult{}, stopWith(OutcomeStopped, StopIdentityMismatch, err)
+	}
+	if err := c.Ticket.Validate(); err != nil {
+		return BuildResult{}, stopWith(OutcomeStopped, StopTicketMissing, err)
+	}
+
 	var prompt string
 	if err := timed(PhaseProjection, func() error {
 		if !modelPattern.MatchString(c.Model) {
@@ -150,7 +160,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 	var wt Worktree
 	if err := timed(PhaseWorktree, func() error {
 		var err error
-		wt, err = AddWorktree(ctx, c.Repo, filepath.Join(c.TempDir, "wt-"+c.RecordID), BranchName(c.Ticket.ID, c.RecordID))
+		wt, err = AddWorktree(ctx, c.Repo, filepath.Join(c.TempDir, "wt-"+c.AttemptID), BranchName(c.Ticket.BranchSegment(), c.AttemptID))
 		if err != nil {
 			return stopWith(OutcomeInfraFailure, StopWorktree, err)
 		}
@@ -216,8 +226,8 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 // runAgent runs the agent under its own deadline with its events captured in a
 // file, uploads them to the completions bucket, then totals their usage.
 func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, dir, prompt string, sum *Summary) error {
-	events := filepath.Join(c.TempDir, "completions-"+c.RecordID+".jsonl")
-	stderrPath := filepath.Join(c.TempDir, "opencode-"+c.RecordID+".stderr")
+	events := filepath.Join(c.TempDir, "completions-"+c.AttemptID+".jsonl")
+	stderrPath := filepath.Join(c.TempDir, "opencode-"+c.AttemptID+".stderr")
 	out, err := os.Create(events)
 	if err != nil {
 		return stopWith(OutcomeInfraFailure, StopCompletions, err)
@@ -238,11 +248,11 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, dir, prompt strin
 	timedOut := errors.Is(agentCtx.Err(), context.DeadlineExceeded)
 	cancel()
 
-	completions := completionsObject(c.RecordID)
+	completions := completionsObject(c.AttemptID)
 	for _, u := range []struct {
 		name string
 		f    *os.File
-	}{{completions, out}, {"completions/" + c.RecordID + ".stderr.log", errOut}} {
+	}{{completions, out}, {"completions/" + c.AttemptID + ".stderr.log", errOut}} {
 		if _, err := u.f.Seek(0, io.SeekStart); err != nil {
 			return stopWith(OutcomeInfraFailure, StopCompletions, err)
 		}

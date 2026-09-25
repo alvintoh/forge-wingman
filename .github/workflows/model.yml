@@ -1,8 +1,10 @@
 # The model's half of a run: fetch the projection, run opencode, upload its completions,
 # then commit and bundle what it changed. Its identity may read projections and create
-# completions, and nothing else, so it cannot write or overwrite a run record. The
-# record job validates the summary this emits and writes the record.
-# Needs the GCP_WIF_PROVIDER and GCP_MODEL_SERVICE_ACCOUNT variables (infra/README.md).
+# completions, and nothing else, so it cannot read or write a run record: the ticket
+# arrives as an input from run.yml's ticket job, and the record job validates the
+# summary this emits and writes the record. No GitHub token reaches the model's environment.
+# Needs the GCP_WIF_PROVIDER, GCP_MODEL_SERVICE_ACCOUNT and WINGMAN_ACCOUNT variables
+# (infra/README.md).
 name: model
 
 on:
@@ -11,12 +13,15 @@ on:
       model:
         type: string
         required: true
+      ticket:
+        type: string
+        required: true
     secrets:
       OPENCODE_API_KEY:
         required: true
     outputs:
-      record_id:
-        value: ${{ jobs.build.outputs.record_id }}
+      attempt_id:
+        value: ${{ jobs.build.outputs.attempt_id }}
       branch:
         value: ${{ jobs.build.outputs.branch }}
       changed:
@@ -34,7 +39,7 @@ jobs:
       contents: read
       id-token: write
     outputs:
-      record_id: ${{ steps.build.outputs.record_id }}
+      attempt_id: ${{ steps.build.outputs.attempt_id }}
       branch: ${{ steps.build.outputs.branch }}
       changed: ${{ steps.build.outputs.changed }}
       summary: ${{ steps.build.outputs.summary }}
@@ -74,10 +79,12 @@ jobs:
         env:
           GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}
           MODEL: ${{ inputs.model }}
+          TICKET: ${{ inputs.ticket }}
+          WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
-        run: '"$RUNNER_TEMP/runner" build -model "$MODEL"'
+        run: '"$RUNNER_TEMP/runner" build -model "$MODEL" -ticket "$TICKET"'
 
-      # wingman.bundle here and in run.yml's pr job is bundleName in internal/runner/build.go.
+      # wingman.bundle here and in run.yml's check and pr jobs is bundleName in internal/runner/build.go.
       - if: steps.build.outputs.changed == 'true'
         env:
           GIT_CONFIG_NOSYSTEM: "1"

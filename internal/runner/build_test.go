@@ -45,10 +45,30 @@ func (f fakeObjects) CreateObject(_ context.Context, name string, r io.Reader) e
 
 type fakeRecords map[string]Record
 
+func (f fakeRecords) GetRecord(_ context.Context, id string) (Record, error) {
+	r, ok := f[id]
+	if !ok {
+		return Record{}, ErrRecordNotFound
+	}
+	return r, nil
+}
+
 func (f fakeRecords) PutRecord(_ context.Context, id string, r Record) error {
 	f[id] = r
 	return nil
 }
+
+func (f fakeRecords) CreateRecord(_ context.Context, id string, r Record) error {
+	if _, ok := f[id]; ok {
+		return fmt.Errorf("%s exists", id)
+	}
+	f[id] = r
+	return nil
+}
+
+var testTicket = Ticket{ID: "ABC-12", Title: "feat(x): add a file", Size: "S", SizedBy: "test", Body: "Add a file."}
+
+var testIdentity = Identity{Account: "octo", Owner: "octo"}
 
 type fakeAgent struct {
 	calls  int
@@ -104,12 +124,13 @@ func testDeps(projections fakeObjects, agent *fakeAgent) (BuildDeps, fakeObjects
 
 func testConfig(t *testing.T, repo string) BuildConfig {
 	return BuildConfig{
-		RecordID: "42-1",
-		Repo:     repo,
-		TempDir:  t.TempDir(),
-		Pointer:  DefaultPointer,
-		Model:    "p/m",
-		Ticket:   Ticket{ID: "t-1", Size: "S", SizedBy: "hardcoded", Body: "Add a file."},
+		AttemptID: "42-1",
+		Repo:      repo,
+		TempDir:   t.TempDir(),
+		Pointer:   DefaultPointer,
+		Model:     "p/m",
+		Identity:  testIdentity,
+		Ticket:    testTicket,
 	}
 }
 
@@ -170,11 +191,11 @@ func TestBuildCommitsAndBundlesTheAgentsEdits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.Changed || res.Branch != "wingman/t-1-42-1" {
+	if !res.Changed || res.Branch != "wingman/abc-12-42-1" {
 		t.Fatalf("result = %+v", res)
 	}
-	if !strings.HasPrefix(agent.prompt, "# Rules") || !strings.HasSuffix(strings.TrimSpace(agent.prompt), "Add a file.") {
-		t.Fatalf("prompt order wrong: %q", agent.prompt)
+	if !strings.HasPrefix(agent.prompt, "# Rules") || !strings.HasSuffix(strings.TrimSpace(agent.prompt), testTicket.Text()) {
+		t.Fatalf("prompt does not end with the ticket: %q", agent.prompt)
 	}
 
 	rec := reported.last(t)
@@ -401,10 +422,101 @@ func TestBuildReportsAPanicThenRepanics(t *testing.T) {
 	_, _ = Build(context.Background(), deps, c)
 }
 
+// branchPattern is the branch check in run.yml's check and pr jobs, with
+// ${GITHUB_RUN_ID} standing for the run.
+const branchPattern = `^wingman/[a-z0-9]+(-[a-z0-9]+)*-${GITHUB_RUN_ID}-[0-9]+$`
+
+func TestRunWorkflowChecksTheBranchPattern(t *testing.T) {
+	yml, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "run.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(yml), `[[ "$BRANCH" =~ `+branchPattern); n != 2 {
+		t.Fatalf("run.yml checks the branch pattern %d times, want 2 (check and pr)", n)
+	}
+}
+
 func TestBranchNameMatchesThePRJobsPattern(t *testing.T) {
-	pattern := regexp.MustCompile(`^wingman/tracer-1-42-[0-9]+$`)
-	if got := BranchName(Tracer.ID, "42-3"); !pattern.MatchString(got) {
-		t.Fatalf("branch %q does not match the pr job's pattern", got)
+	pattern := regexp.MustCompile(strings.ReplaceAll(branchPattern, "${GITHUB_RUN_ID}", "42"))
+	for _, id := range []string{"ABC-12", "xyz-7", "A1-2-3", "x"} {
+		tk := testTicket
+		tk.ID = id
+		if err := tk.Validate(); err != nil {
+			t.Fatalf("%q: %v", id, err)
+		}
+		if got := BranchName(tk.BranchSegment(), "42-3"); !pattern.MatchString(got) {
+			t.Errorf("branch %q does not match the pr job's pattern", got)
+		}
+	}
+	for _, branch := range []string{"wingman/ABC-12-42-3", "wingman/abc--12-42-3", "wingman/abc-12-43-3", "wingman/-42-3"} {
+		if pattern.MatchString(branch) {
+			t.Errorf("pattern accepts %q", branch)
+		}
+	}
+}
+
+func TestBuildRefusesAMismatchedIdentityBeforeTheAgent(t *testing.T) {
+	for name, id := range map[string]Identity{
+		"no account":          {Owner: "octo"},
+		"another account":     {Account: "work-account", Owner: "octo"},
+		"a GitHub token held": {Account: "octo", Owner: "octo", GitHubToken: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			agent := &fakeAgent{}
+			deps, completions, reported := testDeps(validObjects(), agent)
+			c := testConfig(t, initRepo(t))
+			c.Identity = id
+
+			res, err := Build(context.Background(), deps, c)
+			if !errors.Is(err, ErrIdentityMismatch) || res.Changed {
+				t.Fatalf("err = %v, result %+v", err, res)
+			}
+			if agent.calls != 0 || len(completions) != 0 {
+				t.Fatalf("agent ran %d times, completions %v", agent.calls, completions)
+			}
+			if sum := reported.last(t); sum.Outcome != OutcomeStopped || sum.StopReason != StopIdentityMismatch {
+				t.Fatalf("summary = %s/%s", sum.Outcome, sum.StopReason)
+			}
+		})
+	}
+}
+
+func TestBuildChecksTheIdentityBeforeTheTicket(t *testing.T) {
+	deps, _, reported := testDeps(validObjects(), &fakeAgent{})
+	c := testConfig(t, initRepo(t))
+	c.Identity = Identity{Account: "octo", Owner: "octo", GitHubToken: true}
+	c.Ticket = Ticket{}
+	if _, err := Build(context.Background(), deps, c); !errors.Is(err, ErrIdentityMismatch) {
+		t.Fatalf("err = %v, want ErrIdentityMismatch", err)
+	}
+	if sum := reported.last(t); sum.StopReason != StopIdentityMismatch {
+		t.Fatalf("stop reason = %s", sum.StopReason)
+	}
+}
+
+func TestBuildStopsOnAnUnbuildableTicketBeforeTheAgent(t *testing.T) {
+	for name, tk := range map[string]Ticket{
+		"no ticket":         {},
+		"no body":           {ID: "ABC-12", Title: "t", Size: "S"},
+		"an unsafe id":      {ID: "../x", Title: "t", Size: "S", Body: "b"},
+		"a multiline title": {ID: "ABC-12", Title: "t\nu", Size: "S", Body: "b"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			agent := &fakeAgent{}
+			deps, _, reported := testDeps(validObjects(), agent)
+			c := testConfig(t, initRepo(t))
+			c.Ticket = tk
+
+			if _, err := Build(context.Background(), deps, c); !errors.Is(err, ErrTicketInvalid) {
+				t.Fatalf("err = %v, want ErrTicketInvalid", err)
+			}
+			if agent.calls != 0 {
+				t.Fatalf("agent ran %d times", agent.calls)
+			}
+			if sum := reported.last(t); sum.Outcome != OutcomeStopped || sum.StopReason != StopTicketMissing {
+				t.Fatalf("summary = %s/%s", sum.Outcome, sum.StopReason)
+			}
+		})
 	}
 }
 
@@ -437,11 +549,11 @@ func TestBuildReportsASummaryTheRecordJobAccepts(t *testing.T) {
 	if strings.ContainsAny(raw, "\r\n") {
 		t.Fatalf("summary spans lines: %q", raw)
 	}
-	got, err := ParseSummary(raw, c.RecordID, c.Ticket, time.Now())
+	got, err := ParseSummary(raw, c.AttemptID, c.Ticket, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Outcome != OutcomeBuilt || got.Branch != BranchName(c.Ticket.ID, c.RecordID) || got.Tokens.Cost != 0.5 {
+	if got.Outcome != OutcomeBuilt || got.Branch != BranchName(c.Ticket.BranchSegment(), c.AttemptID) || got.Tokens.Cost != 0.5 {
 		t.Fatalf("summary = %+v", got)
 	}
 }
