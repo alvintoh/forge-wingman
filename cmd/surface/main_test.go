@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -50,8 +49,7 @@ func TestVersion(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	want := fmt.Sprintf(`{"sha":%q}`, commitSHA)
-	if got := rec.Body.String(); got != want {
+	if got, want := rec.Body.String(), "{\"sha\":\"dev\"}\n"; got != want {
 		t.Fatalf("body = %q, want %q", got, want)
 	}
 }

@@ -3,8 +3,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -81,7 +81,9 @@ func newMux(spa fs.FS) *http.ServeMux {
 	})
 	mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"sha":%q}`, commitSHA)
+		_ = json.NewEncoder(w).Encode(struct {
+			SHA string `json:"sha"`
+		}{commitSHA})
 	})
 	mux.Handle("GET /api/", http.NotFoundHandler())
 	mux.Handle("GET /", spaHandler(spa))
