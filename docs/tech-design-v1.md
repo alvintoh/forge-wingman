@@ -211,7 +211,8 @@ language. A reusable workflow living in each target repo, called with the run id
 | fetch the projection for the current rule-stack sha from Cloud Storage; refuse if absent | FR-19 — full for plan, trimmed for build; `adr/0012` |
 | `opencode run` for the plan phase, `edit`/`bash` denied | FR-3 |
 | `opencode run` for the build phase | FR-4 — every edited file must appear in the plan's list |
-| open the PR, state decided at creation | FR-5 — never transitioned afterwards |
+| the repo's checks, fed back to the builder for up to 3 rounds; then one review by a different model against the ACs | FR-28 — same tier throughout, so never FR-13 escalation |
+| open the PR, state decided at creation | FR-5 — never transitioned afterwards; still-failing checks or open findings make it a draft |
 | write the run record and upload completions | FR-6, and NFR-7's stdout prohibition |
 
 **Gates are enforced in three places, deliberately.** opencode's per-agent
