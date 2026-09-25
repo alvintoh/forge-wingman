@@ -1,41 +1,27 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import {
-  Outlet,
-  RouterProvider,
-  createRootRoute,
-  createRoute,
-  createRouter,
-} from "@tanstack/react-router";
+import { RouterProvider, createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
+import { Inbox, Root, Run, Stats } from "./pages";
 import "./index.css";
 
-const rootRoute = createRootRoute({
-  component: () => (
-    <main className="min-h-dvh bg-ground text-ink">
-      <Outlet />
-    </main>
-  ),
-});
+const rootRoute = createRootRoute({ component: Root });
 
 const inboxRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
-  component: () => <h1>Inbox</h1>,
+  component: Inbox,
 });
 
 const runRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/runs/$runId",
-  component: function Run() {
-    const { runId } = runRoute.useParams();
-    return <h1>Run {runId}</h1>;
-  },
+  component: Run,
 });
 
 const statsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/stats",
-  component: () => <h1>Statistics</h1>,
+  component: Stats,
 });
 
 const router = createRouter({
