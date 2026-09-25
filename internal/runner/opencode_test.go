@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -44,6 +45,9 @@ func TestSumUsage(t *testing.T) {
 }
 
 func TestOpencodeRunPassesPromptOnStdin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake opencode is a shell script, which Windows cannot execute")
+	}
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "opencode")
 	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > args.txt\nenv > env.txt\ncat > stdin.txt\necho '{\"type\":\"step_finish\"}'\n"
