@@ -25,13 +25,13 @@ var maxEventLine = 64 << 20
 
 // Usage is the token and cost total across every model step of one agent run.
 type Usage struct {
-	Input      int64   `firestore:"input"`
-	Output     int64   `firestore:"output"`
-	Reasoning  int64   `firestore:"reasoning"`
-	CacheRead  int64   `firestore:"cache_read"`
-	CacheWrite int64   `firestore:"cache_write"`
-	Cost       float64 `firestore:"cost"`
-	Steps      int     `firestore:"steps"`
+	Input      int64   `firestore:"input" json:"input"`
+	Output     int64   `firestore:"output" json:"output"`
+	Reasoning  int64   `firestore:"reasoning" json:"reasoning"`
+	CacheRead  int64   `firestore:"cache_read" json:"cache_read"`
+	CacheWrite int64   `firestore:"cache_write" json:"cache_write"`
+	Cost       float64 `firestore:"cost" json:"cost"`
+	Steps      int     `firestore:"steps" json:"steps"`
 }
 
 type event struct {

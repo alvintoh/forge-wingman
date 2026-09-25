@@ -50,10 +50,10 @@ const (
 	StopSecretInBranch    StopReason = "secret-in-branch"
 	StopPanic             StopReason = "panic"
 	StopPRJob             StopReason = "pr-job"
+	StopSummaryInvalid    StopReason = "summary-invalid"
+	StopSummaryUnreadable StopReason = "summary-unreadable"
+	StopSetup             StopReason = "setup"
 )
-
-// ErrRecordNotFound is what a RecordStore returns for an absent record.
-var ErrRecordNotFound = errors.New("run record not found")
 
 // Record is one run's entry in the run store.
 type Record struct {
@@ -83,13 +83,12 @@ type Record struct {
 
 // DiffLines is the size of the branch's diff against its base.
 type DiffLines struct {
-	Added   int64 `firestore:"added"`
-	Removed int64 `firestore:"removed"`
+	Added   int64 `firestore:"added" json:"added"`
+	Removed int64 `firestore:"removed" json:"removed"`
 }
 
-// RecordStore reads and writes run records by id.
+// RecordStore writes run records by id.
 type RecordStore interface {
-	GetRecord(ctx context.Context, id string) (Record, error)
 	PutRecord(ctx context.Context, id string, r Record) error
 }
 
@@ -113,36 +112,42 @@ func newRecord(id string, t Ticket, now time.Time) Record {
 
 // FinalizeInput is what the workflow knows once every job has finished.
 type FinalizeInput struct {
-	RecordID   string
-	Ticket     Ticket
-	PRURL      string
+	RecordID string
+	Ticket   Ticket
+	Summary  string
+	// SummaryUnreadable is set when the summary could not be passed to the record job.
+	SummaryUnreadable bool
+	PRURL             string
+	// RunResult is the model job's result; success means it finished and reported a
+	// summary, whatever the build's outcome.
 	RunResult  string
 	PRResult   string
 	PRDuration time.Duration
 }
 
-// Finalize derives the final outcome from the build's own outcome and the PR
-// job's result, or writes an infra-failure record when the build never wrote one.
+// Finalize writes the whole run record from the build's summary and the PR job's
+// result. A missing, invalid or unreadable summary is recorded as an infra failure.
 // Running it again with a later result replaces the earlier derivation.
 func Finalize(ctx context.Context, store RecordStore, in FinalizeInput, now time.Time) (Record, error) {
-	rec, err := store.GetRecord(ctx, in.RecordID)
+	rec := newRecord(in.RecordID, in.Ticket, now)
+	sum, err := ParseSummary(in.Summary, in.RecordID, in.Ticket, now)
 	switch {
-	case errors.Is(err, ErrRecordNotFound):
-		rec = newRecord(in.RecordID, in.Ticket, now)
-		rec.BuildOutcome = OutcomeInfraFailure
-		rec.Outcome = OutcomeInfraFailure
-		rec.StopReason = StopNoBuildRecord
+	case in.SummaryUnreadable:
+		rec.BuildOutcome, rec.Outcome, rec.StopReason = OutcomeInfraFailure, OutcomeInfraFailure, StopSummaryUnreadable
+	case errors.Is(err, ErrSummaryMissing):
+		rec.BuildOutcome, rec.Outcome, rec.StopReason = OutcomeInfraFailure, OutcomeInfraFailure, StopNoBuildRecord
 	case err != nil:
-		return Record{}, fmt.Errorf("reading record %s: %w", in.RecordID, err)
-	case rec.BuildOutcome == OutcomeBuilt:
-		if in.PRResult == "success" && in.PRURL != "" {
-			rec.Outcome, rec.StopReason = OutcomePROpened, ""
-		} else {
-			rec.Outcome, rec.StopReason = OutcomeInfraFailure, StopPRJob
+		rec.BuildOutcome, rec.Outcome, rec.StopReason = OutcomeInfraFailure, OutcomeInfraFailure, StopSummaryInvalid
+		rec.StopDetail = truncate(err.Error(), stopDetailLimit)
+	default:
+		sum.apply(&rec)
+		if rec.BuildOutcome == OutcomeBuilt {
+			if in.PRResult == "success" && in.PRURL != "" {
+				rec.Outcome = OutcomePROpened
+			} else {
+				rec.Outcome, rec.StopReason = OutcomeInfraFailure, StopPRJob
+			}
 		}
-	}
-	if rec.JobResults == nil {
-		rec.JobResults = map[string]string{}
 	}
 	rec.JobResults["run"] = in.RunResult
 	rec.JobResults["pr"] = in.PRResult
@@ -151,9 +156,6 @@ func Finalize(ctx context.Context, store RecordStore, in FinalizeInput, now time
 		rec.Phase = PhasePR
 	}
 	if in.PRDuration > 0 {
-		if rec.DurationsMS == nil {
-			rec.DurationsMS = map[string]int64{}
-		}
 		rec.DurationsMS[string(PhasePR)] = in.PRDuration.Milliseconds()
 	}
 	rec.UpdatedAt = now
@@ -161,4 +163,29 @@ func Finalize(ctx context.Context, store RecordStore, in FinalizeInput, now time
 		return rec, fmt.Errorf("writing record %s: %w", in.RecordID, err)
 	}
 	return rec, nil
+}
+
+// Succeeded reports whether a run ended where it should: a PR opened, or nothing to change.
+func (r Record) Succeeded() bool {
+	return r.Outcome == OutcomePROpened || r.Outcome == OutcomeNoChanges
+}
+
+func (s Summary) apply(rec *Record) {
+	rec.BuildOutcome, rec.Outcome = s.Outcome, s.Outcome
+	rec.StopReason, rec.StopDetail = s.StopReason, s.StopDetail
+	rec.Phase = s.Phase
+	if s.Model != "" {
+		rec.Models[string(PhaseBuild)] = s.Model
+	}
+	rec.Tokens = s.Tokens
+	rec.EditedFiles = s.EditedFiles
+	rec.DiffLines = s.DiffLines
+	rec.CompletionsObject = s.CompletionsObject
+	for p, ms := range s.DurationsMS {
+		rec.DurationsMS[p] = ms
+	}
+	rec.RuleStackSHA = s.RuleStackSHA
+	rec.Branch = s.Branch
+	rec.UsageWarning = s.UsageWarning
+	rec.StartedAt = s.StartedAt
 }
