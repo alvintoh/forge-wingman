@@ -106,10 +106,10 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordWriteTimeout)
 		defer cancel()
 		if werr := d.Records.PutRecord(wctx, c.RecordID, rec); werr != nil {
-			d.Logger.Error("recordWriteFailed", "record", c.RecordID, "err", truncate(werr.Error(), logErrorLimit))
+			d.Logger.Error("recordWriteFailed", "err", truncate(werr.Error(), logErrorLimit))
 			err = errors.Join(err, fmt.Errorf("writing record %s: %w", c.RecordID, werr))
 		} else {
-			d.Logger.Info("recordWritten", "record", c.RecordID, "outcome", string(rec.Outcome))
+			d.Logger.Info("recordWritten", "outcome", string(rec.Outcome))
 		}
 		if p != nil {
 			panic(p)
