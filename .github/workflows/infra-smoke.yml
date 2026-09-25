@@ -1,8 +1,11 @@
-# Proves the runner's keyless credential end to end: GitHub OIDC -> Workload Identity
-# Federation -> the runner service account, then one call against each store it may use.
-# Needs two repository variables, both OpenTofu outputs from infra/:
-#   GCP_WIF_PROVIDER     workload_identity_provider
-#   GCP_SERVICE_ACCOUNT  runner_service_account
+# Proves both keyless credentials end to end: GitHub OIDC -> Workload Identity Federation
+# -> a service account. `claims` prints the token claims the bindings match on, for a
+# direct job here and for a reusable-workflow job in model-smoke.yml. `smoke` calls each
+# store the runner may use; `model` proves what the model's account may and may not do.
+# Needs three repository variables, all OpenTofu outputs from infra/:
+#   GCP_WIF_PROVIDER           workload_identity_provider
+#   GCP_SERVICE_ACCOUNT        runner_service_account
+#   GCP_MODEL_SERVICE_ACCOUNT  model_service_account
 # The project and bucket names derive from the service account, as infra/storage.tf names them.
 name: infra-smoke
 
@@ -12,6 +15,26 @@ on:
 permissions: {}
 
 jobs:
+  claims:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/oidc-claims
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          expected_job_workflow_ref: ${{ github.repository }}/.github/workflows/infra-smoke.yml@${{ github.ref }}
+
+  model:
+    uses: ./.github/workflows/model-smoke.yml
+    permissions:
+      contents: read
+      id-token: write
+
   smoke:
     runs-on: ubuntu-latest
     permissions:
