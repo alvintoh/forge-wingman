@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -38,5 +39,19 @@ func TestMux(t *testing.T) {
 				t.Fatalf("body = %q, want it to contain %q", rec.Body.String(), tt.wantBody)
 			}
 		})
+	}
+}
+
+func TestVersion(t *testing.T) {
+	mux := newMux(fstest.MapFS{})
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/version", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	want := fmt.Sprintf(`{"sha":%q}`, commitSHA)
+	if got := rec.Body.String(); got != want {
+		t.Fatalf("body = %q, want %q", got, want)
 	}
 }

@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -15,6 +16,10 @@ import (
 
 	"github.com/alvintoh/forge-wingman/web"
 )
+
+// commitSHA is the git commit the binary was built from, injected at build time
+// via -ldflags "-X main.commitSHA=<sha>"; "dev" for a local build.
+var commitSHA = "dev"
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -73,6 +78,10 @@ func newMux(spa fs.FS) *http.ServeMux {
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"sha":%q}`, commitSHA)
 	})
 	mux.Handle("GET /api/", http.NotFoundHandler())
 	mux.Handle("GET /", spaHandler(spa))
