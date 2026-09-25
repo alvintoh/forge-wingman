@@ -69,6 +69,21 @@ func (t Ticket) BranchSegment() string {
 	return strings.ToLower(t.ID)
 }
 
+var conventionalPrefix = regexp.MustCompile(`^[a-z]+(\([^)]*\))?!?: `)
+
+// Subject is the title the PR and its commit carry: the id after a
+// conventional-commit prefix, or in front without one. A title already naming
+// the id is unchanged.
+func (t Ticket) Subject() string {
+	if strings.Contains(t.Title, t.ID) {
+		return t.Title
+	}
+	if p := conventionalPrefix.FindString(t.Title); p != "" {
+		return p + t.ID + " " + t.Title[len(p):]
+	}
+	return t.ID + " " + t.Title
+}
+
 // Text renders the ticket as it appears at the end of the prompt.
 func (t Ticket) Text() string {
 	return "## " + t.ID + ": " + t.Title + " (size " + t.Size + ")\n\n" + t.Body

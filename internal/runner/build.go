@@ -189,7 +189,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 			}
 			return stopWith(OutcomeInfraFailure, StopCommit, err)
 		}
-		files, err := wt.Commit(ctx, c.Ticket.Title+"\n\n"+c.Ticket.Body)
+		files, err := wt.Commit(ctx, c.Ticket.Subject()+"\n\n"+c.Ticket.Body)
 		if err != nil {
 			return stopWith(OutcomeInfraFailure, StopCommit, err)
 		}

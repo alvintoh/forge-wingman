@@ -44,6 +44,21 @@ func TestTicketBranchSegmentIsTheLowercaseID(t *testing.T) {
 	}
 }
 
+func TestTicketSubjectCarriesTheID(t *testing.T) {
+	for title, want := range map[string]string{
+		"feat(runner): build a real ticket": "feat(runner): ABC-12 build a real ticket",
+		"fix!: stop the loop":               "fix!: ABC-12 stop the loop",
+		"[SLICE] Build a real ticket":       "ABC-12 [SLICE] Build a real ticket",
+		"feat: ABC-12 already named":        "feat: ABC-12 already named",
+	} {
+		tk := testTicket
+		tk.Title = title
+		if got := tk.Subject(); got != want {
+			t.Errorf("Subject(%q) = %q, want %q", title, got, want)
+		}
+	}
+}
+
 func TestTicketTextCarriesTheTitle(t *testing.T) {
 	if got := testTicket.Text(); got != "## ABC-12: feat(x): add a file (size S)\n\nAdd a file." {
 		t.Fatalf("text = %q", got)

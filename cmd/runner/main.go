@@ -229,7 +229,7 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	if err != nil {
 		return err
 	}
-	if err := writeOutputs(e.output, map[string]string{"title": t.Title, "branch_segment": t.BranchSegment()}); err != nil {
+	if err := writeOutputs(e.output, map[string]string{"title": t.Subject(), "branch_segment": t.BranchSegment()}); err != nil {
 		return err
 	}
 	return writeMultilineOutput(e.output, "body", body)
@@ -324,7 +324,7 @@ func seed(ctx context.Context, project string, args []string) error {
 	runID := fs.String("run-id", "", "id of the run record to create")
 	var t runner.Ticket
 	fs.StringVar(&t.ID, "id", "", "ticket id, as TEAM-n")
-	fs.StringVar(&t.Title, "title", "", "ticket title, which becomes the PR title")
+	fs.StringVar(&t.Title, "title", "", "ticket title, which the PR title carries after the id")
 	fs.StringVar(&t.Size, "size", "", "ticket size: S, M or L")
 	fs.StringVar(&t.SizedBy, "sized-by", "seed", "what sized the ticket")
 	bodyFile := fs.String("body-file", "", "file holding the ticket body")
