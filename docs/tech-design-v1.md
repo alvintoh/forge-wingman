@@ -206,9 +206,29 @@ language. A reusable workflow living in each target repo, called with the run id
 
 **Gates are enforced in three places, deliberately.** opencode's per-agent
 `permission` block denies the tool; the runner refuses and records; and the
-`GITHUB_TOKEN` is scoped so the capability is **withheld** rather than merely
-denied — the runner never holds permission to mark a PR ready or to merge, so
-FR-5's "the runner cannot change it" is structural rather than conventional.
+capability is **withheld** rather than merely denied — the job the model runs in
+never holds permission to mark a PR ready or to merge, so FR-5's "the runner
+cannot change it" is structural rather than conventional.
+
+*Updated (2026-09-25):* this said the `GITHUB_TOKEN` is *scoped* to withhold it.
+Scope alone cannot: creating a PR and marking it ready are the same
+`pull-requests: write`, the only PR scope GitHub offers. The withholding is a
+**job boundary** — the model's job holds a read-only token, and a separate job
+running fixed steps opens the PR. Each job is a fresh VM, so the split is real.
+
+**Every target repository must allow Actions to create pull requests.** GitHub's
+*Allow GitHub Actions to create and approve pull requests* setting decides whether
+`GITHUB_TOKEN` *"can create and approve pull requests"*, and it starts off, so a
+repository onboarded without it runs the whole build and then fails at the PR.
+Since the runner is per repository (`adr/0002`), this is a per-target onboarding
+step, not a one-off. It also permits approving, which grants nothing while no
+branch rule counts approvals. *(Found 2026-09-25 while grounding FRG-13:
+forge-wingman read `can_approve_pull_request_reviews: false`.)*
+
+**Actions artifacts inherit the repository's read access**, so on a public target
+they are public. Anything private to a run — the projection, the completions —
+moves between the runner and Cloud Storage directly and never through an
+artifact; only the diff, which becomes a public PR anyway, may cross jobs as one.
 
 **The 14 GB runner disk is the real ceiling.** Shallow clones (`--depth`) and
 `actions/cache` for the dependency tree. Exhaustion is an **infrastructure fault
