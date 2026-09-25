@@ -4,6 +4,9 @@ on:
   pull_request:
   push:
     branches: [main]
+  # run.yml dispatches this on the agent's branch: a PR opened by GITHUB_TOKEN
+  # otherwise waits for a manual approval before CI runs.
+  workflow_dispatch:
 
 permissions:
   contents: read

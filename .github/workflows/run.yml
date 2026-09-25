@@ -92,6 +92,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      actions: write
       contents: write
       pull-requests: write
     outputs:
@@ -128,6 +129,15 @@ jobs:
             --body "Built unattended by forge-wingman from the hardcoded ticket \`tracer-1\`. Run: ${RUN_URL}")
           echo "url=${url}" >> "$GITHUB_OUTPUT"
           echo "duration_s=$(( $(date +%s) - STARTED ))" >> "$GITHUB_OUTPUT"
+
+      # workflow_dispatch is the one GITHUB_TOKEN event that starts a run without approval.
+      # The PR is the deliverable, so a failed dispatch leaves CI to be started by hand.
+      - name: Start CI on the branch
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ needs.run.outputs.branch }}
+        run: gh workflow run ci.yml --ref "$BRANCH"
 
   record:
     needs: [run, pr]
