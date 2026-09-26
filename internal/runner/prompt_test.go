@@ -7,7 +7,7 @@ import (
 )
 
 func TestBuildPrompt(t *testing.T) {
-	ticket := Ticket{ID: "t-1", Size: "S", Body: "Do the thing."}
+	ticket := Ticket{ID: "t-1", Title: "feat: the thing", Size: "S", Body: "Do the thing."}
 
 	t.Run("projection verbatim first, ticket last", func(t *testing.T) {
 		projection := "# Rules\n\nbe careful\n\n# The ticket\n\n" + ticketSentinel + "\n"
@@ -15,7 +15,7 @@ func TestBuildPrompt(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := "# Rules\n\nbe careful\n\n# The ticket\n\n## t-1 (size S)\n\nDo the thing.\n"
+		want := "# Rules\n\nbe careful\n\n# The ticket\n\n## t-1: feat: the thing (size S)\n\nDo the thing.\n"
 		if got != want {
 			t.Fatalf("prompt = %q, want %q", got, want)
 		}

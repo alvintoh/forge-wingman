@@ -1,4 +1,6 @@
 **Ticket:** ref <TEAM-n> <!-- "ref", never "closes": Linear auto-closes on merge -->
+<!-- PR title: the ticket key right after the prefix, e.g. `feat(runner): FRG-16 build …`.
+     A squash makes the title the commit subject on main; no ticket, no key. -->
 
 ## Summary
 <!-- First line: an imperative summary of WHAT changed. Then the problem, and why

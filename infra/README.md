@@ -37,6 +37,10 @@ Set from the outputs after `apply`:
 | `GCP_SERVICE_ACCOUNT` | `runner_service_account` |
 | `GCP_MODEL_SERVICE_ACCOUNT` | `model_service_account` |
 
+`WINGMAN_ACCOUNT` is set by hand, not from an output: it must name the repository's
+owner. When it does not, run.yml's ticket, model and pr-meta jobs refuse to run and
+the record job records identity-mismatch.
+
 ## Rolling out the model identity
 
 1. Dispatch `infra-smoke` with `--ref` set to the feature branch and read the
