@@ -65,7 +65,7 @@ func TestPutRecordAgainstTheEmulator(t *testing.T) {
 
 	started := time.Date(2026, 9, 25, 10, 0, 0, 0, time.UTC)
 	tk := runner.Ticket{ID: "ABC-12", Title: "feat(x): add a file", Size: "S", Body: "Add a file."}
-	if err := runner.Seed(ctx, recs, id, tk, started); err != nil {
+	if _, err := doc.Create(ctx, runner.NewRecord(id, tk, started)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := doc.Set(ctx, map[string]any{"linear_priority": 2, "models": map[string]any{"stale": "x"}},

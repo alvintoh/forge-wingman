@@ -17,3 +17,21 @@ output "completions_bucket" {
 output "projections_bucket" {
   value = google_storage_bucket.projections.name
 }
+
+output "dispatcher_service_account" {
+  value = google_service_account.dispatcher.email
+}
+
+output "dispatcher_job" {
+  value = google_cloud_run_v2_job.dispatcher.name
+}
+
+output "dispatcher_schedule" {
+  value = google_cloud_scheduler_job.dispatcher.name
+}
+
+# The rollout step adds a value to each of these by hand, so no apply ever
+# carries a token and the names stay the one contract between the two.
+output "dispatcher_secrets" {
+  value = sort(tolist(local.dispatcher_secrets))
+}

@@ -41,6 +41,60 @@ Set from the outputs after `apply`:
 owner. When it does not, run.yml's ticket, model and pr-meta jobs refuse to run and
 the record job records identity-mismatch.
 
+## Dispatcher
+
+`dispatcher.tf` is the poller: a Cloud Run job that Cloud Scheduler wakes every
+fifteen minutes. One execution is one poll — admit every ticket Linear has
+delegated, then start at most one queued run, the one whose `size:` label is
+`L` and whose Linear priority is lowest. A dispatch GitHub refuses releases its
+claim, so the next poll takes it again.
+
+Two identities, and no grant in common: the job reads the store, and the
+schedule can only start the job.
+
+| Service account | Grants |
+|---|---|
+| `dispatcher` | Firestore read/write on the queue, read both tokens |
+| `dispatcher-schedule` | start one execution of the `forge-wingman-dispatcher` job |
+
+Three variables name what OpenTofu cannot guess:
+
+| Variable | What it is |
+|---|---|
+| `dispatcher_image` | the image to run. The `Dockerfile` builds it with `CMD=dispatcher`; nothing here pushes it, so push it yourself and name the digest |
+| `linear_delegate` | the Linear id of the agent the job acts for; a poll whose token is another agent's admits nothing |
+| `linear_repositories` | the allowlist. Empty admits nothing, so a forgotten one refuses every ticket rather than dispatching |
+
+### Secrets
+
+The apply creates `linear-token` and `github-token` with no value in them; the
+job reads each secret's latest version as a run starts, so a rotation is the
+next run's business and not a redeploy's.
+
+```sh
+printf %s "$LINEAR_TOKEN" | gcloud secrets versions add linear-token --data-file=-
+printf %s "$GITHUB_TOKEN" | gcloud secrets versions add github-token --data-file=-
+```
+
+### A ticket
+
+A delegated issue is queued only with both labels, and is recorded as refused
+otherwise, in `dispatch/rejected-<identifier>`:
+
+| Label | Values | Without it |
+|---|---|---|
+| `size:` | `S`, `M`, `L` | refused `no-size`; `XL` is refused `size-above-ceiling` |
+| `repo:` | `owner/name`, allowlisted | refused `no-repository` or `repository-not-allowlisted` |
+
+Sizes are hand-set labels: nothing infers a size from the issue's own estimate.
+
+Rollout: apply with the three variables, add the two secret versions, delegate
+one issue to the agent, then read the job's log for the poll that took it.
+
+```sh
+gcloud logging read 'resource.type="cloud_run_job"' --freshness=1h --limit=50
+```
+
 ## Rolling out the model identity
 
 1. Dispatch `infra-smoke` with `--ref` set to the feature branch and read the

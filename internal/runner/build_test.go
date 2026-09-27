@@ -58,14 +58,6 @@ func (f fakeRecords) PutRecord(_ context.Context, id string, r Record) error {
 	return nil
 }
 
-func (f fakeRecords) CreateRecord(_ context.Context, id string, r Record) error {
-	if _, ok := f[id]; ok {
-		return fmt.Errorf("%s exists", id)
-	}
-	f[id] = r
-	return nil
-}
-
 var testTicket = Ticket{ID: "ABC-12", Title: "feat(x): add a file", Size: "S", SizedBy: "test", Body: "Add a file."}
 
 var testIdentity = Identity{Account: "octo", Owner: "octo"}

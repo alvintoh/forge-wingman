@@ -142,15 +142,10 @@ func TestSubcommandsRefuseARunIDBeforeOpeningFirestore(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	env := map[string]string{"GOOGLE_CLOUD_PROJECT": "p", "RUNNER_TEMP": t.TempDir(), "GITHUB_RUN_ID": "42",
 		"GITHUB_RUN_ATTEMPT": "1", "WINGMAN_ACCOUNT": "octo", "GITHUB_REPOSITORY_OWNER": "octo"}
-	body := filepath.Join(t.TempDir(), "body.md")
-	if err := os.WriteFile(body, []byte("Add a file."), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	for _, args := range [][]string{
 		{"ticket", "-run-id", "runs/x"},
 		{"record", "-run-id", ""},
 		{"pr-meta", "-run-id", "../x", "-template", "../../.github/pull_request_template.md"},
-		{"seed", "-run-id", "a b", "-id", "ABC-12", "-title", "t", "-size", "S", "-body-file", body},
 	} {
 		err := run(context.Background(), logger, args, func(k string) string { return env[k] })
 		if err == nil || !strings.Contains(err.Error(), "cannot name a record") {

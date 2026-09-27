@@ -53,12 +53,6 @@ func (r *Records) PutRecord(ctx context.Context, id string, rec runner.Record) e
 	return err
 }
 
-// CreateRecord writes the record, failing if one exists.
-func (r *Records) CreateRecord(ctx context.Context, id string, rec runner.Record) error {
-	_, err := r.client.Collection(runsCollection).Doc(id).Create(ctx, rec)
-	return err
-}
-
 // fields maps a struct's top-level fields by their firestore names, skipping those
 // tagged "-". Tag options such as omitempty are not applied.
 func fields(v any) map[string]any {
