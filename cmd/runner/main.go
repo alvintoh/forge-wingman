@@ -4,7 +4,6 @@
 //	runner build   -model <provider/model> -ticket   fetch the projection, run the agent, bundle the branch, emit a summary
 //	runner pr-meta -run-id <id> -failed-gate <g>     render the PR's title and body from the run record
 //	runner record  -run-id <id> -summary <json> ...  validate the build's summary and merge it into the run record
-//	runner seed    -run-id <id> -id <ticket> ...     write a run record for a ticket
 //
 // build exits 0 when it stops short of a branch but reported why; ticket, pr-meta
 // and record exit 1 for any run that cannot or did not succeed, so the workflow
@@ -59,7 +58,7 @@ func exitCode(err error) int {
 	return 1
 }
 
-// env is the workflow context every subcommand but seed reads.
+// env is the workflow context every subcommand reads.
 type env struct {
 	project   string
 	runID     string
@@ -105,10 +104,7 @@ func loadEnv(getenv func(string) string) (env, error) {
 
 func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(string) string) error {
 	if len(args) == 0 {
-		return errors.New("usage: runner ticket|build|pr-meta|record|seed [flags]")
-	}
-	if args[0] == "seed" {
-		return seed(ctx, getenv("GOOGLE_CLOUD_PROJECT"), args[1:])
+		return errors.New("usage: runner ticket|build|pr-meta|record [flags]")
 	}
 	e, err := loadEnv(getenv)
 	if err != nil {
@@ -316,35 +312,6 @@ func record(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		return errRunFailed
 	}
 	return nil
-}
-
-// seed writes a run record for the ticket its flags describe.
-func seed(ctx context.Context, project string, args []string) error {
-	fs := flag.NewFlagSet("seed", flag.ContinueOnError)
-	runID := fs.String("run-id", "", "id of the run record to create")
-	var t runner.Ticket
-	fs.StringVar(&t.ID, "id", "", "ticket id, as TEAM-n")
-	fs.StringVar(&t.Title, "title", "", "ticket title, which the PR title carries after the id")
-	fs.StringVar(&t.Size, "size", "", "ticket size: S, M or L")
-	fs.StringVar(&t.SizedBy, "sized-by", "seed", "what sized the ticket")
-	bodyFile := fs.String("body-file", "", "file holding the ticket body")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if *bodyFile == "" {
-		return errors.New("-body-file is required")
-	}
-	body, err := os.ReadFile(*bodyFile)
-	if err != nil {
-		return fmt.Errorf("reading the ticket body: %w", err)
-	}
-	t.Body = string(body)
-	fsc, err := recordsClient(ctx, project, *runID)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = fsc.Close() }()
-	return runner.Seed(ctx, store.NewRecords(fsc), *runID, t, time.Now())
 }
 
 // recordsClient opens Firestore for a subcommand that reads or writes record runID.
