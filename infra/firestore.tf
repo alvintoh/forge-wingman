@@ -13,3 +13,21 @@ resource "google_firestore_database" "default" {
     prevent_destroy = true
   }
 }
+
+# The queue's claim reads one queued run, ordered by the Linear priority the
+# dispatcher wrote, which a single-field index cannot serve.
+resource "google_firestore_index" "queue_claim" {
+  project    = var.project_id
+  database   = google_firestore_database.default.name
+  collection = "runs"
+
+  fields {
+    field_path = "state"
+    order      = "ASCENDING"
+  }
+
+  fields {
+    field_path = "linear_priority"
+    order      = "ASCENDING"
+  }
+}

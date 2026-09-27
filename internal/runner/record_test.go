@@ -55,14 +55,10 @@ func encoded(t *testing.T, s Summary) string {
 
 var seededAt = finalizeNow.Add(-2 * time.Hour)
 
-// seeded is a store holding the record Seed writes for testTicket.
+// seeded is a store holding the record the dispatcher writes for testTicket.
 func seeded(t *testing.T) fakeRecords {
 	t.Helper()
-	store := fakeRecords{}
-	if err := Seed(context.Background(), store, testRunID, testTicket, seededAt); err != nil {
-		t.Fatal(err)
-	}
-	return store
+	return fakeRecords{testRunID: NewRecord(testRunID, testTicket, seededAt)}
 }
 
 func TestFinalize(t *testing.T) {
@@ -329,28 +325,6 @@ func TestReadRun(t *testing.T) {
 	if _, err := ReadRun(context.Background(), store, "another-run"); !errors.As(err, &stopped) ||
 		stopped.Reason != StopRecordMissing {
 		t.Fatalf("err = %v, want a record-missing stop", err)
-	}
-}
-
-func TestSeedRefuses(t *testing.T) {
-	store := seeded(t)
-	for name, tt := range map[string]struct {
-		runID  string
-		ticket Ticket
-	}{
-		"an existing record":    {testRunID, testTicket},
-		"an unbuildable ticket": {"run-2", Ticket{ID: "ABC-13"}},
-		"a run id with a slash": {"runs/x", testTicket},
-		"an empty run id":       {"", testTicket},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if err := Seed(context.Background(), store, tt.runID, tt.ticket, finalizeNow); err == nil {
-				t.Fatal("seeded")
-			}
-		})
-	}
-	if len(store) != 1 || store[testRunID].Ticket() != testTicket {
-		t.Fatalf("store = %+v", store)
 	}
 }
 

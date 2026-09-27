@@ -114,11 +114,6 @@ type RecordStore interface {
 	PutRecord(ctx context.Context, id string, r Record) error
 }
 
-// RecordCreator writes a run record, failing if one exists.
-type RecordCreator interface {
-	CreateRecord(ctx context.Context, id string, r Record) error
-}
-
 var runIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
 
 // ValidRunID reports whether id can name a run record.
@@ -147,24 +142,6 @@ func ReadRun(ctx context.Context, r RecordReader, runID string) (Record, error) 
 	return rec, nil
 }
 
-// Seed writes a new run record for ticket t.
-//
-// TODO(FRG-18): the dispatcher writes run records; retire Seed with it.
-func Seed(ctx context.Context, c RecordCreator, runID string, t Ticket, now time.Time) error {
-	if !ValidRunID(runID) {
-		return fmt.Errorf("run id %q cannot name a record", truncate(runID, logErrorLimit))
-	}
-	if err := t.Validate(); err != nil {
-		return err
-	}
-	rec := newRecord(runID, t, now)
-	rec.UpdatedAt = now
-	if err := c.CreateRecord(ctx, runID, rec); err != nil {
-		return fmt.Errorf("creating record %s: %w", runID, err)
-	}
-	return nil
-}
-
 // FailedGate names the gate a check job reported failing: "" for a check that
 // was not run or reported "none", gateUnnamed for any report that is not a gate.
 func FailedGate(reported string) string {
@@ -182,7 +159,9 @@ type ObjectCreator interface {
 	CreateObject(ctx context.Context, name string, r io.Reader) error
 }
 
-func newRecord(id string, t Ticket, now time.Time) Record {
+// NewRecord is the record the dispatcher starts a run with: the ticket as read
+// from Linear and nothing derived from a build yet.
+func NewRecord(id string, t Ticket, now time.Time) Record {
 	return Record{
 		RunID:       id,
 		TicketID:    t.ID,
@@ -232,7 +211,7 @@ func Finalize(ctx context.Context, store RecordStore, in FinalizeInput, now time
 	if started.IsZero() {
 		started = now
 	}
-	rec := newRecord(in.RunID, t, started)
+	rec := NewRecord(in.RunID, t, started)
 	identityErr := in.Identity.CheckAccount()
 	sum, err := ParseSummary(in.Summary, in.AttemptID, t, now)
 	switch {
