@@ -9,7 +9,7 @@ import (
 const DefaultPRTemplate = ".github/pull_request_template.md"
 
 const (
-	templateTicketLine   = "**Ticket:** ref <TEAM-n>"
+	templateTicketLine   = "**Ticket:** closes <TEAM-n>"
 	templateSummary      = "## Summary"
 	templateVerification = "## Verification"
 	templateTableRule    = "|---|---|---|"

@@ -1,7 +1,4 @@
-**Ticket:** closes <TEAM-n> <!-- "closes" auto-transitions the ticket to Done on merge —
-     correct when every row below is already ✅. Use "ref", not "closes", ONLY when a row
-     is genuinely ⏳ (a check that can't run until this merges, e.g. a live first
-     dispatch) — then set Done by hand once that check actually passes. -->
+**Ticket:** closes <TEAM-n> <!-- auto-closes on merge; use "ref" only when a row is genuinely ⏳ post-merge -->
 <!-- PR title: the ticket key right after the prefix, e.g. `feat(runner): FRG-16 build …`.
      A squash makes the title the commit subject on main; no ticket, no key. -->
 
