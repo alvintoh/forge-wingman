@@ -17,7 +17,8 @@ import (
 var plainTag = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
 func TestFieldsNamesEveryRecordFieldByItsFirestoreTag(t *testing.T) {
-	rec := runner.Record{RunID: "r", TicketID: "ABC-12", FailedGate: "test", Models: map[string]string{"build": "p/m"}}
+	rec := runner.Record{RunID: "r", TicketID: "ABC-12", FailedGate: "test",
+		Steps: []runner.Step{{Phase: runner.PhaseBuild, Round: 1, Model: "p/m"}}}
 	got := fields(rec)
 	typ := reflect.TypeFor[runner.Record]()
 	if len(got) != typ.NumField() {
@@ -32,7 +33,7 @@ func TestFieldsNamesEveryRecordFieldByItsFirestoreTag(t *testing.T) {
 			t.Errorf("field %s is not written as %q", f.Name, tag)
 		}
 	}
-	if got["ticket_id"] != "ABC-12" || got["failed_gate"] != "test" || got["models"].(map[string]string)["build"] != "p/m" {
+	if got["ticket_id"] != "ABC-12" || got["failed_gate"] != "test" || got["steps"].([]runner.Step)[0].Model != "p/m" {
 		t.Fatalf("fields = %v", got)
 	}
 }
@@ -68,7 +69,7 @@ func TestPutRecordAgainstTheEmulator(t *testing.T) {
 	if err := runner.Seed(ctx, recs, id, tk, started); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := doc.Set(ctx, map[string]any{"linear_priority": 2, "models": map[string]any{"stale": "x"}},
+	if _, err := doc.Set(ctx, map[string]any{"linear_priority": 2, "steps": []any{map[string]any{"model": "stale"}}},
 		firestore.MergeAll); err != nil {
 		t.Fatal(err)
 	}
@@ -86,8 +87,8 @@ func TestPutRecordAgainstTheEmulator(t *testing.T) {
 	if data["linear_priority"] != int64(2) {
 		t.Errorf("a field no Record names was lost: %v", data["linear_priority"])
 	}
-	if models, _ := data["models"].(map[string]any); len(models) != 0 {
-		t.Errorf("models = %v, want the map replaced", models)
+	if steps, _ := data["steps"].([]any); len(steps) != 0 {
+		t.Errorf("steps = %v, want the slice replaced", steps)
 	}
 	if got, _ := data["started_at"].(time.Time); !got.Equal(started) {
 		t.Errorf("started_at = %v, want %v", got, started)

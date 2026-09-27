@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -9,15 +10,19 @@ import (
 
 func validSummary() Summary {
 	return Summary{
-		Outcome:           OutcomeBuilt,
-		Phase:             PhaseCommit,
-		Model:             "opencode/big-pickle",
-		EditedFiles:       []string{"version.go"},
-		CompletionsObject: "completions/1-1.jsonl",
-		DurationsMS:       map[string]int64{"build": 10},
-		RuleStackSHA:      testSHA,
-		Branch:            BranchName(testTicket.BranchSegment(), "1-1"),
-		StartedAt:         finalizeNow.Add(-time.Hour),
+		Outcome: OutcomeBuilt,
+		Phase:   PhaseCommit,
+		Steps: []Step{{
+			Phase:             PhaseBuild,
+			Round:             1,
+			Model:             "opencode/big-pickle",
+			CompletionsObject: completionsObject("1-1", PhaseBuild, 1),
+		}},
+		EditedFiles:  []string{"version.go"},
+		DurationsMS:  map[string]int64{"build": 10},
+		RuleStackSHA: testSHA,
+		Branch:       BranchName(testTicket.BranchSegment(), "1-1"),
+		StartedAt:    finalizeNow.Add(-time.Hour),
 	}
 }
 
@@ -46,9 +51,9 @@ func TestParseSummaryRejects(t *testing.T) {
 		{"a stop without a reason", func(s *Summary) { s.Outcome = OutcomeStopped }},
 		{"the pr phase", func(s *Summary) { s.Phase = PhasePR }},
 		{"no phase", func(s *Summary) { s.Phase = "" }},
-		{"a malformed model", func(s *Summary) { s.Model = "big pickle" }},
-		{"negative tokens", func(s *Summary) { s.Tokens.Input = -1 }},
-		{"a negative cost", func(s *Summary) { s.Tokens.Cost = -0.1 }},
+		{"a malformed model", func(s *Summary) { s.Steps[0].Model = "big pickle" }},
+		{"negative tokens", func(s *Summary) { s.Steps[0].Tokens.Input = -1 }},
+		{"a negative cost", func(s *Summary) { s.Steps[0].Tokens.Cost = -0.1 }},
 		{"negative diff lines", func(s *Summary) { s.DiffLines.Removed = -1 }},
 		{"too many diff lines", func(s *Summary) { s.DiffLines.Added = maxCount + 1 }},
 		{"an empty edited file", func(s *Summary) { s.EditedFiles = []string{""} }},
@@ -58,8 +63,11 @@ func TestParseSummaryRejects(t *testing.T) {
 		{"an edited file through a parent segment", func(s *Summary) { s.EditedFiles = []string{"a/../b"} }},
 		{"an edited file ending in a parent segment", func(s *Summary) { s.EditedFiles = []string{"a/.."} }},
 		{"a start time over a week old", func(s *Summary) { s.StartedAt = finalizeNow.Add(-8 * 24 * time.Hour) }},
-		{"another run's completions", func(s *Summary) { s.CompletionsObject = "completions/1-2.jsonl" }},
-		{"a completions path escape", func(s *Summary) { s.CompletionsObject = "completions/../x.jsonl" }},
+		{"another run's completions", func(s *Summary) { s.Steps[0].CompletionsObject = "completions/1-2-build-1.jsonl" }},
+		{"a completions path escape", func(s *Summary) { s.Steps[0].CompletionsObject = "completions/../x.jsonl" }},
+		{"a step wearing another step's completions name", func(s *Summary) {
+			s.Steps[0].CompletionsObject = completionsObject("1-1", PhaseBuild, 2)
+		}},
 		{"another run's branch", func(s *Summary) { s.Branch = "wingman/abc-12-9-1" }},
 		{"a duration for another phase", func(s *Summary) { s.DurationsMS = map[string]int64{"pr": 1} }},
 		{"a negative duration", func(s *Summary) { s.DurationsMS = map[string]int64{"build": -1} }},
@@ -67,10 +75,12 @@ func TestParseSummaryRejects(t *testing.T) {
 		{"no start time", func(s *Summary) { s.StartedAt = time.Time{} }},
 		{"a start time in the future", func(s *Summary) { s.StartedAt = finalizeNow.Add(time.Hour) }},
 		{"a built run with no branch", func(s *Summary) { s.Branch = "" }},
-		{"a built run with no model", func(s *Summary) { s.Model = "" }},
-		{"a built run with no completions", func(s *Summary) { s.CompletionsObject = "" }},
+		{"a built run with no model", func(s *Summary) { s.Steps[0].Model = "" }},
+		{"a built run with no completions", func(s *Summary) { s.Steps[0].CompletionsObject = "" }},
+		{"a built run with no build step", func(s *Summary) { s.Steps = nil }},
 		{"an agent failure with no completions", func(s *Summary) {
-			s.Outcome, s.StopReason, s.Phase, s.CompletionsObject = OutcomeAgentFailed, StopAgentExit, PhaseBuild, ""
+			s.Outcome, s.StopReason, s.Phase = OutcomeAgentFailed, StopAgentExit, PhaseBuild
+			s.Steps[0].CompletionsObject = ""
 		}},
 	}
 	for _, tt := range tests {
@@ -148,7 +158,11 @@ func TestParseSummaryAcceptsEveryBuildEnding(t *testing.T) {
 	for e := range buildEndings {
 		s := Summary{Outcome: e.outcome, StopReason: e.reason, Phase: e.phase, StartedAt: finalizeNow}
 		if e.phase == PhaseBuild || e.phase == PhaseCommit {
-			s.Branch, s.Model, s.CompletionsObject = BranchName(testTicket.BranchSegment(), "1-1"), "opencode/big-pickle", "completions/1-1.jsonl"
+			s.Branch = BranchName(testTicket.BranchSegment(), "1-1")
+			s.Steps = []Step{{
+				Phase: PhaseBuild, Round: 1, Model: "opencode/big-pickle",
+				CompletionsObject: completionsObject("1-1", PhaseBuild, 1),
+			}}
 		}
 		raw, err := s.Encode()
 		if err != nil {
@@ -181,5 +195,54 @@ func TestParseSummaryRejectsEndingsABuildCannotReach(t *testing.T) {
 		if _, err := ParseSummary(raw, "1-1", testTicket, finalizeNow); err == nil {
 			t.Errorf("accepted %s/%s at %q", e.outcome, e.reason, e.phase)
 		}
+	}
+}
+
+func TestParseSummaryAcceptsSeveralStepsEachUnderItsOwnCompletionsName(t *testing.T) {
+	s := validSummary()
+	s.Steps = append(s.Steps, Step{
+		Phase: PhaseBuild, Round: 2, Model: "opencode/big-pickle",
+		CompletionsObject: completionsObject("1-1", PhaseBuild, 2),
+	})
+	raw, err := s.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParseSummary(raw, "1-1", testTicket, finalizeNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Steps) != 2 || got.Steps[0].CompletionsObject == got.Steps[1].CompletionsObject {
+		t.Fatalf("steps = %+v", got.Steps)
+	}
+}
+
+func TestEncodeDropsTheOldestStepsWhenEditedFilesAloneIsNotEnough(t *testing.T) {
+	s := validSummary()
+	s.EditedFiles = nil
+	for i := range 700 {
+		s.Steps = append(s.Steps, Step{
+			Phase: PhaseBuild, Round: i + 2, Model: "opencode/big-pickle",
+			CompletionsObject: completionsObject("1-1", PhaseBuild, i+2),
+		})
+	}
+	want := len(s.Steps)
+
+	raw, err := s.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > maxSummaryBytes {
+		t.Fatalf("summary is %d bytes, over %d", len(raw), maxSummaryBytes)
+	}
+	var got Summary
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Steps) == 0 || len(got.Steps) >= want {
+		t.Fatalf("kept %d of %d steps, want some trimmed", len(got.Steps), want)
+	}
+	if got.Steps[0].Round != s.Steps[want-len(got.Steps)].Round {
+		t.Fatalf("kept steps do not start where the oldest were dropped: first round %d", got.Steps[0].Round)
 	}
 }

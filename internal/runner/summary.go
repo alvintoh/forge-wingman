@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -33,20 +34,29 @@ var ErrSummaryUnreported = errors.New("summary not reported")
 // Summary is what a build reports for the record job to write, since the build's
 // own identity cannot write the run store.
 type Summary struct {
-	Outcome           Outcome          `json:"outcome"`
-	StopReason        StopReason       `json:"stop_reason,omitempty"`
-	StopDetail        string           `json:"stop_detail,omitempty"`
-	Phase             Phase            `json:"phase"`
-	Model             string           `json:"model,omitempty"`
-	Tokens            Usage            `json:"tokens"`
-	EditedFiles       []string         `json:"edited_files,omitempty"`
-	DiffLines         DiffLines        `json:"diff_lines"`
-	CompletionsObject string           `json:"completions_object,omitempty"`
-	DurationsMS       map[string]int64 `json:"durations_ms,omitempty"`
-	RuleStackSHA      string           `json:"rule_stack_sha,omitempty"`
-	Branch            string           `json:"branch,omitempty"`
-	UsageWarning      string           `json:"usage_warning,omitempty"`
-	StartedAt         time.Time        `json:"started_at"`
+	Outcome      Outcome          `json:"outcome"`
+	StopReason   StopReason       `json:"stop_reason,omitempty"`
+	StopDetail   string           `json:"stop_detail,omitempty"`
+	Phase        Phase            `json:"phase"`
+	Steps        []Step           `json:"steps,omitempty"`
+	EditedFiles  []string         `json:"edited_files,omitempty"`
+	DiffLines    DiffLines        `json:"diff_lines"`
+	DurationsMS  map[string]int64 `json:"durations_ms,omitempty"`
+	RuleStackSHA string           `json:"rule_stack_sha,omitempty"`
+	Branch       string           `json:"branch,omitempty"`
+	UsageWarning string           `json:"usage_warning,omitempty"`
+	StartedAt    time.Time        `json:"started_at"`
+}
+
+// Step is one opencode invocation in a run's build, distinct from Usage.Steps,
+// which counts that invocation's own internal step_finish events.
+type Step struct {
+	Phase             Phase  `firestore:"phase" json:"phase"`
+	Round             int    `firestore:"round" json:"round"`
+	Model             string `firestore:"model" json:"model"`
+	Tokens            Usage  `firestore:"tokens" json:"tokens"`
+	DurationMS        int64  `firestore:"duration_ms" json:"duration_ms"`
+	CompletionsObject string `firestore:"completions_object" json:"completions_object"`
 }
 
 type ending struct {
@@ -96,8 +106,9 @@ func SetupSummary(err error, now time.Time) Summary {
 	}
 }
 
-// Encode renders the summary as one line of JSON within maxSummaryBytes,
-// dropping edited file names from the end until it fits.
+// Encode renders the summary as one line of JSON within maxSummaryBytes: first
+// dropping edited file names from the end, then, once none are left, dropping the
+// oldest steps until it fits.
 func (s Summary) Encode() (string, error) {
 	s.EditedFiles = capFiles(s.EditedFiles)
 	for {
@@ -108,10 +119,14 @@ func (s Summary) Encode() (string, error) {
 		if len(b) <= maxSummaryBytes {
 			return string(b), nil
 		}
-		if len(s.EditedFiles) == 0 {
+		switch {
+		case len(s.EditedFiles) > 0:
+			s.EditedFiles = s.EditedFiles[:len(s.EditedFiles)/2]
+		case len(s.Steps) > 0:
+			s.Steps = s.Steps[1:]
+		default:
 			return "", fmt.Errorf("summary is %d bytes, over %d", len(b), maxSummaryBytes)
 		}
-		s.EditedFiles = s.EditedFiles[:len(s.EditedFiles)/2]
 	}
 }
 
@@ -160,23 +175,19 @@ func (s Summary) validate(attemptID string, t Ticket, now time.Time) error {
 			truncate(string(s.Outcome), logErrorLimit), truncate(string(s.StopReason), logErrorLimit),
 			truncate(string(s.Phase), logErrorLimit))
 	}
-	// A build names its branch once the worktree exists, its model as the agent
-	// starts, and its completions once the agent's events are uploaded, so an ending
-	// past each point that lacks the field did not come from a build.
+	// A build names its branch once the worktree exists and gains a build step once
+	// the agent's events are uploaded, so an ending past each point that lacks the
+	// field did not come from a build.
 	if (s.Phase == PhaseBuild || s.Phase == PhaseCommit) && s.Branch == "" {
 		return errors.New("an ending past the worktree names no branch")
 	}
-	if (s.Phase == PhaseBuild || s.Phase == PhaseCommit) && s.Model == "" {
-		return errors.New("an ending past the worktree names no model")
+	if (s.Phase == PhaseCommit || s.Outcome == OutcomeAgentFailed) && !hasBuildStep(s.Steps) {
+		return errors.New("an ending past the worktree names no build step")
 	}
-	if (s.Phase == PhaseCommit || s.Outcome == OutcomeAgentFailed) && s.CompletionsObject == "" {
-		return errors.New("an ending after the agent ran names no completions")
-	}
-	if s.Model != "" && (len(s.Model) > maxModelBytes || !modelPattern.MatchString(s.Model)) {
-		return errors.New("model is not provider/model")
-	}
-	if err := s.Tokens.validate(); err != nil {
-		return err
+	for _, step := range s.Steps {
+		if err := step.validate(attemptID); err != nil {
+			return err
+		}
 	}
 	if len(s.EditedFiles) > maxEditedFiles {
 		return fmt.Errorf("%d edited files, over %d", len(s.EditedFiles), maxEditedFiles)
@@ -190,9 +201,6 @@ func (s Summary) validate(attemptID string, t Ticket, now time.Time) error {
 		if n < 0 || n > maxCount {
 			return fmt.Errorf("diff line count %d is out of range", n)
 		}
-	}
-	if s.CompletionsObject != "" && s.CompletionsObject != completionsObject(attemptID) {
-		return errors.New("completions object is not this run's")
 	}
 	for p, ms := range s.DurationsMS {
 		if !buildPhases[Phase(p)] {
@@ -226,6 +234,29 @@ func (u Usage) validate() error {
 	return nil
 }
 
+func hasBuildStep(steps []Step) bool {
+	for _, st := range steps {
+		if st.Phase == PhaseBuild {
+			return true
+		}
+	}
+	return false
+}
+
+// validate checks a step's model, tokens and completions object against attemptID's run.
+func (st Step) validate(attemptID string) error {
+	if st.Model == "" || len(st.Model) > maxModelBytes || !modelPattern.MatchString(st.Model) {
+		return errors.New("model is not provider/model")
+	}
+	if err := st.Tokens.validate(); err != nil {
+		return err
+	}
+	if st.CompletionsObject != completionsObject(attemptID, st.Phase, st.Round) {
+		return errors.New("completions object is not this run's")
+	}
+	return nil
+}
+
 // repoRelative reports whether f is a non-empty path that stays inside the repository.
 func repoRelative(f string) bool {
 	if f == "" || strings.ContainsRune(f, 0) || strings.HasPrefix(f, "/") {
@@ -234,6 +265,6 @@ func repoRelative(f string) bool {
 	return !slices.Contains(strings.Split(f, "/"), "..")
 }
 
-func completionsObject(attemptID string) string {
-	return "completions/" + attemptID + ".jsonl"
+func completionsObject(attemptID string, phase Phase, round int) string {
+	return "completions/" + attemptID + "-" + string(phase) + "-" + strconv.Itoa(round) + ".jsonl"
 }

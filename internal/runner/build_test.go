@@ -208,11 +208,15 @@ func TestBuildCommitsAndBundlesTheAgentsEdits(t *testing.T) {
 	if rec.DiffLines.Added == 0 {
 		t.Fatalf("diff lines = %+v, want the added file counted", rec.DiffLines)
 	}
-	if rec.Tokens.Input != 10 || rec.Tokens.CacheRead != 90 || rec.Model != "p/m" {
-		t.Fatalf("summary usage = %+v, model %q", rec.Tokens, rec.Model)
+	if len(rec.Steps) != 1 {
+		t.Fatalf("steps = %+v, want exactly one", rec.Steps)
 	}
-	if got := completions[rec.CompletionsObject]; !bytes.Equal(got, []byte(agent.events)) {
-		t.Fatalf("completions object %q = %q", rec.CompletionsObject, got)
+	step := rec.Steps[0]
+	if step.Tokens.Input != 10 || step.Tokens.CacheRead != 90 || step.Model != "p/m" || step.Phase != PhaseBuild || step.Round != 1 {
+		t.Fatalf("step = %+v", step)
+	}
+	if got := completions[step.CompletionsObject]; !bytes.Equal(got, []byte(agent.events)) {
+		t.Fatalf("completions object %q = %q", step.CompletionsObject, got)
 	}
 
 	clone := t.TempDir()
@@ -239,7 +243,10 @@ func TestBuildReportsAFailedAgent(t *testing.T) {
 	if rec.Outcome != OutcomeAgentFailed || rec.StopReason != StopAgentExit {
 		t.Fatalf("record = %s/%s", rec.Outcome, rec.StopReason)
 	}
-	if _, ok := completions[rec.CompletionsObject]; !ok {
+	if len(rec.Steps) != 1 {
+		t.Fatalf("steps = %+v, want exactly one", rec.Steps)
+	}
+	if _, ok := completions[rec.Steps[0].CompletionsObject]; !ok {
 		t.Fatal("completions of a failed agent were not uploaded")
 	}
 }
@@ -340,7 +347,10 @@ func TestBuildStopsTheAgentAtItsDeadline(t *testing.T) {
 	if rec.StopReason != StopAgentTimeout {
 		t.Fatalf("reason = %s", rec.StopReason)
 	}
-	if _, ok := completions[rec.CompletionsObject]; !ok {
+	if len(rec.Steps) != 1 {
+		t.Fatalf("steps = %+v, want exactly one", rec.Steps)
+	}
+	if _, ok := completions[rec.Steps[0].CompletionsObject]; !ok {
 		t.Fatal("completions were not uploaded after the deadline")
 	}
 }
@@ -367,7 +377,10 @@ func TestBuildUploadsCompletionsEvenWhenUsageCannotBeSummed(t *testing.T) {
 
 			_, _ = Build(context.Background(), deps, c)
 			rec := reported.last(t)
-			if got := completions[rec.CompletionsObject]; string(got) != longLine {
+			if len(rec.Steps) != 1 {
+				t.Fatalf("steps = %+v, want exactly one", rec.Steps)
+			}
+			if got := completions[rec.Steps[0].CompletionsObject]; string(got) != longLine {
 				t.Fatalf("completions = %q", got)
 			}
 			if rec.UsageWarning == "" || rec.StopReason != tt.wantReason {
@@ -553,7 +566,8 @@ func TestBuildReportsASummaryTheRecordJobAccepts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Outcome != OutcomeBuilt || got.Branch != BranchName(c.Ticket.BranchSegment(), c.AttemptID) || got.Tokens.Cost != 0.5 {
+	if got.Outcome != OutcomeBuilt || got.Branch != BranchName(c.Ticket.BranchSegment(), c.AttemptID) ||
+		len(got.Steps) != 1 || got.Steps[0].Tokens.Cost != 0.5 {
 		t.Fatalf("summary = %+v", got)
 	}
 }
