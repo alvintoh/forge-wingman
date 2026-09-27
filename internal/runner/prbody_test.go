@@ -72,7 +72,7 @@ func TestPRBodyFencesTheTicketBodyAfterTheGateRow(t *testing.T) {
 func TestPRBodyRefusesATemplateItCannotFill(t *testing.T) {
 	template := repoTemplate(t)
 	for name, broken := range map[string]string{
-		"no ticket line": strings.Replace(template, "**Ticket:** ref <TEAM-n>", "**Ticket:**", 1),
+		"no ticket line": strings.Replace(template, "**Ticket:** closes <TEAM-n>", "**Ticket:**", 1),
 		"no summary":     strings.Replace(template, "## Summary", "## About", 1),
 		"no table":       strings.Replace(template, "|---|---|---|", "", 1),
 		"no notes":       strings.Replace(template, "## Notes", "## Other", 1),
@@ -84,7 +84,7 @@ func TestPRBodyRefusesATemplateItCannotFill(t *testing.T) {
 }
 
 func TestPRBodyWritesTheSummaryOnce(t *testing.T) {
-	tmpl := "**Ticket:** ref <TEAM-n>\n\n## Summary\n<!-- a -->\n<!-- b -->\n\n## Verification\n" +
+	tmpl := "**Ticket:** closes <TEAM-n>\n\n## Summary\n<!-- a -->\n<!-- b -->\n\n## Verification\n" +
 		"| Check | What it proves | Result |\n|---|---|---|\n| x | y | ✅ |\n\n## Notes\n"
 	body, err := PRBody(tmpl, testTicket, "", testRunURL)
 	if err != nil {
