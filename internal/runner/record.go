@@ -68,31 +68,30 @@ const gateUnnamed = "check"
 
 // Record is one run's entry in the run store.
 type Record struct {
-	RunID             string            `firestore:"run_id"`
-	TicketID          string            `firestore:"ticket_id"`
-	TicketTitle       string            `firestore:"ticket_title"`
-	TicketBody        string            `firestore:"ticket_body"`
-	Size              string            `firestore:"size"`
-	SizedBy           string            `firestore:"sized_by"`
-	Phase             Phase             `firestore:"phase"`
-	Models            map[string]string `firestore:"models"`
-	Tokens            Usage             `firestore:"tokens"`
-	DurationsMS       map[string]int64  `firestore:"durations_ms"`
-	EditedFiles       []string          `firestore:"edited_files"`
-	DiffLines         DiffLines         `firestore:"diff_lines"`
-	Branch            string            `firestore:"branch"`
-	BuildOutcome      Outcome           `firestore:"build_outcome"`
-	Outcome           Outcome           `firestore:"outcome"`
-	StopReason        StopReason        `firestore:"stop_reason"`
-	StopDetail        string            `firestore:"stop_detail"`
-	FailedGate        string            `firestore:"failed_gate"`
-	UsageWarning      string            `firestore:"usage_warning"`
-	RuleStackSHA      string            `firestore:"rule_stack_sha"`
-	CompletionsObject string            `firestore:"completions_object"`
-	PRURL             string            `firestore:"pr_url"`
-	JobResults        map[string]string `firestore:"job_results"`
-	StartedAt         time.Time         `firestore:"started_at"`
-	UpdatedAt         time.Time         `firestore:"updated_at"`
+	RunID        string            `firestore:"run_id"`
+	TicketID     string            `firestore:"ticket_id"`
+	TicketTitle  string            `firestore:"ticket_title"`
+	TicketBody   string            `firestore:"ticket_body"`
+	Size         string            `firestore:"size"`
+	SizedBy      string            `firestore:"sized_by"`
+	Phase        Phase             `firestore:"phase"`
+	Steps        []Step            `firestore:"steps"`
+	Tokens       Usage             `firestore:"tokens"`
+	DurationsMS  map[string]int64  `firestore:"durations_ms"`
+	EditedFiles  []string          `firestore:"edited_files"`
+	DiffLines    DiffLines         `firestore:"diff_lines"`
+	Branch       string            `firestore:"branch"`
+	BuildOutcome Outcome           `firestore:"build_outcome"`
+	Outcome      Outcome           `firestore:"outcome"`
+	StopReason   StopReason        `firestore:"stop_reason"`
+	StopDetail   string            `firestore:"stop_detail"`
+	FailedGate   string            `firestore:"failed_gate"`
+	UsageWarning string            `firestore:"usage_warning"`
+	RuleStackSHA string            `firestore:"rule_stack_sha"`
+	PRURL        string            `firestore:"pr_url"`
+	JobResults   map[string]string `firestore:"job_results"`
+	StartedAt    time.Time         `firestore:"started_at"`
+	UpdatedAt    time.Time         `firestore:"updated_at"`
 }
 
 // DiffLines is the size of the branch's diff against its base.
@@ -191,7 +190,6 @@ func newRecord(id string, t Ticket, now time.Time) Record {
 		TicketBody:  t.Body,
 		Size:        t.Size,
 		SizedBy:     t.SizedBy,
-		Models:      map[string]string{},
 		DurationsMS: map[string]int64{},
 		JobResults:  map[string]string{},
 		StartedAt:   now,
@@ -287,17 +285,29 @@ func (s Summary) apply(rec *Record) {
 	rec.BuildOutcome, rec.Outcome = s.Outcome, s.Outcome
 	rec.StopReason, rec.StopDetail = s.StopReason, s.StopDetail
 	rec.Phase = s.Phase
-	if s.Model != "" {
-		rec.Models[string(PhaseBuild)] = s.Model
-	}
-	rec.Tokens = s.Tokens
+	rec.Steps = s.Steps
+	rec.Tokens = sumSteps(s.Steps)
 	rec.EditedFiles = s.EditedFiles
 	rec.DiffLines = s.DiffLines
-	rec.CompletionsObject = s.CompletionsObject
 	for p, ms := range s.DurationsMS {
 		rec.DurationsMS[p] = ms
 	}
 	rec.RuleStackSHA = s.RuleStackSHA
 	rec.Branch = s.Branch
 	rec.UsageWarning = s.UsageWarning
+}
+
+// sumSteps totals every step's tokens into one run-wide Usage.
+func sumSteps(steps []Step) Usage {
+	var u Usage
+	for _, st := range steps {
+		u.Input += st.Tokens.Input
+		u.Output += st.Tokens.Output
+		u.Reasoning += st.Tokens.Reasoning
+		u.CacheRead += st.Tokens.CacheRead
+		u.CacheWrite += st.Tokens.CacheWrite
+		u.Cost += st.Tokens.Cost
+		u.Steps += st.Tokens.Steps
+	}
+	return u
 }

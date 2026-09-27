@@ -40,7 +40,11 @@ func encoded(t *testing.T, s Summary) string {
 	}
 	if s.Phase == "" && s.StopReason == "" {
 		s.Phase = PhaseCommit
-		s.Branch, s.Model, s.CompletionsObject = BranchName(testTicket.BranchSegment(), "1-1"), "opencode/big-pickle", "completions/1-1.jsonl"
+		s.Branch = BranchName(testTicket.BranchSegment(), "1-1")
+		s.Steps = []Step{{
+			Phase: PhaseBuild, Round: 1, Model: "opencode/big-pickle",
+			CompletionsObject: completionsObject("1-1", PhaseBuild, 1),
+		}}
 	}
 	raw, err := s.Encode()
 	if err != nil {
@@ -207,17 +211,22 @@ func TestFinalizeRecordsTheFailedGateOfAnOpenedPR(t *testing.T) {
 func TestFinalizeWritesTheWholeRecordFromTheSummary(t *testing.T) {
 	started := finalizeNow.Add(-10 * time.Minute)
 	sum := Summary{
-		Outcome:           OutcomeBuilt,
-		Phase:             PhaseCommit,
-		Model:             "opencode/big-pickle",
-		Tokens:            Usage{Input: 10, Output: 2, CacheRead: 90, Cost: 0.5, Steps: 1},
-		EditedFiles:       []string{"version.go"},
-		DiffLines:         DiffLines{Added: 3},
-		CompletionsObject: "completions/1-1.jsonl",
-		DurationsMS:       map[string]int64{"build": 1200},
-		RuleStackSHA:      testSHA,
-		Branch:            BranchName(testTicket.BranchSegment(), "1-1"),
-		StartedAt:         started,
+		Outcome: OutcomeBuilt,
+		Phase:   PhaseCommit,
+		Steps: []Step{{
+			Phase:             PhaseBuild,
+			Round:             1,
+			Model:             "opencode/big-pickle",
+			Tokens:            Usage{Input: 10, Output: 2, CacheRead: 90, Cost: 0.5, Steps: 1},
+			DurationMS:        1200,
+			CompletionsObject: completionsObject("1-1", PhaseBuild, 1),
+		}},
+		EditedFiles:  []string{"version.go"},
+		DiffLines:    DiffLines{Added: 3},
+		DurationsMS:  map[string]int64{"build": 1200},
+		RuleStackSHA: testSHA,
+		Branch:       BranchName(testTicket.BranchSegment(), "1-1"),
+		StartedAt:    started,
 	}
 	store := seeded(t)
 	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: encoded(t, sum), RunResult: "success",
@@ -226,11 +235,35 @@ func TestFinalizeWritesTheWholeRecordFromTheSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := store[testRunID]
-	if got.Models["build"] != sum.Model || got.Tokens != sum.Tokens || got.DiffLines != sum.DiffLines ||
-		got.CompletionsObject != sum.CompletionsObject || got.RuleStackSHA != testSHA || got.Branch != sum.Branch ||
+	if len(got.Steps) != 1 || got.Steps[0] != sum.Steps[0] || got.Tokens != sum.Steps[0].Tokens ||
+		got.DiffLines != sum.DiffLines || got.RuleStackSHA != testSHA || got.Branch != sum.Branch ||
 		got.DurationsMS["build"] != 1200 || !got.StartedAt.Equal(seededAt) || len(got.EditedFiles) != 1 ||
 		got.Phase != PhasePR {
 		t.Fatalf("record = %+v", got)
+	}
+}
+
+func TestFinalizeSumsTokensAcrossSteps(t *testing.T) {
+	sum := Summary{
+		Outcome: OutcomeBuilt,
+		Phase:   PhaseCommit,
+		Branch:  BranchName(testTicket.BranchSegment(), "1-1"),
+		Steps: []Step{
+			{Phase: PhaseBuild, Round: 1, Model: "opencode/big-pickle", Tokens: Usage{Input: 10, Output: 2, Steps: 1},
+				CompletionsObject: completionsObject("1-1", PhaseBuild, 1)},
+			{Phase: PhaseBuild, Round: 2, Model: "opencode/big-pickle", Tokens: Usage{Input: 5, Output: 1, Steps: 1},
+				CompletionsObject: completionsObject("1-1", PhaseBuild, 2)},
+		},
+	}
+	store := seeded(t)
+	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: encoded(t, sum),
+		RunResult: "success", PRResult: "success", PRURL: "https://github.com/o/r/pull/1"}
+	if _, err := Finalize(context.Background(), store, in, finalizeNow); err != nil {
+		t.Fatal(err)
+	}
+	got := store[testRunID]
+	if want := (Usage{Input: 15, Output: 3, Steps: 2}); got.Tokens != want {
+		t.Fatalf("tokens = %+v, want %+v", got.Tokens, want)
 	}
 }
 

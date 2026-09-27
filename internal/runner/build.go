@@ -172,7 +172,6 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 	}
 
 	if err := timed(PhaseBuild, func() error {
-		sum.Model = c.Model
 		return runAgent(ctx, d, c, wt.Dir, prompt, &sum)
 	}); err != nil {
 		return BuildResult{}, err
@@ -224,8 +223,13 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 }
 
 // runAgent runs the agent under its own deadline with its events captured in a
-// file, uploads them to the completions bucket, then totals their usage.
+// file, uploads them to the completions bucket, then appends the round's usage to
+// the summary as a Step.
 func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, dir, prompt string, sum *Summary) error {
+	const round = 1
+	start := d.Now()
+	completions := completionsObject(c.AttemptID, PhaseBuild, round)
+	stderrObject := strings.TrimSuffix(completions, ".jsonl") + ".stderr.log"
 	events := filepath.Join(c.TempDir, "completions-"+c.AttemptID+".jsonl")
 	stderrPath := filepath.Join(c.TempDir, "opencode-"+c.AttemptID+".stderr")
 	out, err := os.Create(events)
@@ -248,11 +252,10 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, dir, prompt strin
 	timedOut := errors.Is(agentCtx.Err(), context.DeadlineExceeded)
 	cancel()
 
-	completions := completionsObject(c.AttemptID)
 	for _, u := range []struct {
 		name string
 		f    *os.File
-	}{{completions, out}, {"completions/" + c.AttemptID + ".stderr.log", errOut}} {
+	}{{completions, out}, {stderrObject, errOut}} {
 		if _, err := u.f.Seek(0, io.SeekStart); err != nil {
 			return stopWith(OutcomeInfraFailure, StopCompletions, err)
 		}
@@ -263,17 +266,19 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, dir, prompt strin
 			return stopWith(OutcomeInfraFailure, StopCompletions, fmt.Errorf("uploading %s: %w", u.name, err))
 		}
 	}
-	sum.CompletionsObject = completions
 
+	step := Step{Phase: PhaseBuild, Round: round, Model: c.Model, CompletionsObject: completions}
 	if _, err := out.Seek(0, io.SeekStart); err != nil {
 		sum.UsageWarning = err.Error()
 	} else if usage, err := SumUsage(out); err != nil {
 		sum.UsageWarning = err.Error()
 	} else {
-		sum.Tokens = usage
+		step.Tokens = usage
 	}
-	d.Logger.Info("agentFinished", "steps", sum.Tokens.Steps, "input", sum.Tokens.Input, "output", sum.Tokens.Output,
-		"cacheRead", sum.Tokens.CacheRead, "cost", sum.Tokens.Cost, "usageWarning", sum.UsageWarning != "")
+	step.DurationMS = d.Now().Sub(start).Milliseconds()
+	sum.Steps = append(sum.Steps, step)
+	d.Logger.Info("agentFinished", "steps", step.Tokens.Steps, "input", step.Tokens.Input, "output", step.Tokens.Output,
+		"cacheRead", step.Tokens.CacheRead, "cost", step.Tokens.Cost, "usageWarning", sum.UsageWarning != "")
 
 	switch {
 	case timedOut:
