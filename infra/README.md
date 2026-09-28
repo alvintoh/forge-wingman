@@ -1,7 +1,7 @@
 # infra
 
-OpenTofu for the project's stores and the two keyless identities GitHub Actions
-runs under. The state bucket `gs://forge-wingman-tfstate` is bootstrapped by hand
+OpenTofu for the project's stores and the keyless identities GitHub Actions runs
+under. The state bucket `gs://forge-wingman-tfstate` is bootstrapped by hand
 and is not managed here.
 
 ```sh
@@ -26,6 +26,13 @@ this repository — the model's included — cannot become the runner.
 |---|---|---|
 | `runner` | `run.yml`, `infra-smoke.yml` | Firestore read/write, completions create, projections read |
 | `wingman-model` | `model.yml`, `model-smoke.yml` | completions create, projections read |
+| `wingman-publisher` | any job of the rule stack on `main` | projections create; get and overwrite of `projections/current` only |
+
+The publisher is the one identity for another repository: the rule stack, which is
+private, so nothing here names it. It has its own provider, `rule-stack`, whose
+condition pins the rule stack's numeric id (`rule_stack_repository_id`), the owner
+and `refs/heads/main`, and its binding matches that id rather than a workflow file.
+The `github` provider is unchanged and still admits this repository alone.
 
 ## Repository variables
 
@@ -40,6 +47,31 @@ Set from the outputs after `apply`:
 `WINGMAN_ACCOUNT` is set by hand, not from an output: it must name the repository's
 owner. When it does not, run.yml's ticket, model and pr-meta jobs refuse to run and
 the record job records identity-mismatch.
+
+The rule stack's publish workflow needs two variables on that repository:
+
+| Variable | Output |
+|---|---|
+| `GCP_WIF_PROVIDER` | `rule_stack_workload_identity_provider` |
+| `GCP_PUBLISHER_SERVICE_ACCOUNT` | `publisher_service_account` |
+
+## Rolling out the publisher
+
+1. Merge.
+2. `tofu plan`, then `tofu apply`. The plan only adds: the `rule-stack` provider,
+   the publisher, its binding and its two bucket grants. Read back the provider's
+   condition and the projections bucket's IAM policy.
+3. Set the rule stack's two variables above.
+4. Pin the publish workflow's checkout of this repository to the merge commit
+   from step 1.
+5. Merge the rule stack's publish workflow; that push is the first publish.
+   `projections/current` must name the merged sha.
+6. Dispatch the publish workflow on `main` a second time: it must be green, and
+   its upload lines must read 412. If they read 403, the uploads could count 403
+   as done for the sha objects, since only this identity's create path produces
+   it there.
+7. Dispatch the publish workflow from a branch other than `main`: its auth step
+   must be refused.
 
 ## Dispatcher
 

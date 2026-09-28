@@ -14,6 +14,12 @@ variable "github_repository_id" {
   default = "1382834276"
 }
 
+# The rule stack the projections are generated from.
+variable "rule_stack_repository_id" {
+  type    = string
+  default = "1282955517"
+}
+
 variable "github_owner_id" {
   type    = string
   default = "24959836"
