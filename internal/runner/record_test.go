@@ -61,6 +61,20 @@ func seeded(t *testing.T) fakeRecords {
 	return fakeRecords{testRunID: NewRecord(testRunID, testTicket, seededAt)}
 }
 
+// fakeLedger is a Ledger that records every run it was asked to settle.
+type fakeLedger struct {
+	settled []string
+	err     error
+}
+
+func (l *fakeLedger) Settle(_ context.Context, runID string) error {
+	if l.err != nil {
+		return l.err
+	}
+	l.settled = append(l.settled, runID)
+	return nil
+}
+
 func TestFinalize(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -101,7 +115,7 @@ func TestFinalize(t *testing.T) {
 			in.Summary = tt.summary(t)
 			in.PRDuration = 3 * time.Second
 
-			if _, err := Finalize(context.Background(), store, in, finalizeNow); err != nil {
+			if _, err := Finalize(context.Background(), store, &fakeLedger{}, in, finalizeNow); err != nil {
 				t.Fatal(err)
 			}
 			got := store[testRunID]
@@ -126,7 +140,7 @@ func TestFinalizeWritesTheSeededRecordKeepingItsTicketAndStart(t *testing.T) {
 	store := seeded(t)
 	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: encoded(t, Summary{Outcome: OutcomeBuilt}),
 		RunResult: "success", PRResult: "success", PRURL: "https://github.com/o/r/pull/1"}
-	if _, err := Finalize(context.Background(), store, in, finalizeNow); err != nil {
+	if _, err := Finalize(context.Background(), store, &fakeLedger{}, in, finalizeNow); err != nil {
 		t.Fatal(err)
 	}
 	if len(store) != 1 {
@@ -151,7 +165,7 @@ func TestFinalizeRecordsWhyThereWasNoTicket(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", RunResult: "skipped", PRResult: "skipped"}
-			rec, err := Finalize(context.Background(), tt.store, in, finalizeNow)
+			rec, err := Finalize(context.Background(), tt.store, &fakeLedger{}, in, finalizeNow)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -168,7 +182,7 @@ func TestFinalizeRecordsWhyThereWasNoTicket(t *testing.T) {
 
 func TestFinalizeFailsWhenTheRecordCannotBeRead(t *testing.T) {
 	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1"}
-	if _, err := Finalize(context.Background(), unreadableRecords{}, in, finalizeNow); err == nil {
+	if _, err := Finalize(context.Background(), unreadableRecords{}, &fakeLedger{}, in, finalizeNow); err == nil {
 		t.Fatal("Finalize wrote a record it could not read")
 	}
 }
@@ -193,7 +207,7 @@ func TestFinalizeRecordsTheFailedGateOfAnOpenedPR(t *testing.T) {
 			store := seeded(t)
 			in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: encoded(t, Summary{Outcome: OutcomeBuilt}),
 				RunResult: "success", PRResult: "success", PRURL: "https://github.com/o/r/pull/1", CheckReport: report}
-			if _, err := Finalize(context.Background(), store, in, finalizeNow); err != nil {
+			if _, err := Finalize(context.Background(), store, &fakeLedger{}, in, finalizeNow); err != nil {
 				t.Fatal(err)
 			}
 			got := store[testRunID]
@@ -227,7 +241,7 @@ func TestFinalizeWritesTheWholeRecordFromTheSummary(t *testing.T) {
 	store := seeded(t)
 	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: encoded(t, sum), RunResult: "success",
 		PRResult: "success", PRURL: "https://github.com/o/r/pull/1"}
-	if _, err := Finalize(context.Background(), store, in, finalizeNow); err != nil {
+	if _, err := Finalize(context.Background(), store, &fakeLedger{}, in, finalizeNow); err != nil {
 		t.Fatal(err)
 	}
 	got := store[testRunID]
@@ -254,7 +268,7 @@ func TestFinalizeSumsTokensAcrossSteps(t *testing.T) {
 	store := seeded(t)
 	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: encoded(t, sum),
 		RunResult: "success", PRResult: "success", PRURL: "https://github.com/o/r/pull/1"}
-	if _, err := Finalize(context.Background(), store, in, finalizeNow); err != nil {
+	if _, err := Finalize(context.Background(), store, &fakeLedger{}, in, finalizeNow); err != nil {
 		t.Fatal(err)
 	}
 	got := store[testRunID]
@@ -278,7 +292,7 @@ func TestFinalizeConvergesWhenTheFailedJobIsRerun(t *testing.T) {
 	for i, s := range steps {
 		s.in.RunID, s.in.AttemptID, s.in.Identity = testRunID, "1-1", testIdentity
 		s.in.Summary = raw
-		if _, err := Finalize(context.Background(), store, s.in, finalizeNow); err != nil {
+		if _, err := Finalize(context.Background(), store, &fakeLedger{}, s.in, finalizeNow); err != nil {
 			t.Fatal(err)
 		}
 		got := store[testRunID]
@@ -292,7 +306,7 @@ func TestFinalizeConvergesWhenTheFailedJobIsRerun(t *testing.T) {
 func TestFinalizeRecordsAnUnreadableSummary(t *testing.T) {
 	store := seeded(t)
 	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", SummaryUnreadable: true, RunResult: "success", PRResult: "skipped"}
-	rec, err := Finalize(context.Background(), store, in, finalizeNow)
+	rec, err := Finalize(context.Background(), store, &fakeLedger{}, in, finalizeNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,6 +342,75 @@ func TestReadRun(t *testing.T) {
 	}
 }
 
+func TestFinalizeSettlesTheLedgerWithTheRunsActualCost(t *testing.T) {
+	store := seeded(t)
+	rec := store[testRunID]
+	rec.Private = true
+	store[testRunID] = rec
+
+	sum := Summary{
+		Outcome: OutcomeBuilt,
+		Phase:   PhaseCommit,
+		Branch:  BranchName(testTicket.BranchSegment(), "1-1"),
+		Steps: []Step{{
+			Phase: PhaseBuild, Round: 1, Model: "opencode/big-pickle",
+			Tokens:            Usage{Input: 10, Output: 2, Cost: 0.123456, Steps: 1},
+			CompletionsObject: completionsObject("1-1", PhaseBuild, 1),
+		}},
+		DurationsMS: map[string]int64{"build": 90_000}, // 1.5 minutes, rounds up to 2
+	}
+	ledger := &fakeLedger{}
+	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: encoded(t, sum),
+		RunResult: "success", PRResult: "success", PRURL: "https://github.com/o/r/pull/1"}
+	if _, err := Finalize(context.Background(), store, ledger, in, finalizeNow); err != nil {
+		t.Fatal(err)
+	}
+	got := store[testRunID]
+	if !got.SettledAt.Equal(finalizeNow) {
+		t.Fatalf("settled at %v, want %v", got.SettledAt, finalizeNow)
+	}
+	if got.SettledProviderCostMicros != 123456 {
+		t.Fatalf("settled cost = %d micros, want 123456", got.SettledProviderCostMicros)
+	}
+	if got.SettledRunnerMinutes != 2 {
+		t.Fatalf("settled minutes = %d, want 2 (90s rounds up)", got.SettledRunnerMinutes)
+	}
+	if !got.Private {
+		t.Fatal("private was not carried from the existing record")
+	}
+	if !slices.Equal(ledger.settled, []string{testRunID}) {
+		t.Fatalf("ledger.Settle was called with %v, want [%s]", ledger.settled, testRunID)
+	}
+}
+
+func TestFinalizeZeroesSettledRunnerMinutesForAPublicTarget(t *testing.T) {
+	store := seeded(t) // Private defaults to false
+	sum := Summary{
+		Outcome: OutcomeBuilt, Phase: PhaseCommit, Branch: BranchName(testTicket.BranchSegment(), "1-1"),
+		Steps: []Step{{Phase: PhaseBuild, Round: 1, Model: "opencode/big-pickle", Tokens: Usage{Cost: 1},
+			CompletionsObject: completionsObject("1-1", PhaseBuild, 1)}},
+		DurationsMS: map[string]int64{"build": 120_000},
+	}
+	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: encoded(t, sum),
+		RunResult: "success", PRResult: "success", PRURL: "https://github.com/o/r/pull/1"}
+	if _, err := Finalize(context.Background(), store, &fakeLedger{}, in, finalizeNow); err != nil {
+		t.Fatal(err)
+	}
+	if got := store[testRunID].SettledRunnerMinutes; got != 0 {
+		t.Fatalf("settled runner minutes = %d, want 0 for a public target", got)
+	}
+}
+
+func TestFinalizeFailsWhenTheLedgerCannotBeSettled(t *testing.T) {
+	store := seeded(t)
+	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: encoded(t, Summary{Outcome: OutcomeBuilt}),
+		RunResult: "success", PRResult: "success", PRURL: "https://github.com/o/r/pull/1"}
+	ledger := &fakeLedger{err: errors.New("firestore unreachable")}
+	if _, err := Finalize(context.Background(), store, ledger, in, finalizeNow); err == nil {
+		t.Fatal("Finalize succeeded despite the ledger failing to settle")
+	}
+}
+
 func TestFinalizeRecordsAnIdentityMismatchAheadOfEverythingElse(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
@@ -343,7 +426,7 @@ func TestFinalizeRecordsAnIdentityMismatchAheadOfEverythingElse(t *testing.T) {
 			in := tt.in
 			in.RunID, in.AttemptID = testRunID, "1-1"
 			in.Identity = Identity{Account: "work-account", Owner: "octo"}
-			rec, err := Finalize(context.Background(), tt.store, in, finalizeNow)
+			rec, err := Finalize(context.Background(), tt.store, &fakeLedger{}, in, finalizeNow)
 			if err != nil {
 				t.Fatal(err)
 			}

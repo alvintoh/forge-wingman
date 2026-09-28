@@ -284,9 +284,71 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, dir, prompt strin
 	case timedOut:
 		return stopWith(OutcomeAgentFailed, StopAgentTimeout, fmt.Errorf("agent exceeded %s", timeout))
 	case runErr != nil:
-		return stopWith(OutcomeAgentFailed, StopAgentExit, runErr)
+		outcome, reason := classifyAgentFailure(stderrPath)
+		return stopWith(outcome, reason, runErr)
 	}
 	return nil
+}
+
+// allowanceMarkers are phrases assumed to appear in the agent's stderr when
+// the provider's own allowance is exhausted mid-build, distinguishing a
+// budget stop (FR-22, never escalated) from an ordinary agent failure (FR-13,
+// which may retry at a higher tier). UNVERIFIED against a live exhaustion: no
+// probe has confirmed OpenCode Go's actual wording, so this is a documented
+// assumption pending that verification, not an observed fact — see the PR's
+// Known Limitations.
+var allowanceMarkers = []string{
+	"allowance exhausted",
+	"insufficient credit",
+	"insufficient balance",
+	"quota exceeded",
+	"payment required",
+}
+
+// classifyStderrTail is how much of the agent's stderr classifyAgentFailure
+// reads, from the END of the file — an exhaustion message is the process's
+// last output before it exits, and bounding the read keeps a runaway stream
+// from being loaded into memory on the one path meant to handle a bad run
+// gracefully.
+const classifyStderrTail = 64 << 10
+
+// classifyAgentFailure reads a bounded tail of the agent's stderr file to
+// tell a provider allowance exhaustion apart from any other agent failure.
+// A read it cannot perform (or a stderr silent on every marker) falls back to
+// the ordinary agent-failure classification, never to a false budget stop.
+func classifyAgentFailure(stderrPath string) (Outcome, StopReason) {
+	raw, err := readTail(stderrPath, classifyStderrTail)
+	if err != nil {
+		return OutcomeAgentFailed, StopAgentExit
+	}
+	lower := strings.ToLower(string(raw))
+	for _, marker := range allowanceMarkers {
+		if strings.Contains(lower, marker) {
+			return OutcomeBudgetStop, StopAllowanceExhausted
+		}
+	}
+	return OutcomeAgentFailed, StopAgentExit
+}
+
+// readTail reads at most limit bytes from the end of the file at path.
+func readTail(path string, limit int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	var start int64
+	if info.Size() > limit {
+		start = info.Size() - limit
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return nil, err
+	}
+	return io.ReadAll(f)
 }
 
 func detail(err error) string {

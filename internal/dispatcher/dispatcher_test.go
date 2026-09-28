@@ -8,6 +8,8 @@ import (
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/alvintoh/forge-wingman/internal/money"
 )
 
 var pollAt = time.Date(2026, 9, 27, 9, 15, 0, 0, time.UTC)
@@ -27,18 +29,45 @@ func (s fakeSource) Delegated(context.Context) ([]Issue, error) {
 	return s.issues, nil
 }
 
+// tryClaimCall is one TryClaim invocation a test can inspect: what run it was
+// asked to claim, and the reservation it was asked to claim it with.
+type tryClaimCall struct {
+	runID string
+	cfg   BudgetConfig
+	res   Reservation
+}
+
 // fakeQueue is the store a poll writes, with the outcome each call is to have.
 type fakeQueue struct {
 	queued     []Queued
 	holds      map[string]bool
 	rejected   []Rejection
 	released   []string
-	claim      Claim
-	claimed    bool
-	claimErr   error
 	enqueueErr error
 	rejectErr  error
 	releaseErr error
+
+	candidates    []Candidate
+	candidatesErr error
+
+	// bindings maps a candidate's run id to the ceiling TryClaim reports it
+	// would breach; a run id absent from both bindings and unavailable is
+	// claimed.
+	bindings    map[string]string
+	unavailable map[string]bool
+	tryClaimErr error
+
+	claimed   []string
+	tryClaims []tryClaimCall
+
+	existsErr error
+}
+
+func (q *fakeQueue) Exists(_ context.Context, runID string) (bool, error) {
+	if q.existsErr != nil {
+		return false, q.existsErr
+	}
+	return q.holds[runID], nil
 }
 
 func (q *fakeQueue) Enqueue(_ context.Context, run Queued) error {
@@ -52,11 +81,26 @@ func (q *fakeQueue) Enqueue(_ context.Context, run Queued) error {
 	return nil
 }
 
-func (q *fakeQueue) Claim(context.Context, time.Time) (Claim, bool, error) {
-	if q.claimErr != nil {
-		return Claim{}, false, q.claimErr
+func (q *fakeQueue) Candidates(context.Context) ([]Candidate, error) {
+	if q.candidatesErr != nil {
+		return nil, q.candidatesErr
 	}
-	return q.claim, q.claimed, nil
+	return q.candidates, nil
+}
+
+func (q *fakeQueue) TryClaim(_ context.Context, runID string, _ time.Time, cfg BudgetConfig, res Reservation) (bool, string, error) {
+	if q.tryClaimErr != nil {
+		return false, "", q.tryClaimErr
+	}
+	q.tryClaims = append(q.tryClaims, tryClaimCall{runID: runID, cfg: cfg, res: res})
+	if binding, ok := q.bindings[runID]; ok {
+		return false, binding, nil
+	}
+	if q.unavailable[runID] {
+		return false, "", nil
+	}
+	q.claimed = append(q.claimed, runID)
+	return true, "", nil
 }
 
 func (q *fakeQueue) Release(_ context.Context, runID string, _ time.Time) error {
@@ -89,17 +133,53 @@ func (w *fakeWorkflow) Dispatch(_ context.Context, c Claim) error {
 	return nil
 }
 
+// fakeEstimator reports the estimate configured for each size, defaulting to
+// a zero estimate for a size it holds none for.
+type fakeEstimator struct {
+	bySize map[string]Estimate
+	err    error
+}
+
+func (e fakeEstimator) Estimate(_ context.Context, size string) (Estimate, error) {
+	if e.err != nil {
+		return Estimate{}, e.err
+	}
+	return e.bySize[size], nil
+}
+
+// fakeVisibility reports the visibility configured for each repository,
+// defaulting to public for one it holds none for. calls counts every
+// invocation, through a pointer so it survives the struct being copied into
+// Deps by value — a test asserting admission never reached this check reads
+// it directly rather than inferring it from Poll's outcome.
+type fakeVisibility struct {
+	private map[string]bool
+	err     error
+	calls   *int
+}
+
+func (v fakeVisibility) Private(_ context.Context, repo string) (bool, error) {
+	if v.calls != nil {
+		*v.calls++
+	}
+	if v.err != nil {
+		return false, v.err
+	}
+	return v.private[repo], nil
+}
+
 func pollDeps(source Source, q *fakeQueue, w *fakeWorkflow) Deps {
 	return Deps{
 		Source: source, Queue: q, Workflow: w,
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Now:    func() time.Time { return pollAt },
+		Estimator:  fakeEstimator{},
+		Visibility: fakeVisibility{},
+		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Now:        func() time.Time { return pollAt },
 	}
 }
 
 func TestPollAdmitsWhatItCanAndRefusesWhatItCannot(t *testing.T) {
-	claim := Claim{RunID: "FRG-18", Repo: "octo/scratch", Priority: 2}
-	q := &fakeQueue{claim: claim, claimed: true}
+	q := &fakeQueue{candidates: []Candidate{{RunID: "FRG-18", Repo: "octo/scratch", Size: "M", Priority: 2}}}
 	w := &fakeWorkflow{}
 	res, err := Poll(context.Background(), pollDeps(fakeSource{issues: []Issue{
 		admitted("size:M", "repo:octo/scratch"),
@@ -118,21 +198,60 @@ func TestPollAdmitsWhatItCanAndRefusesWhatItCannot(t *testing.T) {
 	if len(q.queued) != 1 || q.queued[0].Repo != "octo/scratch" || !q.queued[0].At.Equal(pollAt) {
 		t.Fatalf("queued = %+v", q.queued)
 	}
-	if res.Dispatched != "FRG-18" || !slices.Equal(w.claims, []Claim{claim}) {
+	if res.Dispatched != "FRG-18" || !slices.Equal(w.claims, []Claim{{RunID: "FRG-18", Repo: "octo/scratch", Priority: 2}}) {
 		t.Fatalf("dispatched %q, %+v", res.Dispatched, w.claims)
 	}
 }
 
 func TestPollLeavesATicketTheQueueAlreadyHolds(t *testing.T) {
 	q := &fakeQueue{holds: map[string]bool{"FRG-18": true}}
-	res, err := Poll(context.Background(), pollDeps(fakeSource{issues: []Issue{
+	deps := pollDeps(fakeSource{issues: []Issue{
 		admitted("size:M", "repo:octo/scratch"),
-	}}, q, &fakeWorkflow{}), buildConfig)
+	}}, q, &fakeWorkflow{})
+	calls := 0
+	deps.Visibility = fakeVisibility{calls: &calls}
+	res, err := Poll(context.Background(), deps, buildConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(res.Enqueued) != 0 || len(q.queued) != 0 || len(q.rejected) != 0 {
 		t.Fatalf("result %+v, queue %+v", res, q)
+	}
+	// The regression this guards: Exists must short-circuit BEFORE the
+	// visibility check, not merely tolerate the check's own failure — those
+	// are two different fixes and this one isolates the first.
+	if calls != 0 {
+		t.Fatalf("visibility checked %d times, want the already-queued ticket to skip it entirely", calls)
+	}
+}
+
+func TestPollFailsWhenExistsCannotBeRead(t *testing.T) {
+	q := &fakeQueue{existsErr: errFirestore}
+	deps := pollDeps(fakeSource{issues: []Issue{admitted("size:M", "repo:octo/scratch")}}, q, &fakeWorkflow{})
+	if _, err := Poll(context.Background(), deps, buildConfig); !errors.Is(err, errFirestore) {
+		t.Fatalf("err = %v, want the existence check's failure", err)
+	}
+}
+
+// TestPollSkipsATicketWhoseVisibilityCannotBeRead is the regression test for
+// the bug a mutation test caught: a transient failure checking one NEW
+// ticket's repository visibility must not withhold every other delegated
+// ticket's admission, or the dispatch that follows it — the ticket is simply
+// not enqueued yet, and Delegated returns it again next poll.
+func TestPollSkipsATicketWhoseVisibilityCannotBeRead(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{{RunID: "FRG-9", Repo: "octo/ready"}}}
+	w := &fakeWorkflow{}
+	deps := pollDeps(fakeSource{issues: []Issue{admitted("size:M", "repo:octo/scratch")}}, q, w)
+	deps.Visibility = fakeVisibility{err: errFirestore}
+	res, err := Poll(context.Background(), deps, buildConfig)
+	if err != nil {
+		t.Fatalf("err = %v, want the poll to continue past the failed check", err)
+	}
+	if len(res.Enqueued) != 0 || len(q.queued) != 0 {
+		t.Fatalf("queued = %+v, want the ticket left unqueued for a later poll", q.queued)
+	}
+	if res.Dispatched != "FRG-9" {
+		t.Fatalf("dispatched = %q, want the ready candidate dispatched despite the earlier failure", res.Dispatched)
 	}
 }
 
@@ -149,7 +268,7 @@ func TestPollWithNothingQueuedDispatchesNothing(t *testing.T) {
 
 func TestPollReturnsAClaimedRunWhoseDispatchFailed(t *testing.T) {
 	dispatchErr := errors.New("github is unreachable")
-	q := &fakeQueue{claim: Claim{RunID: "FRG-18", Repo: "octo/scratch", Priority: 1}, claimed: true}
+	q := &fakeQueue{candidates: []Candidate{{RunID: "FRG-18", Repo: "octo/scratch", Priority: 1}}}
 	res, err := Poll(context.Background(), pollDeps(fakeSource{}, q,
 		&fakeWorkflow{err: dispatchErr}), buildConfig)
 	if !errors.Is(err, dispatchErr) {
@@ -165,11 +284,100 @@ func TestPollReturnsAClaimedRunWhoseDispatchFailed(t *testing.T) {
 
 func TestPollReportsAFailedReleaseBesideTheDispatchThatCausedIt(t *testing.T) {
 	dispatchErr, releaseErr := errors.New("github is unreachable"), errors.New("firestore is unreachable")
-	q := &fakeQueue{claim: Claim{RunID: "FRG-18"}, claimed: true, releaseErr: releaseErr}
+	q := &fakeQueue{candidates: []Candidate{{RunID: "FRG-18"}}, releaseErr: releaseErr}
 	_, err := Poll(context.Background(), pollDeps(fakeSource{}, q,
 		&fakeWorkflow{err: dispatchErr}), buildConfig)
 	if !errors.Is(err, dispatchErr) || !errors.Is(err, releaseErr) {
 		t.Fatalf("err = %v, want both the dispatch and the release failure", err)
+	}
+}
+
+func TestPollDefersACandidateTheBudgetWouldBreachAndClaimsTheNext(t *testing.T) {
+	q := &fakeQueue{
+		candidates: []Candidate{
+			{RunID: "FRG-18", Repo: "octo/scratch", Size: "L", Priority: 1},
+			{RunID: "FRG-19", Repo: "octo/scratch", Size: "S", Priority: 2},
+		},
+		bindings: map[string]string{"FRG-18": CeilingCash},
+	}
+	w := &fakeWorkflow{}
+	res, err := Poll(context.Background(), pollDeps(fakeSource{}, q, w), buildConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(q.claimed, []string{"FRG-19"}) || res.Dispatched != "FRG-19" {
+		t.Fatalf("claimed %v, dispatched %q", q.claimed, res.Dispatched)
+	}
+	if len(res.Deferrals) != 1 || res.Deferrals[0].RunID != "FRG-18" || res.Deferrals[0].Ceiling != CeilingCash {
+		t.Fatalf("deferrals = %+v", res.Deferrals)
+	}
+}
+
+func TestPollDispatchesNothingWhenEveryCandidateBreachesItsCeiling(t *testing.T) {
+	q := &fakeQueue{
+		candidates: []Candidate{{RunID: "FRG-18", Priority: 1}, {RunID: "FRG-19", Priority: 2}},
+		bindings:   map[string]string{"FRG-18": CeilingCash, "FRG-19": "5h"},
+	}
+	res, err := Poll(context.Background(), pollDeps(fakeSource{}, q, &fakeWorkflow{}), buildConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Dispatched != "" {
+		t.Fatalf("dispatched %q, want nothing", res.Dispatched)
+	}
+	if got := deferredCeilings(res.Deferrals); !slices.Equal(got, []string{CeilingCash, "5h"}) {
+		t.Fatalf("deferrals named %v", got)
+	}
+}
+
+func TestPollSkipsACandidateAnotherPollAlreadyClaimedWithoutDeferringIt(t *testing.T) {
+	q := &fakeQueue{
+		candidates:  []Candidate{{RunID: "FRG-18", Priority: 1}, {RunID: "FRG-19", Priority: 2}},
+		unavailable: map[string]bool{"FRG-18": true},
+	}
+	res, err := Poll(context.Background(), pollDeps(fakeSource{}, q, &fakeWorkflow{}), buildConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Deferrals) != 0 {
+		t.Fatalf("deferrals = %+v, want none for a row another poll already took", res.Deferrals)
+	}
+	if res.Dispatched != "FRG-19" {
+		t.Fatalf("dispatched %q, want FRG-19", res.Dispatched)
+	}
+}
+
+func TestPollBuildsTheReservationFromTheEstimateAndVisibility(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{
+		{RunID: "FRG-18", Repo: "octo/private", Size: "L", Private: true},
+		{RunID: "FRG-19", Repo: "octo/public", Size: "S", Private: false},
+	}}
+	deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	deps.Estimator = fakeEstimator{bySize: map[string]Estimate{
+		"L": {ProviderCost: 5 * money.Dollar, Minutes: 40},
+		"S": {ProviderCost: money.Dollar, Minutes: 10},
+	}}
+	if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.tryClaims) != 1 {
+		t.Fatalf("TryClaim called %d times, want 1 (it stopped at the first claim)", len(q.tryClaims))
+	}
+	got := q.tryClaims[0]
+	if got.runID != "FRG-18" || got.res != (Reservation{ProviderCost: 5 * money.Dollar, RunnerMinutes: 40}) {
+		t.Fatalf("reservation = %+v, want the private target's estimated minutes counted", got)
+	}
+}
+
+func TestPollZeroesRunnerMinutesForAPublicTarget(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{{RunID: "FRG-18", Repo: "octo/public", Size: "S", Private: false}}}
+	deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	deps.Estimator = fakeEstimator{bySize: map[string]Estimate{"S": {ProviderCost: money.Dollar, Minutes: 40}}}
+	if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
+		t.Fatal(err)
+	}
+	if got := q.tryClaims[0].res; got.RunnerMinutes != 0 {
+		t.Fatalf("reservation = %+v, want a public target's runner minutes zeroed", got)
 	}
 }
 
@@ -179,8 +387,9 @@ func TestPollFailsOnTheStore(t *testing.T) {
 		source fakeSource
 		issues []Issue
 	}{
-		"the source cannot be read":   {queue: &fakeQueue{}, source: fakeSource{err: errFirestore}},
-		"the queue cannot be claimed": {queue: &fakeQueue{claimErr: errFirestore}},
+		"the source cannot be read":     {queue: &fakeQueue{}, source: fakeSource{err: errFirestore}},
+		"the candidates cannot be read": {queue: &fakeQueue{candidatesErr: errFirestore}},
+		"a candidate cannot be claimed": {queue: &fakeQueue{candidates: []Candidate{{RunID: "FRG-18"}}, tryClaimErr: errFirestore}},
 		"a run cannot be queued": {queue: &fakeQueue{enqueueErr: errFirestore},
 			issues: []Issue{admitted("size:M", "repo:octo/scratch")}},
 		"a refusal cannot be recorded": {queue: &fakeQueue{rejectErr: errFirestore},
@@ -197,10 +406,39 @@ func TestPollFailsOnTheStore(t *testing.T) {
 	}
 }
 
+func TestPollFailsWhenTheEstimatorFails(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{{RunID: "FRG-18"}}}
+	deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	deps.Estimator = fakeEstimator{err: errFirestore}
+	if _, err := Poll(context.Background(), deps, buildConfig); !errors.Is(err, errFirestore) {
+		t.Fatalf("err = %v, want the estimator's failure", err)
+	}
+}
+
+func TestAdmitCarriesTheRepositorysVisibilityOntoTheQueuedRun(t *testing.T) {
+	q := &fakeQueue{}
+	deps := pollDeps(fakeSource{issues: []Issue{admitted("size:M", "repo:octo/scratch")}}, q, &fakeWorkflow{})
+	deps.Visibility = fakeVisibility{private: map[string]bool{"octo/scratch": true}}
+	if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.queued) != 1 || !q.queued[0].Private {
+		t.Fatalf("queued = %+v, want Private carried from the visibility check", q.queued)
+	}
+}
+
 func reasons(rejections []Rejection) []Refusal {
 	var out []Refusal
 	for _, r := range rejections {
 		out = append(out, r.Reason)
+	}
+	return out
+}
+
+func deferredCeilings(deferrals []Deferral) []string {
+	var out []string
+	for _, d := range deferrals {
+		out = append(out, d.Ceiling)
 	}
 	return out
 }

@@ -28,6 +28,7 @@ import (
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
+	"github.com/alvintoh/forge-wingman/internal/money"
 	"github.com/alvintoh/forge-wingman/internal/store"
 )
 
@@ -47,6 +48,29 @@ const (
 	// on a hung connection until Cloud Run's own deadline.
 	requestTimeout = 30 * time.Second
 )
+
+// budgetConfig is FR-22's admission ceilings, assumed against OpenCode Go per
+// the PRD's Constraints table: its own rolling allowance windows — $12/5h,
+// $30/week, $60/month — checked INSTEAD OF the cash ceiling for provider
+// cost, since its $10/month subscription already satisfies NFR-1's $20 cash
+// cap; the cash ceiling itself, a calendar month (GitHub's own billing
+// cycle); and GitHub Actions' free 2,000 minutes/month on a private target
+// repository, hard-stopped there by default (RatePerMinute zero) since no
+// payment method is assumed configured.
+//
+// Hardcoded rather than read from the environment: NFR-3 calls every one of
+// these a configuration value, and making a nested structure like this
+// env-configurable is a deliberate scope cut for FRG-20 — see the PR's Known
+// Limitations.
+var budgetConfig = dispatcher.BudgetConfig{
+	ProviderWindows: []dispatcher.Window{
+		{Name: "opencode-go-5h", Period: 5 * time.Hour, Limit: 12 * money.Dollar},
+		{Name: "opencode-go-week", Period: 7 * 24 * time.Hour, Limit: 30 * money.Dollar},
+		{Name: "opencode-go-month", Period: 30 * 24 * time.Hour, Limit: 60 * money.Dollar},
+	},
+	Cash:   dispatcher.Window{Name: dispatcher.CeilingCash, Calendar: true, Limit: 20 * money.Dollar},
+	Runner: dispatcher.RunnerMinutes{FreeMinutes: 2000},
+}
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -143,15 +167,16 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 	}
 	defer func() { _ = fsc.Close() }()
 	client := &http.Client{Timeout: requestTimeout}
+	gh := dispatcher.GitHub{Token: githubToken, Workflow: runWorkflow, Branch: runBranch, Client: client}
 	if _, err := dispatcher.Poll(ctx, dispatcher.Deps{
-		Source: dispatcher.Linear{Token: linear, Delegate: c.delegate, Client: client},
-		Queue:  store.NewQueue(fsc),
-		Workflow: dispatcher.GitHub{
-			Token: githubToken, Workflow: runWorkflow, Branch: runBranch, Client: client,
-		},
-		Logger: logger,
-		Now:    time.Now,
-	}, dispatcher.Config{Repos: c.repos}); err != nil {
+		Source:     dispatcher.Linear{Token: linear, Delegate: c.delegate, Client: client},
+		Queue:      store.NewQueue(fsc),
+		Estimator:  store.NewEstimates(fsc),
+		Visibility: gh,
+		Workflow:   gh,
+		Logger:     logger,
+		Now:        time.Now,
+	}, dispatcher.Config{Repos: c.repos, Budget: budgetConfig}); err != nil {
 		return err
 	}
 	return nil

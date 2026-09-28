@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"slices"
 	"time"
+
+	"github.com/alvintoh/forge-wingman/internal/money"
 )
 
 // Phase is how far a run got.
@@ -31,6 +33,11 @@ const (
 	OutcomeStopped      Outcome = "stopped"
 	OutcomeAgentFailed  Outcome = "agent-failed"
 	OutcomeInfraFailure Outcome = "infra-failure"
+	// OutcomeBudgetStop is a run the provider itself stopped by exhausting an
+	// allowance mid-build (FR-22). Kept distinct from OutcomeAgentFailed so it
+	// never reads as a verification failure FR-13 would retry at a higher,
+	// more expensive tier — the one thing an exhausted allowance must not do.
+	OutcomeBudgetStop Outcome = "budget-stop"
 )
 
 // StopReason names the condition that ended a run short of a PR.
@@ -58,6 +65,9 @@ const (
 	StopRecordMissing     StopReason = "record-missing"
 	StopTicketMissing     StopReason = "ticket-missing"
 	StopIdentityMismatch  StopReason = "identity-mismatch"
+	// StopAllowanceExhausted is a provider allowance-exhaustion error surfaced
+	// mid-build, recorded as a budget stop rather than an agent failure (FR-22).
+	StopAllowanceExhausted StopReason = "allowance-exhausted"
 )
 
 // gates are the checks run.yml's check job runs on the branch, in order.
@@ -68,30 +78,42 @@ const gateUnnamed = "check"
 
 // Record is one run's entry in the run store.
 type Record struct {
-	RunID        string            `firestore:"run_id"`
-	TicketID     string            `firestore:"ticket_id"`
-	TicketTitle  string            `firestore:"ticket_title"`
-	TicketBody   string            `firestore:"ticket_body"`
-	Size         string            `firestore:"size"`
-	SizedBy      string            `firestore:"sized_by"`
-	Phase        Phase             `firestore:"phase"`
-	Steps        []Step            `firestore:"steps"`
-	Tokens       Usage             `firestore:"tokens"`
-	DurationsMS  map[string]int64  `firestore:"durations_ms"`
-	EditedFiles  []string          `firestore:"edited_files"`
-	DiffLines    DiffLines         `firestore:"diff_lines"`
-	Branch       string            `firestore:"branch"`
-	BuildOutcome Outcome           `firestore:"build_outcome"`
-	Outcome      Outcome           `firestore:"outcome"`
-	StopReason   StopReason        `firestore:"stop_reason"`
-	StopDetail   string            `firestore:"stop_detail"`
-	FailedGate   string            `firestore:"failed_gate"`
-	UsageWarning string            `firestore:"usage_warning"`
-	RuleStackSHA string            `firestore:"rule_stack_sha"`
-	PRURL        string            `firestore:"pr_url"`
-	JobResults   map[string]string `firestore:"job_results"`
-	StartedAt    time.Time         `firestore:"started_at"`
-	UpdatedAt    time.Time         `firestore:"updated_at"`
+	RunID       string `firestore:"run_id"`
+	TicketID    string `firestore:"ticket_id"`
+	TicketTitle string `firestore:"ticket_title"`
+	TicketBody  string `firestore:"ticket_body"`
+	Size        string `firestore:"size"`
+	SizedBy     string `firestore:"sized_by"`
+	// Private is whether the run's target repository is private, resolved
+	// once at admission and never re-queried (FR-22, NFR-1): its runner
+	// minutes count toward the cash ceiling; a public repository's count as
+	// zero.
+	Private bool   `firestore:"private"`
+	Phase   Phase  `firestore:"phase"`
+	Steps   []Step `firestore:"steps"`
+	Tokens  Usage  `firestore:"tokens"`
+	// SettledAt, SettledProviderCostMicros and SettledRunnerMinutes are
+	// written once, by Finalize: the run's actual cost, settled against the
+	// dispatch/ledger reservation the claim booked (adr/0003). Zero until
+	// then; runner minutes are zero for a public target.
+	SettledAt                 time.Time         `firestore:"settled_at"`
+	SettledProviderCostMicros money.Micros      `firestore:"settled_provider_cost_micros"`
+	SettledRunnerMinutes      int64             `firestore:"settled_runner_minutes"`
+	DurationsMS               map[string]int64  `firestore:"durations_ms"`
+	EditedFiles               []string          `firestore:"edited_files"`
+	DiffLines                 DiffLines         `firestore:"diff_lines"`
+	Branch                    string            `firestore:"branch"`
+	BuildOutcome              Outcome           `firestore:"build_outcome"`
+	Outcome                   Outcome           `firestore:"outcome"`
+	StopReason                StopReason        `firestore:"stop_reason"`
+	StopDetail                string            `firestore:"stop_detail"`
+	FailedGate                string            `firestore:"failed_gate"`
+	UsageWarning              string            `firestore:"usage_warning"`
+	RuleStackSHA              string            `firestore:"rule_stack_sha"`
+	PRURL                     string            `firestore:"pr_url"`
+	JobResults                map[string]string `firestore:"job_results"`
+	StartedAt                 time.Time         `firestore:"started_at"`
+	UpdatedAt                 time.Time         `firestore:"updated_at"`
 }
 
 // DiffLines is the size of the branch's diff against its base.
@@ -159,6 +181,36 @@ type ObjectCreator interface {
 	CreateObject(ctx context.Context, name string, r io.Reader) error
 }
 
+// Ledger settles a run's dispatch/ledger reservation once its actual cost is
+// known, dropping its entry from the in-flight total FR-22 admission reads
+// (adr/0003). Settle is idempotent: a run holding no reservation settles as a
+// no-op, so a record job that runs more than once for the same run settles it
+// exactly once.
+type Ledger interface {
+	Settle(ctx context.Context, runID string) error
+}
+
+// msPerMinute is how many milliseconds GitHub Actions bills as one minute.
+const msPerMinute = 60_000
+
+// BillableMinutes approximates a run's own GitHub Actions minutes from its
+// timed phases (projection, worktree, build, commit, pr), rounding up since
+// GitHub bills whole minutes. The true billed figure also includes checkout
+// and job setup this run does not time, and is only knowable from GitHub's
+// own API once the whole workflow has finished — which is after the record
+// job itself runs — so this is a deliberate estimate of it (FR-22), not the
+// billed truth.
+func BillableMinutes(durationsMS map[string]int64) int64 {
+	var totalMS int64
+	for _, ms := range durationsMS {
+		totalMS += ms
+	}
+	if totalMS <= 0 {
+		return 0
+	}
+	return (totalMS + msPerMinute - 1) / msPerMinute
+}
+
 // NewRecord is the record the dispatcher starts a run with: the ticket as read
 // from Linear and nothing derived from a build yet.
 func NewRecord(id string, t Ticket, now time.Time) Record {
@@ -200,7 +252,11 @@ type FinalizeInput struct {
 // identity mismatch is recorded as the stop ahead of anything else, then a missing
 // record or ticket; a missing, invalid or unreadable summary as an infra failure.
 // Running it again with a later result replaces the earlier derivation.
-func Finalize(ctx context.Context, store RecordStore, in FinalizeInput, now time.Time) (Record, error) {
+//
+// Every path through Finalize writes a terminal outcome, so every call
+// settles the run's ledger reservation to its actual cost (adr/0003) — even a
+// repeated call for the same run, since Settle is idempotent.
+func Finalize(ctx context.Context, store RecordStore, ledger Ledger, in FinalizeInput, now time.Time) (Record, error) {
 	existing, err := ReadRun(ctx, store, in.RunID)
 	var stopped *StopError
 	if err != nil && !errors.As(err, &stopped) {
@@ -212,6 +268,7 @@ func Finalize(ctx context.Context, store RecordStore, in FinalizeInput, now time
 		started = now
 	}
 	rec := NewRecord(in.RunID, t, started)
+	rec.Private = existing.Private
 	identityErr := in.Identity.CheckAccount()
 	sum, err := ParseSummary(in.Summary, in.AttemptID, t, now)
 	switch {
@@ -249,8 +306,23 @@ func Finalize(ctx context.Context, store RecordStore, in FinalizeInput, now time
 		rec.DurationsMS[string(PhasePR)] = in.PRDuration.Milliseconds()
 	}
 	rec.UpdatedAt = now
+	rec.SettledAt = now
+	rec.SettledProviderCostMicros = money.FromUSD(rec.Tokens.Cost)
+	if rec.Private {
+		rec.SettledRunnerMinutes = BillableMinutes(rec.DurationsMS)
+	}
 	if err := store.PutRecord(ctx, in.RunID, rec); err != nil {
 		return rec, fmt.Errorf("writing record %s: %w", in.RunID, err)
+	}
+	// The record write and the ledger settle are two separate Firestore
+	// writes, not one transaction: if this fails after the record above
+	// already landed, the run stays double-counted (both reserved and
+	// settled) against every budget ceiling until it settles. Both writes
+	// are idempotent, so rerunning this job retries the settle safely —
+	// state that explicitly, since this failure otherwise reads as an
+	// ordinary infra error with no obvious fix.
+	if err := ledger.Settle(ctx, in.RunID); err != nil {
+		return rec, fmt.Errorf("settling run %s (rerun this job to retry — PutRecord and Settle are both idempotent): %w", in.RunID, err)
 	}
 	return rec, nil
 }
