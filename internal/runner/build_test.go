@@ -64,23 +64,40 @@ var testTicket = Ticket{ID: "ABC-12", Title: "feat(x): add a file", Size: "S", S
 var testIdentity = Identity{Account: "octo", Owner: "octo"}
 
 type fakeAgent struct {
-	calls  int
-	prompt string
-	edit   func(dir string) error
-	events string
-	stderr string
-	err    error
+	calls   int
+	prompt  string
+	prompts []string
+	// sessions records the session id every call received, in order — the
+	// pre-PR loop's check-rebuild and fix rounds must continue the same one.
+	sessions []string
+	// deadlines records the deadline of the context every call received, in
+	// order — empty (the zero Time) for a call with no deadline.
+	deadlines []time.Time
+	edit      func(dir string) error
+	events    string
+	// eventsFn, when set, overrides events per call (its 1-based call number).
+	eventsFn func(call int) string
+	stderr   string
+	err      error
 }
 
-func (a *fakeAgent) Run(_ context.Context, dir, prompt string, stdout, stderr io.Writer) error {
+func (a *fakeAgent) Run(ctx context.Context, dir, session, prompt string, stdout, stderr io.Writer) error {
 	a.calls++
 	a.prompt = prompt
+	a.prompts = append(a.prompts, prompt)
+	a.sessions = append(a.sessions, session)
+	deadline, _ := ctx.Deadline()
+	a.deadlines = append(a.deadlines, deadline)
 	if a.edit != nil {
 		if err := a.edit(dir); err != nil {
 			return err
 		}
 	}
-	if _, err := io.WriteString(stdout, a.events); err != nil {
+	events := a.events
+	if a.eventsFn != nil {
+		events = a.eventsFn(a.calls)
+	}
+	if _, err := io.WriteString(stdout, events); err != nil {
 		return err
 	}
 	if a.stderr != "" {
@@ -89,6 +106,12 @@ func (a *fakeAgent) Run(_ context.Context, dir, prompt string, stdout, stderr io
 		}
 	}
 	return a.err
+}
+
+// reviewEvent is one opencode text event carrying the review agent's final
+// message: a review-findings block naming findings, empty for a clean review.
+func reviewEvent(findings string) string {
+	return `{"type":"text","part":{"type":"text","text":` + strconv.Quote("```review-findings\n"+findings+"\n```") + `}}` + "\n"
 }
 
 // reports holds every summary a build reported; a build must report exactly one.
@@ -106,12 +129,18 @@ func (r *reports) last(t *testing.T) Summary {
 	return s
 }
 
+// alwaysPassChecks is the Checks fake most tests use: RunChecks's own
+// behavior is checks_test.go's concern, not this file's.
+func alwaysPassChecks(context.Context, string) (string, string, error) { return "", "", nil }
+
 func testDeps(projections fakeObjects, agent *fakeAgent) (BuildDeps, fakeObjects, *reports) {
 	completions, reported := fakeObjects{}, &reports{}
 	return BuildDeps{
 		Projections: projections,
 		Completions: completions,
 		Agent:       agent,
+		ReviewAgent: &fakeAgent{events: reviewEvent("")},
+		Checks:      alwaysPassChecks,
 		Report: func(s Summary) error {
 			*reported = append(*reported, s)
 			return nil
@@ -123,13 +152,14 @@ func testDeps(projections fakeObjects, agent *fakeAgent) (BuildDeps, fakeObjects
 
 func testConfig(t *testing.T, repo string) BuildConfig {
 	return BuildConfig{
-		AttemptID: "42-1",
-		Repo:      repo,
-		TempDir:   t.TempDir(),
-		Pointer:   DefaultPointer,
-		Model:     "p/m",
-		Identity:  testIdentity,
-		Ticket:    testTicket,
+		AttemptID:   "42-1",
+		Repo:        repo,
+		TempDir:     t.TempDir(),
+		Pointer:     DefaultPointer,
+		Model:       "p/m",
+		ReviewModel: "p/r",
+		Identity:    testIdentity,
+		Ticket:      testTicket,
 	}
 }
 
@@ -207,8 +237,11 @@ func TestBuildCommitsAndBundlesTheAgentsEdits(t *testing.T) {
 	if rec.DiffLines.Added == 0 {
 		t.Fatalf("diff lines = %+v, want the added file counted", rec.DiffLines)
 	}
-	if len(rec.Steps) != 1 {
-		t.Fatalf("steps = %+v, want exactly one", rec.Steps)
+	if len(rec.Steps) != 2 {
+		t.Fatalf("steps = %+v, want the build round then the review pass", rec.Steps)
+	}
+	if !rec.Ready {
+		t.Fatalf("ready = %v, want true: checks passed and the review found nothing", rec.Ready)
 	}
 	step := rec.Steps[0]
 	if step.Tokens.Input != 10 || step.Tokens.CacheRead != 90 || step.Model != "p/m" || step.Phase != PhaseBuild || step.Round != 1 {
@@ -340,8 +373,8 @@ func TestBuildRunsThePlanPhaseForAnMOrLTicket(t *testing.T) {
 	for _, st := range rec.Steps {
 		phases = append(phases, st.Phase)
 	}
-	if !slices.Equal(phases, []Phase{PhasePlan, PhaseBuild}) {
-		t.Fatalf("steps = %v, want the plan phase then the build phase", phases)
+	if !slices.Equal(phases, []Phase{PhasePlan, PhaseBuild, PhaseReview}) {
+		t.Fatalf("steps = %v, want the plan phase, the build phase, then the review pass", phases)
 	}
 }
 
@@ -476,6 +509,335 @@ func TestBuildStopsOnAnInvalidModel(t *testing.T) {
 	}
 }
 
+func TestBuildStopsWhenTheReviewModelIsInvalid(t *testing.T) {
+	for name, reviewModel := range map[string]string{
+		"malformed":           "not a model",
+		"same as build model": "p/m",
+	} {
+		t.Run(name, func(t *testing.T) {
+			agent := &fakeAgent{}
+			deps, _, reported := testDeps(validObjects(), agent)
+			c := testConfig(t, initRepo(t))
+			c.ReviewModel = reviewModel
+			if _, err := Build(context.Background(), deps, c); err == nil {
+				t.Fatal("Build accepted the review model")
+			}
+			if agent.calls != 0 || reported.last(t).StopReason != StopModelInvalid {
+				t.Fatalf("calls %d, reason %s", agent.calls, reported.last(t).StopReason)
+			}
+		})
+	}
+}
+
+func edit(name, content string) func(dir string) error {
+	return func(dir string) error {
+		return os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600)
+	}
+}
+
+func TestPrePRLoopOpensReadyWhenChecksAndReviewPassFirstTry(t *testing.T) {
+	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
+	deps, _, reported := testDeps(validObjects(), agent)
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 1 {
+		t.Fatalf("build agent ran %d times, want 1", agent.calls)
+	}
+	rec := reported.last(t)
+	if !rec.Ready || rec.LoopDetail != "" {
+		t.Fatalf("ready = %v, detail = %q, want ready with no detail", rec.Ready, rec.LoopDetail)
+	}
+	var phases []Phase
+	for _, st := range rec.Steps {
+		phases = append(phases, st.Phase)
+	}
+	if !slices.Equal(phases, []Phase{PhaseBuild, PhaseReview}) {
+		t.Fatalf("steps = %v, want the build round then the review pass", phases)
+	}
+}
+
+func TestPrePRLoopRebuildsOnceOnAFailingCheckThenPasses(t *testing.T) {
+	agent := &fakeAgent{
+		edit:   edit("version.go", "package x\n"),
+		events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{"input":1}}}` + "\n",
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	calls := 0
+	deps.Checks = func(context.Context, string) (string, string, error) {
+		calls++
+		if calls == 1 {
+			return checkVet, "vet failed: bad format", nil
+		}
+		return "", "", nil
+	}
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 2 {
+		t.Fatalf("build agent ran %d times, want 2 (initial attempt + one rebuild)", agent.calls)
+	}
+	if agent.sessions[1] != "ses_1" {
+		t.Fatalf("rebuild session = %q, want the initial round's session continued", agent.sessions[1])
+	}
+	if !strings.Contains(agent.prompts[1], checkVet) || !strings.Contains(agent.prompts[1], "bad format") {
+		t.Fatalf("rebuild prompt = %q, want it to name the failing gate and its output", agent.prompts[1])
+	}
+	rec := reported.last(t)
+	if !rec.Ready {
+		t.Fatal("ready = false, want true: checks eventually passed and the review found nothing")
+	}
+	if rec.Steps[1].Phase != PhaseBuild || rec.Steps[1].Round != 2 || rec.Steps[1].Detail != checkVet {
+		t.Fatalf("rebuild step = %+v", rec.Steps[1])
+	}
+}
+
+func TestPrePRLoopGivesUpAfterThreeRoundsStillFailing(t *testing.T) {
+	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
+	deps, _, reported := testDeps(validObjects(), agent)
+	deps.Checks = func(context.Context, string) (string, string, error) {
+		return checkTest, "still failing", nil
+	}
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != checkLoopMaxRounds {
+		t.Fatalf("build agent ran %d times, want %d", agent.calls, checkLoopMaxRounds)
+	}
+	rec := reported.last(t)
+	if rec.Ready {
+		t.Fatal("ready = true, want false: the checks never passed")
+	}
+	if !strings.Contains(rec.LoopDetail, checkTest) || !strings.Contains(rec.LoopDetail, "still failing") {
+		t.Fatalf("loop detail = %q, want it to name the failing gate", rec.LoopDetail)
+	}
+	for _, st := range rec.Steps {
+		if st.Phase == PhaseReview {
+			t.Fatalf("the review ran despite the checks never passing: %+v", rec.Steps)
+		}
+	}
+}
+
+func TestPrePRLoopReviewFindingsForceADraftAndOneFixRound(t *testing.T) {
+	const finding = "the retry never bounds its attempts"
+	agent := &fakeAgent{
+		edit:   edit("version.go", "package x\n"),
+		events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{}}}` + "\n",
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	deps.ReviewAgent = &fakeAgent{events: reviewEvent(finding)}
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 2 {
+		t.Fatalf("build agent ran %d times, want 2 (initial attempt + one fix round)", agent.calls)
+	}
+	if agent.sessions[1] != "ses_1" {
+		t.Fatalf("fix round session = %q, want the initial round's session continued", agent.sessions[1])
+	}
+	if !strings.Contains(agent.prompts[1], finding) {
+		t.Fatalf("fix round prompt = %q, want it to carry the review's finding", agent.prompts[1])
+	}
+	rec := reported.last(t)
+	if rec.Ready {
+		t.Fatal("ready = true, want false: the review left a finding open")
+	}
+	if !strings.Contains(rec.LoopDetail, finding) {
+		t.Fatalf("loop detail = %q, want it to name the finding", rec.LoopDetail)
+	}
+	if len(rec.Steps) != 3 || rec.Steps[2].Phase != PhaseBuild || rec.Steps[2].Round != 2 || rec.Steps[2].Detail != finding {
+		t.Fatalf("steps = %+v, want [build round1] [review] [build round2, the fix]", rec.Steps)
+	}
+}
+
+func TestPrePRLoopStopsWithinNFR1Budget(t *testing.T) {
+	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
+	deps, _, reported := testDeps(validObjects(), agent)
+	deps.Checks = func(context.Context, string) (string, string, error) {
+		return checkTest, "still failing", nil
+	}
+	started := time.Now()
+	first := true
+	deps.Now = func() time.Time {
+		if first {
+			first = false
+			return started
+		}
+		return started.Add(checkLoopBudget + time.Minute)
+	}
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 1 {
+		t.Fatalf("build agent ran %d times, want 1: the budget was already spent before a second round", agent.calls)
+	}
+	rec := reported.last(t)
+	if rec.Ready {
+		t.Fatal("ready = true, want false")
+	}
+	for _, st := range rec.Steps {
+		if st.Phase == PhaseReview {
+			t.Fatalf("the review ran despite the run-duration budget being spent: %+v", rec.Steps)
+		}
+	}
+}
+
+// fakeClockElapsed returns a Now func whose first call anchors sum.StartedAt
+// at started, and every later call reports elapsed further on — simulating a
+// meaningful fraction of NFR-1's window already spent by the phases that ran
+// before the call under test, regardless of how many Now calls land in between.
+func fakeClockElapsed(started time.Time, elapsed time.Duration) func() time.Time {
+	first := true
+	return func() time.Time {
+		if first {
+			first = false
+			return started
+		}
+		return started.Add(elapsed)
+	}
+}
+
+// assertBoundedByRemainingBudget asserts a call's deadline reflects what
+// remained of checkLoopBudget after elapsed had already passed, not the full
+// defaultAgentTimeout — the regression for round 1 and the plan phase both
+// having ignored NFR-1's budget entirely.
+func assertBoundedByRemainingBudget(t *testing.T, deadline time.Time, elapsed time.Duration) {
+	t.Helper()
+	if deadline.IsZero() {
+		t.Fatal("the call recorded no deadline")
+	}
+	got := time.Until(deadline)
+	want := checkLoopBudget - elapsed
+	if diff := got - want; diff < -2*time.Second || diff > 2*time.Second {
+		t.Fatalf("timeout = %s, want ~%s (the remaining NFR-1 budget, not the full %s default)", got, want, defaultAgentTimeout)
+	}
+}
+
+func TestPrePRLoopBoundsRound1ToTheRemainingNFR1Budget(t *testing.T) {
+	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
+	deps, _, _ := testDeps(validObjects(), agent)
+	elapsed := 20 * time.Minute
+	deps.Now = fakeClockElapsed(time.Now(), elapsed)
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.deadlines) == 0 {
+		t.Fatal("round 1 recorded no deadline")
+	}
+	assertBoundedByRemainingBudget(t, agent.deadlines[0], elapsed)
+}
+
+func TestBuildBoundsThePlanPhaseCallToTheRemainingNFR1Budget(t *testing.T) {
+	planAgent := &fakeAgent{events: planEvent("```plan-files\nversion.go\n```")}
+	buildAgent := &fakeAgent{edit: edit("version.go", "package x\n")}
+	objects := validObjects()
+	objects["projections/"+testSHA+"/"+planProjectionFile] = []byte("# Plan rules\n\n" + ticketSentinel)
+	deps, _, _ := testDeps(objects, buildAgent)
+	deps.PlanAgent = planAgent
+	elapsed := 20 * time.Minute
+	deps.Now = fakeClockElapsed(time.Now(), elapsed)
+	c := testConfig(t, initRepo(t))
+	c.Ticket.Size = "M"
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if len(planAgent.deadlines) == 0 {
+		t.Fatal("the plan phase recorded no deadline")
+	}
+	assertBoundedByRemainingBudget(t, planAgent.deadlines[0], elapsed)
+}
+
+// TestPrePRLoopWarnsWhenARoundPastTheFirstReportsNoSessionID is the
+// regression for a round silently losing session continuity: opencode's own
+// event stream carries no sessionID on round 2, so the *next* round would
+// start a brand-new session with none of this run's history — a real
+// occurrence must surface in the summary rather than degrade silently.
+func TestPrePRLoopWarnsWhenARoundPastTheFirstReportsNoSessionID(t *testing.T) {
+	agent := &fakeAgent{
+		edit: edit("version.go", "package x\n"),
+		eventsFn: func(call int) string {
+			if call == 1 {
+				return `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{}}}` + "\n"
+			}
+			return `{"type":"step_finish","part":{"tokens":{}}}` + "\n" // round 2: no sessionID
+		},
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	calls := 0
+	deps.Checks = func(context.Context, string) (string, string, error) {
+		calls++
+		if calls == 1 {
+			return checkVet, "vet failed", nil
+		}
+		return "", "", nil
+	}
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 2 {
+		t.Fatalf("build agent ran %d times, want 2", agent.calls)
+	}
+	rec := reported.last(t)
+	if !strings.Contains(rec.UsageWarning, "round 2") {
+		t.Fatalf("usage warning = %q, want it to note round 2's missing session id", rec.UsageWarning)
+	}
+}
+
+// TestPrePRLoopStillCommitsAsADraftWhenTheReviewPassFails is the regression
+// for Fix 1 making the review pass reachable: before it, the review always
+// saw an empty diff, so a malformed response was near-unreachable. Now that
+// it sees real content, a response with no review-findings block is a real
+// failure mode, and it must not discard the build's own edits.
+func TestPrePRLoopStillCommitsAsADraftWhenTheReviewPassFails(t *testing.T) {
+	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
+	deps, _, reported := testDeps(validObjects(), agent)
+	deps.ReviewAgent = &fakeAgent{events: `{"type":"text","part":{"type":"text","text":"looks fine, no block here"}}` + "\n"}
+	c := testConfig(t, initRepo(t))
+
+	res, err := Build(context.Background(), deps, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Changed {
+		t.Fatal("Build discarded the build's edits when the review pass failed")
+	}
+	if res.Ready {
+		t.Fatal("ready = true, want false: the review pass never produced a verdict")
+	}
+	if !strings.Contains(res.LoopDetail, "review") {
+		t.Fatalf("loop detail = %q, want it to name the review failure", res.LoopDetail)
+	}
+	if agent.calls != 1 {
+		t.Fatalf("build agent ran %d times, want 1: a review-phase failure gets no fix round", agent.calls)
+	}
+	rec := reported.last(t)
+	if rec.Outcome != OutcomeBuilt || rec.Phase != PhaseCommit {
+		t.Fatalf("record = %s at %s, want built at commit despite the review failure", rec.Outcome, rec.Phase)
+	}
+	var phases []Phase
+	for _, st := range rec.Steps {
+		phases = append(phases, st.Phase)
+	}
+	if !slices.Equal(phases, []Phase{PhaseBuild, PhaseReview}) {
+		t.Fatalf("steps = %v, want the build round then the failed review attempt", phases)
+	}
+}
+
 func TestClassifyAgentFailure(t *testing.T) {
 	dir := t.TempDir()
 	write := func(content string) string {
@@ -533,7 +895,7 @@ func TestModelPatternAcceptsProviderIDs(t *testing.T) {
 
 type blockingAgent struct{}
 
-func (blockingAgent) Run(ctx context.Context, _, _ string, stdout, _ io.Writer) error {
+func (blockingAgent) Run(ctx context.Context, _, _, _ string, stdout, _ io.Writer) error {
 	if _, err := io.WriteString(stdout, "{}\n"); err != nil {
 		return err
 	}
@@ -621,7 +983,7 @@ func TestBuildRefusesToBundleASecret(t *testing.T) {
 
 type panickingAgent struct{}
 
-func (panickingAgent) Run(context.Context, string, string, io.Writer, io.Writer) error {
+func (panickingAgent) Run(context.Context, string, string, string, io.Writer, io.Writer) error {
 	panic("boom")
 }
 
@@ -774,7 +1136,7 @@ func TestBuildReportsASummaryTheRecordJobAccepts(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.Outcome != OutcomeBuilt || got.Branch != BranchName(c.Ticket.BranchSegment(), c.AttemptID) ||
-		len(got.Steps) != 1 || got.Steps[0].Tokens.Cost != 0.5 {
+		len(got.Steps) != 2 || got.Steps[0].Tokens.Cost != 0.5 {
 		t.Fatalf("summary = %+v", got)
 	}
 }

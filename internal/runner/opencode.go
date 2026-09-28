@@ -105,6 +105,28 @@ func FinalText(r io.Reader) (string, error) {
 	return text, nil
 }
 
+// SessionID returns the session id opencode's JSON event stream reports,
+// read from the first event that carries one — every event does, including
+// an error, so this works even on a run that never completed. Empty when
+// none appeared.
+func SessionID(r io.Reader) (string, error) {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, min(64*1024, maxEventLine)), maxEventLine)
+	for sc.Scan() {
+		var e struct {
+			SessionID string `json:"sessionID"`
+		}
+		if json.Unmarshal(sc.Bytes(), &e) != nil || e.SessionID == "" {
+			continue
+		}
+		return e.SessionID, nil
+	}
+	if err := sc.Err(); err != nil {
+		return "", fmt.Errorf("reading events: %w", err)
+	}
+	return "", nil
+}
+
 // Opencode runs the opencode CLI non-interactively.
 //
 // Agent and ConfigContent together select a restricted agent profile: Agent
@@ -119,14 +141,18 @@ type Opencode struct {
 	ConfigContent string
 }
 
-// Run sends the prompt on stdin and streams the JSON events to stdout.
+// Run sends the prompt on stdin and streams the JSON events to stdout,
+// continuing session when it is non-empty rather than starting a fresh one.
 //
 // The agent runs in its own process group, terminated when ctx ends and killed
 // once Run returns.
-func (o Opencode) Run(ctx context.Context, dir, prompt string, stdout, stderr io.Writer) error {
+func (o Opencode) Run(ctx context.Context, dir, session, prompt string, stdout, stderr io.Writer) error {
 	args := []string{"run", "--format", "json", "--auto", "-m", o.Model, "--dir", dir}
 	if o.Agent != "" {
 		args = append(args, "--agent", o.Agent)
+	}
+	if session != "" {
+		args = append(args, "-s", session)
 	}
 	cmd := exec.CommandContext(ctx, o.Bin, args...)
 	cmd.Dir = dir
@@ -152,11 +178,17 @@ func (o Opencode) Run(ctx context.Context, dir, prompt string, stdout, stderr io
 }
 
 func agentEnv(environ []string) []string {
+	return filterEnv(environ, agentEnvNames)
+}
+
+// filterEnv narrows environ to the variables named in allowed — a name in
+// allowed ending in "_" matches any variable it prefixes.
+func filterEnv(environ []string, allowed []string) []string {
 	var env []string
 	for _, kv := range environ {
 		name, _, _ := strings.Cut(kv, "=")
-		for _, allowed := range agentEnvNames {
-			if name == allowed || (strings.HasSuffix(allowed, "_") && strings.HasPrefix(name, allowed)) {
+		for _, a := range allowed {
+			if name == a || (strings.HasSuffix(a, "_") && strings.HasPrefix(name, a)) {
 				env = append(env, kv)
 				break
 			}

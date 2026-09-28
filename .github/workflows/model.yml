@@ -13,6 +13,12 @@ on:
       model:
         type: string
         required: true
+      # review_model is the pre-PR loop's review pass (FR-28), FR-14
+      # configuration: it must differ from model, so the review is never the
+      # builder checking its own work.
+      review_model:
+        type: string
+        required: true
       ticket:
         type: string
         required: true
@@ -28,6 +34,13 @@ on:
         value: ${{ jobs.build.outputs.changed }}
       summary:
         value: ${{ jobs.build.outputs.summary }}
+      # ready and loop_detail are the pre-PR loop's draft-vs-ready decision
+      # (FR-5): ready is true only once the checks passed and the review
+      # found nothing open; loop_detail names why not.
+      ready:
+        value: ${{ jobs.build.outputs.ready }}
+      loop_detail:
+        value: ${{ jobs.build.outputs.loop_detail }}
 
 permissions: {}
 
@@ -43,6 +56,8 @@ jobs:
       branch: ${{ steps.build.outputs.branch }}
       changed: ${{ steps.build.outputs.changed }}
       summary: ${{ steps.build.outputs.summary }}
+      ready: ${{ steps.build.outputs.ready }}
+      loop_detail: ${{ steps.build.outputs.loop_detail }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -54,6 +69,10 @@ jobs:
           cache: false
 
       - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
+
+      # The version is ci.yml's golangci-lint-action version, and run.yml's check
+      # job's — the pre-PR loop (FR-28) runs the same four gates in-job, first.
+      - run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
 
       - name: Install opencode
         env:
@@ -79,10 +98,11 @@ jobs:
         env:
           GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}
           MODEL: ${{ inputs.model }}
+          REVIEW_MODEL: ${{ inputs.review_model }}
           TICKET: ${{ inputs.ticket }}
           WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
-        run: '"$RUNNER_TEMP/runner" build -model "$MODEL" -ticket "$TICKET"'
+        run: '"$RUNNER_TEMP/runner" build -model "$MODEL" -review-model "$REVIEW_MODEL" -ticket "$TICKET"'
 
       # wingman.bundle here and in run.yml's check and pr jobs is bundleName in internal/runner/build.go.
       - if: steps.build.outputs.changed == 'true'
