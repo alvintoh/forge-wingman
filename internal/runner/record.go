@@ -20,8 +20,12 @@ const (
 	PhaseWorktree   Phase = "worktree"
 	PhasePlan       Phase = "plan"
 	PhaseBuild      Phase = "build"
-	PhaseCommit     Phase = "commit"
-	PhasePR         Phase = "pr"
+	// PhaseReview is FR-28's review pass, once the build's own checks pass:
+	// a model other than the builder's checks the diff against the ticket's
+	// acceptance criteria.
+	PhaseReview Phase = "review"
+	PhaseCommit Phase = "commit"
+	PhasePR     Phase = "pr"
 )
 
 // Outcome is how a run ended.
@@ -71,10 +75,18 @@ const (
 	StopAllowanceExhausted StopReason = "allowance-exhausted"
 	StopPlanInvalid        StopReason = "plan-invalid"
 	StopOutOfPlan          StopReason = "out-of-plan"
+	// StopChecksRun reports the pre-PR loop's own checks (FR-28) failing to
+	// run at all — never a gate that ran and failed, which does not stop the
+	// build; see RunChecks.
+	StopChecksRun StopReason = "checks-run"
+	// StopReviewInvalid reports a review pass (FR-28) whose final message
+	// carries no valid review-findings block.
+	StopReviewInvalid StopReason = "review-invalid"
 )
 
-// gates are the checks run.yml's check job runs on the branch, in order.
-var gates = []string{"gofmt", "vet", "golangci-lint", "test"}
+// gates are the checks run.yml's check job — and RunChecks, in-job — run on
+// the branch, in order.
+var gates = []string{checkGofmt, checkVet, checkLint, checkTest}
 
 // gateUnnamed is the failed gate of a check job that did not name one it runs.
 const gateUnnamed = "check"
@@ -99,24 +111,28 @@ type Record struct {
 	// written once, by Finalize: the run's actual cost, settled against the
 	// dispatch/ledger reservation the claim booked (adr/0003). Zero until
 	// then; runner minutes are zero for a public target.
-	SettledAt                 time.Time         `firestore:"settled_at"`
-	SettledProviderCostMicros money.Micros      `firestore:"settled_provider_cost_micros"`
-	SettledRunnerMinutes      int64             `firestore:"settled_runner_minutes"`
-	DurationsMS               map[string]int64  `firestore:"durations_ms"`
-	EditedFiles               []string          `firestore:"edited_files"`
-	DiffLines                 DiffLines         `firestore:"diff_lines"`
-	Branch                    string            `firestore:"branch"`
-	BuildOutcome              Outcome           `firestore:"build_outcome"`
-	Outcome                   Outcome           `firestore:"outcome"`
-	StopReason                StopReason        `firestore:"stop_reason"`
-	StopDetail                string            `firestore:"stop_detail"`
-	FailedGate                string            `firestore:"failed_gate"`
-	UsageWarning              string            `firestore:"usage_warning"`
-	RuleStackSHA              string            `firestore:"rule_stack_sha"`
-	PRURL                     string            `firestore:"pr_url"`
-	JobResults                map[string]string `firestore:"job_results"`
-	StartedAt                 time.Time         `firestore:"started_at"`
-	UpdatedAt                 time.Time         `firestore:"updated_at"`
+	SettledAt                 time.Time        `firestore:"settled_at"`
+	SettledProviderCostMicros money.Micros     `firestore:"settled_provider_cost_micros"`
+	SettledRunnerMinutes      int64            `firestore:"settled_runner_minutes"`
+	DurationsMS               map[string]int64 `firestore:"durations_ms"`
+	EditedFiles               []string         `firestore:"edited_files"`
+	DiffLines                 DiffLines        `firestore:"diff_lines"`
+	Branch                    string           `firestore:"branch"`
+	BuildOutcome              Outcome          `firestore:"build_outcome"`
+	Outcome                   Outcome          `firestore:"outcome"`
+	StopReason                StopReason       `firestore:"stop_reason"`
+	StopDetail                string           `firestore:"stop_detail"`
+	FailedGate                string           `firestore:"failed_gate"`
+	// Ready is FR-5's draft-vs-ready decision: true only when the pre-PR
+	// loop's checks passed and the review found nothing left open.
+	Ready        bool              `firestore:"ready"`
+	LoopDetail   string            `firestore:"loop_detail"`
+	UsageWarning string            `firestore:"usage_warning"`
+	RuleStackSHA string            `firestore:"rule_stack_sha"`
+	PRURL        string            `firestore:"pr_url"`
+	JobResults   map[string]string `firestore:"job_results"`
+	StartedAt    time.Time         `firestore:"started_at"`
+	UpdatedAt    time.Time         `firestore:"updated_at"`
 }
 
 // DiffLines is the size of the branch's diff against its base.
@@ -356,6 +372,8 @@ func (s Summary) apply(rec *Record) {
 	rec.RuleStackSHA = s.RuleStackSHA
 	rec.Branch = s.Branch
 	rec.UsageWarning = s.UsageWarning
+	rec.Ready = s.Ready
+	rec.LoopDetail = s.LoopDetail
 }
 
 // sumSteps totals every step's tokens into one run-wide Usage.

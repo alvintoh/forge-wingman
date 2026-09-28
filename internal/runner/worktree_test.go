@@ -126,6 +126,60 @@ func TestCheckSecret(t *testing.T) {
 	}
 }
 
+func TestDirty(t *testing.T) {
+	_, w := newWorktree(t)
+	dirty, err := w.Dirty(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dirty {
+		t.Fatal("a fresh worktree reports dirty")
+	}
+	writeFile(t, filepath.Join(w.Dir, "a.go"), "package a\n")
+	dirty, err = w.Dirty(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !dirty {
+		t.Fatal("an untracked file was not reported as dirty")
+	}
+}
+
+// TestDiffPendingSeesUncommittedEdits is the regression for the pre-PR
+// loop's review pass having always seen an empty diff: it ran before
+// PhaseCommit, when nothing had been committed yet, so Diff's comparison
+// against HEAD never had anything to show. DiffPending must see the edit
+// while it is still only in the working tree.
+func TestDiffPendingSeesUncommittedEdits(t *testing.T) {
+	_, w := newWorktree(t)
+	writeFile(t, filepath.Join(w.Dir, "a.go"), "package a\n")
+	diff, err := w.DiffPending(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(diff, "a.go") || !strings.Contains(diff, "package a") {
+		t.Fatalf("diff = %q, want it to carry the uncommitted edit", diff)
+	}
+}
+
+// TestDiffPendingSeesAModifiedTrackedFile covers the other half: an edit to
+// a file the branch already committed, still uncommitted itself.
+func TestDiffPendingSeesAModifiedTrackedFile(t *testing.T) {
+	_, w := newWorktree(t)
+	writeFile(t, filepath.Join(w.Dir, "a.go"), "package a\n")
+	if _, err := w.Commit(context.Background(), "t-1: add"); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(w.Dir, "a.go"), "package a\n\nvar x = 1\n")
+	diff, err := w.DiffPending(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(diff, "a.go") || !strings.Contains(diff, "var x = 1") {
+		t.Fatalf("diff = %q, want it to carry the uncommitted modification", diff)
+	}
+}
+
 func TestGitErrorKeepsStderrOutOfItsMessage(t *testing.T) {
 	_, w := newWorktree(t)
 	_, err := w.git(context.Background(), "add", "--", "no-such-file-named-by-the-agent")

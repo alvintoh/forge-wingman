@@ -24,7 +24,9 @@ var errTemplate = errors.New("pull request template lacks the ticket line, summa
 // ticket, its title as the summary, the check job's report in place of the example
 // rows, and runURL and the ticket's body, fenced, in the notes, dropping the
 // screenshots section. failedGate is empty when the check reported a pass.
-func PRBody(template string, t Ticket, failedGate, runURL string) (string, error) {
+// loopDetail is the pre-PR loop's report of why the PR opened as a draft
+// (FR-5), empty when it did not.
+func PRBody(template string, t Ticket, failedGate, runURL, loopDetail string) (string, error) {
 	lines := strings.Split(strings.ReplaceAll(template, "\r\n", "\n"), "\n")
 	var out []string
 	var section string
@@ -46,8 +48,12 @@ func PRBody(template string, t Ticket, failedGate, runURL string) (string, error
 			filled[templateTableRule] = true
 		case strings.HasPrefix(line, "| ") && filled[templateTableRule] && section == templateVerification:
 		case line == templateNotes:
-			out = append(out, line, "Built unattended by forge-wingman. Run: "+runURL, "", "The ticket as built:", "",
-				fence(t.Body), t.Body, fence(t.Body), "")
+			notes := []string{line, "Built unattended by forge-wingman. Run: " + runURL}
+			if loopDetail != "" {
+				notes = append(notes, "", "**Pre-PR loop:** kept this a draft — "+loopDetail)
+			}
+			notes = append(notes, "", "The ticket as built:", "", fence(t.Body), t.Body, fence(t.Body), "")
+			out = append(out, notes...)
 			filled[templateNotes] = true
 		default:
 			out = append(out, line)

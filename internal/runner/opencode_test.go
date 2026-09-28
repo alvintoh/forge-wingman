@@ -92,7 +92,7 @@ func TestOpencodeRunPassesPromptOnStdin(t *testing.T) {
 	prompt := strings.Repeat("rule line\n", 20000) + "## t-1\n\nlast"
 
 	var stdout, stderr strings.Builder
-	if err := (Opencode{Bin: bin, Model: "p/m"}).Run(context.Background(), dir, prompt, &stdout, &stderr); err != nil {
+	if err := (Opencode{Bin: bin, Model: "p/m"}).Run(context.Background(), dir, "", prompt, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
 	gotStdin, err := os.ReadFile(filepath.Join(dir, "stdin.txt"))
@@ -128,6 +128,57 @@ func TestOpencodeRunPassesPromptOnStdin(t *testing.T) {
 	}
 }
 
+func TestOpencodeRunPassesTheSessionToContinue(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake opencode is a shell script, which Windows cannot execute")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "opencode")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > args.txt\ncat > /dev/null\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr strings.Builder
+	if err := (Opencode{Bin: bin, Model: "p/m"}).Run(context.Background(), dir, "ses_abc", "prompt", &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	gotArgs, err := os.ReadFile(filepath.Join(dir, "args.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantArgs := "run\n--format\njson\n--auto\n-m\np/m\n--dir\n" + dir + "\n-s\nses_abc\n"
+	if string(gotArgs) != wantArgs {
+		t.Fatalf("args = %q, want %q", gotArgs, wantArgs)
+	}
+}
+
+func TestSessionID(t *testing.T) {
+	tests := []struct {
+		name   string
+		stream string
+		want   string
+	}{
+		{"no session", `{"type":"step_finish","part":{}}`, ""},
+		{"reported on an error event", `{"type":"error","sessionID":"ses_f19e","error":{}}`, "ses_f19e"},
+		{"reported on the first event and reused", strings.Join([]string{
+			`{"type":"step_start","sessionID":"ses_1"}`,
+			`{"type":"step_finish","sessionID":"ses_1"}`,
+		}, "\n"), "ses_1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := SessionID(strings.NewReader(tt.stream))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("session = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestOpencodeRunPassesTheRestrictedAgentAndItsConfig(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the fake opencode is a shell script, which Windows cannot execute")
@@ -141,7 +192,7 @@ func TestOpencodeRunPassesTheRestrictedAgentAndItsConfig(t *testing.T) {
 
 	var stdout, stderr strings.Builder
 	agent := PlanOpencode(bin, "p/m")
-	if err := agent.Run(context.Background(), dir, "prompt", &stdout, &stderr); err != nil {
+	if err := agent.Run(context.Background(), dir, "", "prompt", &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
 	gotArgs, err := os.ReadFile(filepath.Join(dir, "args.txt"))

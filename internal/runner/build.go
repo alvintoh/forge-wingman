@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -25,9 +26,10 @@ const (
 
 var modelPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*(/[A-Za-z0-9][A-Za-z0-9._:-]*)+$`)
 
-// Agent runs the build model in a directory, streaming its events to stdout.
+// Agent runs the build model in a directory, continuing session when it is
+// non-empty, and streams its events to stdout.
 type Agent interface {
-	Run(ctx context.Context, dir, prompt string, stdout, stderr io.Writer) error
+	Run(ctx context.Context, dir, session, prompt string, stdout, stderr io.Writer) error
 }
 
 // BuildDeps are the stores and the agents a build talks to, and where it reports.
@@ -39,18 +41,28 @@ type BuildDeps struct {
 	// PlanAgent runs the plan phase for an M or L ticket, restricted so it
 	// cannot edit the worktree or run shell commands.
 	PlanAgent Agent
-	Report    func(Summary) error
-	Logger    *slog.Logger
-	Now       func() time.Time
+	// ReviewAgent runs the pre-PR loop's review pass (FR-28), restricted the
+	// same way PlanAgent is.
+	ReviewAgent Agent
+	// Checks runs the repository's own quality gates for the pre-PR loop —
+	// RunChecks in production.
+	Checks CheckRunner
+	Report func(Summary) error
+	Logger *slog.Logger
+	Now    func() time.Time
 }
 
 // BuildConfig identifies one build.
 type BuildConfig struct {
-	AttemptID    string
-	Repo         string
-	TempDir      string
-	Pointer      string
-	Model        string
+	AttemptID string
+	Repo      string
+	TempDir   string
+	Pointer   string
+	Model     string
+	// ReviewModel is FR-14's configuration for the pre-PR loop's review
+	// pass (FR-28): it must differ from Model, so the review is never the
+	// builder checking its own work.
+	ReviewModel  string
 	AgentTimeout time.Duration
 	Secret       string
 	Identity     Identity
@@ -62,6 +74,11 @@ type BuildResult struct {
 	Branch     string
 	BundlePath string
 	Changed    bool
+	// Ready is FR-5's draft-vs-ready decision: true only when the pre-PR
+	// loop's checks passed and no review finding is still open. LoopDetail
+	// names why not, so the PR can say so.
+	Ready      bool
+	LoopDetail string
 }
 
 // StopError ends a build with an outcome the summary reports. Build has already
@@ -142,6 +159,12 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		if !modelPattern.MatchString(c.Model) {
 			return stopWith(OutcomeStopped, StopModelInvalid, errors.New("model is not provider/model"))
 		}
+		if !modelPattern.MatchString(c.ReviewModel) {
+			return stopWith(OutcomeStopped, StopModelInvalid, errors.New("review model is not provider/model"))
+		}
+		if c.ReviewModel == c.Model {
+			return stopWith(OutcomeStopped, StopModelInvalid, errors.New("review model must differ from the build model"))
+		}
 		p, err := FetchBuildProjection(ctx, d.Projections, c.Pointer)
 		var missing *MissingError
 		switch {
@@ -194,7 +217,8 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 			if err != nil {
 				return stopWith(OutcomeStopped, StopProjectionInvalid, err)
 			}
-			text, err := runAgent(ctx, d, c, PhasePlan, d.PlanAgent, wt.Dir, planPrompt, &sum)
+			call := agentCall{Phase: PhasePlan, Round: 1, Model: c.Model, Timeout: roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now())}
+			text, _, err := runAgent(ctx, d, c, call, d.PlanAgent, wt.Dir, planPrompt, &sum)
 			if err != nil {
 				return err
 			}
@@ -208,14 +232,41 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		}
 	}
 
+	var checksOK bool
+	var loopDetail, session string
+	var lastRound int
 	if err := timed(PhaseBuild, func() error {
-		_, err := runAgent(ctx, d, c, PhaseBuild, d.Agent, wt.Dir, prompt, &sum)
+		var err error
+		checksOK, loopDetail, session, lastRound, err = runCheckLoop(ctx, d, c, wt, &sum, prompt)
 		return err
 	}); err != nil {
 		return BuildResult{}, err
 	}
 
-	res = BuildResult{Branch: wt.Branch}
+	ready := checksOK
+	if checksOK {
+		// Unlike the check loop above, a review-phase failure never stops the
+		// build: it forces a draft naming the failure instead (FR-5).
+		_ = timed(PhaseReview, func() error {
+			var rerr error
+			ready, loopDetail, rerr = runReview(ctx, d, c, wt, &sum, session, lastRound)
+			if rerr != nil {
+				ready = false
+				loopDetail = reviewFailureDetail(rerr)
+				var s *StopError
+				reason := StopReason("")
+				if errors.As(rerr, &s) {
+					reason = s.Reason
+				}
+				d.Logger.Error("reviewFailed", "reason", string(reason), "err", truncate(detail(rerr), logErrorLimit))
+			}
+			return nil
+		})
+	}
+
+	sum.Ready = ready
+	sum.LoopDetail = truncate(loopDetail, stopDetailLimit)
+	res = BuildResult{Branch: wt.Branch, Ready: ready, LoopDetail: loopDetail}
 	if err := timed(PhaseCommit, func() error {
 		if err := wt.Verify(ctx); err != nil {
 			switch {
@@ -265,33 +316,47 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 	return res, nil
 }
 
-// runAgent runs agent under its own deadline with its events captured in a
+// agentCall is one opencode invocation's identity within a build: which
+// phase and round it belongs to, which model runs it, the session it
+// continues (empty for a fresh one), its own deadline, and — for a round the
+// check or review loop drove — what drove it (FR-6).
+type agentCall struct {
+	Phase   Phase
+	Round   int
+	Model   string
+	Session string
+	Detail  string
+	Timeout time.Duration
+}
+
+// runAgent runs agent under call's own deadline with its events captured in a
 // file, uploads them to the completions bucket, appends the round's usage to
-// the summary as a Step for phase, and returns the agent's final text.
-func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, phase Phase, agent Agent, dir, prompt string, sum *Summary) (string, error) {
-	const round = 1
+// the summary as a Step, and returns the agent's final text and the session
+// id it reports, so a caller can feed it back on a later round.
+func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, agent Agent, dir, prompt string, sum *Summary) (string, string, error) {
 	start := d.Now()
-	completions := completionsObject(c.AttemptID, phase, round)
+	completions := completionsObject(c.AttemptID, call.Phase, call.Round)
 	stderrObject := strings.TrimSuffix(completions, ".jsonl") + ".stderr.log"
-	events := filepath.Join(c.TempDir, "completions-"+c.AttemptID+"-"+string(phase)+".jsonl")
-	stderrPath := filepath.Join(c.TempDir, "opencode-"+c.AttemptID+"-"+string(phase)+".stderr")
+	roundSuffix := string(call.Phase) + "-" + strconv.Itoa(call.Round)
+	events := filepath.Join(c.TempDir, "completions-"+c.AttemptID+"-"+roundSuffix+".jsonl")
+	stderrPath := filepath.Join(c.TempDir, "opencode-"+c.AttemptID+"-"+roundSuffix+".stderr")
 	out, err := os.Create(events)
 	if err != nil {
-		return "", stopWith(OutcomeInfraFailure, StopCompletions, err)
+		return "", "", stopWith(OutcomeInfraFailure, StopCompletions, err)
 	}
 	defer func() { _ = out.Close() }()
 	errOut, err := os.Create(stderrPath)
 	if err != nil {
-		return "", stopWith(OutcomeInfraFailure, StopCompletions, err)
+		return "", "", stopWith(OutcomeInfraFailure, StopCompletions, err)
 	}
 	defer func() { _ = errOut.Close() }()
 
-	timeout := c.AgentTimeout
+	timeout := call.Timeout
 	if timeout <= 0 {
 		timeout = defaultAgentTimeout
 	}
 	agentCtx, cancel := context.WithTimeout(ctx, timeout)
-	runErr := agent.Run(agentCtx, dir, prompt, out, errOut)
+	runErr := agent.Run(agentCtx, dir, call.Session, prompt, out, errOut)
 	timedOut := errors.Is(agentCtx.Err(), context.DeadlineExceeded)
 	cancel()
 
@@ -300,17 +365,18 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, phase Phase, agen
 		f    *os.File
 	}{{completions, out}, {stderrObject, errOut}} {
 		if _, err := u.f.Seek(0, io.SeekStart); err != nil {
-			return "", stopWith(OutcomeInfraFailure, StopCompletions, err)
+			return "", "", stopWith(OutcomeInfraFailure, StopCompletions, err)
 		}
 		uctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), uploadTimeout)
 		err := d.Completions.CreateObject(uctx, u.name, u.f)
 		cancel()
 		if err != nil {
-			return "", stopWith(OutcomeInfraFailure, StopCompletions, fmt.Errorf("uploading %s: %w", u.name, err))
+			return "", "", stopWith(OutcomeInfraFailure, StopCompletions, fmt.Errorf("uploading %s: %w", u.name, err))
 		}
 	}
 
-	step := Step{Phase: phase, Round: round, Model: c.Model, CompletionsObject: completions}
+	step := Step{Phase: call.Phase, Round: call.Round, Model: call.Model, CompletionsObject: completions,
+		Detail: truncate(call.Detail, stopDetailLimit)}
 	if _, err := out.Seek(0, io.SeekStart); err != nil {
 		sum.UsageWarning = err.Error()
 	} else if usage, err := SumUsage(out); err != nil {
@@ -318,24 +384,40 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, phase Phase, agen
 	} else {
 		step.Tokens = usage
 	}
-	var text string
+	var text, sessionID string
 	if _, err := out.Seek(0, io.SeekStart); err == nil {
 		text, _ = FinalText(out)
 	}
+	if _, err := out.Seek(0, io.SeekStart); err == nil {
+		sessionID, _ = SessionID(out)
+	}
+	// A round past the first continues an earlier session (call.Session is
+	// non-empty); an empty sessionID here means opencode reported no session
+	// id at all, so the NEXT round would silently start a fresh session with
+	// none of this run's history. Round 1 legitimately starting fresh never
+	// warns.
+	if call.Round > 1 && sessionID == "" {
+		warning := fmt.Sprintf("round %d reported no session id: continuity with earlier rounds may be lost", call.Round)
+		if sum.UsageWarning == "" {
+			sum.UsageWarning = warning
+		} else {
+			sum.UsageWarning += "; " + warning
+		}
+	}
 	step.DurationMS = d.Now().Sub(start).Milliseconds()
 	sum.Steps = append(sum.Steps, step)
-	d.Logger.Info("agentFinished", "phase", string(phase), "steps", step.Tokens.Steps, "input", step.Tokens.Input,
-		"output", step.Tokens.Output, "cacheRead", step.Tokens.CacheRead, "cost", step.Tokens.Cost,
-		"usageWarning", sum.UsageWarning != "")
+	d.Logger.Info("agentFinished", "phase", string(call.Phase), "round", call.Round, "steps", step.Tokens.Steps,
+		"input", step.Tokens.Input, "output", step.Tokens.Output, "cacheRead", step.Tokens.CacheRead,
+		"cost", step.Tokens.Cost, "usageWarning", sum.UsageWarning != "")
 
 	switch {
 	case timedOut:
-		return text, stopWith(OutcomeAgentFailed, StopAgentTimeout, fmt.Errorf("agent exceeded %s", timeout))
+		return text, sessionID, stopWith(OutcomeAgentFailed, StopAgentTimeout, fmt.Errorf("agent exceeded %s", timeout))
 	case runErr != nil:
 		outcome, reason := classifyAgentFailure(stderrPath)
-		return text, stopWith(outcome, reason, runErr)
+		return text, sessionID, stopWith(outcome, reason, runErr)
 	}
-	return text, nil
+	return text, sessionID, nil
 }
 
 // allowanceMarkers are phrases assumed to appear in the agent's stderr when

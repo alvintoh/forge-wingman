@@ -20,6 +20,10 @@ on:
         description: opencode model, as provider/model
         type: string
         default: opencode/big-pickle
+      review_model:
+        description: the pre-PR loop's review model, as provider/model (FR-14) — must differ from model
+        type: string
+        default: opencode-go/glm-5.3-flash
 
 permissions: {}
 
@@ -72,6 +76,7 @@ jobs:
       id-token: write
     with:
       model: ${{ inputs.model }}
+      review_model: ${{ inputs.review_model }}
       ticket: ${{ needs.ticket.outputs.ticket }}
     secrets:
       OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
@@ -184,9 +189,11 @@ jobs:
           RUN_ID: ${{ inputs.run_id }}
           FAILED_GATE: ${{ needs.check.outputs.failed_gate || 'unfinished' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          LOOP_DETAIL: ${{ needs.model.outputs.loop_detail }}
           WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
         run: >-
           "$RUNNER_TEMP/runner" pr-meta -run-id "$RUN_ID" -failed-gate "$FAILED_GATE" -run-url "$RUN_URL"
+          -loop-detail "$LOOP_DETAIL"
 
   pr:
     needs: [model, pr-meta]
@@ -236,16 +243,23 @@ jobs:
           git -c transfer.fsckObjects=true fetch "$RUNNER_TEMP/wingman.bundle" "refs/heads/${BRANCH}:refs/heads/${BRANCH}"
           git push origin "refs/heads/${BRANCH}"
 
+      # ready is the pre-PR loop's own draft-vs-ready decision (FR-5): a fact
+      # about the branch's deterministic checks and review, not the model's
+      # own claim, so it is trustworthy here despite the model job being
+      # otherwise untrusted.
       - id: open
-        name: Open the draft PR
+        name: Open the PR
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           BRANCH: ${{ needs.model.outputs.branch }}
           TITLE: ${{ needs.pr-meta.outputs.title }}
           BODY: ${{ needs.pr-meta.outputs.body }}
+          READY: ${{ needs.model.outputs.ready }}
         run: |
           printf '%s\n' "$BODY" > "$RUNNER_TEMP/pr-body.md"
-          url=$(gh pr create --draft --base main --head "$BRANCH" --title "$TITLE" --body-file "$RUNNER_TEMP/pr-body.md")
+          draft=(--draft)
+          [[ "$READY" == "true" ]] && draft=()
+          url=$(gh pr create "${draft[@]}" --base main --head "$BRANCH" --title "$TITLE" --body-file "$RUNNER_TEMP/pr-body.md")
           echo "url=${url}" >> "$GITHUB_OUTPUT"
           echo "duration_s=$(( $(date +%s) - STARTED ))" >> "$GITHUB_OUTPUT"
 

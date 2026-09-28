@@ -153,6 +153,7 @@ func ticket(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 func build(ctx context.Context, logger *slog.Logger, e env, args []string) error {
 	fs := flag.NewFlagSet("build", flag.ContinueOnError)
 	model := fs.String("model", "", "opencode model, as provider/model")
+	reviewModel := fs.String("review-model", "", "the pre-PR loop's review model, as provider/model (FR-14)")
 	pointer := fs.String("pointer", runner.DefaultPointer, "object naming the current rule-stack sha")
 	rawTicket := fs.String("ticket", "", "the run's ticket, as the ticket subcommand wrote it")
 	if err := fs.Parse(args); err != nil {
@@ -178,26 +179,33 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 		Completions: store.NewBucket(gcs, e.project+"-completions"),
 		Agent:       runner.Opencode{Bin: "opencode", Model: *model},
 		PlanAgent:   runner.PlanOpencode("opencode", *model),
+		ReviewAgent: runner.ReviewOpencode("opencode", *reviewModel),
+		Checks:      runner.RunChecks,
 		Report:      func(s runner.Summary) error { return writeSummary(e.output, s) },
 		Logger:      logger,
 		Now:         time.Now,
 	}, runner.BuildConfig{
-		AttemptID: e.attemptID,
-		Repo:      ".",
-		TempDir:   e.tempDir,
-		Pointer:   *pointer,
-		Model:     *model,
-		Secret:    e.secret,
-		Identity:  e.identity,
-		Ticket:    t,
+		AttemptID:   e.attemptID,
+		Repo:        ".",
+		TempDir:     e.tempDir,
+		Pointer:     *pointer,
+		Model:       *model,
+		ReviewModel: *reviewModel,
+		Secret:      e.secret,
+		Identity:    e.identity,
+		Ticket:      t,
 	})
 	if err != nil {
 		return err
 	}
-	return writeOutputs(e.output, map[string]string{
+	if err := writeOutputs(e.output, map[string]string{
 		"branch":  res.Branch,
 		"changed": strconv.FormatBool(res.Changed),
-	})
+		"ready":   strconv.FormatBool(res.Ready),
+	}); err != nil {
+		return err
+	}
+	return writeMultilineOutput(e.output, "loop_detail", res.LoopDetail)
 }
 
 // prMeta writes the PR's title, body and the branch segment the pushed branch must
@@ -207,6 +215,7 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	runID := fs.String("run-id", "", "run record to read the ticket from")
 	checkReport := fs.String("failed-gate", "", "the check job's failed_gate output")
 	runURL := fs.String("run-url", "", "URL of the workflow run")
+	loopDetail := fs.String("loop-detail", "", "the pre-PR loop's report of why the PR is a draft (FR-5)")
 	template := fs.String("template", runner.DefaultPRTemplate, "pull request template to render")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -222,7 +231,7 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	if err != nil {
 		return err
 	}
-	body, err := runner.PRBody(string(tmpl), t, runner.FailedGate(*checkReport), *runURL)
+	body, err := runner.PRBody(string(tmpl), t, runner.FailedGate(*checkReport), *runURL, *loopDetail)
 	if err != nil {
 		return err
 	}

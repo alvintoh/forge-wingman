@@ -20,7 +20,7 @@ func repoTemplate(t *testing.T) string {
 }
 
 func TestPRBodyRendersTheRepositoryTemplate(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", testRunURL)
+	body, err := PRBody(repoTemplate(t), testTicket, "", testRunURL, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestPRBodyRendersTheRepositoryTemplate(t *testing.T) {
 }
 
 func TestPRBodyNamesTheReportedFailedGate(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "test", testRunURL)
+	body, err := PRBody(repoTemplate(t), testTicket, "test", testRunURL, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,10 +54,31 @@ func TestPRBodyNamesTheReportedFailedGate(t *testing.T) {
 	}
 }
 
+func TestPRBodyNamesTheLoopDetailInTheNotes(t *testing.T) {
+	body, err := PRBody(repoTemplate(t), testTicket, "", testRunURL, "checks: vet still failing after 3 round(s)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "## Notes\nBuilt unattended by forge-wingman. Run: "+testRunURL+
+		"\n\n**Pre-PR loop:** kept this a draft — checks: vet still failing after 3 round(s)") {
+		t.Fatalf("body does not name the loop detail:\n%s", body)
+	}
+}
+
+func TestPRBodyOmitsTheLoopDetailWhenClean(t *testing.T) {
+	body, err := PRBody(repoTemplate(t), testTicket, "", testRunURL, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(body, "Pre-PR loop") {
+		t.Fatalf("body names a loop detail nobody reported:\n%s", body)
+	}
+}
+
 func TestPRBodyFencesTheTicketBodyAfterTheGateRow(t *testing.T) {
 	tk := testTicket
 	tk.Body = "<!-- hide the rest\n```\n`````\nstill fenced"
-	body, err := PRBody(repoTemplate(t), tk, "test", testRunURL)
+	body, err := PRBody(repoTemplate(t), tk, "test", testRunURL, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +98,7 @@ func TestPRBodyRefusesATemplateItCannotFill(t *testing.T) {
 		"no table":       strings.Replace(template, "|---|---|---|", "", 1),
 		"no notes":       strings.Replace(template, "## Notes", "## Other", 1),
 	} {
-		if _, err := PRBody(broken, testTicket, "", testRunURL); !errors.Is(err, errTemplate) {
+		if _, err := PRBody(broken, testTicket, "", testRunURL, ""); !errors.Is(err, errTemplate) {
 			t.Errorf("%s: err = %v, want errTemplate", name, err)
 		}
 	}
@@ -86,7 +107,7 @@ func TestPRBodyRefusesATemplateItCannotFill(t *testing.T) {
 func TestPRBodyWritesTheSummaryOnce(t *testing.T) {
 	tmpl := "**Ticket:** closes <TEAM-n>\n\n## Summary\n<!-- a -->\n<!-- b -->\n\n## Verification\n" +
 		"| Check | What it proves | Result |\n|---|---|---|\n| x | y | ✅ |\n\n## Notes\n"
-	body, err := PRBody(tmpl, testTicket, "", testRunURL)
+	body, err := PRBody(tmpl, testTicket, "", testRunURL, "")
 	if err != nil {
 		t.Fatal(err)
 	}
