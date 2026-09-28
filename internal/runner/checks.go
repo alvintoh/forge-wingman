@@ -24,9 +24,12 @@ const (
 // toolchain's and golangci-lint's own needs, deliberately not
 // OPENCODE_API_KEY or the workload-identity credentials model.yml's auth
 // step exports. An allow-list, not an exclude-list, so a secret added to
-// that job later isn't carried in by default.
+// that job later isn't carried in by default. TEMP/TMP/LocalAppData are
+// Windows' equivalents of TMPDIR/GOCACHE's own fallback path, needed for
+// `make check` to run locally on Windows (see the repo's other Windows fixes).
 var checkEnvNames = []string{
-	"PATH", "HOME", "TMPDIR", "LANG", "GOROOT", "GOPATH", "GOMODCACHE", "GOCACHE", "GOTOOLCHAIN", "GOFLAGS",
+	"PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LOCALAPPDATA", "LANG",
+	"GOROOT", "GOPATH", "GOMODCACHE", "GOCACHE", "GOTOOLCHAIN", "GOFLAGS",
 	"LC_", "XDG_",
 }
 
