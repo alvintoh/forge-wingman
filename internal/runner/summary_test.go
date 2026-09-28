@@ -166,7 +166,7 @@ func TestEncodeFitsTheLimitAndStaysOnOneLine(t *testing.T) {
 func TestParseSummaryAcceptsEveryBuildEnding(t *testing.T) {
 	for e := range buildEndings {
 		s := Summary{Outcome: e.outcome, StopReason: e.reason, Phase: e.phase, StartedAt: finalizeNow}
-		if e.phase == PhasePlan || e.phase == PhaseBuild || e.phase == PhaseCommit {
+		if e.phase == PhasePlan || e.phase == PhaseBuild || e.phase == PhaseReview || e.phase == PhaseCommit {
 			s.Branch = BranchName(testTicket.BranchSegment(), "1-1")
 		}
 		agentPhase := e.phase
@@ -201,6 +201,10 @@ func TestParseSummaryRejectsEndingsABuildCannotReach(t *testing.T) {
 		{OutcomeInfraFailure, StopSetup, PhaseProjection},
 		{OutcomeInfraFailure, StopPanic, ""},
 		{OutcomeStopped, StopWorktree, PhaseWorktree},
+		// A review-phase failure no longer ends a build at PhaseReview: it
+		// forces a draft and the build proceeds to PhaseCommit instead (FR-5).
+		{OutcomeStopped, StopReviewInvalid, PhaseReview},
+		{OutcomeInfraFailure, StopChecksRun, PhaseReview},
 	} {
 		s := Summary{Outcome: e.outcome, StopReason: e.reason, Phase: e.phase, StartedAt: finalizeNow}
 		raw, err := s.Encode()

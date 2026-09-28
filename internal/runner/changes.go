@@ -63,13 +63,18 @@ func (w Worktree) Commit(ctx context.Context, message string) ([]string, error) 
 	if err != nil {
 		return nil, err
 	}
-	var files []string
-	for _, f := range bytes.Split(bytes.TrimSuffix(diff, []byte{0}), []byte{0}) {
-		if len(f) > 0 {
-			files = append(files, string(f))
+	return splitNUL(diff), nil
+}
+
+// splitNUL splits NUL-terminated git output into its non-empty entries.
+func splitNUL(out []byte) []string {
+	var entries []string
+	for _, e := range bytes.Split(bytes.TrimSuffix(out, []byte{0}), []byte{0}) {
+		if len(e) > 0 {
+			entries = append(entries, string(e))
 		}
 	}
-	return files, nil
+	return entries
 }
 
 var (
@@ -126,6 +131,46 @@ func (w Worktree) CheckSecret(ctx context.Context, secret string) error {
 		return ErrSecretInBranch
 	}
 	return nil
+}
+
+// Dirty reports whether the worktree holds any uncommitted change.
+func (w Worktree) Dirty(ctx context.Context) (bool, error) {
+	out, err := w.git(ctx, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	if err != nil {
+		return false, err
+	}
+	return len(bytes.TrimSpace(out)) > 0, nil
+}
+
+// maxReviewDiffBytes bounds how much of the branch's diff the review prompt
+// carries, since an unbounded diff would make the review call arbitrarily
+// expensive.
+const maxReviewDiffBytes = 200 << 10
+
+// DiffPending returns the branch's diff against its base including the
+// current working tree — staged and unstaged, but not yet committed —
+// truncated to maxReviewDiffBytes. Used by the pre-PR loop's review pass
+// (FR-28), which runs before PhaseCommit while HEAD has not moved yet, so a
+// diff against HEAD would always be empty.
+//
+// A new, untracked file is marked intent-to-add first: plain `git diff`
+// otherwise omits an untracked path entirely, and Commit's later `git add
+// --all` stages its real content regardless of this marker.
+func (w Worktree) DiffPending(ctx context.Context) (string, error) {
+	untracked, err := w.git(ctx, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return "", err
+	}
+	if paths := splitNUL(untracked); len(paths) > 0 {
+		if _, err := w.git(ctx, append([]string{"add", "-N", "--"}, paths...)...); err != nil {
+			return "", err
+		}
+	}
+	out, err := w.git(ctx, "diff", w.Base)
+	if err != nil {
+		return "", err
+	}
+	return truncate(string(out), maxReviewDiffBytes), nil
 }
 
 // Bundle writes the branch's commits since the base to a git bundle at path,

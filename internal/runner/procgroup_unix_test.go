@@ -36,7 +36,7 @@ func TestOpencodeRunLeavesNoChildBehind(t *testing.T) {
 	}
 	defer func() { _ = out.Close() }()
 
-	if err := (Opencode{Bin: bin, Model: "p/m"}).Run(context.Background(), dir, "x", out, out); err != nil {
+	if err := (Opencode{Bin: bin, Model: "p/m"}).Run(context.Background(), dir, "", "x", out, out); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, "child.pid"))
@@ -63,7 +63,7 @@ func TestOpencodeRunStopsAtTheDeadline(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	err := (Opencode{Bin: bin, Model: "p/m"}).Run(ctx, dir, "x", io.Discard, io.Discard)
+	err := (Opencode{Bin: bin, Model: "p/m"}).Run(ctx, dir, "", "x", io.Discard, io.Discard)
 	if err == nil {
 		t.Fatal("Run returned nil past its deadline")
 	}

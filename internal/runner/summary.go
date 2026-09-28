@@ -45,15 +45,23 @@ type Summary struct {
 	RuleStackSHA string           `json:"rule_stack_sha,omitempty"`
 	Branch       string           `json:"branch,omitempty"`
 	UsageWarning string           `json:"usage_warning,omitempty"`
-	StartedAt    time.Time        `json:"started_at"`
+	// Ready is FR-5's draft-vs-ready decision, from the pre-PR loop (FR-28):
+	// true only when the checks passed and the review found nothing open.
+	Ready      bool      `json:"ready"`
+	LoopDetail string    `json:"loop_detail,omitempty"`
+	StartedAt  time.Time `json:"started_at"`
 }
 
 // Step is one opencode invocation in a run's build, distinct from Usage.Steps,
 // which counts that invocation's own internal step_finish events.
 type Step struct {
-	Phase             Phase  `firestore:"phase" json:"phase"`
-	Round             int    `firestore:"round" json:"round"`
-	Model             string `firestore:"model" json:"model"`
+	Phase Phase  `firestore:"phase" json:"phase"`
+	Round int    `firestore:"round" json:"round"`
+	Model string `firestore:"model" json:"model"`
+	// Detail names what drove this round (FR-6): the failing gate for a
+	// check-rebuild round, or the review's findings for the fix round; empty
+	// for the initial build round and for the review round itself.
+	Detail            string `firestore:"detail" json:"detail,omitempty"`
 	Tokens            Usage  `firestore:"tokens" json:"tokens"`
 	DurationMS        int64  `firestore:"duration_ms" json:"duration_ms"`
 	CompletionsObject string `firestore:"completions_object" json:"completions_object"`
@@ -88,22 +96,26 @@ var buildEndings = func() map[ending]bool {
 		{OutcomeAgentFailed, StopAgentTimeout, PhaseBuild}:         true,
 		{OutcomeAgentFailed, StopAgentExit, PhaseBuild}:            true,
 		{OutcomeBudgetStop, StopAllowanceExhausted, PhaseBuild}:    true,
-		{OutcomeStopped, StopGitTampered, PhaseCommit}:             true,
-		{OutcomeStopped, StopHeadMoved, PhaseCommit}:               true,
-		{OutcomeInfraFailure, StopCommit, PhaseCommit}:             true,
-		{OutcomeStopped, StopSecretInBranch, PhaseCommit}:          true,
-		{OutcomeStopped, StopOutOfPlan, PhaseCommit}:               true,
-		{OutcomeNoChanges, "", PhaseCommit}:                        true,
-		{OutcomeBuilt, "", PhaseCommit}:                            true,
+		{OutcomeInfraFailure, StopChecksRun, PhaseBuild}:           true,
+		// A review-phase failure never ends a build at PhaseReview: it forces
+		// a draft and the build proceeds to PhaseCommit instead (FR-5) — only
+		// a panic mid-review, below, can end there.
+		{OutcomeStopped, StopGitTampered, PhaseCommit}:    true,
+		{OutcomeStopped, StopHeadMoved, PhaseCommit}:      true,
+		{OutcomeInfraFailure, StopCommit, PhaseCommit}:    true,
+		{OutcomeStopped, StopSecretInBranch, PhaseCommit}: true,
+		{OutcomeStopped, StopOutOfPlan, PhaseCommit}:      true,
+		{OutcomeNoChanges, "", PhaseCommit}:               true,
+		{OutcomeBuilt, "", PhaseCommit}:                   true,
 	}
-	for _, p := range []Phase{PhaseProjection, PhaseWorktree, PhasePlan, PhaseBuild, PhaseCommit} {
+	for _, p := range []Phase{PhaseProjection, PhaseWorktree, PhasePlan, PhaseBuild, PhaseReview, PhaseCommit} {
 		m[ending{OutcomeInfraFailure, StopPanic, p}] = true
 	}
 	return m
 }()
 
 var buildPhases = map[Phase]bool{
-	PhaseProjection: true, PhaseWorktree: true, PhasePlan: true, PhaseBuild: true, PhaseCommit: true,
+	PhaseProjection: true, PhaseWorktree: true, PhasePlan: true, PhaseBuild: true, PhaseReview: true, PhaseCommit: true,
 }
 
 // SetupSummary is the summary of a build that failed before it could start.
@@ -175,6 +187,7 @@ func ParseSummary(raw, attemptID string, t Ticket, now time.Time) (Summary, erro
 	}
 	s.StopDetail = truncate(s.StopDetail, stopDetailLimit)
 	s.UsageWarning = truncate(s.UsageWarning, stopDetailLimit)
+	s.LoopDetail = truncate(s.LoopDetail, stopDetailLimit)
 	s.EditedFiles = capFiles(s.EditedFiles)
 	return s, nil
 }
@@ -188,15 +201,17 @@ func (s Summary) validate(attemptID string, t Ticket, now time.Time) error {
 	// A build names its branch once the worktree exists and gains a step for
 	// whichever phase's agent ran once that agent's events are uploaded, so an
 	// ending past each point that lacks the field did not come from a build.
-	if (s.Phase == PhasePlan || s.Phase == PhaseBuild || s.Phase == PhaseCommit) && s.Branch == "" {
+	if (s.Phase == PhasePlan || s.Phase == PhaseBuild || s.Phase == PhaseReview || s.Phase == PhaseCommit) && s.Branch == "" {
 		return errors.New("an ending past the worktree names no branch")
 	}
 	agentStep := s.Phase
 	if s.Phase == PhaseCommit {
 		agentStep = PhaseBuild
 	}
-	if (s.Phase == PhaseCommit || s.Outcome == OutcomeAgentFailed || s.Outcome == OutcomeBudgetStop) && !hasStep(s.Steps, agentStep) {
-		return errors.New("an ending past the worktree names no build step")
+	if s.Phase == PhaseCommit || s.Outcome == OutcomeAgentFailed || s.Outcome == OutcomeBudgetStop {
+		if !hasStep(s.Steps, agentStep) {
+			return errors.New("an ending past the worktree names no build step")
+		}
 	}
 	for _, step := range s.Steps {
 		if err := step.validate(attemptID); err != nil {
