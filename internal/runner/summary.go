@@ -83,6 +83,7 @@ var buildEndings = func() map[ending]bool {
 		{OutcomeAgentFailed, StopAgentTimeout, PhasePlan}:          true,
 		{OutcomeAgentFailed, StopAgentExit, PhasePlan}:             true,
 		{OutcomeStopped, StopPlanInvalid, PhasePlan}:               true,
+		{OutcomeBudgetStop, StopAllowanceExhausted, PhasePlan}:     true,
 		{OutcomeInfraFailure, StopCompletions, PhaseBuild}:         true,
 		{OutcomeAgentFailed, StopAgentTimeout, PhaseBuild}:         true,
 		{OutcomeAgentFailed, StopAgentExit, PhaseBuild}:            true,
