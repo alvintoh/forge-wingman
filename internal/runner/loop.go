@@ -7,7 +7,9 @@ import (
 )
 
 // checkLoopMaxRounds is FR-28's "at most 3 rounds": the build agent's first
-// attempt plus at most two rebuilds fed the failing gate's output.
+// attempt plus at most two rebuilds fed the failing gate's output. Counts
+// rebuild PASSES, not agentCall.Round — a same-pass model substitution
+// advances Round without spending one of these three.
 const checkLoopMaxRounds = 3
 
 // checkFeedbackLimit bounds how much of a gate's output a rebuild round or
@@ -94,7 +96,7 @@ func reviewFailureDetail(err error) string {
 func runCheckLoop(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum *Summary, prompt string) (ok bool, detail, session string, round int, err error) {
 	round = 1
 	call := agentCall{Phase: PhaseBuild, Round: round, Model: c.Model, Timeout: roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now())}
-	_, session, err = runAgent(ctx, d, c, call, d.Agent, wt.Dir, prompt, sum)
+	_, session, round, err = runAgentWithFallback(ctx, d, c, call, d.Agent, wt.Dir, prompt, sum)
 	if err != nil {
 		return false, "", "", round, err
 	}
@@ -108,7 +110,7 @@ func runCheckLoop(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, 
 	}
 
 	var lastGate, lastOutput string
-	for {
+	for rebuildRound := 1; ; rebuildRound++ {
 		gate, output, cerr := d.Checks(ctx, wt.Dir)
 		if cerr != nil {
 			return false, "", session, round, stopWith(OutcomeInfraFailure, StopChecksRun, cerr)
@@ -118,13 +120,13 @@ func runCheckLoop(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, 
 		}
 		lastGate, lastOutput = gate, output
 		now := d.Now()
-		if round >= checkLoopMaxRounds || !withinBudget(sum.StartedAt, now) {
+		if rebuildRound >= checkLoopMaxRounds || !withinBudget(sum.StartedAt, now) {
 			break
 		}
 		round++
 		call := agentCall{Phase: PhaseBuild, Round: round, Model: c.Model, Session: session, Detail: gate,
 			Timeout: roundTimeout(c.AgentTimeout, sum.StartedAt, now)}
-		_, session, err = runAgent(ctx, d, c, call, d.Agent, wt.Dir, checkFeedbackPrompt(gate, output), sum)
+		_, session, round, err = runAgentWithFallback(ctx, d, c, call, d.Agent, wt.Dir, checkFeedbackPrompt(gate, output), sum)
 		if err != nil {
 			return false, "", session, round, err
 		}
@@ -151,7 +153,7 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 		return false, "", stopWith(OutcomeInfraFailure, StopChecksRun, err)
 	}
 	call := agentCall{Phase: PhaseReview, Round: 1, Model: c.ReviewModel, Timeout: roundTimeout(c.AgentTimeout, sum.StartedAt, now)}
-	text, _, err := runAgent(ctx, d, c, call, d.ReviewAgent, wt.Dir, ReviewPrompt(diff, c.Ticket), sum)
+	text, _, _, err := runAgentWithFallback(ctx, d, c, call, d.ReviewAgent, wt.Dir, ReviewPrompt(diff, c.Ticket), sum)
 	if err != nil {
 		return false, "", err
 	}
@@ -170,7 +172,7 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 	}
 	fixCall := agentCall{Phase: PhaseBuild, Round: buildRound + 1, Model: c.Model, Session: session, Detail: findings,
 		Timeout: roundTimeout(c.AgentTimeout, sum.StartedAt, now)}
-	if _, _, err := runAgent(ctx, d, c, fixCall, d.Agent, wt.Dir, fixPrompt(findings), sum); err != nil {
+	if _, _, _, err := runAgentWithFallback(ctx, d, c, fixCall, d.Agent, wt.Dir, fixPrompt(findings), sum); err != nil {
 		return false, "", err
 	}
 

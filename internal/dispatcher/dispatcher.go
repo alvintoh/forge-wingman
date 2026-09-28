@@ -62,22 +62,35 @@ type Claim struct {
 }
 
 // Config is the boundary a poll admits inside: the repositories it may
-// dispatch into, and the ceilings FR-22 checks before claiming one. The
-// agent it acts for is the Source's own, which proves the token reads as
-// that agent before any ticket is looked at.
+// dispatch into, the ceilings FR-22 checks before claiming one, and the
+// model every dispatched run starts with (run.yml's own workflow_dispatch
+// default) — read here only to name its provider for AC4's halt check, not a
+// new per-ticket configuration surface. The agent it acts for is the
+// Source's own, which proves the token reads as that agent before any
+// ticket is looked at.
 type Config struct {
 	Repos  []string
 	Budget BudgetConfig
+	Model  string
+}
+
+// ProviderHalts reports whether repeated infra stops have halted dispatch to
+// a provider (AC4), until an operator's runner enable-provider admits it
+// again (AC5).
+type ProviderHalts interface {
+	Halted(ctx context.Context, provider string) (bool, error)
 }
 
 // Deps are the tickets a poll reads, the queue it writes, the estimator and
-// repository visibility it checks a claim's budget against, the workflow it
-// dispatches, and where it reports.
+// repository visibility it checks a claim's budget against, the provider
+// halt state it checks before claiming (AC4), the workflow it dispatches,
+// and where it reports.
 type Deps struct {
 	Source     Source
 	Queue      Queue
 	Estimator  Estimator
 	Visibility RepoVisibility
+	Providers  ProviderHalts
 	Workflow   Workflow
 	Logger     *slog.Logger
 	Now        func() time.Time
@@ -240,13 +253,27 @@ func admit(ctx context.Context, d Deps, c Config, issue Issue, res *Result) erro
 
 // admitClaim walks the queue in priority order, claiming the first candidate
 // whose estimated cost fits every ceiling FR-22 checks. Each one it skips
-// over is recorded as a deferral naming the ceiling that bound it.
+// over is recorded as a deferral naming the ceiling that bound it — a halted
+// provider (AC4) checked once, ahead of the walk, since every candidate
+// starts on the same configured model until FR-13's escalation ladder gives
+// a candidate one of its own.
 func admitClaim(ctx context.Context, d Deps, c Config, res *Result) (Claim, bool, error) {
 	candidates, err := d.Queue.Candidates(ctx)
 	if err != nil {
 		return Claim{}, false, err
 	}
+	provider := runner.Provider(c.Model)
+	halted, err := d.Providers.Halted(ctx, provider)
+	if err != nil {
+		d.Logger.Info("providerHaltCheckFailed", "provider", provider, "err", err.Error())
+		halted = false
+	}
 	for _, cand := range candidates {
+		if halted {
+			d.Logger.Info("runDeferred", "run", cand.RunID, "ceiling", CeilingProviderHalted)
+			res.Deferrals = append(res.Deferrals, Deferral{RunID: cand.RunID, Ceiling: CeilingProviderHalted, At: d.Now()})
+			continue
+		}
 		est, err := d.Estimator.Estimate(ctx, cand.Size)
 		if err != nil {
 			// A failed estimate withholds only this candidate, not the whole

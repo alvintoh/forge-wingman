@@ -82,6 +82,10 @@ const (
 	// StopReviewInvalid reports a review pass (FR-28) whose final message
 	// carries no valid review-findings block.
 	StopReviewInvalid StopReason = "review-invalid"
+	// StopModelUnavailable reports every model in a starting model's
+	// availability order failing as unavailable, so dispatch counts this as
+	// an infra stop against the provider rather than an agent failure (AC3).
+	StopModelUnavailable StopReason = "model-unavailable"
 )
 
 // gates are the checks run.yml's check job — and RunChecks, in-job — run on
