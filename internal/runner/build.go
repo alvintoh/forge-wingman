@@ -26,6 +26,30 @@ const (
 
 var modelPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*(/[A-Za-z0-9][A-Za-z0-9._:-]*)+$`)
 
+// Provider is model's prefix before its first "/" — "opencode" from
+// "opencode/big-pickle" — matching modelPattern's own requirement that every
+// model contain that separator.
+func Provider(model string) string {
+	if i := strings.IndexByte(model, '/'); i >= 0 {
+		return model[:i]
+	}
+	return model
+}
+
+// DefaultModel is every dispatched run's starting model, matching run.yml's
+// own workflow_dispatch default. The single source of truth for that string —
+// cmd/dispatcher references it rather than its own literal, so it can never
+// drift out of sync with availabilityOrder's key below.
+const DefaultModel = "opencode/big-pickle"
+
+// availabilityOrder is AC1's same-provider substitution list: for a starting
+// model, the other models to retry in order once it classifies as
+// unavailable. Not a tier ladder — FR-13's escalation is unimplemented, so
+// this is one ordered list per starting model, revisited once that lands.
+var availabilityOrder = map[string][]string{
+	DefaultModel: {"opencode/deepseek-v4-flash-free", "opencode/mimo-v2.6-flash-free"},
+}
+
 // Agent runs the build model in a directory, continuing session when it is
 // non-empty, and streams its events to stdout.
 type Agent interface {
@@ -218,7 +242,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 				return stopWith(OutcomeStopped, StopProjectionInvalid, err)
 			}
 			call := agentCall{Phase: PhasePlan, Round: 1, Model: c.Model, Timeout: roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now())}
-			text, _, err := runAgent(ctx, d, c, call, d.PlanAgent, wt.Dir, planPrompt, &sum)
+			text, _, _, err := runAgentWithFallback(ctx, d, c, call, d.PlanAgent, wt.Dir, planPrompt, &sum)
 			if err != nil {
 				return err
 			}
@@ -420,6 +444,41 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 	return text, sessionID, nil
 }
 
+// runAgentWithFallback runs call via runAgent, and on an availability-
+// classified failure (StopModelUnavailable) retries with the next untried
+// model in availabilityOrder[call.Model], each attempt as its own Step under
+// an incrementing Round so every model tried is recorded (AC1). It reports
+// the round its last attempt used, so a caller numbering further rounds for
+// this phase continues from there rather than reusing one. Once the order is
+// exhausted, it stops the build with OutcomeInfraFailure/StopModelUnavailable
+// (AC3) instead of the ordinary agent-failure path — deliberately not a path
+// FR-13's (unimplemented) escalation could hook into.
+func runAgentWithFallback(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, agent Agent, dir, prompt string, sum *Summary) (text, session string, round int, err error) {
+	models := append([]string{call.Model}, availabilityOrder[call.Model]...)
+	round = call.Round
+	var lastErr error
+	for i, model := range models {
+		attempt := call
+		attempt.Model, attempt.Round = model, round
+		text, session, err = runAgent(ctx, d, c, attempt, agent, dir, prompt, sum)
+		if err == nil {
+			return text, session, round, nil
+		}
+		var s *StopError
+		if !errors.As(err, &s) || s.Reason != StopModelUnavailable {
+			return text, session, round, err
+		}
+		lastErr = err
+		if i+1 >= len(models) {
+			break
+		}
+		round++
+		d.Logger.Warn("modelSubstituted", "phase", string(call.Phase), "from", model, "to", models[i+1])
+	}
+	return "", "", round, stopWith(OutcomeInfraFailure, StopModelUnavailable,
+		fmt.Errorf("availability order for %s exhausted: %w", call.Model, lastErr))
+}
+
 // allowanceMarkers are phrases assumed to appear in the agent's stderr when
 // the provider's own allowance is exhausted mid-build, distinguishing a
 // budget stop (FR-22, never escalated) from an ordinary agent failure (FR-13,
@@ -433,6 +492,24 @@ var allowanceMarkers = []string{
 	"insufficient balance",
 	"quota exceeded",
 	"payment required",
+}
+
+// availabilityMarkers are phrases assumed to appear in the agent's stderr
+// when the requested model itself is unavailable — rate-limited, overloaded,
+// or pulled from the provider's roster — distinguishing an availability stop
+// (AC1's same-provider substitution) from an ordinary agent failure.
+// UNVERIFIED against a live outage: no probe has confirmed OpenCode Go's
+// actual wording, so this is a documented assumption pending that
+// verification, not an observed fact — see the PR's Known Limitations.
+var availabilityMarkers = []string{
+	"model not found",
+	"model not available",
+	"model unavailable",
+	"no endpoints found",
+	"rate limited",
+	"overloaded",
+	"service unavailable",
+	"bad gateway",
 }
 
 // classifyStderrTail is how much of the agent's stderr classifyAgentFailure
@@ -455,6 +532,11 @@ func classifyAgentFailure(stderrPath string) (Outcome, StopReason) {
 	for _, marker := range allowanceMarkers {
 		if strings.Contains(lower, marker) {
 			return OutcomeBudgetStop, StopAllowanceExhausted
+		}
+	}
+	for _, marker := range availabilityMarkers {
+		if strings.Contains(lower, marker) {
+			return OutcomeInfraFailure, StopModelUnavailable
 		}
 	}
 	return OutcomeAgentFailed, StopAgentExit

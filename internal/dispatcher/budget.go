@@ -7,10 +7,13 @@ import (
 	"github.com/alvintoh/forge-wingman/internal/money"
 )
 
-// Ceiling names the binding limit a deferral records (FR-22).
+// Ceiling names the binding limit a deferral records (FR-22). Reused for
+// CeilingProviderHalted, which is not a budget ceiling but withholds a
+// candidate the same way — reconsidered next poll, never rejected outright.
 const (
-	CeilingRunnerMinutes = "runner-minutes"
-	CeilingCash          = "cash"
+	CeilingRunnerMinutes  = "runner-minutes"
+	CeilingCash           = "cash"
+	CeilingProviderHalted = "provider-halted"
 )
 
 // Window is one rolling allowance ceiling FR-22 checks admission against: the

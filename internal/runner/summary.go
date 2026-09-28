@@ -92,10 +92,12 @@ var buildEndings = func() map[ending]bool {
 		{OutcomeAgentFailed, StopAgentExit, PhasePlan}:             true,
 		{OutcomeStopped, StopPlanInvalid, PhasePlan}:               true,
 		{OutcomeBudgetStop, StopAllowanceExhausted, PhasePlan}:     true,
+		{OutcomeInfraFailure, StopModelUnavailable, PhasePlan}:     true,
 		{OutcomeInfraFailure, StopCompletions, PhaseBuild}:         true,
 		{OutcomeAgentFailed, StopAgentTimeout, PhaseBuild}:         true,
 		{OutcomeAgentFailed, StopAgentExit, PhaseBuild}:            true,
 		{OutcomeBudgetStop, StopAllowanceExhausted, PhaseBuild}:    true,
+		{OutcomeInfraFailure, StopModelUnavailable, PhaseBuild}:    true,
 		{OutcomeInfraFailure, StopChecksRun, PhaseBuild}:           true,
 		// A review-phase failure never ends a build at PhaseReview: it forces
 		// a draft and the build proceeds to PhaseCommit instead (FR-5) — only
