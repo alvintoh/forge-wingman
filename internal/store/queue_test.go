@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
+	"github.com/alvintoh/forge-wingman/internal/money"
 	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
@@ -46,7 +47,8 @@ func queue(t *testing.T) (*Queue, *firestore.Client) {
 	return NewQueue(client), client
 }
 
-// forget removes the run and refusal documents one test wrote.
+// forget removes the run and refusal documents one test wrote, and its
+// ledger reservation.
 func forget(t *testing.T, client *firestore.Client, ids ...string) {
 	t.Helper()
 	t.Cleanup(func() {
@@ -54,6 +56,8 @@ func forget(t *testing.T, client *firestore.Client, ids ...string) {
 		for _, id := range ids {
 			_, _ = client.Collection(runsCollection).Doc(id).Delete(ctx)
 			_, _ = client.Collection(dispatchCollection).Doc(rejectedPrefix + id).Delete(ctx)
+			_, _ = client.Collection(dispatchCollection).Doc(ledgerDocID).Update(ctx,
+				[]firestore.Update{{FieldPath: firestore.FieldPath{"reservations", id}, Value: firestore.Delete}})
 		}
 	})
 }
@@ -69,10 +73,19 @@ func queuedRun(id string, priority int) dispatcher.Queued {
 	}
 }
 
+// generousBudget fits any candidate this suite claims, so a test not
+// exercising the budget itself never has to think about it.
+var generousBudget = dispatcher.BudgetConfig{
+	ProviderWindows: []dispatcher.Window{{Name: "5h", Period: 5 * time.Hour, Limit: 1000 * money.Dollar}},
+	Cash:            dispatcher.Window{Name: dispatcher.CeilingCash, Calendar: true, Limit: 1000 * money.Dollar},
+	Runner:          dispatcher.RunnerMinutes{FreeMinutes: 1_000_000},
+}
+
 func TestEnqueueWritesTheRunRecordQueued(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
 	run := queuedRun(fresh("queue-enq"), 2)
+	run.Private = true
 	forget(t, client, run.RunID)
 	if err := q.Enqueue(ctx, run); err != nil {
 		t.Fatal(err)
@@ -82,14 +95,15 @@ func TestEnqueueWritesTheRunRecordQueued(t *testing.T) {
 		t.Fatal(err)
 	}
 	data := snap.Data()
-	if data[stateField] != stateQueued || data[priorityField] != int64(2) || data[repoField] != "octo/scratch" {
+	if data[stateField] != stateQueued || data[priorityField] != int64(2) || data[repoField] != "octo/scratch" ||
+		data[privateField] != true {
 		t.Fatalf("queued row = %v", data)
 	}
 	var rec runner.Record
 	if err := snap.DataTo(&rec); err != nil {
 		t.Fatal(err)
 	}
-	if rec.Ticket() != run.Ticket || !rec.StartedAt.Equal(queueAt) || !rec.UpdatedAt.Equal(queueAt) {
+	if rec.Ticket() != run.Ticket || !rec.StartedAt.Equal(queueAt) || !rec.UpdatedAt.Equal(queueAt) || !rec.Private {
 		t.Fatalf("record = %+v", rec)
 	}
 	// A poll that finds the same ticket delegated again must not start a second run.
@@ -127,7 +141,7 @@ func TestRejectRecordsTheRefusalAndEnqueueClearsIt(t *testing.T) {
 	}
 }
 
-func TestClaimTakesTheHighestPriorityRunFirst(t *testing.T) {
+func TestCandidatesListsQueuedRunsInPriorityOrder(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
 	// The suffixes sort after the names, so the ids cannot stand in for the
@@ -141,33 +155,132 @@ func TestClaimTakesTheHighestPriorityRunFirst(t *testing.T) {
 	}
 	forget(t, client, ids...)
 	for id, priority := range priorities {
-		if err := q.Enqueue(ctx, queuedRun(id, priority)); err != nil {
+		run := queuedRun(id, priority)
+		run.Ticket.Size = "S"
+		if err := q.Enqueue(ctx, run); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, want := range slices.Sorted(maps.Keys(priorities)) {
-		claim, ok, err := q.Claim(ctx, queueAt)
-		if err != nil || !ok || claim.RunID != want {
-			t.Fatalf("claim = %+v, %v, %v, want %s", claim, ok, err, want)
-		}
-		if claim.Priority == 0 || claim.Repo != "octo/scratch" {
-			t.Fatalf("claim = %+v", claim)
-		}
-		snap, err := client.Collection(runsCollection).Doc(want).Get(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if snap.Data()[stateField] != stateClaimed {
-			t.Fatalf("%s is %v after being claimed", want, snap.Data()[stateField])
-		}
+	cands, err := q.Candidates(ctx)
+	if err != nil {
+		t.Fatal(err)
 	}
-	claim, ok, err := q.Claim(ctx, queueAt)
-	if err != nil || ok || claim.RunID != "" {
-		t.Fatalf("claim of an empty queue = %+v, %v, %v", claim, ok, err)
+	byID := map[string]dispatcher.Candidate{}
+	var order []string
+	for _, c := range cands {
+		if _, ours := priorities[c.RunID]; !ours {
+			continue // another test's row, from a shared collection
+		}
+		byID[c.RunID] = c
+		order = append(order, c.RunID)
+	}
+	want := slices.Sorted(maps.Keys(priorities))
+	if !slices.Equal(order, want) {
+		t.Fatalf("candidate order = %v, want %v", order, want)
+	}
+	for id := range priorities {
+		if byID[id].Repo != "octo/scratch" || byID[id].Size != "S" || byID[id].Priority == 0 {
+			t.Fatalf("candidate %s = %+v", id, byID[id])
+		}
 	}
 }
 
-func TestTwoPollsClaimOneRunBetweenThem(t *testing.T) {
+func TestTryClaimAdmitsARunThatFitsAndBooksItsReservation(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	run := queuedRun(fresh("queue-claim"), 1)
+	forget(t, client, run.RunID)
+	if err := q.Enqueue(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	res := dispatcher.Reservation{ProviderCost: 3 * money.Dollar, RunnerMinutes: 12}
+	ok, binding, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, res)
+	if err != nil || !ok || binding != "" {
+		t.Fatalf("ok = %v, binding = %q, err = %v", ok, binding, err)
+	}
+	snap, err := client.Collection(runsCollection).Doc(run.RunID).Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Data()[stateField] != stateClaimed {
+		t.Fatalf("%s is %v after being claimed", run.RunID, snap.Data()[stateField])
+	}
+	ledgerSnap, err := client.Collection(dispatchCollection).Doc(ledgerDocID).Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ledger ledgerDoc
+	if err := ledgerSnap.DataTo(&ledger); err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := ledger.Reservations[run.RunID]
+	if !ok || entry.ProviderCostMicros != int64(res.ProviderCost) || entry.RunnerMinutes != res.RunnerMinutes {
+		t.Fatalf("reservation = %+v, ok %v", entry, ok)
+	}
+}
+
+func TestTryClaimDefersARunTheProviderWindowWouldBreach(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	run := queuedRun(fresh("queue-defer"), 1)
+	forget(t, client, run.RunID)
+	if err := q.Enqueue(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	tight := dispatcher.BudgetConfig{
+		ProviderWindows: []dispatcher.Window{{Name: "5h", Period: 5 * time.Hour, Limit: 2 * money.Dollar}},
+		Cash:            dispatcher.Window{Name: dispatcher.CeilingCash, Calendar: true, Limit: 1000 * money.Dollar},
+		Runner:          dispatcher.RunnerMinutes{FreeMinutes: 1_000_000},
+	}
+	ok, binding, err := q.TryClaim(ctx, run.RunID, queueAt, tight, dispatcher.Reservation{ProviderCost: 3 * money.Dollar})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok || binding != "5h" {
+		t.Fatalf("ok = %v, binding = %q, want deferred on 5h", ok, binding)
+	}
+	snap, err := client.Collection(runsCollection).Doc(run.RunID).Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Data()[stateField] != stateQueued {
+		t.Fatalf("a deferred run's state = %v, want it to stay queued", snap.Data()[stateField])
+	}
+}
+
+func TestTryClaimCountsAnotherRunsInFlightReservationTowardTheCeiling(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	first := queuedRun(fresh("queue-inflight-a"), 1)
+	second := queuedRun(fresh("queue-inflight-b"), 2)
+	forget(t, client, first.RunID, second.RunID)
+	for _, r := range []dispatcher.Queued{first, second} {
+		if err := q.Enqueue(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tight := dispatcher.BudgetConfig{
+		ProviderWindows: []dispatcher.Window{{Name: "5h", Period: 5 * time.Hour, Limit: 5 * money.Dollar}},
+		Cash:            dispatcher.Window{Name: dispatcher.CeilingCash, Calendar: true, Limit: 1000 * money.Dollar},
+		Runner:          dispatcher.RunnerMinutes{FreeMinutes: 1_000_000},
+	}
+	// Claiming the first run reserves $4 of the $5 window.
+	ok, _, err := q.TryClaim(ctx, first.RunID, queueAt, tight, dispatcher.Reservation{ProviderCost: 4 * money.Dollar})
+	if err != nil || !ok {
+		t.Fatalf("first claim: ok = %v, err = %v", ok, err)
+	}
+	// Nothing has settled yet, but the first run's reservation alone leaves no
+	// room for a second $4 estimate.
+	ok, binding, err := q.TryClaim(ctx, second.RunID, queueAt, tight, dispatcher.Reservation{ProviderCost: 4 * money.Dollar})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok || binding != "5h" {
+		t.Fatalf("ok = %v, binding = %q, want the in-flight reservation to defer this claim", ok, binding)
+	}
+}
+
+func TestTwoTryClaimsClaimOneRunBetweenThem(t *testing.T) {
 	q, client := queue(t)
 	run := queuedRun(fresh("queue-race"), 1)
 	forget(t, client, run.RunID)
@@ -177,34 +290,35 @@ func TestTwoPollsClaimOneRunBetweenThem(t *testing.T) {
 	var (
 		wg    sync.WaitGroup
 		mu    sync.Mutex
-		won   []string
+		won   int
 		fails []error
 	)
 	for range 2 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			claim, ok, err := q.Claim(context.Background(), queueAt)
+			ok, _, err := q.TryClaim(context.Background(), run.RunID, queueAt, generousBudget,
+				dispatcher.Reservation{ProviderCost: money.Dollar})
 			mu.Lock()
 			defer mu.Unlock()
 			switch {
 			case err != nil:
 				fails = append(fails, err)
 			case ok:
-				won = append(won, claim.RunID)
+				won++
 			}
 		}()
 	}
 	wg.Wait()
-	if len(won) != 1 || won[0] != run.RunID {
-		t.Fatalf("%d polls claimed a run, want exactly one: %v", len(won), won)
+	if won != 1 {
+		t.Fatalf("%d claims won, want exactly one", won)
 	}
 	if len(fails) > 0 {
-		t.Fatalf("a poll failed rather than reporting the run was taken: %v", fails)
+		t.Fatalf("a claim failed rather than reporting the run was taken: %v", fails)
 	}
 }
 
-func TestReleaseReturnsAClaimedRunToTheQueue(t *testing.T) {
+func TestReleaseReturnsAClaimedRunToTheQueueAndDropsItsReservation(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
 	run := queuedRun(fresh("queue-rel"), 1)
@@ -212,8 +326,8 @@ func TestReleaseReturnsAClaimedRunToTheQueue(t *testing.T) {
 	if err := q.Enqueue(ctx, run); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := q.Claim(ctx, queueAt); err != nil || !ok {
-		t.Fatalf("claim = %v, %v", ok, err)
+	if ok, _, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, dispatcher.Reservation{ProviderCost: money.Dollar}); err != nil || !ok {
+		t.Fatalf("claim: ok %v, err %v", ok, err)
 	}
 	if err := q.Release(ctx, run.RunID, queueAt.Add(time.Minute)); err != nil {
 		t.Fatal(err)
@@ -228,8 +342,93 @@ func TestReleaseReturnsAClaimedRunToTheQueue(t *testing.T) {
 	if _, ok := snap.Data()[claimedAtField]; ok {
 		t.Fatalf("released run still holds %s", claimedAtField)
 	}
-	claim, ok, err := q.Claim(ctx, queueAt)
-	if err != nil || !ok || claim.RunID != run.RunID {
-		t.Fatalf("the released run was not claimed again: %+v, %v, %v", claim, ok, err)
+	ledgerSnap, err := client.Collection(dispatchCollection).Doc(ledgerDocID).Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ledger ledgerDoc
+	if err := ledgerSnap.DataTo(&ledger); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ledger.Reservations[run.RunID]; ok {
+		t.Fatalf("a released run's reservation was not dropped: %+v", ledger.Reservations[run.RunID])
+	}
+	// The released run is claimable again, with the ledger no longer double-
+	// counting its reservation.
+	ok, _, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, dispatcher.Reservation{ProviderCost: money.Dollar})
+	if err != nil || !ok {
+		t.Fatalf("the released run was not claimed again: %v, %v", ok, err)
+	}
+}
+
+func TestSettleDropsTheReservationAndIsIdempotent(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	run := queuedRun(fresh("queue-settle"), 1)
+	forget(t, client, run.RunID)
+	if err := q.Enqueue(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, dispatcher.Reservation{ProviderCost: 2 * money.Dollar}); err != nil || !ok {
+		t.Fatalf("claim: ok %v, err %v", ok, err)
+	}
+	if err := q.Settle(ctx, run.RunID); err != nil {
+		t.Fatal(err)
+	}
+	ledgerSnap, err := client.Collection(dispatchCollection).Doc(ledgerDocID).Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ledger ledgerDoc
+	if err := ledgerSnap.DataTo(&ledger); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ledger.Reservations[run.RunID]; ok {
+		t.Fatalf("a settled run's reservation was not dropped: %+v", ledger.Reservations[run.RunID])
+	}
+	// Settling a second time (a rerun record job) must not error.
+	if err := q.Settle(ctx, run.RunID); err != nil {
+		t.Fatalf("settling an already-settled run: %v", err)
+	}
+}
+
+func TestTryClaimCountsSettledCostWithinTheWindow(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	settled := queuedRun(fresh("queue-settled"), 1)
+	candidate := queuedRun(fresh("queue-after-settled"), 2)
+	forget(t, client, settled.RunID, candidate.RunID)
+	for _, r := range []dispatcher.Queued{settled, candidate} {
+		if err := q.Enqueue(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Settle a run's cost directly, as runner.Finalize would.
+	if _, err := client.Collection(runsCollection).Doc(settled.RunID).Set(ctx, map[string]any{
+		settledAtField:           queueAt,
+		settledProviderCostField: int64(4 * money.Dollar),
+	}, firestore.MergeAll); err != nil {
+		t.Fatal(err)
+	}
+
+	tight := dispatcher.BudgetConfig{
+		ProviderWindows: []dispatcher.Window{{Name: "5h", Period: 5 * time.Hour, Limit: 5 * money.Dollar}},
+		Cash:            dispatcher.Window{Name: dispatcher.CeilingCash, Calendar: true, Limit: 1000 * money.Dollar},
+		Runner:          dispatcher.RunnerMinutes{FreeMinutes: 1_000_000},
+	}
+	ok, binding, err := q.TryClaim(ctx, candidate.RunID, queueAt.Add(time.Minute), tight,
+		dispatcher.Reservation{ProviderCost: 2 * money.Dollar})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok || binding != "5h" {
+		t.Fatalf("ok = %v, binding = %q, want the $4 already settled in this window to defer a further $2", ok, binding)
+	}
+
+	// The same settled cost falls outside a window that starts after it.
+	ok, binding, err = q.TryClaim(ctx, candidate.RunID, queueAt.Add(6*time.Hour), tight,
+		dispatcher.Reservation{ProviderCost: 2 * money.Dollar})
+	if err != nil || !ok || binding != "" {
+		t.Fatalf("ok = %v, binding = %q, want it to fit once the settled run has rolled out of the window", ok, binding)
 	}
 }

@@ -74,6 +74,49 @@ func TestGitHubReportsARefusalOnOneLine(t *testing.T) {
 	}
 }
 
+func TestGitHubReadsARepositorysVisibility(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"a private repository", `{"private":true}`, true},
+		{"a public repository", `{"private":false}`, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var path string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				path = r.URL.Path
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			defer srv.Close()
+			got, err := (GitHub{Endpoint: srv.URL, Token: "gh-token", Client: srv.Client()}).
+				Private(context.Background(), "octo/scratch")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if path != "/repos/octo/scratch" {
+				t.Fatalf("path = %q", path)
+			}
+			if got != tt.want {
+				t.Fatalf("private = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGitHubReportsARefusalReadingVisibility(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"message":"Not Found"}`)
+	}))
+	defer srv.Close()
+	if _, err := (GitHub{Endpoint: srv.URL, Token: "gh-token", Client: srv.Client()}).
+		Private(context.Background(), "octo/scratch"); err == nil {
+		t.Fatal("Private succeeded against a 404")
+	}
+}
+
 func TestSnippetTruncatesAndFlattens(t *testing.T) {
 	if got := snippet([]byte("  a\r\nb  ")); got != "a b" {
 		t.Fatalf("snippet = %q", got)

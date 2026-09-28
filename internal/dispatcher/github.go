@@ -23,6 +23,9 @@ const (
 	// maxLinearResponseBytes bounds one Linear page: a page of a hundred
 	// oversized descriptions is a ticket the query should not have asked for.
 	maxLinearResponseBytes = 4 << 20
+	// maxRepoResponseBytes bounds a "get a repository" reply: the field this
+	// product reads from it is one boolean.
+	maxRepoResponseBytes = 64 << 10
 )
 
 // GitHub starts the run workflow in one repository.
@@ -77,6 +80,40 @@ func (g GitHub) Dispatch(ctx context.Context, c Claim) error {
 	raw, _ := io.ReadAll(io.LimitReader(res.Body, maxErrorBytes))
 	return fmt.Errorf("GitHub refused to dispatch run %s in %s: %s: %s",
 		c.RunID, c.Repo, res.Status, snippet(raw))
+}
+
+// Private reports whether repo is a private repository, read live from
+// GitHub's own API (FR-22) rather than a hand-maintained list, which goes
+// stale the moment a repository's visibility changes.
+func (g GitHub) Private(ctx context.Context, repo string) (bool, error) {
+	endpoint := fmt.Sprintf("%s/repos/%s", g.endpoint(), repo)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return false, fmt.Errorf("building the repository request: %w", err)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+g.Token)
+	req.Header.Set("X-GitHub-Api-Version", githubAPIVersion)
+	client := g.Client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	res, err := client.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("reading repository %s: %w", repo, err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(res.Body, maxErrorBytes))
+		return false, fmt.Errorf("GitHub refused to read repository %s: %s: %s", repo, res.Status, snippet(raw))
+	}
+	var body struct {
+		Private bool `json:"private"`
+	}
+	if err := json.NewDecoder(io.LimitReader(res.Body, maxRepoResponseBytes)).Decode(&body); err != nil {
+		return false, fmt.Errorf("decoding repository %s: %w", repo, err)
+	}
+	return body.Private, nil
 }
 
 func (g GitHub) endpoint() string {

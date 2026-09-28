@@ -79,6 +79,7 @@ var buildEndings = func() map[ending]bool {
 		{OutcomeInfraFailure, StopCompletions, PhaseBuild}:         true,
 		{OutcomeAgentFailed, StopAgentTimeout, PhaseBuild}:         true,
 		{OutcomeAgentFailed, StopAgentExit, PhaseBuild}:            true,
+		{OutcomeBudgetStop, StopAllowanceExhausted, PhaseBuild}:    true,
 		{OutcomeStopped, StopGitTampered, PhaseCommit}:             true,
 		{OutcomeStopped, StopHeadMoved, PhaseCommit}:               true,
 		{OutcomeInfraFailure, StopCommit, PhaseCommit}:             true,
@@ -181,7 +182,7 @@ func (s Summary) validate(attemptID string, t Ticket, now time.Time) error {
 	if (s.Phase == PhaseBuild || s.Phase == PhaseCommit) && s.Branch == "" {
 		return errors.New("an ending past the worktree names no branch")
 	}
-	if (s.Phase == PhaseCommit || s.Outcome == OutcomeAgentFailed) && !hasBuildStep(s.Steps) {
+	if (s.Phase == PhaseCommit || s.Outcome == OutcomeAgentFailed || s.Outcome == OutcomeBudgetStop) && !hasBuildStep(s.Steps) {
 		return errors.New("an ending past the worktree names no build step")
 	}
 	for _, step := range s.Steps {
