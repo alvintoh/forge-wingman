@@ -305,12 +305,19 @@ var allowanceMarkers = []string{
 	"payment required",
 }
 
-// classifyAgentFailure reads a bounded prefix of the agent's stderr file to
+// classifyStderrTail is how much of the agent's stderr classifyAgentFailure
+// reads, from the END of the file — an exhaustion message is the process's
+// last output before it exits, and bounding the read keeps a runaway stream
+// from being loaded into memory on the one path meant to handle a bad run
+// gracefully.
+const classifyStderrTail = 64 << 10
+
+// classifyAgentFailure reads a bounded tail of the agent's stderr file to
 // tell a provider allowance exhaustion apart from any other agent failure.
 // A read it cannot perform (or a stderr silent on every marker) falls back to
 // the ordinary agent-failure classification, never to a false budget stop.
 func classifyAgentFailure(stderrPath string) (Outcome, StopReason) {
-	raw, err := os.ReadFile(stderrPath)
+	raw, err := readTail(stderrPath, classifyStderrTail)
 	if err != nil {
 		return OutcomeAgentFailed, StopAgentExit
 	}
@@ -321,6 +328,27 @@ func classifyAgentFailure(stderrPath string) (Outcome, StopReason) {
 		}
 	}
 	return OutcomeAgentFailed, StopAgentExit
+}
+
+// readTail reads at most limit bytes from the end of the file at path.
+func readTail(path string, limit int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	var start int64
+	if info.Size() > limit {
+		start = info.Size() - limit
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return nil, err
+	}
+	return io.ReadAll(f)
 }
 
 func detail(err error) string {

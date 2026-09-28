@@ -42,13 +42,14 @@ func (e *Estimates) Estimate(ctx context.Context, size string) (dispatcher.Estim
 	if len(recs) == 0 {
 		return dispatcher.Estimate{}, nil
 	}
-	var costSum, minutesSum int64
+	var costSum money.Micros
+	var minutesSum int64
 	for _, r := range recs {
 		costSum += r.SettledProviderCostMicros
 		minutesSum += runner.BillableMinutes(r.DurationsMS)
 	}
 	n := int64(len(recs))
-	return dispatcher.Estimate{ProviderCost: money.Micros(costSum / n), Minutes: minutesSum / n}, nil
+	return dispatcher.Estimate{ProviderCost: costSum / money.Micros(n), Minutes: minutesSum / n}, nil
 }
 
 // settledBySize is every settled run of size. A single equality filter on

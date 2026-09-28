@@ -69,6 +69,18 @@ func NewQueue(client *firestore.Client) *Queue {
 	return &Queue{client: client}
 }
 
+// Exists reports whether a run record already exists for runID.
+func (q *Queue) Exists(ctx context.Context, runID string) (bool, error) {
+	_, err := q.client.Collection(runsCollection).Doc(runID).Get(ctx)
+	if status.Code(err) == codes.NotFound {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("checking whether run %s exists: %w", runID, err)
+	}
+	return true, nil
+}
+
 // Enqueue writes the run record for a delegated ticket, queued, and clears any
 // refusal an earlier poll recorded against the same ticket. It fails with
 // dispatcher.ErrAlreadyQueued when the record exists, so neither a repeated
@@ -127,7 +139,14 @@ func (q *Queue) Candidates(ctx context.Context) ([]dispatcher.Candidate, error) 
 		data := snap.Data()
 		repo, _ := data[repoField].(string)
 		size, _ := data[sizeField].(string)
-		private, _ := data[privateField].(bool)
+		// A record from before this field existed has no privateField at
+		// all — default that to true (private), the safe direction: it
+		// counts the run's runner minutes toward NFR-1's ceiling rather than
+		// silently zeroing them for a target that may in fact be private.
+		private := true
+		if v, ok := data[privateField]; ok {
+			private, _ = v.(bool)
+		}
 		priority, _ := data[priorityField].(int64)
 		out = append(out, dispatcher.Candidate{
 			RunID: snap.Ref.ID, Repo: repo, Size: size, Private: private, Priority: int(priority),
@@ -145,8 +164,8 @@ type ledgerDoc struct {
 }
 
 type reservationEntry struct {
-	ProviderCostMicros int64 `firestore:"provider_cost_micros"`
-	RunnerMinutes      int64 `firestore:"runner_minutes"`
+	ProviderCostMicros money.Micros `firestore:"provider_cost_micros"`
+	RunnerMinutes      int64        `firestore:"runner_minutes"`
 }
 
 func (q *Queue) ledgerRef() *firestore.DocumentRef {
@@ -157,7 +176,7 @@ func (q *Queue) ledgerRef() *firestore.DocumentRef {
 func reservedTotals(doc ledgerDoc) dispatcher.Totals {
 	var t dispatcher.Totals
 	for _, r := range doc.Reservations {
-		t.ProviderCost += money.Micros(r.ProviderCostMicros)
+		t.ProviderCost += r.ProviderCostMicros
 		t.RunnerMinutes += r.RunnerMinutes
 	}
 	return t
@@ -196,13 +215,13 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 
 		windowSettled := make([]money.Micros, len(cfg.ProviderWindows))
 		for i, w := range cfg.ProviderWindows {
-			sum, err := q.settledProviderCost(tx, w.Since(at))
+			sum, _, err := q.settledSince(tx, w.Since(at))
 			if err != nil {
 				return err
 			}
 			windowSettled[i] = sum
 		}
-		cashSettledCost, cashSettledMinutes, err := q.settledCashTotals(tx, cfg.Cash.Since(at))
+		cashSettledCost, cashSettledMinutes, err := q.settledSince(tx, cfg.Cash.Since(at))
 		if err != nil {
 			return err
 		}
@@ -217,7 +236,7 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 			ledger.Reservations = map[string]reservationEntry{}
 		}
 		ledger.Reservations[runID] = reservationEntry{
-			ProviderCostMicros: int64(res.ProviderCost),
+			ProviderCostMicros: res.ProviderCost,
 			RunnerMinutes:      res.RunnerMinutes,
 		}
 		if err := tx.Set(ledgerRef, ledger); err != nil {
@@ -259,30 +278,17 @@ func (q *Queue) readLedger(tx *firestore.Transaction, ledgerRef *firestore.Docum
 	return ledger, nil
 }
 
-// settledProviderCost sums settled_provider_cost_micros over every run whose
-// settlement fell at or after since, within tx.
-func (q *Queue) settledProviderCost(tx *firestore.Transaction, since time.Time) (money.Micros, error) {
-	iter := tx.Documents(q.client.Collection(runsCollection).Where(settledAtField, ">=", since))
-	defer iter.Stop()
-	var sum int64
-	for {
-		snap, err := iter.Next()
-		if errors.Is(err, iterator.Done) {
-			break
-		}
-		if err != nil {
-			return 0, fmt.Errorf("summing settled cost since %s: %w", since, err)
-		}
-		cost, _ := snap.Data()[settledProviderCostField].(int64)
-		sum += cost
-	}
-	return money.Micros(sum), nil
-}
-
-// settledCashTotals sums settled_provider_cost_micros and
-// settled_runner_minutes over every run whose settlement fell at or after
-// since, within tx — the two totals NFR-1's cash ceiling reads.
-func (q *Queue) settledCashTotals(tx *firestore.Transaction, since time.Time) (money.Micros, int64, error) {
+// settledSince sums settled_provider_cost_micros and settled_runner_minutes
+// over every run whose settlement fell at or after since, within tx — one
+// scan shared by every window's admission check, so the provider-window and
+// cash queries cannot silently diverge from each other.
+//
+// This re-scans the full window on every call, and TryClaim calls it once per
+// candidate walked in one poll (up to candidateScanLimit). Accepted at this
+// project's personal-scale volume, same as Estimates' query (internal/store/
+// estimate.go) — revisit both together if either the run history or the
+// candidate backlog grows enough to matter.
+func (q *Queue) settledSince(tx *firestore.Transaction, since time.Time) (cost money.Micros, minutes int64, err error) {
 	iter := tx.Documents(q.client.Collection(runsCollection).Where(settledAtField, ">=", since))
 	defer iter.Stop()
 	var costSum, minutesSum int64
@@ -295,10 +301,10 @@ func (q *Queue) settledCashTotals(tx *firestore.Transaction, since time.Time) (m
 			return 0, 0, fmt.Errorf("summing settled totals since %s: %w", since, err)
 		}
 		data := snap.Data()
-		cost, _ := data[settledProviderCostField].(int64)
-		minutes, _ := data[settledRunnerMinutesField].(int64)
-		costSum += cost
-		minutesSum += minutes
+		c, _ := data[settledProviderCostField].(int64)
+		m, _ := data[settledRunnerMinutesField].(int64)
+		costSum += c
+		minutesSum += m
 	}
 	return money.Micros(costSum), minutesSum, nil
 }

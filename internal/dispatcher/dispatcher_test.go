@@ -59,6 +59,15 @@ type fakeQueue struct {
 
 	claimed   []string
 	tryClaims []tryClaimCall
+
+	existsErr error
+}
+
+func (q *fakeQueue) Exists(_ context.Context, runID string) (bool, error) {
+	if q.existsErr != nil {
+		return false, q.existsErr
+	}
+	return q.holds[runID], nil
 }
 
 func (q *fakeQueue) Enqueue(_ context.Context, run Queued) error {
@@ -139,13 +148,20 @@ func (e fakeEstimator) Estimate(_ context.Context, size string) (Estimate, error
 }
 
 // fakeVisibility reports the visibility configured for each repository,
-// defaulting to public for one it holds none for.
+// defaulting to public for one it holds none for. calls counts every
+// invocation, through a pointer so it survives the struct being copied into
+// Deps by value — a test asserting admission never reached this check reads
+// it directly rather than inferring it from Poll's outcome.
 type fakeVisibility struct {
 	private map[string]bool
 	err     error
+	calls   *int
 }
 
 func (v fakeVisibility) Private(_ context.Context, repo string) (bool, error) {
+	if v.calls != nil {
+		*v.calls++
+	}
 	if v.err != nil {
 		return false, v.err
 	}
@@ -189,14 +205,53 @@ func TestPollAdmitsWhatItCanAndRefusesWhatItCannot(t *testing.T) {
 
 func TestPollLeavesATicketTheQueueAlreadyHolds(t *testing.T) {
 	q := &fakeQueue{holds: map[string]bool{"FRG-18": true}}
-	res, err := Poll(context.Background(), pollDeps(fakeSource{issues: []Issue{
+	deps := pollDeps(fakeSource{issues: []Issue{
 		admitted("size:M", "repo:octo/scratch"),
-	}}, q, &fakeWorkflow{}), buildConfig)
+	}}, q, &fakeWorkflow{})
+	calls := 0
+	deps.Visibility = fakeVisibility{calls: &calls}
+	res, err := Poll(context.Background(), deps, buildConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(res.Enqueued) != 0 || len(q.queued) != 0 || len(q.rejected) != 0 {
 		t.Fatalf("result %+v, queue %+v", res, q)
+	}
+	// The regression this guards: Exists must short-circuit BEFORE the
+	// visibility check, not merely tolerate the check's own failure — those
+	// are two different fixes and this one isolates the first.
+	if calls != 0 {
+		t.Fatalf("visibility checked %d times, want the already-queued ticket to skip it entirely", calls)
+	}
+}
+
+func TestPollFailsWhenExistsCannotBeRead(t *testing.T) {
+	q := &fakeQueue{existsErr: errFirestore}
+	deps := pollDeps(fakeSource{issues: []Issue{admitted("size:M", "repo:octo/scratch")}}, q, &fakeWorkflow{})
+	if _, err := Poll(context.Background(), deps, buildConfig); !errors.Is(err, errFirestore) {
+		t.Fatalf("err = %v, want the existence check's failure", err)
+	}
+}
+
+// TestPollSkipsATicketWhoseVisibilityCannotBeRead is the regression test for
+// the bug a mutation test caught: a transient failure checking one NEW
+// ticket's repository visibility must not withhold every other delegated
+// ticket's admission, or the dispatch that follows it — the ticket is simply
+// not enqueued yet, and Delegated returns it again next poll.
+func TestPollSkipsATicketWhoseVisibilityCannotBeRead(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{{RunID: "FRG-9", Repo: "octo/ready"}}}
+	w := &fakeWorkflow{}
+	deps := pollDeps(fakeSource{issues: []Issue{admitted("size:M", "repo:octo/scratch")}}, q, w)
+	deps.Visibility = fakeVisibility{err: errFirestore}
+	res, err := Poll(context.Background(), deps, buildConfig)
+	if err != nil {
+		t.Fatalf("err = %v, want the poll to continue past the failed check", err)
+	}
+	if len(res.Enqueued) != 0 || len(q.queued) != 0 {
+		t.Fatalf("queued = %+v, want the ticket left unqueued for a later poll", q.queued)
+	}
+	if res.Dispatched != "FRG-9" {
+		t.Fatalf("dispatched = %q, want the ready candidate dispatched despite the earlier failure", res.Dispatched)
 	}
 }
 
@@ -357,14 +412,6 @@ func TestPollFailsWhenTheEstimatorFails(t *testing.T) {
 	deps.Estimator = fakeEstimator{err: errFirestore}
 	if _, err := Poll(context.Background(), deps, buildConfig); !errors.Is(err, errFirestore) {
 		t.Fatalf("err = %v, want the estimator's failure", err)
-	}
-}
-
-func TestPollFailsWhenVisibilityCannotBeRead(t *testing.T) {
-	deps := pollDeps(fakeSource{issues: []Issue{admitted("size:M", "repo:octo/scratch")}}, &fakeQueue{}, &fakeWorkflow{})
-	deps.Visibility = fakeVisibility{err: errFirestore}
-	if _, err := Poll(context.Background(), deps, buildConfig); !errors.Is(err, errFirestore) {
-		t.Fatalf("err = %v, want the visibility check's failure", err)
 	}
 }
 

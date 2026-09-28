@@ -185,6 +185,44 @@ func TestCandidatesListsQueuedRunsInPriorityOrder(t *testing.T) {
 	}
 }
 
+// TestCandidatesDefaultsAMissingPrivateFieldToTrue is the regression test for
+// a rolling-deploy hazard: a run record written before this field existed has
+// no privateField at all. Defaulting that to false would silently zero a
+// private target's runner minutes against NFR-1's ceiling during the
+// transition; defaulting to true is the safe direction instead.
+func TestCandidatesDefaultsAMissingPrivateFieldToTrue(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	id := fresh("pre-migration")
+	forget(t, client, id)
+	if _, err := client.Collection(runsCollection).Doc(id).Set(ctx, map[string]any{
+		stateField:    stateQueued,
+		priorityField: int64(1),
+		repoField:     "octo/scratch",
+		sizeField:     "S",
+		// privateField deliberately omitted.
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cands, err := q.Candidates(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, c := range cands {
+		if c.RunID != id {
+			continue
+		}
+		found = true
+		if !c.Private {
+			t.Fatalf("candidate %+v, want Private true for a record missing the field", c)
+		}
+	}
+	if !found {
+		t.Fatalf("candidate %s not listed among %+v", id, cands)
+	}
+}
+
 func TestTryClaimAdmitsARunThatFitsAndBooksItsReservation(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
@@ -214,7 +252,7 @@ func TestTryClaimAdmitsARunThatFitsAndBooksItsReservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	entry, ok := ledger.Reservations[run.RunID]
-	if !ok || entry.ProviderCostMicros != int64(res.ProviderCost) || entry.RunnerMinutes != res.RunnerMinutes {
+	if !ok || entry.ProviderCostMicros != res.ProviderCost || entry.RunnerMinutes != res.RunnerMinutes {
 		t.Fatalf("reservation = %+v, ok %v", entry, ok)
 	}
 }

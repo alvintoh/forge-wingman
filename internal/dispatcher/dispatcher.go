@@ -91,9 +91,12 @@ type Source interface {
 }
 
 // Enqueuer writes a run record and queues it, failing with ErrAlreadyQueued
-// when the ticket already has one.
+// when the ticket already has one. Exists reports whether a run record
+// already exists for runID, so a caller can skip resolving anything the
+// record would only need once, at creation.
 type Enqueuer interface {
 	Enqueue(ctx context.Context, q Queued) error
+	Exists(ctx context.Context, runID string) (bool, error)
 }
 
 // Candidater lists queued runs a poll may claim, in Linear priority order
@@ -190,9 +193,15 @@ func Poll(ctx context.Context, d Deps, c Config) (Result, error) {
 // admit queues one issue or records the refusal against it, adding what it did
 // to res. A queue error is returned as the queue wrote it: the store already
 // names the run, the ticket and the reason, and saying it twice reads as a
-// different failure. The repository's visibility is resolved once here and
-// carried on the run record from then on (FR-22), rather than re-queried on
+// different failure. The repository's visibility is resolved once, at
+// creation, and carried on the run record from then on (FR-22) — Exists skips
+// that resolution for a ticket already queued, rather than re-checking it on
 // every poll the ticket remains undispatched.
+//
+// A visibility-check failure aborts only this ticket's admission, never the
+// poll: an issue not yet enqueued is seen again next poll (Delegated still
+// returns it), so nothing is lost, and one flaky check must not withhold every
+// other delegated ticket's admission or the ready dispatch that follows it.
 func admit(ctx context.Context, d Deps, c Config, issue Issue, res *Result) error {
 	q, rejection := build(issue, c, d.Now())
 	if rejection.Reason != "" {
@@ -204,9 +213,18 @@ func admit(ctx context.Context, d Deps, c Config, issue Issue, res *Result) erro
 		res.Rejections = append(res.Rejections, rejection)
 		return nil
 	}
+	exists, err := d.Queue.Exists(ctx, q.RunID)
+	if err != nil {
+		return err
+	}
+	if exists {
+		d.Logger.Info("ticketAlreadyQueued", "run", q.RunID, "repo", q.Repo, "priority", q.Priority)
+		return nil
+	}
 	private, err := d.Visibility.Private(ctx, q.Repo)
 	if err != nil {
-		return fmt.Errorf("checking whether %s is private: %w", q.Repo, err)
+		d.Logger.Warn("visibilityCheckFailed", "run", q.RunID, "repo", q.Repo, "err", err.Error())
+		return nil
 	}
 	q.Private = private
 	switch err := d.Queue.Enqueue(ctx, q); {

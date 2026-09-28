@@ -18,7 +18,7 @@ func settledRecord(t *testing.T, client *firestore.Client, id, size string, cost
 	tk := runner.Ticket{ID: id, Title: "feat(x): add a file", Size: size, Body: "Add a file."}
 	rec := runner.NewRecord(id, tk, settledAt.Add(-time.Hour))
 	rec.SettledAt = settledAt
-	rec.SettledProviderCostMicros = int64(cost)
+	rec.SettledProviderCostMicros = cost
 	rec.DurationsMS = map[string]int64{"build": durationMS}
 	if _, err := client.Collection(runsCollection).Doc(id).Set(context.Background(), fields(rec)); err != nil {
 		t.Fatal(err)

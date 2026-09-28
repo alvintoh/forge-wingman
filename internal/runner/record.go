@@ -95,11 +95,9 @@ type Record struct {
 	// SettledAt, SettledProviderCostMicros and SettledRunnerMinutes are
 	// written once, by Finalize: the run's actual cost, settled against the
 	// dispatch/ledger reservation the claim booked (adr/0003). Zero until
-	// then. Cost is USD micros (money.Micros, as an int64 so this package
-	// need not import money's type to hold it); runner minutes are zero for
-	// a public target.
+	// then; runner minutes are zero for a public target.
 	SettledAt                 time.Time         `firestore:"settled_at"`
-	SettledProviderCostMicros int64             `firestore:"settled_provider_cost_micros"`
+	SettledProviderCostMicros money.Micros      `firestore:"settled_provider_cost_micros"`
 	SettledRunnerMinutes      int64             `firestore:"settled_runner_minutes"`
 	DurationsMS               map[string]int64  `firestore:"durations_ms"`
 	EditedFiles               []string          `firestore:"edited_files"`
@@ -309,15 +307,22 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, in Finalize
 	}
 	rec.UpdatedAt = now
 	rec.SettledAt = now
-	rec.SettledProviderCostMicros = int64(money.FromUSD(rec.Tokens.Cost))
+	rec.SettledProviderCostMicros = money.FromUSD(rec.Tokens.Cost)
 	if rec.Private {
 		rec.SettledRunnerMinutes = BillableMinutes(rec.DurationsMS)
 	}
 	if err := store.PutRecord(ctx, in.RunID, rec); err != nil {
 		return rec, fmt.Errorf("writing record %s: %w", in.RunID, err)
 	}
+	// The record write and the ledger settle are two separate Firestore
+	// writes, not one transaction: if this fails after the record above
+	// already landed, the run stays double-counted (both reserved and
+	// settled) against every budget ceiling until it settles. Both writes
+	// are idempotent, so rerunning this job retries the settle safely —
+	// state that explicitly, since this failure otherwise reads as an
+	// ordinary infra error with no obvious fix.
 	if err := ledger.Settle(ctx, in.RunID); err != nil {
-		return rec, fmt.Errorf("settling run %s: %w", in.RunID, err)
+		return rec, fmt.Errorf("settling run %s (rerun this job to retry — PutRecord and Settle are both idempotent): %w", in.RunID, err)
 	}
 	return rec, nil
 }

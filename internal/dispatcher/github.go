@@ -57,29 +57,13 @@ func (g GitHub) Dispatch(ctx context.Context, c Claim) error {
 	}
 	endpoint := fmt.Sprintf("%s/repos/%s/actions/workflows/%s/dispatches",
 		g.endpoint(), c.Repo, url.PathEscape(g.Workflow))
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	action := fmt.Sprintf("dispatch run %s in %s", c.RunID, c.Repo)
+	res, err := g.do(ctx, http.MethodPost, endpoint, bytes.NewReader(body), action)
 	if err != nil {
-		return fmt.Errorf("building the dispatch request: %w", err)
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Authorization", "Bearer "+g.Token)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-GitHub-Api-Version", githubAPIVersion)
-	client := g.Client
-	if client == nil {
-		client = http.DefaultClient
-	}
-	res, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("dispatching run %s in %s: %w", c.RunID, c.Repo, err)
+		return err
 	}
 	defer func() { _ = res.Body.Close() }()
-	if res.StatusCode >= 200 && res.StatusCode < 300 {
-		return nil
-	}
-	raw, _ := io.ReadAll(io.LimitReader(res.Body, maxErrorBytes))
-	return fmt.Errorf("GitHub refused to dispatch run %s in %s: %s: %s",
-		c.RunID, c.Repo, res.Status, snippet(raw))
+	return nil
 }
 
 // Private reports whether repo is a private repository, read live from
@@ -87,26 +71,11 @@ func (g GitHub) Dispatch(ctx context.Context, c Claim) error {
 // stale the moment a repository's visibility changes.
 func (g GitHub) Private(ctx context.Context, repo string) (bool, error) {
 	endpoint := fmt.Sprintf("%s/repos/%s", g.endpoint(), repo)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	res, err := g.do(ctx, http.MethodGet, endpoint, nil, fmt.Sprintf("read repository %s", repo))
 	if err != nil {
-		return false, fmt.Errorf("building the repository request: %w", err)
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Authorization", "Bearer "+g.Token)
-	req.Header.Set("X-GitHub-Api-Version", githubAPIVersion)
-	client := g.Client
-	if client == nil {
-		client = http.DefaultClient
-	}
-	res, err := client.Do(req)
-	if err != nil {
-		return false, fmt.Errorf("reading repository %s: %w", repo, err)
+		return false, err
 	}
 	defer func() { _ = res.Body.Close() }()
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		raw, _ := io.ReadAll(io.LimitReader(res.Body, maxErrorBytes))
-		return false, fmt.Errorf("GitHub refused to read repository %s: %s: %s", repo, res.Status, snippet(raw))
-	}
 	var body struct {
 		Private bool `json:"private"`
 	}
@@ -114,6 +83,37 @@ func (g GitHub) Private(ctx context.Context, repo string) (bool, error) {
 		return false, fmt.Errorf("decoding repository %s: %w", repo, err)
 	}
 	return body.Private, nil
+}
+
+// do sends an authenticated GitHub API request and returns its response on
+// any 2xx — the caller closes its body. reqBody may be nil for a GET. action
+// names what the call was trying to do, for both the request-build error and
+// a refusal's message.
+func (g GitHub) do(ctx context.Context, method, endpoint string, reqBody io.Reader, action string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("building the request to %s: %w", action, err)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+g.Token)
+	if reqBody != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("X-GitHub-Api-Version", githubAPIVersion)
+	client := g.Client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	res, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", action, err)
+	}
+	if res.StatusCode >= 200 && res.StatusCode < 300 {
+		return res, nil
+	}
+	defer func() { _ = res.Body.Close() }()
+	raw, _ := io.ReadAll(io.LimitReader(res.Body, maxErrorBytes))
+	return nil, fmt.Errorf("GitHub refused to %s: %s: %s", action, res.Status, snippet(raw))
 }
 
 func (g GitHub) endpoint() string {
