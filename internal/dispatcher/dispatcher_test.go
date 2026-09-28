@@ -174,11 +174,25 @@ func (v fakeVisibility) Private(_ context.Context, repo string) (bool, error) {
 	return v.private[repo], nil
 }
 
+// fakeProviders reports the halt state configured for each provider.
+type fakeProviders struct {
+	halted map[string]bool
+	err    error
+}
+
+func (p fakeProviders) Halted(_ context.Context, provider string) (bool, error) {
+	if p.err != nil {
+		return false, p.err
+	}
+	return p.halted[provider], nil
+}
+
 func pollDeps(source Source, q *fakeQueue, w *fakeWorkflow) Deps {
 	return Deps{
 		Source: source, Queue: q, Workflow: w,
 		Estimator:  fakeEstimator{},
 		Visibility: fakeVisibility{},
+		Providers:  fakeProviders{},
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Now:        func() time.Time { return pollAt },
 	}
@@ -446,6 +460,57 @@ func TestAdmitCarriesTheRepositorysVisibilityOntoTheQueuedRun(t *testing.T) {
 	}
 	if len(q.queued) != 1 || !q.queued[0].Private {
 		t.Fatalf("queued = %+v, want Private carried from the visibility check", q.queued)
+	}
+}
+
+func TestPollDefersEveryCandidateWhileItsProviderIsHalted(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{
+		{RunID: "FRG-18", Repo: "octo/scratch", Priority: 1},
+		{RunID: "FRG-19", Repo: "octo/scratch", Priority: 2},
+	}}
+	deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	deps.Providers = fakeProviders{halted: map[string]bool{"opencode": true}}
+	cfg := Config{Repos: buildConfig.Repos, Budget: buildConfig.Budget, Model: "opencode/big-pickle"}
+	res, err := Poll(context.Background(), deps, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Dispatched != "" || len(q.claimed) != 0 {
+		t.Fatalf("dispatched %q, claimed %v, want nothing while the provider is halted (AC4)", res.Dispatched, q.claimed)
+	}
+	if got := deferredCeilings(res.Deferrals); !slices.Equal(got, []string{CeilingProviderHalted, CeilingProviderHalted}) {
+		t.Fatalf("deferrals = %v, want every candidate deferred as provider-halted, reconsidered next poll", got)
+	}
+}
+
+func TestPollClaimsNormallyWhenTheConfiguredProviderIsNotHalted(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{{RunID: "FRG-18", Repo: "octo/scratch", Priority: 1}}}
+	deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	// A different provider is halted; the configured one is not, so nothing withholds this candidate.
+	deps.Providers = fakeProviders{halted: map[string]bool{"openrouter": true}}
+	cfg := Config{Repos: buildConfig.Repos, Budget: buildConfig.Budget, Model: "opencode/big-pickle"}
+	res, err := Poll(context.Background(), deps, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Dispatched != "FRG-18" || len(res.Deferrals) != 0 {
+		t.Fatalf("dispatched %q, deferrals %v, want the candidate claimed (AC5)", res.Dispatched, res.Deferrals)
+	}
+}
+
+func TestPollClaimsNormallyWhenTheProviderHaltCheckErrors(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{{RunID: "FRG-18", Repo: "octo/scratch", Priority: 1}}}
+	deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	// A halt check that itself fails must not withhold every candidate — it fails open,
+	// same as the estimate/visibility checks it sits alongside.
+	deps.Providers = fakeProviders{err: errFirestore}
+	cfg := Config{Repos: buildConfig.Repos, Budget: buildConfig.Budget, Model: "opencode/big-pickle"}
+	res, err := Poll(context.Background(), deps, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Dispatched != "FRG-18" || len(res.Deferrals) != 0 {
+		t.Fatalf("dispatched %q, deferrals %v, want the candidate claimed despite the halt-check error (fail open)", res.Dispatched, res.Deferrals)
 	}
 }
 

@@ -78,7 +78,11 @@ type fakeAgent struct {
 	// eventsFn, when set, overrides events per call (its 1-based call number).
 	eventsFn func(call int) string
 	stderr   string
+	// stderrFn, when set, overrides stderr per call (its 1-based call number).
+	stderrFn func(call int) string
 	err      error
+	// errFn, when set, overrides err per call (its 1-based call number).
+	errFn func(call int) error
 }
 
 func (a *fakeAgent) Run(ctx context.Context, dir, session, prompt string, stdout, stderr io.Writer) error {
@@ -100,10 +104,17 @@ func (a *fakeAgent) Run(ctx context.Context, dir, session, prompt string, stdout
 	if _, err := io.WriteString(stdout, events); err != nil {
 		return err
 	}
-	if a.stderr != "" {
-		if _, err := io.WriteString(stderr, a.stderr); err != nil {
+	stderrText := a.stderr
+	if a.stderrFn != nil {
+		stderrText = a.stderrFn(a.calls)
+	}
+	if stderrText != "" {
+		if _, err := io.WriteString(stderr, stderrText); err != nil {
 			return err
 		}
+	}
+	if a.errFn != nil {
+		return a.errFn(a.calls)
 	}
 	return a.err
 }
@@ -306,6 +317,84 @@ func TestBuildClassifiesAnOrdinaryAgentFailureUnchanged(t *testing.T) {
 
 	if _, err := Build(context.Background(), deps, c); err == nil {
 		t.Fatal("Build succeeded with a failed agent")
+	}
+	rec := reported.last(t)
+	if rec.Outcome != OutcomeAgentFailed || rec.StopReason != StopAgentExit {
+		t.Fatalf("record = %s/%s, want the ordinary agent-failure classification", rec.Outcome, rec.StopReason)
+	}
+}
+
+func TestBuildSubstitutesTheNextModelOnAnAvailabilityFailureAndRecordsBothAttempts(t *testing.T) {
+	agent := &fakeAgent{
+		edit: edit("version.go", "package x\n"),
+		errFn: func(call int) error {
+			if call == 1 {
+				return errors.New("exit status 1")
+			}
+			return nil
+		},
+		stderrFn: func(call int) string {
+			if call == 1 {
+				return "Error: no endpoints found for this model"
+			}
+			return ""
+		},
+		events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{"input":1}}}` + "\n",
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	c := testConfig(t, initRepo(t))
+	c.Model = "opencode/big-pickle"
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 2 {
+		t.Fatalf("build agent ran %d times, want 2 (the unavailable attempt plus the substituted one)", agent.calls)
+	}
+	rec := reported.last(t)
+	if rec.Outcome != OutcomeBuilt {
+		t.Fatalf("outcome = %s, want the substituted model's build to succeed", rec.Outcome)
+	}
+	want := availabilityOrder[c.Model][0]
+	if rec.Steps[0].Model != c.Model || rec.Steps[0].Round != 1 || rec.Steps[1].Model != want || rec.Steps[1].Round != 2 {
+		t.Fatalf("steps = %+v, want the original model recorded then the substitution (AC1)", rec.Steps)
+	}
+}
+
+func TestBuildStopsWithModelUnavailableOnceTheAvailabilityOrderIsExhausted(t *testing.T) {
+	agent := &fakeAgent{stderr: "Error: no endpoints found for this model", err: errors.New("exit status 1")}
+	deps, _, reported := testDeps(validObjects(), agent)
+	c := testConfig(t, initRepo(t))
+	c.Model = "opencode/big-pickle"
+
+	if _, err := Build(context.Background(), deps, c); err == nil {
+		t.Fatal("Build succeeded with every model in the order unavailable")
+	}
+	wantAttempts := 1 + len(availabilityOrder[c.Model])
+	if agent.calls != wantAttempts {
+		t.Fatalf("build agent ran %d times, want %d (every model in the order tried once)", agent.calls, wantAttempts)
+	}
+	rec := reported.last(t)
+	if rec.Outcome != OutcomeInfraFailure || rec.StopReason != StopModelUnavailable {
+		t.Fatalf("record = %s/%s, want an infra failure once the order is exhausted (AC3)", rec.Outcome, rec.StopReason)
+	}
+	if len(rec.Steps) != wantAttempts {
+		t.Fatalf("steps = %d, want every attempt recorded (AC1)", len(rec.Steps))
+	}
+}
+
+func TestBuildNeverSubstitutesOnAnOrdinaryAgentFailureEvenWithFallbacksConfigured(t *testing.T) {
+	agent := &fakeAgent{stderr: "Error: the model returned malformed output", err: errors.New("exit status 1")}
+	deps, _, reported := testDeps(validObjects(), agent)
+	c := testConfig(t, initRepo(t))
+	c.Model = "opencode/big-pickle"
+
+	if _, err := Build(context.Background(), deps, c); err == nil {
+		t.Fatal("Build succeeded with a failed agent")
+	}
+	if agent.calls != 1 {
+		t.Fatalf("build agent ran %d times, want 1: a content/quality failure must never trigger the fallback (AC2)",
+			agent.calls)
 	}
 	rec := reported.last(t)
 	if rec.Outcome != OutcomeAgentFailed || rec.StopReason != StopAgentExit {
@@ -624,6 +713,44 @@ func TestPrePRLoopGivesUpAfterThreeRoundsStillFailing(t *testing.T) {
 	}
 }
 
+func TestPrePRLoopStillGetsThreeRebuildRoundsAfterAMidRoundModelSubstitution(t *testing.T) {
+	agent := &fakeAgent{
+		edit: edit("version.go", "package x\n"),
+		errFn: func(call int) error {
+			if call == 1 {
+				return errors.New("exit status 1")
+			}
+			return nil
+		},
+		stderrFn: func(call int) string {
+			if call == 1 {
+				return "Error: no endpoints found for this model"
+			}
+			return ""
+		},
+		events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{"input":1}}}` + "\n",
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	deps.Checks = func(context.Context, string) (string, string, error) {
+		return checkTest, "still failing", nil
+	}
+	c := testConfig(t, initRepo(t))
+	c.Model = "opencode/big-pickle"
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	want := checkLoopMaxRounds + 1 // one extra call to substitute past the unavailable model on the first rebuild pass
+	if agent.calls != want {
+		t.Fatalf("build agent ran %d times, want %d: a same-pass model substitution must not cost a rebuild round",
+			agent.calls, want)
+	}
+	rec := reported.last(t)
+	if rec.Ready {
+		t.Fatal("ready = true, want false: the checks never passed")
+	}
+}
+
 func TestPrePRLoopReviewFindingsForceADraftAndOneFixRound(t *testing.T) {
 	const finding = "the retry never bounds its attempts"
 	agent := &fakeAgent{
@@ -855,6 +982,7 @@ func TestClassifyAgentFailure(t *testing.T) {
 	}{
 		{"an allowance marker", write("Error: allowance exhausted"), OutcomeBudgetStop, StopAllowanceExhausted},
 		{"a case-insensitive marker", write("QUOTA EXCEEDED for this account"), OutcomeBudgetStop, StopAllowanceExhausted},
+		{"an availability marker", write("Error: no endpoints found for this model"), OutcomeInfraFailure, StopModelUnavailable},
 		{"an ordinary failure", write("panic: nil pointer"), OutcomeAgentFailed, StopAgentExit},
 		{"an unreadable file", filepath.Join(dir, "does-not-exist"), OutcomeAgentFailed, StopAgentExit},
 	} {
@@ -889,6 +1017,18 @@ func TestModelPatternAcceptsProviderIDs(t *testing.T) {
 	for _, model := range []string{"opencode/big-pickle", "openrouter/deepseek/deepseek-v4:free", "opencode-go/glm-5.3-flash"} {
 		if !modelPattern.MatchString(model) {
 			t.Errorf("rejected %q", model)
+		}
+	}
+}
+
+func TestProviderIsTheModelsPrefixBeforeItsFirstSlash(t *testing.T) {
+	for _, tt := range []struct{ model, want string }{
+		{"opencode/big-pickle", "opencode"},
+		{"openrouter/deepseek/deepseek-v4:free", "openrouter"},
+		{"noslash", "noslash"},
+	} {
+		if got := Provider(tt.model); got != tt.want {
+			t.Errorf("Provider(%q) = %q, want %q", tt.model, got, tt.want)
 		}
 	}
 }

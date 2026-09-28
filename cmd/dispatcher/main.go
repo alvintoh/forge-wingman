@@ -29,6 +29,7 @@ import (
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 	"github.com/alvintoh/forge-wingman/internal/money"
+	"github.com/alvintoh/forge-wingman/internal/runner"
 	"github.com/alvintoh/forge-wingman/internal/store"
 )
 
@@ -173,10 +174,11 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		Queue:      store.NewQueue(fsc),
 		Estimator:  store.NewEstimates(fsc),
 		Visibility: gh,
+		Providers:  store.NewProviders(fsc),
 		Workflow:   gh,
 		Logger:     logger,
 		Now:        time.Now,
-	}, dispatcher.Config{Repos: c.repos, Budget: budgetConfig}); err != nil {
+	}, dispatcher.Config{Repos: c.repos, Budget: budgetConfig, Model: runner.DefaultModel}); err != nil {
 		return err
 	}
 	return nil

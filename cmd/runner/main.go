@@ -1,9 +1,10 @@
 // Command runner executes one run inside a repository's GitHub Actions workflow.
 //
-//	runner ticket  -run-id <id>                      read the run record's ticket for the model job
-//	runner build   -model <provider/model> -ticket   fetch the projection, run the agent, bundle the branch, emit a summary
-//	runner pr-meta -run-id <id> -failed-gate <g>     render the PR's title and body from the run record
-//	runner record  -run-id <id> -summary <json> ...  validate the build's summary and merge it into the run record
+//	runner ticket          -run-id <id>             read the run record's ticket for the model job
+//	runner build           -model <provider/model>  fetch the projection, run the agent, bundle the branch, emit a summary
+//	runner pr-meta         -run-id <id> ...          render the PR's title and body from the run record
+//	runner record          -run-id <id> -summary ... validate the build's summary and merge it into the run record
+//	runner enable-provider -provider <name>          admit a halted provider back to dispatch (AC5)
 //
 // build exits 0 when it stops short of a branch but reported why; ticket, pr-meta
 // and record exit 1 for any run that cannot or did not succeed, so the workflow
@@ -20,6 +21,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -104,7 +106,7 @@ func loadEnv(getenv func(string) string) (env, error) {
 
 func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(string) string) error {
 	if len(args) == 0 {
-		return errors.New("usage: runner ticket|build|pr-meta|record [flags]")
+		return errors.New("usage: runner ticket|build|pr-meta|record|enable-provider [flags]")
 	}
 	e, err := loadEnv(getenv)
 	if err != nil {
@@ -122,6 +124,8 @@ func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(st
 		return prMeta(ctx, logger, e, args[1:])
 	case "record":
 		return record(ctx, logger, e, args[1:])
+	case "enable-provider":
+		return enableProvider(ctx, logger, e, args[1:])
 	default:
 		return fmt.Errorf("unknown subcommand %q", args[0])
 	}
@@ -318,11 +322,56 @@ func record(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	}
 	logger.Info("recordFinalized", "run", *runID, "attempt", *attemptID, "outcome", string(rec.Outcome),
 		"reason", string(rec.StopReason), "failedGate", rec.FailedGate)
+	if rec.Outcome == runner.OutcomeInfraFailure && rec.StopReason == runner.StopModelUnavailable && len(rec.Steps) > 0 {
+		provider := runner.Provider(rec.Steps[len(rec.Steps)-1].Model)
+		if perr := store.NewProviders(fsc).RecordInfraStop(ctx, provider, time.Now()); perr != nil {
+			logger.Error("providerInfraStopNotRecorded", "run", *runID, "provider", provider, "err", perr.Error())
+		}
+	}
+	if rec.Succeeded() && len(rec.Steps) > 0 {
+		provider := runner.Provider(rec.Steps[len(rec.Steps)-1].Model)
+		if perr := store.NewProviders(fsc).RecordSuccess(ctx, provider); perr != nil {
+			logger.Error("providerSuccessNotRecorded", "run", *runID, "provider", provider, "err", perr.Error())
+		}
+	}
 	if !rec.Succeeded() {
 		return errRunFailed
 	}
 	return nil
 }
+
+// enableProvider clears a halted provider's stop count, admitting it to
+// dispatch again (AC5) — a manual operator action, never automatic.
+func enableProvider(ctx context.Context, logger *slog.Logger, e env, args []string) error {
+	fs := flag.NewFlagSet("enable-provider", flag.ContinueOnError)
+	provider := fs.String("provider", "", "provider to admit again, e.g. opencode")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := e.identity.CheckAccount(); err != nil {
+		return err
+	}
+	if !providerPattern.MatchString(*provider) {
+		return fmt.Errorf("provider %q is not a provider name", *provider)
+	}
+	if e.project == "" {
+		return errors.New("GOOGLE_CLOUD_PROJECT is not set")
+	}
+	fsc, err := firestore.NewClient(ctx, e.project)
+	if err != nil {
+		return fmt.Errorf("firestore client: %w", err)
+	}
+	defer func() { _ = fsc.Close() }()
+	if err := store.NewProviders(fsc).ClearHalt(ctx, *provider); err != nil {
+		return err
+	}
+	logger.Info("providerEnabled", "provider", *provider)
+	return nil
+}
+
+// providerPattern is what runner.Provider extracts from a model string: the
+// same character class modelPattern requires of a model's provider segment.
+var providerPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 // recordsClient opens Firestore for a subcommand that reads or writes record runID.
 func recordsClient(ctx context.Context, project, runID string) (*firestore.Client, error) {
