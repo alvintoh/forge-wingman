@@ -70,6 +70,19 @@ func TestDecideZeroesRunnerMinutesForAPublicTarget(t *testing.T) {
 	}
 }
 
+// TestDecideNeverBlocksAPublicTargetOnAnAlreadyExhaustedRunnerCeiling is the
+// regression test for a candidate contributing zero minutes being blocked by
+// an overage entirely caused by OTHER, private-target runs this month — a
+// public target's minutes count as zero, so it can never newly breach a
+// ceiling it never touches, however exhausted that ceiling already is.
+func TestDecideNeverBlocksAPublicTargetOnAnAlreadyExhaustedRunnerCeiling(t *testing.T) {
+	fits, binding := Decide(openCodeGo, Totals{}, []money.Micros{0, 0, 0}, 0, 2500,
+		Reservation{ProviderCost: money.Dollar, RunnerMinutes: 0})
+	if !fits || binding != "" {
+		t.Fatalf("fits = %v, binding = %q, want a zero-minute candidate to fit despite the ceiling already being exhausted", fits, binding)
+	}
+}
+
 func TestDecideHardStopsOnRunnerMinutesWithNoPaymentMethodConfigured(t *testing.T) {
 	// A private target pushing total minutes past the free tier, with
 	// RatePerMinute left at its zero default, must defer rather than spend.

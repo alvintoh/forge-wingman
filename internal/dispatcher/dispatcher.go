@@ -5,7 +5,6 @@ package dispatcher
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -223,7 +222,7 @@ func admit(ctx context.Context, d Deps, c Config, issue Issue, res *Result) erro
 	}
 	private, err := d.Visibility.Private(ctx, q.Repo)
 	if err != nil {
-		d.Logger.Warn("visibilityCheckFailed", "run", q.RunID, "repo", q.Repo, "err", err.Error())
+		d.Logger.Info("visibilityCheckFailed", "run", q.RunID, "repo", q.Repo, "err", err.Error())
 		return nil
 	}
 	q.Private = private
@@ -250,7 +249,13 @@ func admitClaim(ctx context.Context, d Deps, c Config, res *Result) (Claim, bool
 	for _, cand := range candidates {
 		est, err := d.Estimator.Estimate(ctx, cand.Size)
 		if err != nil {
-			return Claim{}, false, fmt.Errorf("estimating a size-%s run: %w", cand.Size, err)
+			// A failed estimate withholds only this candidate, not the whole
+			// walk: the next poll re-reads the same candidates in the same
+			// order, so nothing is lost, and one flaky estimate must not
+			// block a lower-priority candidate whose own estimate would
+			// have succeeded.
+			d.Logger.Info("estimateFailed", "run", cand.RunID, "size", cand.Size, "err", err.Error())
+			continue
 		}
 		reservation := Reservation{ProviderCost: est.ProviderCost}
 		if cand.Private {
@@ -267,7 +272,7 @@ func admitClaim(ctx context.Context, d Deps, c Config, res *Result) (Claim, bool
 			// Another poll already claimed this row: not a budget matter.
 			continue
 		}
-		d.Logger.Warn("runDeferred", "run", cand.RunID, "ceiling", binding)
+		d.Logger.Info("runDeferred", "run", cand.RunID, "ceiling", binding)
 		res.Deferrals = append(res.Deferrals, Deferral{RunID: cand.RunID, Ceiling: binding, At: d.Now()})
 	}
 	return Claim{}, false, nil

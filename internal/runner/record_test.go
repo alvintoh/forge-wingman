@@ -180,6 +180,26 @@ func TestFinalizeRecordsWhyThereWasNoTicket(t *testing.T) {
 	}
 }
 
+// TestFinalizeNeverSettlesARunThatNeverReachedAnAgent is the regression test
+// for a stop that happens before any agent runs (identity/ticket/projection
+// checks) being marked settled anyway, at zero cost — which would otherwise
+// enter the estimator's mean as a genuine zero-cost sample and silently pull
+// every future estimate of that size down.
+func TestFinalizeNeverSettlesARunThatNeverReachedAnAgent(t *testing.T) {
+	ticketless := Record{RunID: testRunID, TicketID: "ABC-12", TicketTitle: "a title and nothing else"}
+	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", RunResult: "skipped", PRResult: "skipped"}
+	rec, err := Finalize(context.Background(), fakeRecords{testRunID: ticketless}, &fakeLedger{}, in, finalizeNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.StopReason != StopTicketMissing {
+		t.Fatalf("stop reason = %q, want %q", rec.StopReason, StopTicketMissing)
+	}
+	if !rec.SettledAt.IsZero() {
+		t.Fatalf("settled at %v, want zero — no agent ran, so no cost could have been incurred", rec.SettledAt)
+	}
+}
+
 func TestFinalizeFailsWhenTheRecordCannotBeRead(t *testing.T) {
 	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1"}
 	if _, err := Finalize(context.Background(), unreadableRecords{}, &fakeLedger{}, in, finalizeNow); err == nil {
