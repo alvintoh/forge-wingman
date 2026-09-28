@@ -26,8 +26,10 @@ func PlanOpencode(bin, model string) Opencode {
 // message must end with, since nothing external defines a plan artifact format.
 const planFileListInstruction = "Do not edit any files or run any shell commands: this phase is planning only.\n\n" +
 	"End your final response with a fenced code block listing every file you plan to add or change, " +
-	"one repository-relative path per line and nothing else in the block:\n\n" +
-	"```plan-files\npath/one.go\npath/two.go\n```"
+	"one repository-relative path per line and nothing else in the block. Include the test file " +
+	"alongside each source file you expect it to need — the build stops if it edits a file this list " +
+	"does not name:\n\n" +
+	"```plan-files\npath/one.go\npath/one_test.go\npath/two.go\n```"
 
 // PlanPrompt is the plan phase's prompt: the plan projection with the ticket
 // substituted, followed by the plan-files format instruction.

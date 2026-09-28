@@ -13,7 +13,8 @@ func TestPlanPromptEndsWithTheFileListInstruction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(got, "# Rules") || !strings.HasSuffix(got, "```plan-files\npath/one.go\npath/two.go\n```") {
+	if !strings.HasPrefix(got, "# Rules") ||
+		!strings.HasSuffix(got, "```plan-files\npath/one.go\npath/one_test.go\npath/two.go\n```") {
 		t.Fatalf("prompt = %q", got)
 	}
 }
