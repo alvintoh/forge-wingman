@@ -306,8 +306,15 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, in Finalize
 		rec.DurationsMS[string(PhasePR)] = in.PRDuration.Milliseconds()
 	}
 	rec.UpdatedAt = now
-	rec.SettledAt = now
-	rec.SettledProviderCostMicros = money.FromUSD(rec.Tokens.Cost)
+	// Settle only a run that reached an agent — one with no Steps never had
+	// the chance to incur cost (identity/ticket/projection stops all happen
+	// before any agent runs), and marking it settled anyway would enter the
+	// estimator's mean as a genuine zero-cost sample, silently pulling every
+	// future estimate of that size down (FR-22).
+	if len(rec.Steps) > 0 {
+		rec.SettledAt = now
+		rec.SettledProviderCostMicros = money.FromUSD(rec.Tokens.Cost)
+	}
 	if rec.Private {
 		rec.SettledRunnerMinutes = BillableMinutes(rec.DurationsMS)
 	}

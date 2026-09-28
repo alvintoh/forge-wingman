@@ -134,13 +134,19 @@ func (w *fakeWorkflow) Dispatch(_ context.Context, c Claim) error {
 }
 
 // fakeEstimator reports the estimate configured for each size, defaulting to
-// a zero estimate for a size it holds none for.
+// a zero estimate for a size it holds none for. errBySize fails one size
+// specifically, so a test can prove a failed estimate withholds only that
+// candidate; err fails every size.
 type fakeEstimator struct {
-	bySize map[string]Estimate
-	err    error
+	bySize    map[string]Estimate
+	err       error
+	errBySize map[string]error
 }
 
 func (e fakeEstimator) Estimate(_ context.Context, size string) (Estimate, error) {
+	if err, ok := e.errBySize[size]; ok {
+		return Estimate{}, err
+	}
 	if e.err != nil {
 		return Estimate{}, e.err
 	}
@@ -406,12 +412,28 @@ func TestPollFailsOnTheStore(t *testing.T) {
 	}
 }
 
-func TestPollFailsWhenTheEstimatorFails(t *testing.T) {
-	q := &fakeQueue{candidates: []Candidate{{RunID: "FRG-18"}}}
-	deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
-	deps.Estimator = fakeEstimator{err: errFirestore}
-	if _, err := Poll(context.Background(), deps, buildConfig); !errors.Is(err, errFirestore) {
-		t.Fatalf("err = %v, want the estimator's failure", err)
+// TestPollSkipsACandidateWhoseEstimateFails is the regression test for the
+// same class of bug as TestPollSkipsATicketWhoseVisibilityCannotBeRead: a
+// failed estimate must withhold only the one candidate it failed for, never
+// abort the whole claim walk — a lower-priority candidate whose own estimate
+// succeeds must still be considered and dispatched this poll.
+func TestPollSkipsACandidateWhoseEstimateFails(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{
+		{RunID: "FRG-18", Size: "L", Priority: 1},
+		{RunID: "FRG-9", Size: "S", Priority: 2},
+	}}
+	w := &fakeWorkflow{}
+	deps := pollDeps(fakeSource{}, q, w)
+	deps.Estimator = fakeEstimator{errBySize: map[string]error{"L": errFirestore}}
+	res, err := Poll(context.Background(), deps, buildConfig)
+	if err != nil {
+		t.Fatalf("err = %v, want the poll to continue past the failed estimate", err)
+	}
+	if res.Dispatched != "FRG-9" {
+		t.Fatalf("dispatched = %q, want the candidate whose estimate succeeded", res.Dispatched)
+	}
+	if len(q.tryClaims) != 1 || q.tryClaims[0].runID != "FRG-9" {
+		t.Fatalf("tryClaims = %+v, want only the un-failed candidate claimed", q.tryClaims)
 	}
 }
 
