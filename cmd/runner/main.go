@@ -288,7 +288,7 @@ func record(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	}
 	defer func() { _ = fsc.Close() }()
 
-	rec, err := runner.Finalize(ctx, store.NewRecords(fsc), runner.FinalizeInput{
+	rec, err := runner.Finalize(ctx, store.NewRecords(fsc), store.NewQueue(fsc), runner.FinalizeInput{
 		RunID:             *runID,
 		Identity:          e.identity,
 		AttemptID:         *attemptID,

@@ -67,10 +67,11 @@ type fakeAgent struct {
 	prompt string
 	edit   func(dir string) error
 	events string
+	stderr string
 	err    error
 }
 
-func (a *fakeAgent) Run(_ context.Context, dir, prompt string, stdout, _ io.Writer) error {
+func (a *fakeAgent) Run(_ context.Context, dir, prompt string, stdout, stderr io.Writer) error {
 	a.calls++
 	a.prompt = prompt
 	if a.edit != nil {
@@ -80,6 +81,11 @@ func (a *fakeAgent) Run(_ context.Context, dir, prompt string, stdout, _ io.Writ
 	}
 	if _, err := io.WriteString(stdout, a.events); err != nil {
 		return err
+	}
+	if a.stderr != "" {
+		if _, err := io.WriteString(stderr, a.stderr); err != nil {
+			return err
+		}
 	}
 	return a.err
 }
@@ -243,6 +249,36 @@ func TestBuildReportsAFailedAgent(t *testing.T) {
 	}
 }
 
+func TestBuildClassifiesAProviderAllowanceExhaustionAsABudgetStopNotAgentFailed(t *testing.T) {
+	agent := &fakeAgent{events: "{}\n", stderr: "Error: allowance exhausted for this billing period",
+		err: errors.New("exit status 1")}
+	deps, _, reported := testDeps(validObjects(), agent)
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err == nil {
+		t.Fatal("Build succeeded with a failed agent")
+	}
+	rec := reported.last(t)
+	if rec.Outcome != OutcomeBudgetStop || rec.StopReason != StopAllowanceExhausted {
+		t.Fatalf("record = %s/%s, want a budget stop never escalated by FR-13", rec.Outcome, rec.StopReason)
+	}
+}
+
+func TestBuildClassifiesAnOrdinaryAgentFailureUnchanged(t *testing.T) {
+	agent := &fakeAgent{events: "{}\n", stderr: "Error: the model returned malformed output",
+		err: errors.New("exit status 1")}
+	deps, _, reported := testDeps(validObjects(), agent)
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err == nil {
+		t.Fatal("Build succeeded with a failed agent")
+	}
+	rec := reported.last(t)
+	if rec.Outcome != OutcomeAgentFailed || rec.StopReason != StopAgentExit {
+		t.Fatalf("record = %s/%s, want the ordinary agent-failure classification", rec.Outcome, rec.StopReason)
+	}
+}
+
 func initRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -285,6 +321,35 @@ func TestBuildStopsOnAnInvalidModel(t *testing.T) {
 			}
 			if agent.calls != 0 || reported.last(t).StopReason != StopModelInvalid {
 				t.Fatalf("calls %d, reason %s", agent.calls, reported.last(t).StopReason)
+			}
+		})
+	}
+}
+
+func TestClassifyAgentFailure(t *testing.T) {
+	dir := t.TempDir()
+	write := func(content string) string {
+		path := filepath.Join(dir, "stderr-"+strings.ReplaceAll(content, " ", "_"))
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	for _, tt := range []struct {
+		name       string
+		path       string
+		wantOut    Outcome
+		wantReason StopReason
+	}{
+		{"an allowance marker", write("Error: allowance exhausted"), OutcomeBudgetStop, StopAllowanceExhausted},
+		{"a case-insensitive marker", write("QUOTA EXCEEDED for this account"), OutcomeBudgetStop, StopAllowanceExhausted},
+		{"an ordinary failure", write("panic: nil pointer"), OutcomeAgentFailed, StopAgentExit},
+		{"an unreadable file", filepath.Join(dir, "does-not-exist"), OutcomeAgentFailed, StopAgentExit},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			gotOut, gotReason := classifyAgentFailure(tt.path)
+			if gotOut != tt.wantOut || gotReason != tt.wantReason {
+				t.Fatalf("classifyAgentFailure = %s/%s, want %s/%s", gotOut, gotReason, tt.wantOut, tt.wantReason)
 			}
 		})
 	}
