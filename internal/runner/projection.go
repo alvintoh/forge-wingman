@@ -13,6 +13,9 @@ const DefaultPointer = "projections/current"
 // buildProjectionFile is the build projection's name in tools/projection/gen_projection.py.
 const buildProjectionFile = "projection-build.md"
 
+// planProjectionFile is the plan projection's name in tools/projection/gen_projection.py.
+const planProjectionFile = "projection-plan.md"
+
 // ErrObjectNotFound is what an ObjectReader returns for an absent object.
 var ErrObjectNotFound = errors.New("object not found")
 
@@ -43,6 +46,15 @@ type Projection struct {
 
 // FetchBuildProjection resolves the pointer, then reads the build projection it names.
 func FetchBuildProjection(ctx context.Context, r ObjectReader, pointer string) (Projection, error) {
+	return fetchProjection(ctx, r, pointer, buildProjectionFile)
+}
+
+// FetchPlanProjection resolves the pointer, then reads the plan projection it names.
+func FetchPlanProjection(ctx context.Context, r ObjectReader, pointer string) (Projection, error) {
+	return fetchProjection(ctx, r, pointer, planProjectionFile)
+}
+
+func fetchProjection(ctx context.Context, r ObjectReader, pointer, file string) (Projection, error) {
 	raw, err := readRequired(ctx, r, pointer)
 	if err != nil {
 		return Projection{}, err
@@ -51,7 +63,7 @@ func FetchBuildProjection(ctx context.Context, r ObjectReader, pointer string) (
 	if !shaPattern.MatchString(sha) {
 		return Projection{}, fmt.Errorf("%s: %w", pointer, ErrPointerInvalid)
 	}
-	text, err := readRequired(ctx, r, "projections/"+sha+"/"+buildProjectionFile)
+	text, err := readRequired(ctx, r, "projections/"+sha+"/"+file)
 	if err != nil {
 		return Projection{}, err
 	}

@@ -77,10 +77,46 @@ func SumUsage(r io.Reader) (Usage, error) {
 	return u, nil
 }
 
+// FinalText returns the last text part in opencode's JSON event stream, empty
+// when none appeared.
+//
+// A text part carries the message accumulated so far rather than a delta, so
+// the last one seen holds the final text; lines that are not JSON events are
+// skipped, the same as SumUsage.
+func FinalText(r io.Reader) (string, error) {
+	var text string
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, min(64*1024, maxEventLine)), maxEventLine)
+	for sc.Scan() {
+		var e struct {
+			Type string `json:"type"`
+			Part struct {
+				Text string `json:"text"`
+			} `json:"part"`
+		}
+		if json.Unmarshal(sc.Bytes(), &e) != nil || e.Type != "text" {
+			continue
+		}
+		text = e.Part.Text
+	}
+	if err := sc.Err(); err != nil {
+		return "", fmt.Errorf("reading events: %w", err)
+	}
+	return text, nil
+}
+
 // Opencode runs the opencode CLI non-interactively.
+//
+// Agent and ConfigContent together select a restricted agent profile: Agent
+// names it on the command line, and ConfigContent (opencode's own
+// OPENCODE_CONFIG_CONTENT variable) defines its permissions inline, since
+// there is no file to point opencode at. Both are empty for the default,
+// unrestricted agent.
 type Opencode struct {
-	Bin   string
-	Model string
+	Bin           string
+	Model         string
+	Agent         string
+	ConfigContent string
 }
 
 // Run sends the prompt on stdin and streams the JSON events to stdout.
@@ -88,9 +124,16 @@ type Opencode struct {
 // The agent runs in its own process group, terminated when ctx ends and killed
 // once Run returns.
 func (o Opencode) Run(ctx context.Context, dir, prompt string, stdout, stderr io.Writer) error {
-	cmd := exec.CommandContext(ctx, o.Bin, "run", "--format", "json", "--auto", "-m", o.Model, "--dir", dir)
+	args := []string{"run", "--format", "json", "--auto", "-m", o.Model, "--dir", dir}
+	if o.Agent != "" {
+		args = append(args, "--agent", o.Agent)
+	}
+	cmd := exec.CommandContext(ctx, o.Bin, args...)
 	cmd.Dir = dir
 	cmd.Env = agentEnv(os.Environ())
+	if o.ConfigContent != "" {
+		cmd.Env = append(cmd.Env, "OPENCODE_CONFIG_CONTENT="+o.ConfigContent)
+	}
 	cmd.Stdin = strings.NewReader(prompt)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr

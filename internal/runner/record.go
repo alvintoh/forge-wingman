@@ -18,6 +18,7 @@ type Phase string
 const (
 	PhaseProjection Phase = "projection"
 	PhaseWorktree   Phase = "worktree"
+	PhasePlan       Phase = "plan"
 	PhaseBuild      Phase = "build"
 	PhaseCommit     Phase = "commit"
 	PhasePR         Phase = "pr"
@@ -68,6 +69,8 @@ const (
 	// StopAllowanceExhausted is a provider allowance-exhaustion error surfaced
 	// mid-build, recorded as a budget stop rather than an agent failure (FR-22).
 	StopAllowanceExhausted StopReason = "allowance-exhausted"
+	StopPlanInvalid        StopReason = "plan-invalid"
+	StopOutOfPlan          StopReason = "out-of-plan"
 )
 
 // gates are the checks run.yml's check job runs on the branch, in order.
