@@ -140,13 +140,20 @@ func Decide(cfg BudgetConfig, reserved Totals, windowSettled []money.Micros, cas
 		}
 	}
 
-	totalMinutes := reserved.RunnerMinutes + cashSettledMinutes + estimate.RunnerMinutes
+	// A candidate contributing zero runner minutes (a public target) can
+	// never newly breach this ceiling, however much prior private-target
+	// work has already consumed — so it is skipped entirely rather than
+	// being blocked by an overage it played no part in (FR-22, NFR-1: "a
+	// public target's [runner minutes] count as zero").
 	var runnerCost money.Micros
-	if over := totalMinutes - cfg.Runner.FreeMinutes; over > 0 {
-		if cfg.Runner.RatePerMinute <= 0 {
-			return false, CeilingRunnerMinutes
+	if estimate.RunnerMinutes > 0 {
+		totalMinutes := reserved.RunnerMinutes + cashSettledMinutes + estimate.RunnerMinutes
+		if over := totalMinutes - cfg.Runner.FreeMinutes; over > 0 {
+			if cfg.Runner.RatePerMinute <= 0 {
+				return false, CeilingRunnerMinutes
+			}
+			runnerCost = money.Micros(over) * cfg.Runner.RatePerMinute
 		}
-		runnerCost = money.Micros(over) * cfg.Runner.RatePerMinute
 	}
 
 	// A windowed provider's own cost is checked against its windows above,
