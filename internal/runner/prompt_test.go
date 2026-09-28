@@ -6,12 +6,12 @@ import (
 	"testing"
 )
 
-func TestBuildPrompt(t *testing.T) {
+func TestRenderPrompt(t *testing.T) {
 	ticket := Ticket{ID: "t-1", Title: "feat: the thing", Size: "S", Body: "Do the thing."}
 
 	t.Run("projection verbatim first, ticket last", func(t *testing.T) {
 		projection := "# Rules\n\nbe careful\n\n# The ticket\n\n" + ticketSentinel + "\n"
-		got, err := BuildPrompt(projection, ticket)
+		got, err := RenderPrompt(projection, ticket)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -38,7 +38,7 @@ func TestBuildPrompt(t *testing.T) {
 		{"content after the sentinel", "# Rules\n" + ticketSentinel + "\nmore rules\n"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := BuildPrompt(tt.projection, ticket); !errors.Is(err, errSentinel) {
+			if _, err := RenderPrompt(tt.projection, ticket); !errors.Is(err, errSentinel) {
 				t.Fatalf("err = %v, want errSentinel", err)
 			}
 		})

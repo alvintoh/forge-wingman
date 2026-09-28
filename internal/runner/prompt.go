@@ -12,8 +12,8 @@ const ticketSentinel = "<<<TICKET>>>"
 // whose placeholder is missing, repeated, or not last.
 var errSentinel = errors.New("projection must be rules followed by exactly one trailing ticket sentinel")
 
-// BuildPrompt returns the projection verbatim with its sentinel replaced by the ticket.
-func BuildPrompt(projection string, t Ticket) (string, error) {
+// RenderPrompt returns the projection verbatim with its sentinel replaced by the ticket.
+func RenderPrompt(projection string, t Ticket) (string, error) {
 	head, tail, found := strings.Cut(projection, ticketSentinel)
 	if !found || strings.TrimSpace(head) == "" || strings.TrimSpace(tail) != "" {
 		return "", errSentinel

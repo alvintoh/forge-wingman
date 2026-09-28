@@ -82,6 +82,12 @@ func TestParseSummaryRejects(t *testing.T) {
 			s.Outcome, s.StopReason, s.Phase = OutcomeAgentFailed, StopAgentExit, PhaseBuild
 			s.Steps[0].CompletionsObject = ""
 		}},
+		{"a plan stop with no branch", func(s *Summary) {
+			s.Outcome, s.StopReason, s.Phase, s.Branch = OutcomeStopped, StopPlanInvalid, PhasePlan, ""
+		}},
+		{"a plan agent failure with a build-phase step", func(s *Summary) {
+			s.Outcome, s.StopReason, s.Phase = OutcomeAgentFailed, StopAgentExit, PhasePlan
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -157,11 +163,17 @@ func TestEncodeFitsTheLimitAndStaysOnOneLine(t *testing.T) {
 func TestParseSummaryAcceptsEveryBuildEnding(t *testing.T) {
 	for e := range buildEndings {
 		s := Summary{Outcome: e.outcome, StopReason: e.reason, Phase: e.phase, StartedAt: finalizeNow}
-		if e.phase == PhaseBuild || e.phase == PhaseCommit {
+		if e.phase == PhasePlan || e.phase == PhaseBuild || e.phase == PhaseCommit {
 			s.Branch = BranchName(testTicket.BranchSegment(), "1-1")
+		}
+		agentPhase := e.phase
+		if e.phase == PhaseCommit {
+			agentPhase = PhaseBuild
+		}
+		if e.phase == PhaseCommit || e.outcome == OutcomeAgentFailed || e.outcome == OutcomeBudgetStop {
 			s.Steps = []Step{{
-				Phase: PhaseBuild, Round: 1, Model: "opencode/big-pickle",
-				CompletionsObject: completionsObject("1-1", PhaseBuild, 1),
+				Phase: agentPhase, Round: 1, Model: "opencode/big-pickle",
+				CompletionsObject: completionsObject("1-1", agentPhase, 1),
 			}}
 		}
 		raw, err := s.Encode()

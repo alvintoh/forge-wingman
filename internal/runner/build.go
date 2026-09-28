@@ -30,14 +30,18 @@ type Agent interface {
 	Run(ctx context.Context, dir, prompt string, stdout, stderr io.Writer) error
 }
 
-// BuildDeps are the stores and the agent a build talks to, and where it reports.
+// BuildDeps are the stores and the agents a build talks to, and where it reports.
 type BuildDeps struct {
 	Projections ObjectReader
 	Completions ObjectCreator
-	Agent       Agent
-	Report      func(Summary) error
-	Logger      *slog.Logger
-	Now         func() time.Time
+	// Agent runs the build phase, with the repository open for edits.
+	Agent Agent
+	// PlanAgent runs the plan phase for an M or L ticket, restricted so it
+	// cannot edit the worktree or run shell commands.
+	PlanAgent Agent
+	Report    func(Summary) error
+	Logger    *slog.Logger
+	Now       func() time.Time
 }
 
 // BuildConfig identifies one build.
@@ -81,12 +85,14 @@ func BranchName(segment, attemptID string) string {
 	return "wingman/" + segment + "-" + attemptID
 }
 
-// Build checks the identity and the ticket, fetches the projection, runs the
-// agent in a fresh worktree, and commits and bundles what it changed.
+// Build checks the identity and the ticket, fetches the projection, plans an M
+// or L ticket with edit and bash denied, runs the build agent in a fresh
+// worktree, and commits and bundles what it changed.
 //
 // The summary is reported on every return path, a panic included. The agent
 // never runs unless the identity matches, the ticket is buildable, the model is
-// well formed and the projection was found and valid.
+// well formed and the projection was found and valid. A build that edits a
+// file outside its plan is stopped rather than committed.
 func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, err error) {
 	sum := Summary{DurationsMS: map[string]int64{}, StartedAt: d.Now()}
 	defer func() {
@@ -148,7 +154,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		}
 		sum.RuleStackSHA = p.SHA
 		d.Logger.Info("projectionFetched", "sha", p.SHA)
-		prompt, err = BuildPrompt(p.Text, c.Ticket)
+		prompt, err = RenderPrompt(p.Text, c.Ticket)
 		if err != nil {
 			return stopWith(OutcomeStopped, StopProjectionInvalid, err)
 		}
@@ -171,8 +177,40 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		return BuildResult{}, err
 	}
 
+	var planFiles []string
+	if c.Ticket.Size != "S" {
+		if err := timed(PhasePlan, func() error {
+			p, err := FetchPlanProjection(ctx, d.Projections, c.Pointer)
+			var missing *MissingError
+			switch {
+			case errors.As(err, &missing):
+				return stopWith(OutcomeStopped, StopProjectionMissing, err)
+			case errors.Is(err, ErrPointerInvalid):
+				return stopWith(OutcomeStopped, StopProjectionInvalid, err)
+			case err != nil:
+				return stopWith(OutcomeInfraFailure, StopProjectionRead, err)
+			}
+			planPrompt, err := PlanPrompt(p.Text, c.Ticket)
+			if err != nil {
+				return stopWith(OutcomeStopped, StopProjectionInvalid, err)
+			}
+			text, err := runAgent(ctx, d, c, PhasePlan, d.PlanAgent, wt.Dir, planPrompt, &sum)
+			if err != nil {
+				return err
+			}
+			if planFiles, err = parsePlanFiles(text); err != nil {
+				return stopWith(OutcomeStopped, StopPlanInvalid, err)
+			}
+			d.Logger.Info("planFilesParsed", "files", len(planFiles))
+			return nil
+		}); err != nil {
+			return BuildResult{}, err
+		}
+	}
+
 	if err := timed(PhaseBuild, func() error {
-		return runAgent(ctx, d, c, wt.Dir, prompt, &sum)
+		_, err := runAgent(ctx, d, c, PhaseBuild, d.Agent, wt.Dir, prompt, &sum)
+		return err
 	}); err != nil {
 		return BuildResult{}, err
 	}
@@ -203,6 +241,11 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 			sum.Outcome = OutcomeNoChanges
 			return nil
 		}
+		if c.Ticket.Size != "S" {
+			if extra := outOfPlanFiles(files, planFiles); len(extra) > 0 {
+				return stopWith(OutcomeStopped, StopOutOfPlan, fmt.Errorf("edited outside the plan: %s", strings.Join(extra, ", ")))
+			}
+		}
 		if err := wt.CheckSecret(ctx, c.Secret); err != nil {
 			if errors.Is(err, ErrSecretInBranch) {
 				return stopWith(OutcomeStopped, StopSecretInBranch, err)
@@ -222,24 +265,24 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 	return res, nil
 }
 
-// runAgent runs the agent under its own deadline with its events captured in a
-// file, uploads them to the completions bucket, then appends the round's usage to
-// the summary as a Step.
-func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, dir, prompt string, sum *Summary) error {
+// runAgent runs agent under its own deadline with its events captured in a
+// file, uploads them to the completions bucket, appends the round's usage to
+// the summary as a Step for phase, and returns the agent's final text.
+func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, phase Phase, agent Agent, dir, prompt string, sum *Summary) (string, error) {
 	const round = 1
 	start := d.Now()
-	completions := completionsObject(c.AttemptID, PhaseBuild, round)
+	completions := completionsObject(c.AttemptID, phase, round)
 	stderrObject := strings.TrimSuffix(completions, ".jsonl") + ".stderr.log"
-	events := filepath.Join(c.TempDir, "completions-"+c.AttemptID+".jsonl")
-	stderrPath := filepath.Join(c.TempDir, "opencode-"+c.AttemptID+".stderr")
+	events := filepath.Join(c.TempDir, "completions-"+c.AttemptID+"-"+string(phase)+".jsonl")
+	stderrPath := filepath.Join(c.TempDir, "opencode-"+c.AttemptID+"-"+string(phase)+".stderr")
 	out, err := os.Create(events)
 	if err != nil {
-		return stopWith(OutcomeInfraFailure, StopCompletions, err)
+		return "", stopWith(OutcomeInfraFailure, StopCompletions, err)
 	}
 	defer func() { _ = out.Close() }()
 	errOut, err := os.Create(stderrPath)
 	if err != nil {
-		return stopWith(OutcomeInfraFailure, StopCompletions, err)
+		return "", stopWith(OutcomeInfraFailure, StopCompletions, err)
 	}
 	defer func() { _ = errOut.Close() }()
 
@@ -248,7 +291,7 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, dir, prompt strin
 		timeout = defaultAgentTimeout
 	}
 	agentCtx, cancel := context.WithTimeout(ctx, timeout)
-	runErr := d.Agent.Run(agentCtx, dir, prompt, out, errOut)
+	runErr := agent.Run(agentCtx, dir, prompt, out, errOut)
 	timedOut := errors.Is(agentCtx.Err(), context.DeadlineExceeded)
 	cancel()
 
@@ -257,17 +300,17 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, dir, prompt strin
 		f    *os.File
 	}{{completions, out}, {stderrObject, errOut}} {
 		if _, err := u.f.Seek(0, io.SeekStart); err != nil {
-			return stopWith(OutcomeInfraFailure, StopCompletions, err)
+			return "", stopWith(OutcomeInfraFailure, StopCompletions, err)
 		}
 		uctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), uploadTimeout)
 		err := d.Completions.CreateObject(uctx, u.name, u.f)
 		cancel()
 		if err != nil {
-			return stopWith(OutcomeInfraFailure, StopCompletions, fmt.Errorf("uploading %s: %w", u.name, err))
+			return "", stopWith(OutcomeInfraFailure, StopCompletions, fmt.Errorf("uploading %s: %w", u.name, err))
 		}
 	}
 
-	step := Step{Phase: PhaseBuild, Round: round, Model: c.Model, CompletionsObject: completions}
+	step := Step{Phase: phase, Round: round, Model: c.Model, CompletionsObject: completions}
 	if _, err := out.Seek(0, io.SeekStart); err != nil {
 		sum.UsageWarning = err.Error()
 	} else if usage, err := SumUsage(out); err != nil {
@@ -275,19 +318,24 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, dir, prompt strin
 	} else {
 		step.Tokens = usage
 	}
+	var text string
+	if _, err := out.Seek(0, io.SeekStart); err == nil {
+		text, _ = FinalText(out)
+	}
 	step.DurationMS = d.Now().Sub(start).Milliseconds()
 	sum.Steps = append(sum.Steps, step)
-	d.Logger.Info("agentFinished", "steps", step.Tokens.Steps, "input", step.Tokens.Input, "output", step.Tokens.Output,
-		"cacheRead", step.Tokens.CacheRead, "cost", step.Tokens.Cost, "usageWarning", sum.UsageWarning != "")
+	d.Logger.Info("agentFinished", "phase", string(phase), "steps", step.Tokens.Steps, "input", step.Tokens.Input,
+		"output", step.Tokens.Output, "cacheRead", step.Tokens.CacheRead, "cost", step.Tokens.Cost,
+		"usageWarning", sum.UsageWarning != "")
 
 	switch {
 	case timedOut:
-		return stopWith(OutcomeAgentFailed, StopAgentTimeout, fmt.Errorf("agent exceeded %s", timeout))
+		return text, stopWith(OutcomeAgentFailed, StopAgentTimeout, fmt.Errorf("agent exceeded %s", timeout))
 	case runErr != nil:
 		outcome, reason := classifyAgentFailure(stderrPath)
-		return stopWith(outcome, reason, runErr)
+		return text, stopWith(outcome, reason, runErr)
 	}
-	return nil
+	return text, nil
 }
 
 // allowanceMarkers are phrases assumed to appear in the agent's stderr when
