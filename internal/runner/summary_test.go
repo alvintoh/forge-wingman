@@ -88,6 +88,9 @@ func TestParseSummaryRejects(t *testing.T) {
 		{"a plan agent failure with a build-phase step", func(s *Summary) {
 			s.Outcome, s.StopReason, s.Phase = OutcomeAgentFailed, StopAgentExit, PhasePlan
 		}},
+		{"a budget stop with no build step", func(s *Summary) {
+			s.Outcome, s.StopReason, s.Phase, s.Steps = OutcomeBudgetStop, StopAllowanceExhausted, PhaseBuild, nil
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
