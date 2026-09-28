@@ -76,6 +76,14 @@ var buildEndings = func() map[ending]bool {
 		{OutcomeStopped, StopProjectionInvalid, PhaseProjection}:   true,
 		{OutcomeInfraFailure, StopProjectionRead, PhaseProjection}: true,
 		{OutcomeInfraFailure, StopWorktree, PhaseWorktree}:         true,
+		{OutcomeStopped, StopProjectionMissing, PhasePlan}:         true,
+		{OutcomeStopped, StopProjectionInvalid, PhasePlan}:         true,
+		{OutcomeInfraFailure, StopProjectionRead, PhasePlan}:       true,
+		{OutcomeInfraFailure, StopCompletions, PhasePlan}:          true,
+		{OutcomeAgentFailed, StopAgentTimeout, PhasePlan}:          true,
+		{OutcomeAgentFailed, StopAgentExit, PhasePlan}:             true,
+		{OutcomeStopped, StopPlanInvalid, PhasePlan}:               true,
+		{OutcomeBudgetStop, StopAllowanceExhausted, PhasePlan}:     true,
 		{OutcomeInfraFailure, StopCompletions, PhaseBuild}:         true,
 		{OutcomeAgentFailed, StopAgentTimeout, PhaseBuild}:         true,
 		{OutcomeAgentFailed, StopAgentExit, PhaseBuild}:            true,
@@ -84,17 +92,18 @@ var buildEndings = func() map[ending]bool {
 		{OutcomeStopped, StopHeadMoved, PhaseCommit}:               true,
 		{OutcomeInfraFailure, StopCommit, PhaseCommit}:             true,
 		{OutcomeStopped, StopSecretInBranch, PhaseCommit}:          true,
+		{OutcomeStopped, StopOutOfPlan, PhaseCommit}:               true,
 		{OutcomeNoChanges, "", PhaseCommit}:                        true,
 		{OutcomeBuilt, "", PhaseCommit}:                            true,
 	}
-	for _, p := range []Phase{PhaseProjection, PhaseWorktree, PhaseBuild, PhaseCommit} {
+	for _, p := range []Phase{PhaseProjection, PhaseWorktree, PhasePlan, PhaseBuild, PhaseCommit} {
 		m[ending{OutcomeInfraFailure, StopPanic, p}] = true
 	}
 	return m
 }()
 
 var buildPhases = map[Phase]bool{
-	PhaseProjection: true, PhaseWorktree: true, PhaseBuild: true, PhaseCommit: true,
+	PhaseProjection: true, PhaseWorktree: true, PhasePlan: true, PhaseBuild: true, PhaseCommit: true,
 }
 
 // SetupSummary is the summary of a build that failed before it could start.
@@ -176,13 +185,17 @@ func (s Summary) validate(attemptID string, t Ticket, now time.Time) error {
 			truncate(string(s.Outcome), logErrorLimit), truncate(string(s.StopReason), logErrorLimit),
 			truncate(string(s.Phase), logErrorLimit))
 	}
-	// A build names its branch once the worktree exists and gains a build step once
-	// the agent's events are uploaded, so an ending past each point that lacks the
-	// field did not come from a build.
-	if (s.Phase == PhaseBuild || s.Phase == PhaseCommit) && s.Branch == "" {
+	// A build names its branch once the worktree exists and gains a step for
+	// whichever phase's agent ran once that agent's events are uploaded, so an
+	// ending past each point that lacks the field did not come from a build.
+	if (s.Phase == PhasePlan || s.Phase == PhaseBuild || s.Phase == PhaseCommit) && s.Branch == "" {
 		return errors.New("an ending past the worktree names no branch")
 	}
-	if (s.Phase == PhaseCommit || s.Outcome == OutcomeAgentFailed || s.Outcome == OutcomeBudgetStop) && !hasBuildStep(s.Steps) {
+	agentStep := s.Phase
+	if s.Phase == PhaseCommit {
+		agentStep = PhaseBuild
+	}
+	if (s.Phase == PhaseCommit || s.Outcome == OutcomeAgentFailed || s.Outcome == OutcomeBudgetStop) && !hasStep(s.Steps, agentStep) {
 		return errors.New("an ending past the worktree names no build step")
 	}
 	for _, step := range s.Steps {
@@ -235,9 +248,9 @@ func (u Usage) validate() error {
 	return nil
 }
 
-func hasBuildStep(steps []Step) bool {
+func hasStep(steps []Step, phase Phase) bool {
 	for _, st := range steps {
-		if st.Phase == PhaseBuild {
+		if st.Phase == phase {
 			return true
 		}
 	}

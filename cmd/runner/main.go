@@ -177,6 +177,7 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 		Projections: store.NewBucket(gcs, e.project+"-projections"),
 		Completions: store.NewBucket(gcs, e.project+"-completions"),
 		Agent:       runner.Opencode{Bin: "opencode", Model: *model},
+		PlanAgent:   runner.PlanOpencode("opencode", *model),
 		Report:      func(s runner.Summary) error { return writeSummary(e.output, s) },
 		Logger:      logger,
 		Now:         time.Now,

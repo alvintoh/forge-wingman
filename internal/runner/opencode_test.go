@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -39,6 +40,36 @@ func TestSumUsage(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Fatalf("usage = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFinalText(t *testing.T) {
+	textEvent := func(text string) string {
+		return `{"type":"text","part":{"type":"text","text":` + strconv.Quote(text) + `}}`
+	}
+	tests := []struct {
+		name   string
+		stream string
+		want   string
+	}{
+		{"no text event", `{"type":"step_finish","part":{}}`, ""},
+		{"one text event", textEvent("hello"), "hello"},
+		{"later events accumulate, so the last wins", strings.Join([]string{
+			textEvent("## plan\n\nfile"),
+			`{"type":"step_finish","part":{}}`,
+			textEvent("## plan\n\nfile one\nfile two"),
+		}, "\n"), "## plan\n\nfile one\nfile two"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := FinalText(strings.NewReader(tt.stream))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("text = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -94,5 +125,38 @@ func TestOpencodeRunPassesPromptOnStdin(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "step_finish") {
 		t.Fatal("events did not reach stdout")
+	}
+}
+
+func TestOpencodeRunPassesTheRestrictedAgentAndItsConfig(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake opencode is a shell script, which Windows cannot execute")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "opencode")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > args.txt\nenv > env.txt\ncat > /dev/null\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr strings.Builder
+	agent := PlanOpencode(bin, "p/m")
+	if err := agent.Run(context.Background(), dir, "prompt", &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	gotArgs, err := os.ReadFile(filepath.Join(dir, "args.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantArgs := "run\n--format\njson\n--auto\n-m\np/m\n--dir\n" + dir + "\n--agent\n" + planAgentName + "\n"
+	if string(gotArgs) != wantArgs {
+		t.Fatalf("args = %q, want %q", gotArgs, wantArgs)
+	}
+	gotEnv, err := os.ReadFile(filepath.Join(dir, "env.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(gotEnv), "OPENCODE_CONFIG_CONTENT="+planAgentConfig) {
+		t.Fatalf("agent env carries no restricted config:\n%s", gotEnv)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -276,6 +277,155 @@ func TestBuildClassifiesAnOrdinaryAgentFailureUnchanged(t *testing.T) {
 	rec := reported.last(t)
 	if rec.Outcome != OutcomeAgentFailed || rec.StopReason != StopAgentExit {
 		t.Fatalf("record = %s/%s, want the ordinary agent-failure classification", rec.Outcome, rec.StopReason)
+	}
+}
+
+// planEvent is one opencode text event carrying the plan agent's final message.
+func planEvent(text string) string {
+	return `{"type":"text","part":{"type":"text","text":` + strconv.Quote(text) + `}}` + "\n"
+}
+
+func TestBuildSkipsThePlanPhaseForAnSTicket(t *testing.T) {
+	buildAgent := &fakeAgent{edit: func(dir string) error {
+		return os.WriteFile(filepath.Join(dir, "version.go"), []byte("package x\n"), 0o600)
+	}}
+	planAgent := &fakeAgent{}
+	deps, _, reported := testDeps(validObjects(), buildAgent)
+	deps.PlanAgent = planAgent
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if planAgent.calls != 0 {
+		t.Fatalf("plan agent ran %d times for an S ticket, want 0", planAgent.calls)
+	}
+	rec := reported.last(t)
+	if rec.Outcome != OutcomeBuilt {
+		t.Fatalf("outcome = %s/%s", rec.Outcome, rec.StopReason)
+	}
+	if _, ok := rec.DurationsMS[string(PhasePlan)]; ok {
+		t.Fatal("an S ticket recorded a plan phase duration")
+	}
+}
+
+func TestBuildRunsThePlanPhaseForAnMOrLTicket(t *testing.T) {
+	planAgent := &fakeAgent{events: planEvent("plan\n\n```plan-files\nversion.go\n```")}
+	buildAgent := &fakeAgent{edit: func(dir string) error {
+		return os.WriteFile(filepath.Join(dir, "version.go"), []byte("package x\n"), 0o600)
+	}}
+	objects := validObjects()
+	objects["projections/"+testSHA+"/"+planProjectionFile] = []byte("# Plan rules\n\n" + ticketSentinel)
+	deps, _, reported := testDeps(objects, buildAgent)
+	deps.PlanAgent = planAgent
+	c := testConfig(t, initRepo(t))
+	c.Ticket.Size = "M"
+
+	res, err := Build(context.Background(), deps, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Changed {
+		t.Fatal("build did not change anything")
+	}
+	if planAgent.calls != 1 || !strings.HasPrefix(planAgent.prompt, "# Plan rules") ||
+		!strings.Contains(planAgent.prompt, "plan-files") {
+		t.Fatalf("plan agent calls %d, prompt %q", planAgent.calls, planAgent.prompt)
+	}
+	rec := reported.last(t)
+	if rec.Outcome != OutcomeBuilt {
+		t.Fatalf("outcome = %s/%s", rec.Outcome, rec.StopReason)
+	}
+	var phases []Phase
+	for _, st := range rec.Steps {
+		phases = append(phases, st.Phase)
+	}
+	if !slices.Equal(phases, []Phase{PhasePlan, PhaseBuild}) {
+		t.Fatalf("steps = %v, want the plan phase then the build phase", phases)
+	}
+}
+
+func TestBuildStopsWhenTheBuildEditsOutsideThePlan(t *testing.T) {
+	planAgent := &fakeAgent{events: planEvent("```plan-files\nversion.go\n```")}
+	buildAgent := &fakeAgent{edit: func(dir string) error {
+		return os.WriteFile(filepath.Join(dir, "extra.go"), []byte("package x\n"), 0o600)
+	}}
+	objects := validObjects()
+	objects["projections/"+testSHA+"/"+planProjectionFile] = []byte("# Plan rules\n\n" + ticketSentinel)
+	deps, _, reported := testDeps(objects, buildAgent)
+	deps.PlanAgent = planAgent
+	c := testConfig(t, initRepo(t))
+	c.Ticket.Size = "M"
+
+	res, err := Build(context.Background(), deps, c)
+	if err == nil || res.Changed {
+		t.Fatal("Build committed a change outside its plan")
+	}
+	rec := reported.last(t)
+	if rec.Outcome != OutcomeStopped || rec.StopReason != StopOutOfPlan {
+		t.Fatalf("record = %s/%s", rec.Outcome, rec.StopReason)
+	}
+	if !strings.Contains(rec.StopDetail, "extra.go") {
+		t.Fatalf("stop detail = %q, want it to name extra.go", rec.StopDetail)
+	}
+}
+
+func TestBuildStopsWhenThePlanAgentNamesNoFiles(t *testing.T) {
+	planAgent := &fakeAgent{events: planEvent("no file list here")}
+	buildAgent := &fakeAgent{}
+	objects := validObjects()
+	objects["projections/"+testSHA+"/"+planProjectionFile] = []byte("# Plan rules\n\n" + ticketSentinel)
+	deps, _, reported := testDeps(objects, buildAgent)
+	deps.PlanAgent = planAgent
+	c := testConfig(t, initRepo(t))
+	c.Ticket.Size = "L"
+
+	if _, err := Build(context.Background(), deps, c); err == nil {
+		t.Fatal("Build succeeded with an unparseable plan")
+	}
+	if buildAgent.calls != 0 {
+		t.Fatalf("build agent ran %d times, want 0", buildAgent.calls)
+	}
+	sum := reported.last(t)
+	if sum.Outcome != OutcomeStopped || sum.StopReason != StopPlanInvalid || sum.Phase != PhasePlan {
+		t.Fatalf("summary = %s/%s at %s", sum.Outcome, sum.StopReason, sum.Phase)
+	}
+}
+
+func TestBuildFailsClosedWithoutAPlanProjection(t *testing.T) {
+	planProjectionPath := "projections/" + testSHA + "/" + planProjectionFile
+	tests := []struct {
+		name       string
+		objects    fakeObjects
+		wantReason StopReason
+	}{
+		{"missing plan projection", validObjects(), StopProjectionMissing},
+		{"plan projection without a sentinel", func() fakeObjects {
+			o := validObjects()
+			o[planProjectionPath] = []byte("rules")
+			return o
+		}(), StopProjectionInvalid},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buildAgent, planAgent := &fakeAgent{}, &fakeAgent{}
+			deps, _, reported := testDeps(tt.objects, buildAgent)
+			deps.PlanAgent = planAgent
+			c := testConfig(t, initRepo(t))
+			c.Ticket.Size = "M"
+
+			if _, err := Build(context.Background(), deps, c); err == nil {
+				t.Fatal("Build succeeded without a plan projection")
+			}
+			if planAgent.calls != 0 || buildAgent.calls != 0 {
+				t.Fatalf("plan calls %d, build calls %d, want 0 and 0", planAgent.calls, buildAgent.calls)
+			}
+			sum := reported.last(t)
+			if sum.Outcome != OutcomeStopped || sum.StopReason != tt.wantReason || sum.Phase != PhasePlan {
+				t.Fatalf("summary = %s/%s at %s, want stopped/%s at plan",
+					sum.Outcome, sum.StopReason, sum.Phase, tt.wantReason)
+			}
+		})
 	}
 }
 
