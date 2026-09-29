@@ -3,6 +3,14 @@
 
 .PHONY: dev ui check
 
+# A fresh clone has no web/node_modules, so `bun run dev` fails with `vite: command
+# not found`. Install on first use, and again whenever the manifest or lockfile changes.
+web/node_modules: web/package.json web/bun.lock
+	cd web && bun install --frozen-lockfile
+	@touch web/node_modules
+
+dev ui: web/node_modules
+
 # Backend on :8080, frontend on :5173 with /api proxied to it. Ctrl-C stops both.
 dev:
 	@trap 'kill 0' EXIT; \
