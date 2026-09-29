@@ -1,0 +1,8 @@
+{
+  "default": "opencode/big-pickle",
+  "fallbacks": [
+    "opencode/mimo-v2.6-flash-free"
+  ],
+  "probed_at": "",
+  "evidence": []
+}

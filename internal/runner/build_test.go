@@ -355,7 +355,7 @@ func TestBuildSubstitutesTheNextModelOnAnAvailabilityFailureAndRecordsBothAttemp
 	if rec.Outcome != OutcomeBuilt {
 		t.Fatalf("outcome = %s, want the substituted model's build to succeed", rec.Outcome)
 	}
-	want := availabilityOrder[c.Model][0]
+	want := fallbackModels(c.Model)[0]
 	if rec.Steps[0].Model != c.Model || rec.Steps[0].Round != 1 || rec.Steps[1].Model != want || rec.Steps[1].Round != 2 {
 		t.Fatalf("steps = %+v, want the original model recorded then the substitution (AC1)", rec.Steps)
 	}
@@ -370,7 +370,7 @@ func TestBuildStopsWithModelUnavailableOnceTheAvailabilityOrderIsExhausted(t *te
 	if _, err := Build(context.Background(), deps, c); err == nil {
 		t.Fatal("Build succeeded with every model in the order unavailable")
 	}
-	wantAttempts := 1 + len(availabilityOrder[c.Model])
+	wantAttempts := 1 + len(fallbackModels(c.Model))
 	if agent.calls != wantAttempts {
 		t.Fatalf("build agent ran %d times, want %d (every model in the order tried once)", agent.calls, wantAttempts)
 	}
