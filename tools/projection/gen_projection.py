@@ -141,7 +141,7 @@ def check(root, name, text, *, trimmed):
     # employer-identifying string is ever written into this public file
     employer = sections((root / EMPLOYER_LAYER).read_text())
     leaked = [h for h in employer if h and h in text]
-    assert not leaked, f"{name}: employer layer leaked: {leaked}"
+    assert not leaked, f"{name}: employer layer leaked: {len(leaked)} heading(s)"
 
     # the ticket is LAST, or the cacheable prefix is broken
     assert text.count(TICKET_SENTINEL) == 1, f"{name}: ticket sentinel not unique"
@@ -151,7 +151,7 @@ def check(root, name, text, *, trimmed):
     assert "~/.claude/rules/" not in text, \
         f"{name}: points the agent at a config path it cannot reach"
     tail = text.split(TICKET_SENTINEL)[1].strip()
-    assert tail == "", f"{name}: content after the ticket breaks the cache prefix: {tail[:60]!r}"
+    assert tail == "", f"{name}: content after the ticket breaks the cache prefix: {len(tail)} chars"
 
     if trimmed:
         for prefix in BUILD_DROPS:
