@@ -2,12 +2,20 @@ output "workload_identity_provider" {
   value = google_iam_workload_identity_pool_provider.github.name
 }
 
+output "rule_stack_workload_identity_provider" {
+  value = google_iam_workload_identity_pool_provider.rule_stack.name
+}
+
 output "runner_service_account" {
   value = google_service_account.runner.email
 }
 
 output "model_service_account" {
   value = google_service_account.model.email
+}
+
+output "publisher_service_account" {
+  value = google_service_account.publisher.email
 }
 
 output "completions_bucket" {
