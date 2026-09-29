@@ -581,6 +581,35 @@ func TestPollNamesTheConditionThatWithheldEachWaitingCandidate(t *testing.T) {
 	}
 }
 
+func TestPollLeavesAContendedRunQueuedWithNoOutcome(t *testing.T) {
+	q := &fakeQueue{
+		candidates: []Candidate{
+			{RunID: "run-a", Repo: "octo/a", Priority: 1},
+			{RunID: "run-b", Repo: "octo/a", Priority: 2},
+		},
+		bindings: map[string]string{"run-b": ConditionRepoBusy},
+	}
+	var logs strings.Builder
+	deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	deps.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	res, err := Poll(context.Background(), deps, buildConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Deferrals) != 1 {
+		t.Fatalf("deferrals %+v", res.Deferrals)
+	}
+	if len(res.Rejections) != 0 || len(q.rejected) != 0 {
+		t.Fatalf("contention refused a ticket: %+v", q.rejected)
+	}
+	if len(q.released) != 0 {
+		t.Fatalf("contention released %v", q.released)
+	}
+	if strings.Contains(logs.String(), "level=WARN") || strings.Contains(logs.String(), "level=ERROR") {
+		t.Fatalf("contention logged above info:\n%s", logs.String())
+	}
+}
+
 func TestPollCountsOpenPRsAcrossTheAllowlistOnce(t *testing.T) {
 	q := &fakeQueue{candidates: []Candidate{
 		{RunID: "run-a", Repo: "octo/a", Priority: 1},
