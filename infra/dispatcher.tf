@@ -96,6 +96,14 @@ resource "google_cloud_run_v2_job" "dispatcher" {
           name  = "WINGMAN_REPOS"
           value = join(",", var.linear_repositories)
         }
+
+        dynamic "env" {
+          for_each = var.dispatcher_settings
+          content {
+            name  = env.key
+            value = env.value
+          }
+        }
       }
     }
   }

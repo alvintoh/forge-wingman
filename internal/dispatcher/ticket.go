@@ -49,7 +49,10 @@ func build(issue Issue, c Config, at time.Time) (Queued, Rejection) {
 	if err := t.Validate(); err != nil {
 		return Queued{}, rejection(issue, RefusalTicketInvalid, err.Error(), at)
 	}
-	return Queued{RunID: issue.ID, Ticket: t, Repo: repo, Priority: rank, At: at}, Rejection{}
+	return Queued{
+		RunID: issue.ID, Ticket: t, Repo: repo, Priority: rank,
+		BlockedBy: issue.BlockedBy, Blocks: issue.Blocks, At: at,
+	}, Rejection{}
 }
 
 // rejection is the record kept against a ticket the dispatcher would not admit.

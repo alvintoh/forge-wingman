@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"slices"
 	"testing"
 	"time"
 )
@@ -37,6 +38,11 @@ func TestBuildAdmitsASizedTicketForAnAllowlistedRepository(t *testing.T) {
 	// move a run somewhere the allowlist never named.
 	if q.RunID != "FRG-18" || q.Repo != "octo/scratch" || q.Priority != 2 || !q.At.Equal(buildAt) {
 		t.Fatalf("queued = %+v", q)
+	}
+	related := admitted("size:M", "repo:octo/scratch")
+	related.BlockedBy, related.Blocks = []string{"run-p"}, []string{"run-x"}
+	if q, _ := build(related, buildConfig, buildAt); !slices.Equal(q.BlockedBy, []string{"run-p"}) || !slices.Equal(q.Blocks, []string{"run-x"}) {
+		t.Fatalf("queued = %+v, want the blocking relations carried onto the run", q)
 	}
 	tk := q.Ticket
 	if tk.ID != "FRG-18" || tk.Size != "M" || tk.Title == "" || tk.Body == "" || tk.SizedBy != "linear-label" {

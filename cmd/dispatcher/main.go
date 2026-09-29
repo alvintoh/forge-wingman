@@ -1,11 +1,11 @@
 // Command dispatcher is the scheduled job that polls Linear and dispatches runs.
 //
 // It reads the issues Linear has delegated to the configured agent, queues the
-// ones it can build, and dispatches the highest-priority queued run into the
-// repository its ticket names. Everything it holds is a reference to a value
-// provisioned with the job: the Linear and GitHub tokens are read from Secret
-// Manager as the run starts, and WINGMAN_REPOS is the allowlist a ticket's
-// repo: label must name.
+// ones it can build, and dispatches the queued runs admission lets start, in
+// priority order, each into the repository its ticket names. Everything it
+// holds is a reference to a value provisioned with the job: the Linear and
+// GitHub tokens are read from Secret Manager as the run starts, and
+// WINGMAN_REPOS is the allowlist a ticket's repo: label must name.
 //
 // The job runs under its own service account, holds the store and the two API
 // tokens, and holds nothing that reaches a repository.
@@ -16,10 +16,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -85,12 +87,15 @@ func main() {
 }
 
 // config is what one poll needs: the project whose store is the queue, the
-// Linear agent it acts for, and the repositories it may dispatch into. The
+// Linear agent it acts for, the repositories it may dispatch into, and the
+// optional concurrency limits and tuning, where zero means the default. The
 // tokens are not here because a poll reads them from Secret Manager.
 type config struct {
 	project  string
 	delegate string
 	repos    []string
+	limits   dispatcher.Limits
+	tuning   dispatcher.Tuning
 }
 
 func loadConfig(getenv func(string) string) (config, error) {
@@ -115,7 +120,58 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, err
 	}
 	c.repos = repos
+	if c.limits, c.tuning, err = concurrencySettings(getenv); err != nil {
+		return config{}, err
+	}
 	return c, nil
+}
+
+// concurrencySettings reads the optional limits and tuning the WINGMAN_*
+// variables name. An unset one is zero, so its default applies; one that is set
+// must be positive, and the fall band must lie above the rise band.
+func concurrencySettings(getenv func(string) string) (dispatcher.Limits, dispatcher.Tuning, error) {
+	var l dispatcher.Limits
+	var t dispatcher.Tuning
+	for _, s := range []struct {
+		key  string
+		into *int
+	}{
+		{"WINGMAN_PLATFORM_CAP", &l.PlatformCap},
+		{"WINGMAN_LARGE_CAP", &l.LargeCap},
+		{"WINGMAN_REVIEW_WIP", &l.ReviewWIP},
+		{"WINGMAN_STABLE_RUNS", &t.StableRuns},
+	} {
+		raw := strings.TrimSpace(getenv(s.key))
+		if raw == "" {
+			continue
+		}
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			return l, t, fmt.Errorf("%s = %q is not a positive whole number", s.key, raw)
+		}
+		*s.into = n
+	}
+	for _, s := range []struct {
+		key  string
+		into *float64
+	}{
+		{"WINGMAN_RISE_WITHIN", &t.RiseWithin},
+		{"WINGMAN_HALVE_BEYOND", &t.HalveBeyond},
+	} {
+		raw := strings.TrimSpace(getenv(s.key))
+		if raw == "" {
+			continue
+		}
+		f, err := strconv.ParseFloat(raw, 64)
+		if err != nil || !(f > 0) || math.IsInf(f, 0) {
+			return l, t, fmt.Errorf("%s = %q is not a positive number", s.key, raw)
+		}
+		*s.into = f
+	}
+	if eff := t.OrDefault(); eff.HalveBeyond <= eff.RiseWithin {
+		return l, t, errors.New("WINGMAN_HALVE_BEYOND must exceed WINGMAN_RISE_WITHIN")
+	}
+	return l, t, nil
 }
 
 // repoPattern is what GitHub calls a repository: an owner and a name.
@@ -176,9 +232,10 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		Visibility: gh,
 		Providers:  store.NewProviders(fsc),
 		Workflow:   gh,
+		OpenPRs:    gh,
 		Logger:     logger,
 		Now:        time.Now,
-	}, dispatcher.Config{Repos: c.repos, Budget: budgetConfig, Model: runner.DefaultModel}); err != nil {
+	}, dispatcher.Config{Repos: c.repos, Budget: budgetConfig, Model: runner.DefaultModel, Limits: c.limits, Tuning: c.tuning}); err != nil {
 		return err
 	}
 	return nil

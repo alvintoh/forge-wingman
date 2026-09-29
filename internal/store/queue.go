@@ -1,6 +1,7 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -35,11 +36,21 @@ const (
 	repoField      = "repo"
 	claimedAtField = "claimed_at"
 	updatedAtField = "updated_at"
+	// waitingOnField names the condition that withheld a queued run at its
+	// last claim attempt; a claim clears it.
+	waitingOnField = "waiting_on"
+	// claimConcurrencyField is how many runs were in flight, this one
+	// included, when the run was claimed.
+	claimConcurrencyField = "claim_concurrency"
+	blockedByField        = "blocked_by"
+	blocksField           = "blocks"
 
 	// sizeField and privateField are Record's own fields (runner.Record),
 	// read here to build a Candidate without a second query.
-	sizeField    = "size"
-	privateField = "private"
+	sizeField     = "size"
+	privateField  = "private"
+	ticketIDField = "ticket_id"
+	outcomeField  = "outcome"
 	// settledAtField, settledProviderCostField and settledRunnerMinutesField
 	// are Record's own settlement fields, written once by runner.Finalize and
 	// summed here for FR-22's window checks.
@@ -93,6 +104,12 @@ func (q *Queue) Enqueue(ctx context.Context, run dispatcher.Queued) error {
 	data[stateField] = stateQueued
 	data[priorityField] = run.Priority
 	data[repoField] = run.Repo
+	if len(run.BlockedBy) > 0 {
+		data[blockedByField] = run.BlockedBy
+	}
+	if len(run.Blocks) > 0 {
+		data[blocksField] = run.Blocks
+	}
 	rejected := q.rejected(run.RunID)
 	err := q.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		// Read before writing: a transaction may not read after it writes, and
@@ -156,16 +173,73 @@ func (q *Queue) Candidates(ctx context.Context) ([]dispatcher.Candidate, error) 
 }
 
 // ledgerDoc is the dispatch/ledger document's own shape (adr/0003): the
-// reservation every claimed-but-not-yet-settled run holds, keyed by run id. A
-// future concurrency limit (FR-27's discovered N) has room to live here
-// beside Reservations without changing this shape.
+// reservation every claimed-but-not-yet-settled run holds, keyed by run id,
+// and the discovered concurrency limit N beside them. A ledger written before
+// N existed reads as 1.
 type ledgerDoc struct {
 	Reservations map[string]reservationEntry `firestore:"reservations"`
+	N            int                         `firestore:"n"`
+	StableRuns   int                         `firestore:"stable_runs"`
+	// PlatformCap is the configured cap N may not pass, as the last claim saw it.
+	PlatformCap int `firestore:"platform_cap"`
+	// ChangedAfter is the latest claim time among the runs in flight when N last
+	// moved; a run claimed no later than this ran under the old N.
+	ChangedAfter time.Time `firestore:"changed_after"`
+	// TuneStableRuns, TuneRiseWithin and TuneHalveBeyond are the rule's numbers as
+	// the last claim saw them, for the runner's Settle to apply.
+	TuneStableRuns  int     `firestore:"tune_stable_runs"`
+	TuneRiseWithin  float64 `firestore:"tune_rise_within"`
+	TuneHalveBeyond float64 `firestore:"tune_halve_beyond"`
 }
 
 type reservationEntry struct {
 	ProviderCostMicros money.Micros `firestore:"provider_cost_micros"`
 	RunnerMinutes      int64        `firestore:"runner_minutes"`
+	TicketID           string       `firestore:"ticket_id"`
+	Repo               string       `firestore:"repo"`
+	Size               string       `firestore:"size"`
+	ClaimedAt          time.Time    `firestore:"claimed_at"`
+}
+
+// inFlight lists the runs the ledger holds a reservation for.
+func inFlight(doc ledgerDoc) []dispatcher.InFlight {
+	out := make([]dispatcher.InFlight, 0, len(doc.Reservations))
+	for _, r := range doc.Reservations {
+		out = append(out, dispatcher.InFlight{Ticket: r.TicketID, Repo: r.Repo, Size: r.Size})
+	}
+	return out
+}
+
+// tuning is the rule's numbers as the ledger holds them, defaulted where unset.
+func (d ledgerDoc) tuning() dispatcher.Tuning {
+	return dispatcher.Tuning{StableRuns: d.TuneStableRuns, RiseWithin: d.TuneRiseWithin, HalveBeyond: d.TuneHalveBeyond}.OrDefault()
+}
+
+// concurrency is the ledger's N and stable count as the rule reads them.
+func (d ledgerDoc) concurrency() dispatcher.Concurrency {
+	return dispatcher.Concurrency{N: max(d.N, 1), Stable: d.StableRuns}
+}
+
+// subject is the candidate a run row describes.
+func subject(row map[string]any) dispatcher.Subject {
+	str := func(field string) string {
+		v, _ := row[field].(string)
+		return v
+	}
+	ids := func(field string) []string {
+		var out []string
+		list, _ := row[field].([]any)
+		for _, v := range list {
+			if id, ok := v.(string); ok {
+				out = append(out, id)
+			}
+		}
+		return out
+	}
+	return dispatcher.Subject{
+		Ticket: str(ticketIDField), Repo: str(repoField), Size: str(sizeField),
+		BlockedBy: ids(blockedByField), Blocks: ids(blocksField),
+	}
 }
 
 func (q *Queue) ledgerRef() *firestore.DocumentRef {
@@ -186,10 +260,10 @@ func reservedTotals(doc ledgerDoc) dispatcher.Totals {
 // row (must still be queued) and the ledger, sums the ledger's in-flight
 // reservations and the settled cost of runs that ended inside each of cfg's
 // windows, and commits — claiming the row and adding res to the ledger —
-// only if the result fits every ceiling (adr/0003, dispatcher.Decide). It
-// reports (false, "", nil) when another poll already claimed the row, and
-// (false, <ceiling>, nil) when the budget itself is why it was not claimed.
-func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg dispatcher.BudgetConfig, res dispatcher.Reservation) (bool, string, error) {
+// only if dispatcher.Admit lets it start (adr/0003). It reports (false, "",
+// nil) when another poll already claimed the row, and (false, <binding>, nil)
+// when a condition withholds it, which it also records on the row.
+func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg dispatcher.BudgetConfig, facts dispatcher.Facts, res dispatcher.Reservation) (bool, string, error) {
 	rowRef := q.client.Collection(runsCollection).Doc(runID)
 	ledgerRef := q.ledgerRef()
 	var binding string
@@ -203,7 +277,8 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 		if err != nil {
 			return err
 		}
-		if state, _ := row.Data()[stateField].(string); state != stateQueued {
+		data := row.Data()
+		if state, _ := data[stateField].(string); state != stateQueued {
 			return nil
 		}
 
@@ -211,25 +286,41 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 		if err != nil {
 			return err
 		}
-		reserved := reservedTotals(ledger)
 
-		windowSettled := make([]money.Micros, len(cfg.ProviderWindows))
+		settled := dispatcher.Settled{Windows: make([]money.Micros, len(cfg.ProviderWindows))}
 		for i, w := range cfg.ProviderWindows {
 			sum, _, err := q.settledSince(tx, w.Since(at))
 			if err != nil {
 				return err
 			}
-			windowSettled[i] = sum
+			settled.Windows[i] = sum
 		}
-		cashSettledCost, cashSettledMinutes, err := q.settledSince(tx, cfg.Cash.Since(at))
+		settled.CashCost, settled.CashMinutes, err = q.settledSince(tx, cfg.Cash.Since(at))
 		if err != nil {
 			return err
 		}
 
-		fits, why := dispatcher.Decide(cfg, reserved, windowSettled, cashSettledCost, cashSettledMinutes, res)
-		if !fits {
+		running := inFlight(ledger)
+		cand := subject(data)
+		if facts.Relations.Known {
+			cand.BlockedBy, cand.Blocks = facts.Relations.BlockedBy, facts.Relations.Blocks
+		}
+		ok, why := dispatcher.Admit(dispatcher.AdmitInput{
+			Facts:       facts,
+			N:           ledger.concurrency().N,
+			InFlight:    running,
+			Candidate:   cand,
+			Budget:      cfg,
+			Reserved:    reservedTotals(ledger),
+			Settled:     settled,
+			Reservation: res,
+		})
+		if !ok {
 			binding = why
-			return nil
+			if prev, _ := data[waitingOnField].(string); prev == why {
+				return nil
+			}
+			return tx.Update(rowRef, []firestore.Update{{Path: waitingOnField, Value: why}})
 		}
 
 		if ledger.Reservations == nil {
@@ -238,7 +329,14 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 		ledger.Reservations[runID] = reservationEntry{
 			ProviderCostMicros: res.ProviderCost,
 			RunnerMinutes:      res.RunnerMinutes,
+			TicketID:           cand.Ticket,
+			Repo:               cand.Repo,
+			Size:               cand.Size,
+			ClaimedAt:          at,
 		}
+		ledger.N = ledger.concurrency().N
+		ledger.PlatformCap = facts.Limits.PlatformCap
+		ledger.TuneStableRuns, ledger.TuneRiseWithin, ledger.TuneHalveBeyond = facts.Tuning.StableRuns, facts.Tuning.RiseWithin, facts.Tuning.HalveBeyond
 		if err := tx.Set(ledgerRef, ledger); err != nil {
 			return err
 		}
@@ -246,6 +344,8 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 			{Path: stateField, Value: stateClaimed},
 			{Path: claimedAtField, Value: at},
 			{Path: updatedAtField, Value: at},
+			{Path: claimConcurrencyField, Value: len(running) + 1},
+			{Path: waitingOnField, Value: firestore.Delete},
 		}); err != nil {
 			return err
 		}
@@ -309,34 +409,6 @@ func (q *Queue) settledSince(tx *firestore.Transaction, since time.Time) (cost m
 	return money.Micros(costSum), minutesSum, nil
 }
 
-// hasReservation reports whether the ledger currently holds a reservation for
-// runID, read within tx so the check is consistent with whatever else the
-// transaction reads. Firestore requires every read in a transaction to
-// happen before any write, so callers must read this before writing anything.
-func hasReservation(tx *firestore.Transaction, ledgerRef *firestore.DocumentRef, runID string) (bool, error) {
-	snap, err := tx.Get(ledgerRef)
-	if status.Code(err) == codes.NotFound {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	var ledger ledgerDoc
-	if err := snap.DataTo(&ledger); err != nil {
-		return false, fmt.Errorf("decoding the ledger: %w", err)
-	}
-	_, ok := ledger.Reservations[runID]
-	return ok, nil
-}
-
-// clearReservation drops runID's reservation from the ledger, within a
-// transaction that has already confirmed (via hasReservation) that it holds one.
-func clearReservation(tx *firestore.Transaction, ledgerRef *firestore.DocumentRef, runID string) error {
-	return tx.Update(ledgerRef, []firestore.Update{
-		{FieldPath: firestore.FieldPath{"reservations", runID}, Value: firestore.Delete},
-	})
-}
-
 // Release returns a claimed run to the queue and drops its ledger
 // reservation, for the dispatch that never reached GitHub: the next poll then
 // considers it again, at the priority it was queued with, with no stale
@@ -345,7 +417,7 @@ func (q *Queue) Release(ctx context.Context, runID string, at time.Time) error {
 	rowRef := q.client.Collection(runsCollection).Doc(runID)
 	ledgerRef := q.ledgerRef()
 	err := q.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
-		has, err := hasReservation(tx, ledgerRef, runID)
+		ledger, err := q.readLedger(tx, ledgerRef)
 		if err != nil {
 			return err
 		}
@@ -356,8 +428,10 @@ func (q *Queue) Release(ctx context.Context, runID string, at time.Time) error {
 		}); err != nil {
 			return err
 		}
-		if has {
-			return clearReservation(tx, ledgerRef, runID)
+		if _, has := ledger.Reservations[runID]; has {
+			return tx.Update(ledgerRef, []firestore.Update{
+				{FieldPath: firestore.FieldPath{"reservations", runID}, Value: firestore.Delete},
+			})
 		}
 		return nil
 	})
@@ -368,20 +442,42 @@ func (q *Queue) Release(ctx context.Context, runID string, at time.Time) error {
 }
 
 // Settle removes runID's reservation from the ledger, once its record carries
-// its actual cost (runner.Finalize). It is a no-op when the run holds no
+// its actual cost (runner.Finalize), and in the same transaction moves N by
+// what the settled run showed. It is a no-op when the run holds no
 // reservation, so a run whose record job runs more than once settles exactly
 // once (adr/0003).
 func (q *Queue) Settle(ctx context.Context, runID string) error {
 	ledgerRef := q.ledgerRef()
+	rowRef := q.client.Collection(runsCollection).Doc(runID)
 	err := q.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
-		has, err := hasReservation(tx, ledgerRef, runID)
+		ledger, err := q.readLedger(tx, ledgerRef)
 		if err != nil {
 			return err
 		}
-		if !has {
+		if _, has := ledger.Reservations[runID]; !has {
 			return nil
 		}
-		return clearReservation(tx, ledgerRef, runID)
+		cur := ledger.concurrency()
+		obs, err := q.observe(tx, rowRef, ledger)
+		if err != nil {
+			return err
+		}
+		platformCap := cmp.Or(ledger.PlatformCap, dispatcher.DefaultLimits.PlatformCap)
+		next := dispatcher.NextConcurrency(cur, obs, ledger.tuning(), platformCap)
+		changedAfter := ledger.ChangedAfter
+		if next.N != cur.N {
+			for _, r := range ledger.Reservations {
+				if r.ClaimedAt.After(changedAfter) {
+					changedAfter = r.ClaimedAt
+				}
+			}
+		}
+		return tx.Update(ledgerRef, []firestore.Update{
+			{FieldPath: firestore.FieldPath{"reservations", runID}, Value: firestore.Delete},
+			{Path: "n", Value: next.N},
+			{Path: "stable_runs", Value: next.Stable},
+			{Path: "changed_after", Value: changedAfter},
+		})
 	})
 	if err != nil {
 		return fmt.Errorf("settling run %s: %w", runID, err)
