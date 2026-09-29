@@ -42,7 +42,7 @@ func configEnv(extra map[string]string) func(string) string {
 
 func TestLoadConfigReadsTheConcurrencySettings(t *testing.T) {
 	c, err := loadConfig(configEnv(map[string]string{
-		"WINGMAN_PLATFORM_CAP": "8", "WINGMAN_LARGE_CAP": "2", "WINGMAN_REVIEW_WIP": "4",
+		"WINGMAN_PLATFORM_CAP": " 8 ", "WINGMAN_LARGE_CAP": "2", "WINGMAN_REVIEW_WIP": "4",
 		"WINGMAN_STABLE_RUNS": "3", "WINGMAN_RISE_WITHIN": " 1.1 ", "WINGMAN_HALVE_BEYOND": "1.8",
 	}))
 	if err != nil {

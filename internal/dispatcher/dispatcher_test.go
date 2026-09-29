@@ -723,7 +723,7 @@ func (w *failingWorkflow) Dispatch(_ context.Context, c Claim) error {
 	return nil
 }
 
-func TestPollBooksNothingItCannotDispatchWhenAClaimFailsMidWalk(t *testing.T) {
+func TestPollStartsTheClaimsAlreadyBookedWhenALaterClaimFails(t *testing.T) {
 	q := &fakeQueue{
 		candidates: []Candidate{
 			{RunID: "run-a", Repo: "octo/a", Priority: 1},
@@ -779,4 +779,34 @@ func deferredCeilings(deferrals []Deferral) []string {
 		out = append(out, d.Ceiling)
 	}
 	return out
+}
+
+func TestPollLogsWhenEveryCandidateIsDeferred(t *testing.T) {
+	two := []Candidate{{RunID: "run-a", Repo: "octo/a", Priority: 1}, {RunID: "run-b", Repo: "octo/b", Priority: 2}}
+	for name, tt := range map[string]struct {
+		candidates  []Candidate
+		bindings    map[string]string
+		unavailable map[string]bool
+		want        bool
+	}{
+		"nothing is queued": {},
+		"every candidate is withheld": {candidates: two,
+			bindings: map[string]string{"run-a": ConditionRepoBusy, "run-b": ConditionConcurrency}, want: true},
+		"one candidate is claimed": {candidates: two, bindings: map[string]string{"run-b": ConditionConcurrency}},
+		"one candidate was taken by another poll": {candidates: two,
+			bindings: map[string]string{"run-b": ConditionConcurrency}, unavailable: map[string]bool{"run-a": true}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			q := &fakeQueue{candidates: tt.candidates, bindings: tt.bindings, unavailable: tt.unavailable}
+			var logs strings.Builder
+			deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+			deps.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+			if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Contains(logs.String(), "everyCandidateDeferred"); got != tt.want {
+				t.Fatalf("logged = %v, want %v:\n%s", got, tt.want, logs.String())
+			}
+		})
+	}
 }

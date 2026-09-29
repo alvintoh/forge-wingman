@@ -128,7 +128,8 @@ func loadConfig(getenv func(string) string) (config, error) {
 
 // concurrencySettings reads the optional limits and tuning the WINGMAN_*
 // variables name. An unset one is zero, so its default applies; one that is set
-// must be positive, and the fall band must lie above the rise band.
+// must be positive, and the fall band must lie above the rise band. The names
+// are the keys infra/variables.tf allows in dispatcher_settings.
 func concurrencySettings(getenv func(string) string) (dispatcher.Limits, dispatcher.Tuning, error) {
 	var l dispatcher.Limits
 	var t dispatcher.Tuning

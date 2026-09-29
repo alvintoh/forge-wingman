@@ -110,6 +110,28 @@ func readLedgerDoc(t *testing.T, client *firestore.Client) ledgerDoc {
 	return ledger
 }
 
+func TestEnqueueStoresTheBlockingRelationsOnTheRow(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	run := queuedRun(fresh("queue-enq-relations"), 2)
+	run.BlockedBy, run.Blocks = []string{"run-p"}, []string{"run-x"}
+	forget(t, client, run.RunID)
+	if err := q.Enqueue(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := client.Collection(runsCollection).Doc(run.RunID).Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := subject(snap.Data())
+	if !slices.Equal(got.BlockedBy, []string{"run-p"}) || !slices.Equal(got.Blocks, []string{"run-x"}) {
+		t.Fatalf("subject = %+v, want the relations read back as enqueued", got)
+	}
+	if _, has := snap.Data()[blocksField]; !has {
+		t.Fatalf("queued row = %v, want a blocks column", snap.Data())
+	}
+}
+
 func TestEnqueueWritesTheRunRecordQueued(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
@@ -128,8 +150,10 @@ func TestEnqueueWritesTheRunRecordQueued(t *testing.T) {
 		data[privateField] != true {
 		t.Fatalf("queued row = %v", data)
 	}
-	if _, has := data[blockedByField]; has {
-		t.Fatalf("queued row = %v, want no blocked_by column for a ticket with none", data)
+	for _, field := range []string{blockedByField, blocksField} {
+		if _, has := data[field]; has {
+			t.Fatalf("queued row = %v, want no %s column for a ticket with none", data, field)
+		}
 	}
 	var rec runner.Record
 	if err := snap.DataTo(&rec); err != nil {
@@ -595,6 +619,32 @@ func TestTryClaimHoldsARunBlockedByOneInFlight(t *testing.T) {
 	}
 }
 
+func TestTryClaimCapsTheRunsOfTheLargeSizeInFlight(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	first, second := queuedRun(fresh("queue-large-a"), 1), queuedRun(fresh("queue-large-b"), 2)
+	first.Repo, second.Repo = "octo/large-a", "octo/large-b"
+	first.Ticket.Size, second.Ticket.Size = "L", "L"
+	forget(t, client, first.RunID, second.RunID)
+	resetLedger(t, client, 5)
+	for _, r := range []dispatcher.Queued{first, second} {
+		if err := q.Enqueue(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res := dispatcher.Reservation{ProviderCost: money.Dollar}
+	if ok, _, err := q.TryClaim(ctx, first.RunID, queueAt, generousBudget, openFacts, res); err != nil || !ok {
+		t.Fatalf("first claim: ok %v, err %v", ok, err)
+	}
+	ok, binding, err := q.TryClaim(ctx, second.RunID, queueAt, generousBudget, openFacts, res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok || binding != dispatcher.ConditionLargeCap {
+		t.Fatalf("ok = %v, binding = %q, want the large run held by the one already in flight", ok, binding)
+	}
+}
+
 func TestRacingClaimsForOneRepositoryAdmitOne(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
@@ -686,6 +736,19 @@ func seedSettled(t *testing.T, client *firestore.Client, id, size string, outcom
 	}
 }
 
+// seedRuns settles count runs of size that reached a PR, claimed at
+// concurrency and each taking took, and returns their ids. The latest ended
+// agoBase before queueAt, and each earlier one an hour before the last.
+func seedRuns(t *testing.T, client *firestore.Client, size, prefix string, count, concurrency int, took, agoBase time.Duration) []string {
+	t.Helper()
+	ids := make([]string, count)
+	for i := range ids {
+		ids[i] = fresh(prefix)
+		seedSettled(t, client, ids[i], size, runner.OutcomePROpened, concurrency, took, queueAt.Add(-agoBase-time.Duration(i)*time.Hour))
+	}
+	return ids
+}
+
 // holdReservation makes the ledger hold a reservation for each run, claimed at
 // the given time, beside the ledger's own N, stable count and change marker.
 func holdReservation(t *testing.T, client *firestore.Client, ledger ledgerDoc, claimedAt map[string]time.Time) {
@@ -710,7 +773,9 @@ func TestSettleMovesNByWhatTheSettledRunShowed(t *testing.T) {
 		// concurrency 1 and at the settled run's own; older are slow loaded runs
 		// settled before them all.
 		alone, loaded, older int
-		want                 ledgerDoc
+		// olderAlone are slow runs that ran alone, settled before all the others.
+		olderAlone int
+		want       ledgerDoc
 	}{
 		"the fifth stable run raises N": {
 			before: ledgerDoc{N: 1, StableRuns: 4}, claimed: 1, took: solo, outcome: runner.OutcomePROpened, alone: 4,
@@ -744,6 +809,18 @@ func TestSettleMovesNByWhatTheSettledRunShowed(t *testing.T) {
 			before: ledgerDoc{N: 2, StableRuns: 3, TuneRiseWithin: 1.1, TuneHalveBeyond: 1.2}, claimed: 2, took: 13 * time.Minute, outcome: runner.OutcomePROpened, alone: 5, loaded: 4,
 			want: ledgerDoc{N: 1},
 		},
+		"a tuned count reads only that many of the latest runs": {
+			before: ledgerDoc{N: 2, StableRuns: 1, TuneStableRuns: 2}, claimed: 2, took: solo, outcome: runner.OutcomePROpened, alone: 5, loaded: 1, older: 3,
+			want: ledgerDoc{N: 3},
+		},
+		"a tuned count reads only that many of the latest runs alone": {
+			before: ledgerDoc{N: 2, StableRuns: 1, TuneStableRuns: 2}, claimed: 2, took: 16 * time.Minute, outcome: runner.OutcomePROpened, alone: 2, loaded: 1, olderAlone: 3,
+			want: ledgerDoc{N: 1},
+		},
+		"runs at N are no evidence while too few ran alone": {
+			before: ledgerDoc{N: 2, StableRuns: 3}, claimed: 2, took: solo, outcome: runner.OutcomePROpened, alone: 3, loaded: 4,
+			want: ledgerDoc{N: 2, StableRuns: 3},
+		},
 		"only the latest five runs at N make the median": {
 			before: ledgerDoc{N: 2, StableRuns: 4}, claimed: 2, took: solo, outcome: runner.OutcomePROpened, alone: 5, loaded: 4, older: 6,
 			want: ledgerDoc{N: 3},
@@ -754,16 +831,10 @@ func TestSettleMovesNByWhatTheSettledRunShowed(t *testing.T) {
 			size := "S-" + fresh("settle-n")
 			id := fresh("queue-settle-n")
 			ids := []string{id}
-			seed := func(prefix string, count, concurrency int, took time.Duration, agoBase time.Duration) {
-				for i := range count {
-					prior := fresh(prefix)
-					ids = append(ids, prior)
-					seedSettled(t, client, prior, size, runner.OutcomePROpened, concurrency, took, queueAt.Add(-agoBase-time.Duration(i+1)*time.Hour))
-				}
-			}
-			seed("queue-settle-alone", tt.alone, 1, solo, time.Hour)
-			seed("queue-settle-loaded", tt.loaded, tt.claimed, tt.took, time.Hour)
-			seed("queue-settle-older", tt.older, tt.claimed, 6*slow, 100*time.Hour)
+			ids = append(ids, seedRuns(t, client, size, "queue-settle-alone", tt.alone, 1, solo, 2*time.Hour)...)
+			ids = append(ids, seedRuns(t, client, size, "queue-settle-loaded", tt.loaded, tt.claimed, tt.took, 2*time.Hour)...)
+			ids = append(ids, seedRuns(t, client, size, "queue-settle-older", tt.older, tt.claimed, 6*slow, 101*time.Hour)...)
+			ids = append(ids, seedRuns(t, client, size, "queue-settle-older-alone", tt.olderAlone, 1, 6*slow, 102*time.Hour)...)
 			forget(t, client, ids...)
 			resetLedger(t, client, tt.before.N)
 			seedSettled(t, client, id, size, tt.outcome, tt.claimed, tt.took, queueAt)
@@ -837,16 +908,8 @@ func TestSettleCapsNAtTheConfiguredPlatformCap(t *testing.T) {
 	q, client := queue(t)
 	size := "S-" + fresh("cap")
 	id := fresh("queue-cap")
-	ids := []string{id}
-	for i := range 5 {
-		alone, loaded := fresh("queue-cap-alone"), fresh("queue-cap-loaded")
-		ids = append(ids, alone, loaded)
-		ago := time.Duration(i+1) * time.Hour
-		seedSettled(t, client, alone, size, runner.OutcomePROpened, 1, 10*time.Minute, queueAt.Add(-ago))
-		if i < 4 {
-			seedSettled(t, client, loaded, size, runner.OutcomePROpened, 2, 10*time.Minute, queueAt.Add(-ago))
-		}
-	}
+	ids := append([]string{id}, seedRuns(t, client, size, "queue-cap-alone", 5, 1, 10*time.Minute, time.Hour)...)
+	ids = append(ids, seedRuns(t, client, size, "queue-cap-loaded", 4, 2, 10*time.Minute, time.Hour)...)
 	forget(t, client, ids...)
 	resetLedger(t, client, 2)
 	seedSettled(t, client, id, size, runner.OutcomePROpened, 2, 10*time.Minute, queueAt)
@@ -961,17 +1024,8 @@ func TestSettleNeedsFiveRunsAtNNotOnlyFiveAlone(t *testing.T) {
 	q, client := queue(t)
 	size := "S-" + fresh("few-loaded")
 	id := fresh("queue-few-loaded")
-	ids := []string{id}
-	for i := range 5 {
-		alone := fresh("queue-few-alone")
-		ids = append(ids, alone)
-		seedSettled(t, client, alone, size, runner.OutcomePROpened, 1, 10*time.Minute, queueAt.Add(-time.Duration(i+10)*time.Hour))
-	}
-	for i := range 2 {
-		loaded := fresh("queue-few-loaded-slow")
-		ids = append(ids, loaded)
-		seedSettled(t, client, loaded, size, runner.OutcomePROpened, 2, 40*time.Minute, queueAt.Add(-time.Duration(i+1)*time.Hour))
-	}
+	ids := append([]string{id}, seedRuns(t, client, size, "queue-few-alone", 5, 1, 10*time.Minute, 10*time.Hour)...)
+	ids = append(ids, seedRuns(t, client, size, "queue-few-loaded-slow", 2, 2, 40*time.Minute, time.Hour)...)
 	forget(t, client, ids...)
 	resetLedger(t, client, 2)
 	seedSettled(t, client, id, size, runner.OutcomePROpened, 2, 40*time.Minute, queueAt)
@@ -1011,17 +1065,9 @@ func TestSettleReadsOnlyRunsOfTheSettledRunsSize(t *testing.T) {
 	size := "S-" + fresh("own-size")
 	other := "L-" + fresh("other-size")
 	id := fresh("queue-own-size")
-	ids := []string{id}
-	seed := func(prefix, size string, count, concurrency int, took time.Duration, agoBase time.Duration) {
-		for i := range count {
-			prior := fresh(prefix)
-			ids = append(ids, prior)
-			seedSettled(t, client, prior, size, runner.OutcomePROpened, concurrency, took, queueAt.Add(-agoBase-time.Duration(i)*time.Hour))
-		}
-	}
-	seed("queue-own-alone", size, 5, 1, 10*time.Minute, 20*time.Hour)
-	seed("queue-own-loaded", size, 4, 2, 10*time.Minute, time.Hour)
-	seed("queue-other-loaded", other, 5, 2, 60*time.Minute, 0)
+	ids := append([]string{id}, seedRuns(t, client, size, "queue-own-alone", 5, 1, 10*time.Minute, 20*time.Hour)...)
+	ids = append(ids, seedRuns(t, client, size, "queue-own-loaded", 4, 2, 10*time.Minute, time.Hour)...)
+	ids = append(ids, seedRuns(t, client, other, "queue-other-loaded", 5, 2, 60*time.Minute, 0)...)
 	forget(t, client, ids...)
 	resetLedger(t, client, 2)
 	seedSettled(t, client, id, size, runner.OutcomePROpened, 2, 10*time.Minute, queueAt)
@@ -1039,12 +1085,7 @@ func TestSettleSkipsARunWithNoSettlementTime(t *testing.T) {
 	size := "S-" + fresh("unsettled")
 	id := fresh("queue-unsettled")
 	unsettled := fresh("queue-unsettled-zero")
-	ids := []string{id, unsettled}
-	for i := range 3 {
-		alone := fresh("queue-unsettled-alone")
-		ids = append(ids, alone)
-		seedSettled(t, client, alone, size, runner.OutcomePROpened, 1, 10*time.Minute, queueAt.Add(-time.Duration(i+1)*time.Hour))
-	}
+	ids := append([]string{id, unsettled}, seedRuns(t, client, size, "queue-unsettled-alone", 3, 1, 10*time.Minute, time.Hour)...)
 	if _, err := client.Collection(runsCollection).Doc(unsettled).Set(context.Background(), map[string]any{
 		sizeField: size, outcomeField: string(runner.OutcomePROpened), claimConcurrencyField: int64(1), settledAtField: time.Time{},
 	}); err != nil {
@@ -1066,18 +1107,10 @@ func TestSettleTakesTheMedianOfOnlyTheLatestFiveLoadedRuns(t *testing.T) {
 	q, client := queue(t)
 	size := "S-" + fresh("latest-five")
 	id := fresh("queue-latest-five")
-	ids := []string{id}
-	seed := func(prefix string, count, concurrency int, took, agoBase time.Duration) {
-		for i := range count {
-			prior := fresh(prefix)
-			ids = append(ids, prior)
-			seedSettled(t, client, prior, size, runner.OutcomePROpened, concurrency, took, queueAt.Add(-agoBase-time.Duration(i)*time.Hour))
-		}
-	}
-	seed("queue-five-alone", 5, 1, 10*time.Minute, 50*time.Hour)
-	seed("queue-five-recent", 1, 2, 10*time.Minute, time.Hour)
-	seed("queue-five-slow", 3, 2, 40*time.Minute, 2*time.Hour)
-	seed("queue-five-old", 1, 2, 10*time.Minute, 10*time.Hour)
+	ids := append([]string{id}, seedRuns(t, client, size, "queue-five-alone", 5, 1, 10*time.Minute, 50*time.Hour)...)
+	ids = append(ids, seedRuns(t, client, size, "queue-five-recent", 1, 2, 10*time.Minute, time.Hour)...)
+	ids = append(ids, seedRuns(t, client, size, "queue-five-slow", 3, 2, 40*time.Minute, 2*time.Hour)...)
+	ids = append(ids, seedRuns(t, client, size, "queue-five-old", 1, 2, 10*time.Minute, 10*time.Hour)...)
 	forget(t, client, ids...)
 	resetLedger(t, client, 2)
 	seedSettled(t, client, id, size, runner.OutcomePROpened, 2, 10*time.Minute, queueAt)
@@ -1155,14 +1188,8 @@ func TestSettleIgnoresARunClaimedBelowNEvenWhereNHasEvidence(t *testing.T) {
 	q, client := queue(t)
 	size := "S-" + fresh("below-n")
 	id := fresh("queue-below-n")
-	ids := []string{id}
-	for i := range 5 {
-		alone, loaded := fresh("queue-below-alone"), fresh("queue-below-loaded")
-		ids = append(ids, alone, loaded)
-		ago := time.Duration(i+1) * time.Hour
-		seedSettled(t, client, alone, size, runner.OutcomePROpened, 1, 10*time.Minute, queueAt.Add(-ago))
-		seedSettled(t, client, loaded, size, runner.OutcomePROpened, 3, 40*time.Minute, queueAt.Add(-ago))
-	}
+	ids := append([]string{id}, seedRuns(t, client, size, "queue-below-alone", 5, 1, 10*time.Minute, time.Hour)...)
+	ids = append(ids, seedRuns(t, client, size, "queue-below-loaded", 5, 3, 40*time.Minute, time.Hour)...)
 	forget(t, client, ids...)
 	resetLedger(t, client, 3)
 	seedSettled(t, client, id, size, runner.OutcomePROpened, 1, 10*time.Minute, queueAt)
@@ -1180,12 +1207,15 @@ func TestSettleDropsTheReservationOfARunWithNoRow(t *testing.T) {
 	id := fresh("queue-no-row")
 	forget(t, client, id)
 	resetLedger(t, client, 2)
-	holdReservation(t, client, ledgerDoc{N: 2, StableRuns: 3}, map[string]time.Time{id: queueAt})
+	holdReservation(t, client, ledgerDoc{N: 2, StableRuns: 3}, map[string]time.Time{id: queueAt, "other-" + id: queueAt.Add(time.Minute)})
 	if err := q.Settle(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}
 	got := readLedgerDoc(t, client)
 	if _, held := got.Reservations[id]; held || got.N != 2 || got.StableRuns != 3 {
 		t.Fatalf("reservations %v, N %d stable %d, want the reservation dropped and N left alone", got.Reservations, got.N, got.StableRuns)
+	}
+	if !got.ChangedAfter.IsZero() {
+		t.Fatalf("changed_after = %v, want it left alone while N did not move", got.ChangedAfter)
 	}
 }

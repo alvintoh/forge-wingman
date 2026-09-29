@@ -211,7 +211,9 @@ func TestGitHubCountsAgentPullRequestsAcrossPages(t *testing.T) {
 }
 
 func TestGitHubFailsWhenThePullRequestsOutrunTheirPages(t *testing.T) {
+	pages := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		pages++
 		_, _ = io.WriteString(w, pullsPageBody(pullsPerPage, 1))
 	}))
 	defer srv.Close()
@@ -219,6 +221,9 @@ func TestGitHubFailsWhenThePullRequestsOutrunTheirPages(t *testing.T) {
 		OpenAgentPRs(context.Background(), "octo/scratch")
 	if err == nil || n != 0 {
 		t.Fatalf("count %d, err %v, want no count that may be short", n, err)
+	}
+	if pages != maxPullsPages {
+		t.Fatalf("read %d pages, want %d", pages, maxPullsPages)
 	}
 }
 
@@ -235,5 +240,46 @@ func TestGitHubReadsTheLastPageItWalks(t *testing.T) {
 		OpenAgentPRs(context.Background(), "octo/scratch")
 	if err != nil || n != 2 {
 		t.Fatalf("count %d, err %v, want 2 from the last permitted page", n, err)
+	}
+}
+
+func TestGitHubStopsAtAPageThatIsNotFull(t *testing.T) {
+	pages := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		pages++
+		_, _ = io.WriteString(w, pullsPageBody(pullsPerPage-1, pullsPerPage-1))
+	}))
+	defer srv.Close()
+	n, err := (GitHub{Endpoint: srv.URL, Token: "gh-token", Client: srv.Client()}).
+		OpenAgentPRs(context.Background(), "octo/scratch")
+	if err != nil || n != pullsPerPage-1 || pages != 1 {
+		t.Fatalf("count %d over %d pages, err %v, want %d over one", n, pages, err, pullsPerPage-1)
+	}
+}
+
+func TestGitHubReportsNoCountWhenALaterPageFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") == "1" {
+			_, _ = io.WriteString(w, pullsPageBody(pullsPerPage, pullsPerPage))
+			return
+		}
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+	n, err := (GitHub{Endpoint: srv.URL, Token: "gh-token", Client: srv.Client()}).
+		OpenAgentPRs(context.Background(), "octo/scratch")
+	if err == nil || n != 0 {
+		t.Fatalf("count %d, err %v, want no partial count", n, err)
+	}
+}
+
+func TestGitHubRefusesAPullRequestPageLargerThanItsBound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "["+strings.Repeat(" ", maxPullsResponseBytes)+"]")
+	}))
+	defer srv.Close()
+	if _, err := (GitHub{Endpoint: srv.URL, Token: "gh-token", Client: srv.Client()}).
+		OpenAgentPRs(context.Background(), "octo/scratch"); err == nil {
+		t.Fatal("an oversized page was read whole")
 	}
 }

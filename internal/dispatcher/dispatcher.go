@@ -359,7 +359,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		d.Logger.Info("runDeferred", "run", cand.RunID, "ceiling", binding)
 		res.Deferrals = append(res.Deferrals, Deferral{RunID: cand.RunID, Ceiling: binding, At: d.Now()})
 	}
-	if len(candidates) > 0 && len(claims) == 0 && len(res.Deferrals) == len(candidates) {
+	if len(candidates) > 0 && len(res.Deferrals) == len(candidates) {
 		d.Logger.Info("everyCandidateDeferred", "candidates", len(candidates))
 	}
 	return claims, nil

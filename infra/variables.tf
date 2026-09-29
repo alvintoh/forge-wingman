@@ -53,7 +53,8 @@ variable "linear_repositories" {
 }
 
 # Optional concurrency limits and tuning the dispatcher reads; a key left out
-# keeps its default.
+# keeps its default. The allowed keys are the variables concurrencySettings
+# reads in cmd/dispatcher/main.go, and change with it.
 variable "dispatcher_settings" {
   type    = map(string)
   default = {}

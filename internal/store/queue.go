@@ -317,9 +317,6 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 		})
 		if !ok {
 			binding = why
-			if prev, _ := data[waitingOnField].(string); prev == why {
-				return nil
-			}
 			return tx.Update(rowRef, []firestore.Update{{Path: waitingOnField, Value: why}})
 		}
 
