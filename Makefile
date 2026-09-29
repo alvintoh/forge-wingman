@@ -9,17 +9,17 @@ web/node_modules: web/package.json web/bun.lock
 	cd web && bun install --frozen-lockfile
 	@touch web/node_modules
 
-dev ui: web/node_modules
-
 # Backend on :8080, frontend on :5173 with /api proxied to it. Ctrl-C stops both.
-dev:
+dev: web/node_modules
 	@trap 'kill 0' EXIT; \
 	go run ./cmd/surface 2>&1 | sed 's/^/[be] /' & \
 	(cd web && bun run dev) 2>&1 | sed 's/^/[fe] /' & \
 	wait
 
-ui:
-	process-compose up
+# process-compose serves its own HTTP API on :8080 by default, the port the backend needs,
+# so the backend could never bind and the frontend waited on its health check forever.
+ui: web/node_modules
+	process-compose up --no-server
 
 # The whole Go gate, as CI runs it.
 check:
