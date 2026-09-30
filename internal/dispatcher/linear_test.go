@@ -31,6 +31,9 @@ func linearServer(t *testing.T, pages []map[string]any) (*httptest.Server, *[]ma
 		if !strings.Contains(req.Query, "delegate: { id: { eq: $delegate } }") {
 			t.Errorf("the query does not filter by delegate: %s", req.Query)
 		}
+		if !strings.Contains(req.Query, "$delegate: ID!") {
+			t.Errorf("the query declares $delegate as something other than ID!, which Linear rejects for an id filter: %s", req.Query)
+		}
 		for _, field := range []string{" relations {", " inverseRelations {"} {
 			if !strings.Contains(req.Query, field) {
 				t.Errorf("the query does not ask for%s: %s", field, req.Query)

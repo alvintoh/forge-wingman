@@ -27,7 +27,7 @@ const linearPage = 50
 // it, so a poll cannot act for an agent other than the configured one. State
 // types rather than names are filtered: the completed and canceled names differ
 // per team, the types do not.
-const delegatedQuery = `query DelegatedIssues($delegate: String!, $first: Int, $after: String) {
+const delegatedQuery = `query DelegatedIssues($delegate: ID!, $first: Int, $after: String) {
   viewer {
     id
   }
