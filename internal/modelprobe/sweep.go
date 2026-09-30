@@ -2,6 +2,7 @@ package modelprobe
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -14,6 +15,15 @@ type Sweep struct {
 	Results []Result
 	// Skipped are the models left unprobed because the run reached cfg.MaxModels.
 	Skipped []string
+}
+
+// ErrNoEvidence marks a sweep whose every run was void, so it says nothing about any model.
+var ErrNoEvidence = errors.New("no model produced a judgeable run")
+
+// NoEvidence reports whether models were probed and every run was void, as a rejected
+// credential or a dead endpoint makes it. A fail is a verdict, so it is evidence.
+func (s Sweep) NoEvidence() bool {
+	return len(s.Results) > 0 && !slices.ContainsFunc(s.Results, func(r Result) bool { return r.Verdict != VerdictVoid })
 }
 
 // RunSweep probes and judges up to cfg.MaxModels models, one after another, the

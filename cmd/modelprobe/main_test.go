@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -262,5 +263,29 @@ func TestRunDatesTheResultsFileInUTC(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(results, "2026-10-02-1.json")); err != nil {
 		t.Fatalf("results file: %v", err)
+	}
+}
+
+func TestRunFailsButKeepsTheReportWhenEveryRunIsVoid(t *testing.T) {
+	bin, models, results := setup(t)
+	rejected := strings.Replace(fakeOpencode, "while [ $# -gt 0 ]", `echo '{"type":"error","error":{"name":"APIError","data":{"statusCode":401}}}'; exit 1
+while [ $# -gt 0 ]`, 1)
+	if err := os.WriteFile(bin, []byte(rejected), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(models)
+	outputs := filepath.Join(t.TempDir(), "output")
+	err := run(context.Background(), quietLogger(), args(bin, models, results, "-outputs", outputs), time.Now)
+	if !errors.Is(err, modelprobe.ErrNoEvidence) {
+		t.Fatalf("err = %v, want ErrNoEvidence", err)
+	}
+	if files, _ := os.ReadDir(results); len(files) != 1 {
+		t.Fatalf("results files = %d, want the report kept", len(files))
+	}
+	if out, _ := os.ReadFile(outputs); !strings.Contains(string(out), "results=") {
+		t.Fatalf("outputs = %q, want results= so the workflow can stage the report", out)
+	}
+	if after, _ := os.ReadFile(models); string(after) != string(before) {
+		t.Fatalf("models file changed by a probe that proved nothing:\n%s", after)
 	}
 }

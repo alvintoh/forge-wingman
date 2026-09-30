@@ -62,6 +62,7 @@ jobs:
         run: '"$RUNNER_TEMP/modelprobe" -run-id "$GITHUB_RUN_ID" -outputs "$GITHUB_OUTPUT"'
 
       - name: Stage the outputs
+        if: ${{ !cancelled() && steps.probe.outputs.results != '' }}
         env:
           RESULTS: ${{ steps.probe.outputs.results }}
         run: |
@@ -69,8 +70,10 @@ jobs:
           cp internal/runner/models.json "$RUNNER_TEMP/out/models.json"
           cp "$RESULTS" "$RUNNER_TEMP/out/results/"
 
-      # Kept whether or not the default changes: the results file is the record of the run.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      # Kept whether or not the default changes, and when the probe fails: the results file
+      # is the record of the run.
+      - if: ${{ !cancelled() && steps.probe.outputs.results != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: probe-output
           path: ${{ runner.temp }}/out

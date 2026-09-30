@@ -229,3 +229,22 @@ func TestRunSweepDoesNotHoldChallengersToAFailedIncumbent(t *testing.T) {
 		t.Fatalf("challenger = %+v, want a pass: a failed incumbent sets no tool-call bar", sw.Results[1])
 	}
 }
+
+func TestSweepNoEvidenceOnlyWhenEveryRunIsVoid(t *testing.T) {
+	void, pass, fail := Result{Verdict: VerdictVoid}, Result{Verdict: VerdictPass}, Result{Verdict: VerdictFail}
+	for name, tc := range map[string]struct {
+		results []Result
+		want    bool
+	}{
+		"every run void":           {[]Result{void, void}, true},
+		"one pass among voids":     {[]Result{void, pass}, false},
+		"a fail is still evidence": {[]Result{void, fail}, false},
+		"nothing probed":           {nil, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := (Sweep{Results: tc.results}).NoEvidence(); got != tc.want {
+				t.Fatalf("NoEvidence = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

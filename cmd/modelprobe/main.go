@@ -146,6 +146,9 @@ func run(ctx context.Context, logger *slog.Logger, args []string, now func() tim
 			return err
 		}
 	}
+	if sw.NoEvidence() {
+		return fmt.Errorf("%w: every run was void, see %s", modelprobe.ErrNoEvidence, resultsPath)
+	}
 	logger.Info("modelprobeDone", "changed", changed, "models", len(sw.Results), "cost", report.Usage.Cost)
 	return nil
 }
