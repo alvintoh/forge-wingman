@@ -111,9 +111,11 @@ printf %s "$LINEAR_TOKEN" | gcloud secrets versions add linear-token --data-file
 printf %s "$GITHUB_TOKEN" | gcloud secrets versions add github-token --data-file=-
 ```
 
-The GitHub token also needs `pull_requests: read` on every allowlisted
-repository: admission counts the open agent PRs, and a repository it cannot read
-leaves that count unknown, which admits only a lone run.
+The GitHub token also needs two permissions on every allowlisted repository.
+`pull_requests: read`: admission counts the open agent PRs, and a repository it
+cannot read leaves that count unknown, which admits only a lone run.
+`actions: write`: the dispatch is a `workflow_dispatch`, which GitHub refuses
+with 403 "Resource not accessible by personal access token" without it.
 
 ### A ticket
 
