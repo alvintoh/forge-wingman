@@ -6,6 +6,34 @@ builds each one in an isolated run, and leaves a pull request for review.
 **The design lives in `docs/tech-design-v1.md` and `docs/adr/`.** They are copied here from the
 forge-vault vault, which is where they are edited — never edit them in this repo.
 
+## Use
+
+Hand a ticket over by **delegating it to the Forge Wingman app in Linear**. An app
+cannot be an assignee, so delegation is the trigger and the human assignee is left
+intact.
+
+The ticket also needs two labels:
+
+| Label | Value |
+|---|---|
+| a size label | `size:S`, `size:M` or `size:L`, hand-set — nothing infers a size from the issue's own estimate |
+| a repo label | `repo:owner/name`, naming a repository the dispatcher is allowed to run in |
+
+`size:XL` is a fourth value the dispatcher recognises and refuses. One run is not
+measured to carry it, so it is held above the ceiling rather than rejected as
+unreadable.
+
+Without both labels the ticket is refused rather than queued, and the reason is
+recorded against it in the store as `dispatch/rejected-<identifier>`: `no-size` for
+no size label, `size-unknown` for a size that is not `S`, `M` or `L`,
+`size-above-ceiling` for an `XL`, `no-repository` for no repo label,
+`repository-not-allowlisted` for a repo it may not run in, and `ticket-invalid` for a
+ticket that fails its own checks.
+
+The dispatcher looks for new tickets **every 15 minutes**: Cloud Scheduler wakes the
+job, and one execution is one poll. A ticket delegated just after a poll waits for
+the next one.
+
 ## Shape
 
 One repository, one product, two projects — the Go module and `web/` — and three
