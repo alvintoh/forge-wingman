@@ -1,10 +1,11 @@
 // Package dispatcher admits the tickets Linear delegates to the run queue and
-// dispatches the highest-priority run each poll finds there.
+// dispatches every run each poll's admission lets start.
 package dispatcher
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -18,6 +19,10 @@ type Issue struct {
 	Body     string
 	Priority int
 	Labels   []string
+	// BlockedBy and Blocks are the ids of the issues Linear relates to this
+	// one as blocking it and as blocked by it.
+	BlockedBy []string
+	Blocks    []string
 }
 
 // Refusal is why a delegated ticket was not admitted to the queue.
@@ -49,9 +54,11 @@ type Queued struct {
 	// admission and carried on the run record from then on (FR-22, NFR-1):
 	// its runner minutes count toward the cash ceiling; a public repo's
 	// count as zero.
-	Private  bool
-	Priority int
-	At       time.Time
+	Private   bool
+	Priority  int
+	BlockedBy []string
+	Blocks    []string
+	At        time.Time
 }
 
 // Claim is the run a poll took off the queue.
@@ -72,6 +79,10 @@ type Config struct {
 	Repos  []string
 	Budget BudgetConfig
 	Model  string
+	// Limits are the concurrency ceilings; a zero field takes its default.
+	Limits Limits
+	// Tuning is the concurrency rule's numbers; a zero field takes its default.
+	Tuning Tuning
 }
 
 // ProviderHalts reports whether repeated infra stops have halted dispatch to
@@ -91,9 +102,39 @@ type Deps struct {
 	Estimator  Estimator
 	Visibility RepoVisibility
 	Providers  ProviderHalts
+	OpenPRs    OpenPRCounter
 	Workflow   Workflow
 	Logger     *slog.Logger
 	Now        func() time.Time
+}
+
+// missing names the first dependency left unset, or "" when all are wired.
+func (d Deps) missing() string {
+	for _, dep := range []struct {
+		name string
+		set  bool
+	}{
+		{"Source", d.Source != nil},
+		{"Queue", d.Queue != nil},
+		{"Estimator", d.Estimator != nil},
+		{"Visibility", d.Visibility != nil},
+		{"Providers", d.Providers != nil},
+		{"OpenPRs", d.OpenPRs != nil},
+		{"Workflow", d.Workflow != nil},
+		{"Logger", d.Logger != nil},
+		{"Now", d.Now != nil},
+	} {
+		if !dep.set {
+			return dep.name
+		}
+	}
+	return ""
+}
+
+// OpenPRCounter counts the open agent PRs a repository holds, the review WIP
+// admission limits.
+type OpenPRCounter interface {
+	OpenAgentPRs(ctx context.Context, repo string) (int, error)
 }
 
 // Source yields the issues delegated to the configured agent, and proves the
@@ -117,16 +158,16 @@ type Candidater interface {
 	Candidates(ctx context.Context) ([]Candidate, error)
 }
 
-// Claimer attempts to reserve a candidate's budget and claim it, atomically
-// with every other poll that might race it (adr/0003); Release returns a
-// claimed run whose dispatch never reached GitHub.
+// Claimer attempts to admit a candidate and claim it, atomically with every
+// other poll that might race it (adr/0003); Release returns a claimed run
+// whose dispatch never reached GitHub.
 //
 // TryClaim reports (true, "", nil) once runID is claimed and its reservation
 // booked; (false, "", nil) when another poll already claimed the row first —
-// not a budget matter, so nothing is deferred; and (false, <ceiling>, nil)
-// when cfg and res together would breach a ceiling, naming which one.
+// not an admission matter, so nothing is deferred; and (false, <binding>, nil)
+// when Admit withholds it, naming the first condition that does.
 type Claimer interface {
-	TryClaim(ctx context.Context, runID string, at time.Time, cfg BudgetConfig, res Reservation) (ok bool, binding string, err error)
+	TryClaim(ctx context.Context, runID string, at time.Time, cfg BudgetConfig, facts Facts, res Reservation) (ok bool, binding string, err error)
 	Release(ctx context.Context, runID string, at time.Time) error
 }
 
@@ -162,20 +203,23 @@ type Result struct {
 	Seen       int
 	Enqueued   []string
 	Rejections []Rejection
-	// Deferrals is every candidate a ceiling withheld this poll, in the order
-	// admission walked them (FR-22). Reconsidered next poll, not permanent.
+	// Deferrals is every candidate a ceiling or condition withheld this poll,
+	// in the order admission walked them (FR-22). Reconsidered next poll.
 	Deferrals []Deferral
-	// Dispatched is the claimed run's id, empty when nothing was claimed.
-	Dispatched string
+	// Dispatched is the id of every run this poll claimed and started.
+	Dispatched []string
 }
 
 // Poll admits every issue still delegated, then walks the queue in priority
-// order claiming the first run whose estimate fits every budget ceiling.
-// A ticket the queue already holds is left alone; a candidate a ceiling would
-// breach is deferred, not rejected, and reconsidered next poll; and a run
+// order claiming every run Admit lets start.
+// A ticket the queue already holds is left alone; a candidate a condition
+// withholds is deferred, not rejected, and reconsidered next poll; and a run
 // whose dispatch fails is released rather than left claimed, so the next
 // poll considers it again.
 func Poll(ctx context.Context, d Deps, c Config) (Result, error) {
+	if name := d.missing(); name != "" {
+		return Result{}, fmt.Errorf("dispatcher dependency %s is not set", name)
+	}
 	issues, err := d.Source.Delegated(ctx)
 	if err != nil {
 		return Result{}, err
@@ -187,18 +231,24 @@ func Poll(ctx context.Context, d Deps, c Config) (Result, error) {
 			return res, admitErr
 		}
 	}
-	claim, ok, err := admitClaim(ctx, d, c, &res)
-	if err != nil {
+	relations := make(map[string]Relations, len(issues))
+	for _, issue := range issues {
+		relations[issue.ID] = Relations{Known: true, BlockedBy: issue.BlockedBy, Blocks: issue.Blocks}
+	}
+	claims, claimErr := admitClaims(ctx, d, c, relations, &res)
+	dispatchErrs := []error{claimErr}
+	for _, claim := range claims {
+		if err := dispatch(ctx, d, claim); err != nil {
+			dispatchErrs = append(dispatchErrs, err)
+			continue
+		}
+		res.Dispatched = append(res.Dispatched, claim.RunID)
+	}
+	if err := errors.Join(dispatchErrs...); err != nil {
 		return res, err
 	}
-	if ok {
-		if err := dispatch(ctx, d, claim); err != nil {
-			return res, err
-		}
-		res.Dispatched = claim.RunID
-	}
 	d.Logger.Info("pollComplete", "seen", res.Seen, "enqueued", len(res.Enqueued),
-		"rejected", len(res.Rejections), "deferred", len(res.Deferrals), "dispatched", res.Dispatched)
+		"rejected", len(res.Rejections), "deferred", len(res.Deferrals), "dispatched", len(res.Dispatched))
 	return res, nil
 }
 
@@ -251,16 +301,18 @@ func admit(ctx context.Context, d Deps, c Config, issue Issue, res *Result) erro
 	return nil
 }
 
-// admitClaim walks the queue in priority order, claiming the first candidate
-// whose estimated cost fits every ceiling FR-22 checks. Each one it skips
-// over is recorded as a deferral naming the ceiling that bound it — a halted
-// provider (AC4) checked once, ahead of the walk, since every candidate
-// starts on the same configured model until FR-13's escalation ladder gives
-// a candidate one of its own.
-func admitClaim(ctx context.Context, d Deps, c Config, res *Result) (Claim, bool, error) {
+// admitClaims walks the queue in priority order, claiming every candidate
+// Admit lets start and recording each one it withholds as a deferral naming
+// the condition that bound it.
+//
+// On an error it returns the claims already booked beside it, so the caller can
+// dispatch or release them. The provider halt is read once ahead of the walk,
+// since every candidate starts on the same model, and the open-PR count across
+// the allowlist once, when anything is queued.
+func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Relations, res *Result) ([]Claim, error) {
 	candidates, err := d.Queue.Candidates(ctx)
 	if err != nil {
-		return Claim{}, false, err
+		return nil, err
 	}
 	provider := runner.Provider(c.Model)
 	halted, err := d.Providers.Halted(ctx, provider)
@@ -268,12 +320,13 @@ func admitClaim(ctx context.Context, d Deps, c Config, res *Result) (Claim, bool
 		d.Logger.Info("providerHaltCheckFailed", "provider", provider, "err", err.Error())
 		halted = false
 	}
+	limits := c.Limits.orDefault()
+	var prs openPRCount
+	if len(candidates) > 0 {
+		prs = countOpenPRs(ctx, d, c.Repos)
+	}
+	var claims []Claim
 	for _, cand := range candidates {
-		if halted {
-			d.Logger.Info("runDeferred", "run", cand.RunID, "ceiling", CeilingProviderHalted)
-			res.Deferrals = append(res.Deferrals, Deferral{RunID: cand.RunID, Ceiling: CeilingProviderHalted, At: d.Now()})
-			continue
-		}
 		est, err := d.Estimator.Estimate(ctx, cand.Size)
 		if err != nil {
 			// A failed estimate withholds only this candidate, not the whole
@@ -282,27 +335,54 @@ func admitClaim(ctx context.Context, d Deps, c Config, res *Result) (Claim, bool
 			// block a lower-priority candidate whose own estimate would
 			// have succeeded.
 			d.Logger.Info("estimateFailed", "run", cand.RunID, "size", cand.Size, "err", err.Error())
+			res.Deferrals = append(res.Deferrals, Deferral{RunID: cand.RunID, Ceiling: ConditionEstimateFailed, At: d.Now()})
 			continue
 		}
 		reservation := Reservation{ProviderCost: est.ProviderCost}
 		if cand.Private {
 			reservation.RunnerMinutes = est.Minutes
 		}
-		ok, binding, err := d.Queue.TryClaim(ctx, cand.RunID, d.Now(), c.Budget, reservation)
+		facts := Facts{Limits: limits, Tuning: c.Tuning.OrDefault(), ProviderHalted: halted, OpenPRs: prs.count, OpenPRsKnown: prs.known,
+			Relations: relations[cand.RunID]}
+		ok, binding, err := d.Queue.TryClaim(ctx, cand.RunID, d.Now(), c.Budget, facts, reservation)
 		if err != nil {
-			return Claim{}, false, err
+			return claims, err
 		}
 		if ok {
-			return Claim{RunID: cand.RunID, Repo: cand.Repo, Priority: cand.Priority}, true, nil
+			claims = append(claims, Claim{RunID: cand.RunID, Repo: cand.Repo, Priority: cand.Priority})
+			continue
 		}
 		if binding == "" {
-			// Another poll already claimed this row: not a budget matter.
+			// Another poll already claimed this row: not an admission matter.
 			continue
 		}
 		d.Logger.Info("runDeferred", "run", cand.RunID, "ceiling", binding)
 		res.Deferrals = append(res.Deferrals, Deferral{RunID: cand.RunID, Ceiling: binding, At: d.Now()})
 	}
-	return Claim{}, false, nil
+	if len(candidates) > 0 && len(res.Deferrals) == len(candidates) {
+		d.Logger.Info("everyCandidateDeferred", "candidates", len(candidates))
+	}
+	return claims, nil
+}
+
+// openPRCount is the open agent PR count across the allowlist, and whether
+// every read behind it succeeded.
+type openPRCount struct {
+	count int
+	known bool
+}
+
+func countOpenPRs(ctx context.Context, d Deps, repos []string) openPRCount {
+	total := 0
+	for _, repo := range repos {
+		n, err := d.OpenPRs.OpenAgentPRs(ctx, repo)
+		if err != nil {
+			d.Logger.Info("openPRCountFailed", "repo", repo, "err", err.Error())
+			return openPRCount{}
+		}
+		total += n
+	}
+	return openPRCount{count: total, known: true}
 }
 
 // dispatch starts the claimed run, returning it to the queue if GitHub refused

@@ -14,6 +14,10 @@ import (
 // server of their own.
 const linearEndpoint = "https://api.linear.app/graphql"
 
+// blocksRelation is the type of a Linear issue relation whose issue blocks its
+// related issue.
+const blocksRelation = "blocks"
+
 // linearPage is how many issues one page asks for. A workspace holds far more
 // issues than one workspace's delegated to a single agent, so the pages are
 // walked rather than the first one taken as all of them.
@@ -23,7 +27,7 @@ const linearPage = 50
 // it, so a poll cannot act for an agent other than the configured one. State
 // types rather than names are filtered: the completed and canceled names differ
 // per team, the types do not.
-const delegatedQuery = `query DelegatedIssues($delegate: String!, $first: Int, $after: String) {
+const delegatedQuery = `query DelegatedIssues($delegate: ID!, $first: Int, $after: String) {
   viewer {
     id
   }
@@ -40,6 +44,22 @@ const delegatedQuery = `query DelegatedIssues($delegate: String!, $first: Int, $
       labels {
         nodes {
           name
+        }
+      }
+      relations {
+        nodes {
+          type
+          relatedIssue {
+            identifier
+          }
+        }
+      }
+      inverseRelations {
+        nodes {
+          type
+          issue {
+            identifier
+          }
         }
       }
     }
@@ -79,6 +99,22 @@ type linearResponse struct {
 						Name string `json:"name"`
 					} `json:"nodes"`
 				} `json:"labels"`
+				Relations struct {
+					Nodes []struct {
+						Type         string `json:"type"`
+						RelatedIssue struct {
+							Identifier string `json:"identifier"`
+						} `json:"relatedIssue"`
+					} `json:"nodes"`
+				} `json:"relations"`
+				InverseRelations struct {
+					Nodes []struct {
+						Type  string `json:"type"`
+						Issue struct {
+							Identifier string `json:"identifier"`
+						} `json:"issue"`
+					} `json:"nodes"`
+				} `json:"inverseRelations"`
 			} `json:"nodes"`
 			PageInfo struct {
 				HasNextPage bool   `json:"hasNextPage"`
@@ -122,6 +158,16 @@ func (l Linear) Delegated(ctx context.Context) ([]Issue, error) {
 			}
 			for _, label := range node.Labels.Nodes {
 				issue.Labels = append(issue.Labels, label.Name)
+			}
+			for _, rel := range node.Relations.Nodes {
+				if rel.Type == blocksRelation {
+					issue.Blocks = append(issue.Blocks, rel.RelatedIssue.Identifier)
+				}
+			}
+			for _, rel := range node.InverseRelations.Nodes {
+				if rel.Type == blocksRelation {
+					issue.BlockedBy = append(issue.BlockedBy, rel.Issue.Identifier)
+				}
 			}
 			issues = append(issues, issue)
 		}

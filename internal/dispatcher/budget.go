@@ -114,10 +114,10 @@ type Candidate struct {
 	Priority int
 }
 
-// Deferral is a queued run's claim withheld this poll because dispatching it
-// would breach a ceiling. Unlike a Rejection it names no permanent verdict
-// against the ticket — the same run is reconsidered, at the same priority,
-// next poll (FR-22).
+// Deferral is a queued run's claim withheld this poll by a budget ceiling or an
+// admission condition, which Ceiling names. Unlike a Rejection it names no
+// permanent verdict against the ticket — the same run is reconsidered, at the
+// same priority, next poll (FR-22).
 type Deferral struct {
 	RunID   string
 	Ceiling string

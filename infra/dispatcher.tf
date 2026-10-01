@@ -96,6 +96,14 @@ resource "google_cloud_run_v2_job" "dispatcher" {
           name  = "WINGMAN_REPOS"
           value = join(",", var.linear_repositories)
         }
+
+        dynamic "env" {
+          for_each = var.dispatcher_settings
+          content {
+            name  = env.key
+            value = env.value
+          }
+        }
       }
     }
   }
@@ -130,7 +138,7 @@ resource "google_cloud_scheduler_job" "dispatcher" {
   time_zone = "Etc/UTC"
 
   description      = "Wakes the dispatcher to admit delegated tickets and start one run."
-  attempt_deadline = 300
+  attempt_deadline = "300s"
 
   retry_config {
     retry_count = 0

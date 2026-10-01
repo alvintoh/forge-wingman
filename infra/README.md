@@ -77,8 +77,10 @@ The rule stack's publish workflow needs two variables on that repository:
 
 `dispatcher.tf` is the poller: a Cloud Run job that Cloud Scheduler wakes every
 fifteen minutes. One execution is one poll — admit every ticket Linear has
-delegated, then start at most one queued run, the one whose `size:` label is
-`L` and whose Linear priority is lowest. A dispatch GitHub refuses releases its
+delegated, then walk the queue in priority order and start every run admission
+lets start: the discovered concurrency limit, the platform cap, one run per
+repository, the large-run cap, blocking relations and the open-PR review limit
+each withhold a run until a later poll. A dispatch GitHub refuses releases its
 claim, so the next poll takes it again.
 
 Two identities, and no grant in common: the job reads the store, and the
@@ -89,13 +91,14 @@ schedule can only start the job.
 | `dispatcher` | Firestore read/write on the queue, read both tokens |
 | `dispatcher-schedule` | start one execution of the `forge-wingman-dispatcher` job |
 
-Three variables name what OpenTofu cannot guess:
+Three variables name what OpenTofu cannot guess, and a fourth is optional:
 
 | Variable | What it is |
 |---|---|
 | `dispatcher_image` | the image to run. The `Dockerfile` builds it with `CMD=dispatcher`; nothing here pushes it, so push it yourself and name the digest |
 | `linear_delegate` | the Linear id of the agent the job acts for; a poll whose token is another agent's admits nothing |
 | `linear_repositories` | the allowlist. Empty admits nothing, so a forgotten one refuses every ticket rather than dispatching |
+| `dispatcher_settings` | optional. A map of `WINGMAN_PLATFORM_CAP`, `WINGMAN_LARGE_CAP`, `WINGMAN_REVIEW_WIP`, `WINGMAN_STABLE_RUNS`, `WINGMAN_RISE_WITHIN` and `WINGMAN_HALVE_BEYOND` to a value; a key left out keeps its default |
 
 ### Secrets
 
@@ -107,6 +110,12 @@ next run's business and not a redeploy's.
 printf %s "$LINEAR_TOKEN" | gcloud secrets versions add linear-token --data-file=-
 printf %s "$GITHUB_TOKEN" | gcloud secrets versions add github-token --data-file=-
 ```
+
+The GitHub token also needs two permissions on every allowlisted repository.
+`pull_requests: read`: admission counts the open agent PRs, and a repository it
+cannot read leaves that count unknown, which admits only a lone run.
+`actions: write`: the dispatch is a `workflow_dispatch`, which GitHub refuses
+with 403 "Resource not accessible by personal access token" without it.
 
 ### A ticket
 

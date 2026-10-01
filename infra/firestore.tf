@@ -31,3 +31,30 @@ resource "google_firestore_index" "queue_claim" {
     order      = "ASCENDING"
   }
 }
+
+# Serves the latest-settled-runs query behind concurrency tuning.
+resource "google_firestore_index" "settled_by_size_and_concurrency" {
+  project    = var.project_id
+  database   = google_firestore_database.default.name
+  collection = "runs"
+
+  fields {
+    field_path = "size"
+    order      = "ASCENDING"
+  }
+
+  fields {
+    field_path = "outcome"
+    order      = "ASCENDING"
+  }
+
+  fields {
+    field_path = "claim_concurrency"
+    order      = "ASCENDING"
+  }
+
+  fields {
+    field_path = "settled_at"
+    order      = "DESCENDING"
+  }
+}
