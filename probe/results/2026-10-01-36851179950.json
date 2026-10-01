@@ -1,0 +1,155 @@
+{
+  "probed_at": "2026-10-01",
+  "config": {
+    "margin": 0.8,
+    "tool_call_ratio": 2,
+    "max_tool_calls": 150,
+    "timeout_seconds": 900,
+    "max_fallbacks": 3,
+    "max_models": 8
+  },
+  "results": [
+    {
+      "model": "opencode/nemotron-3-ultra-free",
+      "verdict": "pass",
+      "tool_calls": 8,
+      "transcript_bytes": 27875,
+      "usage": {
+        "input": 70379,
+        "output": 510,
+        "reasoning": 218,
+        "cache_read": 0,
+        "cache_write": 0,
+        "cost": 0,
+        "steps": 7
+      }
+    },
+    {
+      "model": "opencode/big-pickle",
+      "verdict": "fail",
+      "reason": "tool-calls-over-threshold",
+      "tool_calls": 19,
+      "transcript_bytes": 61851,
+      "usage": {
+        "input": 40157,
+        "output": 2068,
+        "reasoning": 894,
+        "cache_read": 130545,
+        "cache_write": 0,
+        "cost": 0,
+        "steps": 16
+      }
+    },
+    {
+      "model": "opencode/ling-3.0-flash-fin-free",
+      "verdict": "void",
+      "reason": "run-errored",
+      "tool_calls": 0,
+      "transcript_bytes": 733,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache_read": 0,
+        "cache_write": 0,
+        "cost": 0,
+        "steps": 0
+      }
+    },
+    {
+      "model": "opencode/mimo-v2.5-free",
+      "verdict": "void",
+      "reason": "run-errored",
+      "tool_calls": 0,
+      "transcript_bytes": 218,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache_read": 0,
+        "cache_write": 0,
+        "cost": 0,
+        "steps": 0
+      }
+    },
+    {
+      "model": "opencode/muse-spark-1.2-contributor-free",
+      "verdict": "void",
+      "reason": "run-errored",
+      "tool_calls": 0,
+      "transcript_bytes": 218,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache_read": 0,
+        "cache_write": 0,
+        "cost": 0,
+        "steps": 0
+      }
+    },
+    {
+      "model": "opencode/muse-spark-1.3-contributor-free",
+      "verdict": "pass",
+      "tool_calls": 16,
+      "transcript_bytes": 53175,
+      "usage": {
+        "input": 7870,
+        "output": 1484,
+        "reasoning": 668,
+        "cache_read": 97145,
+        "cache_write": 0,
+        "cost": 0,
+        "steps": 9
+      }
+    },
+    {
+      "model": "opencode/nemotron-3.5-lightning-free",
+      "verdict": "void",
+      "reason": "no-work",
+      "tool_calls": 10,
+      "transcript_bytes": 26113,
+      "usage": {
+        "input": 15429,
+        "output": 416,
+        "reasoning": 138,
+        "cache_read": 30464,
+        "cache_write": 0,
+        "cost": 0,
+        "steps": 5
+      }
+    }
+  ],
+  "decision": {
+    "set": {
+      "default": "opencode/nemotron-3-ultra-free",
+      "fallbacks": [
+        "opencode/muse-spark-1.3-contributor-free"
+      ],
+      "probed_at": "2026-10-01",
+      "evidence": [
+        {
+          "model": "opencode/nemotron-3-ultra-free",
+          "tool_calls": 8,
+          "transcript_bytes": 27875
+        },
+        {
+          "model": "opencode/muse-spark-1.3-contributor-free",
+          "tool_calls": 16,
+          "transcript_bytes": 53175
+        }
+      ]
+    },
+    "changed": true,
+    "reason": "fallbacks-changed-only"
+  },
+  "usage": {
+    "input": 133835,
+    "output": 4478,
+    "reasoning": 1918,
+    "cache_read": 258154,
+    "cache_write": 0,
+    "cost": 0,
+    "steps": 37
+  }
+}
