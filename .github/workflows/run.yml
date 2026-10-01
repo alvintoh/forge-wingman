@@ -23,7 +23,7 @@ on:
       review_model:
         description: the pre-PR loop's review model, as provider/model (FR-14) — must differ from model
         type: string
-        default: opencode-go/glm-5.3-flash
+        default: opencode/nemotron-3-ultra-free
 
 permissions: {}
 
