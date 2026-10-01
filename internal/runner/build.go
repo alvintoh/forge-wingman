@@ -36,20 +36,6 @@ func Provider(model string) string {
 	return model
 }
 
-// DefaultModel is every dispatched run's starting model, matching run.yml's
-// own workflow_dispatch default. The single source of truth for that string —
-// cmd/dispatcher references it rather than its own literal, so it can never
-// drift out of sync with availabilityOrder's key below.
-const DefaultModel = "opencode/big-pickle"
-
-// availabilityOrder is AC1's same-provider substitution list: for a starting
-// model, the other models to retry in order once it classifies as
-// unavailable. Not a tier ladder — FR-13's escalation is unimplemented, so
-// this is one ordered list per starting model, revisited once that lands.
-var availabilityOrder = map[string][]string{
-	DefaultModel: {"opencode/deepseek-v4-flash-free", "opencode/mimo-v2.6-flash-free"},
-}
-
 // Agent runs the build model in a directory, continuing session when it is
 // non-empty, and streams its events to stdout.
 type Agent interface {
@@ -449,7 +435,7 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 
 // runAgentWithFallback runs call via runAgent, and on an availability-
 // classified failure (StopModelUnavailable) retries with the next untried
-// model in availabilityOrder[call.Model], each attempt as its own Step under
+// model in fallbackModels(call.Model), each attempt as its own Step under
 // an incrementing Round so every model tried is recorded (AC1). It reports
 // the round its last attempt used, so a caller numbering further rounds for
 // this phase continues from there rather than reusing one. Once the order is
@@ -457,7 +443,7 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 // (AC3) instead of the ordinary agent-failure path — deliberately not a path
 // FR-13's (unimplemented) escalation could hook into.
 func runAgentWithFallback(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, agent Agent, dir, prompt string, sum *Summary) (text, session string, round int, err error) {
-	models := append([]string{call.Model}, availabilityOrder[call.Model]...)
+	models := append([]string{call.Model}, fallbackModels(call.Model)...)
 	round = call.Round
 	var lastErr error
 	for i, model := range models {

@@ -27,9 +27,13 @@ fi
 mkdir -p "$dest"
 cp -R "$here/fixture/." "$dest/"
 
-# Fixed dates, so the same fixture and identity always yield the same sha.
+# Fixed dates and identity, so the same fixture yields the same sha on any machine.
 export GIT_AUTHOR_DATE='2026-09-22T18:56:23+10:00'
 export GIT_COMMITTER_DATE="$GIT_AUTHOR_DATE"
+export GIT_AUTHOR_NAME='fixture'
+export GIT_AUTHOR_EMAIL='fixture@example.com'
+export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
+export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
 git -C "$dest" init -q -b main
 git -C "$dest" add -A
 git -C "$dest" commit -q -m 'chore: account collector with request pacing and a lookup path'

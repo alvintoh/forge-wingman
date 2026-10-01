@@ -1,0 +1,10 @@
+{
+  "default": "opencode/nemotron-3-ultra-free",
+  "fallbacks": [
+    "opencode/longcat-2.5-preview-free",
+    "opencode/muse-spark-1.3-contributor-free",
+    "opencode/big-pickle"
+  ],
+  "probed_at": "",
+  "evidence": []
+}

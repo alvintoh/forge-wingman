@@ -236,7 +236,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		OpenPRs:    gh,
 		Logger:     logger,
 		Now:        time.Now,
-	}, dispatcher.Config{Repos: c.repos, Budget: budgetConfig, Model: runner.DefaultModel, Limits: c.limits, Tuning: c.tuning}); err != nil {
+	}, dispatcher.Config{Repos: c.repos, Budget: budgetConfig, Model: runner.DefaultModel(), Limits: c.limits, Tuning: c.tuning}); err != nil {
 		return err
 	}
 	return nil
