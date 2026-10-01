@@ -1,7 +1,9 @@
 {
-  "default": "opencode/big-pickle",
+  "default": "opencode/nemotron-3-ultra-free",
   "fallbacks": [
-    "opencode/mimo-v2.6-flash-free"
+    "opencode/longcat-2.5-preview-free",
+    "opencode/muse-spark-1.3-contributor-free",
+    "opencode/big-pickle"
   ],
   "probed_at": "",
   "evidence": []

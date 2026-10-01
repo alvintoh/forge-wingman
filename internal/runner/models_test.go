@@ -15,13 +15,13 @@ func TestEmbeddedModelsAreCanonicalAndNameTheDefault(t *testing.T) {
 	if !bytes.Equal(got, modelsJSON) {
 		t.Fatalf("models.json is not in Marshal's form:\n%s", got)
 	}
-	if DefaultModel() != "opencode/big-pickle" {
+	if DefaultModel() != "opencode/nemotron-3-ultra-free" {
 		t.Fatalf("DefaultModel() = %q, want the model models.json names", DefaultModel())
 	}
 }
 
 func TestFallbackModelsAreTheDefaultsOnly(t *testing.T) {
-	want := []string{"opencode/mimo-v2.6-flash-free"}
+	want := []string{"opencode/longcat-2.5-preview-free", "opencode/muse-spark-1.3-contributor-free", "opencode/big-pickle"}
 	if got := fallbackModels(DefaultModel()); !slices.Equal(got, want) {
 		t.Fatalf("fallbackModels(default) = %v, want %v", got, want)
 	}

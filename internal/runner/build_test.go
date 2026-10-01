@@ -343,7 +343,7 @@ func TestBuildSubstitutesTheNextModelOnAnAvailabilityFailureAndRecordsBothAttemp
 	}
 	deps, _, reported := testDeps(validObjects(), agent)
 	c := testConfig(t, initRepo(t))
-	c.Model = "opencode/big-pickle"
+	c.Model = DefaultModel()
 
 	if _, err := Build(context.Background(), deps, c); err != nil {
 		t.Fatal(err)
@@ -365,7 +365,7 @@ func TestBuildStopsWithModelUnavailableOnceTheAvailabilityOrderIsExhausted(t *te
 	agent := &fakeAgent{stderr: "Error: no endpoints found for this model", err: errors.New("exit status 1")}
 	deps, _, reported := testDeps(validObjects(), agent)
 	c := testConfig(t, initRepo(t))
-	c.Model = "opencode/big-pickle"
+	c.Model = DefaultModel()
 
 	if _, err := Build(context.Background(), deps, c); err == nil {
 		t.Fatal("Build succeeded with every model in the order unavailable")
@@ -387,7 +387,7 @@ func TestBuildNeverSubstitutesOnAnOrdinaryAgentFailureEvenWithFallbacksConfigure
 	agent := &fakeAgent{stderr: "Error: the model returned malformed output", err: errors.New("exit status 1")}
 	deps, _, reported := testDeps(validObjects(), agent)
 	c := testConfig(t, initRepo(t))
-	c.Model = "opencode/big-pickle"
+	c.Model = DefaultModel()
 
 	if _, err := Build(context.Background(), deps, c); err == nil {
 		t.Fatal("Build succeeded with a failed agent")
@@ -735,7 +735,7 @@ func TestPrePRLoopStillGetsThreeRebuildRoundsAfterAMidRoundModelSubstitution(t *
 		return checkTest, "still failing", nil
 	}
 	c := testConfig(t, initRepo(t))
-	c.Model = "opencode/big-pickle"
+	c.Model = DefaultModel()
 
 	if _, err := Build(context.Background(), deps, c); err != nil {
 		t.Fatal(err)
