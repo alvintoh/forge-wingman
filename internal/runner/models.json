@@ -1,10 +1,31 @@
 {
   "default": "opencode/nemotron-3-ultra-free",
   "fallbacks": [
-    "opencode/longcat-2.5-preview-free",
     "opencode/muse-spark-1.3-contributor-free",
-    "opencode/big-pickle"
+    "opencode/big-pickle",
+    "opencode/nemotron-3.5-lightning-free"
   ],
-  "probed_at": "",
-  "evidence": []
+  "probed_at": "2026-10-01",
+  "evidence": [
+    {
+      "model": "opencode/nemotron-3-ultra-free",
+      "tool_calls": 10,
+      "transcript_bytes": 32737
+    },
+    {
+      "model": "opencode/muse-spark-1.3-contributor-free",
+      "tool_calls": 16,
+      "transcript_bytes": 54378
+    },
+    {
+      "model": "opencode/big-pickle",
+      "tool_calls": 17,
+      "transcript_bytes": 60590
+    },
+    {
+      "model": "opencode/nemotron-3.5-lightning-free",
+      "tool_calls": 18,
+      "transcript_bytes": 43980
+    }
+  ]
 }
