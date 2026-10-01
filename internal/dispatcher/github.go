@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
 const (
@@ -26,6 +28,12 @@ const (
 	// maxRepoResponseBytes bounds a "get a repository" reply: the field this
 	// product reads from it is one boolean.
 	maxRepoResponseBytes = 64 << 10
+	// pullsPerPage is how many open PRs one listing page reads, and maxPullsPages
+	// how many pages a count walks.
+	pullsPerPage  = 100
+	maxPullsPages = 5
+	// maxPullsResponseBytes bounds one page of the open-PR listing.
+	maxPullsResponseBytes = 4 << 20
 )
 
 // GitHub starts the run workflow in one repository.
@@ -83,6 +91,52 @@ func (g GitHub) Private(ctx context.Context, repo string) (bool, error) {
 		return false, fmt.Errorf("decoding repository %s: %w", repo, err)
 	}
 	return body.Private, nil
+}
+
+// OpenAgentPRs counts the open pull requests in repo whose head branch is one
+// of the runner's own. It needs pull_requests: read on every repository the
+// allowlist names, and fails rather than report a count that may be short when
+// the open PRs fill maxPullsPages pages.
+func (g GitHub) OpenAgentPRs(ctx context.Context, repo string) (int, error) {
+	n := 0
+	for page := 1; page <= maxPullsPages; page++ {
+		endpoint := fmt.Sprintf("%s/repos/%s/pulls?state=open&per_page=%d&page=%d", g.endpoint(), repo, pullsPerPage, page)
+		heads, err := g.openPullHeads(ctx, endpoint, repo)
+		if err != nil {
+			return 0, err
+		}
+		for _, ref := range heads {
+			if strings.HasPrefix(ref, runner.BranchPrefix) {
+				n++
+			}
+		}
+		if len(heads) < pullsPerPage {
+			return n, nil
+		}
+	}
+	return 0, fmt.Errorf("%s may hold more than %d open pull requests", repo, maxPullsPages*pullsPerPage)
+}
+
+// openPullHeads is the head branch of every PR on one page of the listing.
+func (g GitHub) openPullHeads(ctx context.Context, endpoint, repo string) ([]string, error) {
+	res, err := g.do(ctx, http.MethodGet, endpoint, nil, fmt.Sprintf("list open pull requests in %s", repo))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = res.Body.Close() }()
+	var pulls []struct {
+		Head struct {
+			Ref string `json:"ref"`
+		} `json:"head"`
+	}
+	if err := json.NewDecoder(io.LimitReader(res.Body, maxPullsResponseBytes)).Decode(&pulls); err != nil {
+		return nil, fmt.Errorf("decoding the open pull requests of %s: %w", repo, err)
+	}
+	heads := make([]string, len(pulls))
+	for i, p := range pulls {
+		heads[i] = p.Head.Ref
+	}
+	return heads, nil
 }
 
 // do sends an authenticated GitHub API request and returns its response on

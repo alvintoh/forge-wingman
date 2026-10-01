@@ -120,10 +120,13 @@ func stopWith(o Outcome, r StopReason, err error) *StopError {
 	return &StopError{Outcome: o, Reason: r, Err: err}
 }
 
+// BranchPrefix starts the name of every branch a run builds on.
+const BranchPrefix = "wingman/"
+
 // BranchName is the branch attempt attemptID builds a ticket on, from the
 // ticket's BranchSegment.
 func BranchName(segment, attemptID string) string {
-	return "wingman/" + segment + "-" + attemptID
+	return BranchPrefix + segment + "-" + attemptID
 }
 
 // Build checks the identity and the ticket, fetches the projection, plans an M

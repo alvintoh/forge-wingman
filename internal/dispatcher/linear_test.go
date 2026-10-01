@@ -31,6 +31,14 @@ func linearServer(t *testing.T, pages []map[string]any) (*httptest.Server, *[]ma
 		if !strings.Contains(req.Query, "delegate: { id: { eq: $delegate } }") {
 			t.Errorf("the query does not filter by delegate: %s", req.Query)
 		}
+		if !strings.Contains(req.Query, "$delegate: ID!") {
+			t.Errorf("the query declares $delegate as something other than ID!, which Linear rejects for an id filter: %s", req.Query)
+		}
+		for _, field := range []string{" relations {", " inverseRelations {"} {
+			if !strings.Contains(req.Query, field) {
+				t.Errorf("the query does not ask for%s: %s", field, req.Query)
+			}
+		}
 		if got := r.Header.Get("Authorization"); got != "Bearer linear-token" {
 			t.Errorf("Authorization = %q", got)
 		}
@@ -132,5 +140,29 @@ func TestLinearReportsAQueryItCannotRun(t *testing.T) {
 				t.Fatal("admitted a reply it cannot use")
 			}
 		})
+	}
+}
+
+func TestLinearReadsBlockingRelationsInBothDirections(t *testing.T) {
+	node := linearNode("run-a", 2, "size:M")
+	node["relations"] = map[string]any{"nodes": []map[string]any{
+		{"type": "blocks", "relatedIssue": map[string]any{"identifier": "run-x"}},
+		{"type": "related", "relatedIssue": map[string]any{"identifier": "run-y"}},
+	}}
+	node["inverseRelations"] = map[string]any{"nodes": []map[string]any{
+		{"type": "blocks", "issue": map[string]any{"identifier": "run-p"}},
+		{"type": "duplicate", "issue": map[string]any{"identifier": "run-q"}},
+	}}
+	srv, _ := linearServer(t, []map[string]any{linearReply("agent-1", false, "", node, linearNode("run-b", 0, "size:L"))})
+	issues, err := Linear{Endpoint: linearURL(srv), Token: "Bearer linear-token", Delegate: "agent-1",
+		Client: srv.Client()}.Delegated(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(issues[0].Blocks, []string{"run-x"}) || !slices.Equal(issues[0].BlockedBy, []string{"run-p"}) {
+		t.Fatalf("issue = %+v, want only the blocking relations kept", issues[0])
+	}
+	if len(issues[1].Blocks) != 0 || len(issues[1].BlockedBy) != 0 {
+		t.Fatalf("issue = %+v, want no relations for an issue with none", issues[1])
 	}
 }

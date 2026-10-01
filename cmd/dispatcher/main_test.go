@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 )
 
 func envOf(kv map[string]string) func(string) string {
@@ -27,6 +29,61 @@ func TestLoadConfigReadsTheBoundaries(t *testing.T) {
 	}
 	if !slices.Equal(c.repos, []string{"octo/scratch", "AlvinToh/Forge-Wingman"}) {
 		t.Fatalf("repos = %v", c.repos)
+	}
+}
+
+func configEnv(extra map[string]string) func(string) string {
+	kv := map[string]string{"GOOGLE_CLOUD_PROJECT": "forge-wingman", "LINEAR_DELEGATE": "agent-1", "WINGMAN_REPOS": "octo/scratch"}
+	for k, v := range extra {
+		kv[k] = v
+	}
+	return envOf(kv)
+}
+
+func TestLoadConfigReadsTheConcurrencySettings(t *testing.T) {
+	c, err := loadConfig(configEnv(map[string]string{
+		"WINGMAN_PLATFORM_CAP": " 8 ", "WINGMAN_LARGE_CAP": "2", "WINGMAN_REVIEW_WIP": "4",
+		"WINGMAN_STABLE_RUNS": "3", "WINGMAN_RISE_WITHIN": " 1.1 ", "WINGMAN_HALVE_BEYOND": "1.8",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (dispatcher.Limits{PlatformCap: 8, LargeCap: 2, ReviewWIP: 4}); c.limits != want {
+		t.Fatalf("limits = %+v, want %+v", c.limits, want)
+	}
+	if want := (dispatcher.Tuning{StableRuns: 3, RiseWithin: 1.1, HalveBeyond: 1.8}); c.tuning != want {
+		t.Fatalf("tuning = %+v, want %+v", c.tuning, want)
+	}
+}
+
+func TestLoadConfigLeavesUnsetConcurrencySettingsToTheirDefaults(t *testing.T) {
+	c, err := loadConfig(configEnv(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.limits != (dispatcher.Limits{}) || c.tuning != (dispatcher.Tuning{}) {
+		t.Fatalf("limits %+v tuning %+v, want zero so the defaults apply", c.limits, c.tuning)
+	}
+}
+
+func TestLoadConfigRefusesUnusableConcurrencySettings(t *testing.T) {
+	for name, kv := range map[string]map[string]string{
+		"a zero cap":                              {"WINGMAN_PLATFORM_CAP": "0"},
+		"a negative cap":                          {"WINGMAN_LARGE_CAP": "-1"},
+		"a cap that is not a number":              {"WINGMAN_REVIEW_WIP": "many"},
+		"a fractional count":                      {"WINGMAN_STABLE_RUNS": "2.5"},
+		"a zero rise band":                        {"WINGMAN_RISE_WITHIN": "0"},
+		"a rise band that is not a number":        {"WINGMAN_RISE_WITHIN": "NaN"},
+		"an infinite fall band":                   {"WINGMAN_HALVE_BEYOND": "Inf"},
+		"a fall band under the default rise band": {"WINGMAN_HALVE_BEYOND": "1.2"},
+		"a rise band over the default fall band":  {"WINGMAN_RISE_WITHIN": "2"},
+		"equal bands":                             {"WINGMAN_RISE_WITHIN": "1.4", "WINGMAN_HALVE_BEYOND": "1.4"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := loadConfig(configEnv(kv)); err == nil {
+				t.Fatalf("%v was accepted", kv)
+			}
+		})
 	}
 }
 
