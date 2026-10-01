@@ -15,15 +15,22 @@ func TestEmbeddedModelsAreCanonicalAndNameTheDefault(t *testing.T) {
 	if !bytes.Equal(got, modelsJSON) {
 		t.Fatalf("models.json is not in Marshal's form:\n%s", got)
 	}
-	if DefaultModel() != "opencode/nemotron-3-ultra-free" {
-		t.Fatalf("DefaultModel() = %q, want the model models.json names", DefaultModel())
+	set, err := ParseModelSet(modelsJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set.Default == "" || DefaultModel() != set.Default {
+		t.Fatalf("DefaultModel() = %q, want the model models.json names (%q)", DefaultModel(), set.Default)
 	}
 }
 
 func TestFallbackModelsAreTheDefaultsOnly(t *testing.T) {
-	want := []string{"opencode/longcat-2.5-preview-free", "opencode/muse-spark-1.3-contributor-free", "opencode/big-pickle"}
-	if got := fallbackModels(DefaultModel()); !slices.Equal(got, want) {
-		t.Fatalf("fallbackModels(default) = %v, want %v", got, want)
+	set, err := ParseModelSet(modelsJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fallbackModels(DefaultModel()); !slices.Equal(got, set.Fallbacks) {
+		t.Fatalf("fallbackModels(default) = %v, want models.json's %v", got, set.Fallbacks)
 	}
 	if got := fallbackModels("opencode/other"); got != nil {
 		t.Fatalf("fallbackModels(other) = %v, want none", got)
