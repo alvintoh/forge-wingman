@@ -4,7 +4,7 @@
 # Merging that PR is the change of default model; reverting it is the undo.
 # `probe` holds the model API key and no GitHub token, since the models it runs have a
 # shell; `pr` holds the App token and never runs a model. Needs the OPENCODE_API_KEY and
-# WINGMAN_APP_PRIVATE_KEY secrets and the WINGMAN_APP_ID variable.
+# WINGMAN_APP_PRIVATE_KEY secrets and the WINGMAN_APP_CLIENT_ID variable.
 name: probe-models
 
 on:
@@ -93,7 +93,7 @@ jobs:
         name: Mint the App's installation token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.WINGMAN_APP_ID }}
+          client-id: ${{ vars.WINGMAN_APP_CLIENT_ID }}
           private-key: ${{ secrets.WINGMAN_APP_PRIVATE_KEY }}
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
