@@ -19,6 +19,11 @@ line, so there is no workspace and no `apps/` level:
 | `cmd/surface` | Cloud Run service behind IAP, serving `web/` | HTTP |
 | `web/` | Vite + React + TanStack Router/Form SPA, embedded in `surface` | — |
 
+## Deploy
+
+`infra/` holds the OpenTofu for the stores and for the keyless identities the
+workflows run under. The steps live in [`infra/README.md`](/infra/README.md).
+
 ## Develop
 
 ```sh
