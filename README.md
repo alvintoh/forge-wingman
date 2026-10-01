@@ -30,6 +30,13 @@ make ui                   # the same, in a process-compose UI: a pane per proces
 For the single binary exactly as it ships: `cd web && bun run build && cd .. && go run ./cmd/surface`,
 then http://localhost:8080. `make ui` needs `brew install f1bonacc1/tap/process-compose`.
 
+## Deploy
+
+The stores, the keyless identities the workflows run under, and the dispatcher's Cloud
+Run job and its schedule are OpenTofu: the apply steps, and the variables each resource
+needs, are in [`infra/README.md`](/infra/README.md). `surface` is not among them — it
+is the same image at its default `CMD`, pushed and deployed by hand.
+
 ## Checks
 
 ```sh
