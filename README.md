@@ -19,6 +19,10 @@ line, so there is no workspace and no `apps/` level:
 | `cmd/surface` | Cloud Run service behind IAP, serving `web/` | HTTP |
 | `web/` | Vite + React + TanStack Router/Form SPA, embedded in `surface` | — |
 
+## Deploy
+
+See [`infra/README.md`](infra/README.md) for deployment steps and infrastructure details.
+
 ## Develop
 
 ```sh
