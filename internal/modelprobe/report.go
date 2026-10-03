@@ -19,6 +19,7 @@ var modelName = regexp.MustCompile("^" + regexp.QuoteMeta(runner.ZenProvider) + 
 var knownReasons = []string{
 	"", ReasonFabricatedBurst, ReasonBurstUnreadable, ReasonNoWork, ReasonRunErrored, ReasonEventShape,
 	ReasonTranscript, ReasonTimedOut, ReasonToolCallCap, ReasonOverToolCallBar,
+	ReasonRefusedFreeTier, ReasonNoSteps, ReasonNoFindingsBlock,
 	DecisionChallengerWins, DecisionWithinMargin, DecisionIncumbentBest, DecisionIncumbentExcluded,
 	DecisionNoSurvivors, DecisionFallbacksReordered,
 }
@@ -73,6 +74,10 @@ func ReadReport(b []byte) (Report, error) {
 			return Report{}, fmt.Errorf("result for %s has verdict %q", res.Model, res.Verdict)
 		case !slices.Contains(knownReasons, res.Reason):
 			return Report{}, fmt.Errorf("result for %s has reason %q", res.Model, res.Reason)
+		case res.ReviewVerdict != "" && res.ReviewVerdict != VerdictPass && res.ReviewVerdict != VerdictFail:
+			return Report{}, fmt.Errorf("result for %s has review verdict %q", res.Model, res.ReviewVerdict)
+		case !slices.Contains(knownReasons, res.ReviewReason):
+			return Report{}, fmt.Errorf("result for %s has review reason %q", res.Model, res.ReviewReason)
 		}
 	}
 	for _, m := range r.Skipped {
@@ -125,13 +130,23 @@ func (r Report) Summary() string {
 	if r.Decision != nil {
 		fmt.Fprintf(&b, "Default: `%s` (%s).\n\n", r.Decision.Set.Default, r.Decision.Reason)
 	}
-	b.WriteString("| Model | Verdict | Tool calls | Reason |\n|---|---|---|---|\n")
+	b.WriteString("| Model | Verdict | Tool calls | Reason | Review/plan |\n|---|---|---|---|---|\n")
 	for _, res := range r.Results {
-		fmt.Fprintf(&b, "| `%s` | %s | %d | %s |\n", res.Model, res.Verdict, res.ToolCalls, res.Reason)
+		fmt.Fprintf(&b, "| `%s` | %s | %d | %s | %s |\n", res.Model, res.Verdict, res.ToolCalls, res.Reason, reviewCell(res))
 	}
 	if len(r.Skipped) > 0 {
 		fmt.Fprintf(&b, "\nNot probed this run (model cap): %s.\n", strings.Join(r.Skipped, ", "))
 	}
 	fmt.Fprintf(&b, "\nProbe spend: %d input, %d output tokens, cost %.4f.\n", r.Usage.Input, r.Usage.Output, r.Usage.Cost)
 	return b.String()
+}
+
+func reviewCell(res Result) string {
+	switch {
+	case res.ReviewVerdict == "":
+		return "-"
+	case res.ReviewReason == "":
+		return string(res.ReviewVerdict)
+	}
+	return string(res.ReviewVerdict) + " (" + res.ReviewReason + ")"
 }

@@ -63,7 +63,7 @@ func TestParseReviewFindings(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseReviewFindings(tt.text)
+			got, err := ParseReviewFindings(tt.text)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -75,7 +75,7 @@ func TestParseReviewFindings(t *testing.T) {
 }
 
 func TestParseReviewFindingsRejectsAResponseWithNoBlock(t *testing.T) {
-	if _, err := parseReviewFindings("looks fine to me"); !errors.Is(err, errReviewFindings) {
+	if _, err := ParseReviewFindings("looks fine to me"); !errors.Is(err, errReviewFindings) {
 		t.Fatalf("err = %v, want errReviewFindings", err)
 	}
 }

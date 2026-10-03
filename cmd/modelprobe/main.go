@@ -98,7 +98,8 @@ func run(ctx context.Context, logger *slog.Logger, args []string, now func() tim
 
 	script := filepath.Join(*repo, "probe", "materialize.sh")
 	deps := modelprobe.Deps{
-		NewAgent: func(model string) runner.Agent { return runner.Opencode{Bin: *bin, Model: model} },
+		NewAgent:      func(model string) runner.Agent { return runner.Opencode{Bin: *bin, Model: model} },
+		NewShapeAgent: func(model string) runner.Agent { return runner.ReviewOpencode(*bin, model) },
 		Materialize: func(ctx context.Context, dest string) error {
 			if out, err := exec.CommandContext(ctx, "bash", script, dest).CombinedOutput(); err != nil {
 				return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
