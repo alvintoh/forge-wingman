@@ -211,3 +211,10 @@ func TestOpencodeRunPassesTheRestrictedAgentAndItsConfig(t *testing.T) {
 		t.Fatalf("agent env carries no restricted config:\n%s", gotEnv)
 	}
 }
+
+func TestOpencodeWithModelKeepsTheAgentProfile(t *testing.T) {
+	got := PlanOpencode("bin", "p/a").WithModel("p/b")
+	if want := PlanOpencode("bin", "p/b"); got != want {
+		t.Fatalf("rebound agent = %+v, want %+v", got, want)
+	}
+}
