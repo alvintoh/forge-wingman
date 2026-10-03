@@ -1,0 +1,52 @@
+# Proves the restricted plan agent refuses edit and bash on the plan list's first and
+# last model, against a fixture, and writes each model and outcome to the job summary.
+# Manual: it spends model calls. Needs the OPENCODE_API_KEY secret, and no cloud identity.
+name: plan-smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      plan_models:
+        description: the plan phase's models in order, comma-separated provider/model; the first and the last are proven
+        type: string
+        default: opencode/space-bunny-free
+
+permissions: {}
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
+
+      # The version and checksum are model.yml's.
+      - name: Install opencode
+        env:
+          OPENCODE_VERSION: 1.18.30
+          OPENCODE_SHA256: 55007246858165496ff85ba1c2b648f7421e8e2013bf4189a680c9ff8e699d17
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/opencode.tar.gz" \
+            "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-x64.tar.gz"
+          echo "${OPENCODE_SHA256}  $RUNNER_TEMP/opencode.tar.gz" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/opencode.tar.gz" -C "$RUNNER_TEMP/bin" opencode
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          test "$("$RUNNER_TEMP/bin/opencode" --version)" = "${OPENCODE_VERSION}"
+
+      - name: Prove the plan agent refuses edit and bash
+        env:
+          PLAN_MODELS: ${{ inputs.plan_models }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+        run: '"$RUNNER_TEMP/runner" plan-smoke -plan-models "$PLAN_MODELS"'

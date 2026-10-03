@@ -12,20 +12,32 @@ import (
 
 type fallbackAttempt struct{ model, agent, config string }
 
-// unavailableOpencode writes a fake opencode that records each invocation's
-// model, agent and config to a log, then fails as an unavailable model does.
+// unavailableOpencode is scriptedOpencode failing every model as an unavailable one does.
 func unavailableOpencode(t *testing.T) (bin string, attempts func() []fallbackAttempt) {
+	t.Helper()
+	return scriptedOpencode(t, "Error: no endpoints found for this model", "")
+}
+
+// scriptedOpencode writes a fake opencode that records each invocation's model,
+// agent and config to a log, then exits 1 printing stderrMsg, except for
+// okModel, which answers with a plan naming version.go.
+func scriptedOpencode(t *testing.T, stderrMsg, okModel string) (bin string, attempts func() []fallbackAttempt) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("the fake opencode is a shell script, which Windows cannot execute")
 	}
 	dir := t.TempDir()
-	bin, logPath := filepath.Join(dir, "opencode"), filepath.Join(dir, "attempts.log")
+	bin, logPath, planPath := filepath.Join(dir, "opencode"), filepath.Join(dir, "attempts.log"), filepath.Join(dir, "plan.jsonl")
 	script := "#!/bin/sh\nmodel=; agent=\n" +
 		"while [ $# -gt 0 ]; do\n  case \"$1\" in -m) model=$2; shift;; --agent) agent=$2; shift;; esac\n  shift\ndone\n" +
 		"printf '%s|%s|%s\\n' \"$model\" \"$agent\" \"$OPENCODE_CONFIG_CONTENT\" >> '" + logPath + "'\n" +
-		"cat > /dev/null\necho 'Error: no endpoints found for this model' >&2\nexit 1\n"
+		"cat > /dev/null\n" +
+		"if [ \"$model\" = '" + okModel + "' ]; then cat '" + planPath + "'; exit 0; fi\n" +
+		"echo '" + stderrMsg + "' >&2\nexit 1\n"
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(planPath, []byte(planEvent("plan\n\n```plan-files\nversion.go\n```")), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return bin, func() []fallbackAttempt {
@@ -57,6 +69,7 @@ func TestBuildFallbackRunsEachSubstitutedModelUnderTheSameAgentShape(t *testing.
 		{"plan", PhasePlan, func(bin string, deps *BuildDeps, c *BuildConfig) {
 			deps.PlanAgent = PlanOpencode(bin, DefaultModel())
 			c.Ticket.Size = "M"
+			c.PlanModels = wantModels
 		}, planAgentName, planAgentConfig},
 		{"review", PhaseReview, func(bin string, deps *BuildDeps, c *BuildConfig) {
 			deps.ReviewAgent = ReviewOpencode(bin, DefaultModel())

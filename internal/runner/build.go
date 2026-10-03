@@ -69,6 +69,11 @@ type BuildConfig struct {
 	TempDir   string
 	Pointer   string
 	Model     string
+	// PlanModels is the plan phase's ordered model list: the first entry is the
+	// main model and later ones are backups the phase moves to when the one
+	// before is unavailable or out of allowance. Each is any well-formed
+	// provider/model; they must be distinct, and at least one is required.
+	PlanModels []string
 	// ReviewModel is FR-14's configuration for the pre-PR loop's review
 	// pass (FR-28): it must differ from Model, so the review is never the
 	// builder checking its own work.
@@ -172,6 +177,9 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		if !modelPattern.MatchString(c.Model) {
 			return stopWith(OutcomeStopped, StopModelInvalid, errors.New("model is not provider/model"))
 		}
+		if err := ValidatePlanModels(c.PlanModels); err != nil {
+			return stopWith(OutcomeStopped, StopModelInvalid, err)
+		}
 		if !modelPattern.MatchString(c.ReviewModel) {
 			return stopWith(OutcomeStopped, StopModelInvalid, errors.New("review model is not provider/model"))
 		}
@@ -230,8 +238,8 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 			if err != nil {
 				return stopWith(OutcomeStopped, StopProjectionInvalid, err)
 			}
-			call := agentCall{Phase: PhasePlan, Round: 1, Model: c.Model, Timeout: roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now())}
-			text, _, _, err := runAgentWithFallback(ctx, d, c, call, d.PlanAgent, wt.Dir, planPrompt, &sum)
+			call := agentCall{Phase: PhasePlan, Round: 1, Model: c.PlanModels[0], Timeout: roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now())}
+			text, _, _, err := runAgentInOrder(ctx, d, c, call, c.PlanModels, true, d.PlanAgent, wt.Dir, planPrompt, &sum)
 			if err != nil {
 				return err
 			}
@@ -433,19 +441,48 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 	return text, sessionID, nil
 }
 
-// runAgentWithFallback runs call via runAgent, and on an availability-
-// classified failure (StopModelUnavailable) retries with the next untried
-// model in fallbackModels(call.Model), each attempt as its own Step under
-// an incrementing Round so every model tried is recorded (AC1). It reports
-// the round its last attempt used, so a caller numbering further rounds for
-// this phase continues from there rather than reusing one. Once the order is
-// exhausted, it stops the build with OutcomeInfraFailure/StopModelUnavailable
-// (AC3) instead of the ordinary agent-failure path — deliberately not a path
-// FR-13's (unimplemented) escalation could hook into.
+// DefaultPlanModel is the plan phase's model when none is configured: the one
+// free model proven to complete under the restricted plan agent shape.
+const DefaultPlanModel = "opencode/space-bunny-free"
+
+// ValidatePlanModels reports whether models is a usable plan list: at least
+// one entry, each well formed and none repeated.
+func ValidatePlanModels(models []string) error {
+	if len(models) == 0 {
+		return errors.New("plan models: at least one model is required")
+	}
+	seen := map[string]bool{}
+	for _, m := range models {
+		switch {
+		case !modelPattern.MatchString(m):
+			return fmt.Errorf("plan model %q is not provider/model", m)
+		case seen[m]:
+			return fmt.Errorf("plan model %q is listed twice", m)
+		}
+		seen[m] = true
+	}
+	return nil
+}
+
+// runAgentWithFallback runs call on its model, moving to the same-provider
+// fallbacks of fallbackModels(call.Model) when one is unavailable.
 func runAgentWithFallback(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, agent Agent, dir, prompt string, sum *Summary) (text, session string, round int, err error) {
-	models := append([]string{call.Model}, fallbackModels(call.Model)...)
+	return runAgentInOrder(ctx, d, c, call, append([]string{call.Model}, fallbackModels(call.Model)...), false, agent, dir, prompt, sum)
+}
+
+// runAgentInOrder runs call via runAgent on each of models in turn, advancing
+// on an availability-classified failure (StopModelUnavailable) and, when
+// advanceOnAllowance is set, on an allowance exhaustion too. Each attempt is
+// its own Step under an incrementing Round so every model tried is recorded
+// (AC1). It reports the round its last attempt used, so a caller numbering
+// further rounds for this phase continues from there rather than reusing one.
+// Once the order is exhausted it stops the build with the last failure's own
+// classification: OutcomeInfraFailure/StopModelUnavailable, or
+// OutcomeBudgetStop/StopAllowanceExhausted. That is deliberately not a path
+// FR-13's (unimplemented) escalation could hook into.
+func runAgentInOrder(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, models []string, advanceOnAllowance bool, agent Agent, dir, prompt string, sum *Summary) (text, session string, round int, err error) {
 	round = call.Round
-	var lastErr error
+	var lastErr *StopError
 	for i, model := range models {
 		attempt := call
 		attempt.Model, attempt.Round = model, round
@@ -454,18 +491,29 @@ func runAgentWithFallback(ctx context.Context, d BuildDeps, c BuildConfig, call 
 			return text, session, round, nil
 		}
 		var s *StopError
-		if !errors.As(err, &s) || s.Reason != StopModelUnavailable {
+		if !errors.As(err, &s) || !movesToNextModel(s.Reason, advanceOnAllowance) {
 			return text, session, round, err
 		}
-		lastErr = err
+		lastErr = s
 		if i+1 >= len(models) {
 			break
 		}
 		round++
-		d.Logger.Warn("modelSubstituted", "phase", string(call.Phase), "from", model, "to", models[i+1])
+		d.Logger.Warn("modelSubstituted", "phase", string(call.Phase), "reason", string(s.Reason), "from", model, "to", models[i+1])
+	}
+	if lastErr.Reason == StopAllowanceExhausted {
+		return "", "", round, stopWith(OutcomeBudgetStop, StopAllowanceExhausted,
+			fmt.Errorf("allowance order for %s exhausted: %w", models[0], lastErr))
 	}
 	return "", "", round, stopWith(OutcomeInfraFailure, StopModelUnavailable,
-		fmt.Errorf("availability order for %s exhausted: %w", call.Model, lastErr))
+		fmt.Errorf("availability order for %s exhausted: %w", models[0], lastErr))
+}
+
+// movesToNextModel reports whether a stop of reason sends a phase on to its next
+// model: unavailability always, allowance exhaustion only where a backup may be
+// on another account.
+func movesToNextModel(reason StopReason, advanceOnAllowance bool) bool {
+	return reason == StopModelUnavailable || (advanceOnAllowance && reason == StopAllowanceExhausted)
 }
 
 // modelBinder is implemented by an agent whose model can be swapped per attempt.
