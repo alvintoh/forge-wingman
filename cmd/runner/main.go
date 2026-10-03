@@ -5,6 +5,10 @@
 //	runner pr-meta         -run-id <id> ...          render the PR's title and body from the run record
 //	runner record          -run-id <id> -summary ... validate the build's summary and merge it into the run record
 //	runner enable-provider -provider <name>          admit a halted provider back to dispatch (AC5)
+//	runner plan-define     -provider <name> ...      record a provider plan's price, limit behaviour, pages and harnesses
+//	runner plan-verdict    -provider <name> ...      record the verdict on a plan's terms with its wording and source
+//	runner plan-reply      -provider <name> ...      record a vendor reply and the verdict it leads to
+//	runner plan-list                                 print every plan side by side, flagging the ones to look at
 //
 // build exits 0 when it stops short of a branch but reported why; ticket, pr-meta
 // and record exit 1 for any run that cannot or did not succeed, so the workflow
@@ -106,7 +110,7 @@ func loadEnv(getenv func(string) string) (env, error) {
 
 func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(string) string) error {
 	if len(args) == 0 {
-		return errors.New("usage: runner ticket|build|pr-meta|record|enable-provider [flags]")
+		return errors.New("usage: runner ticket|build|pr-meta|record|enable-provider|plan-define|plan-verdict|plan-reply|plan-list [flags]")
 	}
 	e, err := loadEnv(getenv)
 	if err != nil {
@@ -126,6 +130,14 @@ func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(st
 		return record(ctx, logger, e, args[1:])
 	case "enable-provider":
 		return enableProvider(ctx, logger, e, args[1:])
+	case "plan-define":
+		return planDefine(ctx, logger, e, args[1:])
+	case "plan-verdict":
+		return planVerdict(ctx, logger, e, args[1:])
+	case "plan-reply":
+		return planReply(ctx, logger, e, args[1:])
+	case "plan-list":
+		return planList(ctx, logger, e, args[1:])
 	default:
 		return fmt.Errorf("unknown subcommand %q", args[0])
 	}

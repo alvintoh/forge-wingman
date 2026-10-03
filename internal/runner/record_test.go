@@ -9,6 +9,8 @@ import (
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/alvintoh/forge-wingman/internal/providers"
 )
 
 var finalizeNow = time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
@@ -455,5 +457,20 @@ func TestFinalizeRecordsAnIdentityMismatchAheadOfEverythingElse(t *testing.T) {
 				t.Fatalf("record = %s/%s", got.Outcome, got.StopReason)
 			}
 		})
+	}
+}
+
+func TestFinalizeCarriesTheProviderVerdictFromTheExistingRecord(t *testing.T) {
+	store := seeded(t)
+	rec := store[testRunID]
+	rec.ProviderVerdict = providers.VerdictRestricted
+	store[testRunID] = rec
+	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: "",
+		RunResult: "failure", PRResult: "skipped"}
+	if _, err := Finalize(context.Background(), store, &fakeLedger{}, in, finalizeNow); err != nil {
+		t.Fatal(err)
+	}
+	if got := store[testRunID].ProviderVerdict; got != "restricted" {
+		t.Fatalf("provider verdict = %q, want restricted carried from the record, not the summary", got)
 	}
 }

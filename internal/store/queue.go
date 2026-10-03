@@ -14,6 +14,7 @@ import (
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 	"github.com/alvintoh/forge-wingman/internal/money"
+	prov "github.com/alvintoh/forge-wingman/internal/providers"
 	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
@@ -49,6 +50,7 @@ const (
 	// read here to build a Candidate without a second query.
 	sizeField     = "size"
 	privateField  = "private"
+	verdictField  = "provider_verdict"
 	ticketIDField = "ticket_id"
 	outcomeField  = "outcome"
 	// settledAtField, settledProviderCostField and settledRunnerMinutesField
@@ -434,6 +436,16 @@ func (q *Queue) Release(ctx context.Context, runID string, at time.Time) error {
 	})
 	if err != nil {
 		return fmt.Errorf("releasing run %s: %w", runID, err)
+	}
+	return nil
+}
+
+// RecordVerdict writes the provider plan verdict onto run runID, touching no
+// other field of its record.
+func (q *Queue) RecordVerdict(ctx context.Context, runID string, verdict prov.Verdict) error {
+	_, err := q.client.Collection(runsCollection).Doc(runID).Update(ctx, []firestore.Update{{Path: verdictField, Value: verdict}})
+	if err != nil {
+		return fmt.Errorf("recording the provider verdict on run %s: %w", runID, err)
 	}
 	return nil
 }
