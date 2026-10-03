@@ -9,6 +9,7 @@
 //	runner plan-verdict    -provider <name> ...      record the verdict on a plan's terms with its wording and source
 //	runner plan-reply      -provider <name> ...      record a vendor reply and the verdict it leads to
 //	runner plan-list                                 print every plan side by side, flagging the ones to look at
+//	runner plan-smoke      -plan-models <list>       prove the plan agent refuses edit and bash on the list's first and last model
 //
 // build exits 0 when it stops short of a branch but reported why; ticket, pr-meta
 // and record exit 1 for any run that cannot or did not succeed, so the workflow
@@ -110,7 +111,10 @@ func loadEnv(getenv func(string) string) (env, error) {
 
 func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(string) string) error {
 	if len(args) == 0 {
-		return errors.New("usage: runner ticket|build|pr-meta|record|enable-provider|plan-define|plan-verdict|plan-reply|plan-list [flags]")
+		return errors.New("usage: runner ticket|build|pr-meta|record|enable-provider|plan-define|plan-verdict|plan-reply|plan-list|plan-smoke [flags]")
+	}
+	if args[0] == "plan-smoke" {
+		return planSmoke(ctx, logger, getenv, args[1:])
 	}
 	e, err := loadEnv(getenv)
 	if err != nil {
@@ -169,6 +173,7 @@ func ticket(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 func build(ctx context.Context, logger *slog.Logger, e env, args []string) error {
 	fs := flag.NewFlagSet("build", flag.ContinueOnError)
 	model := fs.String("model", "", "opencode model, as provider/model")
+	planModels := fs.String("plan-models", runner.DefaultPlanModel, "the plan phase's models in order, comma-separated provider/model; later ones are backups")
 	reviewModel := fs.String("review-model", "", "the pre-PR loop's review model, as provider/model (FR-14)")
 	pointer := fs.String("pointer", runner.DefaultPointer, "object naming the current rule-stack sha")
 	rawTicket := fs.String("ticket", "", "the run's ticket, as the ticket subcommand wrote it")
@@ -190,11 +195,12 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 	defer func() { _ = gcs.Close() }()
 
 	logger = logger.With("attempt", e.attemptID, "ticket", t.ID)
+	plan := splitModels(*planModels)
 	res, err := runner.Build(ctx, runner.BuildDeps{
 		Projections: store.NewBucket(gcs, e.project+"-projections"),
 		Completions: store.NewBucket(gcs, e.project+"-completions"),
 		Agent:       runner.Opencode{Bin: "opencode", Model: *model},
-		PlanAgent:   runner.PlanOpencode("opencode", *model),
+		PlanAgent:   runner.PlanOpencode("opencode", plan[0]),
 		ReviewAgent: runner.ReviewOpencode("opencode", *reviewModel),
 		Checks:      runner.RunChecks,
 		Report:      func(s runner.Summary) error { return writeSummary(e.output, s) },
@@ -206,6 +212,7 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 		TempDir:     e.tempDir,
 		Pointer:     *pointer,
 		Model:       *model,
+		PlanModels:  plan,
 		ReviewModel: *reviewModel,
 		Secret:      e.secret,
 		Identity:    e.identity,
@@ -222,6 +229,16 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 		return err
 	}
 	return writeMultilineOutput(e.output, "loop_detail", res.LoopDetail)
+}
+
+// splitModels reads a comma-separated model list. It always returns at least one
+// entry, so an empty flag reaches Build as an invalid model and stops the run.
+func splitModels(s string) []string {
+	parts := strings.Split(s, ",")
+	for i, p := range parts {
+		parts[i] = strings.TrimSpace(p)
+	}
+	return parts
 }
 
 // prMeta writes the PR's title, body and the branch segment the pushed branch must

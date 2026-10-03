@@ -23,6 +23,18 @@ on:
         description: the pre-PR loop's review model, as provider/model (FR-14) — must differ from model
         type: string
         default: opencode/space-bunny-free
+      # The plan phase has its own ordered list because the free build model is refused
+      # there (403) under the restricted plan agent; opencode/space-bunny-free is the one
+      # free model proven to complete. Put a paid model first and free ones after it: the
+      # phase moves to the next entry when one is unavailable or out of allowance.
+      plan_models:
+        description: >-
+          the plan phase's models in order, comma-separated provider/model; the first is the main model
+          and the rest are backups, used when the one before is unavailable or out of allowance.
+          Default is the one free model proven under the restricted plan agent, since the free
+          build model is refused there (403)
+        type: string
+        default: opencode/space-bunny-free
 
 permissions: {}
 
@@ -86,6 +98,7 @@ jobs:
     with:
       model: ${{ needs.ticket.outputs.model }}
       review_model: ${{ inputs.review_model }}
+      plan_models: ${{ inputs.plan_models }}
       ticket: ${{ needs.ticket.outputs.ticket }}
     secrets:
       OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
