@@ -1,0 +1,176 @@
+{
+  "probed_at": "2026-10-03",
+  "config": {
+    "margin": 0.8,
+    "tool_call_ratio": 2,
+    "max_tool_calls": 150,
+    "timeout_seconds": 900,
+    "max_fallbacks": 3,
+    "max_models": 8,
+    "shape_timeout_seconds": 90,
+    "shape_max_tool_calls": 20
+  },
+  "results": [
+    {
+      "model": "opencode/nemotron-3-ultra-free",
+      "verdict": "pass",
+      "tool_calls": 10,
+      "transcript_bytes": 33573,
+      "usage": {
+        "input": 78778,
+        "output": 692,
+        "reasoning": 563,
+        "cache_read": 17280,
+        "cache_write": 0,
+        "cost": 0,
+        "steps": 9
+      },
+      "review_verdict": "fail",
+      "review_reason": "refused-free-tier"
+    },
+    {
+      "model": "opencode/big-pickle",
+      "verdict": "fail",
+      "reason": "tool-calls-over-threshold",
+      "tool_calls": 29,
+      "transcript_bytes": 91733,
+      "usage": {
+        "input": 17810,
+        "output": 2657,
+        "reasoning": 2756,
+        "cache_read": 266011,
+        "cache_write": 0,
+        "cost": 0,
+        "steps": 19
+      },
+      "review_verdict": "fail",
+      "review_reason": "refused-free-tier"
+    },
+    {
+      "model": "opencode/ling-3.0-flash-fin-free",
+      "verdict": "void",
+      "reason": "run-errored",
+      "tool_calls": 0,
+      "transcript_bytes": 733,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache_read": 0,
+        "cache_write": 0,
+        "cost": 0,
+        "steps": 0
+      },
+      "review_verdict": "fail",
+      "review_reason": "refused-free-tier"
+    },
+    {
+      "model": "opencode/mimo-v2.5-free",
+      "verdict": "void",
+      "reason": "run-errored",
+      "tool_calls": 0,
+      "transcript_bytes": 218,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache_read": 0,
+        "cache_write": 0,
+        "cost": 0,
+        "steps": 0
+      },
+      "review_verdict": "fail",
+      "review_reason": "run-errored"
+    },
+    {
+      "model": "opencode/muse-spark-1.2-contributor-free",
+      "verdict": "void",
+      "reason": "run-errored",
+      "tool_calls": 0,
+      "transcript_bytes": 218,
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache_read": 0,
+        "cache_write": 0,
+        "cost": 0,
+        "steps": 0
+      },
+      "review_verdict": "fail",
+      "review_reason": "run-errored"
+    },
+    {
+      "model": "opencode/muse-spark-1.3-contributor-free",
+      "verdict": "pass",
+      "tool_calls": 17,
+      "transcript_bytes": 60836,
+      "usage": {
+        "input": 8799,
+        "output": 1577,
+        "reasoning": 908,
+        "cache_read": 127963,
+        "cache_write": 0,
+        "cost": 0,
+        "steps": 11
+      },
+      "review_verdict": "fail",
+      "review_reason": "refused-free-tier"
+    },
+    {
+      "model": "opencode/nemotron-3.5-lightning-free",
+      "verdict": "pass",
+      "tool_calls": 12,
+      "transcript_bytes": 47689,
+      "usage": {
+        "input": 38210,
+        "output": 1017,
+        "reasoning": 2041,
+        "cache_read": 89216,
+        "cache_write": 0,
+        "cost": 0,
+        "steps": 10
+      },
+      "review_verdict": "fail",
+      "review_reason": "refused-free-tier"
+    }
+  ],
+  "decision": {
+    "set": {
+      "default": "opencode/nemotron-3-ultra-free",
+      "fallbacks": [
+        "opencode/nemotron-3.5-lightning-free",
+        "opencode/muse-spark-1.3-contributor-free"
+      ],
+      "probed_at": "2026-10-03",
+      "evidence": [
+        {
+          "model": "opencode/nemotron-3-ultra-free",
+          "tool_calls": 10,
+          "transcript_bytes": 33573
+        },
+        {
+          "model": "opencode/nemotron-3.5-lightning-free",
+          "tool_calls": 12,
+          "transcript_bytes": 47689
+        },
+        {
+          "model": "opencode/muse-spark-1.3-contributor-free",
+          "tool_calls": 17,
+          "transcript_bytes": 60836
+        }
+      ]
+    },
+    "changed": true,
+    "reason": "fallbacks-changed-only"
+  },
+  "usage": {
+    "input": 143597,
+    "output": 5943,
+    "reasoning": 6268,
+    "cache_read": 500470,
+    "cache_write": 0,
+    "cost": 0,
+    "steps": 49
+  }
+}
