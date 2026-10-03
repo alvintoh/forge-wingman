@@ -19,6 +19,13 @@ on:
       review_model:
         type: string
         required: true
+      # plan_models is the plan phase's ordered list, kept apart from model because
+      # the free build model is refused (403) under the restricted plan agent; the
+      # first entry is the main model and later ones are backups for when it is
+      # unavailable or out of allowance.
+      plan_models:
+        type: string
+        required: true
       ticket:
         type: string
         required: true
@@ -99,10 +106,11 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}
           MODEL: ${{ inputs.model }}
           REVIEW_MODEL: ${{ inputs.review_model }}
+          PLAN_MODELS: ${{ inputs.plan_models }}
           TICKET: ${{ inputs.ticket }}
           WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
-        run: '"$RUNNER_TEMP/runner" build -model "$MODEL" -review-model "$REVIEW_MODEL" -ticket "$TICKET"'
+        run: '"$RUNNER_TEMP/runner" build -model "$MODEL" -review-model "$REVIEW_MODEL" -plan-models "$PLAN_MODELS" -ticket "$TICKET"'
 
       # wingman.bundle here and in run.yml's check and pr jobs is bundleName in internal/runner/build.go.
       - if: steps.build.outputs.changed == 'true'

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -238,5 +239,37 @@ func TestWriteMultilineOutputUsesADelimiter(t *testing.T) {
 	delim, ok := strings.CutPrefix(lines[0], "body<<")
 	if !ok || len(lines) != 4 || lines[1] != "a" || lines[2] != "b" || lines[3] != delim {
 		t.Fatalf("GITHUB_OUTPUT = %q", got)
+	}
+}
+
+func TestSplitModels(t *testing.T) {
+	for in, want := range map[string][]string{
+		"a/b":           {"a/b"},
+		"a/b, c/d ,e/f": {"a/b", "c/d", "e/f"},
+		"":              {""},
+	} {
+		if got := splitModels(in); !slices.Equal(got, want) {
+			t.Errorf("splitModels(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestSmokeModelsAreTheFirstAndLast(t *testing.T) {
+	for _, tt := range []struct{ in, want []string }{
+		{[]string{"a/1"}, []string{"a/1"}},
+		{[]string{"a/1", "b/2"}, []string{"a/1", "b/2"}},
+		{[]string{"a/1", "b/2", "c/3"}, []string{"a/1", "c/3"}},
+	} {
+		if got := smokeModels(tt.in); !slices.Equal(got, tt.want) {
+			t.Errorf("smokeModels(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestPlanSmokeRefusesAnInvalidModelList(t *testing.T) {
+	err := planSmoke(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)),
+		func(string) string { return "" }, []string{"-plan-models", "not a model"})
+	if err == nil {
+		t.Fatal("plan-smoke accepted a malformed model")
 	}
 }

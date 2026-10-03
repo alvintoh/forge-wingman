@@ -168,6 +168,7 @@ func testConfig(t *testing.T, repo string) BuildConfig {
 		TempDir:     t.TempDir(),
 		Pointer:     DefaultPointer,
 		Model:       "p/m",
+		PlanModels:  []string{"p/m"},
 		ReviewModel: "p/r",
 		Identity:    testIdentity,
 		Ticket:      testTicket,
@@ -615,6 +616,50 @@ func TestBuildStopsWhenTheReviewModelIsInvalid(t *testing.T) {
 				t.Fatalf("calls %d, reason %s", agent.calls, reported.last(t).StopReason)
 			}
 		})
+	}
+}
+
+func TestBuildStopsWhenThePlanModelsAreInvalid(t *testing.T) {
+	for name, models := range map[string][]string{
+		"none":        nil,
+		"malformed":   {"p/m", "not a model"},
+		"repeated":    {"p/m", "p/b", "p/m"},
+		"empty entry": {""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			agent := &fakeAgent{}
+			deps, _, reported := testDeps(validObjects(), agent)
+			c := testConfig(t, initRepo(t))
+			c.PlanModels = models
+			if _, err := Build(context.Background(), deps, c); err == nil {
+				t.Fatal("Build accepted the plan models")
+			}
+			if agent.calls != 0 || reported.last(t).StopReason != StopModelInvalid {
+				t.Fatalf("calls %d, reason %s", agent.calls, reported.last(t).StopReason)
+			}
+		})
+	}
+}
+
+func TestDefaultPlanModelsValidate(t *testing.T) {
+	if err := ValidatePlanModels([]string{DefaultPlanModel}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBuildNeverAdvancesTheBuildOrderOnAllowanceExhaustion(t *testing.T) {
+	agent := &fakeAgent{stderr: "Error: allowance exhausted", err: errors.New("exit status 1")}
+	deps, _, reported := testDeps(validObjects(), agent)
+	c := testConfig(t, initRepo(t))
+	c.Model = DefaultModel()
+	if _, err := Build(context.Background(), deps, c); err == nil {
+		t.Fatal("Build succeeded with the allowance exhausted")
+	}
+	if agent.calls != 1 {
+		t.Fatalf("build agent ran %d times, want 1: only the plan list moves on allowance", agent.calls)
+	}
+	if rec := reported.last(t); rec.Outcome != OutcomeBudgetStop || rec.StopReason != StopAllowanceExhausted {
+		t.Fatalf("record = %s/%s", rec.Outcome, rec.StopReason)
 	}
 }
 
@@ -1155,6 +1200,29 @@ func TestRunWorkflowChecksTheBranchPattern(t *testing.T) {
 	}
 	if n := strings.Count(string(yml), `[[ "$BRANCH" =~ `+branchPattern); n != 2 {
 		t.Fatalf("run.yml checks the branch pattern %d times, want 2 (check and pr)", n)
+	}
+}
+
+func TestWorkflowsCarryThePlanModelsFromTheDefaultToTheRunner(t *testing.T) {
+	read := func(name string) string {
+		b, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	for _, name := range []string{"run.yml", "plan-smoke.yml"} {
+		yml := read(name)
+		i := strings.Index(yml, "plan_models:")
+		if i < 0 || !strings.Contains(yml[i:], "default: "+DefaultPlanModel+"\n") {
+			t.Errorf("%s: the plan_models input does not default to %s", name, DefaultPlanModel)
+		}
+	}
+	if !strings.Contains(read("run.yml"), "plan_models: ${{ inputs.plan_models }}") {
+		t.Error("run.yml does not pass plan_models to model.yml")
+	}
+	if !strings.Contains(read("model.yml"), `-plan-models "$PLAN_MODELS"`) {
+		t.Error("model.yml does not pass plan_models to the runner")
 	}
 }
 
