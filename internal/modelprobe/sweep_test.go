@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -246,5 +247,45 @@ func TestSweepNoEvidenceOnlyWhenEveryRunIsVoid(t *testing.T) {
 				t.Fatalf("NoEvidence = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestRunSweepKeepsTheBuildVerdictOfAModelRefusedUnderTheShape(t *testing.T) {
+	refused := shapeAgent{events: `{"type":"error","error":"403 free models only"}` + "\n", err: errors.New("exit status 1")}
+	d := perModelAgent{"opencode/a": {events: toolLine, edit: markedSource}, "opencode/b": {events: toolLine, edit: markedSource}}.deps()
+	d.NewShapeAgent = func(model string) runner.Agent {
+		if model == "opencode/b" {
+			return refused
+		}
+		return passingShape
+	}
+	sw, err := RunSweep(context.Background(), d, "opencode/a", []string{"opencode/a", "opencode/b"}, DefaultConfig(), discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := sw.Results[0], sw.Results[1]
+	if a.ReviewVerdict != VerdictPass || b.Verdict != VerdictPass || b.ReviewVerdict != VerdictFail || b.ReviewReason != ReasonRefusedFreeTier {
+		t.Fatalf("results = %+v, want b's build pass kept beside a refused review run", sw.Results)
+	}
+	stripped := slices.Clone(sw.Results)
+	for i := range stripped {
+		stripped[i].ReviewVerdict, stripped[i].ReviewReason = "", ""
+	}
+	current := runner.ModelSet{Default: "opencode/a"}
+	if got, want := Decide(current, sw.Results, "2026-10-01", DefaultConfig()), Decide(current, stripped, "2026-10-01", DefaultConfig()); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Decide = %+v, want %+v: the shape verdict must not move it", got, want)
+	}
+}
+
+func TestRunSweepRunsTheShapeOncePerModelEvenWhenTheIncumbentIsReprobed(t *testing.T) {
+	runs := 0
+	d := fakeDeps(fakeAgent{})
+	d.NewAgent = func(string) runner.Agent { return fakeAgent{events: `{"type":"error"}` + "\n"} }
+	d.NewShapeAgent = func(string) runner.Agent { runs++; return passingShape }
+	if _, err := RunSweep(context.Background(), d, "opencode/inc", []string{"opencode/inc"}, DefaultConfig(), discardLogger()); err != nil {
+		t.Fatal(err)
+	}
+	if runs != 1 {
+		t.Fatalf("shape runs = %d, want 1", runs)
 	}
 }

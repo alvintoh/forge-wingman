@@ -42,7 +42,8 @@ func (f fakeAgent) Run(ctx context.Context, dir, _, _ string, stdout, _ io.Write
 
 func fakeDeps(a fakeAgent) Deps {
 	return Deps{
-		NewAgent: func(string) runner.Agent { return a },
+		NewAgent:      func(string) runner.Agent { return a },
+		NewShapeAgent: func(string) runner.Agent { return passingShape },
 		Materialize: func(_ context.Context, dest string) error {
 			if err := os.MkdirAll(filepath.Join(dest, filepath.Dir(collectorPath)), 0o755); err != nil {
 				return err
@@ -53,8 +54,9 @@ func fakeDeps(a fakeAgent) Deps {
 }
 
 const (
-	toolLine = `{"type":"tool_use","sessionID":"s"}` + "\n"
-	stepLine = `{"type":"step_finish","part":{"tokens":{"input":100,"output":20},"cost":0.5}}` + "\n"
+	findingsLine = `{"type":"text","part":{"text":"` + "```review-findings\\n```" + `"}}` + "\n"
+	toolLine     = `{"type":"tool_use","sessionID":"s"}` + "\n"
+	stepLine     = `{"type":"step_finish","part":{"tokens":{"input":100,"output":20},"cost":0.5}}` + "\n"
 )
 
 func TestProbeRefusesAModelOutsideTheZenProvider(t *testing.T) {
@@ -205,5 +207,106 @@ func TestSnapshotReadsOnlyGoSourcesOutsideGit(t *testing.T) {
 	}
 	if len(got) != 1 || got[filepath.Join("internal", "collect", "collector.go")] != "package collect" {
 		t.Fatalf("snapshot = %v, want only the Go source outside .git", got)
+	}
+}
+
+type shapeAgent struct {
+	events string
+	stderr string
+	err    error
+	block  bool
+}
+
+func (f shapeAgent) Run(ctx context.Context, _, _, _ string, stdout, stderr io.Writer) error {
+	for _, line := range strings.SplitAfter(f.events, "\n") {
+		if _, err := io.WriteString(stdout, line); err != nil {
+			return err
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+	}
+	if _, err := io.WriteString(stderr, f.stderr); err != nil {
+		return err
+	}
+	if f.block {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return f.err
+}
+
+var passingShape = shapeAgent{events: stepLine + findingsLine}
+
+func shapeDeps(a shapeAgent) Deps {
+	d := fakeDeps(fakeAgent{})
+	d.NewShapeAgent = func(string) runner.Agent { return a }
+	return d
+}
+
+func TestProbeShapeReadsStepsAndTheFindingsBlock(t *testing.T) {
+	obs, err := ProbeShape(context.Background(), shapeDeps(passingShape), "opencode/m", DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obs.Steps != 1 || !obs.HasBlock || obs.Errored || obs.TimedOut || obs.Capped || obs.Unreadable {
+		t.Fatalf("obs = %+v, want one step and a findings block", obs)
+	}
+}
+
+func TestProbeShapeReportsAResponseWithoutAFindingsBlock(t *testing.T) {
+	obs, err := ProbeShape(context.Background(), shapeDeps(shapeAgent{events: stepLine + `{"type":"text","part":{"text":"looks fine"}}` + "\n"}), "opencode/m", DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obs.Steps != 1 || obs.HasBlock {
+		t.Fatalf("obs = %+v, want a step and no block", obs)
+	}
+}
+
+func TestProbeShapeCapturesAnErrorEventAndStderr(t *testing.T) {
+	obs, err := ProbeShape(context.Background(), shapeDeps(shapeAgent{
+		events: `{"type":"error","error":{"data":{"message":"banner-event"}}}` + "\n",
+		stderr: "banner-stderr",
+		err:    errors.New("exit status 1"),
+	}), "opencode/m", DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !obs.Errored || !strings.Contains(obs.ErrorText, "banner-event") || !strings.Contains(obs.ErrorText, "banner-stderr") {
+		t.Fatalf("obs = %+v, want the error event and stderr captured", obs)
+	}
+}
+
+func TestProbeShapeMarksAFailedRunWithNoErrorEventAsErrored(t *testing.T) {
+	obs, err := ProbeShape(context.Background(), shapeDeps(shapeAgent{err: errors.New("exit status 1")}), "opencode/m", DefaultConfig())
+	if err != nil || !obs.Errored {
+		t.Fatalf("obs = %+v err = %v, want an errored run recorded, not returned", obs, err)
+	}
+}
+
+func TestProbeShapeAppliesItsOwnCaps(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ShapeMaxToolCalls = 2
+	capped, err := ProbeShape(context.Background(), shapeDeps(shapeAgent{events: strings.Repeat(toolLine, 50), block: true}), "opencode/m", cfg)
+	if err != nil || !capped.Capped || capped.TimedOut || capped.Errored {
+		t.Fatalf("obs = %+v err = %v, want the run cut at the shape cap", capped, err)
+	}
+	cfg = DefaultConfig()
+	cfg.ShapeTimeoutSeconds = 0
+	timed, err := ProbeShape(context.Background(), shapeDeps(shapeAgent{block: true}), "opencode/m", cfg)
+	if err != nil || !timed.TimedOut || timed.Capped || timed.Errored {
+		t.Fatalf("obs = %+v err = %v, want a timeout", timed, err)
+	}
+}
+
+func TestProbeShapeRefusesAForeignModelAndReturnsCancellation(t *testing.T) {
+	if _, err := ProbeShape(context.Background(), shapeDeps(passingShape), "opencode-go/x", DefaultConfig()); !errors.Is(err, ErrForeignProvider) {
+		t.Fatalf("err = %v, want ErrForeignProvider", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := ProbeShape(ctx, shapeDeps(shapeAgent{block: true}), "opencode/m", DefaultConfig()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want the caller's cancellation returned", err)
 	}
 }

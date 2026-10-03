@@ -33,7 +33,12 @@ opencode/paid
 EOF
 exit 0
 fi
-while [ $# -gt 0 ]; do [ "$1" = -m ] && model="$2"; shift; done
+while [ $# -gt 0 ]; do [ "$1" = -m ] && model="$2"; [ "$1" = --agent ] && agent="$2"; shift; done
+if [ -n "$agent" ]; then
+echo '{"type":"step_finish","part":{"tokens":{"input":1,"output":1},"cost":0}}'
+printf '%s\n' '{"type":"text","part":{"text":"\u0060\u0060\u0060review-findings\n\u0060\u0060\u0060"}}'
+exit 0
+fi
 printf '\n// TODO: quota unverified\n' >> internal/collect/collector.go
 n=10
 [ "$model" = opencode/quick-free ] && n=2
@@ -287,5 +292,23 @@ while [ $# -gt 0 ]`, 1)
 	}
 	if after, _ := os.ReadFile(models); string(after) != string(before) {
 		t.Fatalf("models file changed by a probe that proved nothing:\n%s", after)
+	}
+}
+
+func TestRunRecordsTheReviewShapeVerdictBesideTheBuildVerdict(t *testing.T) {
+	bin, models, results := setup(t)
+	if err := run(context.Background(), quietLogger(), args(bin, models, results, "-only", "opencode/quick-free", "-run-id", "1"), fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(results, "2026-10-01-1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := modelprobe.ReadReport(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := report.Results[0]; got.Verdict != modelprobe.VerdictPass || got.ReviewVerdict != modelprobe.VerdictPass {
+		t.Fatalf("result = %+v, want a build pass and a review-shape pass", got)
 	}
 }
