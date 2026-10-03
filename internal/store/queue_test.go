@@ -1219,3 +1219,30 @@ func TestSettleDropsTheReservationOfARunWithNoRow(t *testing.T) {
 		t.Fatalf("changed_after = %v, want it left alone while N did not move", got.ChangedAfter)
 	}
 }
+
+func TestRecordVerdictWritesOnlyTheVerdictField(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	run := queuedRun(fresh("queue-verdict"), 1)
+	forget(t, client, run.RunID)
+	if err := q.Enqueue(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.RecordVerdict(ctx, run.RunID, "restricted"); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := client.Collection(runsCollection).Doc(run.RunID).Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Data()[verdictField] != "restricted" || snap.Data()[stateField] != stateQueued || snap.Data()[repoField] != run.Repo {
+		t.Fatalf("run = %v, want the verdict set and state and repo untouched", snap.Data())
+	}
+}
+
+func TestRecordVerdictRefusesARunThatDoesNotExist(t *testing.T) {
+	q, _ := queue(t)
+	if err := q.RecordVerdict(context.Background(), fresh("queue-verdict-missing"), "allowed"); err == nil {
+		t.Fatal("a verdict was written onto a run that does not exist")
+	}
+}

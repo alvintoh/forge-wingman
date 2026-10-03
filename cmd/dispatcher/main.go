@@ -226,12 +226,15 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 	defer func() { _ = fsc.Close() }()
 	client := &http.Client{Timeout: requestTimeout}
 	gh := dispatcher.GitHub{Token: githubToken, Workflow: runWorkflow, Branch: runBranch, Client: client}
+	queue := store.NewQueue(fsc)
 	if _, err := dispatcher.Poll(ctx, dispatcher.Deps{
 		Source:     dispatcher.Linear{Token: linear, Delegate: c.delegate, Client: client},
-		Queue:      store.NewQueue(fsc),
+		Queue:      queue,
+		Verdicts:   queue,
 		Estimator:  store.NewEstimates(fsc),
 		Visibility: gh,
 		Providers:  store.NewProviders(fsc),
+		Plans:      store.NewPlans(fsc),
 		Workflow:   gh,
 		OpenPRs:    gh,
 		Logger:     logger,

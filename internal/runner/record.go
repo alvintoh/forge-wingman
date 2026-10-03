@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/money"
+	"github.com/alvintoh/forge-wingman/internal/providers"
 )
 
 // Phase is how far a run got.
@@ -111,6 +112,8 @@ type Record struct {
 	Phase   Phase  `firestore:"phase"`
 	Steps   []Step `firestore:"steps"`
 	Tokens  Usage  `firestore:"tokens"`
+	// ProviderVerdict is the owner's verdict on the run's provider plan, never read from a summary.
+	ProviderVerdict providers.Verdict `firestore:"provider_verdict"`
 	// SettledAt, SettledProviderCostMicros and SettledRunnerMinutes are
 	// written once, by Finalize: the run's actual cost, settled against the
 	// dispatch/ledger reservation the claim booked (adr/0003). Zero until
@@ -292,6 +295,7 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, in Finalize
 	}
 	rec := NewRecord(in.RunID, t, started)
 	rec.Private = existing.Private
+	rec.ProviderVerdict = existing.ProviderVerdict
 	identityErr := in.Identity.CheckAccount()
 	sum, err := ParseSummary(in.Summary, in.AttemptID, t, now)
 	switch {

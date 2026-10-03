@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/alvintoh/forge-wingman/internal/providers"
 	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
@@ -66,6 +67,8 @@ type Claim struct {
 	RunID    string
 	Repo     string
 	Priority int
+	// Verdict is the provider plan's recorded verdict at claim time; empty when none is wired.
+	Verdict providers.Verdict
 }
 
 // Config is the boundary a poll admits inside: the repositories it may
@@ -92,6 +95,16 @@ type ProviderHalts interface {
 	Halted(ctx context.Context, provider string) (bool, error)
 }
 
+// ProviderVerdicts reports the owner's recorded verdict on a provider's plan.
+type ProviderVerdicts interface {
+	Verdict(ctx context.Context, provider string) (providers.Verdict, error)
+}
+
+// VerdictRecorder writes a claimed run's provider verdict onto its record.
+type VerdictRecorder interface {
+	RecordVerdict(ctx context.Context, runID string, verdict providers.Verdict) error
+}
+
 // Deps are the tickets a poll reads, the queue it writes, the estimator and
 // repository visibility it checks a claim's budget against, the provider
 // halt state it checks before claiming (AC4), the workflow it dispatches,
@@ -106,6 +119,10 @@ type Deps struct {
 	Workflow   Workflow
 	Logger     *slog.Logger
 	Now        func() time.Time
+	// Plans is optional: left unset, no verdict is looked up.
+	Plans ProviderVerdicts
+	// Verdicts is optional: left unset, no verdict is written to the run.
+	Verdicts VerdictRecorder
 }
 
 // missing names the first dependency left unset, or "" when all are wired.
@@ -320,6 +337,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		d.Logger.Info("providerHaltCheckFailed", "provider", provider, "err", err.Error())
 		halted = false
 	}
+	verdict := lookupVerdict(ctx, d, provider)
 	limits := c.Limits.orDefault()
 	var prs openPRCount
 	if len(candidates) > 0 {
@@ -349,7 +367,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 			return claims, err
 		}
 		if ok {
-			claims = append(claims, Claim{RunID: cand.RunID, Repo: cand.Repo, Priority: cand.Priority})
+			claims = append(claims, Claim{RunID: cand.RunID, Repo: cand.Repo, Priority: cand.Priority, Verdict: verdict})
 			continue
 		}
 		if binding == "" {
@@ -363,6 +381,32 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		d.Logger.Info("everyCandidateDeferred", "candidates", len(candidates))
 	}
 	return claims, nil
+}
+
+// lookupVerdict reads provider's recorded verdict. A failed read is logged and
+// reported as unknown rather than blocking the run: the verdict informs the
+// owner and never gates dispatch.
+func lookupVerdict(ctx context.Context, d Deps, provider string) providers.Verdict {
+	if d.Plans == nil {
+		return ""
+	}
+	verdict, err := d.Plans.Verdict(ctx, provider)
+	if err != nil {
+		d.Logger.Info("providerVerdictLookupFailed", "provider", provider, "err", err.Error())
+		return providers.VerdictUnknown
+	}
+	return verdict
+}
+
+// recordVerdict writes the claim's verdict onto its run record. A failed write
+// is logged and never blocks the dispatch.
+func recordVerdict(ctx context.Context, d Deps, claim Claim) {
+	if d.Verdicts == nil || claim.Verdict == "" {
+		return
+	}
+	if err := d.Verdicts.RecordVerdict(ctx, claim.RunID, claim.Verdict); err != nil {
+		d.Logger.Warn("verdictRecordFailed", "run", claim.RunID, "err", err.Error())
+	}
 }
 
 // openPRCount is the open agent PR count across the allowlist, and whether
@@ -389,9 +433,10 @@ func countOpenPRs(ctx context.Context, d Deps, repos []string) openPRCount {
 // it. A release that fails too is joined to the dispatch error rather than
 // replacing it, so the run is not silently left claimed.
 func dispatch(ctx context.Context, d Deps, claim Claim) error {
+	recordVerdict(ctx, d, claim)
 	err := d.Workflow.Dispatch(ctx, claim)
 	if err == nil {
-		d.Logger.Info("runDispatched", "run", claim.RunID, "repo", claim.Repo, "priority", claim.Priority)
+		d.Logger.Info("runDispatched", "run", claim.RunID, "repo", claim.Repo, "priority", claim.Priority, "verdict", string(claim.Verdict))
 		return nil
 	}
 	d.Logger.Error("runDispatchFailed", "run", claim.RunID, "repo", claim.Repo, "err", err)
