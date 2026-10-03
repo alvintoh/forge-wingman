@@ -32,6 +32,9 @@ const (
 	ReasonTimedOut        = "timed-out"
 	ReasonToolCallCap     = "tool-call-cap-hit"
 	ReasonOverToolCallBar = "tool-calls-over-threshold"
+	ReasonRefusedFreeTier = "refused-free-tier"
+	ReasonNoSteps         = "no-steps"
+	ReasonNoFindingsBlock = "no-findings-block"
 )
 
 var (
@@ -53,6 +56,10 @@ type Config struct {
 	MaxFallbacks int `json:"max_fallbacks"`
 	// MaxModels caps the models probed in one run, so a run cannot outlast its job.
 	MaxModels int `json:"max_models"`
+	// ShapeTimeoutSeconds is the wall time each model's review-shape run gets.
+	ShapeTimeoutSeconds int `json:"shape_timeout_seconds,omitempty"`
+	// ShapeMaxToolCalls stops a review-shape run outright.
+	ShapeMaxToolCalls int `json:"shape_max_tool_calls,omitempty"`
 }
 
 // DefaultConfig returns the starting values.
@@ -60,7 +67,8 @@ type Config struct {
 // STARTING VALUES, NOT MEASURED: Margin and ToolCallRatio are ratios to the incumbent
 // chosen for a first run; the owner sets the real ones once probe results show the spread.
 func DefaultConfig() Config {
-	return Config{Margin: 0.8, ToolCallRatio: 2, MaxToolCalls: 150, TimeoutSeconds: 900, MaxFallbacks: 3, MaxModels: 8}
+	return Config{Margin: 0.8, ToolCallRatio: 2, MaxToolCalls: 150, TimeoutSeconds: 900, MaxFallbacks: 3, MaxModels: 8,
+		ShapeTimeoutSeconds: 90, ShapeMaxToolCalls: 20}
 }
 
 // Observation is everything one model's run left behind that the judge reads.
@@ -86,6 +94,9 @@ type Result struct {
 	ToolCalls       int          `json:"tool_calls"`
 	TranscriptBytes int          `json:"transcript_bytes"`
 	Usage           runner.Usage `json:"usage"`
+	// ReviewVerdict and ReviewReason grade the run under the review and plan agents' restricted shape.
+	ReviewVerdict Verdict `json:"review_verdict,omitempty"`
+	ReviewReason  string  `json:"review_reason,omitempty"`
 }
 
 // Judge grades obs on voiding, fabrication and tool-call budget.

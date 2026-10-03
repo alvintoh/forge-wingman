@@ -40,3 +40,11 @@ the same git identity always produce the same commit. The baseline is `1821575`.
 It moved twice on 2026-09-24, touching only `go.mod`: from `c06de4f` to `ad75de3`
 when the `toolchain` line was added, then to `1821575` when the `go` floor was
 raised from 1.26 to 1.27, matching the root. Series 9 ran on `ad75de3`.
+
+**The model probe also grades the review/plan shape.** After each model's build run,
+the sweep runs it once under the restricted review agent (edit and bash denied, the
+same permissions the plan agent has) on a fixed review input in an empty directory. It
+passes when the run has no error, at least one step and a parseable `review-findings`
+block. The result is `review_verdict` and `review_reason` beside the build verdict,
+shown in the summary's Review/plan column; it never changes which model is the default.
+The results file is public, so only reason constants are stored, never provider text.

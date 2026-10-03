@@ -157,7 +157,7 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 	if err != nil {
 		return false, "", err
 	}
-	findings, ferr := parseReviewFindings(text)
+	findings, ferr := ParseReviewFindings(text)
 	if ferr != nil {
 		return false, "", stopWith(OutcomeStopped, StopReviewInvalid, ferr)
 	}

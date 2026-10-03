@@ -42,10 +42,10 @@ var errReviewFindings = errors.New("review agent's response carries no valid rev
 
 var reviewFindingsBlock = regexp.MustCompile("(?s)```review-findings\\s*\\n(.*?)```")
 
-// parseReviewFindings reads the review agent's final message for the last
+// ParseReviewFindings reads the review agent's final message for the last
 // review-findings block and returns its content, trimmed — empty when the
 // review found nothing worth fixing.
-func parseReviewFindings(text string) (string, error) {
+func ParseReviewFindings(text string) (string, error) {
 	matches := reviewFindingsBlock.FindAllStringSubmatch(text, -1)
 	if len(matches) == 0 {
 		return "", errReviewFindings

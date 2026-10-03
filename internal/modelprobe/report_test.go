@@ -28,3 +28,39 @@ func TestReportTotalsSpendAndNamesEveryExclusion(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSummaryShowsTheReviewVerdictBesideTheBuildVerdict(t *testing.T) {
+	r := Report{Results: []Result{
+		{Model: "opencode/a", Verdict: VerdictPass, ToolCalls: 3, ReviewVerdict: VerdictPass},
+		{Model: "opencode/b", Verdict: VerdictPass, ToolCalls: 4, ReviewVerdict: VerdictFail, ReviewReason: ReasonRefusedFreeTier},
+		{Model: "opencode/c", Verdict: VerdictFail, ToolCalls: 5, Reason: ReasonNoWork},
+	}}
+	want := "| Model | Verdict | Tool calls | Reason | Review/plan |\n|---|---|---|---|---|\n" +
+		"| `opencode/a` | pass | 3 |  | pass |\n" +
+		"| `opencode/b` | pass | 4 |  | fail (refused-free-tier) |\n" +
+		"| `opencode/c` | fail | 5 | no-work | - |\n"
+	if got := r.Summary(); !strings.Contains(got, want) {
+		t.Fatalf("summary =\n%s\nwant to contain\n%s", got, want)
+	}
+}
+
+func TestReadReportChecksTheReviewFields(t *testing.T) {
+	report := func(res string) []byte {
+		return []byte(`{"probed_at":"d","config":{},"results":[` + res + `],"usage":{}}`)
+	}
+	const head = `{"model":"opencode/a","verdict":"pass","tool_calls":1,"transcript_bytes":1,"usage":{}`
+	if r, err := ReadReport(report(head + `,"review_verdict":"fail","review_reason":"refused-free-tier"}`)); err != nil || r.Results[0].ReviewReason != ReasonRefusedFreeTier {
+		t.Fatalf("ReadReport = %+v, %v, want the review fields accepted", r, err)
+	}
+	for _, reason := range []string{"refused-free-tier", "no-steps", "no-findings-block"} {
+		if _, err := ReadReport(report(head + `,"review_verdict":"fail","review_reason":"` + reason + `"}`)); err != nil {
+			t.Fatalf("ReadReport rejected review reason %q: %v", reason, err)
+		}
+	}
+	if _, err := ReadReport(report(head + `,"review_verdict":"fail","review_reason":"leaked provider text"}`)); err == nil {
+		t.Fatal("ReadReport accepted an unknown review reason")
+	}
+	if _, err := ReadReport(report(head + `,"review_verdict":"void"}`)); err == nil {
+		t.Fatal("ReadReport accepted a review verdict of void")
+	}
+}

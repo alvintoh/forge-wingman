@@ -78,7 +78,55 @@ func TestDefaultConfigMarksARatioToTheIncumbent(t *testing.T) {
 func TestDefaultConfigFitsTheProbeJobTimeout(t *testing.T) {
 	cfg := DefaultConfig()
 	const jobTimeoutSeconds = 150 * 60
-	if worst := (cfg.MaxModels + 1) * cfg.TimeoutSeconds; worst >= jobTimeoutSeconds {
-		t.Fatalf("worst case %ds (every model plus a re-probe) reaches the %ds job timeout", worst, jobTimeoutSeconds)
+	worst := (cfg.MaxModels+1)*cfg.TimeoutSeconds + cfg.MaxModels*cfg.ShapeTimeoutSeconds
+	if worst >= jobTimeoutSeconds {
+		t.Fatalf("worst case %ds (every model plus a build re-probe, each with a shape run) reaches the %ds job timeout", worst, jobTimeoutSeconds)
+	}
+}
+
+func TestJudgeShape(t *testing.T) {
+	ok := ShapeObservation{Steps: 2, HasBlock: true}
+	with := func(f func(*ShapeObservation)) ShapeObservation { o := ok; f(&o); return o }
+	for name, tc := range map[string]struct {
+		obs    ShapeObservation
+		want   Verdict
+		reason string
+	}{
+		"completed": {ok, VerdictPass, ""},
+		"refused by the free tier": {with(func(o *ShapeObservation) {
+			o.Errored, o.ErrorText = true, `{"type":"error","error":"403 Forbidden: free models"}`
+		}), VerdictFail, ReasonRefusedFreeTier},
+		"errored for another way":          {with(func(o *ShapeObservation) { o.Errored, o.ErrorText = true, "rate limited" }), VerdictFail, ReasonRunErrored},
+		"free-tier words without an error": {with(func(o *ShapeObservation) { o.ErrorText = "403 free" }), VerdictPass, ""},
+		"transcript unreadable":            {with(func(o *ShapeObservation) { o.Unreadable = true }), VerdictFail, ReasonTranscript},
+		"timed out":                        {with(func(o *ShapeObservation) { o.TimedOut = true }), VerdictFail, ReasonTimedOut},
+		"stopped at the call cap":          {with(func(o *ShapeObservation) { o.Capped = true }), VerdictFail, ReasonToolCallCap},
+		"no step":                          {with(func(o *ShapeObservation) { o.Steps = 0 }), VerdictFail, ReasonNoSteps},
+		"no findings block":                {with(func(o *ShapeObservation) { o.HasBlock = false }), VerdictFail, ReasonNoFindingsBlock},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if v, r := JudgeShape(tc.obs); v != tc.want || r != tc.reason {
+				t.Fatalf("JudgeShape = %s/%q, want %s/%q", v, r, tc.want, tc.reason)
+			}
+		})
+	}
+}
+
+func TestNamesFreeTierRefusal(t *testing.T) {
+	for name, tc := range map[string]struct {
+		text string
+		want bool
+	}{
+		"free and 403":       {"403: free models only", true},
+		"free and forbidden": {"Forbidden for FREE users", true},
+		"free alone":         {"a free model", false},
+		"403 alone":          {"403 rate limited", false},
+		"forbidden alone":    {"forbidden", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := namesFreeTierRefusal(tc.text); got != tc.want {
+				t.Fatalf("namesFreeTierRefusal(%q) = %v, want %v", tc.text, got, tc.want)
+			}
+		})
 	}
 }

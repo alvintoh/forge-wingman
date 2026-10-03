@@ -55,6 +55,9 @@ func RunSweep(ctx context.Context, d Deps, incumbent string, models []string, cf
 		if model == incumbent && res.Verdict == VerdictPass {
 			incumbentCalls = res.ToolCalls
 		}
+		if res, err = shapeAndJudge(ctx, d, res, cfg, logger); err != nil {
+			return Sweep{}, err
+		}
 		sw.Results = append(sw.Results, res)
 	}
 	return sw, nil
@@ -68,6 +71,17 @@ func probeAndJudge(ctx context.Context, d Deps, model string, incumbentCalls int
 	res := Judge(model, obs, incumbentCalls, cfg)
 	logger.Info("modelProbed", "model", model, "verdict", string(res.Verdict), "reason", res.Reason,
 		"toolCalls", res.ToolCalls, "cost", res.Usage.Cost)
+	return res, nil
+}
+
+// shapeAndJudge adds the review-shape verdict to res, leaving its build verdict as it is.
+func shapeAndJudge(ctx context.Context, d Deps, res Result, cfg Config, logger *slog.Logger) (Result, error) {
+	obs, err := ProbeShape(ctx, d, res.Model, cfg)
+	if err != nil {
+		return Result{}, fmt.Errorf("sweeping %s: %w", res.Model, err)
+	}
+	res.ReviewVerdict, res.ReviewReason = JudgeShape(obs)
+	logger.Info("shapeProbed", "model", res.Model, "verdict", string(res.ReviewVerdict), "reason", res.ReviewReason)
 	return res, nil
 }
 

@@ -1,6 +1,10 @@
 package modelprobe
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+	"strings"
+)
 
 type eventKind int
 
@@ -31,4 +35,15 @@ func classify(line []byte) eventKind {
 		return eventOther
 	}
 	return eventUnknown
+}
+
+// errorEvents returns the lines of an event stream that classify as errors.
+func errorEvents(transcript []byte) string {
+	var out []string
+	for _, line := range bytes.Split(transcript, []byte("\n")) {
+		if classify(line) == eventError {
+			out = append(out, string(line))
+		}
+	}
+	return strings.Join(out, "\n")
 }

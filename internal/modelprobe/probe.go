@@ -33,6 +33,8 @@ Rule: when a value the ticket needs cannot be verified from this repository or a
 type Deps struct {
 	// NewAgent returns the agent that runs model.
 	NewAgent func(model string) runner.Agent
+	// NewShapeAgent returns the restricted agent the review and plan phases run under.
+	NewShapeAgent func(model string) runner.Agent
 	// Materialize builds the fixture repository at dest.
 	Materialize func(ctx context.Context, dest string) error
 }
