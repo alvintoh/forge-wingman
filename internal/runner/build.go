@@ -449,7 +449,7 @@ func runAgentWithFallback(ctx context.Context, d BuildDeps, c BuildConfig, call 
 	for i, model := range models {
 		attempt := call
 		attempt.Model, attempt.Round = model, round
-		text, session, err = runAgent(ctx, d, c, attempt, agent, dir, prompt, sum)
+		text, session, err = runAgent(ctx, d, c, attempt, bindModel(agent, model), dir, prompt, sum)
 		if err == nil {
 			return text, session, round, nil
 		}
@@ -466,6 +466,19 @@ func runAgentWithFallback(ctx context.Context, d BuildDeps, c BuildConfig, call 
 	}
 	return "", "", round, stopWith(OutcomeInfraFailure, StopModelUnavailable,
 		fmt.Errorf("availability order for %s exhausted: %w", call.Model, lastErr))
+}
+
+// modelBinder is implemented by an agent whose model can be swapped per attempt.
+type modelBinder interface {
+	WithModel(model string) Agent
+}
+
+// bindModel returns agent running model, or agent unchanged when it cannot be rebound.
+func bindModel(agent Agent, model string) Agent {
+	if b, ok := agent.(modelBinder); ok {
+		return b.WithModel(model)
+	}
+	return agent
 }
 
 // allowanceMarkers are phrases assumed to appear in the agent's stderr when
