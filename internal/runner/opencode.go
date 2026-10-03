@@ -141,6 +141,12 @@ type Opencode struct {
 	ConfigContent string
 }
 
+// WithModel returns a copy of o that runs model, keeping its agent profile.
+func (o Opencode) WithModel(model string) Agent {
+	o.Model = model
+	return o
+}
+
 // Run sends the prompt on stdin and streams the JSON events to stdout,
 // continuing session when it is non-empty rather than starting a fresh one.
 //
