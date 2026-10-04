@@ -26,8 +26,10 @@ const (
 
 var modelPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*(/[A-Za-z0-9][A-Za-z0-9._:-]*)+$`)
 
-// ValidModel reports whether model is a provider/model id.
-func ValidModel(model string) bool { return modelPattern.MatchString(model) }
+// ValidModel reports whether model is a provider/model id short enough to record.
+func ValidModel(model string) bool {
+	return len(model) <= maxModelBytes && modelPattern.MatchString(model)
+}
 
 // Provider is model's prefix before its first "/" — "opencode" from
 // "opencode/big-pickle" — matching modelPattern's own requirement that every
@@ -177,13 +179,15 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 
 	var prompt string
 	if err := timed(PhaseProjection, func() error {
-		if !modelPattern.MatchString(c.Model) {
+		if !ValidModel(c.Model) {
 			return stopWith(OutcomeStopped, StopModelInvalid, errors.New("model is not provider/model"))
 		}
-		if err := ValidatePlanModels(c.PlanModels); err != nil {
-			return stopWith(OutcomeStopped, StopModelInvalid, err)
+		if c.Ticket.Size != "S" {
+			if err := ValidatePlanModels(c.PlanModels); err != nil {
+				return stopWith(OutcomeStopped, StopModelInvalid, err)
+			}
 		}
-		if !modelPattern.MatchString(c.ReviewModel) {
+		if !ValidModel(c.ReviewModel) {
 			return stopWith(OutcomeStopped, StopModelInvalid, errors.New("review model is not provider/model"))
 		}
 		if c.ReviewModel == c.Model {
@@ -461,7 +465,7 @@ func ValidatePlanModels(models []string) error {
 	seen := map[string]bool{}
 	for _, m := range models {
 		switch {
-		case !modelPattern.MatchString(m):
+		case !ValidModel(m):
 			return fmt.Errorf("plan model %q is not provider/model", m)
 		case seen[m]:
 			return fmt.Errorf("plan model %q is listed twice", m)
@@ -486,13 +490,18 @@ func runAgentWithFallback(ctx context.Context, d BuildDeps, c BuildConfig, call 
 // Once the order is exhausted it stops the build with the last failure's own
 // classification: OutcomeInfraFailure/StopModelUnavailable, or
 // OutcomeBudgetStop/StopAllowanceExhausted. That is deliberately not a path
-// FR-13's (unimplemented) escalation could hook into.
+// FR-13's (unimplemented) escalation could hook into. A later attempt's
+// deadline is recomputed from the time then left, so earlier attempts cannot
+// stretch the phase past the run cap.
 func runAgentInOrder(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, models []string, advanceOnAllowance bool, agent Agent, dir, prompt string, sum *Summary) (text, session string, round int, err error) {
 	round = call.Round
 	var lastErr *StopError
 	for i, model := range models {
 		attempt := call
 		attempt.Model, attempt.Round = model, round
+		if i > 0 {
+			attempt.Timeout = roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now())
+		}
 		text, session, err = runAgent(ctx, d, c, attempt, bindModel(agent, model), dir, prompt, sum)
 		if err == nil {
 			return text, session, round, nil

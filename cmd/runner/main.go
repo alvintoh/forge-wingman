@@ -246,9 +246,13 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 	return writeMultilineOutput(e.output, "loop_detail", res.LoopDetail)
 }
 
-// splitModels reads a comma-separated model list. It always returns at least one
-// entry, so an empty flag reaches Build as an invalid model and stops the run.
+// splitModels reads a comma-separated model list. A blank value takes
+// DefaultPlanModel, which is what a cleared workflow input passes; a blank entry
+// inside a list is kept so the validator reports it.
 func splitModels(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return []string{runner.DefaultPlanModel}
+	}
 	parts := strings.Split(s, ",")
 	for i, p := range parts {
 		parts[i] = strings.TrimSpace(p)
@@ -490,17 +494,11 @@ func writeOutputs(path string, kv map[string]string) error {
 	if path == "" {
 		return nil
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
-	if err != nil {
-		return fmt.Errorf("opening GITHUB_OUTPUT: %w", err)
-	}
+	var out strings.Builder
 	for k, v := range kv {
-		if _, err := fmt.Fprintf(f, "%s=%s\n", k, v); err != nil {
-			_ = f.Close()
-			return fmt.Errorf("writing GITHUB_OUTPUT: %w", err)
-		}
+		fmt.Fprintf(&out, "%s=%s\n", k, v)
 	}
-	return f.Close()
+	return appendFile(path, out.String())
 }
 
 // writeMultilineOutput appends one step output that may span lines to
@@ -517,13 +515,18 @@ func writeMultilineOutput(path, key, value string) error {
 	if strings.Contains(value, delim) {
 		return fmt.Errorf("output %s contains its delimiter", key)
 	}
+	return appendFile(path, fmt.Sprintf("%s<<%s\n%s\n%s\n", key, delim, value, delim))
+}
+
+// appendFile appends content to the file at path, creating it owner-only if absent.
+func appendFile(path, content string) (err error) {
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
 	if err != nil {
-		return fmt.Errorf("opening GITHUB_OUTPUT: %w", err)
+		return fmt.Errorf("opening %s: %w", path, err)
 	}
-	if _, err := fmt.Fprintf(f, "%s<<%s\n%s\n%s\n", key, delim, value, delim); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("writing GITHUB_OUTPUT: %w", err)
+	defer func() { err = errors.Join(err, f.Close()) }()
+	if _, err := f.WriteString(content); err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
 	}
-	return f.Close()
+	return nil
 }
