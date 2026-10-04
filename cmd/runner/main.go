@@ -40,6 +40,9 @@ import (
 	"github.com/alvintoh/forge-wingman/internal/store"
 )
 
+// agentBin is the agent CLI the runner launches.
+const agentBin = "opencode"
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -187,7 +190,7 @@ func modelOutputs(m runner.ModelLabels, ticket string) map[string]string {
 
 func build(ctx context.Context, logger *slog.Logger, e env, args []string) error {
 	fs := flag.NewFlagSet("build", flag.ContinueOnError)
-	model := fs.String("model", "", "opencode model, as provider/model")
+	model := fs.String("model", "", "model, as provider/model")
 	planModels := fs.String("plan-models", runner.DefaultPlanModel, "the plan phase's models in order, comma-separated provider/model; later ones are backups")
 	reviewModel := fs.String("review-model", "", "the pre-PR loop's review model, as provider/model (FR-14)")
 	pointer := fs.String("pointer", runner.DefaultPointer, "object naming the current rule-stack sha")
@@ -214,9 +217,9 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 	res, err := runner.Build(ctx, runner.BuildDeps{
 		Projections: store.NewBucket(gcs, e.project+"-projections"),
 		Completions: store.NewBucket(gcs, e.project+"-completions"),
-		Agent:       runner.Opencode{Bin: "opencode", Model: *model},
-		PlanAgent:   runner.PlanOpencode("opencode", plan[0]),
-		ReviewAgent: runner.ReviewOpencode("opencode", *reviewModel),
+		Agent:       runner.CLIAgent{Bin: agentBin, Model: *model},
+		PlanAgent:   runner.PlanCLIAgent(agentBin, plan[0]),
+		ReviewAgent: runner.ReviewCLIAgent(agentBin, *reviewModel),
 		Checks:      runner.RunChecks,
 		Report:      func(s runner.Summary) error { return writeSummary(e.output, s) },
 		Logger:      logger,

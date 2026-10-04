@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestReviewOpencodeRunPassesTheRestrictedAgentAndItsConfig(t *testing.T) {
+func TestReviewCLIAgentRunPassesTheRestrictedAgentAndItsConfig(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the fake opencode is a shell script, which Windows cannot execute")
 	}
@@ -22,7 +22,7 @@ func TestReviewOpencodeRunPassesTheRestrictedAgentAndItsConfig(t *testing.T) {
 	}
 
 	var stdout, stderr strings.Builder
-	agent := ReviewOpencode(bin, "p/r")
+	agent := ReviewCLIAgent(bin, "p/r")
 	if err := agent.Run(context.Background(), dir, "", "prompt", &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}

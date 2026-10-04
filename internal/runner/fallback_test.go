@@ -14,16 +14,16 @@ import (
 
 type fallbackAttempt struct{ model, agent, config string }
 
-// unavailableOpencode is scriptedOpencode failing every model as an unavailable one does.
-func unavailableOpencode(t *testing.T) (bin string, attempts func() []fallbackAttempt) {
+// unavailableCLIAgent is scriptedCLIAgent failing every model as an unavailable one does.
+func unavailableCLIAgent(t *testing.T) (bin string, attempts func() []fallbackAttempt) {
 	t.Helper()
-	return scriptedOpencode(t, "Error: no endpoints found for this model", "")
+	return scriptedCLIAgent(t, "Error: no endpoints found for this model", "")
 }
 
-// scriptedOpencode writes a fake opencode that records each invocation's model,
+// scriptedCLIAgent writes a fake opencode that records each invocation's model,
 // agent and config to a log, then exits 1 printing stderrMsg, except for
 // okModel, which answers with a plan naming version.go.
-func scriptedOpencode(t *testing.T, stderrMsg, okModel string) (bin string, attempts func() []fallbackAttempt) {
+func scriptedCLIAgent(t *testing.T, stderrMsg, okModel string) (bin string, attempts func() []fallbackAttempt) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("the fake opencode is a shell script, which Windows cannot execute")
@@ -66,21 +66,21 @@ func TestBuildFallbackRunsEachSubstitutedModelUnderTheSameAgentShape(t *testing.
 		wantConfig string
 	}{
 		{"build", PhaseBuild, func(bin string, deps *BuildDeps, c *BuildConfig) {
-			deps.Agent = Opencode{Bin: bin, Model: DefaultModel()}
+			deps.Agent = CLIAgent{Bin: bin, Model: DefaultModel()}
 		}, "", ""},
 		{"plan", PhasePlan, func(bin string, deps *BuildDeps, c *BuildConfig) {
-			deps.PlanAgent = PlanOpencode(bin, DefaultModel())
+			deps.PlanAgent = PlanCLIAgent(bin, DefaultModel())
 			c.Ticket.Size = "M"
 			c.PlanModels = wantModels
 		}, planAgentName, planAgentConfig},
 		{"review", PhaseReview, func(bin string, deps *BuildDeps, c *BuildConfig) {
-			deps.ReviewAgent = ReviewOpencode(bin, DefaultModel())
+			deps.ReviewAgent = ReviewCLIAgent(bin, DefaultModel())
 			c.Model, c.ReviewModel = "p/m", DefaultModel()
 		}, reviewAgentName, reviewAgentConfig},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			bin, attempts := unavailableOpencode(t)
+			bin, attempts := unavailableCLIAgent(t)
 			objects := validObjects()
 			objects["projections/"+testSHA+"/"+planProjectionFile] = []byte("# Plan rules\n\n" + ticketSentinel)
 			deps, _, reported := testDeps(objects, &fakeAgent{edit: edit("version.go", "package x\n")})

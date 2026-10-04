@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-func fakeOpencode(t *testing.T, body string) (bin, dir string) {
+func fakeCLIAgent(t *testing.T, body string) (bin, dir string) {
 	t.Helper()
 	dir = t.TempDir()
 	bin = filepath.Join(dir, "opencode")
@@ -28,15 +28,15 @@ func alive(pid int) bool {
 	return syscall.Kill(pid, 0) == nil
 }
 
-func TestOpencodeRunLeavesNoChildBehind(t *testing.T) {
-	bin, dir := fakeOpencode(t, "sleep 300 &\necho $! > child.pid\n")
+func TestCLIAgentRunLeavesNoChildBehind(t *testing.T) {
+	bin, dir := fakeCLIAgent(t, "sleep 300 &\necho $! > child.pid\n")
 	out, err := os.Create(filepath.Join(t.TempDir(), "events"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = out.Close() }()
 
-	if err := (Opencode{Bin: bin, Model: "p/m"}).Run(context.Background(), dir, "", "x", out, out); err != nil {
+	if err := (CLIAgent{Bin: bin, Model: "p/m"}).Run(context.Background(), dir, "", "x", out, out); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, "child.pid"))
@@ -57,13 +57,13 @@ func TestOpencodeRunLeavesNoChildBehind(t *testing.T) {
 	}
 }
 
-func TestOpencodeRunStopsAtTheDeadline(t *testing.T) {
-	bin, dir := fakeOpencode(t, "sleep 300\n")
+func TestCLIAgentRunStopsAtTheDeadline(t *testing.T) {
+	bin, dir := fakeCLIAgent(t, "sleep 300\n")
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 
 	start := time.Now()
-	err := (Opencode{Bin: bin, Model: "p/m"}).Run(ctx, dir, "", "x", io.Discard, io.Discard)
+	err := (CLIAgent{Bin: bin, Model: "p/m"}).Run(ctx, dir, "", "x", io.Discard, io.Discard)
 	if err == nil {
 		t.Fatal("Run returned nil past its deadline")
 	}

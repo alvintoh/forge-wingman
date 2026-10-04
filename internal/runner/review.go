@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// reviewAgentName is the restricted opencode agent the review pass runs under.
+// reviewAgentName is the restricted agent the review pass runs under.
 const reviewAgentName = "wingman-review"
 
 // reviewAgentConfig is OPENCODE_CONFIG_CONTENT for reviewAgentName: a review
@@ -14,11 +14,11 @@ const reviewAgentName = "wingman-review"
 // way planAgentConfig denies them for the plan phase.
 const reviewAgentConfig = `{"agent":{"` + reviewAgentName + `":{"mode":"primary","permission":{"edit":"deny","bash":"deny"}}}}`
 
-// ReviewOpencode is the restricted agent the review pass runs: opencode with
+// ReviewCLIAgent is the restricted agent the review pass runs: the agent CLI with
 // edit and bash denied, so it can read the diff and reason about it but not
 // touch the worktree.
-func ReviewOpencode(bin, model string) Opencode {
-	return Opencode{Bin: bin, Model: model, Agent: reviewAgentName, ConfigContent: reviewAgentConfig}
+func ReviewCLIAgent(bin, model string) CLIAgent {
+	return CLIAgent{Bin: bin, Model: model, Agent: reviewAgentName, ConfigContent: reviewAgentConfig}
 }
 
 // reviewFindingsInstruction tells the review agent the exact format its

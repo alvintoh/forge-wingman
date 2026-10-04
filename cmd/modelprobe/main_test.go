@@ -15,7 +15,7 @@ import (
 	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
-const fakeOpencode = `#!/bin/sh
+const fakeCLIAgent = `#!/bin/sh
 if [ "$1" = models ]; then
 cat <<'EOF'
 opencode/big-pickle
@@ -50,7 +50,7 @@ func setup(t *testing.T) (bin, models, results string) {
 	t.Helper()
 	dir := t.TempDir()
 	bin = filepath.Join(dir, "opencode")
-	if err := os.WriteFile(bin, []byte(fakeOpencode), 0o755); err != nil {
+	if err := os.WriteFile(bin, []byte(fakeCLIAgent), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	models = filepath.Join(dir, "models.json")
@@ -61,7 +61,7 @@ func setup(t *testing.T) (bin, models, results string) {
 }
 
 func args(bin, models, results string, extra ...string) []string {
-	return append([]string{"-repo", "../..", "-opencode", bin, "-models", models, "-results", results}, extra...)
+	return append([]string{"-repo", "../..", "-agent-bin", bin, "-models", models, "-results", results}, extra...)
 }
 
 func TestRunFlipsTheDefaultToAClearWinnerAndWritesTheResults(t *testing.T) {
@@ -161,7 +161,7 @@ func fixedNow() time.Time { return time.Date(2026, 10, 1, 9, 5, 3, 0, time.UTC) 
 
 func TestRunLeavesTheModelsFileUntouchedWhenTheDecisionChangesNothing(t *testing.T) {
 	bin, models, results := setup(t)
-	tie := strings.Replace(fakeOpencode, `[ "$model" = opencode/quick-free ] && n=2`, ":", 1)
+	tie := strings.Replace(fakeCLIAgent, `[ "$model" = opencode/quick-free ] && n=2`, ":", 1)
 	if err := os.WriteFile(bin, []byte(tie), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +273,7 @@ func TestRunDatesTheResultsFileInUTC(t *testing.T) {
 
 func TestRunFailsButKeepsTheReportWhenEveryRunIsVoid(t *testing.T) {
 	bin, models, results := setup(t)
-	rejected := strings.Replace(fakeOpencode, "while [ $# -gt 0 ]", `echo '{"type":"error","error":{"name":"APIError","data":{"statusCode":401}}}'; exit 1
+	rejected := strings.Replace(fakeCLIAgent, "while [ $# -gt 0 ]", `echo '{"type":"error","error":{"name":"APIError","data":{"statusCode":401}}}'; exit 1
 while [ $# -gt 0 ]`, 1)
 	if err := os.WriteFile(bin, []byte(rejected), 0o755); err != nil {
 		t.Fatal(err)
