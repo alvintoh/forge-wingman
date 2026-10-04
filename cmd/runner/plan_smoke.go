@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -74,16 +73,4 @@ func planSmoke(ctx context.Context, logger *slog.Logger, getenv func(string) str
 // cell makes s safe inside one markdown table cell.
 func cell(s string) string {
 	return strings.NewReplacer("|", "/", "\n", " ", "\r", " ").Replace(s)
-}
-
-func appendFile(path, content string) (err error) {
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
-	if err != nil {
-		return fmt.Errorf("opening %s: %w", path, err)
-	}
-	defer func() { err = errors.Join(err, f.Close()) }()
-	if _, err := f.WriteString(content); err != nil {
-		return fmt.Errorf("writing %s: %w", path, err)
-	}
-	return nil
 }

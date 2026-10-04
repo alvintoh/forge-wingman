@@ -2,12 +2,14 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fallbackAttempt struct{ model, agent, config string }
@@ -110,5 +112,31 @@ func TestBuildFallbackRunsEachSubstitutedModelUnderTheSameAgentShape(t *testing.
 				t.Fatalf("recorded step models %v, want the models actually run %v", stepModels, gotModels)
 			}
 		})
+	}
+}
+
+func TestBuildGivesEachPlanAttemptWhatRemainsOfTheRunBudget(t *testing.T) {
+	objects := validObjects()
+	objects["projections/"+testSHA+"/"+planProjectionFile] = []byte("# Plan rules\n\n" + ticketSentinel)
+	planAgent := &fakeAgent{stderr: "Error: no endpoints found for this model", err: errors.New("exit 1")}
+	deps, _, _ := testDeps(objects, &fakeAgent{edit: edit("version.go", "package x\n")})
+	deps.PlanAgent = planAgent
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	deps.Now = func() time.Time { return now }
+	// The first attempt consumes 20 minutes of the 55 the check loop may use.
+	planAgent.errFn = func(int) error { now = now.Add(20 * time.Minute); return errors.New("exit 1") }
+	c := testConfig(t, initRepo(t))
+	c.Ticket.Size = "M"
+	c.PlanModels = []string{"p/a", "p/b"}
+
+	_, _ = Build(context.Background(), deps, c)
+
+	if len(planAgent.deadlines) != 2 {
+		t.Fatalf("plan agent ran %d times, want 2", len(planAgent.deadlines))
+	}
+	// Both deadlines were set within milliseconds of each other in real time,
+	// so their gap is the difference between the two attempts' timeouts.
+	if gap := planAgent.deadlines[0].Sub(planAgent.deadlines[1]); gap < 14*time.Minute || gap > 16*time.Minute {
+		t.Fatalf("first attempt's deadline is %s past the second's, want the 15m the first attempt's 20m cost off a 50m window", gap)
 	}
 }
