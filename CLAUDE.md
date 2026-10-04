@@ -23,6 +23,17 @@ sibling's plan then has to re-ground against.
 This is a picker-default change, not a rule removal — still gate per ticket,
 just flip which option is recommended.
 
+## Walk agent-built changes in auto mode
+
+When reviewing a change an agent built in this repo, run `/changes-walkthrough` in
+**auto** mode first: every file walked in data-flow order, the mechanical checks per
+file (mutating the guards in changed lines, caller-to-callee, comment budget, consumer
+counts), every local finding fixed and re-verified, and trade-offs batched into one
+picker. Recommend `auto` first at the walk's start gate; the file-by-file human read
+stays one tap away.
+
+*(Owner's instruction, 2026-10-04.)*
+
 ## Merging PRs for the owner
 
 When the owner asks me to merge a PR in this repo, I run `gh pr ready` and
