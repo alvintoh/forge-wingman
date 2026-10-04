@@ -26,13 +26,26 @@ func TestNewDefinitionReadsAWellFormedPlan(t *testing.T) {
 	}
 }
 
+func TestNewDefinitionAcceptsAFreePlanAtZeroPrice(t *testing.T) {
+	got, err := NewDefinition("Zen free tier", "0", nil, nil, "hard-stop", "free")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MonthlyPrice != 0 || got.Billing != BillingFree {
+		t.Fatalf("got price %v billing %q, want 0 and free", got.MonthlyPrice, got.Billing)
+	}
+}
+
 func TestNewDefinitionRefusesWhatItCannotStore(t *testing.T) {
 	for name, tt := range map[string]struct {
 		call func() (Definition, error)
 		want string
 	}{
 		"empty name": {func() (Definition, error) { return NewDefinition(" ", "15", nil, nil, "hard-stop", "free") }, "name is empty"},
-		"zero price": {func() (Definition, error) { return NewDefinition("p", "0", nil, nil, "hard-stop", "free") }, "not a positive amount"},
+		"zero price on a paid plan": {func() (Definition, error) { return NewDefinition("p", "0", nil, nil, "hard-stop", "allowance") },
+			"not a positive amount"},
+		"negative price on a free plan": {func() (Definition, error) { return NewDefinition("p", "-1", nil, nil, "hard-stop", "free") },
+			"not zero or more"},
 		"infinite price": {func() (Definition, error) { return NewDefinition("p", "+Inf", nil, nil, "hard-stop", "free") },
 			"not a positive amount"},
 		"not a number": {func() (Definition, error) { return NewDefinition("p", "cheap", nil, nil, "hard-stop", "free") },
