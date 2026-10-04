@@ -23,7 +23,7 @@ func smokeModels(list []string) []string {
 // planSmoke runs the restricted plan agent on the first and last model of the plan
 // list against a fixture, appends each model and outcome to the job summary, and
 // fails unless every one refused both the edit and the shell command. It needs
-// only the opencode binary and its key, no GCP identity.
+// only the agent binary and its key, no GCP identity.
 func planSmoke(ctx context.Context, logger *slog.Logger, getenv func(string) string, args []string) error {
 	fs := flag.NewFlagSet("plan-smoke", flag.ContinueOnError)
 	planModels := fs.String("plan-models", runner.DefaultPlanModel, "the plan phase's models in order, comma-separated provider/model")
@@ -44,7 +44,7 @@ func planSmoke(ctx context.Context, logger *slog.Logger, getenv func(string) str
 	summary.WriteString("| model | outcome | detail |\n|---|---|---|\n")
 	var failed []string
 	for _, model := range smokeModels(list) {
-		res, err := runner.PlanSmoke(ctx, runner.PlanOpencode("opencode", model), model, dir)
+		res, err := runner.PlanSmoke(ctx, runner.PlanCLIAgent("opencode", model), model, dir)
 		switch {
 		case err != nil:
 			logger.Error("planSmokeFailed", "model", model, "err", err.Error())

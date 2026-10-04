@@ -119,7 +119,7 @@ func snapshot(dir string) (map[string]string, error) {
 	return files, nil
 }
 
-// eventCounter buffers opencode's JSON event stream, counts tool calls as they
+// eventCounter buffers the agent's JSON event stream, counts tool calls as they
 // arrive and cancels the run once they pass max.
 type eventCounter struct {
 	max     int

@@ -32,8 +32,8 @@ func TestPlanSmokeReportsWhetherTheRestrictedAgentWasRefused(t *testing.T) {
 }
 
 func TestPlanSmokeRunsTheScriptedBinaryUnderThePlanAgentShapeOnTheGivenModel(t *testing.T) {
-	bin, attempts := scriptedOpencode(t, "", "opencode-go/paid")
-	res, err := PlanSmoke(context.Background(), PlanOpencode(bin, "ignored/first"), "opencode-go/paid", t.TempDir())
+	bin, attempts := scriptedCLIAgent(t, "", "opencode-go/paid")
+	res, err := PlanSmoke(context.Background(), PlanCLIAgent(bin, "ignored/first"), "opencode-go/paid", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

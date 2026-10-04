@@ -15,7 +15,7 @@ const (
 	eventOther
 )
 
-// classify maps one line of opencode's JSON event stream to a kind.
+// classify maps one line of the agent's JSON event stream to a kind.
 //
 // The only place event names live. step_finish and text are read elsewhere in
 // this repository; tool_use and error are not yet confirmed against a live run.

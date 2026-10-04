@@ -50,7 +50,7 @@ type event struct {
 	} `json:"part"`
 }
 
-// SumUsage totals the step_finish events in opencode's JSON event stream.
+// SumUsage totals the step_finish events in the agent's JSON event stream.
 //
 // Lines that are not JSON events are skipped.
 func SumUsage(r io.Reader) (Usage, error) {
@@ -77,7 +77,7 @@ func SumUsage(r io.Reader) (Usage, error) {
 	return u, nil
 }
 
-// FinalText returns the last text part in opencode's JSON event stream, empty
+// FinalText returns the last text part in the agent's JSON event stream, empty
 // when none appeared.
 //
 // A text part carries the message accumulated so far rather than a delta, so
@@ -105,7 +105,7 @@ func FinalText(r io.Reader) (string, error) {
 	return text, nil
 }
 
-// SessionID returns the session id opencode's JSON event stream reports,
+// SessionID returns the session id the agent's JSON event stream reports,
 // read from the first event that carries one — every event does, including
 // an error, so this works even on a run that never completed. Empty when
 // none appeared.
@@ -127,14 +127,14 @@ func SessionID(r io.Reader) (string, error) {
 	return "", nil
 }
 
-// Opencode runs the opencode CLI non-interactively.
+// CLIAgent runs the agent CLI non-interactively.
 //
 // Agent and ConfigContent together select a restricted agent profile: Agent
 // names it on the command line, and ConfigContent (opencode's own
 // OPENCODE_CONFIG_CONTENT variable) defines its permissions inline, since
 // there is no file to point opencode at. Both are empty for the default,
 // unrestricted agent.
-type Opencode struct {
+type CLIAgent struct {
 	Bin           string
 	Model         string
 	Agent         string
@@ -142,7 +142,7 @@ type Opencode struct {
 }
 
 // WithModel returns a copy of o that runs model, keeping its agent profile.
-func (o Opencode) WithModel(model string) Agent {
+func (o CLIAgent) WithModel(model string) Agent {
 	o.Model = model
 	return o
 }
@@ -152,7 +152,7 @@ func (o Opencode) WithModel(model string) Agent {
 //
 // The agent runs in its own process group, terminated when ctx ends and killed
 // once Run returns.
-func (o Opencode) Run(ctx context.Context, dir, session, prompt string, stdout, stderr io.Writer) error {
+func (o CLIAgent) Run(ctx context.Context, dir, session, prompt string, stdout, stderr io.Writer) error {
 	args := []string{"run", "--format", "json", "--auto", "-m", o.Model, "--dir", dir}
 	if o.Agent != "" {
 		args = append(args, "--agent", o.Agent)
@@ -173,12 +173,12 @@ func (o Opencode) Run(ctx context.Context, dir, session, prompt string, stdout, 
 	ownProcessGroup(cmd)
 	err := cmd.Start()
 	if err != nil {
-		return fmt.Errorf("opencode run: %w", err)
+		return fmt.Errorf("agent run: %w", err)
 	}
 	err = cmd.Wait()
 	killProcessGroup(cmd)
 	if err != nil {
-		return fmt.Errorf("opencode run: %w", err)
+		return fmt.Errorf("agent run: %w", err)
 	}
 	return nil
 }

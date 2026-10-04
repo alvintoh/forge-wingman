@@ -7,19 +7,19 @@ import (
 	"strings"
 )
 
-// planAgentName is the restricted opencode agent the plan phase runs under.
+// planAgentName is the restricted agent the plan phase runs under.
 const planAgentName = "wingman-plan"
 
 // planAgentConfig is OPENCODE_CONFIG_CONTENT for planAgentName: denying edit and
 // bash disables both tools outright rather than merely gating them behind a
-// prompt, confirmed against the installed opencode CLI's own resolved agent
+// prompt, confirmed against the installed agent CLI's own resolved agent
 // config (`opencode debug agent <name>`).
 const planAgentConfig = `{"agent":{"` + planAgentName + `":{"mode":"primary","permission":{"edit":"deny","bash":"deny"}}}}`
 
-// PlanOpencode is the restricted agent the plan phase runs: opencode with edit
+// PlanCLIAgent is the restricted agent the plan phase runs: the agent CLI with edit
 // and bash denied, so it can read and reason but not touch the worktree.
-func PlanOpencode(bin, model string) Opencode {
-	return Opencode{Bin: bin, Model: model, Agent: planAgentName, ConfigContent: planAgentConfig}
+func PlanCLIAgent(bin, model string) CLIAgent {
+	return CLIAgent{Bin: bin, Model: model, Agent: planAgentName, ConfigContent: planAgentConfig}
 }
 
 // planFileListInstruction tells the plan agent the exact format its final

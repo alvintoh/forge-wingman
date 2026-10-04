@@ -52,7 +52,7 @@ type Summary struct {
 	StartedAt  time.Time `json:"started_at"`
 }
 
-// Step is one opencode invocation in a run's build, distinct from Usage.Steps,
+// Step is one agent invocation in a run's build, distinct from Usage.Steps,
 // which counts that invocation's own internal step_finish events.
 type Step struct {
 	Phase Phase  `firestore:"phase" json:"phase"`

@@ -75,7 +75,7 @@ func TestFinalText(t *testing.T) {
 	}
 }
 
-func TestOpencodeRunPassesPromptOnStdin(t *testing.T) {
+func TestCLIAgentRunPassesPromptOnStdin(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the fake opencode is a shell script, which Windows cannot execute")
 	}
@@ -92,7 +92,7 @@ func TestOpencodeRunPassesPromptOnStdin(t *testing.T) {
 	prompt := strings.Repeat("rule line\n", 20000) + "## t-1\n\nlast"
 
 	var stdout, stderr strings.Builder
-	if err := (Opencode{Bin: bin, Model: "p/m"}).Run(context.Background(), dir, "", prompt, &stdout, &stderr); err != nil {
+	if err := (CLIAgent{Bin: bin, Model: "p/m"}).Run(context.Background(), dir, "", prompt, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
 	gotStdin, err := os.ReadFile(filepath.Join(dir, "stdin.txt"))
@@ -128,7 +128,7 @@ func TestOpencodeRunPassesPromptOnStdin(t *testing.T) {
 	}
 }
 
-func TestOpencodeRunPassesTheSessionToContinue(t *testing.T) {
+func TestCLIAgentRunPassesTheSessionToContinue(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the fake opencode is a shell script, which Windows cannot execute")
 	}
@@ -140,7 +140,7 @@ func TestOpencodeRunPassesTheSessionToContinue(t *testing.T) {
 	}
 
 	var stdout, stderr strings.Builder
-	if err := (Opencode{Bin: bin, Model: "p/m"}).Run(context.Background(), dir, "ses_abc", "prompt", &stdout, &stderr); err != nil {
+	if err := (CLIAgent{Bin: bin, Model: "p/m"}).Run(context.Background(), dir, "ses_abc", "prompt", &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
 	gotArgs, err := os.ReadFile(filepath.Join(dir, "args.txt"))
@@ -179,7 +179,7 @@ func TestSessionID(t *testing.T) {
 	}
 }
 
-func TestOpencodeRunPassesTheRestrictedAgentAndItsConfig(t *testing.T) {
+func TestCLIAgentRunPassesTheRestrictedAgentAndItsConfig(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the fake opencode is a shell script, which Windows cannot execute")
 	}
@@ -191,7 +191,7 @@ func TestOpencodeRunPassesTheRestrictedAgentAndItsConfig(t *testing.T) {
 	}
 
 	var stdout, stderr strings.Builder
-	agent := PlanOpencode(bin, "p/m")
+	agent := PlanCLIAgent(bin, "p/m")
 	if err := agent.Run(context.Background(), dir, "", "prompt", &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
@@ -212,9 +212,9 @@ func TestOpencodeRunPassesTheRestrictedAgentAndItsConfig(t *testing.T) {
 	}
 }
 
-func TestOpencodeWithModelKeepsTheAgentProfile(t *testing.T) {
-	got := PlanOpencode("bin", "p/a").WithModel("p/b")
-	if want := PlanOpencode("bin", "p/b"); got != want {
+func TestCLIAgentWithModelKeepsTheAgentProfile(t *testing.T) {
+	got := PlanCLIAgent("bin", "p/a").WithModel("p/b")
+	if want := PlanCLIAgent("bin", "p/b"); got != want {
 		t.Fatalf("rebound agent = %+v, want %+v", got, want)
 	}
 }
