@@ -265,3 +265,14 @@ func TestEncodeDropsTheOldestStepsWhenEditedFilesAloneIsNotEnough(t *testing.T) 
 		t.Fatalf("kept steps do not start where the oldest were dropped: first round %d", got.Steps[0].Round)
 	}
 }
+
+func TestStepRejectsAModelTooLongToRecord(t *testing.T) {
+	step := Step{Phase: PhaseBuild, Round: 1, Model: overLongModel, CompletionsObject: completionsObject("1-1", PhaseBuild, 1)}
+	if err := step.validate("1-1"); err == nil {
+		t.Fatal("a step recorded a model past the length limit")
+	}
+	step.Model = "p/" + strings.Repeat("a", maxModelBytes-2)
+	if err := step.validate("1-1"); err != nil {
+		t.Fatal(err)
+	}
+}

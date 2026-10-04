@@ -582,8 +582,38 @@ func validObjects() fakeObjects {
 	}
 }
 
+// overLongModel is a well-formed model id one byte past what a run record accepts.
+var overLongModel = "p/" + strings.Repeat("a", maxModelBytes-1)
+
+func TestValidModelAcceptsExactlyTheRecordableLength(t *testing.T) {
+	atLimit := "p/" + strings.Repeat("a", maxModelBytes-2)
+	if !ValidModel(atLimit) || len(atLimit) != maxModelBytes {
+		t.Fatalf("a model of %d bytes was rejected", len(atLimit))
+	}
+	if ValidModel(overLongModel) || len(overLongModel) != maxModelBytes+1 {
+		t.Fatalf("a model of %d bytes was accepted", len(overLongModel))
+	}
+	if err := ValidatePlanModels([]string{atLimit}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBuildIgnoresThePlanModelsOfATicketThatDoesNotPlan(t *testing.T) {
+	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
+	deps, _, reported := testDeps(validObjects(), agent)
+	c := testConfig(t, initRepo(t))
+	c.PlanModels = []string{"not a model"}
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatalf("an S ticket never plans, but Build failed: %v", err)
+	}
+	if rec := reported.last(t); rec.Outcome != OutcomeBuilt {
+		t.Fatalf("outcome = %s/%s", rec.Outcome, rec.StopReason)
+	}
+}
+
 func TestBuildStopsOnAnInvalidModel(t *testing.T) {
-	for _, model := range []string{"", "big-pickle", "opencode/big pickle", "-x/y", "opencode/big-pickle;rm"} {
+	for _, model := range []string{"", "big-pickle", "opencode/big pickle", "-x/y", "opencode/big-pickle;rm", overLongModel} {
 		t.Run(model, func(t *testing.T) {
 			agent := &fakeAgent{}
 			deps, _, reported := testDeps(validObjects(), agent)
@@ -603,6 +633,7 @@ func TestBuildStopsWhenTheReviewModelIsInvalid(t *testing.T) {
 	for name, reviewModel := range map[string]string{
 		"malformed":           "not a model",
 		"same as build model": "p/m",
+		"over long":           overLongModel,
 	} {
 		t.Run(name, func(t *testing.T) {
 			agent := &fakeAgent{}
@@ -625,11 +656,13 @@ func TestBuildStopsWhenThePlanModelsAreInvalid(t *testing.T) {
 		"malformed":   {"p/m", "not a model"},
 		"repeated":    {"p/m", "p/b", "p/m"},
 		"empty entry": {""},
+		"over long":   {"p/" + strings.Repeat("a", maxModelBytes)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			agent := &fakeAgent{}
 			deps, _, reported := testDeps(validObjects(), agent)
 			c := testConfig(t, initRepo(t))
+			c.Ticket.Size = "M"
 			c.PlanModels = models
 			if _, err := Build(context.Background(), deps, c); err == nil {
 				t.Fatal("Build accepted the plan models")

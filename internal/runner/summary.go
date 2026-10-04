@@ -276,7 +276,7 @@ func hasStep(steps []Step, phase Phase) bool {
 
 // validate checks a step's model, tokens and completions object against attemptID's run.
 func (st Step) validate(attemptID string) error {
-	if st.Model == "" || len(st.Model) > maxModelBytes || !modelPattern.MatchString(st.Model) {
+	if !ValidModel(st.Model) {
 		return errors.New("model is not provider/model")
 	}
 	if err := st.Tokens.validate(); err != nil {

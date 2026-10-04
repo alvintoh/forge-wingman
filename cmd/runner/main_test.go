@@ -274,7 +274,9 @@ func TestSplitModels(t *testing.T) {
 	for in, want := range map[string][]string{
 		"a/b":           {"a/b"},
 		"a/b, c/d ,e/f": {"a/b", "c/d", "e/f"},
-		"":              {""},
+		"":              {runner.DefaultPlanModel},
+		"  ":            {runner.DefaultPlanModel},
+		"a/b,":          {"a/b", ""},
 	} {
 		if got := splitModels(in); !slices.Equal(got, want) {
 			t.Errorf("splitModels(%q) = %q, want %q", in, got, want)
@@ -299,5 +301,24 @@ func TestPlanSmokeRefusesAnInvalidModelList(t *testing.T) {
 		func(string) string { return "" }, []string{"-plan-models", "not a model"})
 	if err == nil {
 		t.Fatal("plan-smoke accepted a malformed model")
+	}
+}
+
+func TestAppendFileAppendsAndCreatesOwnerOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "out")
+	for _, line := range []string{"a\n", "b\n"} {
+		if err := appendFile(path, line); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != "a\nb\n" {
+		t.Fatalf("file = %q, err %v, want both appends", got, err)
+	}
+	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %v, err %v, want 0600", info.Mode(), err)
+	}
+	if err := appendFile(t.TempDir(), "x"); err == nil {
+		t.Fatal("appendFile wrote to a directory")
 	}
 }

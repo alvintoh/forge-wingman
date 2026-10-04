@@ -64,7 +64,7 @@ func (s ModelSet) Validate() error {
 	seen := map[string]bool{}
 	for _, m := range append([]string{s.Default}, s.Fallbacks...) {
 		switch {
-		case !modelPattern.MatchString(m):
+		case !ValidModel(m):
 			return fmt.Errorf("model %q is not provider/model", m)
 		case Provider(m) != ZenProvider:
 			return fmt.Errorf("model %q is not a %s model", m, ZenProvider)
