@@ -8,7 +8,7 @@ import (
 
 func TestNewDefinitionReadsAWellFormedPlan(t *testing.T) {
 	got, err := NewDefinition(" Go Plan ", "15.50", []string{"https://vendor.example/pricing  #plans"},
-		[]string{"opencode:glm-5"}, "hard-stop")
+		[]string{"opencode:glm-5"}, "hard-stop", "per-token")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -18,8 +18,9 @@ func TestNewDefinitionReadsAWellFormedPlan(t *testing.T) {
 		Pages:          []Locator{{URL: "https://vendor.example/pricing", Selector: "#plans"}},
 		Harnesses:      []HarnessPair{{Harness: "opencode", Model: "glm-5"}},
 		LimitBehaviour: LimitHardStop,
+		Billing:        BillingPerToken,
 	}
-	if got.Name != want.Name || got.MonthlyPrice != want.MonthlyPrice || got.LimitBehaviour != want.LimitBehaviour ||
+	if got.Name != want.Name || got.MonthlyPrice != want.MonthlyPrice || got.LimitBehaviour != want.LimitBehaviour || got.Billing != want.Billing ||
 		len(got.Pages) != 1 || got.Pages[0] != want.Pages[0] || len(got.Harnesses) != 1 || got.Harnesses[0] != want.Harnesses[0] {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
@@ -30,23 +31,26 @@ func TestNewDefinitionRefusesWhatItCannotStore(t *testing.T) {
 		call func() (Definition, error)
 		want string
 	}{
-		"empty name": {func() (Definition, error) { return NewDefinition(" ", "15", nil, nil, "hard-stop") }, "name is empty"},
-		"zero price": {func() (Definition, error) { return NewDefinition("p", "0", nil, nil, "hard-stop") }, "not a positive amount"},
-		"infinite price": {func() (Definition, error) { return NewDefinition("p", "+Inf", nil, nil, "hard-stop") },
+		"empty name": {func() (Definition, error) { return NewDefinition(" ", "15", nil, nil, "hard-stop", "free") }, "name is empty"},
+		"zero price": {func() (Definition, error) { return NewDefinition("p", "0", nil, nil, "hard-stop", "free") }, "not a positive amount"},
+		"infinite price": {func() (Definition, error) { return NewDefinition("p", "+Inf", nil, nil, "hard-stop", "free") },
 			"not a positive amount"},
-		"not a number": {func() (Definition, error) { return NewDefinition("p", "cheap", nil, nil, "hard-stop") },
+		"not a number": {func() (Definition, error) { return NewDefinition("p", "cheap", nil, nil, "hard-stop", "free") },
 			"not a positive amount"},
-		"unknown limit": {func() (Definition, error) { return NewDefinition("p", "15", nil, nil, "soft") }, "limit behaviour"},
+		"unknown billing": {func() (Definition, error) { return NewDefinition("p", "15", nil, nil, "hard-stop", "") }, "billing"},
+		"unknown limit":   {func() (Definition, error) { return NewDefinition("p", "15", nil, nil, "soft", "free") }, "limit behaviour"},
 		"http page": {func() (Definition, error) {
-			return NewDefinition("p", "15", []string{"http://v.example"}, nil, "hard-stop")
+			return NewDefinition("p", "15", []string{"http://v.example"}, nil, "hard-stop", "free")
 		}, "not an https URL"},
-		"page with no host": {func() (Definition, error) { return NewDefinition("p", "15", []string{"https:///x"}, nil, "hard-stop") },
+		"page with no host": {func() (Definition, error) {
+			return NewDefinition("p", "15", []string{"https:///x"}, nil, "hard-stop", "free")
+		},
 			"not an https URL"},
 		"page URL too long": {func() (Definition, error) {
-			return NewDefinition("p", "15", []string{"https://v.example/" + strings.Repeat("a", maxURLBytes)}, nil, "hard-stop")
+			return NewDefinition("p", "15", []string{"https://v.example/" + strings.Repeat("a", maxURLBytes)}, nil, "hard-stop", "free")
 		}, "longer than"},
 		"harness without a model": {func() (Definition, error) {
-			return NewDefinition("p", "15", nil, []string{"opencode:"}, "hard-stop")
+			return NewDefinition("p", "15", nil, []string{"opencode:"}, "hard-stop", "free")
 		}, "not harness:model"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -65,6 +69,23 @@ func TestParseLimitBehaviourAcceptsEachBehaviourAndRefusesOthers(t *testing.T) {
 	}
 	if _, err := ParseLimitBehaviour("soft"); err == nil {
 		t.Error("soft was accepted")
+	}
+}
+
+func TestPlanNeedsOptInOnlyWhenBilledPerToken(t *testing.T) {
+	for _, tt := range []struct {
+		billing                Billing
+		configured, needsOptIn bool
+	}{
+		{"", false, false},
+		{BillingFree, true, false},
+		{BillingAllowance, true, false},
+		{BillingPerToken, true, true},
+	} {
+		p := Plan{Definition: Definition{Billing: tt.billing}}
+		if p.Configured() != tt.configured || p.NeedsOptIn() != tt.needsOptIn {
+			t.Errorf("billing %q: configured %v, needs opt-in %v", tt.billing, p.Configured(), p.NeedsOptIn())
+		}
 	}
 }
 

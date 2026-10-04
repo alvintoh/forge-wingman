@@ -30,13 +30,14 @@ func planDefine(ctx context.Context, logger *slog.Logger, e env, args []string) 
 	name := fs.String("name", "", "plan name")
 	price := fs.String("price-usd", "", "monthly price in USD")
 	limit := fs.String("limit", string(providers.LimitUnknown), "behaviour at the limit: hard-stop, can-spend-past or unknown")
+	billing := fs.String("billing", "", "how the plan charges: free, allowance or per-token")
 	var pages, harnesses listFlag
 	fs.Var(&pages, "page", "vendor page to read: an https URL, then optionally a selector (repeatable)")
 	fs.Var(&harnesses, "harness", "harness:model the plan is offered through (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	def, defErr := providers.NewDefinition(*name, *price, pages, harnesses, *limit)
+	def, defErr := providers.NewDefinition(*name, *price, pages, harnesses, *limit, *billing)
 	plans, closeStore, err := openPlans(ctx, e, *provider, true, defErr)
 	if err != nil {
 		return err
@@ -45,7 +46,29 @@ func planDefine(ctx context.Context, logger *slog.Logger, e env, args []string) 
 	if err := plans.PutDefinition(ctx, *provider, def); err != nil {
 		return err
 	}
-	logger.Info("planDefined", "provider", *provider, "monthlyPriceUSD", def.MonthlyPrice.USD(), "limit", string(def.LimitBehaviour))
+	logger.Info("planDefined", "provider", *provider, "monthlyPriceUSD", def.MonthlyPrice.USD(), "limit", string(def.LimitBehaviour), "billing", string(def.Billing))
+	return nil
+}
+
+// planOptIn records the owner's consent to spend on a per-token provider, or
+// withdraws it. The dispatcher never writes it, so a ticket cannot opt a
+// provider in.
+func planOptIn(ctx context.Context, logger *slog.Logger, e env, args []string) error {
+	fs := flag.NewFlagSet("plan-optin", flag.ContinueOnError)
+	provider := fs.String("provider", "", "provider whose per-token spend the owner accepts; per provider, and cleared if its billing is later changed")
+	optedIn := fs.Bool("opted-in", true, "false withdraws the opt-in")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	plans, closeStore, err := openPlans(ctx, e, *provider, true, nil)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	if err := plans.SetOptIn(ctx, *provider, *optedIn); err != nil {
+		return err
+	}
+	logger.Info("planOptInRecorded", "provider", *provider, "optedIn", *optedIn)
 	return nil
 }
 

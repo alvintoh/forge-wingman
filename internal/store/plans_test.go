@@ -56,6 +56,7 @@ var planDef = prov.Definition{
 	Pages:          []prov.Locator{{URL: "https://vendor.example/pricing", Selector: "#plans"}},
 	Harnesses:      []prov.HarnessPair{{Harness: "opencode", Model: "glm-5"}},
 	LimitBehaviour: prov.LimitHardStop,
+	Billing:        prov.BillingPerToken,
 }
 
 var planNote = prov.VerdictNote{Verdict: prov.VerdictRestricted, Wording: "no automated use", Source: "https://vendor.example/terms", ReadOn: "2026-09-30"}
@@ -163,5 +164,74 @@ func TestListReadsEachPlanWithItsLatestFactsDate(t *testing.T) {
 	}
 	if d, ok := got[without]; !ok || d != "" {
 		t.Fatalf("facts date for %s = %q (listed %v), want none", without, d, ok)
+	}
+}
+
+func TestPlanReadsADefinedPlanAndReportsAnUndefinedOneAbsent(t *testing.T) {
+	defined, undefined := fresh("plan-read"), fresh("plan-read-none")
+	p, _ := planStore(t, defined, undefined)
+	ctx := context.Background()
+	if err := p.PutDefinition(ctx, defined, planDef); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := p.Plan(ctx, defined)
+	if err != nil || !ok || got.Definition.Billing != prov.BillingPerToken || got.OptedIn {
+		t.Fatalf("plan %+v, ok %v, err %v, want the defined per-token plan, not opted in", got, ok, err)
+	}
+	if _, ok, err := p.Plan(ctx, undefined); err != nil || ok {
+		t.Fatalf("ok %v, err %v, want an undefined plan reported absent without an error", ok, err)
+	}
+}
+
+func TestSetOptInSurvivesRedefiningThePlanAndRefusesAnUndefinedOne(t *testing.T) {
+	id, undefined := fresh("plan-optin"), fresh("plan-optin-none")
+	p, client := planStore(t, id, undefined)
+	ctx := context.Background()
+	if err := p.PutDefinition(ctx, id, planDef); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SetOptIn(ctx, id, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PutDefinition(ctx, id, planDef); err != nil {
+		t.Fatal(err)
+	}
+	if got := readPlan(t, client, id); !got.OptedIn || got.Definition.Billing != prov.BillingPerToken {
+		t.Fatalf("plan = %+v, want the opt-in kept through a re-definition", got)
+	}
+	if err := p.SetOptIn(ctx, id, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := readPlan(t, client, id); got.OptedIn {
+		t.Fatalf("plan = %+v, want the opt-in withdrawn", got)
+	}
+	if err := p.SetOptIn(ctx, undefined, true); err == nil || !strings.Contains(err.Error(), "is not defined") {
+		t.Fatalf("err = %v, want a refusal naming the undefined plan", err)
+	}
+}
+
+func TestPutDefinitionWithdrawsTheOptInWhenBillingChanges(t *testing.T) {
+	id := fresh("plan-billing")
+	p, client := planStore(t, id)
+	ctx := context.Background()
+	if err := p.PutDefinition(ctx, id, planDef); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SetOptIn(ctx, id, true); err != nil {
+		t.Fatal(err)
+	}
+	free := planDef
+	free.Billing = prov.BillingFree
+	if err := p.PutDefinition(ctx, id, free); err != nil {
+		t.Fatal(err)
+	}
+	if got := readPlan(t, client, id); got.OptedIn || got.Definition.Billing != prov.BillingFree {
+		t.Fatalf("plan = %+v, want the new billing with the opt-in withdrawn", got)
+	}
+	if err := p.PutDefinition(ctx, id, planDef); err != nil {
+		t.Fatal(err)
+	}
+	if got := readPlan(t, client, id); got.OptedIn || got.Definition.Billing != prov.BillingPerToken {
+		t.Fatalf("plan = %+v, want per-token again without the earlier opt-in", got)
 	}
 }

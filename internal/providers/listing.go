@@ -45,7 +45,7 @@ type Listing struct {
 // WriteTable writes the plans side by side, one row each.
 func WriteTable(w io.Writer, rows []Listing) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	if _, err := fmt.Fprintln(tw, "PROVIDER\tPRICE\tLIMIT\tVERDICT\tFACTS\tFLAGS"); err != nil {
+	if _, err := fmt.Fprintln(tw, "PROVIDER\tPRICE\tLIMIT\tBILLING\tOPTED-IN\tVERDICT\tFACTS\tFLAGS"); err != nil {
 		return err
 	}
 	for _, r := range rows {
@@ -57,8 +57,8 @@ func WriteTable(w io.Writer, rows []Listing) error {
 		for _, f := range Flags(r.Plan.Definition) {
 			flags = append(flags, string(f))
 		}
-		if _, err := fmt.Fprintf(tw, "%s\t$%.2f\t%s\t%s\t%s\t%s\n", r.Provider, r.Plan.Definition.MonthlyPrice.USD(),
-			r.Plan.Definition.LimitBehaviour, verdict, orDash(r.FactsDate), orDash(strings.Join(flags, ","))); err != nil {
+		if _, err := fmt.Fprintf(tw, "%s\t$%.2f\t%s\t%s\t%t\t%s\t%s\t%s\n", r.Provider, r.Plan.Definition.MonthlyPrice.USD(),
+			r.Plan.Definition.LimitBehaviour, orDash(string(r.Plan.Definition.Billing)), r.Plan.OptedIn, verdict, orDash(r.FactsDate), orDash(strings.Join(flags, ","))); err != nil {
 			return err
 		}
 	}

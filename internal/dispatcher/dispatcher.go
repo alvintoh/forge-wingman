@@ -36,6 +36,11 @@ const (
 	RefusalNoRepository  Refusal = "no-repository"
 	RefusalNotAllowlist  Refusal = "repository-not-allowlisted"
 	RefusalTicketInvalid Refusal = "ticket-invalid"
+	// The model refusals are a ticket naming a model a run may not use.
+	RefusalModelMalformed    Refusal = "model-malformed"
+	RefusalReviewIsBuild     Refusal = "review-model-is-build-model"
+	RefusalModelUnconfigured Refusal = "model-provider-unconfigured"
+	RefusalModelNotOptedIn   Refusal = "model-per-token-not-opted-in"
 )
 
 // Rejection is the refusal kept against one ticket, with what made it.
@@ -59,7 +64,9 @@ type Queued struct {
 	Priority  int
 	BlockedBy []string
 	Blocks    []string
-	At        time.Time
+	// Models are the models the ticket named, carried onto the run record.
+	Models runner.ModelLabels
+	At     time.Time
 }
 
 // Claim is the run a poll took off the queue.
@@ -105,6 +112,17 @@ type VerdictRecorder interface {
 	RecordVerdict(ctx context.Context, runID string, verdict providers.Verdict) error
 }
 
+// ModelOverrides yields the models a ticket names in place of a run's defaults.
+type ModelOverrides interface {
+	Overrides(issue Issue) runner.ModelLabels
+}
+
+// ModelPlans reads the owner's plan record for a provider; ok is false when
+// none is defined.
+type ModelPlans interface {
+	Plan(ctx context.Context, provider string) (plan providers.Plan, ok bool, err error)
+}
+
 // Deps are the tickets a poll reads, the queue it writes, the estimator and
 // repository visibility it checks a claim's budget against, the provider
 // halt state it checks before claiming (AC4), the workflow it dispatches,
@@ -119,6 +137,10 @@ type Deps struct {
 	Workflow   Workflow
 	Logger     *slog.Logger
 	Now        func() time.Time
+	// Overrides yields the models a ticket names and ModelPlans is what they are
+	// checked against; both are required, as an unchecked model could spend per token.
+	Overrides  ModelOverrides
+	ModelPlans ModelPlans
 	// Plans is optional: left unset, no verdict is looked up.
 	Plans ProviderVerdicts
 	// Verdicts is optional: left unset, no verdict is written to the run.
@@ -140,6 +162,8 @@ func (d Deps) missing() string {
 		{"Workflow", d.Workflow != nil},
 		{"Logger", d.Logger != nil},
 		{"Now", d.Now != nil},
+		{"Overrides", d.Overrides != nil},
+		{"ModelPlans", d.ModelPlans != nil},
 	} {
 		if !dep.set {
 			return dep.name
@@ -275,22 +299,18 @@ func Poll(ctx context.Context, d Deps, c Config) (Result, error) {
 // different failure. The repository's visibility is resolved once, at
 // creation, and carried on the run record from then on (FR-22) — Exists skips
 // that resolution for a ticket already queued, rather than re-checking it on
-// every poll the ticket remains undispatched.
+// every poll the ticket remains undispatched. The models a ticket names are
+// checked at the same point, for the same reason.
 //
-// A visibility-check failure aborts only this ticket's admission, never the
-// poll: an issue not yet enqueued is seen again next poll (Delegated still
-// returns it), so nothing is lost, and one flaky check must not withhold every
-// other delegated ticket's admission or the ready dispatch that follows it.
+// A visibility-check or model-lookup failure aborts only this ticket's
+// admission, never the poll: an issue not yet enqueued is seen again next poll
+// (Delegated still returns it), so nothing is lost, and one flaky check must not
+// withhold every other delegated ticket's admission or the ready dispatch that
+// follows it.
 func admit(ctx context.Context, d Deps, c Config, issue Issue, res *Result) error {
-	q, rejection := build(issue, c, d.Now())
-	if rejection.Reason != "" {
-		if err := d.Queue.Reject(ctx, rejection); err != nil {
-			return err
-		}
-		d.Logger.Warn("ticketRefused", "ticket", rejection.Ticket, "reason", string(rejection.Reason),
-			"detail", rejection.Detail)
-		res.Rejections = append(res.Rejections, rejection)
-		return nil
+	q, rej := build(issue, c, d.Now())
+	if rej.Reason != "" {
+		return refuse(ctx, d, rej, res)
 	}
 	exists, err := d.Queue.Exists(ctx, q.RunID)
 	if err != nil {
@@ -299,6 +319,18 @@ func admit(ctx context.Context, d Deps, c Config, issue Issue, res *Result) erro
 	if exists {
 		d.Logger.Info("ticketAlreadyQueued", "run", q.RunID, "repo", q.Repo, "priority", q.Priority)
 		return nil
+	}
+	q.Models = d.Overrides.Overrides(issue)
+	reason, detail, err := checkModels(ctx, d.ModelPlans, q.Models, c.Model)
+	if err != nil {
+		// A failed read is neither a refusal nor an admission: the ticket is
+		// seen again next poll, and admitting it unchecked would let a per-token
+		// model through.
+		d.Logger.Info("modelConfigLookupFailed", "run", q.RunID, "err", err.Error())
+		return nil
+	}
+	if reason != "" {
+		return refuse(ctx, d, rejection(issue, reason, detail, d.Now()), res)
 	}
 	private, err := d.Visibility.Private(ctx, q.Repo)
 	if err != nil {
@@ -315,6 +347,16 @@ func admit(ctx context.Context, d Deps, c Config, issue Issue, res *Result) erro
 		d.Logger.Info("ticketEnqueued", "run", q.RunID, "repo", q.Repo, "size", q.Ticket.Size, "priority", q.Priority)
 		res.Enqueued = append(res.Enqueued, q.RunID)
 	}
+	return nil
+}
+
+// refuse records the refusal against its ticket.
+func refuse(ctx context.Context, d Deps, r Rejection, res *Result) error {
+	if err := d.Queue.Reject(ctx, r); err != nil {
+		return err
+	}
+	d.Logger.Warn("ticketRefused", "ticket", r.Ticket, "reason", string(r.Reason), "detail", r.Detail)
+	res.Rejections = append(res.Rejections, r)
 	return nil
 }
 

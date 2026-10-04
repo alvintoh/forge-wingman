@@ -40,21 +40,26 @@ func TestWriteTableShowsAPlanWithNoVerdictAsUnconfirmedAndEmptyCellsAsDashes(t *
 	rows := []Listing{
 		{Provider: "alpha", Plan: Plan{Definition: Definition{MonthlyPrice: 15 * money.Dollar, LimitBehaviour: LimitHardStop}}},
 		{Provider: "beta", Plan: Plan{
-			Definition: Definition{MonthlyPrice: 30 * money.Dollar, LimitBehaviour: LimitCanSpendPast},
+			Definition: Definition{MonthlyPrice: 30 * money.Dollar, LimitBehaviour: LimitCanSpendPast, Billing: BillingPerToken},
 			Verdict:    VerdictRestricted,
+			OptedIn:    true,
 		}, FactsDate: "2026-09-27"},
+		{Provider: "gamma", Plan: Plan{Definition: Definition{MonthlyPrice: 15 * money.Dollar, LimitBehaviour: LimitHardStop, Billing: BillingPerToken}}},
 	}
 	if err := WriteTable(&b, rows); err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(b.String()), "\n")
-	if len(lines) != 3 {
+	if len(lines) != 4 {
 		t.Fatalf("got %d lines:\n%s", len(lines), b.String())
 	}
-	if got := strings.Fields(lines[1]); strings.Join(got, " ") != "alpha $15.00 hard-stop unconfirmed - -" {
+	if got := strings.Fields(lines[1]); strings.Join(got, " ") != "alpha $15.00 hard-stop - false unconfirmed - -" {
 		t.Fatalf("alpha row = %q", lines[1])
 	}
-	if got := strings.Fields(lines[2]); strings.Join(got, " ") != "beta $30.00 can-spend-past restricted 2026-09-27 can-spend-past,outside-price-band" {
+	if got := strings.Fields(lines[2]); strings.Join(got, " ") != "beta $30.00 can-spend-past per-token true restricted 2026-09-27 can-spend-past,outside-price-band" {
 		t.Fatalf("beta row = %q", lines[2])
+	}
+	if got := strings.Fields(lines[3]); strings.Join(got, " ") != "gamma $15.00 hard-stop per-token false unconfirmed - -" {
+		t.Fatalf("gamma row = %q", lines[3])
 	}
 }

@@ -37,6 +37,15 @@ const (
 	LimitUnknown      LimitBehaviour = "unknown"
 )
 
+// Billing is how a provider's plan charges for the models it serves.
+type Billing string
+
+const (
+	BillingFree      Billing = "free"
+	BillingAllowance Billing = "allowance"
+	BillingPerToken  Billing = "per-token"
+)
+
 const (
 	maxNameBytes    = 100
 	maxWordingBytes = 2000
@@ -65,6 +74,8 @@ type Definition struct {
 	Pages          []Locator      `firestore:"pages"`
 	Harnesses      []HarnessPair  `firestore:"harnesses"`
 	LimitBehaviour LimitBehaviour `firestore:"limit_behaviour"`
+	// Billing is empty on a plan recorded before billing was, which reads as unconfigured.
+	Billing Billing `firestore:"billing"`
 }
 
 // Reply is a vendor support reply the owner recorded about a plan's terms.
@@ -82,7 +93,15 @@ type Plan struct {
 	Source  string  `firestore:"verdict_source"`
 	ReadOn  string  `firestore:"verdict_read_on"`
 	Replies []Reply `firestore:"replies"`
+	// OptedIn is the owner's consent to a per-token provider's spend, written only by plan-optin.
+	OptedIn bool `firestore:"opted_in"`
 }
+
+// Configured reports whether the owner has recorded how the plan bills.
+func (p Plan) Configured() bool { return p.Definition.Billing != "" }
+
+// NeedsOptIn reports whether runs on the plan spend per token, so need the owner's opt-in first.
+func (p Plan) NeedsOptIn() bool { return p.Definition.Billing == BillingPerToken }
 
 // VerdictNote is a verdict with the evidence it rests on.
 type VerdictNote struct {
@@ -111,10 +130,19 @@ func ParseLimitBehaviour(s string) (LimitBehaviour, error) {
 	return "", fmt.Errorf("limit behaviour %q is not hard-stop, can-spend-past or unknown", s)
 }
 
+// ParseBilling reads how a plan bills.
+func ParseBilling(s string) (Billing, error) {
+	switch b := Billing(s); b {
+	case BillingFree, BillingAllowance, BillingPerToken:
+		return b, nil
+	}
+	return "", fmt.Errorf("billing %q is not free, allowance or per-token", s)
+}
+
 // NewDefinition validates a plan definition entered as text. A page is a URL
 // optionally followed by the selector of the region to read; a harness is
 // harness:model.
-func NewDefinition(name, priceUSD string, pages, harnesses []string, limit string) (Definition, error) {
+func NewDefinition(name, priceUSD string, pages, harnesses []string, limit, billing string) (Definition, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return Definition{}, errors.New("plan name is empty")
@@ -127,12 +155,17 @@ func NewDefinition(name, priceUSD string, pages, harnesses []string, limit strin
 	if err != nil {
 		return Definition{}, err
 	}
+	kind, err := ParseBilling(billing)
+	if err != nil {
+		return Definition{}, err
+	}
 	def := Definition{
 		Name:           capText(name, maxNameBytes),
 		MonthlyPrice:   money.FromUSD(price),
 		Pages:          []Locator{},
 		Harnesses:      []HarnessPair{},
 		LimitBehaviour: behaviour,
+		Billing:        kind,
 	}
 	for _, p := range pages {
 		raw, selector, _ := strings.Cut(strings.TrimSpace(p), " ")
