@@ -227,6 +227,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 	client := &http.Client{Timeout: requestTimeout}
 	gh := dispatcher.GitHub{Token: githubToken, Workflow: runWorkflow, Branch: runBranch, Client: client}
 	queue := store.NewQueue(fsc)
+	plans := store.NewPlans(fsc)
 	if _, err := dispatcher.Poll(ctx, dispatcher.Deps{
 		Source:     dispatcher.Linear{Token: linear, Delegate: c.delegate, Client: client},
 		Queue:      queue,
@@ -234,7 +235,9 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		Estimator:  store.NewEstimates(fsc),
 		Visibility: gh,
 		Providers:  store.NewProviders(fsc),
-		Plans:      store.NewPlans(fsc),
+		Plans:      plans,
+		ModelPlans: plans,
+		Overrides:  dispatcher.LabelOverrides{},
 		Workflow:   gh,
 		OpenPRs:    gh,
 		Logger:     logger,

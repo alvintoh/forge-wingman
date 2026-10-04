@@ -13,6 +13,11 @@ const (
 	// size, and the repository its run is built in.
 	sizePrefix = "size:"
 	repoPrefix = "repo:"
+	// modelPrefix, reviewModelPrefix and planModelPrefix name the model a ticket
+	// asks a phase to run on; the plan label takes an ordered, comma-separated list.
+	modelPrefix       = "model:"
+	reviewModelPrefix = "review-model:"
+	planModelPrefix   = "plan-model:"
 	// sizedByLabel is what sized a ticket the dispatcher admitted, since a
 	// size label is the owner's own sizing rather than the classifier's.
 	sizedByLabel = "linear-label"
@@ -89,6 +94,20 @@ func sizeLabel(labels []string) (string, Refusal, string) {
 		return "", RefusalAboveCeiling, "size " + s + " is above " + ceilingSize
 	}
 	return "", RefusalSizeUnknown, "size " + label + " is not S, M or L"
+}
+
+// LabelOverrides reads the models a ticket names from its labels.
+type LabelOverrides struct{}
+
+// Overrides is the models issue's labels name, each empty when it carries no label.
+func (LabelOverrides) Overrides(issue Issue) runner.ModelLabels {
+	var m runner.ModelLabels
+	m.Build, _ = labelValue(issue.Labels, modelPrefix)
+	m.Review, _ = labelValue(issue.Labels, reviewModelPrefix)
+	if list, ok := labelValue(issue.Labels, planModelPrefix); ok {
+		m.Plan = strings.Split(list, ",")
+	}
+	return m
 }
 
 // labelValue is the value of the first label carrying prefix. The first match

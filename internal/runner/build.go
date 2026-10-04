@@ -26,6 +26,9 @@ const (
 
 var modelPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*(/[A-Za-z0-9][A-Za-z0-9._:-]*)+$`)
 
+// ValidModel reports whether model is a provider/model id.
+func ValidModel(model string) bool { return modelPattern.MatchString(model) }
+
 // Provider is model's prefix before its first "/" — "opencode" from
 // "opencode/big-pickle" — matching modelPattern's own requirement that every
 // model contain that separator.
@@ -444,6 +447,10 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 // DefaultPlanModel is the plan phase's model when none is configured: the one
 // free model proven to complete under the restricted plan agent shape.
 const DefaultPlanModel = "opencode/space-bunny-free"
+
+// DefaultReviewModel is the review model run.yml's review_model input defaults
+// to, used when a ticket names none.
+const DefaultReviewModel = "opencode/space-bunny-free"
 
 // ValidatePlanModels reports whether models is a usable plan list: at least
 // one entry, each well formed and none repeated.

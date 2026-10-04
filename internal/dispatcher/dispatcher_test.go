@@ -222,6 +222,8 @@ func pollDeps(source Source, q *fakeQueue, w *fakeWorkflow) Deps {
 		Visibility: fakeVisibility{},
 		Providers:  fakeProviders{},
 		OpenPRs:    fakeOpenPRs{},
+		Overrides:  LabelOverrides{},
+		ModelPlans: &fakeModelPlans{},
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Now:        func() time.Time { return pollAt },
 	}
@@ -236,6 +238,8 @@ func TestPollNamesTheDependencyItWasNotGiven(t *testing.T) {
 		"Providers":  func(d *Deps) { d.Providers = nil },
 		"OpenPRs":    func(d *Deps) { d.OpenPRs = nil },
 		"Workflow":   func(d *Deps) { d.Workflow = nil },
+		"Overrides":  func(d *Deps) { d.Overrides = nil },
+		"ModelPlans": func(d *Deps) { d.ModelPlans = nil },
 		"Logger":     func(d *Deps) { d.Logger = nil },
 		"Now":        func(d *Deps) { d.Now = nil },
 	}

@@ -1218,7 +1218,7 @@ func TestWorkflowsCarryThePlanModelsFromTheDefaultToTheRunner(t *testing.T) {
 			t.Errorf("%s: the plan_models input does not default to %s", name, DefaultPlanModel)
 		}
 	}
-	if !strings.Contains(read("run.yml"), "plan_models: ${{ inputs.plan_models }}") {
+	if !strings.Contains(read("run.yml"), "plan_models: ${{ needs.ticket.outputs.override_plan_models || inputs.plan_models }}") {
 		t.Error("run.yml does not pass plan_models to model.yml")
 	}
 	if !strings.Contains(read("model.yml"), `-plan-models "$PLAN_MODELS"`) {

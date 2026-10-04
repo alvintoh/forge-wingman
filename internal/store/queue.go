@@ -101,6 +101,7 @@ func (q *Queue) Exists(ctx context.Context, runID string) (bool, error) {
 func (q *Queue) Enqueue(ctx context.Context, run dispatcher.Queued) error {
 	rec := runner.NewRecord(run.RunID, run.Ticket, run.At)
 	rec.Private = run.Private
+	rec.ModelLabels = run.Models
 	rec.UpdatedAt = run.At
 	data := fields(rec)
 	data[stateField] = stateQueued

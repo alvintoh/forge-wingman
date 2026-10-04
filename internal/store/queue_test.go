@@ -168,6 +168,28 @@ func TestEnqueueWritesTheRunRecordQueued(t *testing.T) {
 	}
 }
 
+func TestEnqueueStoresTheModelsTheTicketNamedOnTheRunRecord(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	named, unnamed := queuedRun(fresh("queue-enq-models"), 2), queuedRun(fresh("queue-enq-nomodels"), 2)
+	named.Models = runner.ModelLabels{Build: "opencode/a", Review: "opencode/b", Plan: []string{"opencode/c", "opencode/d"}}
+	forget(t, client, named.RunID, unnamed.RunID)
+	for _, run := range []dispatcher.Queued{named, unnamed} {
+		if err := q.Enqueue(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := NewRecords(client).GetRecord(ctx, named.RunID)
+	if err != nil || got.ModelLabels.Build != "opencode/a" || got.ModelLabels.Review != "opencode/b" ||
+		!slices.Equal(got.ModelLabels.Plan, []string{"opencode/c", "opencode/d"}) {
+		t.Fatalf("record %+v, err %v, want the named models read back", got.ModelLabels, err)
+	}
+	got, err = NewRecords(client).GetRecord(ctx, unnamed.RunID)
+	if err != nil || got.ModelLabels.Build != "" || got.ModelLabels.Review != "" || len(got.ModelLabels.Plan) != 0 {
+		t.Fatalf("record %+v, err %v, want no named model", got.ModelLabels, err)
+	}
+}
+
 func TestRejectRecordsTheRefusalAndEnqueueClearsIt(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
