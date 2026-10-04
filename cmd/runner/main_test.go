@@ -201,7 +201,7 @@ func (r recordReader) GetRecord(_ context.Context, id string) (runner.Record, er
 	return rec, nil
 }
 
-func TestTicketFromRecordFailsTheRunAndLogsWhy(t *testing.T) {
+func TestRunRecordFailsTheRunAndLogsWhy(t *testing.T) {
 	records := recordReader{"ticketless": {RunID: "ticketless"}}
 	for runID, reason := range map[string]runner.StopReason{
 		"absent":     runner.StopRecordMissing,
@@ -209,13 +209,41 @@ func TestTicketFromRecordFailsTheRunAndLogsWhy(t *testing.T) {
 	} {
 		var log strings.Builder
 		logger := slog.New(slog.NewTextHandler(&log, nil))
-		_, err := ticketFromRecord(context.Background(), logger, records, runID)
+		_, err := runRecord(context.Background(), logger, records, runID)
 		if !errors.Is(err, errRunFailed) || exitCode(err) != 1 {
 			t.Errorf("%s: err = %v, exit %d; want errRunFailed, exit 1", runID, err, exitCode(err))
 		}
 		if !strings.Contains(log.String(), "ticketUnavailable") || !strings.Contains(log.String(), string(reason)) {
 			t.Errorf("%s: log = %q, want ticketUnavailable naming %s", runID, log.String(), reason)
 		}
+	}
+}
+
+func TestModelOutputsAreEmptyForATicketThatNamedNoModel(t *testing.T) {
+	got := modelOutputs(runner.ModelLabels{}, "t")
+	for _, k := range []string{"override_model", "override_review_model", "override_plan_models"} {
+		if v, ok := got[k]; !ok || v != "" {
+			t.Errorf("%s = %q (present %v), want an empty output", k, v, ok)
+		}
+	}
+	if got["ticket"] != "t" {
+		t.Errorf("ticket = %q", got["ticket"])
+	}
+}
+
+func TestModelOutputsCarryTheModelsTheTicketNamed(t *testing.T) {
+	got := modelOutputs(runner.ModelLabels{Build: "opencode/a", Review: "opencode/b", Plan: []string{"opencode/c", "opencode/d"}}, "t")
+	if got["override_model"] != "opencode/a" || got["override_review_model"] != "opencode/b" || got["override_plan_models"] != "opencode/c,opencode/d" {
+		t.Fatalf("outputs = %v", got)
+	}
+}
+
+func TestRunRecordReadsTheModelsTheTicketNamed(t *testing.T) {
+	rec := runner.Record{RunID: "named", TicketID: "T-1", TicketTitle: "t", TicketBody: "b", Size: "S", SizedBy: "linear-label",
+		ModelLabels: runner.ModelLabels{Build: "opencode/a"}}
+	got, err := runRecord(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)), recordReader{"named": rec}, "named")
+	if err != nil || got.ModelLabels.Build != "opencode/a" {
+		t.Fatalf("record %+v, err %v, want the record with its model labels", got, err)
 	}
 }
 

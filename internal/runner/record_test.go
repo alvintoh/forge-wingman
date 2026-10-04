@@ -460,6 +460,21 @@ func TestFinalizeRecordsAnIdentityMismatchAheadOfEverythingElse(t *testing.T) {
 	}
 }
 
+func TestFinalizeCarriesTheModelLabelsFromTheExistingRecord(t *testing.T) {
+	store := seeded(t)
+	rec := store[testRunID]
+	rec.ModelLabels = ModelLabels{Build: "opencode/a", Review: "opencode/b", Plan: []string{"opencode/c", "opencode/d"}}
+	store[testRunID] = rec
+	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: "",
+		RunResult: "failure", PRResult: "skipped"}
+	if _, err := Finalize(context.Background(), store, &fakeLedger{}, in, finalizeNow); err != nil {
+		t.Fatal(err)
+	}
+	if got := store[testRunID].ModelLabels; got.Build != "opencode/a" || got.Review != "opencode/b" || !slices.Equal(got.Plan, []string{"opencode/c", "opencode/d"}) {
+		t.Fatalf("model labels = %+v, want the ticket's carried through finalize", got)
+	}
+}
+
 func TestFinalizeCarriesTheProviderVerdictFromTheExistingRecord(t *testing.T) {
 	store := seeded(t)
 	rec := store[testRunID]

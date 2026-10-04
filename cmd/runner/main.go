@@ -5,7 +5,8 @@
 //	runner pr-meta         -run-id <id> ...          render the PR's title and body from the run record
 //	runner record          -run-id <id> -summary ... validate the build's summary and merge it into the run record
 //	runner enable-provider -provider <name>          admit a halted provider back to dispatch (AC5)
-//	runner plan-define     -provider <name> ...      record a provider plan's price, limit behaviour, pages and harnesses
+//	runner plan-define     -provider <name> ...      record a provider plan's price, billing, limit behaviour, pages and harnesses
+//	runner plan-optin      -provider <name>          record the owner's consent to a per-token provider's spend
 //	runner plan-verdict    -provider <name> ...      record the verdict on a plan's terms with its wording and source
 //	runner plan-reply      -provider <name> ...      record a vendor reply and the verdict it leads to
 //	runner plan-list                                 print every plan side by side, flagging the ones to look at
@@ -136,6 +137,8 @@ func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(st
 		return enableProvider(ctx, logger, e, args[1:])
 	case "plan-define":
 		return planDefine(ctx, logger, e, args[1:])
+	case "plan-optin":
+		return planOptIn(ctx, logger, e, args[1:])
 	case "plan-verdict":
 		return planVerdict(ctx, logger, e, args[1:])
 	case "plan-reply":
@@ -158,16 +161,28 @@ func ticket(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	if err := e.identity.CheckAccount(); err != nil {
 		return err
 	}
-	t, err := readRecordTicket(ctx, logger, e.project, *runID)
+	rec, err := readRunRecord(ctx, logger, e.project, *runID)
 	if err != nil {
 		return err
 	}
+	t := rec.Ticket()
 	v, err := t.Encode()
 	if err != nil {
 		return err
 	}
 	logger.Info("ticketRead", "run", *runID, "ticket", t.ID)
-	return writeOutputs(e.output, map[string]string{"ticket": v})
+	return writeOutputs(e.output, modelOutputs(rec.ModelLabels, v))
+}
+
+// modelOutputs are the ticket output and the models the ticket named, each empty
+// when it named none, so a run.yml expression falls back to its own default.
+func modelOutputs(m runner.ModelLabels, ticket string) map[string]string {
+	return map[string]string{
+		"ticket":                ticket,
+		"override_model":        m.Build,
+		"override_review_model": m.Review,
+		"override_plan_models":  strings.Join(m.Plan, ","),
+	}
 }
 
 func build(ctx context.Context, logger *slog.Logger, e env, args []string) error {
@@ -260,10 +275,11 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	if err != nil {
 		return fmt.Errorf("reading the PR template: %w", err)
 	}
-	t, err := readRecordTicket(ctx, logger, e.project, *runID)
+	rec, err := readRunRecord(ctx, logger, e.project, *runID)
 	if err != nil {
 		return err
 	}
+	t := rec.Ticket()
 	body, err := runner.PRBody(string(tmpl), t, runner.FailedGate(*checkReport), *runURL, *loopDetail)
 	if err != nil {
 		return err
@@ -274,29 +290,29 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	return writeMultilineOutput(e.output, "body", body)
 }
 
-// readRecordTicket reads run runID's ticket, logging why and failing the run when
+// readRunRecord reads run runID's record, logging why and failing the run when
 // the record is missing or its ticket cannot be built.
-func readRecordTicket(ctx context.Context, logger *slog.Logger, project, runID string) (runner.Ticket, error) {
+func readRunRecord(ctx context.Context, logger *slog.Logger, project, runID string) (runner.Record, error) {
 	fsc, err := recordsClient(ctx, project, runID)
 	if err != nil {
-		return runner.Ticket{}, err
+		return runner.Record{}, err
 	}
 	defer func() { _ = fsc.Close() }()
-	return ticketFromRecord(ctx, logger, store.NewRecords(fsc), runID)
+	return runRecord(ctx, logger, store.NewRecords(fsc), runID)
 }
 
-func ticketFromRecord(ctx context.Context, logger *slog.Logger, r runner.RecordReader, runID string) (runner.Ticket, error) {
+func runRecord(ctx context.Context, logger *slog.Logger, r runner.RecordReader, runID string) (runner.Record, error) {
 	rec, err := runner.ReadRun(ctx, r, runID)
 	var stopped *runner.StopError
 	if errors.As(err, &stopped) {
 		logger.Error("ticketUnavailable", "run", runID, "reason", string(stopped.Reason),
 			"err", stopped.Err.Error())
-		return runner.Ticket{}, fmt.Errorf("%w: %s", errRunFailed, stopped.Reason)
+		return runner.Record{}, fmt.Errorf("%w: %s", errRunFailed, stopped.Reason)
 	}
 	if err != nil {
-		return runner.Ticket{}, err
+		return runner.Record{}, err
 	}
-	return rec.Ticket(), nil
+	return rec, nil
 }
 
 func record(ctx context.Context, logger *slog.Logger, e env, args []string) error {

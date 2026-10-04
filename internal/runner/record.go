@@ -96,6 +96,15 @@ var gates = []string{checkGofmt, checkVet, checkLint, checkTest}
 // gateUnnamed is the failed gate of a check job that did not name one it runs.
 const gateUnnamed = "check"
 
+// ModelLabels are the models a ticket names for its phases in place of the
+// run's defaults. An empty field names none; Step.Model records the model a
+// phase actually used.
+type ModelLabels struct {
+	Build  string   `firestore:"build"`
+	Review string   `firestore:"review"`
+	Plan   []string `firestore:"plan"`
+}
+
 // Record is one run's entry in the run store.
 type Record struct {
 	RunID       string `firestore:"run_id"`
@@ -114,6 +123,8 @@ type Record struct {
 	Tokens  Usage  `firestore:"tokens"`
 	// ProviderVerdict is the owner's verdict on the run's provider plan, never read from a summary.
 	ProviderVerdict providers.Verdict `firestore:"provider_verdict"`
+	// ModelLabels is what the ticket named at admission, never rewritten by the run.
+	ModelLabels ModelLabels `firestore:"model_labels"`
 	// SettledAt, SettledProviderCostMicros and SettledRunnerMinutes are
 	// written once, by Finalize: the run's actual cost, settled against the
 	// dispatch/ledger reservation the claim booked (adr/0003). Zero until
@@ -296,6 +307,7 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, in Finalize
 	rec := NewRecord(in.RunID, t, started)
 	rec.Private = existing.Private
 	rec.ProviderVerdict = existing.ProviderVerdict
+	rec.ModelLabels = existing.ModelLabels
 	identityErr := in.Identity.CheckAccount()
 	sum, err := ParseSummary(in.Summary, in.AttemptID, t, now)
 	switch {

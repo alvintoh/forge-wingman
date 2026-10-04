@@ -33,9 +33,30 @@ func (p *Plans) doc(provider string) *firestore.DocumentRef {
 }
 
 // PutDefinition writes provider's definition, leaving any verdict and replies
-// already recorded as they are.
+// already recorded as they are. A change of billing withdraws the opt-in in the
+// same write, so consent given for one kind of billing never carries to another.
 func (p *Plans) PutDefinition(ctx context.Context, provider string, def prov.Definition) error {
-	if _, err := p.doc(provider).Set(ctx, map[string]any{"definition": def}, firestore.Merge(firestore.FieldPath{"definition"})); err != nil {
+	ref := p.doc(provider)
+	err := p.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		var before prov.Plan
+		switch snap, err := tx.Get(ref); {
+		case status.Code(err) == codes.NotFound:
+		case err != nil:
+			return err
+		default:
+			if err := snap.DataTo(&before); err != nil {
+				return err
+			}
+		}
+		data := map[string]any{"definition": def}
+		paths := []firestore.FieldPath{{"definition"}}
+		if before.Definition.Billing != def.Billing {
+			data["opted_in"] = false
+			paths = append(paths, firestore.FieldPath{"opted_in"})
+		}
+		return tx.Set(ref, data, firestore.Merge(paths...))
+	})
+	if err != nil {
 		return fmt.Errorf("writing plan %s: %w", provider, err)
 	}
 	return nil
@@ -75,21 +96,42 @@ func (p *Plans) AddReply(ctx context.Context, provider string, reply prov.Reply,
 	return nil
 }
 
+// SetOptIn records whether the owner consents to spend on provider's per-token
+// plan, which must already be defined.
+func (p *Plans) SetOptIn(ctx context.Context, provider string, optedIn bool) error {
+	_, err := p.doc(provider).Update(ctx, []firestore.Update{{Path: "opted_in", Value: optedIn}})
+	if status.Code(err) == codes.NotFound {
+		return fmt.Errorf("plan %s is not defined", provider)
+	}
+	if err != nil {
+		return fmt.Errorf("recording the opt-in on plan %s: %w", provider, err)
+	}
+	return nil
+}
+
+// Plan reads provider's plan record; ok is false when none is defined.
+func (p *Plans) Plan(ctx context.Context, provider string) (plan prov.Plan, ok bool, err error) {
+	snap, err := p.doc(provider).Get(ctx)
+	if status.Code(err) == codes.NotFound {
+		return prov.Plan{}, false, nil
+	}
+	if err != nil {
+		return prov.Plan{}, false, fmt.Errorf("reading plan %s: %w", provider, err)
+	}
+	if err := snap.DataTo(&plan); err != nil {
+		return prov.Plan{}, false, fmt.Errorf("decoding plan %s: %w", provider, err)
+	}
+	return plan, true, nil
+}
+
 // Verdict reports the verdict recorded for provider. A provider with no plan,
 // or a plan with no verdict yet, is unconfirmed.
 func (p *Plans) Verdict(ctx context.Context, provider string) (prov.Verdict, error) {
-	snap, err := p.doc(provider).Get(ctx)
-	if status.Code(err) == codes.NotFound {
-		return prov.VerdictUnconfirmed, nil
-	}
+	plan, ok, err := p.Plan(ctx, provider)
 	if err != nil {
-		return "", fmt.Errorf("reading plan %s: %w", provider, err)
+		return "", err
 	}
-	var plan prov.Plan
-	if err := snap.DataTo(&plan); err != nil {
-		return "", fmt.Errorf("decoding plan %s: %w", provider, err)
-	}
-	if plan.Verdict == "" {
+	if !ok || plan.Verdict == "" {
 		return prov.VerdictUnconfirmed, nil
 	}
 	return plan.Verdict, nil

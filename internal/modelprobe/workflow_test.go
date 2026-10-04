@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
 // stepScript returns the block-scalar run script of the step named name in a workflow file.
@@ -135,5 +137,36 @@ func TestRunWorkflowAppendsToTheStepOutputFile(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(outFile); string(got) != "ticket=t\nmodel=opencode/a\n" {
 		t.Fatalf("output = %q, want the earlier output kept", got)
+	}
+}
+
+func TestRunWorkflowPassesTheTicketsNamedModelsAheadOfItsDefaults(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "run.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"override_model: ${{ steps.read.outputs.override_model }}",
+		"override_review_model: ${{ steps.read.outputs.override_review_model }}",
+		"override_plan_models: ${{ steps.read.outputs.override_plan_models }}",
+		"model: ${{ needs.ticket.outputs.override_model || needs.ticket.outputs.model }}",
+		"review_model: ${{ needs.ticket.outputs.override_review_model || inputs.review_model }}",
+		"plan_models: ${{ needs.ticket.outputs.override_plan_models || inputs.plan_models }}",
+	} {
+		if !strings.Contains(string(b), "\n      "+want+"\n") {
+			t.Errorf("run.yml has no line %q", want)
+		}
+	}
+}
+
+func TestRunWorkflowDefaultsTheReviewModelToTheDispatchersConstant(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "run.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	yml := string(b)
+	i := strings.Index(yml, "review_model:")
+	if i < 0 || !strings.HasPrefix(yml[i:][strings.Index(yml[i:], "default:"):], "default: "+runner.DefaultReviewModel+"\n") {
+		t.Fatalf("run.yml's review_model input does not default to %s", runner.DefaultReviewModel)
 	}
 }

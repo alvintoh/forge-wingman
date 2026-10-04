@@ -53,6 +53,10 @@ jobs:
     outputs:
       ticket: ${{ steps.read.outputs.ticket }}
       model: ${{ steps.model.outputs.model }}
+      # The models the ticket named, empty when it named none.
+      override_model: ${{ steps.read.outputs.override_model }}
+      override_review_model: ${{ steps.read.outputs.override_review_model }}
+      override_plan_models: ${{ steps.read.outputs.override_plan_models }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -96,9 +100,9 @@ jobs:
       contents: read
       id-token: write
     with:
-      model: ${{ needs.ticket.outputs.model }}
-      review_model: ${{ inputs.review_model }}
-      plan_models: ${{ inputs.plan_models }}
+      model: ${{ needs.ticket.outputs.override_model || needs.ticket.outputs.model }}
+      review_model: ${{ needs.ticket.outputs.override_review_model || inputs.review_model }}
+      plan_models: ${{ needs.ticket.outputs.override_plan_models || inputs.plan_models }}
       ticket: ${{ needs.ticket.outputs.ticket }}
     secrets:
       OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
