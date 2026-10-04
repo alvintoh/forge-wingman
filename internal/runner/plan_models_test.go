@@ -12,7 +12,7 @@ const (
 	ordinaryFailStderr = "Error: the model returned malformed output"
 )
 
-func TestBuildPlanPhaseWalksTheModelListOnTheRealOpencode(t *testing.T) {
+func TestBuildPlanPhaseWalksTheModelListOnTheRealCLIAgent(t *testing.T) {
 	list := []string{"opencode-go/paid", "opencode/free-a", "opencode/free-b"}
 	tests := []struct {
 		name          string
@@ -31,11 +31,11 @@ func TestBuildPlanPhaseWalksTheModelListOnTheRealOpencode(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			bin, attempts := scriptedOpencode(t, tt.stderr, tt.okModel)
+			bin, attempts := scriptedCLIAgent(t, tt.stderr, tt.okModel)
 			objects := validObjects()
 			objects["projections/"+testSHA+"/"+planProjectionFile] = []byte("# Plan rules\n\n" + ticketSentinel)
 			deps, _, reported := testDeps(objects, &fakeAgent{edit: edit("version.go", "package x\n")})
-			deps.PlanAgent = PlanOpencode(bin, "ignored/first")
+			deps.PlanAgent = PlanCLIAgent(bin, "ignored/first")
 			c := testConfig(t, initRepo(t))
 			c.Ticket.Size = "M"
 			c.PlanModels = list

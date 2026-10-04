@@ -148,14 +148,20 @@ func NewDefinition(name, priceUSD string, pages, harnesses []string, limit, bill
 		return Definition{}, errors.New("plan name is empty")
 	}
 	price, err := strconv.ParseFloat(strings.TrimSpace(priceUSD), 64)
-	if err != nil || !(price > 0) || math.IsInf(price, 0) {
+	if err != nil || math.IsInf(price, 0) {
 		return Definition{}, fmt.Errorf("monthly price %q is not a positive amount", priceUSD)
 	}
-	behaviour, err := ParseLimitBehaviour(limit)
+	kind, err := ParseBilling(billing)
 	if err != nil {
 		return Definition{}, err
 	}
-	kind, err := ParseBilling(billing)
+	switch {
+	case kind == BillingFree && !(price >= 0):
+		return Definition{}, fmt.Errorf("monthly price %q is not zero or more", priceUSD)
+	case kind != BillingFree && !(price > 0):
+		return Definition{}, fmt.Errorf("monthly price %q is not a positive amount", priceUSD)
+	}
+	behaviour, err := ParseLimitBehaviour(limit)
 	if err != nil {
 		return Definition{}, err
 	}

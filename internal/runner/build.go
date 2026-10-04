@@ -344,7 +344,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 	return res, nil
 }
 
-// agentCall is one opencode invocation's identity within a build: which
+// agentCall is one agent invocation's identity within a build: which
 // phase and round it belongs to, which model runs it, the session it
 // continues (empty for a fresh one), its own deadline, and — for a round the
 // check or review loop drove — what drove it (FR-6).
@@ -367,7 +367,7 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 	stderrObject := strings.TrimSuffix(completions, ".jsonl") + ".stderr.log"
 	roundSuffix := string(call.Phase) + "-" + strconv.Itoa(call.Round)
 	events := filepath.Join(c.TempDir, "completions-"+c.AttemptID+"-"+roundSuffix+".jsonl")
-	stderrPath := filepath.Join(c.TempDir, "opencode-"+c.AttemptID+"-"+roundSuffix+".stderr")
+	stderrPath := filepath.Join(c.TempDir, "agent-"+c.AttemptID+"-"+roundSuffix+".stderr")
 	out, err := os.Create(events)
 	if err != nil {
 		return "", "", stopWith(OutcomeInfraFailure, StopCompletions, err)
@@ -420,7 +420,7 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 		sessionID, _ = SessionID(out)
 	}
 	// A round past the first continues an earlier session (call.Session is
-	// non-empty); an empty sessionID here means opencode reported no session
+	// non-empty); an empty sessionID here means the agent reported no session
 	// id at all, so the NEXT round would silently start a fresh session with
 	// none of this run's history. Round 1 legitimately starting fresh never
 	// warns.

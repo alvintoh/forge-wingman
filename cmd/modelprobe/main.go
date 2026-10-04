@@ -54,7 +54,7 @@ func run(ctx context.Context, logger *slog.Logger, args []string, now func() tim
 	freeJSON := fs.String("free", "", "with -verify, the roster's free models as a JSON array")
 	outputs := fs.String("outputs", "", "file to append results=, changed= and free= lines to, in GITHUB_OUTPUT form")
 	runID := fs.String("run-id", "", "suffix that keeps the results file name unique; defaults to the time of day")
-	bin := fs.String("opencode", "opencode", "opencode binary")
+	bin := fs.String("agent-bin", "opencode", "agent CLI binary")
 	only := fs.String("only", "", "comma-separated models to probe; skips the decision and leaves the models file alone")
 	fs.Float64Var(&cfg.Margin, "margin", cfg.Margin, "ratio of the incumbent's tool calls a challenger must beat")
 	fs.Float64Var(&cfg.ToolCallRatio, "threshold", cfg.ToolCallRatio, "ratio of the incumbent's tool calls above which a run fails")
@@ -98,8 +98,8 @@ func run(ctx context.Context, logger *slog.Logger, args []string, now func() tim
 
 	script := filepath.Join(*repo, "probe", "materialize.sh")
 	deps := modelprobe.Deps{
-		NewAgent:      func(model string) runner.Agent { return runner.Opencode{Bin: *bin, Model: model} },
-		NewShapeAgent: func(model string) runner.Agent { return runner.ReviewOpencode(*bin, model) },
+		NewAgent:      func(model string) runner.Agent { return runner.CLIAgent{Bin: *bin, Model: model} },
+		NewShapeAgent: func(model string) runner.Agent { return runner.ReviewCLIAgent(*bin, model) },
 		Materialize: func(ctx context.Context, dest string) error {
 			if out, err := exec.CommandContext(ctx, "bash", script, dest).CombinedOutput(); err != nil {
 				return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
