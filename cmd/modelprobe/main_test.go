@@ -61,7 +61,7 @@ func setup(t *testing.T) (bin, models, results string) {
 }
 
 func args(bin, models, results string, extra ...string) []string {
-	return append([]string{"-repo", "../..", "-opencode", bin, "-models", models, "-results", results}, extra...)
+	return append([]string{"-repo", "../..", "-agent-bin", bin, "-models", models, "-results", results}, extra...)
 }
 
 func TestRunFlipsTheDefaultToAClearWinnerAndWritesTheResults(t *testing.T) {

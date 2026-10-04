@@ -40,6 +40,9 @@ import (
 	"github.com/alvintoh/forge-wingman/internal/store"
 )
 
+// agentBin is the agent CLI the runner launches.
+const agentBin = "opencode"
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -214,9 +217,9 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 	res, err := runner.Build(ctx, runner.BuildDeps{
 		Projections: store.NewBucket(gcs, e.project+"-projections"),
 		Completions: store.NewBucket(gcs, e.project+"-completions"),
-		Agent:       runner.CLIAgent{Bin: "opencode", Model: *model},
-		PlanAgent:   runner.PlanCLIAgent("opencode", plan[0]),
-		ReviewAgent: runner.ReviewCLIAgent("opencode", *reviewModel),
+		Agent:       runner.CLIAgent{Bin: agentBin, Model: *model},
+		PlanAgent:   runner.PlanCLIAgent(agentBin, plan[0]),
+		ReviewAgent: runner.ReviewCLIAgent(agentBin, *reviewModel),
 		Checks:      runner.RunChecks,
 		Report:      func(s runner.Summary) error { return writeSummary(e.output, s) },
 		Logger:      logger,
