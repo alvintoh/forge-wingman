@@ -6,21 +6,6 @@ import (
 	"strings"
 )
 
-// reviewAgentName is the restricted agent the review pass runs under.
-const reviewAgentName = "wingman-review"
-
-// reviewAgentConfig is OPENCODE_CONFIG_CONTENT for reviewAgentName: a review
-// reads the diff and reasons about it, so edit and bash are denied the same
-// way planAgentConfig denies them for the plan phase.
-const reviewAgentConfig = `{"agent":{"` + reviewAgentName + `":{"mode":"primary","permission":{"edit":"deny","bash":"deny"}}}}`
-
-// ReviewCLIAgent is the restricted agent the review pass runs: the agent CLI with
-// edit and bash denied, so it can read the diff and reason about it but not
-// touch the worktree.
-func ReviewCLIAgent(bin, model string) CLIAgent {
-	return CLIAgent{Bin: bin, Model: model, Agent: reviewAgentName, ConfigContent: reviewAgentConfig}
-}
-
 // reviewFindingsInstruction tells the review agent the exact format its
 // final message must end with, since nothing external defines a review
 // artifact format.

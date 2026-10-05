@@ -1,0 +1,8 @@
+{"type":"event","event":{"type":"run_start","sessionId":"11a28da6-52ff-4478-90e9-c332f807229d"}}
+{"type":"event","event":{"type":"turn_start","turnNumber":1}}
+{"type":"event","event":{"type":"message_start"}}
+{"type":"event","event":{"type":"model_request_start","model":"deepseek/deepseek-v4.1-flash"}}
+{"type":"event","event":{"type":"model_trace","traceId":"2258f5591f5996499236bd5e39957569"}}
+{"type":"event","event":{"type":"run_error","error":{"name":"TransportError","message":"POST /alpha/generate → 401 error: Invalid 'Authorization' header or token."}}}
+{"type":"event","event":{"type":"run_end","result":{"finalText":"","stopReason":"run_error","turnCount":1,"usage":{"inputTokens":0,"outputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0},"systemPromptTokens":null,"nextState":{"sessionId":"11a28da6-52ff-4478-90e9-c332f807229d","messages":[{"role":"user","content":[{"type":"text","text":"say hi"}],"meta":{"source":"user","createdAt":1791167894004,"messageId":"38a526a5-70c0-43aa-ab43-4d711c3a2a69"}}],"interrupted":false,"modState":{"workspace":{"cwd":"/tmp/scratch","platform":"linux","branch":"main","gitStatus":"?? badhome/\n?? badkey.exit\n?? badkey.ndjson\n?? badkey.stderr\n?? normal.exit\n?? normal.ndjson\n?? normal.stderr\n?? readonly.effects\n?? readonly.exit\n?? readonly.ndjson\n?? readonly.stderr","recentCommits":["a8c807f init"],"additionalDirectories":[]}}}}}}
+{"type":"result","subtype":"error","sessionId":"11a28da6-52ff-4478-90e9-c332f807229d","usage":{"inputTokens":0,"outputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0},"durationMs":933,"finalText":"","error":"Error: Authentication failed. Please run \"cmd login\" first."}

@@ -1065,7 +1065,7 @@ func TestClassifyAgentFailure(t *testing.T) {
 		{"an unreadable file", filepath.Join(dir, "does-not-exist"), OutcomeAgentFailed, StopAgentExit},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			gotOut, gotReason := classifyAgentFailure(tt.path)
+			gotOut, gotReason := classifyAgentFailure(&fakeAgent{}, tt.path, nil)
 			if gotOut != tt.wantOut || gotReason != tt.wantReason {
 				t.Fatalf("classifyAgentFailure = %s/%s, want %s/%s", gotOut, gotReason, tt.wantOut, tt.wantReason)
 			}
@@ -1184,7 +1184,7 @@ func TestBuildRefusesToBundleASecret(t *testing.T) {
 	}}
 	deps, _, reported := testDeps(validObjects(), agent)
 	c := testConfig(t, initRepo(t))
-	c.Secret = secret
+	c.Secrets = []string{"sk-absent-from-the-branch", secret}
 
 	res, err := Build(context.Background(), deps, c)
 	if err == nil || res.Changed {

@@ -2,24 +2,10 @@ package runner
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
-	"os/exec"
-	"strings"
-	"time"
 )
-
-// agentEnvNames are the variables the agent inherits; names ending in _ are prefixes.
-var agentEnvNames = []string{
-	"PATH", "HOME", "TMPDIR", "LANG", "CI", "USER", "SHELL",
-	"OPENCODE_API_KEY", "GOROOT", "GOPATH", "GOMODCACHE", "GOCACHE", "GOTOOLCHAIN", "GOFLAGS",
-	"LC_", "XDG_",
-}
-
-const agentKillGrace = 30 * time.Second
 
 var maxEventLine = 64 << 20
 
@@ -34,6 +20,8 @@ type Usage struct {
 	Steps      int     `firestore:"steps" json:"steps"`
 }
 
+// event is one line of the agent's own event stream: every harness translates
+// its frames into this shape, so the parsers below stay harness-neutral.
 type event struct {
 	Type string `json:"type"`
 	Part struct {
@@ -125,80 +113,4 @@ func SessionID(r io.Reader) (string, error) {
 		return "", fmt.Errorf("reading events: %w", err)
 	}
 	return "", nil
-}
-
-// CLIAgent runs the agent CLI non-interactively.
-//
-// Agent and ConfigContent together select a restricted agent profile: Agent
-// names it on the command line, and ConfigContent (opencode's own
-// OPENCODE_CONFIG_CONTENT variable) defines its permissions inline, since
-// there is no file to point opencode at. Both are empty for the default,
-// unrestricted agent.
-type CLIAgent struct {
-	Bin           string
-	Model         string
-	Agent         string
-	ConfigContent string
-}
-
-// WithModel returns a copy of o that runs model, keeping its agent profile.
-func (o CLIAgent) WithModel(model string) Agent {
-	o.Model = model
-	return o
-}
-
-// Run sends the prompt on stdin and streams the JSON events to stdout,
-// continuing session when it is non-empty rather than starting a fresh one.
-//
-// The agent runs in its own process group, terminated when ctx ends and killed
-// once Run returns.
-func (o CLIAgent) Run(ctx context.Context, dir, session, prompt string, stdout, stderr io.Writer) error {
-	args := []string{"run", "--format", "json", "--auto", "-m", o.Model, "--dir", dir}
-	if o.Agent != "" {
-		args = append(args, "--agent", o.Agent)
-	}
-	if session != "" {
-		args = append(args, "-s", session)
-	}
-	cmd := exec.CommandContext(ctx, o.Bin, args...)
-	cmd.Dir = dir
-	cmd.Env = agentEnv(os.Environ())
-	if o.ConfigContent != "" {
-		cmd.Env = append(cmd.Env, "OPENCODE_CONFIG_CONTENT="+o.ConfigContent)
-	}
-	cmd.Stdin = strings.NewReader(prompt)
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	cmd.WaitDelay = agentKillGrace
-	ownProcessGroup(cmd)
-	err := cmd.Start()
-	if err != nil {
-		return fmt.Errorf("agent run: %w", err)
-	}
-	err = cmd.Wait()
-	killProcessGroup(cmd)
-	if err != nil {
-		return fmt.Errorf("agent run: %w", err)
-	}
-	return nil
-}
-
-func agentEnv(environ []string) []string {
-	return filterEnv(environ, agentEnvNames)
-}
-
-// filterEnv narrows environ to the variables named in allowed — a name in
-// allowed ending in "_" matches any variable it prefixes.
-func filterEnv(environ []string, allowed []string) []string {
-	var env []string
-	for _, kv := range environ {
-		name, _, _ := strings.Cut(kv, "=")
-		for _, a := range allowed {
-			if name == a || (strings.HasSuffix(a, "_") && strings.HasPrefix(name, a)) {
-				env = append(env, kv)
-				break
-			}
-		}
-	}
-	return env
 }

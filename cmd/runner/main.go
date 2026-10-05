@@ -27,6 +27,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -40,8 +41,11 @@ import (
 	"github.com/alvintoh/forge-wingman/internal/store"
 )
 
-// agentBin is the agent CLI the runner launches.
+// agentBin is the agent CLI the runner launches by default.
 const agentBin = "opencode"
+
+// commandCodeBin is the proprietary agent CLI's binary (PACKAGE.txt).
+const commandCodeBin = "cmd"
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -77,39 +81,56 @@ type env struct {
 	attemptID string
 	tempDir   string
 	output    string
-	secret    string
+	secrets   []string
+	harnesses []runner.Harness
 	identity  runner.Identity
 }
 
-func loadEnv(getenv func(string) string) (env, error) {
+// requiredEnv names the variables a subcommand cannot run without. Only the two
+// that act on a workflow run itself need its identity and temp directory; the
+// owner commands need the project alone, so they run from a terminal with no
+// Actions environment.
+func requiredEnv(command string) ([]string, bool) {
+	switch command {
+	case "ticket", "pr-meta", "enable-provider",
+		"plan-define", "plan-optin", "plan-verdict", "plan-reply", "plan-list":
+		return []string{"GOOGLE_CLOUD_PROJECT"}, true
+	case "record":
+		return []string{"GOOGLE_CLOUD_PROJECT", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"}, true
+	case "build":
+		return []string{"GOOGLE_CLOUD_PROJECT", "RUNNER_TEMP", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"}, true
+	}
+	return nil, false
+}
+
+func loadEnv(getenv func(string) string, required ...string) (env, error) {
 	e := env{
 		project:  getenv("GOOGLE_CLOUD_PROJECT"),
 		tempDir:  getenv("RUNNER_TEMP"),
 		output:   getenv("GITHUB_OUTPUT"),
-		secret:   getenv("OPENCODE_API_KEY"),
 		identity: runner.IdentityFromEnv(getenv),
 	}
-	runID, attempt := getenv("GITHUB_RUN_ID"), getenv("GITHUB_RUN_ATTEMPT")
+	e.secrets = []string{getenv("OPENCODE_API_KEY"), getenv("COMMANDCODE_API_KEY")}
+	e.harnesses = harnesses(getenv)
 	var missing []string
-	for _, kv := range [][2]string{
-		{"GOOGLE_CLOUD_PROJECT", e.project},
-		{"RUNNER_TEMP", e.tempDir},
-		{"GITHUB_RUN_ID", runID},
-		{"GITHUB_RUN_ATTEMPT", attempt},
-	} {
-		if kv[1] == "" {
-			missing = append(missing, kv[0])
+	for _, name := range required {
+		if getenv(name) == "" {
+			missing = append(missing, name)
 		}
 	}
 	if len(missing) > 0 {
 		return env{}, fmt.Errorf("missing environment: %v", missing)
 	}
-	n, err := parseAttempt(attempt)
-	if err != nil {
-		return env{}, fmt.Errorf("GITHUB_RUN_ATTEMPT: %w", err)
+	attempt := getenv("GITHUB_RUN_ATTEMPT")
+	if attempt != "" {
+		n, err := parseAttempt(attempt)
+		if err != nil {
+			return env{}, fmt.Errorf("GITHUB_RUN_ATTEMPT: %w", err)
+		}
+		e.attempt = n
 	}
-	e.runID, e.attempt = runID, n
-	e.attemptID = runID + "-" + attempt
+	e.runID = getenv("GITHUB_RUN_ID")
+	e.attemptID = e.runID + "-" + attempt
 	return e, nil
 }
 
@@ -120,7 +141,11 @@ func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(st
 	if args[0] == "plan-smoke" {
 		return planSmoke(ctx, logger, getenv, args[1:])
 	}
-	e, err := loadEnv(getenv)
+	required, known := requiredEnv(args[0])
+	if !known {
+		return fmt.Errorf("unknown subcommand %q", args[0])
+	}
+	e, err := loadEnv(getenv, required...)
 	if err != nil {
 		if args[0] == "build" {
 			return setupFailed(logger, getenv("GITHUB_OUTPUT"), err)
@@ -217,9 +242,9 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 	res, err := runner.Build(ctx, runner.BuildDeps{
 		Projections: store.NewBucket(gcs, e.project+"-projections"),
 		Completions: store.NewBucket(gcs, e.project+"-completions"),
-		Agent:       runner.CLIAgent{Bin: agentBin, Model: *model},
-		PlanAgent:   runner.PlanCLIAgent(agentBin, plan[0]),
-		ReviewAgent: runner.ReviewCLIAgent(agentBin, *reviewModel),
+		Agent:       runner.NewRouter(runner.ProfileBuild, e.harnesses...),
+		PlanAgent:   runner.NewRouter(runner.ProfilePlan, e.harnesses...),
+		ReviewAgent: runner.NewRouter(runner.ProfileReview, e.harnesses...),
 		Checks:      runner.RunChecks,
 		Report:      func(s runner.Summary) error { return writeSummary(e.output, s) },
 		Logger:      logger,
@@ -232,7 +257,7 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 		Model:       *model,
 		PlanModels:  plan,
 		ReviewModel: *reviewModel,
-		Secret:      e.secret,
+		Secrets:     e.secrets,
 		Identity:    e.identity,
 		Ticket:      t,
 	})
@@ -247,6 +272,24 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 		return err
 	}
 	return writeMultilineOutput(e.output, "loop_detail", res.LoopDetail)
+}
+
+// harnesses are the agent CLIs a run may route to: the incumbent, and the
+// proprietary one only when the run is opted into it (AC7).
+func harnesses(getenv func(string) string) []runner.Harness {
+	var commandCodeHome string
+	if tmp := getenv("RUNNER_TEMP"); tmp != "" {
+		commandCodeHome = filepath.Join(tmp, "commandcode-home")
+	}
+	return []runner.Harness{
+		runner.OpencodeHarness{Bin: agentBin},
+		runner.CommandCodeHarness{
+			Bin:   commandCodeBin,
+			Key:   getenv("COMMANDCODE_API_KEY"),
+			OptIn: getenv("COMMAND_CODE_OPT_IN") == "true",
+			Home:  commandCodeHome,
+		},
+	}
 }
 
 // splitModels reads a comma-separated model list. A blank value takes
@@ -396,7 +439,7 @@ func record(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 // dispatch again (AC5) — a manual operator action, never automatic.
 func enableProvider(ctx context.Context, logger *slog.Logger, e env, args []string) error {
 	fs := flag.NewFlagSet("enable-provider", flag.ContinueOnError)
-	provider := fs.String("provider", "", "provider to admit again, e.g. opencode")
+	provider := fs.String("provider", "", "provider to admit again")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

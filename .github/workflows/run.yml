@@ -106,6 +106,7 @@ jobs:
       ticket: ${{ needs.ticket.outputs.ticket }}
     secrets:
       OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+      COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
 
   # The branch's code runs here, so the job holds nothing it could misuse. Each gate is
   # a fixed step, so the branch cannot redefine one; a failing gate is named, not fatal.
