@@ -16,23 +16,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # The store's tests run against it; unset, they skip. Started first so its
+      # boot overlaps vet and lint.
+      - name: Start the Firestore emulator
+        run: |
+          docker run -d --rm -p 8080:8080 \
+            gcr.io/google.com/cloudsdktool/google-cloud-cli:586.0.0-emulators@sha256:7617d937e9360d769de4ef66266a8caae503c1dbbd050c93404d3f30045c5125 \
+            gcloud emulators firestore start --host-port=0.0.0.0:8080
+      # Caching is safe here and off in run.yml: this workflow's main runs build merged
+      # code only, and a branch or PR run's cache is scoped to that branch.
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache: false
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13.2
-          skip-cache: true
-      # The store's tests run against it; unset, they skip.
-      - name: Start the Firestore emulator
+      - name: Wait for the Firestore emulator
         run: |
-          docker run -d --rm -p 8080:8080 \
-            gcr.io/google.com/cloudsdktool/google-cloud-cli:586.0.0-emulators@sha256:7617d937e9360d769de4ef66266a8caae503c1dbbd050c93404d3f30045c5125 \
-            gcloud emulators firestore start --host-port=0.0.0.0:8080
           for _ in $(seq 60); do curl -fs http://localhost:8080 >/dev/null && exit 0; sleep 2; done
           echo "the emulator did not start"; exit 1
       - run: go test -race -shuffle=on -cover ./...
