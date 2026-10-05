@@ -143,8 +143,14 @@ type Record struct {
 	FailedGate                string           `firestore:"failed_gate"`
 	// Ready is FR-5's draft-vs-ready decision: true only when the pre-PR
 	// loop's checks passed and the review found nothing left open.
-	Ready        bool              `firestore:"ready"`
-	LoopDetail   string            `firestore:"loop_detail"`
+	Ready      bool   `firestore:"ready"`
+	LoopDetail string `firestore:"loop_detail"`
+	// CommitSubject is the subject the build committed with, and the PR's title.
+	CommitSubject string `firestore:"commit_subject"`
+	// CommitBody is the commit message after its subject.
+	CommitBody string `firestore:"commit_body"`
+	// PRSummary is the PR's one-line summary.
+	PRSummary    string            `firestore:"pr_summary"`
 	UsageWarning string            `firestore:"usage_warning"`
 	RuleStackSHA string            `firestore:"rule_stack_sha"`
 	PRURL        string            `firestore:"pr_url"`
@@ -394,6 +400,7 @@ func (s Summary) apply(rec *Record) {
 	rec.UsageWarning = s.UsageWarning
 	rec.Ready = s.Ready
 	rec.LoopDetail = s.LoopDetail
+	rec.CommitSubject, rec.CommitBody, rec.PRSummary = s.CommitSubject, s.CommitBody, s.PRSummary
 }
 
 // sumSteps totals every step's tokens into one run-wide Usage.

@@ -325,14 +325,23 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		return err
 	}
 	t := rec.Ticket()
-	body, err := runner.PRBody(string(tmpl), t, runner.FailedGate(*checkReport), *runURL, *loopDetail)
+	body, err := runner.PRBody(string(tmpl), t, rec.PRSummary, runner.FailedGate(*checkReport), *runURL, *loopDetail)
 	if err != nil {
 		return err
 	}
-	if err := writeOutputs(e.output, map[string]string{"title": t.Subject(), "branch_segment": t.BranchSegment()}); err != nil {
+	if err := writeOutputs(e.output, map[string]string{"title": prTitle(rec), "branch_segment": t.BranchSegment()}); err != nil {
 		return err
 	}
 	return writeMultilineOutput(e.output, "body", body)
+}
+
+// prTitle is the subject the build committed with, or the ticket's Subject for
+// a record that carries none.
+func prTitle(rec runner.Record) string {
+	if rec.CommitSubject != "" {
+		return rec.CommitSubject
+	}
+	return rec.Ticket().Subject()
 }
 
 // readRunRecord reads run runID's record, logging why and failing the run when

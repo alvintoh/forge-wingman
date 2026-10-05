@@ -277,9 +277,10 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 	var checksOK bool
 	var loopDetail, session string
 	var lastRound int
+	var msg CommitMessage
 	if err := timed(PhaseBuild, func() error {
 		var err error
-		checksOK, loopDetail, session, lastRound, err = runCheckLoop(ctx, d, c, wt, &sum, prompt)
+		checksOK, loopDetail, session, lastRound, err = runCheckLoop(ctx, d, c, wt, &sum, prompt, &msg)
 		return err
 	}); err != nil {
 		return BuildResult{}, err
@@ -291,7 +292,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		// build: it forces a draft naming the failure instead (FR-5).
 		_ = timed(PhaseReview, func() error {
 			var rerr error
-			ready, loopDetail, rerr = runReview(ctx, d, c, wt, &sum, session, lastRound)
+			ready, loopDetail, rerr = runReview(ctx, d, c, wt, &sum, session, lastRound, &msg)
 			if rerr != nil {
 				ready = false
 				loopDetail = reviewFailureDetail(rerr)
@@ -319,10 +320,19 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 			}
 			return stopWith(OutcomeInfraFailure, StopCommit, err)
 		}
-		files, err := wt.Commit(ctx, c.Ticket.Subject()+"\n\n"+c.Ticket.Body)
+		if msg.Subject == "" {
+			pending, err := wt.PendingFiles(ctx)
+			if err != nil {
+				return stopWith(OutcomeInfraFailure, StopCommit, err)
+			}
+			msg = FallbackCommitMessage(c.Ticket, pending)
+			d.Logger.Info("commitMessageFallback")
+		}
+		files, err := wt.Commit(ctx, msg.Text())
 		if err != nil {
 			return stopWith(OutcomeInfraFailure, StopCommit, err)
 		}
+		sum.CommitSubject, sum.CommitBody, sum.PRSummary = msg.Subject, msg.Body, msg.Summary
 		sum.EditedFiles = files
 		if len(files) > 0 {
 			if sum.DiffLines, err = wt.DiffLines(ctx); err != nil {

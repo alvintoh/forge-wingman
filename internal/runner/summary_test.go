@@ -72,6 +72,8 @@ func TestParseSummaryRejects(t *testing.T) {
 		{"a duration for another phase", func(s *Summary) { s.DurationsMS = map[string]int64{"pr": 1} }},
 		{"a negative duration", func(s *Summary) { s.DurationsMS = map[string]int64{"build": -1} }},
 		{"a sha that is not one", func(s *Summary) { s.RuleStackSHA = "main" }},
+		{"a commit subject over two lines", func(s *Summary) { s.CommitSubject = "feat: ABC-12 x\nmore" }},
+		{"a PR summary over two lines", func(s *Summary) { s.PRSummary = "Adds it.\nmore" }},
 		{"no start time", func(s *Summary) { s.StartedAt = time.Time{} }},
 		{"a start time in the future", func(s *Summary) { s.StartedAt = finalizeNow.Add(time.Hour) }},
 		{"a built run with no branch", func(s *Summary) { s.Branch = "" }},
@@ -142,6 +144,25 @@ func TestParseSummaryCapsAndCleansStrings(t *testing.T) {
 	}
 	if len(got.StopDetail) > stopDetailLimit+len("…") || !utf8.ValidString(got.StopDetail) {
 		t.Fatalf("stop detail of %d bytes, valid %v", len(got.StopDetail), utf8.ValidString(got.StopDetail))
+	}
+}
+
+func TestParseSummaryCapsTheCommitFields(t *testing.T) {
+	s := validSummary()
+	s.CommitSubject = strings.Repeat("s", 2*stopDetailLimit)
+	s.PRSummary = strings.Repeat("p", 2*stopDetailLimit)
+	s.CommitBody = strings.Repeat("b", maxTicketBodyBytes+1)
+	raw, err := s.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParseSummary(raw, "1-1", testTicket, finalizeNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.CommitSubject) > stopDetailLimit+len("…") || len(got.PRSummary) > stopDetailLimit+len("…") ||
+		len(got.CommitBody) > maxTicketBodyBytes+len("…") {
+		t.Fatalf("commit fields of %d, %d and %d bytes", len(got.CommitSubject), len(got.PRSummary), len(got.CommitBody))
 	}
 }
 
