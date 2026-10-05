@@ -36,33 +36,82 @@ type event struct {
 		} `json:"tokens"`
 		Cost float64 `json:"cost"`
 	} `json:"part"`
+	// Warning is a usage_warning event's text: usage the harness could not measure.
+	Warning string `json:"warning,omitempty"`
 }
 
-// SumUsage totals the step_finish events in the agent's JSON event stream.
-//
-// Lines that are not JSON events are skipped.
-func SumUsage(r io.Reader) (Usage, error) {
-	var u Usage
+// scanEvents calls visit for every JSON event in the agent's event stream,
+// skipping lines that are not JSON events.
+func scanEvents(r io.Reader, visit func(e event)) error {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, min(64*1024, maxEventLine)), maxEventLine)
 	for sc.Scan() {
 		var e event
-		if json.Unmarshal(sc.Bytes(), &e) != nil || e.Type != "step_finish" {
+		if json.Unmarshal(sc.Bytes(), &e) != nil {
 			continue
 		}
-		t := e.Part.Tokens
-		u.Input += t.Input
-		u.Output += t.Output
-		u.Reasoning += t.Reasoning
-		u.CacheRead += t.Cache.Read
-		u.CacheWrite += t.Cache.Write
-		u.Cost += e.Part.Cost
-		u.Steps++
+		visit(e)
 	}
 	if err := sc.Err(); err != nil {
-		return u, fmt.Errorf("reading events: %w", err)
+		return fmt.Errorf("reading events: %w", err)
 	}
-	return u, nil
+	return nil
+}
+
+// stepUsage is one step_finish event's tokens and cost, counted as one step.
+func stepUsage(e event) Usage {
+	t := e.Part.Tokens
+	return Usage{Input: t.Input, Output: t.Output, Reasoning: t.Reasoning, CacheRead: t.Cache.Read,
+		CacheWrite: t.Cache.Write, Cost: e.Part.Cost, Steps: 1}
+}
+
+// SumUsage totals the step_finish events in the agent's JSON event stream,
+// plus the cost of any cost event, which a harness emits when its per-step
+// events carry none; a cost event is not a step.
+//
+// Lines that are not JSON events are skipped.
+func SumUsage(r io.Reader) (Usage, error) {
+	var u Usage
+	err := scanEvents(r, func(e event) {
+		switch e.Type {
+		case "step_finish":
+			s := stepUsage(e)
+			u.Input += s.Input
+			u.Output += s.Output
+			u.Reasoning += s.Reasoning
+			u.CacheRead += s.CacheRead
+			u.CacheWrite += s.CacheWrite
+			u.Cost += s.Cost
+			u.Steps++
+		case "cost":
+			u.Cost += e.Part.Cost
+		}
+	})
+	return u, err
+}
+
+// RequestUsage returns each step_finish event's usage in stream order: one
+// entry per model request.
+func RequestUsage(r io.Reader) ([]Usage, error) {
+	var reqs []Usage
+	err := scanEvents(r, func(e event) {
+		if e.Type == "step_finish" {
+			reqs = append(reqs, stepUsage(e))
+		}
+	})
+	return reqs, err
+}
+
+// UsageWarnings returns the text of every usage_warning event in the agent's
+// JSON event stream, in order.
+func UsageWarnings(r io.Reader) ([]string, error) {
+	var warnings []string
+	err := scanEvents(r, func(e event) {
+		if e.Type == "usage_warning" && e.Warning != "" {
+			warnings = append(warnings, e.Warning)
+		}
+	})
+	return warnings, err
 }
 
 // FinalText returns the last text part in the agent's JSON event stream, empty
