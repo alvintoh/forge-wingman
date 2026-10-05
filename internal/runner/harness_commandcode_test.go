@@ -2,6 +2,8 @@ package runner
 
 import (
 	"context"
+	"maps"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,7 +25,9 @@ type commandCodeAttempt struct {
 
 // scriptedCommandCode writes a fake command-code CLI that replays the named
 // recorded fixture: its frames on stdout, its stderr, and its recorded exit code.
-func scriptedCommandCode(t *testing.T, fixture string) (bin string, attempts func() []commandCodeAttempt) {
+// Attempt n, counting from 0, also writes transcripts[n], when given and
+// non-empty, as a session transcript under its HOME.
+func scriptedCommandCode(t *testing.T, fixture string, transcripts ...string) (bin string, attempts func() []commandCodeAttempt) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("the fake command-code CLI is a shell script, which Windows cannot execute")
@@ -41,17 +45,29 @@ func scriptedCommandCode(t *testing.T, fixture string) (bin string, attempts fun
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	bin, logDir := filepath.Join(dir, "cmd"), filepath.Join(dir, "attempts")
-	if err := os.MkdirAll(logDir, 0o755); err != nil {
-		t.Fatal(err)
+	bin, logDir, transcriptDir := filepath.Join(dir, "cmd"), filepath.Join(dir, "attempts"), filepath.Join(dir, "transcripts")
+	for _, d := range []string{logDir, transcriptDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, body := range transcripts {
+		if body == "" {
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(transcriptDir, strconv.Itoa(i)+".jsonl"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	q := func(s string) string { return "'" + s + "'" }
 	script := "#!/bin/sh\n" +
-		"n=$(ls " + q(logDir) + " 2>/dev/null | wc -l)\n" +
+		"n=$(ls " + q(logDir) + " 2>/dev/null | grep -c '\\.args$')\n" +
 		"printf '%s\\0' \"$@\" > " + q(logDir+"/") + "$n.args\n" +
 		"env > " + q(logDir+"/") + "$n.env\n" +
 		"cat > " + q(logDir+"/") + "$n.stdin\n" +
 		"cat \"$HOME/.commandcode/auth.json\" > " + q(logDir+"/") + "$n.auth 2>/dev/null || echo MISSING > " + q(logDir+"/") + "$n.auth\n" +
+		"if [ -f " + q(transcriptDir+"/") + "$n.jsonl ]; then mkdir -p \"$HOME/.commandcode/projects/p\" && " +
+		"cp " + q(transcriptDir+"/") + "$n.jsonl \"$HOME/.commandcode/projects/p/session-$n.jsonl\"; fi\n" +
 		"cat " + q(ndjson) + "\n" +
 		"cat " + q(stderrPath) + " >&2\n" +
 		"exit " + strings.TrimSpace(string(exitRaw)) + "\n"
@@ -224,11 +240,11 @@ func TestCommandCodeAgentNeedsAHome(t *testing.T) {
 }
 
 // TestBuildRunsTheCommandCodeHarnessFromTheRecordedFixtures drives the real
-// adapter against the recorded normal run and asserts the recorded usage,
-// final text and session reach the Step (AC1).
+// adapter against the recorded normal run and asserts the recorded usage, the
+// transcript's cost, final text and session reach the Step (AC1).
 func TestBuildRunsTheCommandCodeHarnessFromTheRecordedFixtures(t *testing.T) {
 	const model = "command-code/deepseek/deepseek-v4.1-flash"
-	bin, attempts := scriptedCommandCode(t, "normal")
+	bin, attempts := scriptedCommandCode(t, "normal", transcriptMessage("d666e9bd", "0.0030955680000000004"))
 	t.Setenv("COMMANDCODE_API_KEY", "command-secret")
 
 	deps, completions, reported := testDeps(validObjects(), nil)
@@ -248,7 +264,7 @@ func TestBuildRunsTheCommandCodeHarnessFromTheRecordedFixtures(t *testing.T) {
 		t.Fatalf("steps = %+v, want the one build attempt", rec.Steps)
 	}
 	step := rec.Steps[0]
-	wantTokens := Usage{Input: 45386, Output: 384, CacheRead: 35072, Steps: 3}
+	wantTokens := Usage{Input: 45386, Output: 384, CacheRead: 35072, Cost: 0.0030955680000000004, Steps: 3}
 	if step.Model != model || step.Phase != PhaseBuild || step.Tokens != wantTokens {
 		t.Fatalf("step = %+v, want model %s and tokens %+v", step, model, wantTokens)
 	}
@@ -485,5 +501,127 @@ func TestModelWorkflowInstallsAndAuthorisesTheCommandCodeHarness(t *testing.T) {
 		if !strings.Contains(yml, want) {
 			t.Errorf("model.yml has no %q", want)
 		}
+	}
+}
+
+// transcriptMessage is one assistant message line as the CLI writes it to a
+// session transcript.
+func transcriptMessage(id string, costUSD string) string {
+	return `{"type":"message","id":"` + id + `","parentId":"aa5ad8af","timestamp":"2026-10-05T05:58:33.789Z",` +
+		`"message":{"role":"assistant","content":[{"type":"text","text":"done"}],"meta":{"source":"model","createdAt":1791179909171,"messageId":"ea701058-f837-408c-b805-860fcaa5d1df"}},` +
+		`"usage":{"inputTokens":113652,"outputTokens":329,"cacheReadTokens":96256,"cacheWriteTokens":0,"costUsd":` + costUSD + `},` +
+		`"model":"deepseek/deepseek-v4.1-flash"}` + "\n"
+}
+
+// transcriptUserLine is a transcript line that bills nothing.
+const transcriptUserLine = `{"type":"message","id":"aa5ad8af","message":{"role":"user","content":[{"type":"text","text":"go"}]}}` + "\n"
+
+func approxEqual(a, b float64) bool { return math.Abs(a-b) < 1e-12 }
+
+// TestCommandCodeCostByID pins the transcript reader: one cost per message id
+// across every transcript, checkpoints and non-billing lines ignored, no
+// transcripts at all not an error, and an unparseable one an error.
+func TestCommandCodeCostByID(t *testing.T) {
+	tests := []struct {
+		name    string
+		files   map[string]string
+		want    map[string]float64
+		wantErr bool
+	}{
+		{"no transcripts yet", nil, nil, false},
+		{"a resume copy is billed once", map[string]string{
+			"p/s1.jsonl": transcriptUserLine + transcriptMessage("d666e9bd", "0.0030955680000000004"),
+			"p/s2.jsonl": transcriptUserLine + transcriptMessage("d666e9bd", "0.0030955680000000004") + transcriptMessage("e1f0c2aa", "0.001204"),
+		}, map[string]float64{"d666e9bd": 0.0030955680000000004, "e1f0c2aa": 0.001204}, false},
+		{"checkpoints and other lines are ignored", map[string]string{
+			"p/s1.jsonl":             `{"type":"summary","usage":{"costUsd":9}}` + "\n" + transcriptMessage("d666e9bd", "0.002"),
+			"p/s1.checkpoints.jsonl": transcriptMessage("ffff0000", "5"),
+		}, map[string]float64{"d666e9bd": 0.002}, false},
+		{"a line cut short by a killed CLI", map[string]string{"p/s1.jsonl": transcriptMessage("d666e9bd", "0.002") + `{"type":"mess`}, map[string]float64{"d666e9bd": 0.002}, false},
+		{"an unparseable transcript", map[string]string{"p/s1.jsonl": "not json\n" + transcriptMessage("d666e9bd", "0.002")}, nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			for name, body := range tt.files {
+				path := filepath.Join(home, ".commandcode", "projects", filepath.FromSlash(name))
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := commandCodeCostByID(home)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, want error %v", err, tt.wantErr)
+			}
+			if !maps.Equal(got, tt.want) {
+				t.Fatalf("costs = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCommandCodeAgentBillsEachAttemptOnlyItsOwnMessages runs two attempts in
+// one HOME, the second resuming the first, whose transcript copies the first's
+// messages: each attempt's cost event carries only the messages new to it.
+func TestCommandCodeAgentBillsEachAttemptOnlyItsOwnMessages(t *testing.T) {
+	first := transcriptMessage("d666e9bd", "0.0030955680000000004") + transcriptMessage("e1f0c2aa", "0.001204")
+	resumed := first + transcriptMessage("0b7c9d21", "0.000871")
+	bin, _ := scriptedCommandCode(t, "normal", first, resumed)
+	agent := CommandCodeHarness{Bin: bin, Key: "k", Home: t.TempDir()}.Agent(ProfileBuild, "command-code/x")
+	dir := t.TempDir()
+	for i, tt := range []struct {
+		session string
+		want    float64
+	}{
+		{"", 0.0030955680000000004 + 0.001204},
+		{"ses_1", 0.000871},
+	} {
+		var out, errBuf strings.Builder
+		if err := agent.Run(context.Background(), dir, tt.session, "p", &out, &errBuf); err != nil {
+			t.Fatal(err)
+		}
+		u, err := SumUsage(strings.NewReader(out.String()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !approxEqual(u.Cost, tt.want) {
+			t.Errorf("attempt %d cost = %v, want %v", i+1, u.Cost, tt.want)
+		}
+		if w, _ := UsageWarnings(strings.NewReader(out.String())); len(w) != 0 {
+			t.Errorf("attempt %d warned %v", i+1, w)
+		}
+	}
+}
+
+// TestBuildRecordsAWarningWhenTheCommandCodeCostIsUnavailable asserts a run
+// whose transcripts are missing or unreadable still succeeds, with no cost and
+// a usage warning on the summary.
+func TestBuildRecordsAWarningWhenTheCommandCodeCostIsUnavailable(t *testing.T) {
+	for name, transcript := range map[string]string{
+		"no transcript":          "",
+		"unparseable transcript": transcriptMessage("d666e9bd", "0.002") + "garbled{",
+	} {
+		t.Run(name, func(t *testing.T) {
+			bin, _ := scriptedCommandCode(t, "normal", transcript)
+			deps, _, reported := testDeps(validObjects(), nil)
+			deps.Agent = NewRouter(ProfileBuild, CommandCodeHarness{Bin: bin, Key: "k", Home: t.TempDir()}, fakeHarness{})
+			c := testConfig(t, initRepo(t))
+			c.Model = "command-code/x"
+			c.ReviewModels = []string{"p/r"}
+
+			if _, err := Build(context.Background(), deps, c); err != nil {
+				t.Fatal(err)
+			}
+			rec := reported.last(t)
+			if rec.Steps[0].Tokens.Cost != 0 {
+				t.Errorf("cost = %v, want 0", rec.Steps[0].Tokens.Cost)
+			}
+			if !strings.Contains(rec.UsageWarning, "transcript cost unavailable") {
+				t.Errorf("usage warning = %q, want the unavailable cost named", rec.UsageWarning)
+			}
+		})
 	}
 }

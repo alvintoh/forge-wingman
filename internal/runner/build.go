@@ -422,11 +422,24 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 	step := Step{Phase: call.Phase, Round: call.Round, Model: call.Model, CompletionsObject: completions,
 		Detail: truncate(call.Detail, stopDetailLimit)}
 	if _, err := out.Seek(0, io.SeekStart); err != nil {
-		sum.UsageWarning = err.Error()
+		addUsageWarning(sum, err.Error())
 	} else if usage, err := SumUsage(out); err != nil {
-		sum.UsageWarning = err.Error()
+		addUsageWarning(sum, err.Error())
 	} else {
 		step.Tokens = usage
+	}
+	if _, err := out.Seek(0, io.SeekStart); err == nil {
+		warnings, _ := UsageWarnings(out)
+		for _, w := range warnings {
+			addUsageWarning(sum, w)
+		}
+	}
+	if _, err := out.Seek(0, io.SeekStart); err == nil {
+		requests, _ := RequestUsage(out)
+		for i, r := range requests {
+			d.Logger.Info("modelRequest", "phase", string(call.Phase), "round", call.Round, "request", i+1,
+				"input", r.Input, "cacheRead", r.CacheRead, "output", r.Output)
+		}
 	}
 	var text, sessionID string
 	if _, err := out.Seek(0, io.SeekStart); err == nil {
@@ -441,12 +454,7 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 	// none of this run's history. Round 1 legitimately starting fresh never
 	// warns.
 	if call.Round > 1 && sessionID == "" {
-		warning := fmt.Sprintf("round %d reported no session id: continuity with earlier rounds may be lost", call.Round)
-		if sum.UsageWarning == "" {
-			sum.UsageWarning = warning
-		} else {
-			sum.UsageWarning += "; " + warning
-		}
+		addUsageWarning(sum, fmt.Sprintf("round %d reported no session id: continuity with earlier rounds may be lost", call.Round))
 	}
 	step.DurationMS = d.Now().Sub(start).Milliseconds()
 	sum.Steps = append(sum.Steps, step)
@@ -462,6 +470,15 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 		return text, sessionID, stopWith(outcome, reason, runErr)
 	}
 	return text, sessionID, nil
+}
+
+// addUsageWarning appends warning to the summary's usage warning.
+func addUsageWarning(sum *Summary, warning string) {
+	if sum.UsageWarning == "" {
+		sum.UsageWarning = warning
+	} else {
+		sum.UsageWarning += "; " + warning
+	}
 }
 
 // DefaultPlanModel is the plan phase's model when none is configured.

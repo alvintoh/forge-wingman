@@ -3,6 +3,7 @@ package runner
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1470,5 +1471,52 @@ func TestBuildFailsWhenTheSummaryCannotBeReported(t *testing.T) {
 	var stopped *StopError
 	if !errors.As(err, &stopped) || !errors.Is(err, ErrSummaryUnreported) {
 		t.Fatalf("err = %v, want a stop marked unreported", err)
+	}
+}
+
+// TestRunAgentLogsEveryModelRequest asserts one modelRequest line per
+// step_finish event, carrying that request's own tokens.
+func TestRunAgentLogsEveryModelRequest(t *testing.T) {
+	agent := &fakeAgent{edit: edit("version.go", "package x\n"), events: strings.Join([]string{
+		`{"type":"step_finish","part":{"tokens":{"input":14946,"output":104,"cache":{"read":5248}}}}`,
+		`{"type":"text","part":{"text":"reading"}}`,
+		`{"type":"step_finish","part":{"tokens":{"input":15210,"output":96,"cache":{"read":14848}}}}`,
+		`{"type":"cost","part":{"cost":0.0030955680000000004}}`,
+	}, "\n") + "\n"}
+	deps, _, _ := testDeps(validObjects(), agent)
+	var logs bytes.Buffer
+	deps.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	type request struct {
+		Phase     string `json:"phase"`
+		Round     int    `json:"round"`
+		Request   int    `json:"request"`
+		Input     int64  `json:"input"`
+		CacheRead int64  `json:"cacheRead"`
+		Output    int64  `json:"output"`
+	}
+	var got []request
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		var l struct {
+			Msg string `json:"msg"`
+			request
+		}
+		if err := json.Unmarshal([]byte(line), &l); err != nil {
+			t.Fatal(err)
+		}
+		if l.Msg == "modelRequest" && l.Phase == string(PhaseBuild) {
+			got = append(got, l.request)
+		}
+	}
+	want := []request{
+		{string(PhaseBuild), 1, 1, 14946, 5248, 104},
+		{string(PhaseBuild), 1, 2, 15210, 14848, 96},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("modelRequest lines = %+v, want %+v", got, want)
 	}
 }
