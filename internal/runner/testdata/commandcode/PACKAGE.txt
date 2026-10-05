@@ -1,0 +1,8 @@
+package: command-code
+version: 1.74.1
+integrity: sha512-AEr4cPm08RQ86xKZTCOIOgf9ohob/L5ugB2ZO8X/iPzOQVk4nxDInRAofKy6/eQTfDlfb49J1y+Nyx3ngXMBFA==
+install: npm i -g command-code@1.74.1 (binary alias: cmd; Node 22+ required)
+model used: deepseek/deepseek-v4.1-flash
+captured: 2026-10-05, WSL2
+auth: credentials come from ~/.commandcode/auth.json (apiKey field); the env var COMMANDCODE_API_KEY is NOT read at this version
+limit-declined case: not captured (cannot be forced); documented exit codes 5 rate limit, 10 insufficient credits
