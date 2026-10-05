@@ -479,14 +479,22 @@ func ValidatePlanModels(models []string) error {
 
 // ValidateReviewModels reports whether models is a usable review list: at
 // least one entry, each well formed and none repeated, and none the build
-// model, so the review never runs on the builder's own model.
+// model or one of its fallbacks, so the review never runs on a model the
+// builder itself may run.
 func ValidateReviewModels(models []string, build string) error {
 	if err := validateModelList("review", models); err != nil {
 		return err
 	}
+	// The build phase falls back along fallbackModels when its model is
+	// unavailable, so a review on one of them would still be the builder
+	// checking its own work.
+	builder := map[string]bool{build: true}
+	for _, m := range fallbackModels(build) {
+		builder[m] = true
+	}
 	for _, m := range models {
-		if m == build {
-			return fmt.Errorf("review model %q is the build model", m)
+		if builder[m] {
+			return fmt.Errorf("review model %q is the build model or one of its fallbacks", m)
 		}
 	}
 	return nil
