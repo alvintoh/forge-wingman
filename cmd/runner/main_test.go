@@ -22,7 +22,11 @@ func TestLoadEnv(t *testing.T) {
 		"GITHUB_RUN_ID":        "42",
 		"GITHUB_RUN_ATTEMPT":   "2",
 	}
-	e, err := loadEnv(func(k string) string { return full[k] })
+	required, known := requiredEnv("build")
+	if !known {
+		t.Fatal("build is not a known subcommand")
+	}
+	e, err := loadEnv(func(k string) string { return full[k] }, required...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,9 +36,27 @@ func TestLoadEnv(t *testing.T) {
 
 	delete(full, "GITHUB_RUN_ATTEMPT")
 	delete(full, "GOOGLE_CLOUD_PROJECT")
-	_, err = loadEnv(func(k string) string { return full[k] })
+	_, err = loadEnv(func(k string) string { return full[k] }, required...)
 	if err == nil || !strings.Contains(err.Error(), "GOOGLE_CLOUD_PROJECT GITHUB_RUN_ATTEMPT") {
 		t.Fatalf("err = %v, want both missing names", err)
+	}
+}
+
+// TestLoadEnvNeedsOnlyTheProjectForAnOwnerCommand is the regression for an owner
+// command failing locally: it reads no workflow-run identity, so it must run
+// with the project alone.
+func TestLoadEnvNeedsOnlyTheProjectForAnOwnerCommand(t *testing.T) {
+	required, known := requiredEnv("plan-define")
+	if !known {
+		t.Fatal("plan-define is not a known subcommand")
+	}
+	only := map[string]string{"GOOGLE_CLOUD_PROJECT": "p"}
+	if _, err := loadEnv(func(k string) string { return only[k] }, required...); err != nil {
+		t.Fatalf("an owner command needs the project alone: %v", err)
+	}
+	_, err := loadEnv(func(string) string { return "" }, required...)
+	if err == nil || !strings.Contains(err.Error(), "GOOGLE_CLOUD_PROJECT") {
+		t.Fatalf("err = %v, want only the project named", err)
 	}
 }
 
@@ -66,7 +88,8 @@ func TestLoadEnvRejectsAMalformedAttempt(t *testing.T) {
 	for _, attempt := range []string{"0", "01", "x", "-1"} {
 		env := map[string]string{"GOOGLE_CLOUD_PROJECT": "p", "RUNNER_TEMP": "/tmp/r", "GITHUB_RUN_ID": "42",
 			"GITHUB_RUN_ATTEMPT": attempt}
-		if _, err := loadEnv(func(k string) string { return env[k] }); err == nil {
+		if _, err := loadEnv(func(k string) string { return env[k] },
+			"GOOGLE_CLOUD_PROJECT", "RUNNER_TEMP", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"); err == nil {
 			t.Errorf("accepted attempt %q", attempt)
 		}
 	}

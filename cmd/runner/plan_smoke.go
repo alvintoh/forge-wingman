@@ -43,8 +43,9 @@ func planSmoke(ctx context.Context, logger *slog.Logger, getenv func(string) str
 	var summary strings.Builder
 	summary.WriteString("| model | outcome | detail |\n|---|---|---|\n")
 	var failed []string
+	agent := runner.NewRouter(runner.ProfilePlan, harnesses(getenv)...)
 	for _, model := range smokeModels(list) {
-		res, err := runner.PlanSmoke(ctx, runner.PlanCLIAgent(agentBin, model), model, dir)
+		res, err := runner.PlanSmoke(ctx, agent, model, dir)
 		switch {
 		case err != nil:
 			logger.Error("planSmokeFailed", "model", model, "err", err.Error())

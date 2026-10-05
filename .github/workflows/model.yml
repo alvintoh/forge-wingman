@@ -1,4 +1,4 @@
-# The model's half of a run: fetch the projection, run opencode, upload its completions,
+# The model's half of a run: fetch the projection, run the agent, upload its completions,
 # then commit and bundle what it changed. Its identity may read projections and create
 # completions, and nothing else, so it cannot read or write a run record: the ticket
 # arrives as an input from run.yml's ticket job, and the record job validates the
@@ -32,6 +32,9 @@ on:
     secrets:
       OPENCODE_API_KEY:
         required: true
+      # The proprietary harness's key; optional, and only used when opted into.
+      COMMANDCODE_API_KEY:
+        required: false
     outputs:
       attempt_id:
         value: ${{ jobs.build.outputs.attempt_id }}
@@ -94,6 +97,14 @@ jobs:
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           test "$("$RUNNER_TEMP/bin/opencode" --version)" = "${OPENCODE_VERSION}"
 
+      # The version and integrity are testdata/commandcode/PACKAGE.txt's; npm
+      # verifies the registry integrity for a pinned version. Installed only
+      # when the run is opted into the harness, so a run that never uses it
+      # carries neither the package nor its registry dependency.
+      - name: Install command-code
+        if: vars.COMMAND_CODE_OPT_IN == 'true'
+        run: npm i -g command-code@1.74.1
+
       - id: auth
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
@@ -110,6 +121,8 @@ jobs:
           TICKET: ${{ inputs.ticket }}
           WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
+          COMMAND_CODE_OPT_IN: ${{ vars.COMMAND_CODE_OPT_IN }}
         run: '"$RUNNER_TEMP/runner" build -model "$MODEL" -review-model "$REVIEW_MODEL" -plan-models "$PLAN_MODELS" -ticket "$TICKET"'
 
       # wingman.bundle here and in run.yml's check and pr jobs is bundleName in internal/runner/build.go.

@@ -45,8 +45,15 @@ jobs:
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           test "$("$RUNNER_TEMP/bin/opencode" --version)" = "${OPENCODE_VERSION}"
 
+      # The version is model.yml's.
+      - name: Install command-code
+        if: vars.COMMAND_CODE_OPT_IN == 'true'
+        run: npm i -g command-code@1.74.1
+
       - name: Prove the plan agent refuses edit and bash
         env:
           PLAN_MODELS: ${{ inputs.plan_models }}
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
+          COMMAND_CODE_OPT_IN: ${{ vars.COMMAND_CODE_OPT_IN }}
         run: '"$RUNNER_TEMP/runner" plan-smoke -plan-models "$PLAN_MODELS"'
