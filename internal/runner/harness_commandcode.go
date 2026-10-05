@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +23,10 @@ const commandCodeProvider = "command-code"
 // commandCodeMaxTurns bounds a run's own turns; a run that reaches it exits 8,
 // which Classify records as an ordinary agent failure.
 const commandCodeMaxTurns = 200
+
+// commandCodeTranscripts is where the CLI writes its session transcripts,
+// under HOME: one .jsonl per session, beside a .checkpoints.jsonl it ignores.
+const commandCodeTranscripts = ".commandcode/projects"
 
 // commandCodeAuthFile is where the CLI reads its credentials, under HOME; a
 // saved login also uses it, so the adapter writes it rather than passing a key
@@ -108,7 +114,8 @@ func (a CommandCodeAgent) WithModel(model string) Agent { a.Model = model; retur
 // on one argument, and translates the CLI's frames to the runner's own event
 // shape on stdout. A non-empty session is resumed from the transcript under
 // Home; the auth file is removed after each run, so the key never sits on disk
-// while the run's later steps do.
+// while the run's later steps do. The CLI's frames carry no cost, so the run's
+// cost is read from the transcripts it wrote and emitted as one cost event.
 func (a CommandCodeAgent) Run(ctx context.Context, dir, session, prompt string, stdout, stderr io.Writer) error {
 	if a.Home == "" {
 		return errors.New("the command-code harness has no home directory")
@@ -153,11 +160,13 @@ func (a CommandCodeAgent) Run(ctx context.Context, dir, session, prompt string, 
 	cmd.Stderr = errFile
 	cmd.WaitDelay = agentKillGrace
 	ownProcessGroup(cmd)
+	before, beforeErr := commandCodeCostByID(a.Home)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("agent run: %w", err)
 	}
 	runErr := cmd.Wait()
 	killProcessGroup(cmd)
+	cost := commandCodeRunCost(a.Home, before, beforeErr, runErr == nil)
 	if !ok {
 		if _, err := errFile.Seek(0, io.SeekStart); err != nil {
 			return fmt.Errorf("agent output file: %w", err)
@@ -174,10 +183,109 @@ func (a CommandCodeAgent) Run(ctx context.Context, dir, session, prompt string, 
 	if err := translateCommandCodeFrames(frames, stdout, stderr); err != nil {
 		return err
 	}
+	if err := json.NewEncoder(stdout).Encode(cost); err != nil {
+		return fmt.Errorf("agent cost event: %w", err)
+	}
 	if runErr != nil {
 		return fmt.Errorf("agent run: %w", runErr)
 	}
 	return nil
+}
+
+// commandCodeRunCost is the event carrying the cost of the messages that
+// appeared in home's transcripts since the before snapshot, or a usage_warning
+// event when the transcripts could not be read. A run that failed and left no
+// transcripts at all simply cost nothing.
+func commandCodeRunCost(home string, before map[string]float64, beforeErr error, succeeded bool) event {
+	var e event
+	after, err := commandCodeCostByID(home)
+	if err == nil && beforeErr != nil {
+		err = beforeErr
+	}
+	if err == nil && after == nil && succeeded {
+		err = errors.New("the run wrote no transcripts")
+	}
+	if err != nil {
+		e.Type = "usage_warning"
+		e.Warning = "transcript cost unavailable: " + err.Error()
+		return e
+	}
+	ids := make([]string, 0, len(after))
+	for id := range after {
+		if _, seen := before[id]; !seen {
+			ids = append(ids, id)
+		}
+	}
+	// Sorted so the float sum is the same whatever order the map yields.
+	sort.Strings(ids)
+	e.Type = "cost"
+	for _, id := range ids {
+		e.Part.Cost += after[id]
+	}
+	return e
+}
+
+// commandCodeTranscriptLine is the part of a transcript line that bills: an
+// assistant message's id and the cost the CLI recorded for it.
+type commandCodeTranscriptLine struct {
+	Type  string `json:"type"`
+	ID    string `json:"id"`
+	Usage *struct {
+		CostUSD *float64 `json:"costUsd"`
+	} `json:"usage"`
+}
+
+// commandCodeCostByID returns the costUsd of every billed message in home's
+// transcripts, keyed by message id; nil, with no error, when the CLI has
+// written none yet.
+//
+// A resume copies the session's history into a new transcript under the same
+// ids, so a message is kept once however many files carry it.
+func commandCodeCostByID(home string) (map[string]float64, error) {
+	root := filepath.Join(home, filepath.FromSlash(commandCodeTranscripts))
+	if _, err := os.Stat(root); errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	costs := map[string]float64{}
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".jsonl") || strings.HasSuffix(path, ".checkpoints.jsonl") {
+			return nil
+		}
+		return readCommandCodeTranscript(path, costs)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("reading command code transcripts: %w", err)
+	}
+	return costs, nil
+}
+
+// readCommandCodeTranscript adds the billed messages in the transcript at path
+// to costs, keeping the first cost seen for an id.
+func readCommandCodeTranscript(path string, costs map[string]float64) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	dec := json.NewDecoder(f)
+	for {
+		var line commandCodeTranscriptLine
+		// A CLI killed mid-write leaves its last line cut short; what precedes it still counts.
+		if err := dec.Decode(&line); errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return nil
+		} else if err != nil {
+			return fmt.Errorf("%s: %w", filepath.Base(path), err)
+		}
+		if line.Type != "message" || line.ID == "" || line.Usage == nil || line.Usage.CostUSD == nil {
+			continue
+		}
+		if _, seen := costs[line.ID]; !seen {
+			costs[line.ID] = *line.Usage.CostUSD
+		}
+	}
 }
 
 // writeCommandCodeAuth writes the key the CLI reads from ~/.commandcode/auth.json.
@@ -263,7 +371,8 @@ func commandCodeText(text string) commandCodeTextEvent {
 }
 
 // commandCodeStepEvent shapes one turn's usage as the runner's own step_finish
-// event; the CLI bills in credits, so cost is left zero.
+// event; the CLI's per-request events carry no cost, so the run's cost arrives
+// as one cost event.
 func commandCodeStepEvent(u commandCodeUsage) event {
 	var e event
 	e.Type = "step_finish"
