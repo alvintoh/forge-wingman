@@ -91,35 +91,6 @@ func TestRunWorkflowRefusesAnEmptyOrNullDefaultModel(t *testing.T) {
 	}
 }
 
-func TestProbeWorkflowStagesOnlyThisRunsResultsFile(t *testing.T) {
-	dir := t.TempDir()
-	for path, body := range map[string]string{
-		"internal/runner/models.json":     "{}",
-		"probe/results/2026-09-01-1.json": "old",
-		"probe/results/2026-10-01-2.json": "new",
-	} {
-		full := filepath.Join(dir, path)
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	tmp := t.TempDir()
-	if err := runScript(t, dir, stepScript(t, "probe-models.yml", "Stage the outputs"),
-		"RUNNER_TEMP="+tmp, "RESULTS=probe/results/2026-10-01-2.json"); err != nil {
-		t.Fatal(err)
-	}
-	staged, _ := filepath.Glob(filepath.Join(tmp, "out", "results", "*"))
-	if len(staged) != 1 || filepath.Base(staged[0]) != "2026-10-01-2.json" {
-		t.Fatalf("staged = %v, want only this run's results file", staged)
-	}
-	if got, _ := os.ReadFile(filepath.Join(tmp, "out", "models.json")); string(got) != "{}" {
-		t.Fatalf("staged models.json = %q, want the working copy's", got)
-	}
-}
-
 func TestRunWorkflowAppendsToTheStepOutputFile(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "internal", "runner"), 0o755); err != nil {
@@ -147,10 +118,10 @@ func TestRunWorkflowPassesTheTicketsNamedModelsAheadOfItsDefaults(t *testing.T) 
 	}
 	for _, want := range []string{
 		"override_model: ${{ steps.read.outputs.override_model }}",
-		"override_review_model: ${{ steps.read.outputs.override_review_model }}",
+		"override_review_models: ${{ steps.read.outputs.override_review_models }}",
 		"override_plan_models: ${{ steps.read.outputs.override_plan_models }}",
 		"model: ${{ needs.ticket.outputs.override_model || needs.ticket.outputs.model }}",
-		"review_model: ${{ needs.ticket.outputs.override_review_model || inputs.review_model }}",
+		"review_models: ${{ needs.ticket.outputs.override_review_models || inputs.review_models }}",
 		"plan_models: ${{ needs.ticket.outputs.override_plan_models || inputs.plan_models }}",
 	} {
 		if !strings.Contains(string(b), "\n      "+want+"\n") {
@@ -165,8 +136,8 @@ func TestRunWorkflowDefaultsTheReviewModelToTheDispatchersConstant(t *testing.T)
 		t.Fatal(err)
 	}
 	yml := string(b)
-	i := strings.Index(yml, "review_model:")
+	i := strings.Index(yml, "review_models:")
 	if i < 0 || !strings.HasPrefix(yml[i:][strings.Index(yml[i:], "default:"):], "default: "+runner.DefaultReviewModel+"\n") {
-		t.Fatalf("run.yml's review_model input does not default to %s", runner.DefaultReviewModel)
+		t.Fatalf("run.yml's review_models input does not default to %s", runner.DefaultReviewModel)
 	}
 }

@@ -8,7 +8,7 @@ import (
 	"slices"
 )
 
-// ZenProvider is the only provider whose free models the default may name.
+// ZenProvider is the opencode harness's provider prefix.
 const ZenProvider = "opencode"
 
 //go:embed models.json
@@ -59,15 +59,17 @@ func mustParseModelSet(b []byte) ModelSet {
 	return s
 }
 
-// Validate reports whether the set names only well-formed, distinct Zen models.
+// Validate reports whether the set names well-formed, distinct models of one
+// provider.
 func (s ModelSet) Validate() error {
+	provider := Provider(s.Default)
 	seen := map[string]bool{}
 	for _, m := range append([]string{s.Default}, s.Fallbacks...) {
 		switch {
 		case !ValidModel(m):
 			return fmt.Errorf("model %q is not provider/model", m)
-		case Provider(m) != ZenProvider:
-			return fmt.Errorf("model %q is not a %s model", m, ZenProvider)
+		case Provider(m) != provider:
+			return fmt.Errorf("model %q is not a %s model", m, provider)
 		case seen[m]:
 			return fmt.Errorf("model %q is listed twice", m)
 		}

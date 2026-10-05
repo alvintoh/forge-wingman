@@ -239,7 +239,7 @@ func TestBuildRunsTheCommandCodeHarnessFromTheRecordedFixtures(t *testing.T) {
 	)
 	c := testConfig(t, initRepo(t))
 	c.Model = model
-	c.ReviewModel = "opencode/space-bunny-free"
+	c.ReviewModels = []string{"opencode/space-bunny-free"}
 
 	if _, err := Build(context.Background(), deps, c); err != nil {
 		t.Fatal(err)
@@ -408,7 +408,7 @@ func TestBuildStopsOnACommandCodeBadKey(t *testing.T) {
 	deps.Agent = CommandCodeHarness{Bin: bin, Key: "bad-key", OptIn: true, Home: t.TempDir()}.Agent(ProfileBuild, "command-code/x")
 	c := testConfig(t, initRepo(t))
 	c.Model = "command-code/x"
-	c.ReviewModel = "opencode/space-bunny-free"
+	c.ReviewModels = []string{"opencode/space-bunny-free"}
 
 	if _, err := Build(context.Background(), deps, c); err == nil {
 		t.Fatal("Build succeeded on a bad key")
@@ -429,7 +429,7 @@ func TestBuildRefusesACommandCodeModelWithoutTheOptIn(t *testing.T) {
 	)
 	c := testConfig(t, initRepo(t))
 	c.Model = "command-code/deepseek-v4.1-flash"
-	c.ReviewModel = "opencode/space-bunny-free"
+	c.ReviewModels = []string{"opencode/space-bunny-free"}
 
 	if _, err := Build(context.Background(), deps, c); err == nil {
 		t.Fatal("Build ran a model whose harness is not opted in")
@@ -447,7 +447,7 @@ func TestBuildRefusesACommandCodeModelWithoutTheOptIn(t *testing.T) {
 // review model and, for a ticket that plans, every plan model (AC7).
 func TestBuildGatesEveryModelSlotOnTheOptIn(t *testing.T) {
 	for name, set := range map[string]func(*BuildConfig){
-		"review": func(c *BuildConfig) { c.ReviewModel = "command-code/x" },
+		"review": func(c *BuildConfig) { c.ReviewModels = []string{"command-code/x"} },
 		"plan": func(c *BuildConfig) {
 			c.Ticket.Size = "M"
 			c.PlanModels = []string{"opencode/p", "command-code/x"}
@@ -458,7 +458,7 @@ func TestBuildGatesEveryModelSlotOnTheOptIn(t *testing.T) {
 			deps.Agent = NewRouter(ProfileBuild, CommandCodeHarness{Bin: "cmd"}, OpencodeHarness{Bin: "opencode"})
 			c := testConfig(t, initRepo(t))
 			c.Model = "opencode/b"
-			c.ReviewModel = "opencode/r"
+			c.ReviewModels = []string{"opencode/r"}
 			set(&c)
 			if _, err := Build(context.Background(), deps, c); err == nil {
 				t.Fatal("Build ran with an un-opted-in harness in the slot")

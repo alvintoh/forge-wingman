@@ -79,10 +79,12 @@ type BuildConfig struct {
 	// before is unavailable or out of allowance. Each is any well-formed
 	// provider/model; they must be distinct, and at least one is required.
 	PlanModels []string
-	// ReviewModel is FR-14's configuration for the pre-PR loop's review
-	// pass (FR-28): it must differ from Model, so the review is never the
-	// builder checking its own work.
-	ReviewModel  string
+	// ReviewModels is FR-14's configuration for the pre-PR loop's review pass
+	// (FR-28), ordered like PlanModels: the first entry is the main model and
+	// later ones are backups the phase moves to when the one before is
+	// unavailable or out of allowance. None may be Model, so the review is
+	// never the builder checking its own work.
+	ReviewModels []string
 	AgentTimeout time.Duration
 	// Secrets are checked against the branch before it is bundled, so an
 	// agent's own API key never reaches the pushed branch.
@@ -189,16 +191,13 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 				return stopWith(OutcomeStopped, StopModelInvalid, err)
 			}
 		}
-		if !ValidModel(c.ReviewModel) {
-			return stopWith(OutcomeStopped, StopModelInvalid, errors.New("review model is not provider/model"))
-		}
-		if c.ReviewModel == c.Model {
-			return stopWith(OutcomeStopped, StopModelInvalid, errors.New("review model must differ from the build model"))
+		if err := ValidateReviewModels(c.ReviewModels, c.Model); err != nil {
+			return stopWith(OutcomeStopped, StopModelInvalid, err)
 		}
 		// A proprietary harness the run is not opted into stops here, before
 		// any agent runs, with the same model-invalid stop (AC7).
 		if g, ok := d.Agent.(modelGate); ok {
-			models := []string{c.Model, c.ReviewModel}
+			models := append([]string{c.Model}, c.ReviewModels...)
 			if c.Ticket.Size != "S" {
 				models = append(models, c.PlanModels...)
 			}
@@ -261,7 +260,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 				return stopWith(OutcomeStopped, StopProjectionInvalid, err)
 			}
 			call := agentCall{Phase: PhasePlan, Round: 1, Model: c.PlanModels[0], Timeout: roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now())}
-			text, _, _, err := runAgentInOrder(ctx, d, c, call, c.PlanModels, true, d.PlanAgent, wt.Dir, planPrompt, &sum)
+			text, _, _, err := runAgentInOrder(ctx, d, c, call, c.PlanModels, d.PlanAgent, wt.Dir, planPrompt, &sum)
 			if err != nil {
 				return err
 			}
@@ -465,27 +464,48 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 	return text, sessionID, nil
 }
 
-// DefaultPlanModel is the plan phase's model when none is configured: the one
-// free model proven to complete under the restricted plan agent shape.
-const DefaultPlanModel = "opencode/space-bunny-free"
+// DefaultPlanModel is the plan phase's model when none is configured.
+const DefaultPlanModel = "command-code/deepseek/deepseek-v4.1-flash"
 
-// DefaultReviewModel is the review model run.yml's review_model input defaults
+// DefaultReviewModel is the review model run.yml's review_models input defaults
 // to, used when a ticket names none.
-const DefaultReviewModel = "opencode/space-bunny-free"
+const DefaultReviewModel = "command-code/meta/muse-spark-1.3-contributor"
 
 // ValidatePlanModels reports whether models is a usable plan list: at least
 // one entry, each well formed and none repeated.
 func ValidatePlanModels(models []string) error {
+	return validateModelList("plan", models)
+}
+
+// ValidateReviewModels reports whether models is a usable review list: at
+// least one entry, each well formed and none repeated, and none the build
+// model, so the review never runs on the builder's own model.
+func ValidateReviewModels(models []string, build string) error {
+	if err := validateModelList("review", models); err != nil {
+		return err
+	}
+	for _, m := range models {
+		if m == build {
+			return fmt.Errorf("review model %q is the build model", m)
+		}
+	}
+	return nil
+}
+
+// validateModelList reports whether models is a usable ordered list: at least
+// one entry, each well formed and none repeated. label names the list in the
+// errors.
+func validateModelList(label string, models []string) error {
 	if len(models) == 0 {
-		return errors.New("plan models: at least one model is required")
+		return fmt.Errorf("%s models: at least one model is required", label)
 	}
 	seen := map[string]bool{}
 	for _, m := range models {
 		switch {
 		case !ValidModel(m):
-			return fmt.Errorf("plan model %q is not provider/model", m)
+			return fmt.Errorf("%s model %q is not provider/model", label, m)
 		case seen[m]:
-			return fmt.Errorf("plan model %q is listed twice", m)
+			return fmt.Errorf("%s model %q is listed twice", label, m)
 		}
 		seen[m] = true
 	}
@@ -493,14 +513,17 @@ func ValidatePlanModels(models []string) error {
 }
 
 // runAgentWithFallback runs call on its model, moving to the same-provider
-// fallbacks of fallbackModels(call.Model) when one is unavailable.
+// fallbacks of fallbackModels(call.Model) when one is unavailable or out of
+// allowance.
 func runAgentWithFallback(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, agent Agent, dir, prompt string, sum *Summary) (text, session string, round int, err error) {
-	return runAgentInOrder(ctx, d, c, call, append([]string{call.Model}, fallbackModels(call.Model)...), false, agent, dir, prompt, sum)
+	// An exhausted allowance advances along this phase's own ordered fallbacks
+	// rather than stopping the build.
+	return runAgentInOrder(ctx, d, c, call, append([]string{call.Model}, fallbackModels(call.Model)...), agent, dir, prompt, sum)
 }
 
 // runAgentInOrder runs call via runAgent on each of models in turn, advancing
-// on an availability-classified failure (StopModelUnavailable) and, when
-// advanceOnAllowance is set, on an allowance exhaustion too. Each attempt is
+// on an availability-classified failure (StopModelUnavailable) and on an
+// exhausted allowance too. Each attempt is
 // its own Step under an incrementing Round so every model tried is recorded
 // (AC1). It reports the round its last attempt used, so a caller numbering
 // further rounds for this phase continues from there rather than reusing one.
@@ -510,7 +533,7 @@ func runAgentWithFallback(ctx context.Context, d BuildDeps, c BuildConfig, call 
 // FR-13's (unimplemented) escalation could hook into. A later attempt's
 // deadline is recomputed from the time then left, so earlier attempts cannot
 // stretch the phase past the run cap.
-func runAgentInOrder(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, models []string, advanceOnAllowance bool, agent Agent, dir, prompt string, sum *Summary) (text, session string, round int, err error) {
+func runAgentInOrder(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, models []string, agent Agent, dir, prompt string, sum *Summary) (text, session string, round int, err error) {
 	round = call.Round
 	var lastErr *StopError
 	for i, model := range models {
@@ -524,7 +547,7 @@ func runAgentInOrder(ctx context.Context, d BuildDeps, c BuildConfig, call agent
 			return text, session, round, nil
 		}
 		var s *StopError
-		if !errors.As(err, &s) || !movesToNextModel(s.Reason, advanceOnAllowance) {
+		if !errors.As(err, &s) || !movesToNextModel(s.Reason) {
 			return text, session, round, err
 		}
 		lastErr = s
@@ -543,10 +566,10 @@ func runAgentInOrder(ctx context.Context, d BuildDeps, c BuildConfig, call agent
 }
 
 // movesToNextModel reports whether a stop of reason sends a phase on to its next
-// model: unavailability always, allowance exhaustion only where a backup may be
-// on another account.
-func movesToNextModel(reason StopReason, advanceOnAllowance bool) bool {
-	return reason == StopModelUnavailable || (advanceOnAllowance && reason == StopAllowanceExhausted)
+// model: unavailability, or an exhausted allowance, which advances along the
+// phase's own ordered fallbacks.
+func movesToNextModel(reason StopReason) bool {
+	return reason == StopModelUnavailable || reason == StopAllowanceExhausted
 }
 
 // modelBinder is implemented by an agent whose model can be swapped per attempt.
