@@ -8,26 +8,14 @@ import (
 	"slices"
 )
 
-// ZenProvider is the opencode harness's provider prefix.
-const ZenProvider = "opencode"
-
 //go:embed models.json
 var modelsJSON []byte
 
-// ModelSet is the default model, its ordered same-provider fallbacks and the
-// evidence they were chosen on; models.json holds the one copy.
+// ModelSet is the default model and its ordered same-provider fallbacks;
+// models.json holds the one copy.
 type ModelSet struct {
-	Default   string          `json:"default"`
-	Fallbacks []string        `json:"fallbacks"`
-	ProbedAt  string          `json:"probed_at"`
-	Evidence  []ModelEvidence `json:"evidence"`
-}
-
-// ModelEvidence is what one surviving model measured in the probe that chose it.
-type ModelEvidence struct {
-	Model           string `json:"model"`
-	ToolCalls       int    `json:"tool_calls"`
-	TranscriptBytes int    `json:"transcript_bytes"`
+	Default   string   `json:"default"`
+	Fallbacks []string `json:"fallbacks"`
 }
 
 var embeddedModels = mustParseModelSet(modelsJSON)
@@ -35,10 +23,10 @@ var embeddedModels = mustParseModelSet(modelsJSON)
 // DefaultModel is every dispatched run's starting model, read from models.json.
 func DefaultModel() string { return embeddedModels.Default }
 
-// ParseModelSet decodes and validates a models.json document.
+// parseModelSet decodes and validates a models.json document.
 //
 // Unknown fields are rejected, since the file is this repository's own contract.
-func ParseModelSet(b []byte) (ModelSet, error) {
+func parseModelSet(b []byte) (ModelSet, error) {
 	var s ModelSet
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
@@ -52,7 +40,7 @@ func ParseModelSet(b []byte) (ModelSet, error) {
 }
 
 func mustParseModelSet(b []byte) ModelSet {
-	s, err := ParseModelSet(b)
+	s, err := parseModelSet(b)
 	if err != nil {
 		panic(err)
 	}
@@ -76,21 +64,6 @@ func (s ModelSet) Validate() error {
 		seen[m] = true
 	}
 	return nil
-}
-
-// Marshal renders the set as the indented, newline-terminated form models.json is kept in.
-func (s ModelSet) Marshal() ([]byte, error) {
-	if s.Fallbacks == nil {
-		s.Fallbacks = []string{}
-	}
-	if s.Evidence == nil {
-		s.Evidence = []ModelEvidence{}
-	}
-	b, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
-		return nil, fmt.Errorf("encoding models: %w", err)
-	}
-	return append(b, '\n'), nil
 }
 
 // fallbackModels is the same-provider substitution list for a starting model:

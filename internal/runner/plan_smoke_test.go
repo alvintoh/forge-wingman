@@ -31,14 +31,14 @@ func TestPlanSmokeReportsWhetherTheRestrictedAgentWasRefused(t *testing.T) {
 	}
 }
 
-func TestPlanSmokeRunsTheScriptedBinaryUnderThePlanAgentShapeOnTheGivenModel(t *testing.T) {
-	bin, attempts := scriptedCLIAgent(t, "", "opencode-go/paid")
-	res, err := PlanSmoke(context.Background(), PlanCLIAgent(bin, "ignored/first"), "opencode-go/paid", t.TempDir())
+func TestPlanSmokeRunsTheScriptedBinaryUnderThePlanProfileOnTheGivenModel(t *testing.T) {
+	bin, attempts := scriptedCLIAgent(t, "", "command-code/given")
+	res, err := PlanSmoke(context.Background(), scriptedAgent(t, bin, ProfilePlan, "command-code/ignored"), "command-code/given", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := attempts()
-	if len(got) != 1 || got[0] != (fallbackAttempt{"opencode-go/paid", planAgentName, planAgentConfig}) || !res.Refused {
+	if len(got) != 1 || got[0] != (fallbackAttempt{"command-code/given", "--plan"}) || !res.Refused {
 		t.Fatalf("attempts %+v, result %+v", got, res)
 	}
 }

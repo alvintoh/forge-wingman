@@ -119,7 +119,7 @@ func (a *fakeAgent) Run(ctx context.Context, dir, session, prompt string, stdout
 	return a.err
 }
 
-// reviewEvent is one opencode text event carrying the review agent's final
+// reviewEvent is one text event carrying the review agent's final
 // message: a review-findings block naming findings, empty for a clean review.
 func reviewEvent(findings string) string {
 	return `{"type":"text","part":{"type":"text","text":` + strconv.Quote("```review-findings\n"+findings+"\n```") + `}}` + "\n"
@@ -403,7 +403,7 @@ func TestBuildNeverSubstitutesOnAnOrdinaryAgentFailureEvenWithFallbacksConfigure
 	}
 }
 
-// planEvent is one opencode text event carrying the plan agent's final message.
+// planEvent is one text event carrying the plan agent's final message.
 func planEvent(text string) string {
 	return `{"type":"text","part":{"type":"text","text":` + strconv.Quote(text) + `}}` + "\n"
 }
@@ -613,7 +613,7 @@ func TestBuildIgnoresThePlanModelsOfATicketThatDoesNotPlan(t *testing.T) {
 }
 
 func TestBuildStopsOnAnInvalidModel(t *testing.T) {
-	for _, model := range []string{"", "big-pickle", "opencode/big pickle", "-x/y", "opencode/big-pickle;rm", overLongModel} {
+	for _, model := range []string{"", "big-pickle", "command-code/big pickle", "-x/y", "command-code/x;rm", overLongModel} {
 		t.Run(model, func(t *testing.T) {
 			agent := &fakeAgent{}
 			deps, _, reported := testDeps(validObjects(), agent)
@@ -1040,7 +1040,7 @@ func TestBuildBoundsThePlanPhaseCallToTheRemainingNFR1Budget(t *testing.T) {
 }
 
 // TestPrePRLoopWarnsWhenARoundPastTheFirstReportsNoSessionID is the
-// regression for a round silently losing session continuity: opencode's own
+// regression for a round silently losing session continuity: the agent's own
 // event stream carries no sessionID on round 2, so the *next* round would
 // start a brand-new session with none of this run's history — a real
 // occurrence must surface in the summary rather than degrade silently.
@@ -1166,7 +1166,7 @@ func TestTruncateKeepsValidUTF8(t *testing.T) {
 }
 
 func TestModelPatternAcceptsProviderIDs(t *testing.T) {
-	for _, model := range []string{"opencode/big-pickle", "openrouter/deepseek/deepseek-v4:free", "opencode-go/glm-5.3-flash"} {
+	for _, model := range []string{"command-code/deepseek/deepseek-v4.1-flash", "openrouter/deepseek/deepseek-v4:free", "command-code/inclusionai/ling-3.1-flash:free"} {
 		if !modelPattern.MatchString(model) {
 			t.Errorf("rejected %q", model)
 		}
@@ -1175,7 +1175,7 @@ func TestModelPatternAcceptsProviderIDs(t *testing.T) {
 
 func TestProviderIsTheModelsPrefixBeforeItsFirstSlash(t *testing.T) {
 	for _, tt := range []struct{ model, want string }{
-		{"opencode/big-pickle", "opencode"},
+		{"command-code/deepseek/deepseek-v4.1-flash", "command-code"},
 		{"openrouter/deepseek/deepseek-v4:free", "openrouter"},
 		{"noslash", "noslash"},
 	} {

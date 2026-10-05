@@ -7,12 +7,15 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
 
-type fallbackAttempt struct{ model, agent, config string }
+// fallbackAttempt is one invocation the scripted CLI recorded: our model id and
+// the profile flag it ran under.
+type fallbackAttempt struct{ model, flag string }
 
 // unavailableCLIAgent is scriptedCLIAgent failing every model as an unavailable one does.
 func unavailableCLIAgent(t *testing.T) (bin string, attempts func() []fallbackAttempt) {
@@ -20,26 +23,27 @@ func unavailableCLIAgent(t *testing.T) (bin string, attempts func() []fallbackAt
 	return scriptedCLIAgent(t, "Error: no endpoints found for this model", "")
 }
 
-// scriptedCLIAgent writes a fake opencode that records each invocation's model,
-// agent and config to a log, then exits 1 printing stderrMsg, except for
-// okModel, which answers with a plan naming version.go.
+// scriptedCLIAgent writes a fake Command Code CLI that records each
+// invocation's model and profile flag to a log, then exits 1 printing
+// stderrMsg, except for okModel, which answers with a plan naming version.go.
 func scriptedCLIAgent(t *testing.T, stderrMsg, okModel string) (bin string, attempts func() []fallbackAttempt) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
-		t.Skip("the fake opencode is a shell script, which Windows cannot execute")
+		t.Skip("the fake command-code CLI is a shell script, which Windows cannot execute")
 	}
 	dir := t.TempDir()
-	bin, logPath, planPath := filepath.Join(dir, "opencode"), filepath.Join(dir, "attempts.log"), filepath.Join(dir, "plan.jsonl")
-	script := "#!/bin/sh\nmodel=; agent=\n" +
-		"while [ $# -gt 0 ]; do\n  case \"$1\" in -m) model=$2; shift;; --agent) agent=$2; shift;; esac\n  shift\ndone\n" +
-		"printf '%s|%s|%s\\n' \"$model\" \"$agent\" \"$OPENCODE_CONFIG_CONTENT\" >> '" + logPath + "'\n" +
+	bin, logPath, planPath := filepath.Join(dir, "cmd"), filepath.Join(dir, "attempts.log"), filepath.Join(dir, "plan.ndjson")
+	script := "#!/bin/sh\nmodel=; flag=\n" +
+		"while [ $# -gt 0 ]; do\n  case \"$1\" in --model) model=command-code/$2; shift;; --plan|--yolo) flag=$1;; esac\n  shift\ndone\n" +
+		"printf '%s|%s\\n' \"$model\" \"$flag\" >> '" + logPath + "'\n" +
 		"cat > /dev/null\n" +
 		"if [ \"$model\" = '" + okModel + "' ]; then cat '" + planPath + "'; exit 0; fi\n" +
 		"echo '" + stderrMsg + "' >&2\nexit 1\n"
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(planPath, []byte(planEvent("plan\n\n```plan-files\nversion.go\n```")), 0o600); err != nil {
+	result := `{"type":"result","sessionId":"ses_1","finalText":` + strconv.Quote("plan\n\n```plan-files\nversion.go\n```") + `}` + "\n"
+	if err := os.WriteFile(planPath, []byte(result), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return bin, func() []fallbackAttempt {
@@ -49,34 +53,39 @@ func scriptedCLIAgent(t *testing.T, stderrMsg, okModel string) (bin string, atte
 		}
 		var got []fallbackAttempt
 		for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
-			p := strings.SplitN(line, "|", 3)
-			got = append(got, fallbackAttempt{p[0], p[1], p[2]})
+			p := strings.SplitN(line, "|", 2)
+			got = append(got, fallbackAttempt{p[0], p[1]})
 		}
 		return got
 	}
 }
 
+// scriptedAgent is the real Command Code agent for profile p, run through bin.
+func scriptedAgent(t *testing.T, bin string, p Profile, model string) CommandCodeAgent {
+	t.Helper()
+	return CommandCodeAgent{Bin: bin, Key: "k", Home: t.TempDir(), Model: model, Profile: p}
+}
+
 func TestBuildFallbackRunsEachSubstitutedModelUnderTheSameAgentShape(t *testing.T) {
 	wantModels := append([]string{DefaultModel()}, fallbackModels(DefaultModel())...)
 	tests := []struct {
-		name       string
-		phase      Phase
-		setup      func(bin string, deps *BuildDeps, c *BuildConfig)
-		wantAgent  string
-		wantConfig string
+		name     string
+		phase    Phase
+		setup    func(bin string, deps *BuildDeps, c *BuildConfig)
+		wantFlag string
 	}{
 		{"build", PhaseBuild, func(bin string, deps *BuildDeps, c *BuildConfig) {
-			deps.Agent = CLIAgent{Bin: bin, Model: DefaultModel()}
-		}, "", ""},
+			deps.Agent = scriptedAgent(t, bin, ProfileBuild, DefaultModel())
+		}, "--yolo"},
 		{"plan", PhasePlan, func(bin string, deps *BuildDeps, c *BuildConfig) {
-			deps.PlanAgent = PlanCLIAgent(bin, DefaultModel())
+			deps.PlanAgent = scriptedAgent(t, bin, ProfilePlan, DefaultModel())
 			c.Ticket.Size = "M"
 			c.PlanModels = wantModels
-		}, planAgentName, planAgentConfig},
+		}, "--plan"},
 		{"review", PhaseReview, func(bin string, deps *BuildDeps, c *BuildConfig) {
-			deps.ReviewAgent = ReviewCLIAgent(bin, DefaultModel())
+			deps.ReviewAgent = scriptedAgent(t, bin, ProfileReview, DefaultModel())
 			c.Model, c.ReviewModels = "p/m", wantModels
-		}, reviewAgentName, reviewAgentConfig},
+		}, "--plan"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -96,12 +105,12 @@ func TestBuildFallbackRunsEachSubstitutedModelUnderTheSameAgentShape(t *testing.
 			var gotModels, stepModels []string
 			for _, a := range got {
 				gotModels = append(gotModels, a.model)
-				if a.agent != tt.wantAgent || a.config != tt.wantConfig {
-					t.Fatalf("attempt %+v, want agent %q and its config on every model", a, tt.wantAgent)
+				if a.flag != tt.wantFlag {
+					t.Fatalf("attempt %+v, want %s on every model", a, tt.wantFlag)
 				}
 			}
 			if !slices.Equal(gotModels, wantModels) {
-				t.Fatalf("opencode ran with -m %v, want %v", gotModels, wantModels)
+				t.Fatalf("the CLI ran models %v, want %v", gotModels, wantModels)
 			}
 			for _, st := range reported.last(t).Steps {
 				if st.Phase == tt.phase {

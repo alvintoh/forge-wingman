@@ -99,10 +99,13 @@ repository, 4 vCPU / 16 GB on a public one, with a 6-hour job ceiling against
 
   *All figures verified against GitHub's billing documentation, 2026-09-21.*
 
-  **The break-even, which is the number to design against:** NFR-1 allows $20/month
-  and the subscription takes $10, leaving ~1,667 paid minutes — so **~121 runs/month
-  on private repos at 30 minutes each**, or **~81 at 45 minutes**. Past that, either
-  the ceiling breaks or the runner stops.
+  **The break-even, which is the number to design against:** NFR-1 allows $30/month
+  and the subscription takes $10 to $20, leaving $20 to $10, which is ~3,333 to ~1,667
+  paid minutes beyond the 2,000 free — so **~177 to ~122 runs/month on private repos
+  at 30 minutes each**, or **~118 to ~81 at 45 minutes** (a $10 plan first, a $20
+  plan second). Past that, either the ceiling breaks or the runner stops.
+  *(Updated 2026-09-29: the ceiling moved from $20 to $30; the old figures are the
+  $20-plan case, recomputed as 122 and 81 rather than 121 and 81.)*
 
 - ⚠️ **The binding limit is coupled to the least certain number in the product.**
   Run duration is assumed ~30 minutes and has **never been measured** — it is on the

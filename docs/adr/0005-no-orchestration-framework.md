@@ -2,6 +2,10 @@
 
 - **Date:** 2026-09-21
 - **Status:** accepted
+- **Amended 2026-10-05:** the harness is the Command Code CLI on its GOAT plan, not
+  opencode on OpenCode Go — see `adr/0015`. The decision is unchanged: the agent is
+  still a third-party CLI run as a subprocess, so where this record says opencode,
+  read the harness.
 
 ## Context
 

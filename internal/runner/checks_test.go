@@ -105,14 +105,14 @@ func TestRunChecksFailsClosedWhenAGateCannotRunAtAll(t *testing.T) {
 
 // TestRunChecksStripsSensitiveEnvFromItsSubprocesses is the regression for
 // RunChecks executing arbitrary agent-written code (an init() or TestMain)
-// with the model job's full environment inherited — OPENCODE_API_KEY and the
+// with the model job's full environment inherited — COMMANDCODE_API_KEY and the
 // workload-identity credentials among it. It sets both in the test process's
 // own environment, the same way the model job's steps do, and has the
 // module's own test assert neither reached it: if checks.go ever stops
 // filtering the subprocess environment, this module's own gate fails, which
 // RunChecks reports as gate == checkTest rather than a clean pass.
 func TestRunChecksStripsSensitiveEnvFromItsSubprocesses(t *testing.T) {
-	t.Setenv("OPENCODE_API_KEY", "should-not-leak")
+	t.Setenv("COMMANDCODE_API_KEY", "should-not-leak")
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "/should/not/leak.json")
 	dir := initModule(t)
 	writeModuleFile(t, dir, "leak_test.go", `package x
@@ -123,7 +123,7 @@ import (
 )
 
 func TestNoSecretLeaked(t *testing.T) {
-	for _, k := range []string{"OPENCODE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS"} {
+	for _, k := range []string{"COMMANDCODE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS"} {
 		if v := os.Getenv(k); v != "" {
 			t.Fatalf("%s leaked into the check subprocess: %q", k, v)
 		}
@@ -141,14 +141,14 @@ func TestNoSecretLeaked(t *testing.T) {
 
 func TestCheckEnvNamesExcludeTheModelJobsSecretsButKeepTheGoToolchain(t *testing.T) {
 	got := filterEnv([]string{
-		"OPENCODE_API_KEY=k",
+		"COMMANDCODE_API_KEY=k",
 		"GOOGLE_APPLICATION_CREDENTIALS=/tmp/creds.json",
 		"GOOGLE_GHA_CREDS_PATH=/tmp/creds.json",
 		"PATH=/usr/bin",
 		"GOPATH=/home/runner/go",
 	}, checkEnvNames)
 	joined := strings.Join(got, "\n")
-	for _, withheld := range []string{"OPENCODE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_GHA_CREDS_PATH"} {
+	for _, withheld := range []string{"COMMANDCODE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_GHA_CREDS_PATH"} {
 		if strings.Contains(joined, withheld) {
 			t.Fatalf("checkEnvNames allows %s through: %v", withheld, got)
 		}

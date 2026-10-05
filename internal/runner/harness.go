@@ -26,8 +26,8 @@ type Harness interface {
 	Agent(p Profile, model string) Agent
 	// Classify maps a failed run's stderr tail and exit error to an outcome.
 	Classify(stderrTail string, exitErr error) (Outcome, StopReason)
-	// Ready reports whether the run is configured to use the harness — a
-	// proprietary harness's opt-in — nil when it is (AC7).
+	// Ready reports whether the run is configured to use the harness, nil
+	// when it is (AC7).
 	Ready() error
 }
 
@@ -83,7 +83,7 @@ func (r Router) Classify(stderrTail string, exitErr error) (Outcome, StopReason)
 }
 
 // Gate reports whether the run is configured to use model, refusing one no
-// harness serves or whose harness is not opted in (AC7).
+// harness serves or whose harness is not configured (AC7).
 func (r Router) Gate(model string) error {
 	h, ok := harnessFor(r.harnesses, Provider(model))
 	if !ok {

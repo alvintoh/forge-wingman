@@ -58,12 +58,12 @@ type RunnerMinutes struct {
 // configuration.
 type BudgetConfig struct {
 	// ProviderWindows are the selected provider's own rolling allowance
-	// ceilings (OpenCode Go: 5h/$12, week/$30, month/$60). Checked INSTEAD OF
+	// ceilings (Command Code GOAT: 5h/$14, week/$35, month/$70). Checked INSTEAD OF
 	// Cash for provider cost, per NFR-1 — a windowed subscription already
 	// satisfies the cash cap. Empty for a per-token provider, whose cost is
 	// then checked against Cash directly.
 	ProviderWindows []Window
-	// Cash is NFR-1's $20/month ceiling.
+	// Cash is NFR-1's $30/month ceiling.
 	Cash Window
 	// Runner is the runner-minutes ceiling, checked independently (FR-22).
 	Runner RunnerMinutes

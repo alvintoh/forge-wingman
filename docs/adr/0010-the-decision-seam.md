@@ -10,6 +10,9 @@
   legible — but it no longer holds. What survives unchanged is the finding
   underneath it: FR-15's two thresholds need a CALIBRATED probability, which is
   a property rather than a product.
+- **Amended 2026-10-05:** the build seam's harness and provider are now the
+  Command Code CLI and its GOAT plan, not opencode and OpenCode Go — see
+  `adr/0015`. The seam split and the decision seam are unchanged.
 
 ## Context
 
@@ -212,7 +215,12 @@ enforcement, not its prose, is the oracle.)
 
 ## Revisit
 
-## Starting configuration, and the flexibility deliberately retained
+## ~~Starting configuration~~, and the flexibility deliberately retained
+
+> [!NOTE]
+> **Superseded (2026-10-05) by `adr/0015`:** the build seam starts on Command Code's
+> GOAT plan ($10/month; $14/5h, $35/7d, $70/month), not OpenCode Go. The budget
+> reasoning below still holds, and so does the OpenRouter configuration.
 
 **Start on OpenCode Go — the reason is budget, and it is a good one.** $10/month
 flat against pay-per-token at ~1.06M tokens a ticket is a real discount, not a
@@ -229,7 +237,7 @@ subscription — which is a measurement the run record will make.
 | Revisit | When |
 |---|---|
 | The candidate | it is scored against FR-15's held-out set — the only gate left, since NFR-2 no longer bars anything |
-| The build provider | per-token spend through a gateway would beat OpenCode Go's flat $10 — measurable from FR-6's cost field |
+| The build provider | per-token spend through a gateway would beat GOAT's flat $10 — measurable from FR-6's cost field once FRG-47 fills it. *Updated (2026-10-05):* this named OpenCode Go |
 | ~~The NFR-2 mechanism~~ | **moot from 2026-09-21** — FR-21's and FR-26's posture checks were removed with NFR-2's rewrite; posture is recorded, not enforced |
 | The seam itself | if a second classification appears — FR-9's unverifiable-fact and FR-10's fork detection are both bounded-output decisions the build model currently makes inline, spending its own context on them |
 | The gateway | if more than one classifier is ever compared in production rather than in evaluation |
