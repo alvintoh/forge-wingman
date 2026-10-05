@@ -1,4 +1,4 @@
-# The model's half of a run: fetch the projection, run opencode, upload its completions,
+# The model's half of a run: fetch the projection, run the agent, upload its completions,
 # then commit and bundle what it changed. Its identity may read projections and create
 # completions, and nothing else, so it cannot read or write a run record: the ticket
 # arrives as an input from run.yml's ticket job, and the record job validates the
@@ -32,6 +32,9 @@ on:
     secrets:
       OPENCODE_API_KEY:
         required: true
+      # The proprietary harness's key; optional, and only used when opted into.
+      COMMANDCODE_API_KEY:
+        required: false
     outputs:
       attempt_id:
         value: ${{ jobs.build.outputs.attempt_id }}
@@ -94,6 +97,23 @@ jobs:
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           test "$("$RUNNER_TEMP/bin/opencode" --version)" = "${OPENCODE_VERSION}"
 
+      # Installed only when the run is opted into the harness, so a run that never
+      # uses it carries neither the package nor its registry dependency. The CLI
+      # needs Node 22 or later (its package.json engines field).
+      - if: vars.COMMAND_CODE_OPT_IN == 'true'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      # tools/command-code's lockfile pins the CLI and every dependency it
+      # installs, each checked against its recorded integrity.
+      - name: Install command-code
+        if: vars.COMMAND_CODE_OPT_IN == 'true'
+        run: |
+          npm ci --prefix tools/command-code --no-audit --no-fund
+          echo "$GITHUB_WORKSPACE/tools/command-code/node_modules/.bin" >> "$GITHUB_PATH"
+          test "$(tools/command-code/node_modules/.bin/cmd --version)" = "$(jq -r '.dependencies["command-code"]' tools/command-code/package.json)"
+
       - id: auth
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
@@ -110,6 +130,8 @@ jobs:
           TICKET: ${{ inputs.ticket }}
           WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
+          COMMAND_CODE_OPT_IN: ${{ vars.COMMAND_CODE_OPT_IN }}
         run: '"$RUNNER_TEMP/runner" build -model "$MODEL" -review-model "$REVIEW_MODEL" -plan-models "$PLAN_MODELS" -ticket "$TICKET"'
 
       # wingman.bundle here and in run.yml's check and pr jobs is bundleName in internal/runner/build.go.

@@ -26,7 +26,7 @@ func (l *listFlag) Set(v string) error { *l = append(*l, v); return nil }
 // recorded against it.
 func planDefine(ctx context.Context, logger *slog.Logger, e env, args []string) error {
 	fs := flag.NewFlagSet("plan-define", flag.ContinueOnError)
-	provider := fs.String("provider", "", "provider the plan belongs to, e.g. opencode")
+	provider := fs.String("provider", "", "provider the plan belongs to")
 	name := fs.String("name", "", "plan name")
 	price := fs.String("price-usd", "", "monthly price in USD")
 	limit := fs.String("limit", string(providers.LimitUnknown), "behaviour at the limit: hard-stop, can-spend-past or unknown")

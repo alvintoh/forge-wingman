@@ -84,9 +84,11 @@ type BuildConfig struct {
 	// builder checking its own work.
 	ReviewModel  string
 	AgentTimeout time.Duration
-	Secret       string
-	Identity     Identity
-	Ticket       Ticket
+	// Secrets are checked against the branch before it is bundled, so an
+	// agent's own API key never reaches the pushed branch.
+	Secrets  []string
+	Identity Identity
+	Ticket   Ticket
 }
 
 // BuildResult is what the workflow needs from a build to open the PR.
@@ -192,6 +194,19 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		}
 		if c.ReviewModel == c.Model {
 			return stopWith(OutcomeStopped, StopModelInvalid, errors.New("review model must differ from the build model"))
+		}
+		// A proprietary harness the run is not opted into stops here, before
+		// any agent runs, with the same model-invalid stop (AC7).
+		if g, ok := d.Agent.(modelGate); ok {
+			models := []string{c.Model, c.ReviewModel}
+			if c.Ticket.Size != "S" {
+				models = append(models, c.PlanModels...)
+			}
+			for _, m := range models {
+				if err := g.Gate(m); err != nil {
+					return stopWith(OutcomeStopped, StopModelInvalid, err)
+				}
+			}
 		}
 		p, err := FetchBuildProjection(ctx, d.Projections, c.Pointer)
 		var missing *MissingError
@@ -325,11 +340,13 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 				return stopWith(OutcomeStopped, StopOutOfPlan, fmt.Errorf("edited outside the plan: %s", strings.Join(extra, ", ")))
 			}
 		}
-		if err := wt.CheckSecret(ctx, c.Secret); err != nil {
-			if errors.Is(err, ErrSecretInBranch) {
-				return stopWith(OutcomeStopped, StopSecretInBranch, err)
+		for _, secret := range c.Secrets {
+			if err := wt.CheckSecret(ctx, secret); err != nil {
+				if errors.Is(err, ErrSecretInBranch) {
+					return stopWith(OutcomeStopped, StopSecretInBranch, err)
+				}
+				return stopWith(OutcomeInfraFailure, StopCommit, err)
 			}
-			return stopWith(OutcomeInfraFailure, StopCommit, err)
 		}
 		res.BundlePath = filepath.Join(c.TempDir, bundleName)
 		if err := wt.Bundle(ctx, res.BundlePath); err != nil {
@@ -442,7 +459,7 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 	case timedOut:
 		return text, sessionID, stopWith(OutcomeAgentFailed, StopAgentTimeout, fmt.Errorf("agent exceeded %s", timeout))
 	case runErr != nil:
-		outcome, reason := classifyAgentFailure(stderrPath)
+		outcome, reason := classifyAgentFailure(agent, stderrPath, runErr)
 		return text, sessionID, stopWith(outcome, reason, runErr)
 	}
 	return text, sessionID, nil
@@ -545,39 +562,6 @@ func bindModel(agent Agent, model string) Agent {
 	return agent
 }
 
-// allowanceMarkers are phrases assumed to appear in the agent's stderr when
-// the provider's own allowance is exhausted mid-build, distinguishing a
-// budget stop (FR-22, never escalated) from an ordinary agent failure (FR-13,
-// which may retry at a higher tier). UNVERIFIED against a live exhaustion: no
-// probe has confirmed OpenCode Go's actual wording, so this is a documented
-// assumption pending that verification, not an observed fact — see the PR's
-// Known Limitations.
-var allowanceMarkers = []string{
-	"allowance exhausted",
-	"insufficient credit",
-	"insufficient balance",
-	"quota exceeded",
-	"payment required",
-}
-
-// availabilityMarkers are phrases assumed to appear in the agent's stderr
-// when the requested model itself is unavailable — rate-limited, overloaded,
-// or pulled from the provider's roster — distinguishing an availability stop
-// (AC1's same-provider substitution) from an ordinary agent failure.
-// UNVERIFIED against a live outage: no probe has confirmed OpenCode Go's
-// actual wording, so this is a documented assumption pending that
-// verification, not an observed fact — see the PR's Known Limitations.
-var availabilityMarkers = []string{
-	"model not found",
-	"model not available",
-	"model unavailable",
-	"no endpoints found",
-	"rate limited",
-	"overloaded",
-	"service unavailable",
-	"bad gateway",
-}
-
 // classifyStderrTail is how much of the agent's stderr classifyAgentFailure
 // reads, from the END of the file — an exhaustion message is the process's
 // last output before it exits, and bounding the read keeps a runaway stream
@@ -585,27 +569,19 @@ var availabilityMarkers = []string{
 // gracefully.
 const classifyStderrTail = 64 << 10
 
-// classifyAgentFailure reads a bounded tail of the agent's stderr file to
-// tell a provider allowance exhaustion apart from any other agent failure.
-// A read it cannot perform (or a stderr silent on every marker) falls back to
-// the ordinary agent-failure classification, never to a false budget stop.
-func classifyAgentFailure(stderrPath string) (Outcome, StopReason) {
+// classifyAgentFailure reads a bounded tail of the agent's stderr file and
+// classifies the failure through the agent's own harness when it has one, else
+// by the assumed provider markers. A read it cannot perform falls back to the
+// ordinary agent-failure classification, never to a false budget stop.
+func classifyAgentFailure(agent Agent, stderrPath string, exitErr error) (Outcome, StopReason) {
 	raw, err := readTail(stderrPath, classifyStderrTail)
 	if err != nil {
 		return OutcomeAgentFailed, StopAgentExit
 	}
-	lower := strings.ToLower(string(raw))
-	for _, marker := range allowanceMarkers {
-		if strings.Contains(lower, marker) {
-			return OutcomeBudgetStop, StopAllowanceExhausted
-		}
+	if c, ok := agent.(failureClassifier); ok {
+		return c.Classify(string(raw), exitErr)
 	}
-	for _, marker := range availabilityMarkers {
-		if strings.Contains(lower, marker) {
-			return OutcomeInfraFailure, StopModelUnavailable
-		}
-	}
-	return OutcomeAgentFailed, StopAgentExit
+	return classifyMarkers(string(raw))
 }
 
 // readTail reads at most limit bytes from the end of the file at path.

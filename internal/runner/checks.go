@@ -21,8 +21,8 @@ const (
 )
 
 // checkEnvNames are the variables a check gate's subprocess inherits: the Go
-// toolchain's and golangci-lint's own needs, deliberately not
-// OPENCODE_API_KEY or the workload-identity credentials model.yml's auth
+// toolchain's and golangci-lint's own needs, deliberately not an agent's API
+// key or the workload-identity credentials model.yml's auth
 // step exports. An allow-list, not an exclude-list, so a secret added to
 // that job later isn't carried in by default. TEMP/TMP/LocalAppData are
 // Windows' equivalents of TMPDIR/GOCACHE's own fallback path, needed for

@@ -22,7 +22,11 @@ func TestLoadEnv(t *testing.T) {
 		"GITHUB_RUN_ID":        "42",
 		"GITHUB_RUN_ATTEMPT":   "2",
 	}
-	e, err := loadEnv(func(k string) string { return full[k] })
+	required, known := requiredEnv("build")
+	if !known {
+		t.Fatal("build is not a known subcommand")
+	}
+	e, err := loadEnv(func(k string) string { return full[k] }, required...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,9 +36,59 @@ func TestLoadEnv(t *testing.T) {
 
 	delete(full, "GITHUB_RUN_ATTEMPT")
 	delete(full, "GOOGLE_CLOUD_PROJECT")
-	_, err = loadEnv(func(k string) string { return full[k] })
+	_, err = loadEnv(func(k string) string { return full[k] }, required...)
 	if err == nil || !strings.Contains(err.Error(), "GOOGLE_CLOUD_PROJECT GITHUB_RUN_ATTEMPT") {
 		t.Fatalf("err = %v, want both missing names", err)
+	}
+}
+
+// TestLoadEnvNeedsOnlyTheProjectForAnOwnerCommand is the regression for an owner
+// command failing locally: it reads no workflow-run identity, so it must run
+// with the project alone.
+func TestLoadEnvNeedsOnlyTheProjectForAnOwnerCommand(t *testing.T) {
+	required, known := requiredEnv("plan-define")
+	if !known {
+		t.Fatal("plan-define is not a known subcommand")
+	}
+	only := map[string]string{"GOOGLE_CLOUD_PROJECT": "p"}
+	if _, err := loadEnv(func(k string) string { return only[k] }, required...); err != nil {
+		t.Fatalf("an owner command needs the project alone: %v", err)
+	}
+	_, err := loadEnv(func(string) string { return "" }, required...)
+	if err == nil || !strings.Contains(err.Error(), "GOOGLE_CLOUD_PROJECT") {
+		t.Fatalf("err = %v, want only the project named", err)
+	}
+}
+
+// TestRecordNeedsTheRunsIdentity asserts record, which checks the attempt id
+// against its own run, still refuses to start without that run's identity.
+func TestRecordNeedsTheRunsIdentity(t *testing.T) {
+	required, _ := requiredEnv("record")
+	only := map[string]string{"GOOGLE_CLOUD_PROJECT": "p"}
+	_, err := loadEnv(func(k string) string { return only[k] }, required...)
+	if err == nil || !strings.Contains(err.Error(), "GITHUB_RUN_ID GITHUB_RUN_ATTEMPT") {
+		t.Fatalf("err = %v, want the run id and attempt named", err)
+	}
+}
+
+// TestHarnessesOptInOnlyOnAnExactTrue asserts the proprietary harness is opted
+// in by the variable's exact value, and keeps its HOME under the job's temp
+// directory so a later round finds the earlier session.
+func TestHarnessesOptInOnlyOnAnExactTrue(t *testing.T) {
+	for value, want := range map[string]bool{"true": true, "yes": false, "": false} {
+		env := map[string]string{"COMMAND_CODE_OPT_IN": value, "COMMANDCODE_API_KEY": "k", "RUNNER_TEMP": "/tmp/r"}
+		var cc runner.CommandCodeHarness
+		for _, h := range harnesses(func(k string) string { return env[k] }) {
+			if c, ok := h.(runner.CommandCodeHarness); ok {
+				cc = c
+			}
+		}
+		if cc.OptIn != want {
+			t.Errorf("COMMAND_CODE_OPT_IN=%q opted in = %v, want %v", value, cc.OptIn, want)
+		}
+		if cc.Home != filepath.Join("/tmp/r", "commandcode-home") {
+			t.Errorf("home = %q, want it under RUNNER_TEMP", cc.Home)
+		}
 	}
 }
 
@@ -66,7 +120,8 @@ func TestLoadEnvRejectsAMalformedAttempt(t *testing.T) {
 	for _, attempt := range []string{"0", "01", "x", "-1"} {
 		env := map[string]string{"GOOGLE_CLOUD_PROJECT": "p", "RUNNER_TEMP": "/tmp/r", "GITHUB_RUN_ID": "42",
 			"GITHUB_RUN_ATTEMPT": attempt}
-		if _, err := loadEnv(func(k string) string { return env[k] }); err == nil {
+		if _, err := loadEnv(func(k string) string { return env[k] },
+			"GOOGLE_CLOUD_PROJECT", "RUNNER_TEMP", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"); err == nil {
 			t.Errorf("accepted attempt %q", attempt)
 		}
 	}

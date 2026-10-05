@@ -8,3 +8,4 @@
 # OpenTofu working directory; the lock file stays tracked.
 .terraform/
 __pycache__/
+/tools/command-code/node_modules/
