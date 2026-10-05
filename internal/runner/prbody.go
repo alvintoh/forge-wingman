@@ -21,12 +21,16 @@ const (
 var errTemplate = errors.New("pull request template lacks the ticket line, summary, verification table or notes")
 
 // PRBody renders the pull request template for a run of ticket t: `ref` to the
-// ticket, its title as the summary, the check job's report in place of the example
-// rows, and runURL and the ticket's body, fenced, in the notes, dropping the
-// screenshots section. failedGate is empty when the check reported a pass.
-// loopDetail is the pre-PR loop's report of why the PR opened as a draft
-// (FR-5), empty when it did not.
-func PRBody(template string, t Ticket, failedGate, runURL, loopDetail string) (string, error) {
+// ticket, prSummary as the summary (or `ID`: title when it is empty), the
+// check job's report in place of the example rows, and runURL and the ticket's
+// body, fenced, in the notes, dropping the screenshots section. failedGate is
+// empty when the check reported a pass. loopDetail is the pre-PR loop's report
+// of why the PR opened as a draft (FR-5), empty when it did not.
+func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail string) (string, error) {
+	summary := prSummary
+	if summary == "" {
+		summary = "`" + t.ID + "`: " + t.Title
+	}
 	lines := strings.Split(strings.ReplaceAll(template, "\r\n", "\n"), "\n")
 	var out []string
 	var section string
@@ -41,7 +45,7 @@ func PRBody(template string, t Ticket, failedGate, runURL, loopDetail string) (s
 			filled[templateTicketLine] = true
 		case section == templateScreens:
 		case section == templateSummary && commentEnds(lines, i):
-			out = append(out, line, "`"+t.ID+"`: "+t.Title)
+			out = append(out, line, summary)
 			filled[templateSummary] = true
 		case line == templateTableRule:
 			out = append(out, line, gateRow(failedGate))

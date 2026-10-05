@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 )
 
@@ -37,17 +38,38 @@ func ParsePorcelain(out []byte) ([]string, error) {
 	return paths, nil
 }
 
+// uncommitted is every path git reports as changed and not yet committed.
+func (w Worktree) uncommitted(ctx context.Context) ([]string, error) {
+	out, err := w.git(ctx, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	if err != nil {
+		return nil, err
+	}
+	return ParsePorcelain(out)
+}
+
+// PendingFiles is every file that differs from the base, committed by the agent
+// or not, without committing anything.
+func (w Worktree) PendingFiles(ctx context.Context) ([]string, error) {
+	paths, err := w.uncommitted(ctx)
+	if err != nil {
+		return nil, err
+	}
+	diff, err := w.git(ctx, "diff", "--name-only", "-z", w.Base, "HEAD")
+	if err != nil {
+		return nil, err
+	}
+	all := append(paths, splitNUL(diff)...)
+	slices.Sort(all)
+	return slices.Compact(all), nil
+}
+
 // ErrSecretInBranch reports a branch whose objects contain a withheld secret.
 var ErrSecretInBranch = errors.New("branch contains a secret value")
 
 // Commit stages exactly the paths git reports as changed, commits them, and
 // returns every file that differs from the base, the agent's own commits included.
 func (w Worktree) Commit(ctx context.Context, message string) ([]string, error) {
-	out, err := w.git(ctx, "status", "--porcelain=v1", "-z", "--untracked-files=all")
-	if err != nil {
-		return nil, err
-	}
-	paths, err := ParsePorcelain(out)
+	paths, err := w.uncommitted(ctx)
 	if err != nil {
 		return nil, err
 	}

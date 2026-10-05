@@ -236,8 +236,9 @@ func TestBuildCommitsAndBundlesTheAgentsEdits(t *testing.T) {
 	if !res.Changed || res.Branch != "wingman/abc-12-42-1" {
 		t.Fatalf("result = %+v", res)
 	}
-	if !strings.HasPrefix(agent.prompt, "# Rules") || !strings.HasSuffix(strings.TrimSpace(agent.prompt), testTicket.Text()) {
-		t.Fatalf("prompt does not end with the ticket: %q", agent.prompt)
+	if !strings.HasPrefix(agent.prompt, "# Rules") ||
+		!strings.HasSuffix(agent.prompt, testTicket.Text()+"\n\n\n"+commitMessageInstruction) {
+		t.Fatalf("prompt does not end with the ticket then the commit-message instruction: %q", agent.prompt)
 	}
 
 	rec := reported.last(t)
@@ -1518,5 +1519,137 @@ func TestRunAgentLogsEveryModelRequest(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("modelRequest lines = %+v, want %+v", got, want)
+	}
+}
+
+// commitBlock is a valid commit-message block for testTicket naming subject.
+func commitBlock(subject string) string {
+	return "Done.\n\n```commit-message\n" + subject + "\n\nAdds the version file.\n\n- add version.go\n```"
+}
+
+func TestBuildCommitsWithTheAgentsCommitMessage(t *testing.T) {
+	agent := &fakeAgent{edit: edit("version.go", "package x\n"), events: planEvent(commitBlock("feat(x): ABC-12 add the version file"))}
+	deps, _, reported := testDeps(validObjects(), agent)
+	c := testConfig(t, initRepo(t))
+	c.Ticket.Title = "[BE] Add a file"
+
+	res, err := Build(context.Background(), deps, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGit(t, c.Repo, "log", "-1", "--format=%B", res.Branch); got != "feat(x): ABC-12 add the version file\n\n- add version.go\n\n" {
+		t.Fatalf("commit message = %q", got)
+	}
+	sum := reported.last(t)
+	if sum.CommitSubject != "feat(x): ABC-12 add the version file" || sum.CommitBody != "- add version.go" ||
+		sum.PRSummary != "Adds the version file." {
+		t.Fatalf("summary commit fields = %q, %q, %q", sum.CommitSubject, sum.CommitBody, sum.PRSummary)
+	}
+}
+
+func TestBuildFallsBackToTheLaneAndPackageWithoutAValidBlock(t *testing.T) {
+	agent := &fakeAgent{
+		edit: func(dir string) error {
+			if err := os.MkdirAll(filepath.Join(dir, "internal", "runner"), 0o700); err != nil {
+				return err
+			}
+			return edit("internal/runner/x.go", "package runner\n")(dir)
+		},
+		events: planEvent(commitBlock("feat: add it")),
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	c := testConfig(t, initRepo(t))
+	c.Ticket.Title = "[INFRA] Add a file"
+
+	res, err := Build(context.Background(), deps, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGit(t, c.Repo, "log", "-1", "--format=%B", res.Branch); got != "chore(runner): ABC-12 add a file\n\nAdd a file.\n\n" {
+		t.Fatalf("commit message = %q", got)
+	}
+	sum := reported.last(t)
+	if sum.CommitSubject != "chore(runner): ABC-12 add a file" || sum.CommitBody != c.Ticket.Body || sum.PRSummary != "Add a file" {
+		t.Fatalf("summary commit fields = %q, %q, %q", sum.CommitSubject, sum.CommitBody, sum.PRSummary)
+	}
+}
+
+func TestBuildKeepsAValidCommitMessageOverALaterInvalidOne(t *testing.T) {
+	agent := &fakeAgent{
+		edit: edit("version.go", "package x\n"),
+		eventsFn: func(call int) string {
+			if call == 1 {
+				return planEvent(commitBlock("feat(x): ABC-12 add the version file"))
+			}
+			return planEvent(commitBlock("bound the retries"))
+		},
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	deps.ReviewAgent = &fakeAgent{events: reviewEvent("the retry never bounds its attempts")}
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if sum := reported.last(t); sum.CommitSubject != "feat(x): ABC-12 add the version file" {
+		t.Fatalf("commit subject = %q, want the build round's valid one", sum.CommitSubject)
+	}
+}
+
+func TestBuildFallbackScopesFilesTheAgentCommittedItself(t *testing.T) {
+	agent := &fakeAgent{
+		edit: func(dir string) error {
+			if err := os.MkdirAll(filepath.Join(dir, "internal", "dispatcher"), 0o700); err != nil {
+				return err
+			}
+			if err := edit("internal/dispatcher/x.go", "package dispatcher\n")(dir); err != nil {
+				return err
+			}
+			cmd := exec.Command("git", "-c", "user.name=a", "-c", "user.email=a@a", "commit", "-qam", "wip")
+			cmd.Dir = dir
+			if out, err := exec.Command("git", "-C", dir, "add", "-A").CombinedOutput(); err != nil {
+				return fmt.Errorf("git add: %v: %s", err, out)
+			}
+			if out, err := cmd.CombinedOutput(); err != nil {
+				return fmt.Errorf("git commit: %v: %s", err, out)
+			}
+			return nil
+		},
+		events: planEvent("Done."),
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	c := testConfig(t, initRepo(t))
+	c.Ticket.Title = "[BE] Add a file"
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if sum := reported.last(t); sum.CommitSubject != "feat(dispatcher): ABC-12 add a file" {
+		t.Fatalf("commit subject = %q, want the scope of the file the agent committed", sum.CommitSubject)
+	}
+}
+
+func TestBuildCommitsWithTheFixRoundsCommitMessage(t *testing.T) {
+	agent := &fakeAgent{
+		edit: edit("version.go", "package x\n"),
+		eventsFn: func(call int) string {
+			if call == 1 {
+				return planEvent(commitBlock("feat(x): ABC-12 add the version file"))
+			}
+			return planEvent(commitBlock("fix(x): ABC-12 bound the retries"))
+		},
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	deps.ReviewAgent = &fakeAgent{events: reviewEvent("the retry never bounds its attempts")}
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(agent.prompts[1], commitMessageInstruction) {
+		t.Fatalf("fix round prompt = %q, want it to end with the commit-message instruction", agent.prompts[1])
+	}
+	if sum := reported.last(t); sum.CommitSubject != "fix(x): ABC-12 bound the retries" {
+		t.Fatalf("commit subject = %q, want the fix round's", sum.CommitSubject)
 	}
 }

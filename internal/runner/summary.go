@@ -47,9 +47,15 @@ type Summary struct {
 	UsageWarning string           `json:"usage_warning,omitempty"`
 	// Ready is FR-5's draft-vs-ready decision, from the pre-PR loop (FR-28):
 	// true only when the checks passed and the review found nothing open.
-	Ready      bool      `json:"ready"`
-	LoopDetail string    `json:"loop_detail,omitempty"`
-	StartedAt  time.Time `json:"started_at"`
+	Ready      bool   `json:"ready"`
+	LoopDetail string `json:"loop_detail,omitempty"`
+	// CommitSubject is the subject the build committed with, and the PR's title.
+	CommitSubject string `json:"commit_subject,omitempty"`
+	// CommitBody is the commit message after its subject.
+	CommitBody string `json:"commit_body,omitempty"`
+	// PRSummary is the PR's one-line summary.
+	PRSummary string    `json:"pr_summary,omitempty"`
+	StartedAt time.Time `json:"started_at"`
 }
 
 // Step is one agent invocation in a run's build, distinct from Usage.Steps,
@@ -190,6 +196,9 @@ func ParseSummary(raw, attemptID string, t Ticket, now time.Time) (Summary, erro
 	s.StopDetail = truncate(s.StopDetail, stopDetailLimit)
 	s.UsageWarning = truncate(s.UsageWarning, stopDetailLimit)
 	s.LoopDetail = truncate(s.LoopDetail, stopDetailLimit)
+	s.CommitSubject = truncate(s.CommitSubject, stopDetailLimit)
+	s.CommitBody = truncate(s.CommitBody, maxTicketBodyBytes)
+	s.PRSummary = truncate(s.PRSummary, stopDetailLimit)
 	s.EditedFiles = capFiles(s.EditedFiles)
 	return s, nil
 }
@@ -240,6 +249,9 @@ func (s Summary) validate(attemptID string, t Ticket, now time.Time) error {
 		if ms < 0 || ms > maxPhaseDuration.Milliseconds() {
 			return fmt.Errorf("duration %d ms for %s is out of range", ms, p)
 		}
+	}
+	if !printable(s.CommitSubject) || !printable(s.PRSummary) {
+		return errors.New("commit subject or PR summary is not one printable line")
 	}
 	if s.RuleStackSHA != "" && !shaPattern.MatchString(s.RuleStackSHA) {
 		return errors.New("rule-stack sha is not a commit sha")

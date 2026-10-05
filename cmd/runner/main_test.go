@@ -378,3 +378,14 @@ func TestAppendFileAppendsAndCreatesOwnerOnly(t *testing.T) {
 		t.Fatal("appendFile wrote to a directory")
 	}
 }
+
+func TestPRTitlePrefersTheCommittedSubject(t *testing.T) {
+	rec := runner.Record{TicketID: "ABC-1", TicketTitle: "[BE] Add the widget"}
+	if got := prTitle(rec); got != "ABC-1 [BE] Add the widget" {
+		t.Fatalf("title without a committed subject = %q, want the ticket's subject", got)
+	}
+	rec.CommitSubject = "feat(runner): ABC-1 add the widget"
+	if got := prTitle(rec); got != "feat(runner): ABC-1 add the widget" {
+		t.Fatalf("title = %q, want the committed subject", got)
+	}
+}
