@@ -1,7 +1,7 @@
 ---
 title: Forge Wingman — tech design v1
 date: 2026-09-21
-tags: [tech-design, forge-wingman, go, firestore, github-actions, cloud-run, opencode]
+tags: [tech-design, forge-wingman, go, firestore, github-actions, cloud-run, command-code]
 status: draft
 version: 1
 ---
@@ -209,14 +209,18 @@ language. A reusable workflow living in each target repo, called with the run id
 | fresh VM, fresh checkout | FR-2 isolation, free — nothing to build |
 | create the worktree and branch | FR-2 |
 | fetch the projection for the current rule-stack sha from Cloud Storage; refuse if absent | FR-19 — full for plan, trimmed for build; `adr/0012` |
-| `opencode run` for the plan phase, `edit`/`bash` denied | FR-3 |
-| `opencode run` for the build phase | FR-4 — every edited file must appear in the plan's list |
+| Command Code `--plan` for the plan phase, edit and shell refused | FR-3 |
+| Command Code `--yolo` for the build phase | FR-4 — every edited file must appear in the plan's list |
 | the repo's checks, fed back to the builder for up to 3 rounds; then one review by a different model against the ACs | FR-28 — same tier throughout, so never FR-13 escalation |
 | open the PR, state decided at creation | FR-5 — never transitioned afterwards; still-failing checks or open findings make it a draft |
 | write the run record and upload completions | FR-6, and NFR-7's stdout prohibition |
 
-**Gates are enforced in three places, deliberately.** opencode's per-agent
-`permission` block denies the tool; the runner refuses and records; and the
+*Updated (2026-10-05):* the two phase rows named `opencode run`; the harness is
+Command Code since `adr/0015`.
+
+**Gates are enforced in three places, deliberately.** The harness's restricted
+profile denies the tool (*Updated (2026-10-05):* Command Code's `--plan`; this
+said opencode's per-agent `permission` block); the runner refuses and records; and the
 capability is **withheld** rather than merely denied — the job the model runs in
 never holds permission to mark a PR ready or to merge, so FR-5's "the runner
 cannot change it" is structural rather than conventional.
@@ -271,7 +275,11 @@ failure mode — which is why they get separate providers rather than one
 abstraction spanning both. Unifying them because they are both *AI* would be
 picking the wrong axis. See `adr/0010`.
 
-#### The BUILD seam — opencode
+#### ~~The BUILD seam — opencode~~ The BUILD seam — Command Code
+
+**Superseded (2026-10-05) by `adr/0015`:** the harness is the Command Code CLI and the
+provider its GOAT plan ($10/month; $14/5h, $35/7d, $70/month). The seam's shape below
+is unchanged.
 
 **opencode is the harness.** Per-agent `model`, `prompt` and `permission`;
 provider OpenCode Go, with pay-per-token documented as the fallback. No
@@ -322,7 +330,8 @@ as `typesafe/jev-1.13` at the same price, which is useful for comparing several
 classifiers and would collapse two credentials into one. The argument against a
 gateway was that NFR-2 bound every party in the data path; **NFR-2 selects on
 performance as of 2026-09-21**, so a gateway costs no verification. What remains
-is that OpenCode Go is $10/month flat against per-token, which FR-6 measures.
+is that GOAT is $10/month flat against per-token, which FR-6 measures once FRG-47
+fills its cost (*Updated (2026-10-05):* this named OpenCode Go).
 
 ⚠️ **Pin the version either way** — `~typesafe/jev-latest` floats, and a
 floating id lets the model change with no configuration edit, which contradicts
@@ -339,6 +348,12 @@ graph engine would be orchestrating an orchestrator.
 > opposite premise, and the difference matters.** That product's argument is that
 > *the model never picks the path*. Here the model does pick the path — we simply
 > do not own the layer where it happens.
+
+**Superseded (2026-10-05) by `adr/0015`, in its mechanism:** the `x-opencode-session`
+header below was opencode's. Under Command Code a per-run HOME and
+`--resume <sessionId>` keep a phase's prefix warm within a run; whether a retry
+reuses the original run's cache is unmeasured, so the ticket-keyed bullet is
+unverified. The throughput argument stands.
 
 **Prompt caching is a throughput mechanism, and it constrains the projection.**
 The provider exposes a *Cached Read* price on every model and asks for one thing:
@@ -416,3 +431,4 @@ It is the only diagram in this product that names technology.
 | 2 | **Updated (2026-09-25): first full run measured** — one size-S ticket (no plan phase): build 4m13s, whole run 7m06s, ~8 billed runner minutes (each job rounds up to the minute), so ~250 runs/month fit a private target's free 2,000. One sample: close at ≥10 runs per size, with p90 for the per-run cap and the mean for minute budgets. ~~probe cells ran **0.9–8.1 min, median 5.5**, so the ~30 min figure is falsified — but a full plan-build-PR run is still unmeasured, and it decides whether level 2 is free or metered. Run duration is assumed at ~30 min and has never been measured~~ | nothing; FR-6 records it and NFR-4 says measure before tuning |
 | 3 | FR-20's PR actions need a scoped GitHub credential for the operator; the scope set is enumerated but not created | the retry-and-act phase only |
 | 4 | **The decision seam's provider is admissible but unproven.** Jev fits FR-15's shape exactly and NFR-2 no longer bars it, but it has not been scored against the held-out set and it is six days old | nothing at level 0 — FR-15's deterministic signals run first and free, and the classifier decides only the remainder |
+| 5 | **Added (2026-10-05):** a Command Code run records a provider cost of 0, so FR-22's GOAT windows and NFR-1's per-run cost cap meter nothing until FRG-47 fills the cost from the CLI transcript's `costUsd` — `adr/0015` | enforcement of FR-22 and NFR-1's cost cap |

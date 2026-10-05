@@ -12,8 +12,10 @@ already own that role — fine for side uses, just not the system of record."*
 
 **Cloud SQL is not in GCP's Always Free list** and carries an always-on floor.
 Forge Octant reached the same wall and recorded it in its own `adr/0001` (verified
-2026-09-16). Against NFR-1's USD 20/month *cash* ceiling with a $10/month provider
+2026-09-16). Against NFR-1's USD 30/month *cash* ceiling with a $10–20/month provider
 already committed, that floor is most of the remaining headroom.
+*(Updated 2026-09-29: the ceiling moved from $20 to $30, so the headroom is $20 to $10
+depending on the plan; whether the floor is still "most of" it depends on the plan chosen.)*
 
 FR-6 stores two things with nothing in common:
 
