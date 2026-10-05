@@ -1,6 +1,8 @@
 # Proves the restricted plan agent refuses edit and bash on the plan list's first and
 # last model, against a fixture, and writes each model and outcome to the job summary.
-# Manual: it spends model calls. Needs the OPENCODE_API_KEY secret, and no cloud identity.
+# Manual: it spends model calls. Needs the OPENCODE_API_KEY and COMMANDCODE_API_KEY
+# secrets, and the COMMAND_CODE_OPT_IN variable when the list names a command-code model;
+# no cloud identity.
 name: plan-smoke
 
 on:
@@ -9,7 +11,7 @@ on:
       plan_models:
         description: the plan phase's models in order, comma-separated provider/model; the first and the last are proven
         type: string
-        default: opencode/space-bunny-free
+        default: command-code/deepseek/deepseek-v4.1-flash
 
 permissions: {}
 

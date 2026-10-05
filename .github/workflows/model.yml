@@ -3,8 +3,8 @@
 # completions, and nothing else, so it cannot read or write a run record: the ticket
 # arrives as an input from run.yml's ticket job, and the record job validates the
 # summary this emits and writes the record. No GitHub token reaches the model's environment.
-# Needs the GCP_WIF_PROVIDER, GCP_MODEL_SERVICE_ACCOUNT and WINGMAN_ACCOUNT variables
-# (infra/README.md).
+# Needs the GCP_WIF_PROVIDER, GCP_MODEL_SERVICE_ACCOUNT, WINGMAN_ACCOUNT and
+# COMMAND_CODE_OPT_IN variables (infra/README.md).
 name: model
 
 on:
@@ -13,16 +13,15 @@ on:
       model:
         type: string
         required: true
-      # review_model is the pre-PR loop's review pass (FR-28), FR-14
-      # configuration: it must differ from model, so the review is never the
+      # review_models is the pre-PR loop's review pass (FR-28), FR-14 configuration, ordered like
+      # plan_models: the first entry is the main model and later ones are backups for when it is
+      # unavailable or out of allowance. None may be the build model, so the review is never the
       # builder checking its own work.
-      review_model:
+      review_models:
         type: string
         required: true
-      # plan_models is the plan phase's ordered list, kept apart from model because
-      # the free build model is refused (403) under the restricted plan agent; the
-      # first entry is the main model and later ones are backups for when it is
-      # unavailable or out of allowance.
+      # plan_models is the plan phase's ordered list, kept apart from model: the first entry is the
+      # main model and later ones are backups for when it is unavailable or out of allowance.
       plan_models:
         type: string
         required: true
@@ -30,11 +29,12 @@ on:
         type: string
         required: true
     secrets:
+      # Only an explicitly labelled opencode model needs this; every default is command-code.
       OPENCODE_API_KEY:
-        required: true
-      # The proprietary harness's key; optional, and only used when opted into.
-      COMMANDCODE_API_KEY:
         required: false
+      # Every default model routes through this harness.
+      COMMANDCODE_API_KEY:
+        required: true
     outputs:
       attempt_id:
         value: ${{ jobs.build.outputs.attempt_id }}
@@ -125,14 +125,14 @@ jobs:
         env:
           GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}
           MODEL: ${{ inputs.model }}
-          REVIEW_MODEL: ${{ inputs.review_model }}
+          REVIEW_MODELS: ${{ inputs.review_models }}
           PLAN_MODELS: ${{ inputs.plan_models }}
           TICKET: ${{ inputs.ticket }}
           WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
           COMMAND_CODE_OPT_IN: ${{ vars.COMMAND_CODE_OPT_IN }}
-        run: '"$RUNNER_TEMP/runner" build -model "$MODEL" -review-model "$REVIEW_MODEL" -plan-models "$PLAN_MODELS" -ticket "$TICKET"'
+        run: '"$RUNNER_TEMP/runner" build -model "$MODEL" -review-models "$REVIEW_MODELS" -plan-models "$PLAN_MODELS" -ticket "$TICKET"'
 
       # wingman.bundle here and in run.yml's check and pr jobs is bundleName in internal/runner/build.go.
       - if: steps.build.outputs.changed == 'true'

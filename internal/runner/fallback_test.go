@@ -75,7 +75,7 @@ func TestBuildFallbackRunsEachSubstitutedModelUnderTheSameAgentShape(t *testing.
 		}, planAgentName, planAgentConfig},
 		{"review", PhaseReview, func(bin string, deps *BuildDeps, c *BuildConfig) {
 			deps.ReviewAgent = ReviewCLIAgent(bin, DefaultModel())
-			c.Model, c.ReviewModel = "p/m", DefaultModel()
+			c.Model, c.ReviewModels = "p/m", wantModels
 		}, reviewAgentName, reviewAgentConfig},
 	}
 	for _, tt := range tests {

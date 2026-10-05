@@ -92,6 +92,11 @@ func ReadReport(b []byte) (Report, error) {
 		if err := r.Decision.Set.Validate(); err != nil {
 			return Report{}, fmt.Errorf("decision set: %w", err)
 		}
+		for _, m := range append([]string{r.Decision.Set.Default}, r.Decision.Set.Fallbacks...) {
+			if !modelName.MatchString(m) {
+				return Report{}, fmt.Errorf("decision model %q is not a %s model", m, runner.ZenProvider)
+			}
+		}
 	}
 	return r, nil
 }

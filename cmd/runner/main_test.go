@@ -276,7 +276,7 @@ func TestRunRecordFailsTheRunAndLogsWhy(t *testing.T) {
 
 func TestModelOutputsAreEmptyForATicketThatNamedNoModel(t *testing.T) {
 	got := modelOutputs(runner.ModelLabels{}, "t")
-	for _, k := range []string{"override_model", "override_review_model", "override_plan_models"} {
+	for _, k := range []string{"override_model", "override_review_models", "override_plan_models"} {
 		if v, ok := got[k]; !ok || v != "" {
 			t.Errorf("%s = %q (present %v), want an empty output", k, v, ok)
 		}
@@ -288,7 +288,7 @@ func TestModelOutputsAreEmptyForATicketThatNamedNoModel(t *testing.T) {
 
 func TestModelOutputsCarryTheModelsTheTicketNamed(t *testing.T) {
 	got := modelOutputs(runner.ModelLabels{Build: "opencode/a", Review: "opencode/b", Plan: []string{"opencode/c", "opencode/d"}}, "t")
-	if got["override_model"] != "opencode/a" || got["override_review_model"] != "opencode/b" || got["override_plan_models"] != "opencode/c,opencode/d" {
+	if got["override_model"] != "opencode/a" || got["override_review_models"] != "opencode/b" || got["override_plan_models"] != "opencode/c,opencode/d" {
 		t.Fatalf("outputs = %v", got)
 	}
 }
@@ -333,9 +333,12 @@ func TestSplitModels(t *testing.T) {
 		"  ":            {runner.DefaultPlanModel},
 		"a/b,":          {"a/b", ""},
 	} {
-		if got := splitModels(in); !slices.Equal(got, want) {
-			t.Errorf("splitModels(%q) = %q, want %q", in, got, want)
+		if got := splitModels(in, runner.DefaultPlanModel); !slices.Equal(got, want) {
+			t.Errorf("splitModels(%q, default) = %q, want %q", in, got, want)
 		}
+	}
+	if got := splitModels("", runner.DefaultReviewModel); !slices.Equal(got, []string{runner.DefaultReviewModel}) {
+		t.Errorf("splitModels(\"\", review default) = %q, want the review default", got)
 	}
 }
 

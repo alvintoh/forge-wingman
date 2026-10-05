@@ -206,10 +206,10 @@ func ticket(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 // when it named none, so a run.yml expression falls back to its own default.
 func modelOutputs(m runner.ModelLabels, ticket string) map[string]string {
 	return map[string]string{
-		"ticket":                ticket,
-		"override_model":        m.Build,
-		"override_review_model": m.Review,
-		"override_plan_models":  strings.Join(m.Plan, ","),
+		"ticket":                 ticket,
+		"override_model":         m.Build,
+		"override_review_models": m.Review,
+		"override_plan_models":   strings.Join(m.Plan, ","),
 	}
 }
 
@@ -217,7 +217,7 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 	fs := flag.NewFlagSet("build", flag.ContinueOnError)
 	model := fs.String("model", "", "model, as provider/model")
 	planModels := fs.String("plan-models", runner.DefaultPlanModel, "the plan phase's models in order, comma-separated provider/model; later ones are backups")
-	reviewModel := fs.String("review-model", "", "the pre-PR loop's review model, as provider/model (FR-14)")
+	reviewModels := fs.String("review-models", runner.DefaultReviewModel, "the review phase's models in order, comma-separated provider/model; later ones are backups (FR-14)")
 	pointer := fs.String("pointer", runner.DefaultPointer, "object naming the current rule-stack sha")
 	rawTicket := fs.String("ticket", "", "the run's ticket, as the ticket subcommand wrote it")
 	if err := fs.Parse(args); err != nil {
@@ -238,7 +238,8 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 	defer func() { _ = gcs.Close() }()
 
 	logger = logger.With("attempt", e.attemptID, "ticket", t.ID)
-	plan := splitModels(*planModels)
+	plan := splitModels(*planModels, runner.DefaultPlanModel)
+	review := splitModels(*reviewModels, runner.DefaultReviewModel)
 	res, err := runner.Build(ctx, runner.BuildDeps{
 		Projections: store.NewBucket(gcs, e.project+"-projections"),
 		Completions: store.NewBucket(gcs, e.project+"-completions"),
@@ -250,16 +251,16 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 		Logger:      logger,
 		Now:         time.Now,
 	}, runner.BuildConfig{
-		AttemptID:   e.attemptID,
-		Repo:        ".",
-		TempDir:     e.tempDir,
-		Pointer:     *pointer,
-		Model:       *model,
-		PlanModels:  plan,
-		ReviewModel: *reviewModel,
-		Secrets:     e.secrets,
-		Identity:    e.identity,
-		Ticket:      t,
+		AttemptID:    e.attemptID,
+		Repo:         ".",
+		TempDir:      e.tempDir,
+		Pointer:      *pointer,
+		Model:        *model,
+		PlanModels:   plan,
+		ReviewModels: review,
+		Secrets:      e.secrets,
+		Identity:     e.identity,
+		Ticket:       t,
 	})
 	if err != nil {
 		return err
@@ -292,12 +293,12 @@ func harnesses(getenv func(string) string) []runner.Harness {
 	}
 }
 
-// splitModels reads a comma-separated model list. A blank value takes
-// DefaultPlanModel, which is what a cleared workflow input passes; a blank entry
-// inside a list is kept so the validator reports it.
-func splitModels(s string) []string {
+// splitModels reads a comma-separated model list, using fallback when the value
+// is blank — what a cleared workflow input passes. A blank entry inside a list
+// is kept so the validator reports it.
+func splitModels(s, fallback string) []string {
 	if strings.TrimSpace(s) == "" {
-		return []string{runner.DefaultPlanModel}
+		return []string{fallback}
 	}
 	parts := strings.Split(s, ",")
 	for i, p := range parts {

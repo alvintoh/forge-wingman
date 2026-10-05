@@ -30,7 +30,7 @@ func planSmoke(ctx context.Context, logger *slog.Logger, getenv func(string) str
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	list := splitModels(*planModels)
+	list := splitModels(*planModels, runner.DefaultPlanModel)
 	if err := runner.ValidatePlanModels(list); err != nil {
 		return err
 	}

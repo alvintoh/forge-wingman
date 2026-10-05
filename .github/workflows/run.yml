@@ -5,8 +5,9 @@
 # the draft with fixed steps, holding GitHub write and no GCP identity; `record`
 # validates the model's summary and merges the outcome into the record whatever happened.
 # Needs the GCP_WIF_PROVIDER, GCP_SERVICE_ACCOUNT, GCP_MODEL_SERVICE_ACCOUNT and
-# WINGMAN_ACCOUNT variables (infra/README.md) and the OPENCODE_API_KEY secret. Workload
-# Identity Federation trusts main only, so dispatch from main.
+# WINGMAN_ACCOUNT and COMMAND_CODE_OPT_IN variables (infra/README.md) and the
+# OPENCODE_API_KEY and COMMANDCODE_API_KEY secrets. Workload Identity Federation trusts main only, so
+# dispatch from main.
 name: run
 
 on:
@@ -17,24 +18,23 @@ on:
         type: string
         required: true
       model:
-        description: opencode model, as provider/model; empty uses the default in internal/runner/models.json
+        description: model, as provider/model; empty uses the default in internal/runner/models.json
         type: string
-      review_model:
-        description: the pre-PR loop's review model, as provider/model (FR-14) — must differ from model
+      review_models:
+        description: >-
+          the pre-PR loop's review models in order, comma-separated provider/model (FR-14); the first is
+          the main model and the rest are backups, used when the one before is unavailable or out of
+          allowance. None may be the build model, so the review is never the builder checking its own work.
         type: string
-        default: opencode/space-bunny-free
-      # The plan phase has its own ordered list because the free build model is refused
-      # there (403) under the restricted plan agent; opencode/space-bunny-free is the one
-      # free model proven to complete. Put a paid model first and free ones after it: the
-      # phase moves to the next entry when one is unavailable or out of allowance.
+        default: command-code/meta/muse-spark-1.3-contributor
+      # The plan phase has its own ordered list: the first entry is the main model and later ones are
+      # backups, used when the one before is unavailable or out of allowance.
       plan_models:
         description: >-
           the plan phase's models in order, comma-separated provider/model; the first is the main model
           and the rest are backups, used when the one before is unavailable or out of allowance.
-          Default is the one free model proven under the restricted plan agent, since the free
-          build model is refused there (403)
         type: string
-        default: opencode/space-bunny-free
+        default: command-code/deepseek/deepseek-v4.1-flash
 
 permissions: {}
 
@@ -55,7 +55,7 @@ jobs:
       model: ${{ steps.model.outputs.model }}
       # The models the ticket named, empty when it named none.
       override_model: ${{ steps.read.outputs.override_model }}
-      override_review_model: ${{ steps.read.outputs.override_review_model }}
+      override_review_models: ${{ steps.read.outputs.override_review_models }}
       override_plan_models: ${{ steps.read.outputs.override_plan_models }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -101,7 +101,7 @@ jobs:
       id-token: write
     with:
       model: ${{ needs.ticket.outputs.override_model || needs.ticket.outputs.model }}
-      review_model: ${{ needs.ticket.outputs.override_review_model || inputs.review_model }}
+      review_models: ${{ needs.ticket.outputs.override_review_models || inputs.review_models }}
       plan_models: ${{ needs.ticket.outputs.override_plan_models || inputs.plan_models }}
       ticket: ${{ needs.ticket.outputs.ticket }}
     secrets:
