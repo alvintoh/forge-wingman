@@ -5,9 +5,8 @@
 # the draft with fixed steps, holding GitHub write and no GCP identity; `record`
 # validates the model's summary and merges the outcome into the record whatever happened.
 # Needs the GCP_WIF_PROVIDER, GCP_SERVICE_ACCOUNT, GCP_MODEL_SERVICE_ACCOUNT and
-# WINGMAN_ACCOUNT and COMMAND_CODE_OPT_IN variables (infra/README.md) and the
-# OPENCODE_API_KEY and COMMANDCODE_API_KEY secrets. Workload Identity Federation trusts main only, so
-# dispatch from main.
+# WINGMAN_ACCOUNT variables (infra/README.md) and the COMMANDCODE_API_KEY secret. Workload Identity Federation trusts main only, so dispatch
+# from main.
 name: run
 
 on:
@@ -105,7 +104,6 @@ jobs:
       plan_models: ${{ needs.ticket.outputs.override_plan_models || inputs.plan_models }}
       ticket: ${{ needs.ticket.outputs.ticket }}
     secrets:
-      OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
       COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
 
   # The branch's code runs here, so the job holds nothing it could misuse. Each gate is

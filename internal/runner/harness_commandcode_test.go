@@ -98,7 +98,7 @@ func TestClassifyAgentFailureDispatchesToTheAgentsHarness(t *testing.T) {
 		t.Fatal(err)
 	}
 	router := NewRouter(ProfileBuild,
-		CommandCodeHarness{Bin: "cmd", Key: "k", OptIn: true},
+		CommandCodeHarness{Bin: "cmd", Key: "k"},
 	).WithModel("command-code/x")
 	err := exec.Command("sh", "-c", "exit 5").Run()
 	if outcome, reason := classifyAgentFailure(router, path, err); outcome != OutcomeBudgetStop || reason != StopAllowanceExhausted {
@@ -170,7 +170,7 @@ func TestTranslateCommandCodeFramesFindsTheSessionInEitherFrame(t *testing.T) {
 func TestCommandCodeAgentResumesTheSessionUnderOneHome(t *testing.T) {
 	bin, attempts := scriptedCommandCode(t, "normal")
 	home := t.TempDir()
-	agent := CommandCodeHarness{Bin: bin, Key: "k", OptIn: true, Home: home}.Agent(ProfileBuild, "command-code/x")
+	agent := CommandCodeHarness{Bin: bin, Key: "k", Home: home}.Agent(ProfileBuild, "command-code/x")
 	prompt := strings.Repeat("rule line\n", 20000)
 	dir := t.TempDir()
 	for _, session := range []string{"", "ses_1"} {
@@ -229,17 +229,16 @@ func TestCommandCodeAgentNeedsAHome(t *testing.T) {
 func TestBuildRunsTheCommandCodeHarnessFromTheRecordedFixtures(t *testing.T) {
 	const model = "command-code/deepseek/deepseek-v4.1-flash"
 	bin, attempts := scriptedCommandCode(t, "normal")
-	t.Setenv("OPENCODE_API_KEY", "opencode-secret")
 	t.Setenv("COMMANDCODE_API_KEY", "command-secret")
 
 	deps, completions, reported := testDeps(validObjects(), nil)
 	deps.Agent = NewRouter(ProfileBuild,
-		CommandCodeHarness{Bin: bin, Key: "command-secret", OptIn: true, Home: t.TempDir()},
-		OpencodeHarness{Bin: "opencode"},
+		CommandCodeHarness{Bin: bin, Key: "command-secret", Home: t.TempDir()},
+		fakeHarness{},
 	)
 	c := testConfig(t, initRepo(t))
 	c.Model = model
-	c.ReviewModels = []string{"opencode/space-bunny-free"}
+	c.ReviewModels = []string{"p/r"}
 
 	if _, err := Build(context.Background(), deps, c); err != nil {
 		t.Fatal(err)
@@ -280,7 +279,7 @@ func TestBuildRunsTheCommandCodeHarnessFromTheRecordedFixtures(t *testing.T) {
 		t.Errorf("auth file = %q, want the key written under the run's own HOME", got[0].auth)
 	}
 	for _, kv := range got[0].env {
-		if strings.HasPrefix(kv, "OPENCODE_API_KEY=") || strings.HasPrefix(kv, "COMMANDCODE_API_KEY=") {
+		if strings.HasPrefix(kv, "COMMANDCODE_API_KEY=") {
 			t.Errorf("the command-code process inherited a key in its environment: %s", kv)
 		}
 	}
@@ -290,7 +289,7 @@ func TestBuildRunsTheCommandCodeHarnessFromTheRecordedFixtures(t *testing.T) {
 // the restricted flag only for plan and review (AC2).
 func TestCommandCodeAgentChoosesTheProfileFlag(t *testing.T) {
 	bin, attempts := scriptedCommandCode(t, "readonly")
-	harness := CommandCodeHarness{Bin: bin, Key: "k", OptIn: true, Home: t.TempDir()}
+	harness := CommandCodeHarness{Bin: bin, Key: "k", Home: t.TempDir()}
 	for name, tt := range map[string]struct {
 		profile Profile
 		want    string
@@ -318,7 +317,7 @@ func TestCommandCodeAgentChoosesTheProfileFlag(t *testing.T) {
 // read-only run and confirms by effect that nothing was written (AC2).
 func TestPlanSmokeRefusesUnderTheCommandCodePlanProfile(t *testing.T) {
 	bin, _ := scriptedCommandCode(t, "readonly")
-	harness := CommandCodeHarness{Bin: bin, Key: "k", OptIn: true, Home: t.TempDir()}
+	harness := CommandCodeHarness{Bin: bin, Key: "k", Home: t.TempDir()}
 	res, err := PlanSmoke(context.Background(), harness.Agent(ProfilePlan, "command-code/x"), "command-code/x", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -358,7 +357,7 @@ func TestCommandCodeFailureMappings(t *testing.T) {
 // key run from its exit code (AC3).
 func TestCommandCodeHarnessClassifiesTheBadKeyFixture(t *testing.T) {
 	bin, _ := scriptedCommandCode(t, "badkey")
-	harness := CommandCodeHarness{Bin: bin, Key: "bad-key", OptIn: true, Home: t.TempDir()}
+	harness := CommandCodeHarness{Bin: bin, Key: "bad-key", Home: t.TempDir()}
 	var out, errBuf strings.Builder
 	err := harness.Agent(ProfileBuild, "command-code/x").Run(context.Background(), t.TempDir(), "", "prompt", &out, &errBuf)
 	if err == nil {
@@ -405,10 +404,10 @@ func TestCommandCodeHarnessClassifiesLiveExitCodes(t *testing.T) {
 func TestBuildStopsOnACommandCodeBadKey(t *testing.T) {
 	bin, _ := scriptedCommandCode(t, "badkey")
 	deps, _, reported := testDeps(validObjects(), nil)
-	deps.Agent = CommandCodeHarness{Bin: bin, Key: "bad-key", OptIn: true, Home: t.TempDir()}.Agent(ProfileBuild, "command-code/x")
+	deps.Agent = CommandCodeHarness{Bin: bin, Key: "bad-key", Home: t.TempDir()}.Agent(ProfileBuild, "command-code/x")
 	c := testConfig(t, initRepo(t))
 	c.Model = "command-code/x"
-	c.ReviewModels = []string{"opencode/space-bunny-free"}
+	c.ReviewModels = []string{"p/r"}
 
 	if _, err := Build(context.Background(), deps, c); err == nil {
 		t.Fatal("Build succeeded on a bad key")
@@ -419,49 +418,49 @@ func TestBuildStopsOnACommandCodeBadKey(t *testing.T) {
 	}
 }
 
-// TestBuildRefusesACommandCodeModelWithoutTheOptIn asserts an un-opted-in
-// proprietary harness stops the run before any agent starts (AC7).
-func TestBuildRefusesACommandCodeModelWithoutTheOptIn(t *testing.T) {
+// TestBuildRefusesACommandCodeModelWithoutTheKey asserts a harness without its
+// key stops the run before any agent starts (AC7).
+func TestBuildRefusesACommandCodeModelWithoutTheKey(t *testing.T) {
 	deps, _, reported := testDeps(validObjects(), &fakeAgent{})
 	deps.Agent = NewRouter(ProfileBuild,
 		CommandCodeHarness{Bin: "cmd"},
-		OpencodeHarness{Bin: "opencode"},
+		fakeHarness{},
 	)
 	c := testConfig(t, initRepo(t))
 	c.Model = "command-code/deepseek-v4.1-flash"
-	c.ReviewModels = []string{"opencode/space-bunny-free"}
+	c.ReviewModels = []string{"p/r"}
 
 	if _, err := Build(context.Background(), deps, c); err == nil {
-		t.Fatal("Build ran a model whose harness is not opted in")
+		t.Fatal("Build ran a model whose harness has no key")
 	}
 	rec := reported.last(t)
 	if rec.Outcome != OutcomeStopped || rec.StopReason != StopModelInvalid {
 		t.Fatalf("record = %s/%s, want a model-invalid stop", rec.Outcome, rec.StopReason)
 	}
-	if !strings.Contains(rec.StopDetail, "COMMAND_CODE_OPT_IN") {
-		t.Fatalf("stop detail %q does not name the missing opt-in", rec.StopDetail)
+	if !strings.Contains(rec.StopDetail, "COMMANDCODE_API_KEY") {
+		t.Fatalf("stop detail %q does not name the missing key", rec.StopDetail)
 	}
 }
 
-// TestBuildGatesEveryModelSlotOnTheOptIn asserts the opt-in gate covers the
+// TestBuildGatesEveryModelSlotOnTheKey asserts the missing-key gate covers the
 // review model and, for a ticket that plans, every plan model (AC7).
-func TestBuildGatesEveryModelSlotOnTheOptIn(t *testing.T) {
+func TestBuildGatesEveryModelSlotOnTheKey(t *testing.T) {
 	for name, set := range map[string]func(*BuildConfig){
 		"review": func(c *BuildConfig) { c.ReviewModels = []string{"command-code/x"} },
 		"plan": func(c *BuildConfig) {
 			c.Ticket.Size = "M"
-			c.PlanModels = []string{"opencode/p", "command-code/x"}
+			c.PlanModels = []string{"p/p", "command-code/x"}
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			deps, _, reported := testDeps(validObjects(), &fakeAgent{})
-			deps.Agent = NewRouter(ProfileBuild, CommandCodeHarness{Bin: "cmd"}, OpencodeHarness{Bin: "opencode"})
+			deps.Agent = NewRouter(ProfileBuild, CommandCodeHarness{Bin: "cmd"}, fakeHarness{})
 			c := testConfig(t, initRepo(t))
-			c.Model = "opencode/b"
-			c.ReviewModels = []string{"opencode/r"}
+			c.Model = "p/b"
+			c.ReviewModels = []string{"p/r"}
 			set(&c)
 			if _, err := Build(context.Background(), deps, c); err == nil {
-				t.Fatal("Build ran with an un-opted-in harness in the slot")
+				t.Fatal("Build ran with a keyless harness in the slot")
 			}
 			if rec := reported.last(t); rec.StopReason != StopModelInvalid {
 				t.Fatalf("stop = %s, want a model-invalid stop", rec.StopReason)
@@ -471,7 +470,7 @@ func TestBuildGatesEveryModelSlotOnTheOptIn(t *testing.T) {
 }
 
 // TestModelWorkflowInstallsAndAuthorisesTheCommandCodeHarness asserts the
-// workflow carries the package, secret and opt-in the adapter needs (AC7).
+// workflow carries the package and secret the adapter needs (AC7).
 func TestModelWorkflowInstallsAndAuthorisesTheCommandCodeHarness(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "model.yml"))
 	if err != nil {
@@ -482,7 +481,6 @@ func TestModelWorkflowInstallsAndAuthorisesTheCommandCodeHarness(t *testing.T) {
 		"node-version: 22",
 		"npm ci --prefix tools/command-code",
 		"COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}",
-		"COMMAND_CODE_OPT_IN: ${{ vars.COMMAND_CODE_OPT_IN }}",
 	} {
 		if !strings.Contains(yml, want) {
 			t.Errorf("model.yml has no %q", want)

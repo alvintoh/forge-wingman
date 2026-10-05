@@ -23,12 +23,12 @@ func TestPlanCommandsRefuseInvalidInputBeforeOpeningFirestore(t *testing.T) {
 		args []string
 		want string
 	}{
-		"a reply with no verdict": {[]string{"plan-reply", "-provider", "opencode", "-reply", "fine"}, "is not allowed, restricted or unconfirmed"},
-		"a verdict with an impossible date": {[]string{"plan-verdict", "-provider", "opencode", "-verdict", "allowed",
+		"a reply with no verdict": {[]string{"plan-reply", "-provider", "command-code", "-reply", "fine"}, "is not allowed, restricted or unconfirmed"},
+		"a verdict with an impossible date": {[]string{"plan-verdict", "-provider", "command-code", "-verdict", "allowed",
 			"-wording", "w", "-source", "https://v.example/terms", "-read-on", "2026-02-30"}, "yyyy-mm-dd"},
 		"a definition with a malformed provider": {[]string{"plan-define", "-provider", "Open Code", "-name", "n", "-price-usd", "15"}, "is not a provider name"},
-		"a definition with no price":             {[]string{"plan-define", "-provider", "opencode", "-name", "n"}, "not a positive amount"},
-		"a definition with no billing":           {[]string{"plan-define", "-provider", "opencode", "-name", "n", "-price-usd", "15"}, "is not free, allowance or per-token"},
+		"a definition with no price":             {[]string{"plan-define", "-provider", "command-code", "-name", "n"}, "not a positive amount"},
+		"a definition with no billing":           {[]string{"plan-define", "-provider", "command-code", "-name", "n", "-price-usd", "15"}, "is not free, allowance or per-token"},
 		"an opt-in naming a malformed provider":  {[]string{"plan-optin", "-provider", "Open Code"}, "is not a provider name"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -42,7 +42,7 @@ func TestPlanCommandsRefuseInvalidInputBeforeOpeningFirestore(t *testing.T) {
 
 func TestPlanCommandsRefuseAMismatchedIdentity(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	for _, args := range [][]string{{"plan-list"}, {"plan-verdict", "-provider", "opencode"}, {"plan-optin", "-provider", "opencode"}} {
+	for _, args := range [][]string{{"plan-list"}, {"plan-verdict", "-provider", "command-code"}, {"plan-optin", "-provider", "command-code"}} {
 		err := run(context.Background(), logger, args, planEnv("work-account"))
 		if !errors.Is(err, runner.ErrIdentityMismatch) {
 			t.Errorf("%v: err = %v, want ErrIdentityMismatch", args, err)

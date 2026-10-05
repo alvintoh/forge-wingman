@@ -2,7 +2,5 @@
   "default": "command-code/deepseek/deepseek-v4.1-flash",
   "fallbacks": [
     "command-code/inclusionai/ling-3.1-flash:free"
-  ],
-  "probed_at": "",
-  "evidence": []
+  ]
 }

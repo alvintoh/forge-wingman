@@ -3,8 +3,8 @@
 # completions, and nothing else, so it cannot read or write a run record: the ticket
 # arrives as an input from run.yml's ticket job, and the record job validates the
 # summary this emits and writes the record. No GitHub token reaches the model's environment.
-# Needs the GCP_WIF_PROVIDER, GCP_MODEL_SERVICE_ACCOUNT, WINGMAN_ACCOUNT and
-# COMMAND_CODE_OPT_IN variables (infra/README.md).
+# Needs the GCP_WIF_PROVIDER, GCP_MODEL_SERVICE_ACCOUNT and WINGMAN_ACCOUNT variables and
+# the COMMANDCODE_API_KEY secret (infra/README.md).
 name: model
 
 on:
@@ -29,9 +29,6 @@ on:
         type: string
         required: true
     secrets:
-      # Only an explicitly labelled opencode model needs this; every default is command-code.
-      OPENCODE_API_KEY:
-        required: false
       # Every default model routes through this harness.
       COMMANDCODE_API_KEY:
         required: true
@@ -84,31 +81,15 @@ jobs:
       # job's — the pre-PR loop (FR-28) runs the same four gates in-job, first.
       - run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
 
-      - name: Install opencode
-        env:
-          OPENCODE_VERSION: 1.18.30
-          OPENCODE_SHA256: 55007246858165496ff85ba1c2b648f7421e8e2013bf4189a680c9ff8e699d17
-        run: |
-          curl -fsSL -o "$RUNNER_TEMP/opencode.tar.gz" \
-            "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-x64.tar.gz"
-          echo "${OPENCODE_SHA256}  $RUNNER_TEMP/opencode.tar.gz" | sha256sum --check --strict
-          mkdir -p "$RUNNER_TEMP/bin"
-          tar -xzf "$RUNNER_TEMP/opencode.tar.gz" -C "$RUNNER_TEMP/bin" opencode
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-          test "$("$RUNNER_TEMP/bin/opencode" --version)" = "${OPENCODE_VERSION}"
-
-      # Installed only when the run is opted into the harness, so a run that never
-      # uses it carries neither the package nor its registry dependency. The CLI
-      # needs Node 22 or later (its package.json engines field).
-      - if: vars.COMMAND_CODE_OPT_IN == 'true'
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      # The CLI every model slot runs needs Node 22 or later (its package.json
+      # engines field).
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
       # tools/command-code's lockfile pins the CLI and every dependency it
       # installs, each checked against its recorded integrity.
       - name: Install command-code
-        if: vars.COMMAND_CODE_OPT_IN == 'true'
         run: |
           npm ci --prefix tools/command-code --no-audit --no-fund
           echo "$GITHUB_WORKSPACE/tools/command-code/node_modules/.bin" >> "$GITHUB_PATH"
@@ -129,9 +110,7 @@ jobs:
           PLAN_MODELS: ${{ inputs.plan_models }}
           TICKET: ${{ inputs.ticket }}
           WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
-          COMMAND_CODE_OPT_IN: ${{ vars.COMMAND_CODE_OPT_IN }}
         run: '"$RUNNER_TEMP/runner" build -model "$MODEL" -review-models "$REVIEW_MODELS" -plan-models "$PLAN_MODELS" -ticket "$TICKET"'
 
       # wingman.bundle here and in run.yml's check and pr jobs is bundleName in internal/runner/build.go.

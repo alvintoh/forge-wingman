@@ -44,7 +44,7 @@ func encoded(t *testing.T, s Summary) string {
 		s.Phase = PhaseCommit
 		s.Branch = BranchName(testTicket.BranchSegment(), "1-1")
 		s.Steps = []Step{{
-			Phase: PhaseBuild, Round: 1, Model: "opencode/big-pickle",
+			Phase: PhaseBuild, Round: 1, Model: "command-code/x",
 			CompletionsObject: completionsObject("1-1", PhaseBuild, 1),
 		}}
 	}
@@ -248,7 +248,7 @@ func TestFinalizeWritesTheWholeRecordFromTheSummary(t *testing.T) {
 		Steps: []Step{{
 			Phase:             PhaseBuild,
 			Round:             1,
-			Model:             "opencode/big-pickle",
+			Model:             "command-code/x",
 			Tokens:            Usage{Input: 10, Output: 2, CacheRead: 90, Cost: 0.5, Steps: 1},
 			DurationMS:        1200,
 			CompletionsObject: completionsObject("1-1", PhaseBuild, 1),
@@ -281,9 +281,9 @@ func TestFinalizeSumsTokensAcrossSteps(t *testing.T) {
 		Phase:   PhaseCommit,
 		Branch:  BranchName(testTicket.BranchSegment(), "1-1"),
 		Steps: []Step{
-			{Phase: PhaseBuild, Round: 1, Model: "opencode/big-pickle", Tokens: Usage{Input: 10, Output: 2, Steps: 1},
+			{Phase: PhaseBuild, Round: 1, Model: "command-code/x", Tokens: Usage{Input: 10, Output: 2, Steps: 1},
 				CompletionsObject: completionsObject("1-1", PhaseBuild, 1)},
-			{Phase: PhaseBuild, Round: 2, Model: "opencode/big-pickle", Tokens: Usage{Input: 5, Output: 1, Steps: 1},
+			{Phase: PhaseBuild, Round: 2, Model: "command-code/x", Tokens: Usage{Input: 5, Output: 1, Steps: 1},
 				CompletionsObject: completionsObject("1-1", PhaseBuild, 2)},
 		},
 	}
@@ -375,7 +375,7 @@ func TestFinalizeSettlesTheLedgerWithTheRunsActualCost(t *testing.T) {
 		Phase:   PhaseCommit,
 		Branch:  BranchName(testTicket.BranchSegment(), "1-1"),
 		Steps: []Step{{
-			Phase: PhaseBuild, Round: 1, Model: "opencode/big-pickle",
+			Phase: PhaseBuild, Round: 1, Model: "command-code/x",
 			Tokens:            Usage{Input: 10, Output: 2, Cost: 0.123456, Steps: 1},
 			CompletionsObject: completionsObject("1-1", PhaseBuild, 1),
 		}},
@@ -409,7 +409,7 @@ func TestFinalizeZeroesSettledRunnerMinutesForAPublicTarget(t *testing.T) {
 	store := seeded(t) // Private defaults to false
 	sum := Summary{
 		Outcome: OutcomeBuilt, Phase: PhaseCommit, Branch: BranchName(testTicket.BranchSegment(), "1-1"),
-		Steps: []Step{{Phase: PhaseBuild, Round: 1, Model: "opencode/big-pickle", Tokens: Usage{Cost: 1},
+		Steps: []Step{{Phase: PhaseBuild, Round: 1, Model: "command-code/x", Tokens: Usage{Cost: 1},
 			CompletionsObject: completionsObject("1-1", PhaseBuild, 1)}},
 		DurationsMS: map[string]int64{"build": 120_000},
 	}
@@ -463,14 +463,14 @@ func TestFinalizeRecordsAnIdentityMismatchAheadOfEverythingElse(t *testing.T) {
 func TestFinalizeCarriesTheModelLabelsFromTheExistingRecord(t *testing.T) {
 	store := seeded(t)
 	rec := store[testRunID]
-	rec.ModelLabels = ModelLabels{Build: "opencode/a", Review: "opencode/b", Plan: []string{"opencode/c", "opencode/d"}}
+	rec.ModelLabels = ModelLabels{Build: "p/a", Review: "p/b", Plan: []string{"p/c", "p/d"}}
 	store[testRunID] = rec
 	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: "",
 		RunResult: "failure", PRResult: "skipped"}
 	if _, err := Finalize(context.Background(), store, &fakeLedger{}, in, finalizeNow); err != nil {
 		t.Fatal(err)
 	}
-	if got := store[testRunID].ModelLabels; got.Build != "opencode/a" || got.Review != "opencode/b" || !slices.Equal(got.Plan, []string{"opencode/c", "opencode/d"}) {
+	if got := store[testRunID].ModelLabels; got.Build != "p/a" || got.Review != "p/b" || !slices.Equal(got.Plan, []string{"p/c", "p/d"}) {
 		t.Fatalf("model labels = %+v, want the ticket's carried through finalize", got)
 	}
 }

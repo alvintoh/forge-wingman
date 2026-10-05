@@ -31,9 +31,9 @@ func ValidModel(model string) bool {
 	return len(model) <= maxModelBytes && modelPattern.MatchString(model)
 }
 
-// Provider is model's prefix before its first "/" — "opencode" from
-// "opencode/big-pickle" — matching modelPattern's own requirement that every
-// model contain that separator.
+// Provider is model's prefix before its first "/" — "command-code" from
+// "command-code/deepseek/deepseek-v4.1-flash" — matching modelPattern's own
+// requirement that every model contain that separator.
 func Provider(model string) string {
 	if i := strings.IndexByte(model, '/'); i >= 0 {
 		return model[:i]
@@ -194,8 +194,8 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		if err := ValidateReviewModels(c.ReviewModels, c.Model); err != nil {
 			return stopWith(OutcomeStopped, StopModelInvalid, err)
 		}
-		// A proprietary harness the run is not opted into stops here, before
-		// any agent runs, with the same model-invalid stop (AC7).
+		// A harness the run is not configured for stops here, before any
+		// agent runs, with the same model-invalid stop (AC7).
 		if g, ok := d.Agent.(modelGate); ok {
 			models := append([]string{c.Model}, c.ReviewModels...)
 			if c.Ticket.Size != "S" {

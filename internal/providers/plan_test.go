@@ -8,7 +8,7 @@ import (
 
 func TestNewDefinitionReadsAWellFormedPlan(t *testing.T) {
 	got, err := NewDefinition(" Go Plan ", "15.50", []string{"https://vendor.example/pricing  #plans"},
-		[]string{"opencode:glm-5"}, "hard-stop", "per-token")
+		[]string{"command-code:glm-5"}, "hard-stop", "per-token")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -16,7 +16,7 @@ func TestNewDefinitionReadsAWellFormedPlan(t *testing.T) {
 		Name:           "Go Plan",
 		MonthlyPrice:   15_500_000,
 		Pages:          []Locator{{URL: "https://vendor.example/pricing", Selector: "#plans"}},
-		Harnesses:      []HarnessPair{{Harness: "opencode", Model: "glm-5"}},
+		Harnesses:      []HarnessPair{{Harness: "command-code", Model: "glm-5"}},
 		LimitBehaviour: LimitHardStop,
 		Billing:        BillingPerToken,
 	}
@@ -27,7 +27,7 @@ func TestNewDefinitionReadsAWellFormedPlan(t *testing.T) {
 }
 
 func TestNewDefinitionAcceptsAFreePlanAtZeroPrice(t *testing.T) {
-	got, err := NewDefinition("Zen free tier", "0", nil, nil, "hard-stop", "free")
+	got, err := NewDefinition("Free tier", "0", nil, nil, "hard-stop", "free")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestNewDefinitionRefusesWhatItCannotStore(t *testing.T) {
 			return NewDefinition("p", "15", []string{"https://v.example/" + strings.Repeat("a", maxURLBytes)}, nil, "hard-stop", "free")
 		}, "longer than"},
 		"harness without a model": {func() (Definition, error) {
-			return NewDefinition("p", "15", nil, []string{"opencode:"}, "hard-stop", "free")
+			return NewDefinition("p", "15", nil, []string{"command-code:"}, "hard-stop", "free")
 		}, "not harness:model"},
 	} {
 		t.Run(name, func(t *testing.T) {

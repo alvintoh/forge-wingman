@@ -2,7 +2,7 @@
 name: backend-builder
 domain: backend
 description: Implement server-side code — handlers, input validation, data access, error handling — to best practices. The build counterpart to the `backend-reviewer` agent; dispatched by /agent-mode per plan section.
-stacks: [go, gcp, opencode]
+stacks: [go, gcp, command-code]
 owns-readme: none
 layer: specialized
 ---
@@ -262,204 +262,170 @@ permissions: { id-token: write, contents: read }
 - Condition on the repository first (`assertion.repository`), then narrow production to the
   environment claim so it composes with the approval gate.
 
-### opencode
+### command-code
 
-Vendor mechanics for the **opencode** agent harness and the provider routes it
-reaches. Inlined when a task drives opencode non-interactively, or designs around
-its cost model.
+Vendor mechanics for the **Command Code** CLI (`cmd`) as an agent harness. Inlined
+when a task drives it non-interactively or designs an adapter around it. *(Verified
+2026-10-05 against command-code 1.74.1 on WSL2, by running it; the vendor pages are
+`commandcode.ai/docs/headless` and `/docs/taste`.)*
 
-⚠️ **RE-VERIFY EVERY FIGURE BELOW BEFORE QUOTING ONE IN A DESIGN.** This vendor
-moves its catalogue and its prices faster than anything else in the stack, and a
-dated line here is precisely what stops anyone re-checking it. *(Owner's standing
-instruction 2026-09-22: "opencode models and specs is updated frequently".)* The
-check is two first-party pages — `opencode.ai/docs/zen/` for the model list and
-prices, and the provider's own pricing page for allowance windows. Read them,
-then **REPLACE the line in place** rather than adding a second one. Anything
-marked UNVERIFIED below stays marked until someone measures it: inheriting it as
-fact is the failure this block exists to prevent.
+⚠️ **RE-RUN BEFORE QUOTING.** The CLI moves fast (version 1.74 at this date), and a
+frame name or exit code here is a dated observation, not a contract. **Replace a
+line in place** when a re-run changes it.
 
-## Prompt caching — the mechanic is a HEADER, and it is easy to miss
+## Install and login
 
-- **Caching is enabled by sending a STABLE session id in `x-opencode-session`.**
-  The vendor states it plainly: *"Send a stable session ID in `x-opencode-session`
-  for each conversation so we can optimize routing and prompt caching"* (verified
-  2026-09-21). There is no request field and no config flag — it is one header, and
-  omitting it silently costs full input price on every call rather than erroring.
-  This is the rediscovery trap the pack exists for.
-- **Every model carries a *Cached Read* price and some a *Cached Write*.** So
-  caching is a first-class part of the pricing table rather than a per-model perk.
-  GLM-5.3-Flash reads cached at **$0.03/1M against $0.15/1M input — 5x, not the
-  10x** that is often assumed from other vendors; MiMo-V2.5 at $0.0028/1M
-  (verified 2026-09-21).
-- **A large cached prefix is the DOCUMENTED NORMAL, not an optimisation.** The
-  vendor publishes typical per-request usage as *"GLM-5.3-Flash — 1,000 input,
-  55,000 cached, 200 output"* and *"Grok 4.6 — 390 input, 32,500 cached, 120
-  output"*. Read those before assuming a large system prompt is unusual: the
-  expected shape is a small varying tail on a big stable head.
-- **⚠️ A cache belongs to ONE model, so escalating a tier discards it.** *(Derived
-  from how prefix caching works, not a vendor statement — treat as reasoning to
-  check rather than a quoted fact.)* The consequence is that a retry-at-a-higher-
-  tier costs the tier difference **plus** full input price on a prefix that was
-  reading at a fifth of it. A design that escalates on failure should bound the
-  retries tightly for this reason, not only for the tier price.
-- **Cacheability constrains PROMPT ORDER, which is a design decision rather than
-  an implementation detail.** *(Derived.)* A prefix cache only hits on a stable
-  head, so emit the invariant material — rules, system prompt, tool definitions —
-  **first**, and the varying material last. Interleaving them makes the whole
-  prompt uncacheable, and nothing reports it: the bill is simply higher.
-- **Key the session id by what stays STABLE across a retry.** *(Derived.)* Keying
-  on a run id means a retry of the same work misses a cache the first attempt
-  warmed; keying on the unit of work (a ticket, a thread) means it hits. The id is
-  a caching hint and carries no identity, so it need not match a record's primary
-  key. Different prompts are different caches, so a multi-phase flow keys per
-  phase as well.
+- `npm i -g command-code@latest`; the command is `cmd` (`cmdc` on native Windows).
+  It refuses Node 20 and below.
+- **Login is `cmd login`** (`cmd auth login` is rejected). It is an interactive
+  screen that needs a real TTY and crashes under an agent with Ink's raw-mode error,
+  so the owner runs it.
+- **The credential is the file `~/.commandcode/auth.json`** (`apiKey`, `userId`,
+  `userName`, `keyName`, `authenticatedAt`). The CLI does NOT read
+  `COMMANDCODE_API_KEY`, and a saved login silently overrides an env var, so a
+  bad-key test needs an isolated `HOME` holding a bad `auth.json`. A runner must write
+  that file into a per-run `HOME` so the key reaches this harness only.
 
-## Provider routes — three shapes, and only ONE is a subscription
+## Headless
 
-*Verified 2026-09-22 against the vendors' own pages. Every figure is a re-verify
-candidate per the block above.*
+- `cmd -p "<prompt>" --output-format json --model <id>` streams NDJSON: `run_start`,
+  `turn_start`, `model_request_start`, `thinking_*`, `text_delta`, `tool_queued`,
+  `tool_running`, `tool_completed`, `model_request_end` (carries `usage`), `turn_end`,
+  `run_end`, then one `{"type":"result"}` line with `usage` (`inputTokens`,
+  `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`), `durationMs`, `finalText`,
+  `sessionId`, `stopReason`. Failure is a `run_error` event (`TransportError`) and
+  `subtype":"error"`.
+- **`--plan` refuses edit and shell but exits 0**: the refusal is only in `finalText`.
+  Verify read-only by EFFECTS (no new file, empty `git diff`), never by exit code.
+- Exit codes (docs): 0 ok, 3 not authenticated (reproduced), 4 permission denied,
+  5 rate limit, 6 network, 7 server 5xx, 8 max turns, 9 no response, 10 insufficient
+  credits. The limit-declined case cannot be forced and is UNRECORDED.
+- `--yolo` enables writes and shell; default blocks them. `--max-turns` defaults to 100.
+- **Send the prompt on STDIN, never as `-p`'s argument.** `-p` reads a piped stdin prompt
+  (omit the query string) — the only safe route for a projection-sized prompt: Linux caps one
+  argv element at 131072 bytes, so `-p "<190 KB>"` dies with `E2BIG`. (Verified 2026-10-05.)
+- **`--resume <sessionId>` continues a prior conversation**; transcripts live under `HOME`
+  (`~/.commandcode/projects`), so ONE `HOME` for the whole run is what lets a later round resume
+  — a fresh `HOME` per attempt silently starts each round from scratch. *(Docs: the package's
+  `headless.md`.)*
+- **Neutralise the interactive paths for an unattended run: `--skip-onboarding --no-auto-update`.**
+  Onboarding would otherwise prompt, and auto-update would mutate the binary mid-run.
 
-| Route | Payment shape | Flash-tier cost |
-|---|---|---|
-| **OpenCode Go** | subscription + allowance windows | see the windows below |
-| **opencode Zen** | prepaid, pay-as-you-go | free models listed; DeepSeek V4 Flash $0.14 in / $0.28 out per 1M |
-| **OpenRouter** | key + rate card | $0 on a `:free` variant |
+## Models
 
-- **Read Zen's roster from `opencode.ai/zen/v1/models`, NOT the docs page.** It
-  is an OpenAI-compatible listing, public and **keyless** (HTTP 200, no auth),
-  and it is authoritative for which models exist right now. ⚠️ **It carries
-  `id`, `object`, `created`, `owned_by` and NOTHING ELSE** — no pricing, no
-  context length. A cost filter written against it silently reports every model
-  as free, because the field it reads is absent rather than zero (hit 2026-09-22:
-  76 of 76 came back "free"). Prices live on the docs page; the roster lives on
-  the endpoint, and the two disagree.
-- **The FREE roster rotates, and the docs page LAGS the endpoint.** On
-  2026-09-22 the docs named four free models, a search summary named two others,
-  and the endpoint listed ten: `deepseek-v4-flash-free`,
-  `nemotron-3.5-lightning-free`, `mimo-v2.6-flash-free`, `mimo-v2.5-free`,
-  `ling-3.0-flash-fin-free`, `nemotron-3-ultra-free`, `jev-1.13-free`,
-  `big-pickle` and two `muse-spark-*-contributor-free`. That churn is the
-  *"available on OpenCode for a limited time"* caveat made visible, so never
-  design against a specific free model — and pick by TIER: `-flash-`/`-lightning-`
-  for a flash-tier question, never `-ultra-`, which passes for the wrong reason.
-- **⚠️ Zen's free models probably need a CARD, and the site never says
-  otherwise.** Its documented signup is *"sign in to OpenCode Zen, **add your
-  billing details**, and copy your API key"*, `opencode.ai/zen`'s getting-started
-  step is *"Add $20 Pay as you go balance"*, and `/pricing` is a 404 while
-  `/auth` redirects straight into OAuth. **So the public site cannot answer it
-  and the documented path asks for billing** — treat Zen as card-required until
-  someone signs in and proves otherwise. **For a zero-spend run, prefer
-  OpenRouter, whose no-purchase condition IS documented.** *(Checked
-  2026-09-22 across /docs/zen, /zen, /pricing and /auth.)*
-- **⚠️ Free-model behaviour at a LARGE prompt varies per model, and one stalled
-  model is not a finding about the tier.** Measured 2026-09-22 through
-  `opencode run` with a 40,090-token prompt across all ten free models:
-  **seven responded and made tool calls**, two returned a server error, and
-  **one stalled silently** — 12 minutes at 0.0% CPU, no stdout, no error to
-  read. A tiny prompt on that same stalling model returned in 0.9s, so **the
-  small-prompt smoke test passes on a model that cannot do the real work** —
-  which is the trap worth carrying. It is NOT a size ceiling on the tier: sweep
-  the candidates at full prompt size before concluding anything, because the
-  first conclusion here was "free endpoints cannot sustain an agentic run",
-  generalised from a single sample, and it was wrong.
+`cmd --list-models` (85 at this date). DeepSeek: `deepseek/deepseek-v4.1-flash`,
+`deepseek/deepseek-v4-flash`, `-fast` variants, `deepseek/deepseek-v4-pro`. Free ids
+exist (`poolside/laguna-s-2.1-free`, `inclusionai/ling-3.1-flash:free`,
+`stealth/space-bunny-alpha`); their quality and unattended-use terms are UNVERIFIED.
 
-- **Zen auto-reloads $20 when the balance falls below $5**, by default. Say so
-  before recommending it — an auto-reload is an always-on floor wearing
-  pay-as-you-go clothes. It can be customised or disabled.
-- **OpenRouter's free tier is the documented zero-spend route**: `:free`
-  variants need no credit purchase at all — 20 requests/minute, 50/day, rising
-  to 1000/day once $10 has been purchased. The tier keys off **all-time
-  purchases, not current balance**.
-- **⚠️ Zen and OpenCode Go do NOT share a model catalogue**, so a name from one
-  does not resolve on the other — Zen lists MiMo-V2.6-Flash Free where Go's
-  table carries MiMo-V2.5. Check which route a price belongs to before quoting
-  it.
-- **Free-model CONTEXT is a non-issue — measured 2026-09-22: 23 of the 24 free
-  models hold 40,000+ tokens, and the largest is 1,048,576.** A large rule stack
-  is the usual reason to ask, so this retires the worry rather than carrying it.
-- **Read the catalogue from `openrouter.ai/api/v1/models`, NOT the models page.**
-  The page is client-rendered, so a plain fetch returns the server fallback and
-  reads as *"no free models"* — false, and a broken instrument rather than
-  evidence. The JSON endpoint is public, needs no key, and carries `pricing` and
-  `context_length` per model, which is what any of these questions actually want.
-  *(This entry previously said to check it in a browser. The API is cheaper and
-  the browser advice was written before anyone tried the endpoint.)*
-- **⚠️ Price and context are NOT suitability, and the free list is where that
-  bites.** The API answers what a model COSTS and how much it HOLDS; it cannot
-  say whether a model represents the tier you are testing. Free catalogues skew
-  to **domain-tuned** builds (finance, health, vision variants of one flash
-  family) and to **ultra**-tier models, and either one silently invalidates a
-  flash-tier experiment — an ultra passes and teaches nothing, a finance-tuned
-  flash fails for reasons unrelated to the question. Read the model card, not the
-  price column. **And a result from a free model is not transferable to the model
-  you ship on**: it answers "does this work on a flash-tier model at all", which
-  is usually the real question, but say which it is.
+## Prompt caching (measured 2026-10-05)
 
-## Unattended use
+- **Measured: 95.7% cache hit** over 514 requests and 222M input tokens on v4.1-flash (Updated
+  2026-10-05; was 95.1% at 411 requests). Long sessions reached 94-95.5%; one-shot runs 30-86%
+  (cold first turn). A CI build with a fresh `HOME` read 88.8% (forge-wingman run 37293316194).
+- **Whole-context misses are the cost, not the per-turn tail** (Updated 2026-10-05, supersedes
+  '~21k per request'): 18 of 411 requests (4%) carried 90% of uncached tokens. Each missed on a
+  200-700k context, 0.2-1.8 min after the previous request (so not expiry). A median turn adds
+  0.5k uncached (>99% hit). Probed 2026-10-05: `activate_skill` does NOT cause a miss;
+  `enter_plan_mode` is absent from headless `-p`, so it is untested. 3 of the 18 were the first
+  request after a resume; the other 15 (mid-session, under 2 min apart) are UNEXPLAINED.
+- **`--resume` re-bills the history (measured 2026-10-05):** the first request of each new
+  `cmd -p --resume` process reads only the ~101k stable prefix from cache; the conversation after
+  it (18-22k in the probe) is billed uncached every time. Within one process, requests hit 99% or
+  more. So a runner resuming a large session per round pays nearly the whole context on each
+  resume.
+- **GOAT break-even (derived)**: $70 of credits is ~3.8B tokens a month at 95%, 5B at 97.3%, ~7B
+  at 99%. GOAT bills close to DeepSeek's list prices ($3.50 for 190M).
+- **Levers**: keep sessions well under the ~600k contexts that made each miss cost $0.10-0.20
+  (start a fresh session per task rather than one run-long session); keep resumed sessions small,
+  or carry state in a file rather than a resume; no edits to AGENTS.md or the layers
+  mid-session; no model switch mid-session. Narrow file reads barely matter (`read_file` caused
+  2.8% of uncached tokens).
+- **Measure it** from `~/.commandcode/projects/*/*.jsonl` (not `*.checkpoints.jsonl`): sum
+  `inputTokens`, `cacheReadTokens`, `outputTokens` per message, **counted once per message `id`**.
+  A resumed session copies its history into a new file, so a plain sum counts it twice (378M vs
+  174M here).
 
-- **⚠️ A REFUSED PERMISSION TERMINATES THE RUN, AND SILENTLY — so pre-grant, never
-  rely on the prompt.** `opencode run` asks for approval on anything outside the
-  working directory, and in a non-interactive run the refusal ENDS the session:
-  no error to the caller, no partial result flagged, exit status unremarkable.
-  The run reads as a model that did nothing. **Verified 2026-09-22 across two
-  agent cells, both of which had COMPLETED their work and died before the final
-  step** — one refused a read of a config path outside `--dir`, the other
-  `cp file /tmp/x.bak`. **`--auto` ("auto-approve permissions that are not
-  explicitly denied") is the blunt fix; the precise one is the per-agent
-  `permission` field.** Either way an unattended lane must not depend on someone
-  answering.
-- **The trap worth naming: the natural way to obey a mutation-testing convention
-  is a backup in `/tmp`** — outside `--dir`, so refused. An agent instructed to
-  prove its own assertions is load-bearing will reach for exactly that, which
-  means a rule stack that asks for mutation testing and a harness that denies
-  `/tmp` combine into a run that dies at its most conscientious moment.
-- **A prompt that instructs the agent to READ FILES must ship their content, not
-  their paths.** A projection assembled from a config repo can inline the rule
-  files' text while keeping the sentence that says they live in
-  `~/.claude/rules/` and should be opened there — which is false of the
-  projection and fatal in the sandbox. Verified 2026-09-22: the section survived
-  the trim, a compliant agent obeyed it, and the run died on the refusal. Assert
-  the emitted prompt contains no path outside the run directory.
-- **Non-interactive operation is a first-class mode**: opencode documents `run`
-  (non-interactive), `serve` (headless), `--format json` and `--auto` (verified
-  2026-09-20). So driving it from CI or a scheduler needs no wrapper or PTY trick.
-- **⚠️ The terms are NOT silent on unattended use — corrected 2026-09-22 by
-  reading them.** `opencode.ai/legal/terms-of-service` prohibits *"any processes
-  that run or are activated while you are not logged into the Services"*, which
-  on a literal reading is exactly an unattended agent. **Read in context it is
-  arguable**: the clause sits in an abuse list (Maillist, Listserv,
-  auto-responder, spam) and closes *"or that otherwise interfere with the proper
-  working of the Services"*, where "otherwise" frames the preceding items as
-  examples of interference — and one ticket's build is not interference. A second
-  clause prohibits *"automatically or programmatically extracts data or Output"*,
-  which touches any design that persists completions. **So this is a real,
-  unresolved risk on the primary provider, not an absence of one.** The earlier
-  wording here said SILENT, which was wrong and would have let a design proceed
-  on a false premise. They ask only
-  that a client send typical coding-agent traffic and **identify itself by user
-  agent** rather than using a generic SDK name. Two consequences: send a distinct
-  user agent (`<product>/<version>`), and note that a *solicited* ruling is
-  unrecoverable where silence is workable — so weigh asking the vendor against
-  simply complying with the stated expectation.
-- **OpenCode Go is a subscription with ALLOWANCE WINDOWS, and the windows bind
-  before the cash does.** $10/month against $12/5h, $30/week and $60/month
-  (verified 2026-09-20). A cash ceiling of $20 is satisfied outright by the
-  subscription, so any budget mechanism must enforce the *windows* — and an
-  allowance-exhaustion error must be classified as a budget stop, never as a model
-  failure worth retrying at a higher tier.
-- **Caching therefore buys THROUGHPUT, not cash, on a subscription.** *(Derived.)*
-  A 5x cut on the largest token line is roughly 5x more work inside the same
-  window, which is what decides when dispatch starts deferring. Pricing the saving
-  in dollars understates it and misses the constraint that actually binds.
+## Taste (learned preferences)
 
-## Related
+Stored in `.commandcode/taste/` (project, shared through git), `~/.commandcode/taste/`
+(global) and a remote copy; `cmd taste enable|disable|push|pull|list|lint|open`.
+Whether it applies in `-p` runs is UNVERIFIED. *(Judgment call: keep it off for a
+runner and a harness bake-off — it is Command Code only, so it confounds a
+same-model comparison.)*
 
-- `agentops.md` for the criteria that gate the agent rung; `langfuse.md` for
-  tracing, which is OTEL-native and so reachable from any language.
-- `engineering-defaults` records *Vertex AI + Cloud Run + LangGraph Server* for AI
-  work. A product whose agent IS opencode is a delta from that, because the
-  orchestration already exists as a third-party program — there is a graph engine
-  in the default stack and nothing for it to orchestrate.
+## Recording fixtures for an adapter (FRG-41 step 0)
+
+In a scratch git repo, never the real one: (1) a normal run with `--yolo`; (2) the
+same prompt asking to edit and `touch marker` under `--plan`, then record `ls marker`
+and `git diff --stat`; (3) a bad key via an isolated `HOME`. Save each run's
+`.ndjson`, `.stderr` and `.exit`; scrub paths and any key; copy to the repo's
+`testdata/`; note the version and `npm view command-code@<v> dist.integrity`.
+
+## Skills, instructions and the rest of a Claude-style setup (audit 2026-10-05)
+
+*Measured:* skills. *Documented only* (bundled docs in the npm package, read not run): the rest.
+
+- **Skills load from** `~/.commandcode/skills`, `~/.agents/skills`, `<repo>/.commandcode/skills`
+  and `<repo>/.agents/skills`, NOT `.claude/skills`. `cmd skills list -d` names every skill
+  it skipped and why; do not ask the model to list them (it listed 56 of 50). Descriptions are
+  capped at **1024 characters** (the Agent Skills spec), and a
+  longer one skips the whole skill. `drift-audit.sh` fails any description over it.
+- **Project it, do not copy it:** `python3 project-config.py command-code [--repo <repo>]`
+  symlinks poly-mind's skills into `~/.commandcode/skills` and a repo's `.claude/skills` into
+  its `.commandcode/skills` (excluded through `.git/info/exclude`), then runs the loader check.
+  A skill activates through the `activate_skill` tool; one `why` run followed the skill's steps
+  but ended with exit 9 (no final text), so treat skill runs as unproven end to end.
+- **Instructions (measured):** `AGENTS.md`, not `CLAUDE.md` (user `~/.commandcode/AGENTS.md`,
+  project `AGENTS.md` or `.commandcode/AGENTS.md`); `@path` imports work (5 levels, `~/`, absolute,
+  and a RELATIVE `@CLAUDE.md` from a project `AGENTS.md` — verified 2026-10-05, a headless run in
+  forge-wingman answering its own CLAUDE.md convention from the repo `AGENTS.md` alone). It rides in
+  the system prompt every turn. Importing poly-mind's three CLAUDE.md
+  layers took a bare turn from 16.7k to 106k input tokens (cold, 4k cached; the next turn read 98k,
+  92%, from cache), and the agent then applied the commit-message rule unprompted. A runner or
+  bake-off uses an isolated `HOME`, so it never sees this file. `project-config.py` generates it.
+- **Subagents (measured):** `~/.commandcode/agents`, markdown, only `name`, `description`, `tools`,
+  `model` and a few controls read; an omitted `tools:` means NONE (a Claude agent file means all),
+  so the projection writes `tools: "*"`. `project-config.py` generates the 14 agents with each
+  preloaded skill inlined; a headless run delegated
+  to the projected `architecture-reviewer` through the `agent` tool and it answered in role.
+  Tool ids differ (`read_file`, `grep`, `glob`, `shell_command`, `write_file`, `edit_file`).
+- **Hooks (not projected):** `PreToolUse`, `PostToolUse`, `Stop` (forces a revision, capped 3),
+  `SessionStart`; matchers cover only shell, read, write, edit; JSON on stdin and stdout; config
+  in `.commandcode/settings.json`. poly-mind's two hooks key on Claude's `AskUserQuestion` and
+  its transcript format, so they would not match here; they stay Claude-only until rewritten.
+- **MCP (measured):** `.mcp.json` (project) or `~/.commandcode/mcp.json` (user); OAuth tokens in
+  `mcp-tokens.json`. `cmd mcp add --transport http ...` HANGS from an agent shell (it waits on the
+  browser sign-in), so register with `cmd mcp add-json --scope user <name> '{"type":"http","url":"..."}'`
+  (returns at once), then `cmd mcp auth <name>` signs in. It listens on `127.0.0.1:8085` and calls
+  `xdg-open`, which WSL lacks, so it waits unseen: run it in the background with a stub `xdg-open`
+  (a script that appends its argument to a file) first on `PATH`, read the link from the file and
+  give it to the owner. One sign-in holds the port at a time; a stale tab causes "OAuth state
+  parameter mismatch". Both servers then showed `valid` in `cmd mcp auth --list`, and a headless
+  `memory_read` returned the owner's memories. Claude Code reaches mnemoverse
+  through a local stdio server holding an API key; here the remote OAuth connector
+  `https://mcp.mnemoverse.com/mcp` avoids copying that key (same account assumed, UNVERIFIED).
+- ⚠️ **`cmd mcp auth --list` FLAPS and is not evidence on its own.** Verified
+  2026-10-05: it reported `composio: expired` while Composio tools answered every
+  call, then `composio: valid` minutes later with no action taken, and
+  `~/.commandcode/mcp-tokens.json` showed `tokens: {}` throughout. Read it as a
+  hint and confirm with a real call (`memory_stats` for mnemoverse) — a stale
+  `expired` is not a finding. Conversely a re-auth takes effect WITHOUT the restart
+  the CLI advises: a `memory_stats` call answered immediately after
+  `Authentication successful!`.
+- **`/import claude`** copies skills, agents, commands, MCP and memory once: it drifts, so prefer
+  the projection.
+
+## Running an unattended build through the CLI
+
+`cmd -p "<prompt>" --yolo --trust --max-turns <n> --model <id> --output-format json` in a worktree.
+`--yolo` skips every permission prompt, so "do not commit or push" in the prompt binds nothing —
+**and the owner's decision (2026-10-05) is that this lane is NOT guarded: it keeps full git and
+`gh` access, on BOTH CLIs.** So `base/hooks/command-code-build-guard.py` is not registered in
+`.commandcode/settings.json` and must not be re-added as a detail — a guard here is a change to
+this decision, and Claude Code has never carried one (its repo-local `.claude/settings.local.json`
+holds only an allow rule). *(Supersedes the 2026-10-05 measurement note that had the guard
+blocking `git commit`; the script is retained, unwired.)*
 
 ## Return format
 

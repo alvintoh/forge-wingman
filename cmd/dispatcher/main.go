@@ -52,14 +52,16 @@ const (
 	requestTimeout = 30 * time.Second
 )
 
-// budgetConfig is FR-22's admission ceilings, assumed against OpenCode Go per
-// the PRD's Constraints table: its own rolling allowance windows — $12/5h,
-// $30/week, $60/month — checked INSTEAD OF the cash ceiling for provider
-// cost, since its $10/month subscription already satisfies NFR-1's $20 cash
-// cap; the cash ceiling itself, a calendar month (GitHub's own billing
-// cycle); and GitHub Actions' free 2,000 minutes/month on a private target
-// repository, hard-stopped there by default (RatePerMinute zero) since no
-// payment method is assumed configured.
+// budgetConfig is FR-22's admission ceilings: the Command Code GOAT plan's own
+// rolling allowance windows — $14/5h, $35/week, $70/month (verified
+// 2026-10-05: https://commandcode.ai/docs/plans/goat) — checked INSTEAD OF the
+// cash ceiling for provider cost, since its $10/month subscription already
+// satisfies NFR-1's $30 cash cap; the cash ceiling itself, a calendar month
+// (GitHub's own billing cycle); and GitHub Actions' free 2,000 minutes/month
+// on a private target repository, hard-stopped there by default
+// (RatePerMinute zero) since no payment method is assumed configured. The
+// windows meter SettledProviderCostMicros, which Command Code runs do not yet
+// fill (FRG-47).
 //
 // Hardcoded rather than read from the environment: NFR-3 calls every one of
 // these a configuration value, and making a nested structure like this
@@ -67,11 +69,11 @@ const (
 // Limitations.
 var budgetConfig = dispatcher.BudgetConfig{
 	ProviderWindows: []dispatcher.Window{
-		{Name: "opencode-go-5h", Period: 5 * time.Hour, Limit: 12 * money.Dollar},
-		{Name: "opencode-go-week", Period: 7 * 24 * time.Hour, Limit: 30 * money.Dollar},
-		{Name: "opencode-go-month", Period: 30 * 24 * time.Hour, Limit: 60 * money.Dollar},
+		{Name: "command-code-goat-5h", Period: 5 * time.Hour, Limit: 14 * money.Dollar},
+		{Name: "command-code-goat-week", Period: 7 * 24 * time.Hour, Limit: 35 * money.Dollar},
+		{Name: "command-code-goat-month", Period: 30 * 24 * time.Hour, Limit: 70 * money.Dollar},
 	},
-	Cash:   dispatcher.Window{Name: dispatcher.CeilingCash, Calendar: true, Limit: 20 * money.Dollar},
+	Cash:   dispatcher.Window{Name: dispatcher.CeilingCash, Calendar: true, Limit: 30 * money.Dollar},
 	Runner: dispatcher.RunnerMinutes{FreeMinutes: 2000},
 }
 

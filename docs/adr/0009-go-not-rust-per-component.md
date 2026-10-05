@@ -2,6 +2,9 @@
 
 - **Date:** 2026-09-21
 - **Status:** accepted
+- **Amended 2026-10-05:** the runner spawns the Command Code CLI, not `opencode run`,
+  and the plan/review profile is its `--plan` mode — see `adr/0015`. Nothing here
+  turns on which CLI it is: the runner still waits on a remote model.
 
 ## Context
 

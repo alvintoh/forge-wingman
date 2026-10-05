@@ -12,8 +12,8 @@ const (
 	ordinaryFailStderr = "Error: the model returned malformed output"
 )
 
-func TestBuildPlanPhaseWalksTheModelListOnTheRealCLIAgent(t *testing.T) {
-	list := []string{"opencode-go/paid", "opencode/free-a", "opencode/free-b"}
+func TestBuildPlanPhaseWalksTheModelListOnTheRealAgent(t *testing.T) {
+	list := []string{"command-code/a", "command-code/b", "command-code/c"}
 	tests := []struct {
 		name          string
 		stderr        string
@@ -23,11 +23,11 @@ func TestBuildPlanPhaseWalksTheModelListOnTheRealCLIAgent(t *testing.T) {
 		wantReason    StopReason
 		wantPlanSteps int
 	}{
-		{"allowance moves to the backup", allowanceStderr, "opencode/free-a", list[:2], OutcomeBuilt, "", 2},
-		{"unavailability moves to the backup", unavailableStderr, "opencode/free-b", list, OutcomeBuilt, "", 3},
+		{"allowance moves to the backup", allowanceStderr, "command-code/b", list[:2], OutcomeBuilt, "", 2},
+		{"unavailability moves to the backup", unavailableStderr, "command-code/c", list, OutcomeBuilt, "", 3},
 		{"every model out of allowance", allowanceStderr, "", list, OutcomeBudgetStop, StopAllowanceExhausted, 3},
 		{"every model unavailable", unavailableStderr, "", list, OutcomeInfraFailure, StopModelUnavailable, 3},
-		{"an ordinary failure never moves on", ordinaryFailStderr, "opencode/free-a", list[:1], OutcomeAgentFailed, StopAgentExit, 1},
+		{"an ordinary failure never moves on", ordinaryFailStderr, "command-code/b", list[:1], OutcomeAgentFailed, StopAgentExit, 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -35,7 +35,7 @@ func TestBuildPlanPhaseWalksTheModelListOnTheRealCLIAgent(t *testing.T) {
 			objects := validObjects()
 			objects["projections/"+testSHA+"/"+planProjectionFile] = []byte("# Plan rules\n\n" + ticketSentinel)
 			deps, _, reported := testDeps(objects, &fakeAgent{edit: edit("version.go", "package x\n")})
-			deps.PlanAgent = PlanCLIAgent(bin, "ignored/first")
+			deps.PlanAgent = scriptedAgent(t, bin, ProfilePlan, "command-code/ignored")
 			c := testConfig(t, initRepo(t))
 			c.Ticket.Size = "M"
 			c.PlanModels = list
@@ -45,12 +45,12 @@ func TestBuildPlanPhaseWalksTheModelListOnTheRealCLIAgent(t *testing.T) {
 			var gotModels, stepModels []string
 			for _, a := range attempts() {
 				gotModels = append(gotModels, a.model)
-				if a.agent != planAgentName || a.config != planAgentConfig {
-					t.Fatalf("attempt %+v, want the plan agent shape on every model", a)
+				if a.flag != "--plan" {
+					t.Fatalf("attempt %+v, want the plan profile on every model", a)
 				}
 			}
 			if !slices.Equal(gotModels, tt.wantModels) {
-				t.Fatalf("opencode ran with -m %v, want %v", gotModels, tt.wantModels)
+				t.Fatalf("the CLI ran models %v, want %v", gotModels, tt.wantModels)
 			}
 			rec := reported.last(t)
 			for _, st := range rec.Steps {

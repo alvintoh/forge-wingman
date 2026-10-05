@@ -1,6 +1,5 @@
 # Built binaries and local environment. The SPA's own ignores are web/.gitignore.
 /bin/
-/cmd/modelprobe/modelprobe
 *.out
 .env
 .env.*

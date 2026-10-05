@@ -2,18 +2,33 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
 )
 
-func TestOpencodeHarnessServesTheZenAndGoProviders(t *testing.T) {
-	if got := (OpencodeHarness{}).Providers(); !slices.Equal(got, []string{ZenProvider, opencodeGoProvider}) {
-		t.Fatalf("providers = %v", got)
+// fakeHarness serves provider "p" through agent, or a fresh fakeAgent when unset.
+type fakeHarness struct{ agent Agent }
+
+func (fakeHarness) Providers() []string { return []string{"p"} }
+func (h fakeHarness) Agent(Profile, string) Agent {
+	if h.agent == nil {
+		return &fakeAgent{}
 	}
+	return h.agent
+}
+func (fakeHarness) Classify(stderrTail string, _ error) (Outcome, StopReason) {
+	return classifyMarkers(stderrTail)
+}
+func (fakeHarness) Ready() error { return nil }
+
+func TestCommandCodeHarnessServesItsProvider(t *testing.T) {
 	if got := (CommandCodeHarness{}).Providers(); !slices.Equal(got, []string{"command-code"}) {
 		t.Fatalf("providers = %v", got)
 	}
@@ -21,33 +36,29 @@ func TestOpencodeHarnessServesTheZenAndGoProviders(t *testing.T) {
 
 func TestRouterRunsTheHarnessItsModelNames(t *testing.T) {
 	ccBin, ccAttempts := scriptedCommandCode(t, "normal")
-	dir := t.TempDir()
-	ocBin, ocLog := filepath.Join(dir, "opencode"), filepath.Join(dir, "ran")
-	if err := os.WriteFile(ocBin, []byte("#!/bin/sh\ntouch '"+ocLog+"'\ncat > /dev/null\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	other := &fakeAgent{}
 	r := NewRouter(ProfileBuild,
-		CommandCodeHarness{Bin: ccBin, Key: "k", OptIn: true, Home: t.TempDir()},
-		OpencodeHarness{Bin: ocBin},
+		CommandCodeHarness{Bin: ccBin, Key: "k", Home: t.TempDir()},
+		fakeHarness{agent: other},
 	)
 
 	var out, errBuf strings.Builder
 	if err := r.WithModel("command-code/x").Run(context.Background(), t.TempDir(), "", "p", &out, &errBuf); err != nil {
 		t.Fatal(err)
 	}
-	if len(ccAttempts()) != 1 {
-		t.Fatalf("the command-code model did not route to the command-code harness")
+	if len(ccAttempts()) != 1 || other.calls != 0 {
+		t.Fatalf("the command-code model did not route to the command-code harness alone")
 	}
-	if err := r.WithModel("opencode/y").Run(context.Background(), t.TempDir(), "", "p", &out, &errBuf); err != nil {
+	if err := r.WithModel("p/y").Run(context.Background(), t.TempDir(), "", "p", &out, &errBuf); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(ocLog); err != nil {
-		t.Fatalf("the opencode model did not route to the opencode harness: %v", err)
+	if len(ccAttempts()) != 1 || other.calls != 1 {
+		t.Fatalf("the p model did not route to its own harness alone")
 	}
 }
 
 func TestRouterRefusesAnUnservedModel(t *testing.T) {
-	r := NewRouter(ProfileBuild, OpencodeHarness{Bin: "opencode"})
+	r := NewRouter(ProfileBuild, fakeHarness{agent: &fakeAgent{}})
 	if err := r.Gate("other/x"); err == nil {
 		t.Fatal("the router served a model no harness serves")
 	}
@@ -61,44 +72,20 @@ func TestRouterRunRefusesAnUnreadyHarness(t *testing.T) {
 	r := NewRouter(ProfileBuild, CommandCodeHarness{Bin: "cmd"})
 	var out, errBuf strings.Builder
 	err := r.WithModel("command-code/x").Run(context.Background(), t.TempDir(), "", "p", &out, &errBuf)
-	if err == nil || !strings.Contains(err.Error(), "COMMAND_CODE_OPT_IN") {
-		t.Fatalf("err = %v, want the harness's opt-in refusal", err)
+	if err == nil || !strings.Contains(err.Error(), "COMMANDCODE_API_KEY") {
+		t.Fatalf("err = %v, want the harness's missing-key refusal", err)
 	}
 }
 
-// TestOpencodeHarnessRestrictsThePlanAndReviewProfiles asserts the plan and
-// review phases keep their edit- and bash-denying agents (AC2, AC4).
-func TestOpencodeHarnessRestrictsThePlanAndReviewProfiles(t *testing.T) {
-	h := OpencodeHarness{Bin: "opencode"}
-	for p, want := range map[Profile]Agent{
-		ProfilePlan:   PlanCLIAgent("opencode", "opencode/m"),
-		ProfileReview: ReviewCLIAgent("opencode", "opencode/m"),
-		ProfileBuild:  CLIAgent{Bin: "opencode", Model: "opencode/m"},
-	} {
-		if got := h.Agent(p, "opencode/m"); got != want {
-			t.Errorf("profile %d agent = %+v, want %+v", p, got, want)
-		}
-	}
-}
-
-// TestOpencodeHarnessClassifiesByTheMarkers asserts opencode keeps today's
-// marker classification (AC4).
-func TestOpencodeHarnessClassifiesByTheMarkers(t *testing.T) {
-	if outcome, reason := (OpencodeHarness{}).Classify("Error: allowance exhausted", nil); outcome != OutcomeBudgetStop || reason != StopAllowanceExhausted {
-		t.Fatalf("Classify = %s/%s, want the allowance stop", outcome, reason)
-	}
-}
-
-// TestCommandCodeHarnessNeedsBothTheOptInAndTheKey asserts either one alone
-// leaves the harness refused (AC7).
-func TestCommandCodeHarnessNeedsBothTheOptInAndTheKey(t *testing.T) {
+// TestCommandCodeHarnessIsReadyWithItsKey asserts the harness is refused
+// without its key and ready with it (AC7).
+func TestCommandCodeHarnessIsReadyWithItsKey(t *testing.T) {
 	for name, tt := range map[string]struct {
 		h     CommandCodeHarness
 		ready bool
 	}{
-		"opt-in without a key": {CommandCodeHarness{OptIn: true}, false},
-		"a key without opt-in": {CommandCodeHarness{Key: "k"}, false},
-		"both":                 {CommandCodeHarness{OptIn: true, Key: "k"}, true},
+		"no key": {CommandCodeHarness{}, false},
+		"a key":  {CommandCodeHarness{Key: "k"}, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := tt.h.Ready(); (err == nil) != tt.ready {
@@ -111,7 +98,7 @@ func TestCommandCodeHarnessNeedsBothTheOptInAndTheKey(t *testing.T) {
 // TestRouterClassifiesAnUnservedModelAsAnAgentFailure asserts a model no
 // harness serves never reads as a budget or availability stop.
 func TestRouterClassifiesAnUnservedModelAsAnAgentFailure(t *testing.T) {
-	r := NewRouter(ProfileBuild, OpencodeHarness{}).WithModel("other/x").(Router)
+	r := NewRouter(ProfileBuild, fakeHarness{}).WithModel("other/x").(Router)
 	if outcome, reason := r.Classify("allowance exhausted", nil); outcome != OutcomeAgentFailed || reason != StopAgentExit {
 		t.Fatalf("Classify = %s/%s, want the ordinary agent failure", outcome, reason)
 	}
@@ -159,7 +146,7 @@ func TestNoHarnessIsNamedOutsideItsAdapter(t *testing.T) {
 			return err
 		}
 		lower := strings.ToLower(string(b))
-		if strings.Contains(lower, "opencode") || strings.Contains(lower, "commandcode") || strings.Contains(lower, "command-code") {
+		if strings.Contains(lower, "commandcode") || strings.Contains(lower, "command-code") {
 			offenders = append(offenders, rel)
 		}
 		return nil
@@ -175,17 +162,42 @@ func TestNoHarnessIsNamedOutsideItsAdapter(t *testing.T) {
 // harnessNameAllowed lists where a harness name may appear: its own adapter, the
 // composition root, and the vendor-defined values read where they live.
 func harnessNameAllowed(rel string) bool {
-	switch {
-	case rel == "internal/runner/harness_opencode.go",
-		rel == "internal/runner/harness_commandcode.go",
-		rel == "internal/runner/models.go",
-		rel == "internal/runner/build.go",
-		rel == "cmd/runner/main.go",
-		rel == "cmd/dispatcher/main.go",
-		rel == "internal/dispatcher/budget.go",
-		strings.HasPrefix(rel, "internal/modelprobe/"),
-		strings.HasPrefix(rel, "cmd/modelprobe/"):
+	switch rel {
+	case "internal/runner/harness_commandcode.go",
+		"internal/runner/build.go",
+		"cmd/runner/main.go",
+		"cmd/dispatcher/main.go":
 		return true
 	}
 	return false
+}
+
+// TestNoRetiredHarnessIsNamed asserts no tracked file outside the vault copies
+// and the historical probe results names the retired harness or its model set.
+func TestNoRetiredHarnessIsNamed(t *testing.T) {
+	root := filepath.Join("..", "..")
+	cmd := exec.Command("git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ".",
+		":!docs/adr", ":!docs/tech-design-v1.md", ":!probe/results")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git ls-files: %v", err)
+	}
+	retired := regexp.MustCompile(`(?i:open[c]ode|\bz[e]n\b)`)
+	var offenders []string
+	for _, rel := range strings.Split(strings.TrimRight(string(out), "\x00"), "\x00") {
+		b, err := os.ReadFile(filepath.Join(root, rel))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if retired.Match(b) {
+			offenders = append(offenders, rel)
+		}
+	}
+	if len(offenders) > 0 {
+		t.Fatalf("the retired harness is named in: %v", offenders)
+	}
 }

@@ -48,6 +48,8 @@ Set from the outputs after `apply`:
 owner. When it does not, run.yml's ticket, model and pr-meta jobs refuse to run and
 the record job records identity-mismatch.
 
+The `COMMANDCODE_API_KEY` repository secret is the Command Code key every model slot runs on.
+
 The rule stack's publish workflow needs two variables on that repository:
 
 | Variable | Output |

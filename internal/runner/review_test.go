@@ -1,47 +1,10 @@
 package runner
 
 import (
-	"context"
 	"errors"
-	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
-
-func TestReviewCLIAgentRunPassesTheRestrictedAgentAndItsConfig(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake opencode is a shell script, which Windows cannot execute")
-	}
-	dir := t.TempDir()
-	bin := filepath.Join(dir, "opencode")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > args.txt\nenv > env.txt\ncat > /dev/null\n"
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	var stdout, stderr strings.Builder
-	agent := ReviewCLIAgent(bin, "p/r")
-	if err := agent.Run(context.Background(), dir, "", "prompt", &stdout, &stderr); err != nil {
-		t.Fatal(err)
-	}
-	gotArgs, err := os.ReadFile(filepath.Join(dir, "args.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantArgs := "run\n--format\njson\n--auto\n-m\np/r\n--dir\n" + dir + "\n--agent\n" + reviewAgentName + "\n"
-	if string(gotArgs) != wantArgs {
-		t.Fatalf("args = %q, want %q", gotArgs, wantArgs)
-	}
-	gotEnv, err := os.ReadFile(filepath.Join(dir, "env.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(gotEnv), "OPENCODE_CONFIG_CONTENT="+reviewAgentConfig) {
-		t.Fatalf("agent env carries no restricted config:\n%s", gotEnv)
-	}
-}
 
 func TestReviewPromptCarriesTheDiffAndTheTicket(t *testing.T) {
 	got := ReviewPrompt("diff --git a/x.go\n+x", testTicket)
