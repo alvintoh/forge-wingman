@@ -6,11 +6,11 @@ import (
 	"github.com/alvintoh/forge-wingman/internal/money"
 )
 
-// openCodeGo mirrors NFR-1's stated OpenCode Go ceilings: $12/5h, $30/week,
-// $60/month, checked instead of the $20 cash ceiling for provider cost, plus
-// GitHub's 2,000 free runner-minutes/month with no payment method on file (a
-// hard stop past it).
-var openCodeGo = BudgetConfig{
+// windowed is a provider allowance over three rolling windows — $12/5h,
+// $30/week, $60/month — checked instead of the $20 cash ceiling for provider
+// cost, plus GitHub's 2,000 free runner-minutes/month with no payment method
+// on file (a hard stop past it).
+var windowed = BudgetConfig{
 	ProviderWindows: []Window{
 		{Name: "5h", Limit: 12 * money.Dollar},
 		{Name: "week", Limit: 30 * money.Dollar},
@@ -21,7 +21,7 @@ var openCodeGo = BudgetConfig{
 }
 
 func TestDecideAdmitsARunThatFitsEveryCeiling(t *testing.T) {
-	fits, binding := Decide(openCodeGo, Totals{}, []money.Micros{0, 0, 0}, 0, 0,
+	fits, binding := Decide(windowed, Totals{}, []money.Micros{0, 0, 0}, 0, 0,
 		Reservation{ProviderCost: 5 * money.Dollar, RunnerMinutes: 100})
 	if !fits || binding != "" {
 		t.Fatalf("fits = %v, binding = %q", fits, binding)
@@ -39,7 +39,7 @@ func TestDecideDefersOnTheFirstProviderWindowItWouldBreach(t *testing.T) {
 		{"the month window, with 5h and week still fitting", []money.Micros{0, 0, 56 * money.Dollar}, "month"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			fits, binding := Decide(openCodeGo, Totals{}, tt.windowSettled, 0, 0,
+			fits, binding := Decide(windowed, Totals{}, tt.windowSettled, 0, 0,
 				Reservation{ProviderCost: 5 * money.Dollar})
 			if fits || binding != tt.want {
 				t.Fatalf("fits = %v, binding = %q, want deferred on %q", fits, binding, tt.want)
@@ -52,7 +52,7 @@ func TestDecideCountsInFlightReservationsTowardEveryWindow(t *testing.T) {
 	// Nothing settled yet, but another run's reservation alone already fills
 	// the 5-hour window: the ledger's in-flight total must be counted, not
 	// only what has settled.
-	fits, binding := Decide(openCodeGo, Totals{ProviderCost: 11 * money.Dollar}, []money.Micros{0, 0, 0}, 0, 0,
+	fits, binding := Decide(windowed, Totals{ProviderCost: 11 * money.Dollar}, []money.Micros{0, 0, 0}, 0, 0,
 		Reservation{ProviderCost: 2 * money.Dollar})
 	if fits || binding != "5h" {
 		t.Fatalf("fits = %v, binding = %q, want deferred on 5h", fits, binding)
@@ -63,7 +63,7 @@ func TestDecideZeroesRunnerMinutesForAPublicTarget(t *testing.T) {
 	// The estimate holds a large minute figure, but the caller is expected to
 	// zero it for a public target before calling Decide; with it zeroed, a
 	// month's worth of minutes settled elsewhere still fits.
-	fits, binding := Decide(openCodeGo, Totals{}, []money.Micros{0, 0, 0}, 0, 1900,
+	fits, binding := Decide(windowed, Totals{}, []money.Micros{0, 0, 0}, 0, 1900,
 		Reservation{ProviderCost: money.Dollar, RunnerMinutes: 0})
 	if !fits || binding != "" {
 		t.Fatalf("fits = %v, binding = %q, want a public target's zeroed minutes to fit", fits, binding)
@@ -76,7 +76,7 @@ func TestDecideZeroesRunnerMinutesForAPublicTarget(t *testing.T) {
 // public target's minutes count as zero, so it can never newly breach a
 // ceiling it never touches, however exhausted that ceiling already is.
 func TestDecideNeverBlocksAPublicTargetOnAnAlreadyExhaustedRunnerCeiling(t *testing.T) {
-	fits, binding := Decide(openCodeGo, Totals{}, []money.Micros{0, 0, 0}, 0, 2500,
+	fits, binding := Decide(windowed, Totals{}, []money.Micros{0, 0, 0}, 0, 2500,
 		Reservation{ProviderCost: money.Dollar, RunnerMinutes: 0})
 	if !fits || binding != "" {
 		t.Fatalf("fits = %v, binding = %q, want a zero-minute candidate to fit despite the ceiling already being exhausted", fits, binding)
@@ -86,7 +86,7 @@ func TestDecideNeverBlocksAPublicTargetOnAnAlreadyExhaustedRunnerCeiling(t *test
 func TestDecideHardStopsOnRunnerMinutesWithNoPaymentMethodConfigured(t *testing.T) {
 	// A private target pushing total minutes past the free tier, with
 	// RatePerMinute left at its zero default, must defer rather than spend.
-	fits, binding := Decide(openCodeGo, Totals{}, []money.Micros{0, 0, 0}, 0, 1950,
+	fits, binding := Decide(windowed, Totals{}, []money.Micros{0, 0, 0}, 0, 1950,
 		Reservation{ProviderCost: money.Dollar, RunnerMinutes: 100})
 	if fits || binding != CeilingRunnerMinutes {
 		t.Fatalf("fits = %v, binding = %q, want deferred on %q", fits, binding, CeilingRunnerMinutes)
@@ -94,7 +94,7 @@ func TestDecideHardStopsOnRunnerMinutesWithNoPaymentMethodConfigured(t *testing.
 }
 
 func TestDecideConvertsRunnerMinutesToCashWhenARateIsConfigured(t *testing.T) {
-	cfg := openCodeGo
+	cfg := windowed
 	cfg.Runner.RatePerMinute = 6000 // $0.006/minute
 	cfg.Cash.Limit = money.Dollar   // a tight cash ceiling so the overage alone breaches it
 
@@ -127,7 +127,7 @@ func TestDecideNeverChecksAWindowedProvidersCostAgainstCashToo(t *testing.T) {
 	// provider cost, never in addition — so an enormous provider-cost
 	// estimate that still fits every window must not be re-checked against a
 	// tight cash ceiling.
-	cfg := openCodeGo
+	cfg := windowed
 	cfg.Cash.Limit = money.Dollar // would fail instantly if provider cost were double-counted
 	fits, binding := Decide(cfg, Totals{}, []money.Micros{0, 0, 0}, 0, 0, Reservation{ProviderCost: 5 * money.Dollar})
 	if !fits || binding != "" {

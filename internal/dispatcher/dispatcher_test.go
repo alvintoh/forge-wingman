@@ -529,7 +529,7 @@ func TestPollTellsAdmissionWhetherTheConfiguredProviderIsHalted(t *testing.T) {
 		err    error
 		want   bool
 	}{
-		"the configured provider is halted":      {halted: map[string]bool{"opencode": true}, want: true},
+		"the configured provider is halted":      {halted: map[string]bool{"command-code": true}, want: true},
 		"only another provider is halted":        {halted: map[string]bool{"openrouter": true}},
 		"the halt check fails, so it fails open": {err: errFirestore},
 	} {
@@ -537,7 +537,7 @@ func TestPollTellsAdmissionWhetherTheConfiguredProviderIsHalted(t *testing.T) {
 			q := &fakeQueue{candidates: []Candidate{{RunID: "run-a", Repo: "octo/scratch", Priority: 1}}}
 			deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
 			deps.Providers = fakeProviders{halted: tt.halted, err: tt.err}
-			cfg := Config{Repos: buildConfig.Repos, Budget: buildConfig.Budget, Model: "opencode/big-pickle"}
+			cfg := Config{Repos: buildConfig.Repos, Budget: buildConfig.Budget, Model: "command-code/x"}
 			if _, err := Poll(context.Background(), deps, cfg); err != nil {
 				t.Fatal(err)
 			}

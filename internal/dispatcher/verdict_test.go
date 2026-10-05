@@ -23,7 +23,7 @@ func (v fakeVerdicts) Verdict(_ context.Context, provider string) (providers.Ver
 	return v.verdicts[provider], nil
 }
 
-var verdictConfig = Config{Repos: buildConfig.Repos, Budget: buildConfig.Budget, Model: "opencode/big-pickle"}
+var verdictConfig = Config{Repos: buildConfig.Repos, Budget: buildConfig.Budget, Model: "command-code/x"}
 
 // fakeRecorder keeps each verdict it is asked to write.
 type fakeRecorder struct {
@@ -59,14 +59,14 @@ func recordedPoll(t *testing.T, plans ProviderVerdicts, rec VerdictRecorder, log
 
 func TestPollClaimsTheRunWithTheConfiguredProvidersVerdict(t *testing.T) {
 	plans := fakeVerdicts{verdicts: map[string]providers.Verdict{
-		"opencode": providers.VerdictRestricted, "openrouter": providers.VerdictAllowed,
+		"command-code": providers.VerdictRestricted, "openrouter": providers.VerdictAllowed,
 	}}
 	_, w, err := verdictPoll(t, plans, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(w.claims) != 1 || w.claims[0].Verdict != "restricted" {
-		t.Fatalf("claims = %+v, want the opencode verdict restricted", w.claims)
+		t.Fatalf("claims = %+v, want the command-code verdict restricted", w.claims)
 	}
 }
 
@@ -96,7 +96,7 @@ func TestPollLeavesTheVerdictEmptyWhenNoVerdictSourceIsWired(t *testing.T) {
 
 func TestPollLogsTheVerdictOnTheDispatchedRun(t *testing.T) {
 	var logs bytes.Buffer
-	plans := fakeVerdicts{verdicts: map[string]providers.Verdict{"opencode": providers.VerdictAllowed}}
+	plans := fakeVerdicts{verdicts: map[string]providers.Verdict{"command-code": providers.VerdictAllowed}}
 	if _, _, err := verdictPoll(t, plans, &logs); err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestPollLogsTheVerdictOnTheDispatchedRun(t *testing.T) {
 
 func TestPollWritesTheVerdictOntoTheRunBeforeDispatching(t *testing.T) {
 	rec := &fakeRecorder{}
-	plans := fakeVerdicts{verdicts: map[string]providers.Verdict{"opencode": providers.VerdictRestricted}}
+	plans := fakeVerdicts{verdicts: map[string]providers.Verdict{"command-code": providers.VerdictRestricted}}
 	if _, _, err := recordedPoll(t, plans, rec, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestPollWritesTheVerdictOntoTheRunBeforeDispatching(t *testing.T) {
 func TestPollStillDispatchesAndLogsWhenTheVerdictWriteFails(t *testing.T) {
 	var logs bytes.Buffer
 	rec := &fakeRecorder{err: errFirestore}
-	plans := fakeVerdicts{verdicts: map[string]providers.Verdict{"opencode": providers.VerdictAllowed}}
+	plans := fakeVerdicts{verdicts: map[string]providers.Verdict{"command-code": providers.VerdictAllowed}}
 	res, w, err := recordedPoll(t, plans, rec, &logs)
 	if err != nil || len(res.Dispatched) != 1 || len(w.claims) != 1 {
 		t.Fatalf("dispatched %v, claims %v, err %v, want the run started anyway", res.Dispatched, w.claims, err)
@@ -130,7 +130,7 @@ func TestPollStillDispatchesAndLogsWhenTheVerdictWriteFails(t *testing.T) {
 }
 
 func TestPollWritesNothingWhenNoRecorderIsWired(t *testing.T) {
-	plans := fakeVerdicts{verdicts: map[string]providers.Verdict{"opencode": providers.VerdictAllowed}}
+	plans := fakeVerdicts{verdicts: map[string]providers.Verdict{"command-code": providers.VerdictAllowed}}
 	res, _, err := recordedPoll(t, plans, nil, nil)
 	if err != nil || len(res.Dispatched) != 1 {
 		t.Fatalf("dispatched %v, err %v", res.Dispatched, err)
