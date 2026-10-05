@@ -652,6 +652,28 @@ func TestBuildStopsWhenTheReviewModelsAreInvalid(t *testing.T) {
 	}
 }
 
+func TestBuildStopsWhenAReviewModelIsABuildFallback(t *testing.T) {
+	fallbacks := fallbackModels(DefaultModel())
+	if len(fallbacks) == 0 {
+		t.Fatal("models.json names no build fallbacks for this test to cover")
+	}
+	for _, fallback := range fallbacks {
+		t.Run(fallback, func(t *testing.T) {
+			agent := &fakeAgent{}
+			deps, _, reported := testDeps(validObjects(), agent)
+			c := testConfig(t, initRepo(t))
+			c.Model = DefaultModel()
+			c.ReviewModels = []string{fallback}
+			if _, err := Build(context.Background(), deps, c); err == nil {
+				t.Fatal("Build accepted a review model that is a build fallback")
+			}
+			if agent.calls != 0 || reported.last(t).StopReason != StopModelInvalid {
+				t.Fatalf("calls %d, reason %s", agent.calls, reported.last(t).StopReason)
+			}
+		})
+	}
+}
+
 func TestBuildStopsWhenThePlanModelsAreInvalid(t *testing.T) {
 	for name, models := range map[string][]string{
 		"none":        nil,
