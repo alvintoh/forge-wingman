@@ -39,7 +39,7 @@ func TestFallbackModelsAreTheDefaultsOnly(t *testing.T) {
 
 func TestParseModelSetRejectsAnInvalidSet(t *testing.T) {
 	for name, tc := range map[string]struct{ doc, want string }{
-		"other provider":   {`{"default":"opencode-go/glm-5.3-flash","fallbacks":[]}`, "not a opencode model"},
+		"mixed providers":  {`{"default":"opencode-go/glm-5.3-flash","fallbacks":["opencode/a"]}`, "not a opencode-go model"},
 		"malformed name":   {`{"default":"big-pickle","fallbacks":[]}`, "not provider/model"},
 		"duplicate":        {`{"default":"opencode/a","fallbacks":["opencode/a"]}`, "listed twice"},
 		"empty default":    {`{"default":"","fallbacks":[]}`, "not provider/model"},

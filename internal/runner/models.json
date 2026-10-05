@@ -1,25 +1,8 @@
 {
-  "default": "opencode/nemotron-3-ultra-free",
+  "default": "command-code/deepseek/deepseek-v4.1-flash",
   "fallbacks": [
-    "opencode/nemotron-3.5-lightning-free",
-    "opencode/muse-spark-1.3-contributor-free"
+    "command-code/inclusionai/ling-3.1-flash:free"
   ],
-  "probed_at": "2026-10-03",
-  "evidence": [
-    {
-      "model": "opencode/nemotron-3-ultra-free",
-      "tool_calls": 10,
-      "transcript_bytes": 33573
-    },
-    {
-      "model": "opencode/nemotron-3.5-lightning-free",
-      "tool_calls": 12,
-      "transcript_bytes": 47689
-    },
-    {
-      "model": "opencode/muse-spark-1.3-contributor-free",
-      "tool_calls": 17,
-      "transcript_bytes": 60836
-    }
-  ]
+  "probed_at": "",
+  "evidence": []
 }

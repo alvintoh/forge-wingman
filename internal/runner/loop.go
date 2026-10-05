@@ -152,8 +152,8 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 	if err != nil {
 		return false, "", stopWith(OutcomeInfraFailure, StopChecksRun, err)
 	}
-	call := agentCall{Phase: PhaseReview, Round: 1, Model: c.ReviewModel, Timeout: roundTimeout(c.AgentTimeout, sum.StartedAt, now)}
-	text, _, _, err := runAgentWithFallback(ctx, d, c, call, d.ReviewAgent, wt.Dir, ReviewPrompt(diff, c.Ticket), sum)
+	call := agentCall{Phase: PhaseReview, Round: 1, Model: c.ReviewModels[0], Timeout: roundTimeout(c.AgentTimeout, sum.StartedAt, now)}
+	text, _, _, err := runAgentInOrder(ctx, d, c, call, c.ReviewModels, d.ReviewAgent, wt.Dir, ReviewPrompt(diff, c.Ticket), sum)
 	if err != nil {
 		return false, "", err
 	}

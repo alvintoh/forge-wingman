@@ -163,15 +163,15 @@ func testDeps(projections fakeObjects, agent *fakeAgent) (BuildDeps, fakeObjects
 
 func testConfig(t *testing.T, repo string) BuildConfig {
 	return BuildConfig{
-		AttemptID:   "42-1",
-		Repo:        repo,
-		TempDir:     t.TempDir(),
-		Pointer:     DefaultPointer,
-		Model:       "p/m",
-		PlanModels:  []string{"p/m"},
-		ReviewModel: "p/r",
-		Identity:    testIdentity,
-		Ticket:      testTicket,
+		AttemptID:    "42-1",
+		Repo:         repo,
+		TempDir:      t.TempDir(),
+		Pointer:      DefaultPointer,
+		Model:        "p/m",
+		PlanModels:   []string{"p/m"},
+		ReviewModels: []string{"p/r"},
+		Identity:     testIdentity,
+		Ticket:       testTicket,
 	}
 }
 
@@ -629,19 +629,21 @@ func TestBuildStopsOnAnInvalidModel(t *testing.T) {
 	}
 }
 
-func TestBuildStopsWhenTheReviewModelIsInvalid(t *testing.T) {
-	for name, reviewModel := range map[string]string{
-		"malformed":           "not a model",
-		"same as build model": "p/m",
-		"over long":           overLongModel,
+func TestBuildStopsWhenTheReviewModelsAreInvalid(t *testing.T) {
+	for name, reviewModels := range map[string][]string{
+		"none":                nil,
+		"malformed":           {"not a model"},
+		"same as build model": {"p/m"},
+		"repeated":            {"p/r", "p/r"},
+		"over long":           {overLongModel},
 	} {
 		t.Run(name, func(t *testing.T) {
 			agent := &fakeAgent{}
 			deps, _, reported := testDeps(validObjects(), agent)
 			c := testConfig(t, initRepo(t))
-			c.ReviewModel = reviewModel
+			c.ReviewModels = reviewModels
 			if _, err := Build(context.Background(), deps, c); err == nil {
-				t.Fatal("Build accepted the review model")
+				t.Fatal("Build accepted the review models")
 			}
 			if agent.calls != 0 || reported.last(t).StopReason != StopModelInvalid {
 				t.Fatalf("calls %d, reason %s", agent.calls, reported.last(t).StopReason)
@@ -678,18 +680,29 @@ func TestDefaultPlanModelsValidate(t *testing.T) {
 	if err := ValidatePlanModels([]string{DefaultPlanModel}); err != nil {
 		t.Fatal(err)
 	}
+	if err := ValidateReviewModels([]string{DefaultReviewModel}, DefaultModel()); err != nil {
+		t.Fatal(err)
+	}
 }
 
-func TestBuildNeverAdvancesTheBuildOrderOnAllowanceExhaustion(t *testing.T) {
+func TestBuildAdvancesTheBuildOrderOnAllowanceExhaustion(t *testing.T) {
 	agent := &fakeAgent{stderr: "Error: allowance exhausted", err: errors.New("exit status 1")}
 	deps, _, reported := testDeps(validObjects(), agent)
 	c := testConfig(t, initRepo(t))
 	c.Model = DefaultModel()
 	if _, err := Build(context.Background(), deps, c); err == nil {
-		t.Fatal("Build succeeded with the allowance exhausted")
+		t.Fatal("Build succeeded with every model's allowance exhausted")
 	}
-	if agent.calls != 1 {
-		t.Fatalf("build agent ran %d times, want 1: only the plan list moves on allowance", agent.calls)
+	want := []string{"command-code/deepseek/deepseek-v4.1-flash", "command-code/inclusionai/ling-3.1-flash:free"}
+	if agent.calls != len(want) {
+		t.Fatalf("build agent ran %d times, want %d: an exhausted allowance moves to the fallback", agent.calls, len(want))
+	}
+	var models []string
+	for _, st := range reported.last(t).Steps {
+		models = append(models, st.Model)
+	}
+	if !slices.Equal(models, want) {
+		t.Fatalf("build ran on %v, want the ordered list %v", models, want)
 	}
 	if rec := reported.last(t); rec.Outcome != OutcomeBudgetStop || rec.StopReason != StopAllowanceExhausted {
 		t.Fatalf("record = %s/%s", rec.Outcome, rec.StopReason)
@@ -860,6 +873,45 @@ func TestPrePRLoopReviewFindingsForceADraftAndOneFixRound(t *testing.T) {
 	}
 	if len(rec.Steps) != 3 || rec.Steps[2].Phase != PhaseBuild || rec.Steps[2].Round != 2 || rec.Steps[2].Detail != finding {
 		t.Fatalf("steps = %+v, want [build round1] [review] [build round2, the fix]", rec.Steps)
+	}
+}
+
+func TestReviewAdvancesTheReviewOrderOnAllowanceExhaustion(t *testing.T) {
+	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
+	review := &fakeAgent{
+		events: reviewEvent(""),
+		errFn: func(call int) error {
+			if call == 1 {
+				return errors.New("exit status 1")
+			}
+			return nil
+		},
+		stderrFn: func(call int) string {
+			if call == 1 {
+				return allowanceStderr
+			}
+			return ""
+		},
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	deps.ReviewAgent = review
+	c := testConfig(t, initRepo(t))
+	c.ReviewModels = []string{"p/r1", "p/r2"}
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if review.calls != 2 {
+		t.Fatalf("review agent ran %d times, want 2: an exhausted allowance moves on to the backup", review.calls)
+	}
+	var models []string
+	for _, st := range reported.last(t).Steps {
+		if st.Phase == PhaseReview {
+			models = append(models, st.Model)
+		}
+	}
+	if !slices.Equal(models, c.ReviewModels) {
+		t.Fatalf("review ran on %v, want the ordered list %v", models, c.ReviewModels)
 	}
 }
 
