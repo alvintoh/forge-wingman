@@ -14,29 +14,29 @@ import (
 	"time"
 )
 
-func fakeCLIAgent(t *testing.T, body string) (bin, dir string) {
+func fakeCLIAgent(t *testing.T, body string) (agent CommandCodeAgent, dir string) {
 	t.Helper()
 	dir = t.TempDir()
-	bin = filepath.Join(dir, "opencode")
+	bin := filepath.Join(dir, "cmd")
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\ncat > /dev/null\n"+body), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return bin, dir
+	return CommandCodeAgent{Bin: bin, Key: "k", Home: t.TempDir(), Model: "command-code/x"}, dir
 }
 
 func alive(pid int) bool {
 	return syscall.Kill(pid, 0) == nil
 }
 
-func TestCLIAgentRunLeavesNoChildBehind(t *testing.T) {
-	bin, dir := fakeCLIAgent(t, "sleep 300 &\necho $! > child.pid\n")
+func TestCommandCodeAgentRunLeavesNoChildBehind(t *testing.T) {
+	agent, dir := fakeCLIAgent(t, "sleep 300 &\necho $! > child.pid\n")
 	out, err := os.Create(filepath.Join(t.TempDir(), "events"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = out.Close() }()
 
-	if err := (CLIAgent{Bin: bin, Model: "p/m"}).Run(context.Background(), dir, "", "x", out, out); err != nil {
+	if err := agent.Run(context.Background(), dir, "", "x", out, out); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, "child.pid"))
@@ -57,13 +57,13 @@ func TestCLIAgentRunLeavesNoChildBehind(t *testing.T) {
 	}
 }
 
-func TestCLIAgentRunStopsAtTheDeadline(t *testing.T) {
-	bin, dir := fakeCLIAgent(t, "sleep 300\n")
+func TestCommandCodeAgentRunStopsAtTheDeadline(t *testing.T) {
+	agent, dir := fakeCLIAgent(t, "sleep 300\n")
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 
 	start := time.Now()
-	err := (CLIAgent{Bin: bin, Model: "p/m"}).Run(ctx, dir, "", "x", io.Discard, io.Discard)
+	err := agent.Run(ctx, dir, "", "x", io.Discard, io.Discard)
 	if err == nil {
 		t.Fatal("Run returned nil past its deadline")
 	}

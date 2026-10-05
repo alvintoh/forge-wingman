@@ -54,7 +54,7 @@ var planDef = prov.Definition{
 	Name:           "Go Plan",
 	MonthlyPrice:   15_500_000,
 	Pages:          []prov.Locator{{URL: "https://vendor.example/pricing", Selector: "#plans"}},
-	Harnesses:      []prov.HarnessPair{{Harness: "opencode", Model: "glm-5"}},
+	Harnesses:      []prov.HarnessPair{{Harness: "command-code", Model: "glm-5"}},
 	LimitBehaviour: prov.LimitHardStop,
 	Billing:        prov.BillingPerToken,
 }

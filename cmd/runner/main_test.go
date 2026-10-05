@@ -71,24 +71,22 @@ func TestRecordNeedsTheRunsIdentity(t *testing.T) {
 	}
 }
 
-// TestHarnessesOptInOnlyOnAnExactTrue asserts the proprietary harness is opted
-// in by the variable's exact value, and keeps its HOME under the job's temp
-// directory so a later round finds the earlier session.
-func TestHarnessesOptInOnlyOnAnExactTrue(t *testing.T) {
-	for value, want := range map[string]bool{"true": true, "yes": false, "": false} {
-		env := map[string]string{"COMMAND_CODE_OPT_IN": value, "COMMANDCODE_API_KEY": "k", "RUNNER_TEMP": "/tmp/r"}
-		var cc runner.CommandCodeHarness
-		for _, h := range harnesses(func(k string) string { return env[k] }) {
-			if c, ok := h.(runner.CommandCodeHarness); ok {
-				cc = c
-			}
+// TestHarnessesWireTheKeyAndHome asserts the Command Code harness takes the
+// secret's key and keeps its HOME under the job's temp directory, so a later
+// round finds the earlier session.
+func TestHarnessesWireTheKeyAndHome(t *testing.T) {
+	env := map[string]string{"COMMANDCODE_API_KEY": "k", "RUNNER_TEMP": "/tmp/r"}
+	var cc runner.CommandCodeHarness
+	for _, h := range harnesses(func(k string) string { return env[k] }) {
+		if c, ok := h.(runner.CommandCodeHarness); ok {
+			cc = c
 		}
-		if cc.OptIn != want {
-			t.Errorf("COMMAND_CODE_OPT_IN=%q opted in = %v, want %v", value, cc.OptIn, want)
-		}
-		if cc.Home != filepath.Join("/tmp/r", "commandcode-home") {
-			t.Errorf("home = %q, want it under RUNNER_TEMP", cc.Home)
-		}
+	}
+	if cc.Key != "k" {
+		t.Errorf("key = %q, want the secret's", cc.Key)
+	}
+	if cc.Home != filepath.Join("/tmp/r", "commandcode-home") {
+		t.Errorf("home = %q, want it under RUNNER_TEMP", cc.Home)
 	}
 }
 
@@ -226,7 +224,7 @@ func TestEnableProviderRefusesAMalformedProviderBeforeOpeningFirestore(t *testin
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	env := map[string]string{"GOOGLE_CLOUD_PROJECT": "p", "RUNNER_TEMP": t.TempDir(), "GITHUB_RUN_ID": "42",
 		"GITHUB_RUN_ATTEMPT": "1", "WINGMAN_ACCOUNT": "octo", "GITHUB_REPOSITORY_OWNER": "octo"}
-	for _, provider := range []string{"", "CLIAgent", "open code", "opencode/big-pickle"} {
+	for _, provider := range []string{"", "CLIAgent", "command code", "command-code/x"} {
 		err := run(context.Background(), logger, []string{"enable-provider", "-provider", provider},
 			func(k string) string { return env[k] })
 		if err == nil || !strings.Contains(err.Error(), "is not a provider name") {
@@ -239,7 +237,7 @@ func TestEnableProviderRefusesAMismatchedIdentity(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	env := map[string]string{"GOOGLE_CLOUD_PROJECT": "p", "RUNNER_TEMP": t.TempDir(), "GITHUB_RUN_ID": "42",
 		"GITHUB_RUN_ATTEMPT": "1", "WINGMAN_ACCOUNT": "work-account", "GITHUB_REPOSITORY_OWNER": "octo"}
-	err := run(context.Background(), logger, []string{"enable-provider", "-provider", "opencode"},
+	err := run(context.Background(), logger, []string{"enable-provider", "-provider", "command-code"},
 		func(k string) string { return env[k] })
 	if !errors.Is(err, runner.ErrIdentityMismatch) {
 		t.Fatalf("err = %v, want ErrIdentityMismatch", err)
@@ -287,17 +285,17 @@ func TestModelOutputsAreEmptyForATicketThatNamedNoModel(t *testing.T) {
 }
 
 func TestModelOutputsCarryTheModelsTheTicketNamed(t *testing.T) {
-	got := modelOutputs(runner.ModelLabels{Build: "opencode/a", Review: "opencode/b", Plan: []string{"opencode/c", "opencode/d"}}, "t")
-	if got["override_model"] != "opencode/a" || got["override_review_models"] != "opencode/b" || got["override_plan_models"] != "opencode/c,opencode/d" {
+	got := modelOutputs(runner.ModelLabels{Build: "p/a", Review: "p/b", Plan: []string{"p/c", "p/d"}}, "t")
+	if got["override_model"] != "p/a" || got["override_review_models"] != "p/b" || got["override_plan_models"] != "p/c,p/d" {
 		t.Fatalf("outputs = %v", got)
 	}
 }
 
 func TestRunRecordReadsTheModelsTheTicketNamed(t *testing.T) {
 	rec := runner.Record{RunID: "named", TicketID: "T-1", TicketTitle: "t", TicketBody: "b", Size: "S", SizedBy: "linear-label",
-		ModelLabels: runner.ModelLabels{Build: "opencode/a"}}
+		ModelLabels: runner.ModelLabels{Build: "p/a"}}
 	got, err := runRecord(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)), recordReader{"named": rec}, "named")
-	if err != nil || got.ModelLabels.Build != "opencode/a" {
+	if err != nil || got.ModelLabels.Build != "p/a" {
 		t.Fatalf("record %+v, err %v, want the record with its model labels", got, err)
 	}
 }

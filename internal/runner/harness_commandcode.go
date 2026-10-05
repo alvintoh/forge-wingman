@@ -2,7 +2,6 @@ package runner
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // commandCodeProvider is the model-id prefix the Command Code CLI serves.
@@ -27,12 +27,10 @@ const commandCodeMaxTurns = 200
 // in the environment (PACKAGE.txt).
 const commandCodeAuthFile = ".commandcode/auth.json"
 
-// CommandCodeHarness runs the Command Code CLI, a proprietary harness that
-// needs an explicit opt-in and its own key.
+// CommandCodeHarness runs the Command Code CLI on its own key.
 type CommandCodeHarness struct {
-	Bin   string
-	Key   string
-	OptIn bool
+	Bin string
+	Key string
 	// Home is the CLI's HOME for the whole run: it holds the auth file and the
 	// session transcripts a later round resumes.
 	Home string
@@ -46,11 +44,10 @@ func (h CommandCodeHarness) Agent(p Profile, model string) Agent {
 	return CommandCodeAgent{Bin: h.Bin, Key: h.Key, Home: h.Home, Model: model, Profile: p}
 }
 
-// Ready reports the harness usable only when the run opted in and its key is
-// present (AC7).
+// Ready reports the harness usable only when its key is present (AC7).
 func (h CommandCodeHarness) Ready() error {
-	if !h.OptIn || h.Key == "" {
-		return errors.New("the command-code harness needs COMMAND_CODE_OPT_IN=true and the COMMANDCODE_API_KEY secret")
+	if h.Key == "" {
+		return errors.New("the command-code harness needs the COMMANDCODE_API_KEY secret")
 	}
 	return nil
 }
@@ -92,6 +89,9 @@ func commandCodeExitCode(err error) (int, bool) {
 	return 0, false
 }
 
+// agentKillGrace is the CLI's WaitDelay: how long Wait lets it linger once its context ends.
+const agentKillGrace = 30 * time.Second
+
 // CommandCodeAgent runs the Command Code CLI for one profile.
 type CommandCodeAgent struct {
 	Bin     string
@@ -108,7 +108,7 @@ func (a CommandCodeAgent) WithModel(model string) Agent { a.Model = model; retur
 // on one argument, and translates the CLI's frames to the runner's own event
 // shape on stdout. A non-empty session is resumed from the transcript under
 // Home; the auth file is removed after each run, so the key never sits on disk
-// while another harness's agent runs.
+// while the run's later steps do.
 func (a CommandCodeAgent) Run(ctx context.Context, dir, session, prompt string, stdout, stderr io.Writer) error {
 	if a.Home == "" {
 		return errors.New("the command-code harness has no home directory")
@@ -135,9 +135,22 @@ func (a CommandCodeAgent) Run(ctx context.Context, dir, session, prompt string, 
 	// the job's own without the base set having to exclude it.
 	cmd.Env = append(filterEnv(os.Environ(), agentBaseEnvNames), "HOME="+a.Home)
 	cmd.Stdin = strings.NewReader(prompt)
-	var frames bytes.Buffer
-	cmd.Stdout = &frames
-	cmd.Stderr = stderr
+	// Files, not buffers: os/exec pipes any other writer, and a background
+	// child holding that pipe would stall Wait for the whole WaitDelay.
+	frames, err := os.CreateTemp(a.Home, "frames-*")
+	if err != nil {
+		return fmt.Errorf("agent output file: %w", err)
+	}
+	defer func() { _ = frames.Close(); _ = os.Remove(frames.Name()) }()
+	cmd.Stdout = frames
+	errFile, ok := stderr.(*os.File)
+	if !ok {
+		if errFile, err = os.CreateTemp(a.Home, "stderr-*"); err != nil {
+			return fmt.Errorf("agent output file: %w", err)
+		}
+		defer func() { _ = errFile.Close(); _ = os.Remove(errFile.Name()) }()
+	}
+	cmd.Stderr = errFile
 	cmd.WaitDelay = agentKillGrace
 	ownProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
@@ -145,9 +158,20 @@ func (a CommandCodeAgent) Run(ctx context.Context, dir, session, prompt string, 
 	}
 	runErr := cmd.Wait()
 	killProcessGroup(cmd)
+	if !ok {
+		if _, err := errFile.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("agent output file: %w", err)
+		}
+		if _, err := io.Copy(stderr, errFile); err != nil {
+			return fmt.Errorf("agent stderr: %w", err)
+		}
+	}
+	if _, err := frames.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("agent output file: %w", err)
+	}
 	// Translate whatever the CLI wrote, even on a failure, so the failed run's
 	// usage and final text are still recorded.
-	if err := translateCommandCodeFrames(&frames, stdout, stderr); err != nil {
+	if err := translateCommandCodeFrames(frames, stdout, stderr); err != nil {
 		return err
 	}
 	if runErr != nil {
