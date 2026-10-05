@@ -107,7 +107,8 @@ func (a CommandCodeAgent) WithModel(model string) Agent { a.Model = model; retur
 // Run sends the prompt on stdin, since a projection outgrows the kernel's limit
 // on one argument, and translates the CLI's frames to the runner's own event
 // shape on stdout. A non-empty session is resumed from the transcript under
-// Home.
+// Home; the auth file is removed after each run, so the key never sits on disk
+// while another harness's agent runs.
 func (a CommandCodeAgent) Run(ctx context.Context, dir, session, prompt string, stdout, stderr io.Writer) error {
 	if a.Home == "" {
 		return errors.New("the command-code harness has no home directory")
@@ -115,6 +116,7 @@ func (a CommandCodeAgent) Run(ctx context.Context, dir, session, prompt string, 
 	if err := writeCommandCodeAuth(a.Home, a.Key); err != nil {
 		return err
 	}
+	defer func() { _ = os.Remove(filepath.Join(a.Home, filepath.FromSlash(commandCodeAuthFile))) }()
 	// The CLI takes its own model id — ours without the harness's prefix.
 	model := strings.TrimPrefix(a.Model, commandCodeProvider+"/")
 	args := []string{"-p", "--output-format", "json", "--model", model,

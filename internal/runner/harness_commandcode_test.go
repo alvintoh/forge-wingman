@@ -183,6 +183,9 @@ func TestCommandCodeAgentResumesTheSessionUnderOneHome(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("the CLI ran %d times, want 2", len(got))
 	}
+	if _, err := os.Stat(filepath.Join(home, ".commandcode", "auth.json")); !os.IsNotExist(err) {
+		t.Errorf("the auth file outlived the run (stat err %v)", err)
+	}
 	if slices.Contains(got[0].args, "--resume") {
 		t.Errorf("round 1 args %v resume a session it never had", got[0].args)
 	}
@@ -195,6 +198,9 @@ func TestCommandCodeAgentResumesTheSessionUnderOneHome(t *testing.T) {
 		}
 		if slices.Contains(a.args, prompt) {
 			t.Errorf("attempt %d carries the prompt as an argument", i)
+		}
+		if a.auth != `{"apiKey":"k"}` {
+			t.Errorf("attempt %d saw auth file %q, want the key written for that run", i, a.auth)
 		}
 		if !slices.Contains(a.env, "HOME="+home) {
 			t.Errorf("attempt %d does not run under the harness's own HOME", i)
