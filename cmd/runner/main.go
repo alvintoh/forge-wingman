@@ -27,6 +27,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -109,11 +110,7 @@ func loadEnv(getenv func(string) string, required ...string) (env, error) {
 		output:   getenv("GITHUB_OUTPUT"),
 		identity: runner.IdentityFromEnv(getenv),
 	}
-	for _, k := range []string{getenv("OPENCODE_API_KEY"), getenv("COMMANDCODE_API_KEY")} {
-		if k != "" {
-			e.secrets = append(e.secrets, k)
-		}
-	}
+	e.secrets = []string{getenv("OPENCODE_API_KEY"), getenv("COMMANDCODE_API_KEY")}
 	e.harnesses = harnesses(getenv)
 	var missing []string
 	for _, name := range required {
@@ -280,12 +277,17 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 // harnesses are the agent CLIs a run may route to: the incumbent, and the
 // proprietary one only when the run is opted into it (AC7).
 func harnesses(getenv func(string) string) []runner.Harness {
+	var commandCodeHome string
+	if tmp := getenv("RUNNER_TEMP"); tmp != "" {
+		commandCodeHome = filepath.Join(tmp, "commandcode-home")
+	}
 	return []runner.Harness{
 		runner.OpencodeHarness{Bin: agentBin},
 		runner.CommandCodeHarness{
 			Bin:   commandCodeBin,
 			Key:   getenv("COMMANDCODE_API_KEY"),
 			OptIn: getenv("COMMAND_CODE_OPT_IN") == "true",
+			Home:  commandCodeHome,
 		},
 	}
 }

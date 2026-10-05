@@ -45,10 +45,18 @@ jobs:
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           test "$("$RUNNER_TEMP/bin/opencode" --version)" = "${OPENCODE_VERSION}"
 
-      # The version is model.yml's.
+      # The Node version is model.yml's; the CLI's is tools/command-code's lockfile.
+      - if: vars.COMMAND_CODE_OPT_IN == 'true'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
       - name: Install command-code
         if: vars.COMMAND_CODE_OPT_IN == 'true'
-        run: npm i -g command-code@1.74.1
+        run: |
+          npm ci --prefix tools/command-code --no-audit --no-fund
+          echo "$GITHUB_WORKSPACE/tools/command-code/node_modules/.bin" >> "$GITHUB_PATH"
+          test "$(tools/command-code/node_modules/.bin/cmd --version)" = "$(jq -r '.dependencies["command-code"]' tools/command-code/package.json)"
 
       - name: Prove the plan agent refuses edit and bash
         env:

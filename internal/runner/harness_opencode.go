@@ -43,9 +43,6 @@ func (h OpencodeHarness) Agent(p Profile, model string) Agent {
 	}
 }
 
-// EnvNames are the variables the opencode process inherits.
-func (h OpencodeHarness) EnvNames() []string { return slices.Clone(opencodeEnvNames) }
-
 // Classify classifies a failed run by the assumed provider markers (AC4).
 func (h OpencodeHarness) Classify(stderrTail string, _ error) (Outcome, StopReason) {
 	return classifyMarkers(stderrTail)

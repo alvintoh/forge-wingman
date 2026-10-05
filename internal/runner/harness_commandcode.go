@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 )
@@ -24,8 +23,8 @@ const commandCodeProvider = "command-code"
 const commandCodeMaxTurns = 200
 
 // commandCodeAuthFile is where the CLI reads its credentials, under HOME; a
-// saved login also uses it, so the adapter writes it per run rather than
-// passing a key in the environment (PACKAGE.txt).
+// saved login also uses it, so the adapter writes it rather than passing a key
+// in the environment (PACKAGE.txt).
 const commandCodeAuthFile = ".commandcode/auth.json"
 
 // CommandCodeHarness runs the Command Code CLI, a proprietary harness that
@@ -34,6 +33,9 @@ type CommandCodeHarness struct {
 	Bin   string
 	Key   string
 	OptIn bool
+	// Home is the CLI's HOME for the whole run: it holds the auth file and the
+	// session transcripts a later round resumes.
+	Home string
 }
 
 // Providers are the model-id prefixes the Command Code CLI serves.
@@ -41,12 +43,8 @@ func (h CommandCodeHarness) Providers() []string { return []string{commandCodePr
 
 // Agent returns the Command Code agent for profile p.
 func (h CommandCodeHarness) Agent(p Profile, model string) Agent {
-	return CommandCodeAgent{Bin: h.Bin, Key: h.Key, Model: model, Profile: p}
+	return CommandCodeAgent{Bin: h.Bin, Key: h.Key, Home: h.Home, Model: model, Profile: p}
 }
-
-// EnvNames are the variables the CLI process inherits: the base set, and no
-// other harness's key (AC6).
-func (h CommandCodeHarness) EnvNames() []string { return slices.Clone(agentBaseEnvNames) }
 
 // Ready reports the harness usable only when the run opted in and its key is
 // present (AC7).
@@ -98,6 +96,7 @@ func commandCodeExitCode(err error) (int, bool) {
 type CommandCodeAgent struct {
 	Bin     string
 	Key     string
+	Home    string
 	Model   string
 	Profile Profile
 }
@@ -105,33 +104,35 @@ type CommandCodeAgent struct {
 // WithModel returns a copy of a that runs model, keeping its profile.
 func (a CommandCodeAgent) WithModel(model string) Agent { a.Model = model; return a }
 
-// Run runs the CLI with the prompt on the command line, translating its frames
-// to the runner's own event shape on stdout. The CLI has no session flag, so
-// session is ignored and each round starts a fresh conversation — the worktree
-// it runs in carries the accumulated state.
+// Run sends the prompt on stdin, since a projection outgrows the kernel's limit
+// on one argument, and translates the CLI's frames to the runner's own event
+// shape on stdout. A non-empty session is resumed from the transcript under
+// Home.
 func (a CommandCodeAgent) Run(ctx context.Context, dir, session, prompt string, stdout, stderr io.Writer) error {
-	home, err := os.MkdirTemp("", "commandcode-home-")
-	if err != nil {
-		return fmt.Errorf("command code home: %w", err)
+	if a.Home == "" {
+		return errors.New("the command-code harness has no home directory")
 	}
-	defer func() { _ = os.RemoveAll(home) }()
-	if err := writeCommandCodeAuth(home, a.Key); err != nil {
+	if err := writeCommandCodeAuth(a.Home, a.Key); err != nil {
 		return err
 	}
 	// The CLI takes its own model id — ours without the harness's prefix.
 	model := strings.TrimPrefix(a.Model, commandCodeProvider+"/")
-	args := []string{"-p", prompt, "--output-format", "json", "--model", model}
+	args := []string{"-p", "--output-format", "json", "--model", model,
+		"--max-turns", strconv.Itoa(commandCodeMaxTurns), "--skip-onboarding", "--no-auto-update"}
 	if a.Profile == ProfileBuild {
 		args = append(args, "--yolo")
 	} else {
 		args = append(args, "--plan")
 	}
-	args = append(args, "--max-turns", strconv.Itoa(commandCodeMaxTurns))
+	if session != "" {
+		args = append(args, "--resume", session)
+	}
 	cmd := exec.CommandContext(ctx, a.Bin, args...)
 	cmd.Dir = dir
 	// os/exec keeps the last value for a duplicate key, so this HOME overrides
 	// the job's own without the base set having to exclude it.
-	cmd.Env = append(filterEnv(os.Environ(), agentBaseEnvNames), "HOME="+home)
+	cmd.Env = append(filterEnv(os.Environ(), agentBaseEnvNames), "HOME="+a.Home)
+	cmd.Stdin = strings.NewReader(prompt)
 	var frames bytes.Buffer
 	cmd.Stdout = &frames
 	cmd.Stderr = stderr
@@ -184,9 +185,7 @@ type commandCodeUsage struct {
 type commandCodeFrame struct {
 	Type      string          `json:"type"`
 	Event     json.RawMessage `json:"event"`
-	Subtype   string          `json:"subtype"`
 	SessionID string          `json:"sessionId"`
-	Error     string          `json:"error"`
 	FinalText string          `json:"finalText"`
 }
 
@@ -194,9 +193,15 @@ type commandCodeFrame struct {
 type commandCodeEvent struct {
 	Type      string                `json:"type"`
 	SessionID string                `json:"sessionId"`
-	Delta     string                `json:"delta"`
+	Content   []commandCodeContent  `json:"content"`
 	Usage     *commandCodeUsage     `json:"usage"`
 	Error     *commandCodeErrorBody `json:"error"`
+}
+
+// commandCodeContent is one part of a finished message.
+type commandCodeContent struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
 }
 
 type commandCodeErrorBody struct {
@@ -231,9 +236,9 @@ func commandCodeText(text string) commandCodeTextEvent {
 	return e
 }
 
-// stepEvent shapes one turn's usage as the runner's own step_finish event;
-// the CLI bills in credits, so cost is left zero.
-func stepEvent(u commandCodeUsage) event {
+// commandCodeStepEvent shapes one turn's usage as the runner's own step_finish
+// event; the CLI bills in credits, so cost is left zero.
+func commandCodeStepEvent(u commandCodeUsage) event {
 	var e event
 	e.Type = "step_finish"
 	e.Part.Tokens.Input = u.InputTokens
@@ -245,13 +250,12 @@ func stepEvent(u commandCodeUsage) event {
 
 // translateCommandCodeFrames rewrites the CLI's frames as the runner's own
 // event shape, so SumUsage, FinalText and SessionID need no harness-specific
-// parser. A failed run's error is also echoed to stderr, where Classify reads
-// it (AC3).
+// parser. A run_error's detail is also echoed to stderr, where Classify reads
+// it (AC3); the CLI writes the result line's error there itself.
 func translateCommandCodeFrames(r io.Reader, stdout, stderr io.Writer) error {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, min(64*1024, maxEventLine)), maxEventLine)
 	enc := json.NewEncoder(stdout)
-	var text string
 	for sc.Scan() {
 		var frame commandCodeFrame
 		if json.Unmarshal(sc.Bytes(), &frame) != nil {
@@ -259,19 +263,10 @@ func translateCommandCodeFrames(r io.Reader, stdout, stderr io.Writer) error {
 		}
 		switch frame.Type {
 		case "event":
-			if err := emitCommandCodeEvent(enc, stderr, frame.Event, &text); err != nil {
+			if err := emitCommandCodeEvent(enc, stderr, frame.Event); err != nil {
 				return err
 			}
 		case "result":
-			if frame.Subtype != "success" {
-				msg := frame.Error
-				if msg == "" {
-					msg = frame.Subtype
-				}
-				if _, err := fmt.Fprintf(stderr, "command-code result: %s\n", msg); err != nil {
-					return err
-				}
-			}
 			if frame.SessionID != "" {
 				if err := enc.Encode(commandCodeMetaEvent{Type: "result", SessionID: frame.SessionID}); err != nil {
 					return err
@@ -287,7 +282,7 @@ func translateCommandCodeFrames(r io.Reader, stdout, stderr io.Writer) error {
 	return sc.Err()
 }
 
-func emitCommandCodeEvent(enc *json.Encoder, stderr io.Writer, raw json.RawMessage, text *string) error {
+func emitCommandCodeEvent(enc *json.Encoder, stderr io.Writer, raw json.RawMessage) error {
 	var ev commandCodeEvent
 	if json.Unmarshal(raw, &ev) != nil {
 		return nil
@@ -297,14 +292,17 @@ func emitCommandCodeEvent(enc *json.Encoder, stderr io.Writer, raw json.RawMessa
 		if ev.SessionID != "" {
 			return enc.Encode(commandCodeMetaEvent{Type: "run_start", SessionID: ev.SessionID})
 		}
-	case "message_start":
-		*text = ""
-	case "text_delta":
-		*text += ev.Delta
-		return enc.Encode(commandCodeText(*text))
+	case "message_end":
+		for _, c := range ev.Content {
+			if c.Type == "text" && c.Text != "" {
+				if err := enc.Encode(commandCodeText(c.Text)); err != nil {
+					return err
+				}
+			}
+		}
 	case "turn_end":
 		if ev.Usage != nil {
-			return enc.Encode(stepEvent(*ev.Usage))
+			return enc.Encode(commandCodeStepEvent(*ev.Usage))
 		}
 	case "run_error":
 		if ev.Error != nil {

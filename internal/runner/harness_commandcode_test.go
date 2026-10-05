@@ -15,9 +15,10 @@ import (
 
 // commandCodeAttempt is one invocation the fake CLI recorded.
 type commandCodeAttempt struct {
-	args []string
-	env  []string
-	auth string
+	args  []string
+	env   []string
+	auth  string
+	stdin string
 }
 
 // scriptedCommandCode writes a fake command-code CLI that replays the named
@@ -49,6 +50,7 @@ func scriptedCommandCode(t *testing.T, fixture string) (bin string, attempts fun
 		"n=$(ls " + q(logDir) + " 2>/dev/null | wc -l)\n" +
 		"printf '%s\\0' \"$@\" > " + q(logDir+"/") + "$n.args\n" +
 		"env > " + q(logDir+"/") + "$n.env\n" +
+		"cat > " + q(logDir+"/") + "$n.stdin\n" +
 		"cat \"$HOME/.commandcode/auth.json\" > " + q(logDir+"/") + "$n.auth 2>/dev/null || echo MISSING > " + q(logDir+"/") + "$n.auth\n" +
 		"cat " + q(ndjson) + "\n" +
 		"cat " + q(stderrPath) + " >&2\n" +
@@ -73,10 +75,12 @@ func scriptedCommandCode(t *testing.T, fixture string) (bin string, attempts fun
 			args, _ := os.ReadFile(filepath.Join(logDir, base+".args"))
 			env, _ := os.ReadFile(filepath.Join(logDir, base+".env"))
 			auth, _ := os.ReadFile(filepath.Join(logDir, base+".auth"))
+			stdin, _ := os.ReadFile(filepath.Join(logDir, base+".stdin"))
 			got = append(got, commandCodeAttempt{
-				args: strings.Split(strings.TrimRight(string(args), "\x00"), "\x00"),
-				env:  strings.Split(strings.TrimSpace(string(env)), "\n"),
-				auth: strings.TrimSpace(string(auth)),
+				args:  strings.Split(strings.TrimRight(string(args), "\x00"), "\x00"),
+				env:   strings.Split(strings.TrimSpace(string(env)), "\n"),
+				auth:  strings.TrimSpace(string(auth)),
+				stdin: string(stdin),
 			})
 		}
 		return got
@@ -103,16 +107,15 @@ func TestClassifyAgentFailureDispatchesToTheAgentsHarness(t *testing.T) {
 }
 
 // TestTranslateCommandCodeFrames pins the frame-to-event translation: the
-// session, one step per turn, per-message text, and the result line's text as
-// the final answer.
+// session, one step per turn, one text part per finished message, and the
+// result line's text as the final answer.
 func TestTranslateCommandCodeFrames(t *testing.T) {
 	stream := strings.Join([]string{
 		`{"type":"event","event":{"type":"run_start","sessionId":"ses_1"}}`,
-		`{"type":"event","event":{"type":"message_start"}}`,
-		`{"type":"event","event":{"type":"text_delta","delta":"first"}}`,
+		`{"type":"event","event":{"type":"text_delta","delta":"fir"}}`,
+		`{"type":"event","event":{"type":"message_end","content":[{"type":"thinking","thinking":"hm"},{"type":"text","text":"first"},{"type":"tool_result","text":"tool output"}]}}`,
 		`{"type":"event","event":{"type":"turn_end","turnNumber":1,"usage":{"inputTokens":10,"outputTokens":2,"cacheReadTokens":3,"cacheWriteTokens":4}}}`,
-		`{"type":"event","event":{"type":"message_start"}}`,
-		`{"type":"event","event":{"type":"text_delta","delta":"second"}}`,
+		`{"type":"event","event":{"type":"message_end","content":[{"type":"text","text":"second"}]}}`,
 		`{"type":"event","event":{"type":"run_error","error":{"name":"TransportError","message":"boom"}}}`,
 		`{"type":"result","subtype":"success","sessionId":"ses_1","finalText":"authoritative"}`,
 	}, "\n")
@@ -127,14 +130,90 @@ func TestTranslateCommandCodeFrames(t *testing.T) {
 	if u, _ := SumUsage(strings.NewReader(out)); u != (Usage{Input: 10, Output: 2, CacheRead: 3, CacheWrite: 4, Steps: 1}) {
 		t.Errorf("usage = %+v, want the turn's own counts", u)
 	}
-	if !strings.Contains(out, `"text":"first"`) || !strings.Contains(out, `"text":"second"`) || strings.Contains(out, "firstsecond") {
-		t.Errorf("text parts do not reset per message:\n%s", out)
+	if !strings.Contains(out, `"text":"first"`) || !strings.Contains(out, `"text":"second"`) ||
+		strings.Contains(out, `"text":"fir"`) || strings.Contains(out, "tool output") {
+		t.Errorf("want one text part per finished message and none per delta:\n%s", out)
 	}
 	if got, _ := FinalText(strings.NewReader(out)); got != "authoritative" {
 		t.Errorf("final text = %q, want the result line's", got)
 	}
 	if !strings.Contains(stderr.String(), "TransportError: boom") {
 		t.Errorf("stderr %q does not carry the run_error", stderr.String())
+	}
+}
+
+// TestTranslateCommandCodeFramesFindsTheSessionInEitherFrame asserts the
+// session id survives when only one of run_start and the result line carries
+// it — the docs make the result line's optional.
+func TestTranslateCommandCodeFramesFindsTheSessionInEitherFrame(t *testing.T) {
+	for name, stream := range map[string]string{
+		"run_start": `{"type":"event","event":{"type":"run_start","sessionId":"ses_1"}}` + "\n" +
+			`{"type":"result","subtype":"error","finalText":""}`,
+		"result": `{"type":"event","event":{"type":"run_start"}}` + "\n" +
+			`{"type":"result","subtype":"success","sessionId":"ses_1","finalText":"done"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var stdout, stderr strings.Builder
+			if err := translateCommandCodeFrames(strings.NewReader(stream), &stdout, &stderr); err != nil {
+				t.Fatal(err)
+			}
+			if got, _ := SessionID(strings.NewReader(stdout.String())); got != "ses_1" {
+				t.Fatalf("session = %q, want ses_1 from the %s frame", got, name)
+			}
+		})
+	}
+}
+
+// TestCommandCodeAgentResumesTheSessionUnderOneHome asserts a later round
+// resumes the earlier session from the same HOME, and that the prompt travels
+// on stdin, never as an argument.
+func TestCommandCodeAgentResumesTheSessionUnderOneHome(t *testing.T) {
+	bin, attempts := scriptedCommandCode(t, "normal")
+	home := t.TempDir()
+	agent := CommandCodeHarness{Bin: bin, Key: "k", OptIn: true, Home: home}.Agent(ProfileBuild, "command-code/x")
+	prompt := strings.Repeat("rule line\n", 20000)
+	dir := t.TempDir()
+	for _, session := range []string{"", "ses_1"} {
+		var out, errBuf strings.Builder
+		if err := agent.Run(context.Background(), dir, session, prompt, &out, &errBuf); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := attempts()
+	if len(got) != 2 {
+		t.Fatalf("the CLI ran %d times, want 2", len(got))
+	}
+	if slices.Contains(got[0].args, "--resume") {
+		t.Errorf("round 1 args %v resume a session it never had", got[0].args)
+	}
+	if i := slices.Index(got[1].args, "--resume"); i < 0 || i+1 >= len(got[1].args) || got[1].args[i+1] != "ses_1" {
+		t.Errorf("round 2 args %v do not resume ses_1", got[1].args)
+	}
+	for i, a := range got {
+		if a.stdin != prompt {
+			t.Errorf("attempt %d stdin carries %d bytes, want the %d-byte prompt", i, len(a.stdin), len(prompt))
+		}
+		if slices.Contains(a.args, prompt) {
+			t.Errorf("attempt %d carries the prompt as an argument", i)
+		}
+		if !slices.Contains(a.env, "HOME="+home) {
+			t.Errorf("attempt %d does not run under the harness's own HOME", i)
+		}
+		for _, want := range []string{"--skip-onboarding", "--no-auto-update"} {
+			if !slices.Contains(a.args, want) {
+				t.Errorf("attempt %d args %v lack %s", i, a.args, want)
+			}
+		}
+	}
+}
+
+// TestCommandCodeAgentNeedsAHome asserts a harness with no HOME refuses to
+// run rather than reading the job's own credentials.
+func TestCommandCodeAgentNeedsAHome(t *testing.T) {
+	var out, errBuf strings.Builder
+	err := CommandCodeAgent{Bin: "cmd", Key: "k"}.Run(context.Background(), t.TempDir(), "", "p", &out, &errBuf)
+	if err == nil || !strings.Contains(err.Error(), "home") {
+		t.Fatalf("err = %v, want the missing home refused", err)
 	}
 }
 
@@ -145,10 +224,11 @@ func TestBuildRunsTheCommandCodeHarnessFromTheRecordedFixtures(t *testing.T) {
 	const model = "command-code/deepseek/deepseek-v4.1-flash"
 	bin, attempts := scriptedCommandCode(t, "normal")
 	t.Setenv("OPENCODE_API_KEY", "opencode-secret")
+	t.Setenv("COMMANDCODE_API_KEY", "command-secret")
 
 	deps, completions, reported := testDeps(validObjects(), nil)
 	deps.Agent = NewRouter(ProfileBuild,
-		CommandCodeHarness{Bin: bin, Key: "command-secret", OptIn: true},
+		CommandCodeHarness{Bin: bin, Key: "command-secret", OptIn: true, Home: t.TempDir()},
 		OpencodeHarness{Bin: "opencode"},
 	)
 	c := testConfig(t, initRepo(t))
@@ -194,8 +274,8 @@ func TestBuildRunsTheCommandCodeHarnessFromTheRecordedFixtures(t *testing.T) {
 		t.Errorf("auth file = %q, want the key written under the run's own HOME", got[0].auth)
 	}
 	for _, kv := range got[0].env {
-		if strings.HasPrefix(kv, "OPENCODE_API_KEY=") {
-			t.Errorf("the command-code process inherited the opencode key: %s", kv)
+		if strings.HasPrefix(kv, "OPENCODE_API_KEY=") || strings.HasPrefix(kv, "COMMANDCODE_API_KEY=") {
+			t.Errorf("the command-code process inherited a key in its environment: %s", kv)
 		}
 	}
 }
@@ -204,7 +284,7 @@ func TestBuildRunsTheCommandCodeHarnessFromTheRecordedFixtures(t *testing.T) {
 // the restricted flag only for plan and review (AC2).
 func TestCommandCodeAgentChoosesTheProfileFlag(t *testing.T) {
 	bin, attempts := scriptedCommandCode(t, "readonly")
-	harness := CommandCodeHarness{Bin: bin, Key: "k", OptIn: true}
+	harness := CommandCodeHarness{Bin: bin, Key: "k", OptIn: true, Home: t.TempDir()}
 	for name, tt := range map[string]struct {
 		profile Profile
 		want    string
@@ -232,7 +312,7 @@ func TestCommandCodeAgentChoosesTheProfileFlag(t *testing.T) {
 // read-only run and confirms by effect that nothing was written (AC2).
 func TestPlanSmokeRefusesUnderTheCommandCodePlanProfile(t *testing.T) {
 	bin, _ := scriptedCommandCode(t, "readonly")
-	harness := CommandCodeHarness{Bin: bin, Key: "k", OptIn: true}
+	harness := CommandCodeHarness{Bin: bin, Key: "k", OptIn: true, Home: t.TempDir()}
 	res, err := PlanSmoke(context.Background(), harness.Agent(ProfilePlan, "command-code/x"), "command-code/x", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -272,7 +352,7 @@ func TestCommandCodeFailureMappings(t *testing.T) {
 // key run from its exit code (AC3).
 func TestCommandCodeHarnessClassifiesTheBadKeyFixture(t *testing.T) {
 	bin, _ := scriptedCommandCode(t, "badkey")
-	harness := CommandCodeHarness{Bin: bin, Key: "bad-key", OptIn: true}
+	harness := CommandCodeHarness{Bin: bin, Key: "bad-key", OptIn: true, Home: t.TempDir()}
 	var out, errBuf strings.Builder
 	err := harness.Agent(ProfileBuild, "command-code/x").Run(context.Background(), t.TempDir(), "", "prompt", &out, &errBuf)
 	if err == nil {
@@ -319,7 +399,7 @@ func TestCommandCodeHarnessClassifiesLiveExitCodes(t *testing.T) {
 func TestBuildStopsOnACommandCodeBadKey(t *testing.T) {
 	bin, _ := scriptedCommandCode(t, "badkey")
 	deps, _, reported := testDeps(validObjects(), nil)
-	deps.Agent = CommandCodeHarness{Bin: bin, Key: "bad-key", OptIn: true}.Agent(ProfileBuild, "command-code/x")
+	deps.Agent = CommandCodeHarness{Bin: bin, Key: "bad-key", OptIn: true, Home: t.TempDir()}.Agent(ProfileBuild, "command-code/x")
 	c := testConfig(t, initRepo(t))
 	c.Model = "command-code/x"
 	c.ReviewModel = "opencode/space-bunny-free"
@@ -357,6 +437,33 @@ func TestBuildRefusesACommandCodeModelWithoutTheOptIn(t *testing.T) {
 	}
 }
 
+// TestBuildGatesEveryModelSlotOnTheOptIn asserts the opt-in gate covers the
+// review model and, for a ticket that plans, every plan model (AC7).
+func TestBuildGatesEveryModelSlotOnTheOptIn(t *testing.T) {
+	for name, set := range map[string]func(*BuildConfig){
+		"review": func(c *BuildConfig) { c.ReviewModel = "command-code/x" },
+		"plan": func(c *BuildConfig) {
+			c.Ticket.Size = "M"
+			c.PlanModels = []string{"opencode/p", "command-code/x"}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			deps, _, reported := testDeps(validObjects(), &fakeAgent{})
+			deps.Agent = NewRouter(ProfileBuild, CommandCodeHarness{Bin: "cmd"}, OpencodeHarness{Bin: "opencode"})
+			c := testConfig(t, initRepo(t))
+			c.Model = "opencode/b"
+			c.ReviewModel = "opencode/r"
+			set(&c)
+			if _, err := Build(context.Background(), deps, c); err == nil {
+				t.Fatal("Build ran with an un-opted-in harness in the slot")
+			}
+			if rec := reported.last(t); rec.StopReason != StopModelInvalid {
+				t.Fatalf("stop = %s, want a model-invalid stop", rec.StopReason)
+			}
+		})
+	}
+}
+
 // TestModelWorkflowInstallsAndAuthorisesTheCommandCodeHarness asserts the
 // workflow carries the package, secret and opt-in the adapter needs (AC7).
 func TestModelWorkflowInstallsAndAuthorisesTheCommandCodeHarness(t *testing.T) {
@@ -366,7 +473,8 @@ func TestModelWorkflowInstallsAndAuthorisesTheCommandCodeHarness(t *testing.T) {
 	}
 	yml := string(b)
 	for _, want := range []string{
-		"npm i -g command-code@1.74.1",
+		"node-version: 22",
+		"npm ci --prefix tools/command-code",
 		"COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}",
 		"COMMAND_CODE_OPT_IN: ${{ vars.COMMAND_CODE_OPT_IN }}",
 	} {

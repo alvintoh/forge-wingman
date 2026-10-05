@@ -24,9 +24,6 @@ type Harness interface {
 	Providers() []string
 	// Agent returns the agent that runs profile p on model.
 	Agent(p Profile, model string) Agent
-	// EnvNames are the variables the harness's process inherits, so one
-	// harness's API key never reaches another's process.
-	EnvNames() []string
 	// Classify maps a failed run's stderr tail and exit error to an outcome.
 	Classify(stderrTail string, exitErr error) (Outcome, StopReason)
 	// Ready reports whether the run is configured to use the harness — a

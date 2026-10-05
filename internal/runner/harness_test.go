@@ -19,32 +19,6 @@ func TestOpencodeHarnessServesTheZenAndGoProviders(t *testing.T) {
 	}
 }
 
-// TestHarnessEnvSplit asserts each harness's process env carries its own key
-// and neither the other's (AC6).
-func TestHarnessEnvSplit(t *testing.T) {
-	for name, tt := range map[string]struct {
-		env        []string
-		want       []string
-		wantAbsent []string
-	}{
-		"opencode":     {OpencodeHarness{}.EnvNames(), []string{"OPENCODE_API_KEY"}, []string{"COMMANDCODE_API_KEY"}},
-		"command-code": {CommandCodeHarness{}.EnvNames(), nil, []string{"OPENCODE_API_KEY", "COMMANDCODE_API_KEY"}},
-	} {
-		t.Run(name, func(t *testing.T) {
-			for _, want := range tt.want {
-				if !slices.Contains(tt.env, want) {
-					t.Errorf("env %v lacks %s", tt.env, want)
-				}
-			}
-			for _, absent := range tt.wantAbsent {
-				if slices.Contains(tt.env, absent) {
-					t.Errorf("env %v carries %s, which belongs to another harness", tt.env, absent)
-				}
-			}
-		})
-	}
-}
-
 func TestRouterRunsTheHarnessItsModelNames(t *testing.T) {
 	ccBin, ccAttempts := scriptedCommandCode(t, "normal")
 	dir := t.TempDir()
@@ -53,7 +27,7 @@ func TestRouterRunsTheHarnessItsModelNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := NewRouter(ProfileBuild,
-		CommandCodeHarness{Bin: ccBin, Key: "k", OptIn: true},
+		CommandCodeHarness{Bin: ccBin, Key: "k", OptIn: true, Home: t.TempDir()},
 		OpencodeHarness{Bin: ocBin},
 	)
 
@@ -89,6 +63,67 @@ func TestRouterRunRefusesAnUnreadyHarness(t *testing.T) {
 	err := r.WithModel("command-code/x").Run(context.Background(), t.TempDir(), "", "p", &out, &errBuf)
 	if err == nil || !strings.Contains(err.Error(), "COMMAND_CODE_OPT_IN") {
 		t.Fatalf("err = %v, want the harness's opt-in refusal", err)
+	}
+}
+
+// TestOpencodeHarnessRestrictsThePlanAndReviewProfiles asserts the plan and
+// review phases keep their edit- and bash-denying agents (AC2, AC4).
+func TestOpencodeHarnessRestrictsThePlanAndReviewProfiles(t *testing.T) {
+	h := OpencodeHarness{Bin: "opencode"}
+	for p, want := range map[Profile]Agent{
+		ProfilePlan:   PlanCLIAgent("opencode", "opencode/m"),
+		ProfileReview: ReviewCLIAgent("opencode", "opencode/m"),
+		ProfileBuild:  CLIAgent{Bin: "opencode", Model: "opencode/m"},
+	} {
+		if got := h.Agent(p, "opencode/m"); got != want {
+			t.Errorf("profile %d agent = %+v, want %+v", p, got, want)
+		}
+	}
+}
+
+// TestOpencodeHarnessClassifiesByTheMarkers asserts opencode keeps today's
+// marker classification (AC4).
+func TestOpencodeHarnessClassifiesByTheMarkers(t *testing.T) {
+	if outcome, reason := (OpencodeHarness{}).Classify("Error: allowance exhausted", nil); outcome != OutcomeBudgetStop || reason != StopAllowanceExhausted {
+		t.Fatalf("Classify = %s/%s, want the allowance stop", outcome, reason)
+	}
+}
+
+// TestCommandCodeHarnessNeedsBothTheOptInAndTheKey asserts either one alone
+// leaves the harness refused (AC7).
+func TestCommandCodeHarnessNeedsBothTheOptInAndTheKey(t *testing.T) {
+	for name, tt := range map[string]struct {
+		h     CommandCodeHarness
+		ready bool
+	}{
+		"opt-in without a key": {CommandCodeHarness{OptIn: true}, false},
+		"a key without opt-in": {CommandCodeHarness{Key: "k"}, false},
+		"both":                 {CommandCodeHarness{OptIn: true, Key: "k"}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := tt.h.Ready(); (err == nil) != tt.ready {
+				t.Fatalf("Ready() = %v, want ready %v", err, tt.ready)
+			}
+		})
+	}
+}
+
+// TestRouterClassifiesAnUnservedModelAsAnAgentFailure asserts a model no
+// harness serves never reads as a budget or availability stop.
+func TestRouterClassifiesAnUnservedModelAsAnAgentFailure(t *testing.T) {
+	r := NewRouter(ProfileBuild, OpencodeHarness{}).WithModel("other/x").(Router)
+	if outcome, reason := r.Classify("allowance exhausted", nil); outcome != OutcomeAgentFailed || reason != StopAgentExit {
+		t.Fatalf("Classify = %s/%s, want the ordinary agent failure", outcome, reason)
+	}
+}
+
+// TestFilterEnvMatchesAPrefixOnlyForAnUnderscoreName asserts a plain allowed
+// name admits that variable alone, never one it happens to prefix.
+func TestFilterEnvMatchesAPrefixOnlyForAnUnderscoreName(t *testing.T) {
+	got := filterEnv([]string{"CI=true", "CI_JOB_TOKEN=t", "HOME=/h", "HOMEBREW_GITHUB_API_TOKEN=t", "LC_ALL=C"},
+		[]string{"CI", "HOME", "LC_"})
+	if want := []string{"CI=true", "HOME=/h", "LC_ALL=C"}; !slices.Equal(got, want) {
+		t.Fatalf("filterEnv = %v, want %v", got, want)
 	}
 }
 

@@ -60,6 +60,38 @@ func TestLoadEnvNeedsOnlyTheProjectForAnOwnerCommand(t *testing.T) {
 	}
 }
 
+// TestRecordNeedsTheRunsIdentity asserts record, which checks the attempt id
+// against its own run, still refuses to start without that run's identity.
+func TestRecordNeedsTheRunsIdentity(t *testing.T) {
+	required, _ := requiredEnv("record")
+	only := map[string]string{"GOOGLE_CLOUD_PROJECT": "p"}
+	_, err := loadEnv(func(k string) string { return only[k] }, required...)
+	if err == nil || !strings.Contains(err.Error(), "GITHUB_RUN_ID GITHUB_RUN_ATTEMPT") {
+		t.Fatalf("err = %v, want the run id and attempt named", err)
+	}
+}
+
+// TestHarnessesOptInOnlyOnAnExactTrue asserts the proprietary harness is opted
+// in by the variable's exact value, and keeps its HOME under the job's temp
+// directory so a later round finds the earlier session.
+func TestHarnessesOptInOnlyOnAnExactTrue(t *testing.T) {
+	for value, want := range map[string]bool{"true": true, "yes": false, "": false} {
+		env := map[string]string{"COMMAND_CODE_OPT_IN": value, "COMMANDCODE_API_KEY": "k", "RUNNER_TEMP": "/tmp/r"}
+		var cc runner.CommandCodeHarness
+		for _, h := range harnesses(func(k string) string { return env[k] }) {
+			if c, ok := h.(runner.CommandCodeHarness); ok {
+				cc = c
+			}
+		}
+		if cc.OptIn != want {
+			t.Errorf("COMMAND_CODE_OPT_IN=%q opted in = %v, want %v", value, cc.OptIn, want)
+		}
+		if cc.Home != filepath.Join("/tmp/r", "commandcode-home") {
+			t.Errorf("home = %q, want it under RUNNER_TEMP", cc.Home)
+		}
+	}
+}
+
 func TestOwnAttemptID(t *testing.T) {
 	for _, tt := range []struct {
 		id   string

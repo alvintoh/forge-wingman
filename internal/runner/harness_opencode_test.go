@@ -22,6 +22,7 @@ func TestCLIAgentRunPassesPromptOnStdin(t *testing.T) {
 	t.Setenv("GITHUB_OUTPUT", filepath.Join(dir, "out"))
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "tok")
 	t.Setenv("OPENCODE_API_KEY", "k")
+	t.Setenv("COMMANDCODE_API_KEY", "other-harness")
 	t.Setenv("LC_ALL", "C")
 	prompt := strings.Repeat("rule line\n", 20000) + "## t-1\n\nlast"
 
@@ -49,7 +50,7 @@ func TestCLIAgentRunPassesPromptOnStdin(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := string(gotEnv)
-	for _, withheld := range []string{"GITHUB_OUTPUT=", "ACTIONS_ID_TOKEN_REQUEST_TOKEN="} {
+	for _, withheld := range []string{"GITHUB_OUTPUT=", "ACTIONS_ID_TOKEN_REQUEST_TOKEN=", "COMMANDCODE_API_KEY="} {
 		if strings.Contains(env, withheld) {
 			t.Fatalf("agent inherited %s", withheld)
 		}
