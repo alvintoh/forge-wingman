@@ -12,8 +12,8 @@ import (
 const planFileListInstruction = "Do not edit any files or run any shell commands: this phase is planning only.\n\n" +
 	"End your final response with a fenced code block listing every file you plan to add or change, " +
 	"one repository-relative path per line and nothing else in the block. Include the test file " +
-	"alongside each source file you expect it to need — the build stops if it edits a file this list " +
-	"does not name:\n\n" +
+	"alongside each source file you expect it to need — if the build edits a file this list does not " +
+	"name, its PR opens as a draft that lists those files:\n\n" +
 	"```plan-files\npath/one.go\npath/one_test.go\npath/two.go\n```"
 
 // PlanPrompt is the plan phase's prompt: the plan projection with the ticket

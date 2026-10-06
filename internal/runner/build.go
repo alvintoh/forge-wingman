@@ -136,7 +136,8 @@ func BranchName(segment, attemptID string) string {
 // The summary is reported on every return path, a panic included. The agent
 // never runs unless the identity matches, the ticket is buildable, the model is
 // well formed and the projection was found and valid. A build that edits a
-// file outside its plan is stopped rather than committed.
+// file outside its plan is still committed, but never ready, and names those
+// files in its summary.
 func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, err error) {
 	sum := Summary{DurationsMS: map[string]int64{}, StartedAt: d.Now()}
 	defer func() {
@@ -346,7 +347,9 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		}
 		if c.Ticket.Size != "S" {
 			if extra := outOfPlanFiles(files, planFiles); len(extra) > 0 {
-				return stopWith(OutcomeStopped, StopOutOfPlan, fmt.Errorf("edited outside the plan: %s", strings.Join(extra, ", ")))
+				sum.OutOfPlanFiles = extra
+				sum.Ready, res.Ready = false, false
+				d.Logger.Info("outOfPlanEdits", "files", len(extra))
 			}
 		}
 		for _, secret := range c.Secrets {

@@ -208,17 +208,19 @@ jobs:
 
       # A check job that never named a gate reports "unfinished", which the PR names as check.
       - id: meta
-        name: Render the PR from the run record
+        name: Render the PR from the run record and the build's summary
         env:
           GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}
           RUN_ID: ${{ inputs.run_id }}
           FAILED_GATE: ${{ needs.check.outputs.failed_gate || 'unfinished' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           LOOP_DETAIL: ${{ needs.model.outputs.loop_detail }}
+          ATTEMPT_ID: ${{ needs.model.outputs.attempt_id }}
+          SUMMARY: ${{ needs.model.outputs.summary }}
           WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
         run: >-
           "$RUNNER_TEMP/runner" pr-meta -run-id "$RUN_ID" -failed-gate "$FAILED_GATE" -run-url "$RUN_URL"
-          -loop-detail "$LOOP_DETAIL"
+          -loop-detail "$LOOP_DETAIL" -attempt-id "$ATTEMPT_ID" -summary "$SUMMARY"
 
   pr:
     needs: [model, pr-meta]

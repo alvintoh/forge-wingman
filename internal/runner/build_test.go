@@ -461,6 +461,10 @@ func TestBuildRunsThePlanPhaseForAnMOrLTicket(t *testing.T) {
 	if rec.Outcome != OutcomeBuilt {
 		t.Fatalf("outcome = %s/%s", rec.Outcome, rec.StopReason)
 	}
+	if len(rec.OutOfPlanFiles) != 0 || !res.Ready || !rec.Ready {
+		t.Fatalf("out of plan %q, ready %v/%v, want none and ready for a build inside its plan",
+			rec.OutOfPlanFiles, res.Ready, rec.Ready)
+	}
 	var phases []Phase
 	for _, st := range rec.Steps {
 		phases = append(phases, st.Phase)
@@ -470,7 +474,7 @@ func TestBuildRunsThePlanPhaseForAnMOrLTicket(t *testing.T) {
 	}
 }
 
-func TestBuildStopsWhenTheBuildEditsOutsideThePlan(t *testing.T) {
+func TestBuildCommitsADraftWhenTheBuildEditsOutsideThePlan(t *testing.T) {
 	planAgent := &fakeAgent{events: planEvent("```plan-files\nversion.go\n```")}
 	buildAgent := &fakeAgent{edit: func(dir string) error {
 		return os.WriteFile(filepath.Join(dir, "extra.go"), []byte("package x\n"), 0o600)
@@ -483,15 +487,18 @@ func TestBuildStopsWhenTheBuildEditsOutsideThePlan(t *testing.T) {
 	c.Ticket.Size = "M"
 
 	res, err := Build(context.Background(), deps, c)
-	if err == nil || res.Changed {
-		t.Fatal("Build committed a change outside its plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Changed || res.Ready {
+		t.Fatalf("changed %v, ready %v, want a committed draft", res.Changed, res.Ready)
 	}
 	rec := reported.last(t)
-	if rec.Outcome != OutcomeStopped || rec.StopReason != StopOutOfPlan {
-		t.Fatalf("record = %s/%s", rec.Outcome, rec.StopReason)
+	if rec.Outcome != OutcomeBuilt || rec.Phase != PhaseCommit || rec.Ready {
+		t.Fatalf("record = %s at %s, ready %v, want built at commit and not ready", rec.Outcome, rec.Phase, rec.Ready)
 	}
-	if !strings.Contains(rec.StopDetail, "extra.go") {
-		t.Fatalf("stop detail = %q, want it to name extra.go", rec.StopDetail)
+	if !slices.Equal(rec.OutOfPlanFiles, []string{"extra.go"}) {
+		t.Fatalf("out of plan = %q, want [extra.go]", rec.OutOfPlanFiles)
 	}
 }
 

@@ -380,12 +380,116 @@ func TestAppendFileAppendsAndCreatesOwnerOnly(t *testing.T) {
 }
 
 func TestPRTitlePrefersTheCommittedSubject(t *testing.T) {
-	rec := runner.Record{TicketID: "ABC-1", TicketTitle: "[BE] Add the widget"}
-	if got := prTitle(rec); got != "ABC-1 [BE] Add the widget" {
+	tk := runner.Ticket{ID: "ABC-1", Title: "[BE] Add the widget"}
+	if got := prTitle(runner.Summary{}, tk); got != "ABC-1 [BE] Add the widget" {
 		t.Fatalf("title without a committed subject = %q, want the ticket's subject", got)
 	}
-	rec.CommitSubject = "feat(runner): ABC-1 add the widget"
-	if got := prTitle(rec); got != "feat(runner): ABC-1 add the widget" {
+	sum := runner.Summary{CommitSubject: "feat(runner): ABC-1 add the widget"}
+	if got := prTitle(sum, tk); got != "feat(runner): ABC-1 add the widget" {
 		t.Fatalf("title = %q, want the committed subject", got)
+	}
+}
+
+// prRecord is a run record as pr-meta reads it: the ticket, and none of the
+// build's fields, which only the record job writes after the PR opens.
+var prRecord = runner.Record{TicketID: "ABC-1", TicketTitle: "[BE] Add the widget", Size: "M", SizedBy: "test", TicketBody: "Add it."}
+
+func prTemplate(t *testing.T) string {
+	b, err := os.ReadFile(filepath.Join("..", "..", runner.DefaultPRTemplate))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func encodedSummary(t *testing.T, attemptID string, now time.Time) string {
+	tk := prRecord.Ticket()
+	raw, err := runner.Summary{
+		Outcome: runner.OutcomeBuilt,
+		Phase:   runner.PhaseCommit,
+		Steps: []runner.Step{{Phase: runner.PhaseBuild, Round: 1, Model: "command-code/x",
+			CompletionsObject: "completions/" + attemptID + "-build-1.jsonl"}},
+		EditedFiles:    []string{"widget.go", "extra.go"},
+		OutOfPlanFiles: []string{"extra.go"},
+		Branch:         runner.BranchName(tk.BranchSegment(), attemptID),
+		CommitSubject:  "feat(runner): ABC-1 add the widget",
+		PRSummary:      "Adds the widget the runner needs.",
+		StartedAt:      now.Add(-time.Hour),
+	}.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func TestRenderPRTakesTheTitleSummaryAndOutOfPlanFilesFromTheBuildSummary(t *testing.T) {
+	now := time.Now()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	sum := buildSummary(logger, encodedSummary(t, "42-1", now), "42-1", prRecord.Ticket(), now)
+	title, body, err := renderPR(prTemplate(t), prRecord, sum, "", "https://example.test/run", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if title != "feat(runner): ABC-1 add the widget" {
+		t.Fatalf("title = %q, want the build's committed subject", title)
+	}
+	if !strings.Contains(body, "\nAdds the widget the runner needs.\n") ||
+		!strings.Contains(body, "**Edited outside the plan:** extra.go") {
+		t.Fatalf("body lacks the build's summary or out-of-plan files:\n%s", body)
+	}
+}
+
+func TestRenderPRFallsBackToTheTicketWithoutAUsableSummary(t *testing.T) {
+	now := time.Now()
+	for name, tt := range map[string]struct {
+		raw     string
+		wantLog bool
+	}{
+		"empty":           {"", false},
+		"another attempt": {encodedSummary(t, "42-2", now), true},
+		"malformed":       {"{", true},
+	} {
+		var log strings.Builder
+		logger := slog.New(slog.NewTextHandler(&log, nil))
+		sum := buildSummary(logger, tt.raw, "42-1", prRecord.Ticket(), now)
+		title, body, err := renderPR(prTemplate(t), prRecord, sum, "", "https://example.test/run", "")
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if title != "ABC-1 [BE] Add the widget" || !strings.Contains(body, "`ABC-1`: [BE] Add the widget") ||
+			strings.Contains(body, "outside the plan") {
+			t.Errorf("%s: title %q, want the ticket's subject and summary and no out-of-plan line:\n%s", name, title, body)
+		}
+		if got := strings.Contains(log.String(), "summaryRejected"); got != tt.wantLog {
+			t.Errorf("%s: logged summaryRejected = %v, want %v: %q", name, got, tt.wantLog, log.String())
+		}
+	}
+}
+
+func TestBuildAttemptKeepsOnlyThisRunsAttempts(t *testing.T) {
+	e := env{runID: "42", attempt: 2, attemptID: "42-2"}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	for id, want := range map[string]string{"": "42-2", "42-1": "42-1", "43-1": "42-2"} {
+		if got := buildAttempt(logger, id, e); got != want {
+			t.Errorf("buildAttempt(%q) = %q, want %q", id, got, want)
+		}
+	}
+}
+
+func TestRunWorkflowPassesTheBuildSummaryToPRMeta(t *testing.T) {
+	yml, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "run.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, _, _ := strings.Cut(string(yml), "\n  pr:\n")
+	_, job, _ = strings.Cut(job, "\n  pr-meta:\n")
+	for _, want := range []string{
+		"ATTEMPT_ID: ${{ needs.model.outputs.attempt_id }}",
+		"SUMMARY: ${{ needs.model.outputs.summary }}",
+		`-attempt-id "$ATTEMPT_ID" -summary "$SUMMARY"`,
+	} {
+		if !strings.Contains(job, want) {
+			t.Errorf("run.yml's pr-meta job lacks %q", want)
+		}
 	}
 }

@@ -253,15 +253,16 @@ func TestFinalizeWritesTheWholeRecordFromTheSummary(t *testing.T) {
 			DurationMS:        1200,
 			CompletionsObject: completionsObject("1-1", PhaseBuild, 1),
 		}},
-		EditedFiles:   []string{"version.go"},
-		DiffLines:     DiffLines{Added: 3},
-		DurationsMS:   map[string]int64{"build": 1200},
-		RuleStackSHA:  testSHA,
-		Branch:        BranchName(testTicket.BranchSegment(), "1-1"),
-		CommitSubject: "feat(x): ABC-12 add a file",
-		CommitBody:    "- add version.go",
-		PRSummary:     "Adds a file.",
-		StartedAt:     started,
+		EditedFiles:    []string{"version.go"},
+		OutOfPlanFiles: []string{"version.go"},
+		DiffLines:      DiffLines{Added: 3},
+		DurationsMS:    map[string]int64{"build": 1200},
+		RuleStackSHA:   testSHA,
+		Branch:         BranchName(testTicket.BranchSegment(), "1-1"),
+		CommitSubject:  "feat(x): ABC-12 add a file",
+		CommitBody:     "- add version.go",
+		PRSummary:      "Adds a file.",
+		StartedAt:      started,
 	}
 	store := seeded(t)
 	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: encoded(t, sum), RunResult: "success",
@@ -274,7 +275,7 @@ func TestFinalizeWritesTheWholeRecordFromTheSummary(t *testing.T) {
 		got.DiffLines != sum.DiffLines || got.RuleStackSHA != testSHA || got.Branch != sum.Branch ||
 		got.DurationsMS["build"] != 1200 || !got.StartedAt.Equal(seededAt) || len(got.EditedFiles) != 1 ||
 		got.Phase != PhasePR || got.CommitSubject != sum.CommitSubject || got.CommitBody != sum.CommitBody ||
-		got.PRSummary != sum.PRSummary {
+		got.PRSummary != sum.PRSummary || len(got.OutOfPlanFiles) != 1 || got.OutOfPlanFiles[0] != "version.go" {
 		t.Fatalf("record = %+v", got)
 	}
 }

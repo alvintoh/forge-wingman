@@ -75,7 +75,6 @@ const (
 	// mid-build, recorded as a budget stop rather than an agent failure (FR-22).
 	StopAllowanceExhausted StopReason = "allowance-exhausted"
 	StopPlanInvalid        StopReason = "plan-invalid"
-	StopOutOfPlan          StopReason = "out-of-plan"
 	// StopChecksRun reports the pre-PR loop's own checks (FR-28) failing to
 	// run at all — never a gate that ran and failed, which does not stop the
 	// build; see RunChecks.
@@ -134,6 +133,7 @@ type Record struct {
 	SettledRunnerMinutes      int64            `firestore:"settled_runner_minutes"`
 	DurationsMS               map[string]int64 `firestore:"durations_ms"`
 	EditedFiles               []string         `firestore:"edited_files"`
+	OutOfPlanFiles            []string         `firestore:"out_of_plan_files"`
 	DiffLines                 DiffLines        `firestore:"diff_lines"`
 	Branch                    string           `firestore:"branch"`
 	BuildOutcome              Outcome          `firestore:"build_outcome"`
@@ -391,6 +391,7 @@ func (s Summary) apply(rec *Record) {
 	rec.Steps = s.Steps
 	rec.Tokens = sumSteps(s.Steps)
 	rec.EditedFiles = s.EditedFiles
+	rec.OutOfPlanFiles = s.OutOfPlanFiles
 	rec.DiffLines = s.DiffLines
 	for p, ms := range s.DurationsMS {
 		rec.DurationsMS[p] = ms
