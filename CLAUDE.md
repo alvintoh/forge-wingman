@@ -23,6 +23,21 @@ sibling's plan then has to re-ground against.
 This is a picker-default change, not a rule removal — still gate per ticket,
 just flip which option is recommended.
 
+## Tickets the runner will build
+
+The runner reads only a ticket's title and description, and its build agent reads
+this file as project memory, so both rules below reach the run.
+
+- **State invariants, not just mechanisms.** When a ticket gives some calls a thing
+  and not others, first name the state those calls share: a review fix round resumes
+  the build session, so anything shaping that session's prompt must be identical on
+  every round of it. *(Judgment call. Verified 2026-10-06: FRG-50's ticket said fix
+  rounds get no rules; the build followed it and its own review flagged the break.)*
+- **Making a per-attempt name fixed removes the uniqueness that made each create
+  safe.** When a path or branch stops carrying the attempt id, re-check every create
+  of it for a retry in the same change: `git worktree prune` then `add -B`, never
+  `-b`. *(Judgment call. Verified 2026-10-06 on FRG-50.)*
+
 ## Walk agent-built changes in auto mode
 
 When reviewing a change an agent built in this repo, run `/changes-walkthrough` in
