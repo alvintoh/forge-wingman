@@ -1585,7 +1585,7 @@ func TestWorkflowsHandTheTicketOffAsAnArtifactNotAJobOutput(t *testing.T) {
 	}
 	model := read("model.yml")
 	for _, want := range []string{
-		"name: ticket\n",
+		"continue-on-error: true\n        with:\n          name: ticket\n",
 		`-ticket-file "$RUNNER_TEMP/ticket.json"`,
 	} {
 		if !strings.Contains(model, want) {

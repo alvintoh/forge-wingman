@@ -359,6 +359,38 @@ func TestReadTicketDistinguishesAMissingHandOffFromAnUnbuildableTicket(t *testin
 	}
 }
 
+func TestBuildStopsAsTicketNotDeliveredWithoutATicketFile(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	dir := t.TempDir()
+	output := filepath.Join(dir, "out")
+	err := build(context.Background(), logger, env{output: output, attemptID: "42-1"},
+		[]string{"-model", "command-code/p/m", "-ticket-file", filepath.Join(dir, "absent.json")})
+	if exitCode(err) != 0 {
+		t.Fatalf("exit %d, err %v; want a reported stop", exitCode(err), err)
+	}
+	out, rerr := os.ReadFile(output)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	var raw string
+	for _, line := range strings.Split(string(out), "\n") {
+		if v, ok := strings.CutPrefix(line, "summary="); ok {
+			raw = v
+		}
+	}
+	sum, perr := runner.ParseSummary(raw, "42-1", runner.Ticket{}, time.Now())
+	if perr != nil || sum.StopReason != runner.StopTicketNotDelivered {
+		t.Fatalf("summary %+v, err %v; want ticket-not-delivered", sum, perr)
+	}
+}
+
+func TestWriteTicketNeedsAnOutPath(t *testing.T) {
+	output := filepath.Join(t.TempDir(), "out")
+	if err := writeTicket("", output, runner.Ticket{ID: "ABC-1", Title: "t", Size: "S", Body: "b"}, runner.ModelLabels{}); err == nil {
+		t.Fatal("wrote a ticket with no -out path")
+	}
+}
+
 func TestTicketNotDeliveredReportsAStoppedSummary(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	path := filepath.Join(t.TempDir(), "out")
