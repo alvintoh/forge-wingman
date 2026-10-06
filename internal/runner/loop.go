@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -140,46 +141,73 @@ func runCheckLoop(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, 
 	return false, checkGiveUpDetail(lastGate, lastOutput, round), session, round, nil
 }
 
+// reviewPass runs one review pass over the worktree's pending diff and
+// returns its findings, empty when the diff satisfies the ticket. It starts a
+// fresh session with no projection, so it carries no rules.
+func reviewPass(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum *Summary, round int) (string, error) {
+	diff, err := wt.DiffPending(ctx)
+	if err != nil {
+		return "", stopWith(OutcomeInfraFailure, StopChecksRun, err)
+	}
+	call := agentCall{Phase: PhaseReview, Round: round, Model: c.ReviewModels[0],
+		Timeout: roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now())}
+	text, _, _, err := runAgentInOrder(ctx, d, c, call, c.ReviewModels, d.ReviewAgent, wt.Dir, ReviewPrompt(diff, c.Ticket), sum)
+	if err != nil {
+		return "", err
+	}
+	findings, ferr := ParseReviewFindings(text)
+	if ferr != nil {
+		return "", stopWith(OutcomeStopped, StopReviewInvalid, ferr)
+	}
+	return findings, nil
+}
+
+// detailParts joins a loop detail's parts with the separator the pre-PR loop's
+// messages use, dropping empty parts.
+func detailParts(parts ...string) string {
+	var kept []string
+	for _, p := range parts {
+		if p != "" {
+			kept = append(kept, p)
+		}
+	}
+	return strings.Join(kept, "; ")
+}
+
 // runReview runs the pre-PR loop's review pass (FR-28) once the checks have
 // passed: a model other than the builder's checks the diff against the
 // ticket's acceptance criteria. Findings get exactly one fix round, fed back
-// to the build agent's own session the same way a check failure is. Findings
-// always leave the run not ready — nothing re-verifies the fix round beyond
-// re-running the checks once, to catch a gate it newly broke.
+// to the build agent's own session the same way a check failure is. The checks
+// then run once, to catch a gate the fix round newly broke, and — when NFR-1's
+// run-duration budget still allows it — the review runs once more on the fixed
+// diff, so the detail lists only the findings still open. A clean re-review
+// with the checks passing leaves the run ready (FR-59).
 //
-// It gives up — running neither the review nor the fix round — once NFR-1's
-// run-duration budget would not leave enough time for it. A valid
-// commit-message block from the fix round replaces msg. The review pass itself
-// starts a fresh session with no projection, so it carries no rules; its fix
-// round resumes the build agent's own session, so it carries the build
-// projection's rules — dropping them there would change the resumed session's
-// system prompt mid-conversation.
+// It gives up — running neither the review nor the fix round — once the
+// budget would not leave enough time for it, and skips the re-review alone
+// once it would not leave enough time for that, labelling the findings as
+// addressed by a fix round rather than re-reviewed. A valid commit-message
+// block from the fix round replaces msg. Each review pass starts a fresh
+// session with no projection, so it carries no rules; the fix round resumes
+// the build agent's own session, so it carries the build projection's rules —
+// dropping them there would change the resumed session's system prompt
+// mid-conversation.
 func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum *Summary, rules, session string, buildRound int, msg *CommitMessage) (ready bool, detail string, err error) {
 	now := d.Now()
 	if !withinBudget(sum.StartedAt, now) {
 		return false, "review: skipped — NFR-1's run-duration budget was spent by the check loop", nil
 	}
-	diff, err := wt.DiffPending(ctx)
-	if err != nil {
-		return false, "", stopWith(OutcomeInfraFailure, StopChecksRun, err)
-	}
-	call := agentCall{Phase: PhaseReview, Round: 1, Model: c.ReviewModels[0], Timeout: roundTimeout(c.AgentTimeout, sum.StartedAt, now)}
-	text, _, _, err := runAgentInOrder(ctx, d, c, call, c.ReviewModels, d.ReviewAgent, wt.Dir, ReviewPrompt(diff, c.Ticket), sum)
+	findings, err := reviewPass(ctx, d, c, wt, sum, 1)
 	if err != nil {
 		return false, "", err
-	}
-	findings, ferr := ParseReviewFindings(text)
-	if ferr != nil {
-		return false, "", stopWith(OutcomeStopped, StopReviewInvalid, ferr)
 	}
 	if findings == "" {
 		return true, "", nil
 	}
-	detail = "review findings open: " + findings
 
 	now = d.Now()
 	if !withinBudget(sum.StartedAt, now) {
-		return false, detail + " (fix round skipped: NFR-1's run-duration budget was spent)", nil
+		return false, "review findings open: " + findings + " (fix round skipped: NFR-1's run-duration budget was spent)", nil
 	}
 	fixCall := agentCall{Phase: PhaseBuild, Round: buildRound + 1, Model: c.Model, Session: session, Rules: rules, Detail: findings,
 		Timeout: roundTimeout(c.AgentTimeout, sum.StartedAt, now)}
@@ -193,8 +221,21 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 	if cerr != nil {
 		return false, "", stopWith(OutcomeInfraFailure, StopChecksRun, cerr)
 	}
+	checksDetail := ""
 	if gate != "" {
-		detail += "; checks: " + gate + " failing after the fix round\n\n" + truncate(output, checkFeedbackLimit)
+		checksDetail = "checks: " + gate + " failing after the fix round\n\n" + truncate(output, checkFeedbackLimit)
 	}
-	return false, detail, nil
+
+	now = d.Now()
+	if !withinBudget(sum.StartedAt, now) {
+		return false, detailParts("review findings addressed by a fix round, not re-reviewed: "+findings, checksDetail), nil
+	}
+	remaining, err := reviewPass(ctx, d, c, wt, sum, 2)
+	if err != nil {
+		return false, "", err
+	}
+	if remaining == "" {
+		return checksDetail == "", checksDetail, nil
+	}
+	return false, detailParts("review findings open: "+remaining, checksDetail), nil
 }

@@ -915,9 +915,10 @@ func TestPrePRLoopReviewFindingsForceADraftAndOneFixRound(t *testing.T) {
 	// The review pass starts a fresh session with no projection, so it carries
 	// no rules; its fix round resumes the build session, so it must carry the
 	// build round's rules — an empty rules would change the resumed session's
-	// system prompt mid-conversation.
-	if len(review.rules) != 1 || review.rules[0] != "" {
-		t.Fatalf("review pass rules = %q, want none", review.rules)
+	// system prompt mid-conversation. The re-review starts fresh too, so it
+	// carries no rules either.
+	if len(review.rules) != 2 || review.rules[0] != "" || review.rules[1] != "" {
+		t.Fatalf("review pass rules = %q, want none on either pass", review.rules)
 	}
 	if agent.rules[1] == "" || agent.rules[1] != agent.rules[0] {
 		t.Fatalf("fix round rules = %q, want the build round's %q", agent.rules[1], agent.rules[0])
@@ -929,8 +930,194 @@ func TestPrePRLoopReviewFindingsForceADraftAndOneFixRound(t *testing.T) {
 	if !strings.Contains(rec.LoopDetail, finding) {
 		t.Fatalf("loop detail = %q, want it to name the finding", rec.LoopDetail)
 	}
-	if len(rec.Steps) != 3 || rec.Steps[2].Phase != PhaseBuild || rec.Steps[2].Round != 2 || rec.Steps[2].Detail != finding {
-		t.Fatalf("steps = %+v, want [build round1] [review] [build round2, the fix]", rec.Steps)
+	if len(rec.Steps) != 4 || rec.Steps[2].Phase != PhaseBuild || rec.Steps[2].Round != 2 || rec.Steps[2].Detail != finding ||
+		rec.Steps[3].Phase != PhaseReview || rec.Steps[3].Round != 2 {
+		t.Fatalf("steps = %+v, want [build round1] [review round1] [build round2, the fix] [review round2, the re-review]", rec.Steps)
+	}
+}
+
+// TestPrePRLoopReReviewListsOnlyTheFindingsStillOpen is FR-59's first
+// acceptance criterion: once the review has run again on the fixed diff, the
+// detail names only the findings that re-review still reports, so a reader
+// stops re-deriving the ones the fix round already resolved.
+func TestPrePRLoopReReviewListsOnlyTheFindingsStillOpen(t *testing.T) {
+	const (
+		first     = "the retry never bounds its attempts"
+		remaining = "the timeout is hard-coded"
+	)
+	agent := &fakeAgent{events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{}}}` + "\n"}
+	agent.edit = func(dir string) error {
+		files := []string{"version.go"}
+		if agent.calls > 1 {
+			files = append(files, "fixed.go")
+		}
+		for _, f := range files {
+			if err := os.WriteFile(filepath.Join(dir, f), []byte("package x\n"), 0o600); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	review := &fakeAgent{eventsFn: func(call int) string {
+		if call == 1 {
+			return reviewEvent(first + "\n" + remaining)
+		}
+		return reviewEvent(remaining)
+	}}
+	deps.ReviewAgent = review
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if review.calls != 2 {
+		t.Fatalf("review agent ran %d times, want 2 (the review pass, then one re-review)", review.calls)
+	}
+	if !strings.Contains(review.prompts[1], "fixed.go") {
+		t.Fatalf("re-review prompt = %q, want it to carry the diff after the fix round", review.prompts[1])
+	}
+	rec := reported.last(t)
+	if rec.Ready {
+		t.Fatal("ready = true, want false: the re-review still reports a finding")
+	}
+	if !strings.Contains(rec.LoopDetail, remaining) {
+		t.Fatalf("loop detail = %q, want it to name the finding still open", rec.LoopDetail)
+	}
+	if strings.Contains(rec.LoopDetail, first) {
+		t.Fatalf("loop detail = %q, want only the findings the re-review left open", rec.LoopDetail)
+	}
+}
+
+// TestPrePRLoopCleanReReviewWithPassingChecksOpensReady is FR-59's third
+// acceptance criterion: a fix round that satisfies the re-review, with the
+// checks still passing, opens the PR as ready rather than a draft.
+func TestPrePRLoopCleanReReviewWithPassingChecksOpensReady(t *testing.T) {
+	const finding = "the retry never bounds its attempts"
+	agent := &fakeAgent{
+		edit:   edit("version.go", "package x\n"),
+		events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{}}}` + "\n",
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	review := &fakeAgent{eventsFn: func(call int) string {
+		if call == 1 {
+			return reviewEvent(finding)
+		}
+		return reviewEvent("")
+	}}
+	deps.ReviewAgent = review
+	c := testConfig(t, initRepo(t))
+
+	res, err := Build(context.Background(), deps, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.calls != 2 {
+		t.Fatalf("review agent ran %d times, want the review pass then the re-review", review.calls)
+	}
+	if !res.Ready {
+		t.Fatalf("ready = false, want true: the re-review was clean and the checks passed (detail %q)", res.LoopDetail)
+	}
+	rec := reported.last(t)
+	if !rec.Ready || rec.LoopDetail != "" {
+		t.Fatalf("record ready = %v, detail = %q, want ready with no detail", rec.Ready, rec.LoopDetail)
+	}
+}
+
+// TestPrePRLoopCleanReReviewWithAFailingCheckStaysADraft covers the other side
+// of FR-59's ready decision: a clean re-review cannot open the PR when the fix
+// round newly broke a gate, and the detail names the gate rather than a
+// finding.
+func TestPrePRLoopCleanReReviewWithAFailingCheckStaysADraft(t *testing.T) {
+	const finding = "the retry never bounds its attempts"
+	agent := &fakeAgent{
+		edit:   edit("version.go", "package x\n"),
+		events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{}}}` + "\n",
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	review := &fakeAgent{eventsFn: func(call int) string {
+		if call == 1 {
+			return reviewEvent(finding)
+		}
+		return reviewEvent("")
+	}}
+	deps.ReviewAgent = review
+	checkCalls := 0
+	deps.Checks = func(context.Context, string) (string, string, error) {
+		checkCalls++
+		if checkCalls == 2 {
+			return checkVet, "vet failed: bad format", nil
+		}
+		return "", "", nil
+	}
+	c := testConfig(t, initRepo(t))
+
+	res, err := Build(context.Background(), deps, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.calls != 2 {
+		t.Fatalf("review agent ran %d times, want 2: the re-review runs even when the checks fail", review.calls)
+	}
+	if res.Ready {
+		t.Fatal("ready = true, want false: the fix round broke a gate")
+	}
+	if !strings.Contains(res.LoopDetail, checkVet) {
+		t.Fatalf("loop detail = %q, want it to name the failing gate", res.LoopDetail)
+	}
+	if strings.Contains(res.LoopDetail, "review findings open") {
+		t.Fatalf("loop detail = %q, want no findings listed: the re-review was clean", res.LoopDetail)
+	}
+	rec := reported.last(t)
+	if rec.Ready {
+		t.Fatalf("record ready = true, want false (detail %q)", rec.LoopDetail)
+	}
+}
+
+// TestPrePRLoopLabelsFindingsNotReReviewedWhenTheBudgetIsSpent is FR-59's
+// second acceptance criterion: when the run-duration budget leaves no room for
+// the re-review, the detail must not claim the findings are open — it labels
+// them addressed by the fix round but not re-reviewed.
+func TestPrePRLoopLabelsFindingsNotReReviewedWhenTheBudgetIsSpent(t *testing.T) {
+	const finding = "the retry never bounds its attempts"
+	agent := &fakeAgent{
+		edit:   edit("version.go", "package x\n"),
+		events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{}}}` + "\n",
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	review := &fakeAgent{events: reviewEvent(finding)}
+	deps.ReviewAgent = review
+	started := time.Now()
+	clock := started
+	deps.Now = func() time.Time { return clock }
+	checkCalls := 0
+	deps.Checks = func(context.Context, string) (string, string, error) {
+		checkCalls++
+		if checkCalls == 2 {
+			clock = started.Add(checkLoopBudget + time.Minute)
+		}
+		return "", "", nil
+	}
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if review.calls != 1 {
+		t.Fatalf("review agent ran %d times, want 1: the budget was spent before the re-review", review.calls)
+	}
+	rec := reported.last(t)
+	if rec.Ready {
+		t.Fatal("ready = true, want false: a finding was never re-reviewed")
+	}
+	if !strings.Contains(rec.LoopDetail, "addressed by a fix round, not re-reviewed") {
+		t.Fatalf("loop detail = %q, want the addressed-not-re-reviewed label", rec.LoopDetail)
+	}
+	if !strings.Contains(rec.LoopDetail, finding) {
+		t.Fatalf("loop detail = %q, want it to carry the finding", rec.LoopDetail)
+	}
+	if strings.Contains(rec.LoopDetail, "review findings open") {
+		t.Fatalf("loop detail = %q, must not call the findings open when they were not re-reviewed", rec.LoopDetail)
 	}
 }
 
