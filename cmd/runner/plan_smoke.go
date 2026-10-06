@@ -26,11 +26,11 @@ func smokeModels(list []string) []string {
 // only the agent binary and its key, no GCP identity.
 func planSmoke(ctx context.Context, logger *slog.Logger, getenv func(string) string, args []string) error {
 	fs := flag.NewFlagSet("plan-smoke", flag.ContinueOnError)
-	planModels := fs.String("plan-models", runner.DefaultPlanModel, "the plan phase's models in order, comma-separated provider/model")
+	planModels := fs.String("plan-models", runner.DefaultPlanModel(), "the plan phase's models in order, comma-separated provider/model")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	list := splitModels(*planModels, runner.DefaultPlanModel)
+	list := splitModels(*planModels, runner.DefaultPlanModel())
 	if err := runner.ValidatePlanModels(list); err != nil {
 		return err
 	}
@@ -43,7 +43,7 @@ func planSmoke(ctx context.Context, logger *slog.Logger, getenv func(string) str
 	var summary strings.Builder
 	summary.WriteString("| model | outcome | detail |\n|---|---|---|\n")
 	var failed []string
-	agent := runner.NewRouter(runner.ProfilePlan, harnesses(getenv)...)
+	agent := runner.NewRouter(runner.ProfilePlan, runner.Harnesses(getenv)...)
 	for _, model := range smokeModels(list) {
 		res, err := runner.PlanSmoke(ctx, agent, model, dir)
 		switch {

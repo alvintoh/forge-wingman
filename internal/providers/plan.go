@@ -1,6 +1,8 @@
-// Package providers holds the owner's record of each provider's plan: what it
-// costs, how it behaves at its limit, and whether the terms allow unattended
-// agent use.
+// Package providers holds everything the runner knows about the providers it
+// uses: the embedded configuration of each provider's plan windows, ceilings
+// and error phrases (config.go), and the owner's own record of each provider's
+// plan — what it costs, how it behaves at its limit, and whether the terms
+// allow unattended agent use.
 package providers
 
 import (

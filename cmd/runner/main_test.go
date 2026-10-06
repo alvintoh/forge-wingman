@@ -77,7 +77,7 @@ func TestRecordNeedsTheRunsIdentity(t *testing.T) {
 func TestHarnessesWireTheKeyAndHome(t *testing.T) {
 	env := map[string]string{"COMMANDCODE_API_KEY": "k", "RUNNER_TEMP": "/tmp/r"}
 	var cc runner.CommandCodeHarness
-	for _, h := range harnesses(func(k string) string { return env[k] }) {
+	for _, h := range runner.Harnesses(func(k string) string { return env[k] }) {
 		if c, ok := h.(runner.CommandCodeHarness); ok {
 			cc = c
 		}
@@ -452,15 +452,15 @@ func TestSplitModels(t *testing.T) {
 	for in, want := range map[string][]string{
 		"a/b":           {"a/b"},
 		"a/b, c/d ,e/f": {"a/b", "c/d", "e/f"},
-		"":              {runner.DefaultPlanModel},
-		"  ":            {runner.DefaultPlanModel},
+		"":              {runner.DefaultPlanModel()},
+		"  ":            {runner.DefaultPlanModel()},
 		"a/b,":          {"a/b", ""},
 	} {
-		if got := splitModels(in, runner.DefaultPlanModel); !slices.Equal(got, want) {
+		if got := splitModels(in, runner.DefaultPlanModel()); !slices.Equal(got, want) {
 			t.Errorf("splitModels(%q, default) = %q, want %q", in, got, want)
 		}
 	}
-	if got := splitModels("", runner.DefaultReviewModel); !slices.Equal(got, []string{runner.DefaultReviewModel}) {
+	if got := splitModels("", runner.DefaultReviewModel()); !slices.Equal(got, []string{runner.DefaultReviewModel()}) {
 		t.Errorf("splitModels(\"\", review default) = %q, want the review default", got)
 	}
 }

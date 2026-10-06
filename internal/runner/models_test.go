@@ -4,6 +4,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/alvintoh/forge-wingman/internal/providers"
 )
 
 func TestEmbeddedModelsNameTheDefault(t *testing.T) {
@@ -52,5 +54,15 @@ func TestFallbackModelsReturnsACopy(t *testing.T) {
 	first[0] = "command-code/mutated"
 	if got := fallbackModels(DefaultModel()); got[0] == "command-code/mutated" {
 		t.Fatalf("fallbackModels shares its backing array: %v", got)
+	}
+}
+
+// TestDefaultModelProviderHasConfiguredWindows asserts the provider serving the
+// default model has its plan windows configured, so the dispatcher meters it
+// rather than silently falling back to the cash ceiling.
+func TestDefaultModelProviderHasConfiguredWindows(t *testing.T) {
+	provider := Provider(DefaultModel())
+	if windows := providers.Windows(provider); len(windows) == 0 {
+		t.Fatalf("provider %s serving the default model has no configured plan windows", provider)
 	}
 }

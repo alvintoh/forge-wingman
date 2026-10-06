@@ -718,10 +718,10 @@ func TestBuildStopsWhenThePlanModelsAreInvalid(t *testing.T) {
 }
 
 func TestDefaultPlanModelsValidate(t *testing.T) {
-	if err := ValidatePlanModels([]string{DefaultPlanModel}); err != nil {
+	if err := ValidatePlanModels([]string{DefaultPlanModel()}); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateReviewModels([]string{DefaultReviewModel}, DefaultModel()); err != nil {
+	if err := ValidateReviewModels([]string{DefaultReviewModel()}, DefaultModel()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1544,8 +1544,8 @@ func TestWorkflowsCarryThePlanModelsFromTheDefaultToTheRunner(t *testing.T) {
 	for _, name := range []string{"run.yml", "plan-smoke.yml"} {
 		yml := read(name)
 		i := strings.Index(yml, "plan_models:")
-		if i < 0 || !strings.Contains(yml[i:], "default: "+DefaultPlanModel+"\n") {
-			t.Errorf("%s: the plan_models input does not default to %s", name, DefaultPlanModel)
+		if i < 0 || !strings.Contains(yml[i:], "default: "+DefaultPlanModel()+"\n") {
+			t.Errorf("%s: the plan_models input does not default to %s", name, DefaultPlanModel())
 		}
 	}
 	if !strings.Contains(read("run.yml"), "plan_models: ${{ needs.ticket.outputs.override_plan_models || inputs.plan_models }}") {

@@ -17,7 +17,7 @@ func checkModels(ctx context.Context, plans ModelPlans, m runner.ModelLabels, de
 	if reason, detail := malformedModel(m); reason != "" {
 		return reason, detail, nil
 	}
-	if build, review := cmp.Or(m.Build, defaultModel), cmp.Or(m.Review, runner.DefaultReviewModel); review == build {
+	if build, review := cmp.Or(m.Build, defaultModel), cmp.Or(m.Review, runner.DefaultReviewModel()); review == build {
 		return RefusalReviewIsBuild, "review model " + review + " is the build model", nil
 	}
 	seen := map[string]bool{}

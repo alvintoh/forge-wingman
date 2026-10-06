@@ -1,0 +1,42 @@
+{
+  "cash_limit_usd": 30,
+  "runner_free_minutes": 2000,
+  "allowance_markers": [
+    "allowance exhausted",
+    "insufficient credit",
+    "insufficient balance",
+    "quota exceeded",
+    "payment required"
+  ],
+  "availability_markers": [
+    "model not found",
+    "model not available",
+    "model unavailable",
+    "no endpoints found",
+    "rate limited",
+    "overloaded",
+    "service unavailable",
+    "bad gateway"
+  ],
+  "providers": {
+    "command-code": {
+      "windows": [
+        {
+          "name": "command-code-goat-5h",
+          "hours": 5,
+          "limit_usd": 14
+        },
+        {
+          "name": "command-code-goat-week",
+          "hours": 168,
+          "limit_usd": 35
+        },
+        {
+          "name": "command-code-goat-month",
+          "hours": 720,
+          "limit_usd": 70
+        }
+      ]
+    }
+  }
+}
