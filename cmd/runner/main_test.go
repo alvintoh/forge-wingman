@@ -273,21 +273,114 @@ func TestRunRecordFailsTheRunAndLogsWhy(t *testing.T) {
 }
 
 func TestModelOutputsAreEmptyForATicketThatNamedNoModel(t *testing.T) {
-	got := modelOutputs(runner.ModelLabels{}, "t")
+	got := modelOutputs(runner.ModelLabels{})
 	for _, k := range []string{"override_model", "override_review_models", "override_plan_models"} {
 		if v, ok := got[k]; !ok || v != "" {
 			t.Errorf("%s = %q (present %v), want an empty output", k, v, ok)
 		}
 	}
-	if got["ticket"] != "t" {
-		t.Errorf("ticket = %q", got["ticket"])
+	if _, ok := got["ticket"]; ok {
+		t.Error("modelOutputs carries a ticket output")
 	}
 }
 
 func TestModelOutputsCarryTheModelsTheTicketNamed(t *testing.T) {
-	got := modelOutputs(runner.ModelLabels{Build: "p/a", Review: "p/b", Plan: []string{"p/c", "p/d"}}, "t")
+	got := modelOutputs(runner.ModelLabels{Build: "p/a", Review: "p/b", Plan: []string{"p/c", "p/d"}})
 	if got["override_model"] != "p/a" || got["override_review_models"] != "p/b" || got["override_plan_models"] != "p/c,p/d" {
 		t.Fatalf("outputs = %v", got)
+	}
+}
+
+// TestWriteTicketWritesTheFileAndNoTicketOutput is the regression for the
+// masked-output drop: the ticket must reach the model job as a file, never a
+// job output.
+func TestWriteTicketWritesTheFileAndNoTicketOutput(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ticket.json")
+	output := filepath.Join(dir, "output")
+	tk := runner.Ticket{ID: "ABC-1", Title: "t", Size: "S", Body: "b"}
+	if err := writeTicket(path, output, tk, runner.ModelLabels{Build: "p/a"}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := runner.ParseTicket(string(raw)); err != nil || got.ID != "ABC-1" {
+		t.Fatalf("ticket file %q parsed to %+v, err %v", raw, got, err)
+	}
+	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %v, err %v, want 0600", info.Mode(), err)
+	}
+	out, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "ticket=") {
+		t.Errorf("GITHUB_OUTPUT carries a ticket output: %q", out)
+	}
+	if !strings.Contains(string(out), "override_model=p/a") {
+		t.Errorf("GITHUB_OUTPUT lacks the model labels: %q", out)
+	}
+	if err := writeTicket("", output, tk, runner.ModelLabels{}); err == nil {
+		t.Error("writeTicket wrote with no -out path")
+	}
+}
+
+func TestReadTicketDistinguishesAMissingHandOffFromAnUnbuildableTicket(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := readTicket(filepath.Join(dir, "absent.json")); !errors.Is(err, errTicketNotDelivered) {
+		t.Errorf("absent file: err = %v, want errTicketNotDelivered", err)
+	}
+	empty := filepath.Join(dir, "empty.json")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readTicket(empty); !errors.Is(err, errTicketNotDelivered) {
+		t.Errorf("empty file: err = %v, want errTicketNotDelivered", err)
+	}
+	bad := filepath.Join(dir, "bad.json")
+	if err := os.WriteFile(bad, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readTicket(bad); !errors.Is(err, runner.ErrTicketInvalid) {
+		t.Errorf("unbuildable file: err = %v, want ErrTicketInvalid", err)
+	}
+	good := filepath.Join(dir, "good.json")
+	v, err := (runner.Ticket{ID: "ABC-1", Title: "t", Size: "S", Body: "b"}).Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(good, []byte(v), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := readTicket(good); err != nil || got.ID != "ABC-1" {
+		t.Fatalf("good file: ticket %+v, err %v", got, err)
+	}
+}
+
+func TestTicketNotDeliveredReportsAStoppedSummary(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	path := filepath.Join(t.TempDir(), "out")
+	err := ticketNotDelivered(logger, path, errors.New("no ticket file"))
+	if exitCode(err) != 0 {
+		t.Fatalf("exit %d for a reported stop", exitCode(err))
+	}
+	out, rerr := os.ReadFile(path)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	raw, ok := strings.CutPrefix(strings.TrimSpace(string(out)), "summary=")
+	if !ok {
+		t.Fatalf("GITHUB_OUTPUT = %q", out)
+	}
+	sum, perr := runner.ParseSummary(raw, "42-1", runner.Ticket{}, time.Now())
+	if perr != nil || sum.Outcome != runner.OutcomeStopped || sum.StopReason != runner.StopTicketNotDelivered {
+		t.Fatalf("summary %+v, err %v", sum, perr)
+	}
+
+	if exitCode(ticketNotDelivered(logger, "", errors.New("x"))) != 1 {
+		t.Fatal("exit 0 with nowhere to report")
 	}
 }
 

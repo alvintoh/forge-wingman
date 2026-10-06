@@ -1,8 +1,9 @@
 # The model's half of a run: fetch the projection, run the agent, upload its completions,
 # then commit and bundle what it changed. Its identity may read projections and create
 # completions, and nothing else, so it cannot read or write a run record: the ticket
-# arrives as an input from run.yml's ticket job, and the record job validates the
-# summary this emits and writes the record. No GitHub token reaches the model's environment.
+# arrives as an artifact run.yml's ticket job uploads — never a job output, which GitHub
+# drops when the text matches a value masked in that job — and the record job validates
+# the summary this emits and writes the record. No GitHub token reaches the model's environment.
 # Needs the GCP_WIF_PROVIDER, GCP_MODEL_SERVICE_ACCOUNT and WINGMAN_ACCOUNT variables and
 # the COMMANDCODE_API_KEY secret (infra/README.md).
 name: model
@@ -23,9 +24,6 @@ on:
       # plan_models is the plan phase's ordered list, kept apart from model: the first entry is the
       # main model and later ones are backups for when it is unavailable or out of allowance.
       plan_models:
-        type: string
-        required: true
-      ticket:
         type: string
         required: true
     secrets:
@@ -101,6 +99,11 @@ jobs:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_MODEL_SERVICE_ACCOUNT }}
 
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ticket
+          path: ${{ runner.temp }}
+
       - id: build
         name: Build
         env:
@@ -108,10 +111,9 @@ jobs:
           MODEL: ${{ inputs.model }}
           REVIEW_MODELS: ${{ inputs.review_models }}
           PLAN_MODELS: ${{ inputs.plan_models }}
-          TICKET: ${{ inputs.ticket }}
           WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
           COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
-        run: '"$RUNNER_TEMP/runner" build -model "$MODEL" -review-models "$REVIEW_MODELS" -plan-models "$PLAN_MODELS" -ticket "$TICKET"'
+        run: '"$RUNNER_TEMP/runner" build -model "$MODEL" -review-models "$REVIEW_MODELS" -plan-models "$PLAN_MODELS" -ticket-file "$RUNNER_TEMP/ticket.json"'
 
       # wingman.bundle here and in run.yml's check and pr jobs is bundleName in internal/runner/build.go.
       - if: steps.build.outputs.changed == 'true'

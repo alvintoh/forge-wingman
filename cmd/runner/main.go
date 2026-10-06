@@ -1,6 +1,6 @@
 // Command runner executes one run inside a repository's GitHub Actions workflow.
 //
-//	runner ticket          -run-id <id>             read the run record's ticket for the model job
+//	runner ticket          -run-id <id> -out <path> write the run record's ticket to a file for the model job
 //	runner build           -model <provider/model>  fetch the projection, run the agent, bundle the branch, emit a summary
 //	runner pr-meta         -run-id <id> ...          render the PR's title and body from the run record
 //	runner record          -run-id <id> -summary ... validate the build's summary and merge it into the run record
@@ -18,6 +18,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -175,11 +176,13 @@ func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(st
 	}
 }
 
-// ticket writes the run record's ticket as the ticket output, and fails when the
-// identity does not match, the record is missing or its ticket cannot be built.
+// ticket writes the run record's ticket to the file -out names, and fails when
+// the identity does not match, the record is missing or its ticket cannot be
+// built.
 func ticket(ctx context.Context, logger *slog.Logger, e env, args []string) error {
 	fs := flag.NewFlagSet("ticket", flag.ContinueOnError)
 	runID := fs.String("run-id", "", "run record to read the ticket from")
+	out := fs.String("out", "", "path to write the run's ticket to")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -191,23 +194,54 @@ func ticket(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		return err
 	}
 	t := rec.Ticket()
+	logger.Info("ticketRead", "run", *runID, "ticket", t.ID)
+	return writeTicket(*out, e.output, t, rec.ModelLabels)
+}
+
+// writeTicket writes the ticket to path and the models it named to $GITHUB_OUTPUT.
+// The ticket never travels as a job output: GitHub drops any output holding a
+// value masked in this job, which is how a run reaches the model job empty, so
+// only the model labels — never ticket text — are outputs.
+func writeTicket(path, output string, t runner.Ticket, m runner.ModelLabels) error {
+	if path == "" {
+		return errors.New("no -out path to write the ticket to")
+	}
 	v, err := t.Encode()
 	if err != nil {
 		return err
 	}
-	logger.Info("ticketRead", "run", *runID, "ticket", t.ID)
-	return writeOutputs(e.output, modelOutputs(rec.ModelLabels, v))
+	if err := os.WriteFile(path, []byte(v), 0o600); err != nil {
+		return fmt.Errorf("writing the ticket: %w", err)
+	}
+	return writeOutputs(output, modelOutputs(m))
 }
 
-// modelOutputs are the ticket output and the models the ticket named, each empty
-// when it named none, so a run.yml expression falls back to its own default.
-func modelOutputs(m runner.ModelLabels, ticket string) map[string]string {
+// modelOutputs are the models the ticket named, each empty when it named none,
+// so a run.yml expression falls back to its own default.
+func modelOutputs(m runner.ModelLabels) map[string]string {
 	return map[string]string{
-		"ticket":                 ticket,
 		"override_model":         m.Build,
 		"override_review_models": m.Review,
 		"override_plan_models":   strings.Join(m.Plan, ","),
 	}
+}
+
+// errTicketNotDelivered reports no ticket file where the build expected one: the
+// hand-off a masked job output silently dropped, or an artifact that never came.
+var errTicketNotDelivered = errors.New("ticket not delivered")
+
+// readTicket reads the ticket the ticket job wrote to path. An absent or empty
+// file is errTicketNotDelivered, a hand-off failure distinct from a file that is
+// present but does not decode, which is runner.ErrTicketInvalid.
+func readTicket(path string) (runner.Ticket, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return runner.Ticket{}, fmt.Errorf("%w: %w", errTicketNotDelivered, err)
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return runner.Ticket{}, fmt.Errorf("%w: %s is empty", errTicketNotDelivered, path)
+	}
+	return runner.ParseTicket(string(raw))
 }
 
 func build(ctx context.Context, logger *slog.Logger, e env, args []string) error {
@@ -216,15 +250,18 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 	planModels := fs.String("plan-models", runner.DefaultPlanModel, "the plan phase's models in order, comma-separated provider/model; later ones are backups")
 	reviewModels := fs.String("review-models", runner.DefaultReviewModel, "the review phase's models in order, comma-separated provider/model; later ones are backups (FR-14)")
 	pointer := fs.String("pointer", runner.DefaultPointer, "object naming the current rule-stack sha")
-	rawTicket := fs.String("ticket", "", "the run's ticket, as the ticket subcommand wrote it")
+	ticketFile := fs.String("ticket-file", "", "path to the run's ticket, as the ticket subcommand wrote it")
 	if err := fs.Parse(args); err != nil {
 		return setupFailed(logger, e.output, err)
 	}
 	if err := writeOutputs(e.output, map[string]string{"attempt_id": e.attemptID}); err != nil {
 		return setupFailed(logger, e.output, err)
 	}
-	t, err := runner.ParseTicket(*rawTicket)
-	if err != nil {
+	t, err := readTicket(*ticketFile)
+	switch {
+	case errors.Is(err, errTicketNotDelivered):
+		return ticketNotDelivered(logger, e.output, err)
+	case err != nil:
 		logger.Warn("ticketRejected", "err", err.Error())
 	}
 
@@ -523,15 +560,27 @@ func recordsClient(ctx context.Context, project, runID string) (*firestore.Clien
 	return fsc, nil
 }
 
-// setupFailed reports a build that could not start, so the record says why. The
-// returned StopError exits 0 only when that report was written.
+// setupFailed reports a build that could not start, so the record says why.
 func setupFailed(logger *slog.Logger, output string, err error) error {
-	logger.Error("setupFailed", "err", err)
-	stopped := &runner.StopError{Outcome: runner.OutcomeInfraFailure, Reason: runner.StopSetup, Err: err}
+	return reportStop(logger, output, "setupFailed", runner.SetupSummary(err, time.Now()), err)
+}
+
+// ticketNotDelivered reports a build the ticket job handed no ticket, so the
+// record blames the hand-off rather than the ticket.
+func ticketNotDelivered(logger *slog.Logger, output string, err error) error {
+	return reportStop(logger, output, "ticketNotDelivered",
+		runner.StoppedSummary(runner.StopTicketNotDelivered, err, time.Now()), err)
+}
+
+// reportStop writes sum to $GITHUB_OUTPUT and returns the StopError it reports.
+// The returned StopError exits 0 only when that report was written.
+func reportStop(logger *slog.Logger, output, event string, sum runner.Summary, err error) error {
+	logger.Error(event, "err", err)
+	stopped := &runner.StopError{Outcome: sum.Outcome, Reason: sum.StopReason, Err: err}
 	if output == "" {
 		return errors.Join(stopped, runner.ErrSummaryUnreported)
 	}
-	if werr := writeSummary(output, runner.SetupSummary(err, time.Now())); werr != nil {
+	if werr := writeSummary(output, sum); werr != nil {
 		return errors.Join(stopped, fmt.Errorf("%w: %w", runner.ErrSummaryUnreported, werr))
 	}
 	return stopped

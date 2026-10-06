@@ -50,7 +50,6 @@ jobs:
       contents: read
       id-token: write
     outputs:
-      ticket: ${{ steps.read.outputs.ticket }}
       model: ${{ steps.model.outputs.model }}
       # The models the ticket named, empty when it named none.
       override_model: ${{ steps.read.outputs.override_model }}
@@ -90,7 +89,16 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}
           RUN_ID: ${{ inputs.run_id }}
           WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
-        run: '"$RUNNER_TEMP/runner" ticket -run-id "$RUN_ID"'
+        run: '"$RUNNER_TEMP/runner" ticket -run-id "$RUN_ID" -out "$RUNNER_TEMP/ticket.json"'
+
+      # The ticket travels as an artifact, not a job output: GitHub drops any output
+      # holding a value masked in this job, which is how a run reaches the model empty.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ticket
+          path: ${{ runner.temp }}/ticket.json
+          if-no-files-found: error
+          retention-days: 1
 
   model:
     needs: ticket
@@ -102,7 +110,6 @@ jobs:
       model: ${{ needs.ticket.outputs.override_model || needs.ticket.outputs.model }}
       review_models: ${{ needs.ticket.outputs.override_review_models || inputs.review_models }}
       plan_models: ${{ needs.ticket.outputs.override_plan_models || inputs.plan_models }}
-      ticket: ${{ needs.ticket.outputs.ticket }}
     secrets:
       COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
 
