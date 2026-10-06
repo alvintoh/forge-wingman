@@ -86,6 +86,7 @@ var buildEndings = func() map[ending]bool {
 		{OutcomeInfraFailure, StopSetup, ""}:                       true,
 		{OutcomeStopped, StopIdentityMismatch, ""}:                 true,
 		{OutcomeStopped, StopTicketMissing, ""}:                    true,
+		{OutcomeStopped, StopTicketNotDelivered, ""}:               true,
 		{OutcomeStopped, StopModelInvalid, PhaseProjection}:        true,
 		{OutcomeStopped, StopProjectionMissing, PhaseProjection}:   true,
 		{OutcomeStopped, StopProjectionInvalid, PhaseProjection}:   true,
@@ -131,6 +132,17 @@ func SetupSummary(err error, now time.Time) Summary {
 	return Summary{
 		Outcome:    OutcomeInfraFailure,
 		StopReason: StopSetup,
+		StopDetail: truncate(err.Error(), stopDetailLimit),
+		StartedAt:  now,
+	}
+}
+
+// StoppedSummary is the summary of a build that stopped before it could start
+// for reason.
+func StoppedSummary(reason StopReason, err error, now time.Time) Summary {
+	return Summary{
+		Outcome:    OutcomeStopped,
+		StopReason: reason,
 		StopDetail: truncate(err.Error(), stopDetailLimit),
 		StartedAt:  now,
 	}

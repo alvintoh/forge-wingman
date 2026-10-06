@@ -70,7 +70,11 @@ const (
 	StopSetup             StopReason = "setup"
 	StopRecordMissing     StopReason = "record-missing"
 	StopTicketMissing     StopReason = "ticket-missing"
-	StopIdentityMismatch  StopReason = "identity-mismatch"
+	// StopTicketNotDelivered reports no ticket file where the build expected one —
+	// a hand-off GitHub dropped or an artifact that never arrived — kept distinct
+	// from StopTicketMissing, a record whose ticket cannot be built.
+	StopTicketNotDelivered StopReason = "ticket-not-delivered"
+	StopIdentityMismatch   StopReason = "identity-mismatch"
 	// StopAllowanceExhausted is a provider allowance-exhaustion error surfaced
 	// mid-build, recorded as a budget stop rather than an agent failure (FR-22).
 	StopAllowanceExhausted StopReason = "allowance-exhausted"

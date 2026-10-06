@@ -1556,6 +1556,47 @@ func TestWorkflowsCarryThePlanModelsFromTheDefaultToTheRunner(t *testing.T) {
 	}
 }
 
+// TestWorkflowsHandTheTicketOffAsAnArtifactNotAJobOutput is the regression for
+// FRG-60: GitHub drops any job output holding a value masked in that job, so the
+// ticket travels as a file the ticket job uploads and the model job downloads,
+// never as a job output or a job input.
+func TestWorkflowsHandTheTicketOffAsAnArtifactNotAJobOutput(t *testing.T) {
+	read := func(name string) string {
+		b, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	run := read("run.yml")
+	for _, want := range []string{
+		`-out "$RUNNER_TEMP/ticket.json"`,
+		"name: ticket\n",
+		"path: ${{ runner.temp }}/ticket.json",
+	} {
+		if !strings.Contains(run, want) {
+			t.Errorf("run.yml lacks %q", want)
+		}
+	}
+	for _, gone := range []string{"steps.read.outputs.ticket", "needs.ticket.outputs.ticket"} {
+		if strings.Contains(run, gone) {
+			t.Errorf("run.yml still passes the ticket as a job output: %q", gone)
+		}
+	}
+	model := read("model.yml")
+	for _, want := range []string{
+		"continue-on-error: true\n        with:\n          name: ticket\n",
+		`-ticket-file "$RUNNER_TEMP/ticket.json"`,
+	} {
+		if !strings.Contains(model, want) {
+			t.Errorf("model.yml lacks %q", want)
+		}
+	}
+	if strings.Contains(model, "inputs.ticket") {
+		t.Error("model.yml still takes the ticket as an input")
+	}
+}
+
 func TestBranchNameMatchesThePRJobsPattern(t *testing.T) {
 	pattern := regexp.MustCompile(strings.ReplaceAll(branchPattern, "${GITHUB_RUN_ID}", "42"))
 	for _, id := range []string{"ABC-12", "xyz-7", "A1-2-3", "x"} {
