@@ -60,7 +60,7 @@ func TestPRBodyNamesTheLoopDetailInTheNotes(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(body, "## Notes\nBuilt unattended by forge-wingman. Run: "+testRunURL+
-		"\n\n**Pre-PR loop:** kept this a draft — checks: vet still failing after 3 round(s)") {
+		"\n\n**Pre-PR loop:** kept this a draft — checks\\: vet still failing after 3 round\\(s\\)") {
 		t.Fatalf("body does not name the loop detail:\n%s", body)
 	}
 }
@@ -81,8 +81,37 @@ func TestPRBodyNamesTheOutOfPlanFilesInTheNotes(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(body, "## Notes\nBuilt unattended by forge-wingman. Run: "+testRunURL+
-		"\n\n**Edited outside the plan:** a.go, b.go") {
+		"\n\n**Edited outside the plan:** `a.go`, `b.go`") {
 		t.Fatalf("body does not name the out-of-plan files:\n%s", body)
+	}
+}
+
+func TestPRBodyRendersOutOfPlanFilesAsInertCode(t *testing.T) {
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", []string{"x\n\n@someone review", "a`b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "**Edited outside the plan:** `x\\n\\n@someone review`, ``a`b``\n") {
+		t.Fatalf("out-of-plan files not rendered as single-line code spans:\n%s", body)
+	}
+}
+
+func TestPRBodyRendersModelWrittenTextLiterally(t *testing.T) {
+	summary := "Adds it. @someone ![x](https://evil.example/?d=1)"
+	loop := "review asks @org/team to see [here](https://evil.example)\n# Heading"
+	body, err := PRBody(repoTemplate(t), testTicket, summary, "", testRunURL, loop, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, live := range []string{"@someone", "@org/team", "![", "](", "\n# Heading"} {
+		if strings.Contains(body, live) {
+			t.Errorf("model-written %q is still live markdown", live)
+		}
+	}
+	for _, want := range []string{`\@` + "\u200bsomeone", `\!\[x\]\(https\:`, `\# Heading`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body lacks the escaped %q", want)
+		}
 	}
 }
 
@@ -142,7 +171,7 @@ func TestPRBodySummarisesWithTheBuildsSummaryWhenSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(body, "-->\nAdds the widget the runner needs.\n") || strings.Contains(body, "`ABC-12`: ") {
+	if !strings.Contains(body, "-->\nAdds the widget the runner needs\\.\n") || strings.Contains(body, "`ABC-12`: ") {
 		t.Fatalf("body does not carry the build's summary as its own sentence:\n%s", body)
 	}
 }

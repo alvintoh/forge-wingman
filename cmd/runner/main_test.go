@@ -433,8 +433,8 @@ func TestRenderPRTakesTheTitleSummaryAndOutOfPlanFilesFromTheBuildSummary(t *tes
 	if title != "feat(runner): ABC-1 add the widget" {
 		t.Fatalf("title = %q, want the build's committed subject", title)
 	}
-	if !strings.Contains(body, "\nAdds the widget the runner needs.\n") ||
-		!strings.Contains(body, "**Edited outside the plan:** extra.go") {
+	if !strings.Contains(body, "\nAdds the widget the runner needs\\.\n") ||
+		!strings.Contains(body, "**Edited outside the plan:** `extra.go`") {
 		t.Fatalf("body lacks the build's summary or out-of-plan files:\n%s", body)
 	}
 }
