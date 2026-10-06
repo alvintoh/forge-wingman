@@ -1874,3 +1874,18 @@ func TestBuildCommitsWithTheFixRoundsCommitMessage(t *testing.T) {
 		t.Fatalf("commit subject = %q, want the fix round's", sum.CommitSubject)
 	}
 }
+
+func TestDetailPartsDropsEmptyParts(t *testing.T) {
+	for _, tt := range []struct {
+		parts []string
+		want  string
+	}{
+		{[]string{"review findings open: x", ""}, "review findings open: x"},
+		{[]string{"", "checks: vet failing"}, "checks: vet failing"},
+		{[]string{"a", "b"}, "a; b"},
+	} {
+		if got := detailParts(tt.parts...); got != tt.want {
+			t.Errorf("detailParts(%q) = %q, want %q", tt.parts, got, tt.want)
+		}
+	}
+}

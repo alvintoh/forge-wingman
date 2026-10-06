@@ -181,7 +181,7 @@ func detailParts(parts ...string) string {
 // then run once, to catch a gate the fix round newly broke, and — when NFR-1's
 // run-duration budget still allows it — the review runs once more on the fixed
 // diff, so the detail lists only the findings still open. A clean re-review
-// with the checks passing leaves the run ready (FR-59).
+// with the checks passing leaves the run ready (FR-5).
 //
 // It gives up — running neither the review nor the fix round — once the
 // budget would not leave enough time for it, and skips the re-review alone
