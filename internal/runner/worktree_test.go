@@ -55,6 +55,25 @@ func TestVerifyDetectsTampering(t *testing.T) {
 	}
 }
 
+// TestAddWorktreeReusesItsFixedBranchOnARetry is the regression for a fixed
+// local branch failing a second run in the same clone: the branch already
+// exists and its previous worktree is still registered, so AddWorktree must
+// prune the stale registration and reset the branch rather than refuse.
+func TestAddWorktreeReusesItsFixedBranchOnARetry(t *testing.T) {
+	repo := initRepo(t)
+	dir := filepath.Join(t.TempDir(), "wt")
+	if _, err := AddWorktree(context.Background(), repo, dir, "wingman/wt"); err != nil {
+		t.Fatal(err)
+	}
+	// The first run's worktree is gone, but git still registers it.
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AddWorktree(context.Background(), repo, filepath.Join(t.TempDir(), "wt"), "wingman/wt"); err != nil {
+		t.Fatalf("a retry in the same clone failed: %v", err)
+	}
+}
+
 func TestCommitIgnoresTheAgentsGitSideChannels(t *testing.T) {
 	repo, w := newWorktree(t)
 	marker := filepath.Join(t.TempDir(), "hook-ran")
@@ -177,6 +196,31 @@ func TestDiffPendingSeesAModifiedTrackedFile(t *testing.T) {
 	}
 	if !strings.Contains(diff, "a.go") || !strings.Contains(diff, "var x = 1") {
 		t.Fatalf("diff = %q, want it to carry the uncommitted modification", diff)
+	}
+}
+
+// TestBundleCarriesThePushedBranchNotTheWorktreesOwn pins Bundle naming the
+// branch a run pushes — so run.yml can fetch it — even though the worktree
+// itself sits on the fixed localBranch.
+func TestBundleCarriesThePushedBranchNotTheWorktreesOwn(t *testing.T) {
+	_, w := newWorktree(t)
+	writeFile(t, filepath.Join(w.Dir, "a.go"), "package a\n")
+	if _, err := w.Commit(context.Background(), "t-1: add"); err != nil {
+		t.Fatal(err)
+	}
+	bundle := filepath.Join(t.TempDir(), "out.bundle")
+	if err := w.Bundle(context.Background(), bundle, "wingman/pushed-9-9-9"); err != nil {
+		t.Fatal(err)
+	}
+	heads, err := w.git(context.Background(), "bundle", "list-heads", bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(heads), "refs/heads/wingman/pushed-9-9-9") {
+		t.Fatalf("bundle carries %q, want the pushed branch", heads)
+	}
+	if strings.Contains(string(heads), "refs/heads/"+w.Branch) {
+		t.Fatalf("bundle carries %q, the worktree's own fixed branch", heads)
 	}
 }
 

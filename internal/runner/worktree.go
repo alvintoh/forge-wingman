@@ -33,13 +33,19 @@ type Worktree struct {
 	snapshot  [sha256.Size]byte
 }
 
-// AddWorktree creates a worktree at dir on a new branch cut from repo's HEAD.
+// AddWorktree creates a worktree at dir on a branch cut from repo's HEAD,
+// resetting the branch when it already exists. Stale registrations are pruned
+// first, so a retry in the same clone reuses its fixed branch instead of failing
+// on a leftover worktree that still claims it.
 func AddWorktree(ctx context.Context, repo, dir, branch string) (Worktree, error) {
 	bin, err := exec.LookPath("git")
 	if err != nil {
 		return Worktree{}, fmt.Errorf("finding git: %w", err)
 	}
-	if _, err := runGit(ctx, bin, repo, nil, "worktree", "add", dir, "-b", branch); err != nil {
+	if _, err := runGit(ctx, bin, repo, nil, "worktree", "prune"); err != nil {
+		return Worktree{}, err
+	}
+	if _, err := runGit(ctx, bin, repo, nil, "worktree", "add", "-B", branch, dir); err != nil {
 		return Worktree{}, err
 	}
 	out, err := runGit(ctx, bin, dir, nil, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir", "HEAD")

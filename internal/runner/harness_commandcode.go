@@ -33,6 +33,17 @@ const commandCodeTranscripts = ".commandcode/projects"
 // in the environment (PACKAGE.txt).
 const commandCodeAuthFile = ".commandcode/auth.json"
 
+// commandCodeMemoryFile is the user memory the CLI reads ahead of its per-run
+// context block, under HOME. A harness writes the projection's rules head there
+// so its large stable part precedes the context block (working directory,
+// branch, date) that varies per run.
+const commandCodeMemoryFile = ".commandcode/AGENTS.md"
+
+// commandCodeSettingsFile is the CLI's settings file under HOME. The adapter
+// disables the scratchpad section there, whose per-session path would otherwise
+// change the system prompt on every run.
+const commandCodeSettingsFile = ".commandcode/settings.json"
+
 // CommandCodeHarness runs the Command Code CLI on its own key.
 type CommandCodeHarness struct {
 	Bin string
@@ -112,11 +123,14 @@ func (a CommandCodeAgent) WithModel(model string) Agent { a.Model = model; retur
 
 // Run sends the prompt on stdin, since a projection outgrows the kernel's limit
 // on one argument, and translates the CLI's frames to the runner's own event
-// shape on stdout. A non-empty session is resumed from the transcript under
-// Home; the auth file is removed after each run, so the key never sits on disk
-// while the run's later steps do. The CLI's frames carry no cost, so the run's
-// cost is read from the transcripts it wrote and emitted as one cost event.
-func (a CommandCodeAgent) Run(ctx context.Context, dir, session, prompt string, stdout, stderr io.Writer) error {
+// shape on stdout. rules, when non-empty, is written to the CLI's user memory
+// file so it precedes the per-run context block; an empty rules removes that
+// file, so a later round never inherits an earlier one's. A non-empty session is
+// resumed from the transcript under Home; the auth file is removed after each
+// run, so the key never sits on disk while the run's later steps do. The CLI's
+// frames carry no cost, so the run's cost is read from the transcripts it wrote
+// and emitted as one cost event.
+func (a CommandCodeAgent) Run(ctx context.Context, dir, session, prompt, rules string, stdout, stderr io.Writer) error {
 	if a.Home == "" {
 		return errors.New("the command-code harness has no home directory")
 	}
@@ -124,6 +138,12 @@ func (a CommandCodeAgent) Run(ctx context.Context, dir, session, prompt string, 
 		return err
 	}
 	defer func() { _ = os.Remove(filepath.Join(a.Home, filepath.FromSlash(commandCodeAuthFile))) }()
+	if err := writeCommandCodeMemory(a.Home, rules); err != nil {
+		return err
+	}
+	if err := writeCommandCodeSettings(a.Home); err != nil {
+		return err
+	}
 	// The CLI takes its own model id — ours without the harness's prefix.
 	model := strings.TrimPrefix(a.Model, commandCodeProvider+"/")
 	args := []string{"-p", "--output-format", "json", "--model", model,
@@ -302,6 +322,46 @@ func writeCommandCodeAuth(home, key string) error {
 	}
 	if err := os.WriteFile(path, body, 0o600); err != nil {
 		return fmt.Errorf("command code auth file: %w", err)
+	}
+	return nil
+}
+
+// writeCommandCodeMemory writes rules to the CLI's user memory file, or removes
+// it when rules is empty, so a round with no projection never inherits a
+// previous round's from the run's shared HOME.
+func writeCommandCodeMemory(home, rules string) error {
+	path := filepath.Join(home, filepath.FromSlash(commandCodeMemoryFile))
+	if rules == "" {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("command code memory file: %w", err)
+		}
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("command code memory directory: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(rules), 0o600); err != nil {
+		return fmt.Errorf("command code memory file: %w", err)
+	}
+	return nil
+}
+
+// writeCommandCodeSettings writes the CLI settings a run needs, disabling the
+// scratchpad section whose per-session path would otherwise change the system
+// prompt on every run.
+func writeCommandCodeSettings(home string) error {
+	path := filepath.Join(home, filepath.FromSlash(commandCodeSettingsFile))
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("command code settings directory: %w", err)
+	}
+	body, err := json.Marshal(struct {
+		DisableScratchpad bool `json:"disableScratchpad"`
+	}{true})
+	if err != nil {
+		return fmt.Errorf("command code settings file: %w", err)
+	}
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		return fmt.Errorf("command code settings file: %w", err)
 	}
 	return nil
 }

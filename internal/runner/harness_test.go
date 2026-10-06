@@ -43,13 +43,13 @@ func TestRouterRunsTheHarnessItsModelNames(t *testing.T) {
 	)
 
 	var out, errBuf strings.Builder
-	if err := r.WithModel("command-code/x").Run(context.Background(), t.TempDir(), "", "p", &out, &errBuf); err != nil {
+	if err := r.WithModel("command-code/x").Run(context.Background(), t.TempDir(), "", "p", "", &out, &errBuf); err != nil {
 		t.Fatal(err)
 	}
 	if len(ccAttempts()) != 1 || other.calls != 0 {
 		t.Fatalf("the command-code model did not route to the command-code harness alone")
 	}
-	if err := r.WithModel("p/y").Run(context.Background(), t.TempDir(), "", "p", &out, &errBuf); err != nil {
+	if err := r.WithModel("p/y").Run(context.Background(), t.TempDir(), "", "p", "", &out, &errBuf); err != nil {
 		t.Fatal(err)
 	}
 	if len(ccAttempts()) != 1 || other.calls != 1 {
@@ -63,7 +63,7 @@ func TestRouterRefusesAnUnservedModel(t *testing.T) {
 		t.Fatal("the router served a model no harness serves")
 	}
 	var out, errBuf strings.Builder
-	if err := r.WithModel("other/x").Run(context.Background(), t.TempDir(), "", "p", &out, &errBuf); err == nil {
+	if err := r.WithModel("other/x").Run(context.Background(), t.TempDir(), "", "p", "", &out, &errBuf); err == nil {
 		t.Fatal("the router ran a model no harness serves")
 	}
 }
@@ -71,7 +71,7 @@ func TestRouterRefusesAnUnservedModel(t *testing.T) {
 func TestRouterRunRefusesAnUnreadyHarness(t *testing.T) {
 	r := NewRouter(ProfileBuild, CommandCodeHarness{Bin: "cmd"})
 	var out, errBuf strings.Builder
-	err := r.WithModel("command-code/x").Run(context.Background(), t.TempDir(), "", "p", &out, &errBuf)
+	err := r.WithModel("command-code/x").Run(context.Background(), t.TempDir(), "", "p", "", &out, &errBuf)
 	if err == nil || !strings.Contains(err.Error(), "COMMANDCODE_API_KEY") {
 		t.Fatalf("err = %v, want the harness's missing-key refusal", err)
 	}

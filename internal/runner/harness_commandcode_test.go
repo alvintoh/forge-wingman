@@ -17,10 +17,12 @@ import (
 
 // commandCodeAttempt is one invocation the fake CLI recorded.
 type commandCodeAttempt struct {
-	args  []string
-	env   []string
-	auth  string
-	stdin string
+	args     []string
+	env      []string
+	auth     string
+	stdin    string
+	agents   string
+	settings string
 }
 
 // scriptedCommandCode writes a fake command-code CLI that replays the named
@@ -66,6 +68,8 @@ func scriptedCommandCode(t *testing.T, fixture string, transcripts ...string) (b
 		"env > " + q(logDir+"/") + "$n.env\n" +
 		"cat > " + q(logDir+"/") + "$n.stdin\n" +
 		"cat \"$HOME/.commandcode/auth.json\" > " + q(logDir+"/") + "$n.auth 2>/dev/null || echo MISSING > " + q(logDir+"/") + "$n.auth\n" +
+		"cat \"$HOME/.commandcode/AGENTS.md\" > " + q(logDir+"/") + "$n.agents 2>/dev/null || echo MISSING > " + q(logDir+"/") + "$n.agents\n" +
+		"cat \"$HOME/.commandcode/settings.json\" > " + q(logDir+"/") + "$n.settings 2>/dev/null || echo MISSING > " + q(logDir+"/") + "$n.settings\n" +
 		"if [ -f " + q(transcriptDir+"/") + "$n.jsonl ]; then mkdir -p \"$HOME/.commandcode/projects/p\" && " +
 		"cp " + q(transcriptDir+"/") + "$n.jsonl \"$HOME/.commandcode/projects/p/session-$n.jsonl\"; fi\n" +
 		"cat " + q(ndjson) + "\n" +
@@ -92,11 +96,15 @@ func scriptedCommandCode(t *testing.T, fixture string, transcripts ...string) (b
 			env, _ := os.ReadFile(filepath.Join(logDir, base+".env"))
 			auth, _ := os.ReadFile(filepath.Join(logDir, base+".auth"))
 			stdin, _ := os.ReadFile(filepath.Join(logDir, base+".stdin"))
+			agents, _ := os.ReadFile(filepath.Join(logDir, base+".agents"))
+			settings, _ := os.ReadFile(filepath.Join(logDir, base+".settings"))
 			got = append(got, commandCodeAttempt{
-				args:  strings.Split(strings.TrimRight(string(args), "\x00"), "\x00"),
-				env:   strings.Split(strings.TrimSpace(string(env)), "\n"),
-				auth:  strings.TrimSpace(string(auth)),
-				stdin: string(stdin),
+				args:     strings.Split(strings.TrimRight(string(args), "\x00"), "\x00"),
+				env:      strings.Split(strings.TrimSpace(string(env)), "\n"),
+				auth:     strings.TrimSpace(string(auth)),
+				stdin:    string(stdin),
+				agents:   string(agents),
+				settings: strings.TrimSpace(string(settings)),
 			})
 		}
 		return got
@@ -189,9 +197,12 @@ func TestCommandCodeAgentResumesTheSessionUnderOneHome(t *testing.T) {
 	agent := CommandCodeHarness{Bin: bin, Key: "k", Home: home}.Agent(ProfileBuild, "command-code/x")
 	prompt := strings.Repeat("rule line\n", 20000)
 	dir := t.TempDir()
-	for _, session := range []string{"", "ses_1"} {
+	for _, tt := range []struct{ session, rules string }{
+		{"", "# Rules\n"},
+		{"ses_1", ""},
+	} {
 		var out, errBuf strings.Builder
-		if err := agent.Run(context.Background(), dir, session, prompt, &out, &errBuf); err != nil {
+		if err := agent.Run(context.Background(), dir, tt.session, prompt, tt.rules, &out, &errBuf); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -218,6 +229,14 @@ func TestCommandCodeAgentResumesTheSessionUnderOneHome(t *testing.T) {
 		if a.auth != `{"apiKey":"k"}` {
 			t.Errorf("attempt %d saw auth file %q, want the key written for that run", i, a.auth)
 		}
+		// The rules head travels as the CLI's user memory, never stdin; an empty
+		// rules removes the file so a later round cannot inherit the earlier one's.
+		if want := []string{"# Rules\n", "MISSING\n"}[i]; a.agents != want {
+			t.Errorf("attempt %d memory file = %q, want %q", i, a.agents, want)
+		}
+		if a.settings != `{"disableScratchpad":true}` {
+			t.Errorf("attempt %d settings = %q, want the scratchpad disabled", i, a.settings)
+		}
 		if !slices.Contains(a.env, "HOME="+home) {
 			t.Errorf("attempt %d does not run under the harness's own HOME", i)
 		}
@@ -233,7 +252,7 @@ func TestCommandCodeAgentResumesTheSessionUnderOneHome(t *testing.T) {
 // run rather than reading the job's own credentials.
 func TestCommandCodeAgentNeedsAHome(t *testing.T) {
 	var out, errBuf strings.Builder
-	err := CommandCodeAgent{Bin: "cmd", Key: "k"}.Run(context.Background(), t.TempDir(), "", "p", &out, &errBuf)
+	err := CommandCodeAgent{Bin: "cmd", Key: "k"}.Run(context.Background(), t.TempDir(), "", "p", "", &out, &errBuf)
 	if err == nil || !strings.Contains(err.Error(), "home") {
 		t.Fatalf("err = %v, want the missing home refused", err)
 	}
@@ -318,7 +337,7 @@ func TestCommandCodeAgentChoosesTheProfileFlag(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			before := len(attempts())
 			var out, errBuf strings.Builder
-			if err := harness.Agent(tt.profile, "command-code/x").Run(context.Background(), t.TempDir(), "", "prompt", &out, &errBuf); err != nil {
+			if err := harness.Agent(tt.profile, "command-code/x").Run(context.Background(), t.TempDir(), "", "prompt", "", &out, &errBuf); err != nil {
 				t.Fatal(err)
 			}
 			got := attempts()[before:]
@@ -375,7 +394,7 @@ func TestCommandCodeHarnessClassifiesTheBadKeyFixture(t *testing.T) {
 	bin, _ := scriptedCommandCode(t, "badkey")
 	harness := CommandCodeHarness{Bin: bin, Key: "bad-key", Home: t.TempDir()}
 	var out, errBuf strings.Builder
-	err := harness.Agent(ProfileBuild, "command-code/x").Run(context.Background(), t.TempDir(), "", "prompt", &out, &errBuf)
+	err := harness.Agent(ProfileBuild, "command-code/x").Run(context.Background(), t.TempDir(), "", "prompt", "", &out, &errBuf)
 	if err == nil {
 		t.Fatal("the bad-key run reported success")
 	}
@@ -580,7 +599,7 @@ func TestCommandCodeAgentBillsEachAttemptOnlyItsOwnMessages(t *testing.T) {
 		{"ses_1", 0.000871},
 	} {
 		var out, errBuf strings.Builder
-		if err := agent.Run(context.Background(), dir, tt.session, "p", &out, &errBuf); err != nil {
+		if err := agent.Run(context.Background(), dir, tt.session, "p", "", &out, &errBuf); err != nil {
 			t.Fatal(err)
 		}
 		u, err := SumUsage(strings.NewReader(out.String()))

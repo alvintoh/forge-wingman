@@ -36,7 +36,7 @@ func TestCommandCodeAgentRunLeavesNoChildBehind(t *testing.T) {
 	}
 	defer func() { _ = out.Close() }()
 
-	if err := agent.Run(context.Background(), dir, "", "x", out, out); err != nil {
+	if err := agent.Run(context.Background(), dir, "", "x", "", out, out); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, "child.pid"))
@@ -63,7 +63,7 @@ func TestCommandCodeAgentRunStopsAtTheDeadline(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	err := agent.Run(ctx, dir, "", "x", io.Discard, io.Discard)
+	err := agent.Run(ctx, dir, "", "x", "", io.Discard, io.Discard)
 	if err == nil {
 		t.Fatal("Run returned nil past its deadline")
 	}
