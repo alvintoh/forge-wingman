@@ -12,6 +12,10 @@ Hand a ticket over by **delegating it to the Forge Wingman app in Linear**. An a
 cannot be an assignee, so delegation is the trigger and the human assignee is left
 intact.
 
+The runner reads only the issue's **title and description**, never its comments.
+A plan agreed in a comment has to be copied into the description before
+delegating, or the run plans without it.
+
 The ticket also needs two labels, and may name the models its phases run
 on with three optional ones:
 
