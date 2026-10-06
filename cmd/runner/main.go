@@ -302,10 +302,12 @@ func splitModels(s, fallback string) []string {
 }
 
 // prMeta writes the PR's title, body and the branch segment the pushed branch must
-// carry as outputs, rendered from the run record's ticket.
+// carry as outputs, rendered from the run record's ticket and the build's summary.
 func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) error {
 	fs := flag.NewFlagSet("pr-meta", flag.ContinueOnError)
 	runID := fs.String("run-id", "", "run record to read the ticket from")
+	attemptID := fs.String("attempt-id", e.attemptID, "workflow attempt the build ran in")
+	summary := fs.String("summary", "", "the build's summary, as JSON")
 	checkReport := fs.String("failed-gate", "", "the check job's failed_gate output")
 	runURL := fs.String("run-url", "", "URL of the workflow run")
 	loopDetail := fs.String("loop-detail", "", "the pre-PR loop's report of why the PR is a draft (FR-5)")
@@ -324,24 +326,63 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	if err != nil {
 		return err
 	}
-	t := rec.Ticket()
-	body, err := runner.PRBody(string(tmpl), t, rec.PRSummary, runner.FailedGate(*checkReport), *runURL, *loopDetail)
+	sum := buildSummary(logger, *summary, buildAttempt(logger, *attemptID, e), rec.Ticket(), time.Now())
+	title, body, err := renderPR(string(tmpl), rec, sum, runner.FailedGate(*checkReport), *runURL, *loopDetail)
 	if err != nil {
 		return err
 	}
-	if err := writeOutputs(e.output, map[string]string{"title": prTitle(rec), "branch_segment": t.BranchSegment()}); err != nil {
+	if err := writeOutputs(e.output, map[string]string{"title": title, "branch_segment": rec.Ticket().BranchSegment()}); err != nil {
 		return err
 	}
 	return writeMultilineOutput(e.output, "body", body)
 }
 
-// prTitle is the subject the build committed with, or the ticket's Subject for
-// a record that carries none.
-func prTitle(rec runner.Record) string {
-	if rec.CommitSubject != "" {
-		return rec.CommitSubject
+// buildSummary is raw parsed as attemptID's build of t, or the zero Summary when
+// raw is empty or rejected, so the PR falls back to the ticket rather than
+// failing to open.
+func buildSummary(logger *slog.Logger, raw, attemptID string, t runner.Ticket, now time.Time) runner.Summary {
+	if raw == "" {
+		return runner.Summary{}
 	}
-	return rec.Ticket().Subject()
+	sum, err := runner.ParseSummary(raw, attemptID, t, now)
+	if err != nil {
+		logger.Warn("summaryRejected", "err", err.Error())
+		return runner.Summary{}
+	}
+	return sum
+}
+
+// renderPR is the PR's title and body for rec's ticket, taken from the build's
+// summary: the record gains the build's fields only after the PR opens.
+func renderPR(tmpl string, rec runner.Record, sum runner.Summary, failedGate, runURL, loopDetail string) (title, body string, err error) {
+	t := rec.Ticket()
+	body, err = runner.PRBody(tmpl, t, sum.PRSummary, failedGate, runURL, loopDetail, sum.OutOfPlanFiles)
+	if err != nil {
+		return "", "", err
+	}
+	return prTitle(sum, t), body, nil
+}
+
+// prTitle is the subject the build committed with, or the ticket's Subject for
+// a summary that carries none.
+func prTitle(sum runner.Summary, t runner.Ticket) string {
+	if sum.CommitSubject != "" {
+		return sum.CommitSubject
+	}
+	return t.Subject()
+}
+
+// buildAttempt is id when it names an attempt of this run, and the current
+// attempt otherwise.
+func buildAttempt(logger *slog.Logger, id string, e env) string {
+	if id == "" {
+		return e.attemptID
+	}
+	if !ownAttemptID(id, e.runID, e.attempt) {
+		logger.Warn("attemptIDRejected", "length", len(id))
+		return e.attemptID
+	}
+	return id
 }
 
 // readRunRecord reads run runID's record, logging why and failing the run when
@@ -388,12 +429,7 @@ func record(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	if err := writeOutputs(e.output, map[string]string{"started": "true"}); err != nil {
 		return err
 	}
-	if *attemptID == "" {
-		*attemptID = e.attemptID
-	} else if !ownAttemptID(*attemptID, e.runID, e.attempt) {
-		logger.Warn("attemptIDRejected", "length", len(*attemptID))
-		*attemptID = e.attemptID
-	}
+	*attemptID = buildAttempt(logger, *attemptID, e)
 
 	fsc, err := recordsClient(ctx, e.project, *runID)
 	if err != nil {

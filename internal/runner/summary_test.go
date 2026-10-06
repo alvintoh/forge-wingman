@@ -2,6 +2,7 @@ package runner
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -18,11 +19,12 @@ func validSummary() Summary {
 			Model:             "command-code/x",
 			CompletionsObject: completionsObject("1-1", PhaseBuild, 1),
 		}},
-		EditedFiles:  []string{"version.go"},
-		DurationsMS:  map[string]int64{"build": 10},
-		RuleStackSHA: testSHA,
-		Branch:       BranchName(testTicket.BranchSegment(), "1-1"),
-		StartedAt:    finalizeNow.Add(-time.Hour),
+		EditedFiles:    []string{"version.go"},
+		OutOfPlanFiles: []string{"version.go"},
+		DurationsMS:    map[string]int64{"build": 10},
+		RuleStackSHA:   testSHA,
+		Branch:         BranchName(testTicket.BranchSegment(), "1-1"),
+		StartedAt:      finalizeNow.Add(-time.Hour),
 	}
 }
 
@@ -62,6 +64,7 @@ func TestParseSummaryRejects(t *testing.T) {
 		{"an edited file above the repository", func(s *Summary) { s.EditedFiles = []string{"../x"} }},
 		{"an edited file through a parent segment", func(s *Summary) { s.EditedFiles = []string{"a/../b"} }},
 		{"an edited file ending in a parent segment", func(s *Summary) { s.EditedFiles = []string{"a/.."} }},
+		{"an out-of-plan file above the repository", func(s *Summary) { s.OutOfPlanFiles = []string{"../x"} }},
 		{"a start time over a week old", func(s *Summary) { s.StartedAt = finalizeNow.Add(-8 * 24 * time.Hour) }},
 		{"another run's completions", func(s *Summary) { s.Steps[0].CompletionsObject = "completions/1-2-build-1.jsonl" }},
 		{"a completions path escape", func(s *Summary) { s.Steps[0].CompletionsObject = "completions/../x.jsonl" }},
@@ -166,18 +169,47 @@ func TestParseSummaryCapsTheCommitFields(t *testing.T) {
 	}
 }
 
+func TestParseSummaryCapsEveryFilePath(t *testing.T) {
+	s := validSummary()
+	long := strings.Repeat("a", 3*maxPathBytes)
+	s.EditedFiles, s.OutOfPlanFiles = []string{long}, []string{long}
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParseSummary(string(b), "1-1", testTicket, finalizeNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range append(got.EditedFiles, got.OutOfPlanFiles...) {
+		if len(f) > maxPathBytes+len("…") {
+			t.Fatalf("file path of %d bytes survived the cap", len(f))
+		}
+	}
+}
+
 func TestEncodeFitsTheLimitAndStaysOnOneLine(t *testing.T) {
 	s := validSummary()
 	s.EditedFiles = make([]string, 5*maxEditedFiles)
 	for i := range s.EditedFiles {
 		s.EditedFiles[i] = strings.Repeat("\n", 2*maxPathBytes)
 	}
+	s.OutOfPlanFiles = slices.Clone(s.EditedFiles)
 	raw, err := s.Encode()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(raw) > maxSummaryBytes || strings.ContainsAny(raw, "\r\n") {
 		t.Fatalf("summary of %d bytes, multiline %v", len(raw), strings.ContainsAny(raw, "\r\n"))
+	}
+	var encoded Summary
+	if err := json.Unmarshal([]byte(raw), &encoded); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range append(encoded.EditedFiles, encoded.OutOfPlanFiles...) {
+		if len(f) > maxPathBytes+len("…") {
+			t.Fatalf("encoded a file path of %d bytes", len(f))
+		}
 	}
 	if _, err := ParseSummary(raw, "1-1", testTicket, finalizeNow); err != nil {
 		t.Fatal(err)
@@ -226,6 +258,8 @@ func TestParseSummaryRejectsEndingsABuildCannotReach(t *testing.T) {
 		// forces a draft and the build proceeds to PhaseCommit instead (FR-5).
 		{OutcomeStopped, StopReviewInvalid, PhaseReview},
 		{OutcomeInfraFailure, StopChecksRun, PhaseReview},
+		// An out-of-plan build commits a draft rather than stopping.
+		{OutcomeStopped, "out-of-plan", PhaseCommit},
 	} {
 		s := Summary{Outcome: e.outcome, StopReason: e.reason, Phase: e.phase, StartedAt: finalizeNow}
 		raw, err := s.Encode()

@@ -2,7 +2,10 @@ package runner
 
 import (
 	"errors"
+	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // DefaultPRTemplate is the pull request template the pr job renders.
@@ -25,9 +28,10 @@ var errTemplate = errors.New("pull request template lacks the ticket line, summa
 // check job's report in place of the example rows, and runURL and the ticket's
 // body, fenced, in the notes, dropping the screenshots section. failedGate is
 // empty when the check reported a pass. loopDetail is the pre-PR loop's report
-// of why the PR opened as a draft (FR-5), empty when it did not.
-func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail string) (string, error) {
-	summary := prSummary
+// of why the PR opened as a draft (FR-5), empty when it did not. outOfPlan are
+// the edited files the build's plan did not name, which also keep it a draft.
+func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail string, outOfPlan []string) (string, error) {
+	summary := plainText(prSummary)
 	if summary == "" {
 		summary = "`" + t.ID + "`: " + t.Title
 	}
@@ -54,7 +58,14 @@ func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail
 		case line == templateNotes:
 			notes := []string{line, "Built unattended by forge-wingman. Run: " + runURL}
 			if loopDetail != "" {
-				notes = append(notes, "", "**Pre-PR loop:** kept this a draft — "+loopDetail)
+				notes = append(notes, "", "**Pre-PR loop:** kept this a draft — "+plainText(loopDetail))
+			}
+			if len(outOfPlan) > 0 {
+				spans := make([]string, len(outOfPlan))
+				for i, f := range outOfPlan {
+					spans[i] = codeSpan(f)
+				}
+				notes = append(notes, "", "**Edited outside the plan:** "+strings.Join(spans, ", "))
 			}
 			notes = append(notes, "", "The ticket as built:", "", fence(t.Body), t.Body, fence(t.Body), "")
 			out = append(out, notes...)
@@ -80,6 +91,44 @@ func commentEnds(lines []string, i int) bool {
 		}
 	}
 	return true
+}
+
+// plainText renders model-written text literally: every ASCII punctuation mark
+// is backslash-escaped, so it forms no image, link, heading or emphasis, and
+// every @ is followed by a zero-width space, so it notifies no one.
+func plainText(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r < utf8.RuneSelf && (unicode.IsPunct(r) || unicode.IsSymbol(r)) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+		if r == '@' {
+			b.WriteRune('\u200b')
+		}
+	}
+	return b.String()
+}
+
+// codeSpan renders a build-chosen path as one inline code span, escaped so a
+// newline cannot end the line, so the path cannot add a mention, link or heading.
+func codeSpan(s string) string {
+	q := strconv.Quote(s)
+	q = q[1 : len(q)-1]
+	longest, run := 0, 0
+	for _, r := range q {
+		if r == '`' {
+			run++
+			longest = max(longest, run)
+		} else {
+			run = 0
+		}
+	}
+	tick := strings.Repeat("`", longest+1)
+	if strings.HasPrefix(q, "`") || strings.HasSuffix(q, "`") {
+		q = " " + q + " "
+	}
+	return tick + q + tick
 }
 
 // fence is a code fence longer than any run of backticks in s.

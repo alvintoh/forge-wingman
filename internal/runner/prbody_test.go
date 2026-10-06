@@ -20,7 +20,7 @@ func repoTemplate(t *testing.T) string {
 }
 
 func TestPRBodyRendersTheRepositoryTemplate(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestPRBodyRendersTheRepositoryTemplate(t *testing.T) {
 }
 
 func TestPRBodyNamesTheReportedFailedGate(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "test", testRunURL, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "", "test", testRunURL, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,18 +55,18 @@ func TestPRBodyNamesTheReportedFailedGate(t *testing.T) {
 }
 
 func TestPRBodyNamesTheLoopDetailInTheNotes(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "checks: vet still failing after 3 round(s)")
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "checks: vet still failing after 3 round(s)", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(body, "## Notes\nBuilt unattended by forge-wingman. Run: "+testRunURL+
-		"\n\n**Pre-PR loop:** kept this a draft — checks: vet still failing after 3 round(s)") {
+		"\n\n**Pre-PR loop:** kept this a draft — checks\\: vet still failing after 3 round\\(s\\)") {
 		t.Fatalf("body does not name the loop detail:\n%s", body)
 	}
 }
 
 func TestPRBodyOmitsTheLoopDetailWhenClean(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,10 +75,60 @@ func TestPRBodyOmitsTheLoopDetailWhenClean(t *testing.T) {
 	}
 }
 
+func TestPRBodyNamesTheOutOfPlanFilesInTheNotes(t *testing.T) {
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", []string{"a.go", "b.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "## Notes\nBuilt unattended by forge-wingman. Run: "+testRunURL+
+		"\n\n**Edited outside the plan:** `a.go`, `b.go`") {
+		t.Fatalf("body does not name the out-of-plan files:\n%s", body)
+	}
+}
+
+func TestPRBodyRendersOutOfPlanFilesAsInertCode(t *testing.T) {
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", []string{"x\n\n@someone review", "a`b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "**Edited outside the plan:** `x\\n\\n@someone review`, ``a`b``\n") {
+		t.Fatalf("out-of-plan files not rendered as single-line code spans:\n%s", body)
+	}
+}
+
+func TestPRBodyRendersModelWrittenTextLiterally(t *testing.T) {
+	summary := "Adds it. @someone ![x](https://evil.example/?d=1)"
+	loop := "review asks @org/team to see [here](https://evil.example)\n# Heading"
+	body, err := PRBody(repoTemplate(t), testTicket, summary, "", testRunURL, loop, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, live := range []string{"@someone", "@org/team", "![", "](", "\n# Heading"} {
+		if strings.Contains(body, live) {
+			t.Errorf("model-written %q is still live markdown", live)
+		}
+	}
+	for _, want := range []string{`\@` + "\u200bsomeone", `\!\[x\]\(https\:`, `\# Heading`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body lacks the escaped %q", want)
+		}
+	}
+}
+
+func TestPRBodyOmitsTheOutOfPlanLineWhenEmpty(t *testing.T) {
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(body, "outside the plan") {
+		t.Fatalf("body names out-of-plan files nobody reported:\n%s", body)
+	}
+}
+
 func TestPRBodyFencesTheTicketBodyAfterTheGateRow(t *testing.T) {
 	tk := testTicket
 	tk.Body = "<!-- hide the rest\n```\n`````\nstill fenced"
-	body, err := PRBody(repoTemplate(t), tk, "", "test", testRunURL, "")
+	body, err := PRBody(repoTemplate(t), tk, "", "test", testRunURL, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +148,7 @@ func TestPRBodyRefusesATemplateItCannotFill(t *testing.T) {
 		"no table":       strings.Replace(template, "|---|---|---|", "", 1),
 		"no notes":       strings.Replace(template, "## Notes", "## Other", 1),
 	} {
-		if _, err := PRBody(broken, testTicket, "", "", testRunURL, ""); !errors.Is(err, errTemplate) {
+		if _, err := PRBody(broken, testTicket, "", "", testRunURL, "", nil); !errors.Is(err, errTemplate) {
 			t.Errorf("%s: err = %v, want errTemplate", name, err)
 		}
 	}
@@ -107,7 +157,7 @@ func TestPRBodyRefusesATemplateItCannotFill(t *testing.T) {
 func TestPRBodyWritesTheSummaryOnce(t *testing.T) {
 	tmpl := "**Ticket:** closes <TEAM-n>\n\n## Summary\n<!-- a -->\n<!-- b -->\n\n## Verification\n" +
 		"| Check | What it proves | Result |\n|---|---|---|\n| x | y | ✅ |\n\n## Notes\n"
-	body, err := PRBody(tmpl, testTicket, "", "", testRunURL, "")
+	body, err := PRBody(tmpl, testTicket, "", "", testRunURL, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,11 +167,11 @@ func TestPRBodyWritesTheSummaryOnce(t *testing.T) {
 }
 
 func TestPRBodySummarisesWithTheBuildsSummaryWhenSet(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "Adds the widget the runner needs.", "", testRunURL, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "Adds the widget the runner needs.", "", testRunURL, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(body, "-->\nAdds the widget the runner needs.\n") || strings.Contains(body, "`ABC-12`: ") {
+	if !strings.Contains(body, "-->\nAdds the widget the runner needs\\.\n") || strings.Contains(body, "`ABC-12`: ") {
 		t.Fatalf("body does not carry the build's summary as its own sentence:\n%s", body)
 	}
 }

@@ -34,17 +34,18 @@ var ErrSummaryUnreported = errors.New("summary not reported")
 // Summary is what a build reports for the record job to write, since the build's
 // own identity cannot write the run store.
 type Summary struct {
-	Outcome      Outcome          `json:"outcome"`
-	StopReason   StopReason       `json:"stop_reason,omitempty"`
-	StopDetail   string           `json:"stop_detail,omitempty"`
-	Phase        Phase            `json:"phase"`
-	Steps        []Step           `json:"steps,omitempty"`
-	EditedFiles  []string         `json:"edited_files,omitempty"`
-	DiffLines    DiffLines        `json:"diff_lines"`
-	DurationsMS  map[string]int64 `json:"durations_ms,omitempty"`
-	RuleStackSHA string           `json:"rule_stack_sha,omitempty"`
-	Branch       string           `json:"branch,omitempty"`
-	UsageWarning string           `json:"usage_warning,omitempty"`
+	Outcome        Outcome          `json:"outcome"`
+	StopReason     StopReason       `json:"stop_reason,omitempty"`
+	StopDetail     string           `json:"stop_detail,omitempty"`
+	Phase          Phase            `json:"phase"`
+	Steps          []Step           `json:"steps,omitempty"`
+	EditedFiles    []string         `json:"edited_files,omitempty"`
+	OutOfPlanFiles []string         `json:"out_of_plan_files,omitempty"`
+	DiffLines      DiffLines        `json:"diff_lines"`
+	DurationsMS    map[string]int64 `json:"durations_ms,omitempty"`
+	RuleStackSHA   string           `json:"rule_stack_sha,omitempty"`
+	Branch         string           `json:"branch,omitempty"`
+	UsageWarning   string           `json:"usage_warning,omitempty"`
 	// Ready is FR-5's draft-vs-ready decision, from the pre-PR loop (FR-28):
 	// true only when the checks passed and the review found nothing open.
 	Ready      bool   `json:"ready"`
@@ -112,7 +113,6 @@ var buildEndings = func() map[ending]bool {
 		{OutcomeStopped, StopHeadMoved, PhaseCommit}:      true,
 		{OutcomeInfraFailure, StopCommit, PhaseCommit}:    true,
 		{OutcomeStopped, StopSecretInBranch, PhaseCommit}: true,
-		{OutcomeStopped, StopOutOfPlan, PhaseCommit}:      true,
 		{OutcomeNoChanges, "", PhaseCommit}:               true,
 		{OutcomeBuilt, "", PhaseCommit}:                   true,
 	}
@@ -137,10 +137,11 @@ func SetupSummary(err error, now time.Time) Summary {
 }
 
 // Encode renders the summary as one line of JSON within maxSummaryBytes: first
-// dropping edited file names from the end, then, once none are left, dropping the
-// oldest steps until it fits.
+// dropping edited and out-of-plan file names from the end, then, once none are
+// left, dropping the oldest steps until it fits.
 func (s Summary) Encode() (string, error) {
 	s.EditedFiles = capFiles(s.EditedFiles)
+	s.OutOfPlanFiles = capFiles(s.OutOfPlanFiles)
 	for {
 		b, err := json.Marshal(s)
 		if err != nil {
@@ -152,6 +153,7 @@ func (s Summary) Encode() (string, error) {
 		switch {
 		case len(s.EditedFiles) > 0:
 			s.EditedFiles = s.EditedFiles[:len(s.EditedFiles)/2]
+			s.OutOfPlanFiles = s.OutOfPlanFiles[:len(s.OutOfPlanFiles)/2]
 		case len(s.Steps) > 0:
 			s.Steps = s.Steps[1:]
 		default:
@@ -200,6 +202,7 @@ func ParseSummary(raw, attemptID string, t Ticket, now time.Time) (Summary, erro
 	s.CommitBody = truncate(s.CommitBody, maxTicketBodyBytes)
 	s.PRSummary = truncate(s.PRSummary, stopDetailLimit)
 	s.EditedFiles = capFiles(s.EditedFiles)
+	s.OutOfPlanFiles = capFiles(s.OutOfPlanFiles)
 	return s, nil
 }
 
@@ -229,12 +232,14 @@ func (s Summary) validate(attemptID string, t Ticket, now time.Time) error {
 			return err
 		}
 	}
-	if len(s.EditedFiles) > maxEditedFiles {
-		return fmt.Errorf("%d edited files, over %d", len(s.EditedFiles), maxEditedFiles)
-	}
-	for _, f := range s.EditedFiles {
-		if !repoRelative(f) {
-			return fmt.Errorf("edited file %q is not a path inside the repository", truncate(f, logErrorLimit))
+	for kind, files := range map[string][]string{"edited": s.EditedFiles, "out-of-plan": s.OutOfPlanFiles} {
+		if len(files) > maxEditedFiles {
+			return fmt.Errorf("%d %s files, over %d", len(files), kind, maxEditedFiles)
+		}
+		for _, f := range files {
+			if !repoRelative(f) {
+				return fmt.Errorf("%s file %q is not a path inside the repository", kind, truncate(f, logErrorLimit))
+			}
 		}
 	}
 	for _, n := range []int64{s.DiffLines.Added, s.DiffLines.Removed} {
