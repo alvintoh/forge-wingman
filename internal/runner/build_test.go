@@ -68,9 +68,11 @@ type fakeAgent struct {
 	calls   int
 	prompt  string
 	prompts []string
-	// rules records the rules head every call received, in order — the build
-	// rounds carry the projection's rules, the review and fix rounds none.
+	// rules records the rules head every call received, in order — every round
+	// of the build session carries the projection's rules, the review pass none.
 	rules []string
+	// dirs records the directory every call ran in, in order.
+	dirs []string
 	// sessions records the session id every call received, in order — the
 	// pre-PR loop's check-rebuild and fix rounds must continue the same one.
 	sessions []string
@@ -94,6 +96,7 @@ func (a *fakeAgent) Run(ctx context.Context, dir, session, prompt, rules string,
 	a.prompt = prompt
 	a.prompts = append(a.prompts, prompt)
 	a.rules = append(a.rules, rules)
+	a.dirs = append(a.dirs, dir)
 	a.sessions = append(a.sessions, session)
 	deadline, _ := ctx.Deadline()
 	a.deadlines = append(a.deadlines, deadline)
@@ -801,6 +804,12 @@ func TestPrePRLoopRebuildsOnceOnAFailingCheckThenPasses(t *testing.T) {
 	}
 	if agent.sessions[1] != "ses_1" {
 		t.Fatalf("rebuild session = %q, want the initial round's session continued", agent.sessions[1])
+	}
+	if agent.rules[1] == "" || agent.rules[1] != agent.rules[0] {
+		t.Fatalf("rebuild rules = %q, want the build round's %q", agent.rules[1], agent.rules[0])
+	}
+	if want := filepath.Join(c.TempDir, "wt"); agent.dirs[0] != want || agent.dirs[1] != want {
+		t.Fatalf("rounds ran in %q, want the fixed worktree %q on every run", agent.dirs, want)
 	}
 	if !strings.Contains(agent.prompts[1], checkVet) || !strings.Contains(agent.prompts[1], "bad format") {
 		t.Fatalf("rebuild prompt = %q, want it to name the failing gate and its output", agent.prompts[1])
