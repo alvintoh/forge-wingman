@@ -6,23 +6,22 @@ import (
 	"testing"
 )
 
-func TestRenderPrompt(t *testing.T) {
+func TestRenderPromptParts(t *testing.T) {
 	ticket := Ticket{ID: "t-1", Title: "feat: the thing", Size: "S", Body: "Do the thing."}
 
-	t.Run("projection verbatim first, ticket last", func(t *testing.T) {
+	t.Run("rules head first, ticket last", func(t *testing.T) {
 		projection := "# Rules\n\nbe careful\n\n# The ticket\n\n" + ticketSentinel + "\n"
-		got, err := RenderPrompt(projection, ticket)
+		rules, prompt, err := RenderPromptParts(projection, ticket)
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := "# Rules\n\nbe careful\n\n# The ticket\n\n## t-1: feat: the thing (size S)\n\nDo the thing.\n"
-		if got != want {
-			t.Fatalf("prompt = %q, want %q", got, want)
+		if want := "# Rules\n\nbe careful\n\n# The ticket\n\n"; rules != want {
+			t.Fatalf("rules = %q, want the projection's head %q", rules, want)
 		}
-		if !strings.HasPrefix(got, projection[:strings.Index(projection, ticketSentinel)]) {
-			t.Fatal("projection is not the prompt's prefix")
+		if want := ticket.Text() + "\n"; prompt != want {
+			t.Fatalf("prompt = %q, want the ticket %q", prompt, want)
 		}
-		if !strings.HasSuffix(strings.TrimSpace(got), ticket.Body) {
+		if !strings.HasSuffix(strings.TrimSpace(rules+prompt), ticket.Body) {
 			t.Fatal("ticket is not last")
 		}
 	})
@@ -38,7 +37,7 @@ func TestRenderPrompt(t *testing.T) {
 		{"content after the sentinel", "# Rules\n" + ticketSentinel + "\nmore rules\n"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := RenderPrompt(tt.projection, ticket); !errors.Is(err, errSentinel) {
+			if _, _, err := RenderPromptParts(tt.projection, ticket); !errors.Is(err, errSentinel) {
 				t.Fatalf("err = %v, want errSentinel", err)
 			}
 		})

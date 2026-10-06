@@ -196,9 +196,13 @@ func (w Worktree) DiffPending(ctx context.Context) (string, error) {
 }
 
 // Bundle writes the branch's commits since the base to a git bundle at path,
-// then verifies it.
-func (w Worktree) Bundle(ctx context.Context, path string) error {
-	if _, err := w.git(ctx, "bundle", "create", path, w.Base+".."+w.Branch); err != nil {
+// naming them ref so the bundle carries the branch a run pushes — not the
+// worktree's own fixed local branch — then verifies it.
+func (w Worktree) Bundle(ctx context.Context, path, ref string) error {
+	if _, err := w.git(ctx, "update-ref", "refs/heads/"+ref, w.Branch); err != nil {
+		return err
+	}
+	if _, err := w.git(ctx, "bundle", "create", path, w.Base+".."+ref); err != nil {
 		return err
 	}
 	_, err := w.git(ctx, "bundle", "verify", "--quiet", path)

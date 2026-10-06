@@ -44,7 +44,7 @@ func PlanSmoke(ctx context.Context, agent Agent, model, dir string) (SmokeResult
 		return SmokeResult{}, fmt.Errorf("clearing the shell marker: %w", err)
 	}
 	var out bytes.Buffer
-	if err := bindModel(agent, model).Run(ctx, dir, "", smokePrompt, &out, io.Discard); err != nil {
+	if err := bindModel(agent, model).Run(ctx, dir, "", smokePrompt, "", &out, io.Discard); err != nil {
 		return SmokeResult{}, fmt.Errorf("plan agent on %s: %w", model, err)
 	}
 	text, _ := FinalText(&out)

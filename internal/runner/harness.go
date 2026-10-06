@@ -62,7 +62,7 @@ func harnessFor(harnesses []Harness, provider string) (Harness, bool) {
 
 // Run runs the router's profile through the harness serving its model,
 // refusing a model whose harness is not configured (AC7).
-func (r Router) Run(ctx context.Context, dir, session, prompt string, stdout, stderr io.Writer) error {
+func (r Router) Run(ctx context.Context, dir, session, prompt, rules string, stdout, stderr io.Writer) error {
 	h, ok := r.harness()
 	if !ok {
 		return fmt.Errorf("no harness serves model %q", r.model)
@@ -70,7 +70,7 @@ func (r Router) Run(ctx context.Context, dir, session, prompt string, stdout, st
 	if err := h.Ready(); err != nil {
 		return err
 	}
-	return h.Agent(r.profile, r.model).Run(ctx, dir, session, prompt, stdout, stderr)
+	return h.Agent(r.profile, r.model).Run(ctx, dir, session, prompt, rules, stdout, stderr)
 }
 
 // Classify classifies a failed run through the harness that ran it.

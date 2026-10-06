@@ -93,10 +93,12 @@ func reviewFailureDetail(err error) string {
 //
 // It returns whether the checks passed, why not when they did not, the
 // session to continue and the round the build agent last ran under. Each
-// round's valid commit-message block replaces msg.
-func runCheckLoop(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum *Summary, prompt string, msg *CommitMessage) (ok bool, detail, session string, round int, err error) {
+// round's valid commit-message block replaces msg. Every round carries the
+// build projection's rules head, so the resumed session's system prompt stays
+// the same across the loop.
+func runCheckLoop(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum *Summary, rules, prompt string, msg *CommitMessage) (ok bool, detail, session string, round int, err error) {
 	round = 1
-	call := agentCall{Phase: PhaseBuild, Round: round, Model: c.Model, Timeout: roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now())}
+	call := agentCall{Phase: PhaseBuild, Round: round, Model: c.Model, Rules: rules, Timeout: roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now())}
 	var text string
 	text, session, round, err = runAgentWithFallback(ctx, d, c, call, d.Agent, wt.Dir, withCommitInstruction(prompt), sum)
 	if err != nil {
@@ -127,7 +129,7 @@ func runCheckLoop(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, 
 			break
 		}
 		round++
-		call := agentCall{Phase: PhaseBuild, Round: round, Model: c.Model, Session: session, Detail: gate,
+		call := agentCall{Phase: PhaseBuild, Round: round, Model: c.Model, Session: session, Rules: rules, Detail: gate,
 			Timeout: roundTimeout(c.AgentTimeout, sum.StartedAt, now)}
 		text, session, round, err = runAgentWithFallback(ctx, d, c, call, d.Agent, wt.Dir, withCommitInstruction(checkFeedbackPrompt(gate, output)), sum)
 		if err != nil {
@@ -147,8 +149,12 @@ func runCheckLoop(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, 
 //
 // It gives up — running neither the review nor the fix round — once NFR-1's
 // run-duration budget would not leave enough time for it. A valid
-// commit-message block from the fix round replaces msg.
-func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum *Summary, session string, buildRound int, msg *CommitMessage) (ready bool, detail string, err error) {
+// commit-message block from the fix round replaces msg. The review pass itself
+// starts a fresh session with no projection, so it carries no rules; its fix
+// round resumes the build agent's own session, so it carries the build
+// projection's rules — dropping them there would change the resumed session's
+// system prompt mid-conversation.
+func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum *Summary, rules, session string, buildRound int, msg *CommitMessage) (ready bool, detail string, err error) {
 	now := d.Now()
 	if !withinBudget(sum.StartedAt, now) {
 		return false, "review: skipped — NFR-1's run-duration budget was spent by the check loop", nil
@@ -175,7 +181,7 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 	if !withinBudget(sum.StartedAt, now) {
 		return false, detail + " (fix round skipped: NFR-1's run-duration budget was spent)", nil
 	}
-	fixCall := agentCall{Phase: PhaseBuild, Round: buildRound + 1, Model: c.Model, Session: session, Detail: findings,
+	fixCall := agentCall{Phase: PhaseBuild, Round: buildRound + 1, Model: c.Model, Session: session, Rules: rules, Detail: findings,
 		Timeout: roundTimeout(c.AgentTimeout, sum.StartedAt, now)}
 	fixText, _, _, err := runAgentWithFallback(ctx, d, c, fixCall, d.Agent, wt.Dir, withCommitInstruction(fixPrompt(findings)), sum)
 	if err != nil {

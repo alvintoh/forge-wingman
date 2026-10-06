@@ -9,18 +9,21 @@ import (
 
 func TestPlanPromptEndsWithTheFileListInstruction(t *testing.T) {
 	projection := "# Rules\n\n" + ticketSentinel + "\n"
-	got, err := PlanPrompt(projection, testTicket)
+	rules, prompt, err := PlanPrompt(projection, testTicket)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(got, "# Rules") ||
-		!strings.HasSuffix(got, "```plan-files\npath/one.go\npath/one_test.go\npath/two.go\n```") {
-		t.Fatalf("prompt = %q", got)
+	if rules != "# Rules\n\n" {
+		t.Fatalf("rules = %q, want the plan projection's head", rules)
+	}
+	if !strings.HasPrefix(prompt, testTicket.Text()) ||
+		!strings.HasSuffix(prompt, "```plan-files\npath/one.go\npath/one_test.go\npath/two.go\n```") {
+		t.Fatalf("prompt = %q", prompt)
 	}
 }
 
 func TestPlanPromptRejectsAnInvalidProjection(t *testing.T) {
-	if _, err := PlanPrompt("no sentinel", testTicket); !errors.Is(err, errSentinel) {
+	if _, _, err := PlanPrompt("no sentinel", testTicket); !errors.Is(err, errSentinel) {
 		t.Fatalf("err = %v, want errSentinel", err)
 	}
 }

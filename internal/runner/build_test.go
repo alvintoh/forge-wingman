@@ -68,6 +68,9 @@ type fakeAgent struct {
 	calls   int
 	prompt  string
 	prompts []string
+	// rules records the rules head every call received, in order — the build
+	// rounds carry the projection's rules, the review and fix rounds none.
+	rules []string
 	// sessions records the session id every call received, in order — the
 	// pre-PR loop's check-rebuild and fix rounds must continue the same one.
 	sessions []string
@@ -86,10 +89,11 @@ type fakeAgent struct {
 	errFn func(call int) error
 }
 
-func (a *fakeAgent) Run(ctx context.Context, dir, session, prompt string, stdout, stderr io.Writer) error {
+func (a *fakeAgent) Run(ctx context.Context, dir, session, prompt, rules string, stdout, stderr io.Writer) error {
 	a.calls++
 	a.prompt = prompt
 	a.prompts = append(a.prompts, prompt)
+	a.rules = append(a.rules, rules)
 	a.sessions = append(a.sessions, session)
 	deadline, _ := ctx.Deadline()
 	a.deadlines = append(a.deadlines, deadline)
@@ -236,9 +240,12 @@ func TestBuildCommitsAndBundlesTheAgentsEdits(t *testing.T) {
 	if !res.Changed || res.Branch != "wingman/abc-12-42-1" {
 		t.Fatalf("result = %+v", res)
 	}
-	if !strings.HasPrefix(agent.prompt, "# Rules") ||
+	if !strings.HasPrefix(agent.rules[0], "# Rules") {
+		t.Fatalf("build round's rules = %q, want the projection's rules head", agent.rules[0])
+	}
+	if !strings.HasPrefix(agent.prompt, testTicket.Text()) ||
 		!strings.HasSuffix(agent.prompt, testTicket.Text()+"\n\n\n"+commitMessageInstruction) {
-		t.Fatalf("prompt does not end with the ticket then the commit-message instruction: %q", agent.prompt)
+		t.Fatalf("prompt does not carry the ticket then the commit-message instruction: %q", agent.prompt)
 	}
 
 	rec := reported.last(t)
@@ -453,9 +460,9 @@ func TestBuildRunsThePlanPhaseForAnMOrLTicket(t *testing.T) {
 	if !res.Changed {
 		t.Fatal("build did not change anything")
 	}
-	if planAgent.calls != 1 || !strings.HasPrefix(planAgent.prompt, "# Plan rules") ||
+	if planAgent.calls != 1 || !strings.HasPrefix(planAgent.rules[0], "# Plan rules") ||
 		!strings.Contains(planAgent.prompt, "plan-files") {
-		t.Fatalf("plan agent calls %d, prompt %q", planAgent.calls, planAgent.prompt)
+		t.Fatalf("plan agent calls %d, rules %q, prompt %q", planAgent.calls, planAgent.rules, planAgent.prompt)
 	}
 	rec := reported.last(t)
 	if rec.Outcome != OutcomeBuilt {
@@ -880,7 +887,8 @@ func TestPrePRLoopReviewFindingsForceADraftAndOneFixRound(t *testing.T) {
 		events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{}}}` + "\n",
 	}
 	deps, _, reported := testDeps(validObjects(), agent)
-	deps.ReviewAgent = &fakeAgent{events: reviewEvent(finding)}
+	review := &fakeAgent{events: reviewEvent(finding)}
+	deps.ReviewAgent = review
 	c := testConfig(t, initRepo(t))
 
 	if _, err := Build(context.Background(), deps, c); err != nil {
@@ -894,6 +902,16 @@ func TestPrePRLoopReviewFindingsForceADraftAndOneFixRound(t *testing.T) {
 	}
 	if !strings.Contains(agent.prompts[1], finding) {
 		t.Fatalf("fix round prompt = %q, want it to carry the review's finding", agent.prompts[1])
+	}
+	// The review pass starts a fresh session with no projection, so it carries
+	// no rules; its fix round resumes the build session, so it must carry the
+	// build round's rules — an empty rules would change the resumed session's
+	// system prompt mid-conversation.
+	if len(review.rules) != 1 || review.rules[0] != "" {
+		t.Fatalf("review pass rules = %q, want none", review.rules)
+	}
+	if agent.rules[1] == "" || agent.rules[1] != agent.rules[0] {
+		t.Fatalf("fix round rules = %q, want the build round's %q", agent.rules[1], agent.rules[0])
 	}
 	rec := reported.last(t)
 	if rec.Ready {
@@ -1196,7 +1214,7 @@ func TestProviderIsTheModelsPrefixBeforeItsFirstSlash(t *testing.T) {
 
 type blockingAgent struct{}
 
-func (blockingAgent) Run(ctx context.Context, _, _, _ string, stdout, _ io.Writer) error {
+func (blockingAgent) Run(ctx context.Context, _, _, _, _ string, stdout, _ io.Writer) error {
 	if _, err := io.WriteString(stdout, "{}\n"); err != nil {
 		return err
 	}
@@ -1284,7 +1302,7 @@ func TestBuildRefusesToBundleASecret(t *testing.T) {
 
 type panickingAgent struct{}
 
-func (panickingAgent) Run(context.Context, string, string, string, io.Writer, io.Writer) error {
+func (panickingAgent) Run(context.Context, string, string, string, string, io.Writer, io.Writer) error {
 	panic("boom")
 }
 

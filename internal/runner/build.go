@@ -42,9 +42,11 @@ func Provider(model string) string {
 }
 
 // Agent runs the build model in a directory, continuing session when it is
-// non-empty, and streams its events to stdout.
+// non-empty, and streams its events to stdout. rules is the projection's rules
+// head, which a harness places ahead of its per-run context; it is empty only on
+// a round that starts fresh with no projection, such as the review pass.
 type Agent interface {
-	Run(ctx context.Context, dir, session, prompt string, stdout, stderr io.Writer) error
+	Run(ctx context.Context, dir, session, prompt, rules string, stdout, stderr io.Writer) error
 }
 
 // BuildDeps are the stores and the agents a build talks to, and where it reports.
@@ -129,6 +131,11 @@ func BranchName(segment, attemptID string) string {
 	return BranchPrefix + segment + "-" + attemptID
 }
 
+// localBranch is the worktree's own branch name. It is fixed, not per-run, so
+// the branch the agent's context block reports is the same on every run; the
+// bundle carries BranchName instead, which is what run.yml pushes.
+const localBranch = BranchPrefix + "wt"
+
 // Build checks the identity and the ticket, fetches the projection, plans an M
 // or L ticket with edit and bash denied, runs the build agent in a fresh
 // worktree, and commits and bundles what it changed.
@@ -182,7 +189,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		return BuildResult{}, stopWith(OutcomeStopped, StopTicketMissing, err)
 	}
 
-	var prompt string
+	var rules, prompt string
 	if err := timed(PhaseProjection, func() error {
 		if !ValidModel(c.Model) {
 			return stopWith(OutcomeStopped, StopModelInvalid, errors.New("model is not provider/model"))
@@ -220,7 +227,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		}
 		sum.RuleStackSHA = p.SHA
 		d.Logger.Info("projectionFetched", "sha", p.SHA)
-		prompt, err = RenderPrompt(p.Text, c.Ticket)
+		rules, prompt, err = RenderPromptParts(p.Text, c.Ticket)
 		if err != nil {
 			return stopWith(OutcomeStopped, StopProjectionInvalid, err)
 		}
@@ -229,15 +236,18 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		return BuildResult{}, err
 	}
 
+	// The pushed branch must stay BranchName, which run.yml and the summary
+	// validation check; the worktree instead sits on the fixed localBranch.
+	pushBranch := BranchName(c.Ticket.BranchSegment(), c.AttemptID)
 	var wt Worktree
 	if err := timed(PhaseWorktree, func() error {
 		var err error
-		wt, err = AddWorktree(ctx, c.Repo, filepath.Join(c.TempDir, "wt-"+c.AttemptID), BranchName(c.Ticket.BranchSegment(), c.AttemptID))
+		wt, err = AddWorktree(ctx, c.Repo, filepath.Join(c.TempDir, "wt"), localBranch)
 		if err != nil {
 			return stopWith(OutcomeInfraFailure, StopWorktree, err)
 		}
-		sum.Branch = wt.Branch
-		d.Logger.Info("worktreeCreated", "path", wt.Dir, "branch", wt.Branch)
+		sum.Branch = pushBranch
+		d.Logger.Info("worktreeCreated", "path", wt.Dir, "branch", wt.Branch, "push", pushBranch)
 		return nil
 	}); err != nil {
 		return BuildResult{}, err
@@ -256,11 +266,11 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 			case err != nil:
 				return stopWith(OutcomeInfraFailure, StopProjectionRead, err)
 			}
-			planPrompt, err := PlanPrompt(p.Text, c.Ticket)
+			planRules, planPrompt, err := PlanPrompt(p.Text, c.Ticket)
 			if err != nil {
 				return stopWith(OutcomeStopped, StopProjectionInvalid, err)
 			}
-			call := agentCall{Phase: PhasePlan, Round: 1, Model: c.PlanModels[0], Timeout: roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now())}
+			call := agentCall{Phase: PhasePlan, Round: 1, Model: c.PlanModels[0], Rules: planRules, Timeout: roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now())}
 			text, _, _, err := runAgentInOrder(ctx, d, c, call, c.PlanModels, d.PlanAgent, wt.Dir, planPrompt, &sum)
 			if err != nil {
 				return err
@@ -281,7 +291,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 	var msg CommitMessage
 	if err := timed(PhaseBuild, func() error {
 		var err error
-		checksOK, loopDetail, session, lastRound, err = runCheckLoop(ctx, d, c, wt, &sum, prompt, &msg)
+		checksOK, loopDetail, session, lastRound, err = runCheckLoop(ctx, d, c, wt, &sum, rules, prompt, &msg)
 		return err
 	}); err != nil {
 		return BuildResult{}, err
@@ -293,7 +303,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		// build: it forces a draft naming the failure instead (FR-5).
 		_ = timed(PhaseReview, func() error {
 			var rerr error
-			ready, loopDetail, rerr = runReview(ctx, d, c, wt, &sum, session, lastRound, &msg)
+			ready, loopDetail, rerr = runReview(ctx, d, c, wt, &sum, rules, session, lastRound, &msg)
 			if rerr != nil {
 				ready = false
 				loopDetail = reviewFailureDetail(rerr)
@@ -310,7 +320,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 
 	sum.Ready = ready
 	sum.LoopDetail = truncate(loopDetail, stopDetailLimit)
-	res = BuildResult{Branch: wt.Branch, Ready: ready, LoopDetail: loopDetail}
+	res = BuildResult{Branch: pushBranch, Ready: ready, LoopDetail: loopDetail}
 	if err := timed(PhaseCommit, func() error {
 		if err := wt.Verify(ctx); err != nil {
 			switch {
@@ -361,7 +371,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 			}
 		}
 		res.BundlePath = filepath.Join(c.TempDir, bundleName)
-		if err := wt.Bundle(ctx, res.BundlePath); err != nil {
+		if err := wt.Bundle(ctx, res.BundlePath, pushBranch); err != nil {
 			return stopWith(OutcomeInfraFailure, StopCommit, err)
 		}
 		res.Changed = true
@@ -375,13 +385,15 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 
 // agentCall is one agent invocation's identity within a build: which
 // phase and round it belongs to, which model runs it, the session it
-// continues (empty for a fresh one), its own deadline, and — for a round the
-// check or review loop drove — what drove it (FR-6).
+// continues (empty for a fresh one), the projection's rules head it carries
+// (empty for the review pass, which starts fresh), its own deadline, and — for
+// a round the check or review loop drove — what drove it (FR-6).
 type agentCall struct {
 	Phase   Phase
 	Round   int
 	Model   string
 	Session string
+	Rules   string
 	Detail  string
 	Timeout time.Duration
 }
@@ -413,7 +425,7 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 		timeout = defaultAgentTimeout
 	}
 	agentCtx, cancel := context.WithTimeout(ctx, timeout)
-	runErr := agent.Run(agentCtx, dir, call.Session, prompt, out, errOut)
+	runErr := agent.Run(agentCtx, dir, call.Session, prompt, call.Rules, out, errOut)
 	timedOut := errors.Is(agentCtx.Err(), context.DeadlineExceeded)
 	cancel()
 

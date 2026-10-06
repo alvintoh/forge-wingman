@@ -16,14 +16,14 @@ const planFileListInstruction = "Do not edit any files or run any shell commands
 	"name, its PR opens as a draft that lists those files:\n\n" +
 	"```plan-files\npath/one.go\npath/one_test.go\npath/two.go\n```"
 
-// PlanPrompt is the plan phase's prompt: the plan projection with the ticket
-// substituted, followed by the plan-files format instruction.
-func PlanPrompt(projection string, t Ticket) (string, error) {
-	base, err := RenderPrompt(projection, t)
+// PlanPrompt is the plan phase's prompt split into the plan projection's rules
+// head and the ticket text the plan-files format instruction is appended to.
+func PlanPrompt(projection string, t Ticket) (rules, prompt string, err error) {
+	rules, ticket, err := RenderPromptParts(projection, t)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return base + "\n\n" + planFileListInstruction, nil
+	return rules, ticket + "\n\n" + planFileListInstruction, nil
 }
 
 // errPlanFiles reports a plan agent's final message that carries no valid

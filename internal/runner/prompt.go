@@ -12,11 +12,13 @@ const ticketSentinel = "<<<TICKET>>>"
 // whose placeholder is missing, repeated, or not last.
 var errSentinel = errors.New("projection must be rules followed by exactly one trailing ticket sentinel")
 
-// RenderPrompt returns the projection verbatim with its sentinel replaced by the ticket.
-func RenderPrompt(projection string, t Ticket) (string, error) {
+// RenderPromptParts splits a projection into its rules head and the ticket text
+// its sentinel stands for. A harness writes the rules head to its memory file,
+// ahead of the per-run context block, and sends only the ticket as the prompt.
+func RenderPromptParts(projection string, t Ticket) (rules, ticket string, err error) {
 	head, tail, found := strings.Cut(projection, ticketSentinel)
 	if !found || strings.TrimSpace(head) == "" || strings.TrimSpace(tail) != "" {
-		return "", errSentinel
+		return "", "", errSentinel
 	}
-	return head + t.Text() + tail, nil
+	return head, t.Text() + tail, nil
 }
