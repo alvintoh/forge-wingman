@@ -6,6 +6,9 @@
   opencode on OpenCode Go — see `adr/0015`. The decision is unchanged: the agent is
   still a third-party CLI run as a subprocess, so where this record says opencode,
   read the harness.
+- **Amended 2026-10-07:** the harness is omp by default, with the Command Code CLI
+  as the fallback, chosen by configuration per plan — see `adr/0016`. The provider
+  is still GOAT, reached through Command Code's Provider API.
 
 ## Context
 

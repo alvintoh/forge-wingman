@@ -1,7 +1,7 @@
 # 0015 — Command Code is the agent harness, on its GOAT plan
 
 - **Date:** 2026-10-05
-- **Status:** accepted — the harness and its defaults are built (FRG-41, FRG-44); removing opencode and swapping the windows is FRG-43, in progress; metering the windows is FRG-47, not built
+- **Status:** accepted — the harness and its defaults are built (FRG-41, FRG-44); removing opencode and swapping the windows is FRG-43, in progress; metering the windows is FRG-47, not built; partly superseded by `adr/0016` (the harness half; the GOAT provider decision stands)
 - **Supersedes:** the harness and provider named in `adr/0005`'s Decision and `adr/0010`'s build seam and *Starting configuration*; `tech-design-v1` §AI *The BUILD seam* and its prompt-caching mechanism; the PRD's OpenCode Go figures under NFR-1 and its *Harness* and *Provider* constraints
 
 ## Context
@@ -25,7 +25,7 @@ The switch is for cost and caching. At the same $10/month, GOAT's windows are la
   | review | `command-code/meta/muse-spark-1.3-contributor` |
 
   An exhausted allowance advances to the next model in the order (FR-26). Review has one entry, so an exhausted allowance there stops that phase.
-- **Windows.** GOAT is $10/month with windows of **$14 per 5 hours, $35 per 7 days and $70 per month** (verified 2026-10-05: https://commandcode.ai/docs/plans/goat). They replace OpenCode Go's as FR-22's configuration. NFR-1's USD 30/month cash ceiling is unchanged, and $10 sits inside its USD 10–20 band.
+- **Windows.** GOAT is $10/month with windows of **$14 per 5 hours, $35 per 7 days and $70 per month** (verified 2026-10-05: https://commandcode.ai/docs/plans/goat). They replace OpenCode Go's as FR-22's configuration. *Updated (2026-10-06): the plan also sets a monthly allowance per model, and DeepSeek V4.1 Flash, the default plan and build model, gets **$60**, not the $70 total (read from the plan's 'What's included'). So the monthly window for Flash is $60; with it at $70 the dispatcher admits runs the plan then refuses, and the build falls back to the free model. Whether the per-model allowance also caps the 5-hour and weekly windows is unconfirmed. Applied with FRG-56, which moves the windows into configuration.* NFR-1's USD 30/month cash ceiling is unchanged, and $10 sits inside its USD 10–20 band.
 - **opencode goes.** FRG-43 deletes its adapter and the Zen model probe.
 
 ## Consequences
