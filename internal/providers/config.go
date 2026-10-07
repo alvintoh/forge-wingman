@@ -29,6 +29,30 @@ type Window struct {
 // the plan-wide monthly window's own convention: one month, rolling.
 const monthlyPeriod = 720 * time.Hour
 
+// HarnessOrder is the harnesses a plan runs through, in selection order: the
+// default first, then the ordered fallbacks the router moves to when the one
+// before is not registered or not ready.
+type HarnessOrder struct {
+	Default   string
+	Fallbacks []string
+}
+
+// Rates is a plan's price for one model, in US dollars per million tokens, by
+// token class: the plan's rate card. The runner meters a run from it, so a
+// harness whose own cost figure is absent or wrong is still priced (FR-22).
+type Rates struct {
+	Input      float64
+	Output     float64
+	CacheRead  float64
+	CacheWrite float64
+}
+
+// CostUSD is the USD cost of a usage of tokens at these rates.
+func (r Rates) CostUSD(input, output, cacheRead, cacheWrite int64) float64 {
+	return (float64(input)*r.Input + float64(output)*r.Output +
+		float64(cacheRead)*r.CacheRead + float64(cacheWrite)*r.CacheWrite) / 1_000_000
+}
+
 // Provider is one vendor plan the runner is configured to use, as
 // providers.json describes it: where the plan's OpenAI-compatible API is, the
 // secret holding its key, its own rolling allowance windows, the monthly cap it
@@ -44,8 +68,13 @@ type Provider struct {
 	// a run names. A model absent here has no cap of its own and is bounded by
 	// Windows alone.
 	ModelCaps map[string]money.Micros
-	// Harnesses are the harnesses allowed to run on the plan.
-	Harnesses []string
+	// Harnesses is the plan's harness order: the default first, then its
+	// ordered fallbacks.
+	Harnesses HarnessOrder
+	// Rates is the plan's rate card, keyed by the full model id a run names,
+	// in USD per million tokens. A model absent here keeps the harness's own
+	// cost figure.
+	Rates map[string]Rates
 }
 
 // Config is the runner's provider configuration: the vendor facts that are
@@ -78,11 +107,28 @@ type configDoc struct {
 }
 
 type providerDoc struct {
-	BaseURL   string             `json:"base_url"`
-	KeySecret string             `json:"key_secret"`
-	Windows   []windowDoc        `json:"windows"`
-	ModelCaps map[string]float64 `json:"model_caps"`
-	Harnesses []string           `json:"harnesses"`
+	BaseURL   string              `json:"base_url"`
+	KeySecret string              `json:"key_secret"`
+	Windows   []windowDoc         `json:"windows"`
+	ModelCaps map[string]float64  `json:"model_caps"`
+	Harnesses harnessDoc          `json:"harnesses"`
+	Rates     map[string]ratesDoc `json:"rates"`
+}
+
+// harnessDoc is a plan's harness order as providers.json writes it: the default
+// harness, then the ordered fallbacks.
+type harnessDoc struct {
+	Default   string   `json:"default"`
+	Fallbacks []string `json:"fallbacks"`
+}
+
+// ratesDoc is one model's rate card as providers.json writes it: US dollars per
+// million tokens, by token class.
+type ratesDoc struct {
+	Input      float64 `json:"input_usd_per_mtok"`
+	Output     float64 `json:"output_usd_per_mtok"`
+	CacheRead  float64 `json:"cache_read_usd_per_mtok"`
+	CacheWrite float64 `json:"cache_write_usd_per_mtok"`
 }
 
 type windowDoc struct {
@@ -115,7 +161,7 @@ func parseConfig(b []byte) (Config, error) {
 		provider := Provider{
 			BaseURL:   p.BaseURL,
 			KeySecret: p.KeySecret,
-			Harnesses: p.Harnesses,
+			Harnesses: HarnessOrder{Default: p.Harnesses.Default, Fallbacks: p.Harnesses.Fallbacks},
 		}
 		for _, w := range p.Windows {
 			provider.Windows = append(provider.Windows, Window{
@@ -128,6 +174,12 @@ func parseConfig(b []byte) (Config, error) {
 			provider.ModelCaps = make(map[string]money.Micros, len(p.ModelCaps))
 			for model, limitUSD := range p.ModelCaps {
 				provider.ModelCaps[model] = money.FromUSD(limitUSD)
+			}
+		}
+		if len(p.Rates) > 0 {
+			provider.Rates = make(map[string]Rates, len(p.Rates))
+			for model, r := range p.Rates {
+				provider.Rates[model] = Rates(r)
 			}
 		}
 		cfg.Providers[name] = provider
@@ -166,13 +218,8 @@ func (c Config) validate() error {
 		if p.KeySecret == "" {
 			return fmt.Errorf("provider %s has no key secret", name)
 		}
-		if len(p.Harnesses) == 0 {
-			return fmt.Errorf("provider %s allows no harness", name)
-		}
-		for _, h := range p.Harnesses {
-			if strings.TrimSpace(h) == "" {
-				return fmt.Errorf("provider %s has a harness with no name", name)
-			}
+		if err := checkHarnessOrder(name, p.Harnesses); err != nil {
+			return err
 		}
 		for _, w := range p.Windows {
 			switch {
@@ -192,8 +239,65 @@ func (c Config) validate() error {
 				return fmt.Errorf("provider %s model %s cap has no limit", name, model)
 			}
 		}
+		for model, r := range p.Rates {
+			switch {
+			case !strings.HasPrefix(model, name+"/") || len(model) == len(name)+1:
+				return fmt.Errorf("provider %s has rates for %q, not a %s model", name, model, name)
+			case r.Input < 0 || r.Output < 0 || r.CacheRead < 0 || r.CacheWrite < 0:
+				return fmt.Errorf("provider %s model %s has a negative rate", name, model)
+			case r.Input == 0 && r.Output == 0 && r.CacheRead == 0 && r.CacheWrite == 0:
+				return fmt.Errorf("provider %s model %s has no rate", name, model)
+			}
+		}
 	}
 	return nil
+}
+
+// checkHarnessOrder reports whether a plan's harness order is usable: a default
+// plus fallbacks, each named, and no harness listed twice.
+func checkHarnessOrder(provider string, order HarnessOrder) error {
+	switch {
+	case order.Default == "" && len(order.Fallbacks) == 0:
+		return fmt.Errorf("provider %s allows no harness", provider)
+	case strings.TrimSpace(order.Default) == "":
+		return fmt.Errorf("provider %s has fallback harnesses but no default", provider)
+	}
+	seen := map[string]bool{order.Default: true}
+	for _, h := range order.Fallbacks {
+		switch {
+		case strings.TrimSpace(h) == "":
+			return fmt.Errorf("provider %s has a harness with no name", provider)
+		case seen[h]:
+			return fmt.Errorf("provider %s lists harness %s twice", provider, h)
+		}
+		seen[h] = true
+	}
+	return nil
+}
+
+// Harnesses is a plan's harness order: the default harness first, then its
+// ordered fallbacks. Empty for a plan that is not configured.
+func Harnesses(plan string) []string {
+	order := embeddedConfig.Providers[plan].Harnesses
+	if order.Default == "" {
+		return nil
+	}
+	return append([]string{order.Default}, order.Fallbacks...)
+}
+
+// RatesFor returns the plan's rate card for model, and whether the plan prices
+// it. A model the plan does not price keeps the harness's own cost figure.
+func RatesFor(model string) (Rates, bool) { return ratesFor(embeddedConfig, model) }
+
+// ratesFor returns cfg's rate card for model: the plan the model's provider
+// prefix names holds it, keyed by the full model id.
+func ratesFor(cfg Config, model string) (Rates, bool) {
+	plan, _, ok := strings.Cut(model, "/")
+	if !ok {
+		return Rates{}, false
+	}
+	rates, ok := cfg.Providers[plan].Rates[model]
+	return rates, ok
 }
 
 // Windows are a provider's own rolling allowance ceilings, in the order the plan

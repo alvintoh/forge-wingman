@@ -11,33 +11,62 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/alvintoh/forge-wingman/internal/providers"
 )
 
-// fakeHarness serves provider "p" through agent, or a fresh fakeAgent when unset.
-type fakeHarness struct{ agent Agent }
+// fakeHarness serves provider "p" — or its own name — through agent, or a fresh
+// fakeAgent when unset; it is ready and conformant unless a test says otherwise.
+type fakeHarness struct {
+	name     string
+	agent    Agent
+	ready    error
+	conform  error
+	classify func(string, error) (Outcome, StopReason)
+}
 
-func (fakeHarness) Providers() []string { return []string{"p"} }
+func (h fakeHarness) Name() string {
+	if h.name == "" {
+		return "p"
+	}
+	return h.name
+}
 func (h fakeHarness) Agent(Profile, string) Agent {
 	if h.agent == nil {
 		return &fakeAgent{}
 	}
 	return h.agent
 }
-func (fakeHarness) Classify(stderrTail string, _ error) (Outcome, StopReason) {
+func (h fakeHarness) Classify(stderrTail string, err error) (Outcome, StopReason) {
+	if h.classify != nil {
+		return h.classify(stderrTail, err)
+	}
 	return classifyMarkers(stderrTail)
 }
-func (fakeHarness) Ready() error { return nil }
+func (h fakeHarness) Ready() error      { return h.ready }
+func (h fakeHarness) Conformant() error { return h.conform }
 
-func TestCommandCodeHarnessServesItsProvider(t *testing.T) {
-	if got := (CommandCodeHarness{}).Providers(); !slices.Equal(got, []string{"command-code"}) {
-		t.Fatalf("providers = %v", got)
+// planIdentity is the test plan-to-harness resolver: a plan runs the harness
+// named after it, so a fake harness named "p" serves a "p/model" without a
+// providers.json entry, and the command-code harness serves its own plan.
+func planIdentity(plan string) []string { return []string{plan} }
+
+// testRouter is NewRouter with planIdentity, so a test can bind a router to
+// fake harnesses whose plans are not in the embedded configuration.
+func testRouter(profile Profile, harnesses ...Harness) Router {
+	return newRouter(planIdentity, profile, harnesses...)
+}
+
+func TestCommandCodeHarnessNamesItself(t *testing.T) {
+	if got := (CommandCodeHarness{}).Name(); got != "command-code" {
+		t.Fatalf("name = %q, want command-code", got)
 	}
 }
 
 func TestRouterRunsTheHarnessItsModelNames(t *testing.T) {
 	ccBin, ccAttempts := scriptedCommandCode(t, "normal")
 	other := &fakeAgent{}
-	r := NewRouter(ProfileBuild,
+	r := testRouter(ProfileBuild,
 		CommandCodeHarness{Bin: ccBin, Key: "k", Home: t.TempDir()},
 		fakeHarness{agent: other},
 	)
@@ -58,7 +87,7 @@ func TestRouterRunsTheHarnessItsModelNames(t *testing.T) {
 }
 
 func TestRouterRefusesAnUnservedModel(t *testing.T) {
-	r := NewRouter(ProfileBuild, fakeHarness{agent: &fakeAgent{}})
+	r := testRouter(ProfileBuild, fakeHarness{agent: &fakeAgent{}})
 	if err := r.Gate("other/x"); err == nil {
 		t.Fatal("the router served a model no harness serves")
 	}
@@ -69,7 +98,7 @@ func TestRouterRefusesAnUnservedModel(t *testing.T) {
 }
 
 func TestRouterRunRefusesAnUnreadyHarness(t *testing.T) {
-	r := NewRouter(ProfileBuild, CommandCodeHarness{Bin: "cmd"})
+	r := testRouter(ProfileBuild, CommandCodeHarness{Bin: "cmd"})
 	var out, errBuf strings.Builder
 	err := r.WithModel("command-code/x").Run(context.Background(), t.TempDir(), "", "p", "", &out, &errBuf)
 	if err == nil || !strings.Contains(err.Error(), "COMMANDCODE_API_KEY") {
@@ -98,9 +127,137 @@ func TestCommandCodeHarnessIsReadyWithItsKey(t *testing.T) {
 // TestRouterClassifiesAnUnservedModelAsAnAgentFailure asserts a model no
 // harness serves never reads as a budget or availability stop.
 func TestRouterClassifiesAnUnservedModelAsAnAgentFailure(t *testing.T) {
-	r := NewRouter(ProfileBuild, fakeHarness{}).WithModel("other/x").(Router)
+	r := testRouter(ProfileBuild, fakeHarness{}).WithModel("other/x").(Router)
 	if outcome, reason := r.Classify("allowance exhausted", nil); outcome != OutcomeAgentFailed || reason != StopAgentExit {
 		t.Fatalf("Classify = %s/%s, want the ordinary agent failure", outcome, reason)
+	}
+}
+
+// planOrders is a plan-to-harness resolver a case below varies.
+func planOrders(orders map[string][]string) harnessOrder {
+	return func(plan string) []string { return orders[plan] }
+}
+
+// TestRouterSelectsTheHarnessItsPlanConfigures asserts the harness runs because
+// the plan's configuration names it, not because the model's prefix does (AC3).
+func TestRouterSelectsTheHarnessItsPlanConfigures(t *testing.T) {
+	configured, prefixed := &fakeAgent{}, &fakeAgent{}
+	r := newRouter(planOrders(map[string][]string{"plan": {"adapter"}}), ProfileBuild,
+		fakeHarness{name: "adapter", agent: configured},
+		fakeHarness{name: "plan", agent: prefixed},
+	)
+	var out, errBuf strings.Builder
+	if err := r.WithModel("plan/x").Run(context.Background(), t.TempDir(), "", "p", "", &out, &errBuf); err != nil {
+		t.Fatal(err)
+	}
+	if configured.calls != 1 || prefixed.calls != 0 {
+		t.Fatalf("ran the harness named by the prefix (%d) rather than the plan's configuration (%d)", prefixed.calls, configured.calls)
+	}
+}
+
+// TestRouterFallsBackToThePlansNextHarness asserts the plan's ordered fallback
+// runs when its default is not ready (AC3).
+func TestRouterFallsBackToThePlansNextHarness(t *testing.T) {
+	defaultAgent, fallbackAgent := &fakeAgent{}, &fakeAgent{}
+	r := newRouter(planOrders(map[string][]string{"plan": {"default", "fallback"}}), ProfileBuild,
+		fakeHarness{name: "default", ready: errors.New("default is unavailable"), agent: defaultAgent},
+		fakeHarness{name: "fallback", agent: fallbackAgent},
+	)
+	var out, errBuf strings.Builder
+	if err := r.WithModel("plan/x").Run(context.Background(), t.TempDir(), "", "p", "", &out, &errBuf); err != nil {
+		t.Fatal(err)
+	}
+	if defaultAgent.calls != 0 || fallbackAgent.calls != 1 {
+		t.Fatalf("ran default %d times and fallback %d, want the ready fallback alone", defaultAgent.calls, fallbackAgent.calls)
+	}
+}
+
+// TestRouterRefusesAPlanItHasNoHarnessFor asserts a plan no configuration names
+// is refused, so an unregistered model never runs.
+func TestRouterRefusesAPlanItHasNoHarnessFor(t *testing.T) {
+	r := newRouter(planOrders(nil), ProfileBuild, fakeHarness{name: "adapter"})
+	if err := r.Gate("plan/x"); err == nil || !strings.Contains(err.Error(), "plan") {
+		t.Fatalf("Gate = %v, want the unconfigured plan refused", err)
+	}
+	var out, errBuf strings.Builder
+	if err := r.WithModel("plan/x").Run(context.Background(), t.TempDir(), "", "p", "", &out, &errBuf); err == nil {
+		t.Fatal("ran a model whose plan names no harness")
+	}
+}
+
+// TestRouterRefusesAPlanWhoseHarnessesAreAllUnready asserts the default's own
+// refusal is reported when no harness in the plan can run.
+func TestRouterRefusesAPlanWhoseHarnessesAreAllUnready(t *testing.T) {
+	r := newRouter(planOrders(map[string][]string{"plan": {"default", "fallback"}}), ProfileBuild,
+		fakeHarness{name: "default", ready: errors.New("the default harness has no key")},
+		fakeHarness{name: "fallback", ready: errors.New("the fallback harness has no key")},
+	)
+	err := r.Gate("plan/x")
+	if err == nil || !strings.Contains(err.Error(), "default harness has no key") {
+		t.Fatalf("Gate = %v, want the default harness's own refusal", err)
+	}
+}
+
+// TestRouterSelectsFromTheEmbeddedPlanConfiguration asserts the production
+// resolver wires a configured plan to its harness, and refuses one it has no
+// configuration for (AC3).
+func TestRouterSelectsFromTheEmbeddedPlanConfiguration(t *testing.T) {
+	bin, attempts := scriptedCommandCode(t, "normal")
+	r := NewRouter(ProfileBuild, CommandCodeHarness{Bin: bin, Key: "k", Home: t.TempDir()})
+	if err := r.Gate("command-code/x"); err != nil {
+		t.Fatalf("Gate = %v, want the plan's configured harness", err)
+	}
+	var out, errBuf strings.Builder
+	if err := r.WithModel("command-code/x").Run(context.Background(), t.TempDir(), "", "p", "", &out, &errBuf); err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts()) != 1 {
+		t.Fatalf("the configured plan's harness ran %d times, want 1", len(attempts()))
+	}
+	if err := NewRouter(ProfileBuild, CommandCodeHarness{Bin: bin, Key: "k"}).Gate("unconfigured/x"); err == nil {
+		t.Fatal("a plan with no harness configuration was gated in")
+	}
+}
+
+// TestRouterClassifiesThroughThePlansRoutedHarness asserts a failed run is
+// classified by the harness the plan routes to — never a fallback re-picked
+// from readiness, and never downgraded to a bare agent failure (AC3).
+func TestRouterClassifiesThroughThePlansRoutedHarness(t *testing.T) {
+	routed := func(string, error) (Outcome, StopReason) { return OutcomeBudgetStop, StopAllowanceExhausted }
+	fallback := func(string, error) (Outcome, StopReason) { return OutcomeInfraFailure, StopModelUnavailable }
+	r := newRouter(planOrders(map[string][]string{"plan": {"routed", "backup"}}), ProfileBuild,
+		fakeHarness{name: "routed", ready: errors.New("no key"), classify: routed},
+		fakeHarness{name: "backup", classify: fallback},
+	).WithModel("plan/x").(Router)
+	if outcome, reason := r.Classify("", nil); outcome != OutcomeBudgetStop || reason != StopAllowanceExhausted {
+		t.Fatalf("Classify = %s/%s, want the routed harness's own classification", outcome, reason)
+	}
+}
+
+// TestProvenHarnessesDropsAnAdapterThatIsNotConformant is the runtime half of
+// the selection gate: an adapter that has not passed the suite is not in the
+// registry, so a plan cannot select it (AC4).
+func TestProvenHarnessesDropsAnAdapterThatIsNotConformant(t *testing.T) {
+	proven := provenHarnesses([]Harness{
+		fakeHarness{name: "proven"},
+		fakeHarness{name: "failed", conform: errors.New("the conformance suite failed")},
+	})
+	if len(proven) != 1 || proven[0].Name() != "proven" {
+		t.Fatalf("registry = %v, want only the conformant adapter exposed", proven)
+	}
+}
+
+// TestMeterUsageRepricesFromThePlansRates asserts the runner prices a run from
+// the plan's rates — tokens times the rates, replacing the harness's own figure
+// — and keeps the harness figure when the plan does not price the model (FR-22).
+func TestMeterUsageRepricesFromThePlansRates(t *testing.T) {
+	u := Usage{Input: 1_000_000, Output: 1_000_000, CacheRead: 2_000_000, Cost: 9}
+	rates := providers.Rates{Input: 0.28, Output: 0.42, CacheRead: 0.028}
+	if got := priceUsage(u, rates); !approxEqual(got.Cost, 0.756) {
+		t.Fatalf("priced cost = %v, want tokens x the plan's rates = 0.756", got.Cost)
+	}
+	if got := meterUsage(u, "nobody/model"); !approxEqual(got.Cost, 9) {
+		t.Fatalf("metered cost = %v, want the harness's own figure kept", got.Cost)
 	}
 }
 

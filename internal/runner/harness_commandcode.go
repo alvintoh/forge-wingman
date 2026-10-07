@@ -32,14 +32,17 @@ const (
 )
 
 // Harnesses returns the agent harnesses a run may route to, from the
-// environment — the composition root's own construction, kept here so the
-// vendor stays named only in its adapter.
+// environment — the composition root's own construction and the registry the
+// conformance suite proves. Only conformant adapters are exposed, so an adapter
+// that has not passed the shared suite is not in the registry and cannot be
+// selected. Kept in the vendor's adapter so the vendor stays named only in its
+// own file.
 func Harnesses(getenv func(string) string) []Harness {
 	var home string
 	if tmp := getenv("RUNNER_TEMP"); tmp != "" {
 		home = filepath.Join(tmp, "commandcode-home")
 	}
-	return []Harness{CommandCodeHarness{Bin: commandCodeBin, Key: getenv(commandCodeKeyEnv), Home: home}}
+	return provenHarnesses([]Harness{CommandCodeHarness{Bin: commandCodeBin, Key: getenv(commandCodeKeyEnv), Home: home}})
 }
 
 // HarnessSecrets are the credentials the harnesses hold, which a run checks
@@ -77,8 +80,14 @@ type CommandCodeHarness struct {
 	Home string
 }
 
-// Providers are the model-id prefixes the Command Code CLI serves.
-func (h CommandCodeHarness) Providers() []string { return []string{commandCodeProvider} }
+// Name is the harness's own name, the key a plan's configuration selects it by.
+func (h CommandCodeHarness) Name() string { return commandCodeProvider }
+
+// Conformant reports the adapter has passed the shared harness conformance
+// suite, so the registry exposes it and a plan may select it. The suite is
+// TestEveryRegisteredHarnessPassesTheConformanceSuite, which drives this adapter
+// through every contract check.
+func (h CommandCodeHarness) Conformant() error { return nil }
 
 // Agent returns the Command Code agent for profile p.
 func (h CommandCodeHarness) Agent(p Profile, model string) Agent {

@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/alvintoh/forge-wingman/internal/providers"
 )
 
 // commandCodeAttempt is one invocation the fake CLI recorded.
@@ -121,7 +123,7 @@ func TestClassifyAgentFailureDispatchesToTheAgentsHarness(t *testing.T) {
 	if err := os.WriteFile(path, []byte("no marker matches this"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	router := NewRouter(ProfileBuild,
+	router := testRouter(ProfileBuild,
 		CommandCodeHarness{Bin: "cmd", Key: "k"},
 	).WithModel("command-code/x")
 	err := exec.Command("sh", "-c", "exit 5").Run()
@@ -267,7 +269,7 @@ func TestBuildRunsTheCommandCodeHarnessFromTheRecordedFixtures(t *testing.T) {
 	t.Setenv("COMMANDCODE_API_KEY", "command-secret")
 
 	deps, completions, reported := testDeps(validObjects(), nil)
-	deps.Agent = NewRouter(ProfileBuild,
+	deps.Agent = testRouter(ProfileBuild,
 		CommandCodeHarness{Bin: bin, Key: "command-secret", Home: t.TempDir()},
 		fakeHarness{},
 	)
@@ -457,7 +459,7 @@ func TestBuildStopsOnACommandCodeBadKey(t *testing.T) {
 // key stops the run before any agent starts (AC7).
 func TestBuildRefusesACommandCodeModelWithoutTheKey(t *testing.T) {
 	deps, _, reported := testDeps(validObjects(), &fakeAgent{})
-	deps.Agent = NewRouter(ProfileBuild,
+	deps.Agent = testRouter(ProfileBuild,
 		CommandCodeHarness{Bin: "cmd"},
 		fakeHarness{},
 	)
@@ -489,7 +491,7 @@ func TestBuildGatesEveryModelSlotOnTheKey(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			deps, _, reported := testDeps(validObjects(), &fakeAgent{})
-			deps.Agent = NewRouter(ProfileBuild, CommandCodeHarness{Bin: "cmd"}, fakeHarness{})
+			deps.Agent = testRouter(ProfileBuild, CommandCodeHarness{Bin: "cmd"}, fakeHarness{})
 			c := testConfig(t, initRepo(t))
 			c.Model = "p/b"
 			c.ReviewModels = []string{"p/r"}
@@ -520,6 +522,51 @@ func TestModelWorkflowInstallsAndAuthorisesTheCommandCodeHarness(t *testing.T) {
 		if !strings.Contains(yml, want) {
 			t.Errorf("model.yml has no %q", want)
 		}
+	}
+}
+
+// conformanceCases is the Command Code adapter's entry to the shared harness
+// conformance suite. A harness the registry exposes with no entry here fails
+// TestEveryRegisteredHarnessPassesTheConformanceSuite, so it cannot be selected.
+var conformanceCases = map[string]harnessCase{
+	commandCodeConformance().Name: commandCodeConformance(),
+}
+
+// commandCodeConformance wires the Command Code adapter to the shared suite: a
+// fake CLI replaying the recorded fixtures, the arguments the adapter's profile
+// and resume behaviour travels as, and the plan's rate card it is metered by.
+func commandCodeConformance() harnessCase {
+	return harnessCase{
+		Name:           "command-code",
+		Model:          "command-code/deepseek/deepseek-v4.1-flash",
+		CredentialPath: ".commandcode/auth.json",
+		ResumeFlag:     "--resume",
+		ReadOnlyFlag:   "--plan",
+		BuildFlag:      "--yolo",
+		LimitExit:      5,
+		Rates:          providers.Rates{Input: 0.28, Output: 0.42, CacheRead: 0.028},
+		New: func(t *testing.T, fixture string) (Harness, func() []harnessInvocation, string) {
+			replay := fixture
+			var transcripts []string
+			switch fixture {
+			case "normal":
+				transcripts = []string{transcriptMessage("d666e9bd", "0.0030955680000000004")}
+			case "unpriced":
+				// The same frames with no transcript: the harness reports no
+				// cost of its own, so the runner must price the run from tokens.
+				replay = "normal"
+			}
+			bin, attempts := scriptedCommandCode(t, replay, transcripts...)
+			home := t.TempDir()
+			h := CommandCodeHarness{Bin: bin, Key: "k", Home: home}
+			return h, func() []harnessInvocation {
+				var runs []harnessInvocation
+				for _, a := range attempts() {
+					runs = append(runs, harnessInvocation{Args: a.args, Stdin: a.stdin})
+				}
+				return runs
+			}, home
+		},
 	}
 }
 
@@ -626,7 +673,7 @@ func TestBuildRecordsAWarningWhenTheCommandCodeCostIsUnavailable(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			bin, _ := scriptedCommandCode(t, "normal", transcript)
 			deps, _, reported := testDeps(validObjects(), nil)
-			deps.Agent = NewRouter(ProfileBuild, CommandCodeHarness{Bin: bin, Key: "k", Home: t.TempDir()}, fakeHarness{})
+			deps.Agent = testRouter(ProfileBuild, CommandCodeHarness{Bin: bin, Key: "k", Home: t.TempDir()}, fakeHarness{})
 			c := testConfig(t, initRepo(t))
 			c.Model = "command-code/x"
 			c.ReviewModels = []string{"p/r"}
