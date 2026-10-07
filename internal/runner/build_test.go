@@ -721,7 +721,7 @@ func TestDefaultPlanModelsValidate(t *testing.T) {
 	if err := ValidatePlanModels([]string{DefaultPlanModel()}); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateReviewModels([]string{DefaultReviewModel()}, DefaultModel()); err != nil {
+	if err := ValidateReviewModels(DefaultReviewModels(), DefaultModel()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1160,6 +1160,166 @@ func TestReviewAdvancesTheReviewOrderOnAllowanceExhaustion(t *testing.T) {
 	}
 }
 
+// exitClassifiedAgent classifies its failures by exit code alone, the way a
+// harness reads a server error it prints nothing about.
+type exitClassifiedAgent struct{ *fakeAgent }
+
+func (exitClassifiedAgent) Classify(_ string, exitErr error) (Outcome, StopReason) {
+	var exit *exec.ExitError
+	if errors.As(exitErr, &exit) && exit.ExitCode() == 7 {
+		return OutcomeInfraFailure, StopModelUnavailable
+	}
+	return OutcomeAgentFailed, StopAgentExit
+}
+
+// exitWith is the *exec.ExitError of a process that exited with code.
+func exitWith(t *testing.T, code int) error {
+	t.Helper()
+	err := exec.Command("sh", "-c", "exit "+strconv.Itoa(code)).Run()
+	if err == nil {
+		t.Fatalf("exit %d succeeded", code)
+	}
+	return err
+}
+
+func TestReviewMovesToItsBackupWhenTheFirstModelIsUnavailable(t *testing.T) {
+	unavailable := exitWith(t, 7)
+	review := exitClassifiedAgent{&fakeAgent{
+		events: reviewEvent(""),
+		errFn: func(call int) error {
+			if call == 1 {
+				return unavailable
+			}
+			return nil
+		},
+	}}
+	deps, _, reported := testDeps(validObjects(), &fakeAgent{edit: edit("version.go", "package x\n")})
+	deps.ReviewAgent = review
+	c := testConfig(t, initRepo(t))
+	c.ReviewModels = []string{"p/r1", "p/r2"}
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	var models []string
+	for _, st := range reported.last(t).Steps {
+		if st.Phase == PhaseReview {
+			models = append(models, st.Model)
+		}
+	}
+	if !slices.Equal(models, c.ReviewModels) {
+		t.Fatalf("review ran on %v, want %v: the backup completes the review", models, c.ReviewModels)
+	}
+}
+
+func TestAFailedAgentRunLogsItsExitCodeAndRedactedStderr(t *testing.T) {
+	const secret = "sk-live-0123456789"
+	agent := &fakeAgent{stderr: "dialling with " + secret + "\nError: server 502", err: exitWith(t, 7)}
+	deps, _, _ := testDeps(validObjects(), agent)
+	var logs bytes.Buffer
+	deps.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
+	c := testConfig(t, initRepo(t))
+	c.Secrets = []string{secret}
+
+	if _, err := Build(context.Background(), deps, c); err == nil {
+		t.Fatal("the build succeeded, want the agent failure")
+	}
+	var line struct {
+		Msg, Phase, Model, Outcome, Reason, StderrTail string
+		ExitCode                                       int
+	}
+	for l := range strings.Lines(logs.String()) {
+		if strings.Contains(l, `"msg":"agentFailed"`) {
+			if err := json.Unmarshal([]byte(l), &line); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if line.Msg != "agentFailed" {
+		t.Fatalf("no agentFailed line in %s", logs.String())
+	}
+	if line.Phase != string(PhaseBuild) || line.Model != c.Model || line.Outcome != string(OutcomeAgentFailed) ||
+		line.Reason != string(StopAgentExit) || line.ExitCode != 7 {
+		t.Errorf("agentFailed = %+v, want the build phase, model, classification and exit code 7", line)
+	}
+	if want := "dialling with [redacted]\nError: server 502"; line.StderrTail != want {
+		t.Errorf("stderrTail = %q, want %q", line.StderrTail, want)
+	}
+}
+
+func TestAFailedAgentRunNeverLogsTheEndOfASecretTheTailCuts(t *testing.T) {
+	const secret = "sk-live-0123456789"
+	tail := strings.Repeat("y", 2043)
+	agent := &fakeAgent{stderr: secret + tail, err: errors.New("exit status 1")}
+	deps, _, _ := testDeps(validObjects(), agent)
+	var logs bytes.Buffer
+	deps.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
+	c := testConfig(t, initRepo(t))
+	c.Secrets = []string{secret}
+
+	if _, err := Build(context.Background(), deps, c); err == nil {
+		t.Fatal("the build succeeded, want the agent failure")
+	}
+	if !strings.Contains(logs.String(), `"stderrTail":"`+tail+`"`) {
+		t.Fatalf("logs = %s, want a stderr tail of only the bytes after the secret", logs.String())
+	}
+}
+
+func TestAnAgentFailureWithoutAnExitLogsExitCodeMinusOne(t *testing.T) {
+	deps, _, _ := testDeps(validObjects(), &fakeAgent{err: errors.New("could not start")})
+	var logs bytes.Buffer
+	deps.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
+
+	if _, err := Build(context.Background(), deps, testConfig(t, initRepo(t))); err == nil {
+		t.Fatal("the build succeeded, want the agent failure")
+	}
+	if !strings.Contains(logs.String(), `"msg":"agentFailed"`) || !strings.Contains(logs.String(), `"exitCode":-1`) {
+		t.Fatalf("logs = %s, want agentFailed with exitCode -1", logs.String())
+	}
+}
+
+func TestATimedOutAgentRunLogsWhyItFailed(t *testing.T) {
+	deps, _, _ := testDeps(validObjects(), nil)
+	deps.Agent = blockingAgent{}
+	var logs bytes.Buffer
+	deps.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
+	c := testConfig(t, initRepo(t))
+	c.AgentTimeout = 100 * time.Millisecond
+
+	if _, err := Build(context.Background(), deps, c); err == nil {
+		t.Fatal("Build succeeded past the agent deadline")
+	}
+	if !strings.Contains(logs.String(), `"msg":"agentFailed"`) || !strings.Contains(logs.String(), `"reason":"`+string(StopAgentTimeout)+`"`) {
+		t.Fatalf("logs = %s, want agentFailed naming the timeout", logs.String())
+	}
+}
+
+func TestRedactedTail(t *testing.T) {
+	long := strings.Repeat("a", 3000) + "END"
+	for name, tc := range map[string]struct {
+		in      string
+		limit   int
+		secrets []string
+		want    string
+	}{
+		"cut to its end":           {long, 2048, nil, long[len(long)-2048:]},
+		"short kept whole":         {"boom", 2048, nil, "boom"},
+		"a secret redacted":        {"key=s3cret!", 64, []string{"s3cret"}, "key=[redacted]!"},
+		"every occurrence":         {"s3cret s3cret", 64, []string{"s3cret"}, "[redacted] [redacted]"},
+		"an empty secret ignored":  {"boom", 64, []string{""}, "boom"},
+		"a split secret dropped":   {"xxs3cret tail", 8, []string{"s3cret"}, " tail"},
+		"a secret before the tail": {"s3cretxxxxxxxxxx", 4, []string{"s3cret"}, "xxxx"},
+		"overlapping secrets":      {"abcd!", 64, []string{"abc", "bcd"}, "[redacted]!"},
+		"invalid UTF-8 dropped":    {"é tail", 6, nil, " tail"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := redactedTail([]byte(tc.in), tc.limit, tc.secrets); got != tc.want {
+				t.Fatalf("redactedTail = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPrePRLoopStopsWithinNFR1Budget(t *testing.T) {
 	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
 	deps, _, reported := testDeps(validObjects(), agent)
@@ -1562,8 +1722,8 @@ func TestWorkflowsCarryThePlanModelsFromTheDefaultToTheRunner(t *testing.T) {
 			t.Errorf("%s: the plan_models input defaults to %q, want %s", name, got, DefaultPlanModel())
 		}
 	}
-	if got := inputDefault(read("run.yml"), "review_models"); got != DefaultReviewModel() {
-		t.Errorf("run.yml: the review_models input defaults to %q, want %s", got, DefaultReviewModel())
+	if got, want := inputDefault(read("run.yml"), "review_models"), strings.Join(DefaultReviewModels(), ","); got != want {
+		t.Errorf("run.yml: the review_models input defaults to %q, want %s", got, want)
 	}
 	if !strings.Contains(read("run.yml"), "plan_models: ${{ needs.ticket.outputs.override_plan_models || inputs.plan_models }}") {
 		t.Error("run.yml does not pass plan_models to model.yml")

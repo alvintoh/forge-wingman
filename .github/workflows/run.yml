@@ -25,7 +25,7 @@ on:
           the main model and the rest are backups, used when the one before is unavailable or out of
           allowance. None may be the build model, so the review is never the builder checking its own work.
         type: string
-        default: command-code/meta/muse-spark-1.3-contributor
+        default: command-code/meta/muse-spark-1.3-contributor,command-code/poolside/laguna-s-2.1-free
       # The plan phase has its own ordered list: the first entry is the main model and later ones are
       # backups, used when the one before is unavailable or out of allowance.
       plan_models:

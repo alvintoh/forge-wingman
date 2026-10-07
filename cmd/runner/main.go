@@ -29,6 +29,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -244,7 +245,7 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 	fs := flag.NewFlagSet("build", flag.ContinueOnError)
 	model := fs.String("model", "", "model, as provider/model")
 	planModels := fs.String("plan-models", runner.DefaultPlanModel(), "the plan phase's models in order, comma-separated provider/model; later ones are backups")
-	reviewModels := fs.String("review-models", runner.DefaultReviewModel(), "the review phase's models in order, comma-separated provider/model; later ones are backups (FR-14)")
+	reviewModels := fs.String("review-models", strings.Join(runner.DefaultReviewModels(), ","), "the review phase's models in order, comma-separated provider/model; later ones are backups (FR-14)")
 	pointer := fs.String("pointer", runner.DefaultPointer, "object naming the current rule-stack sha")
 	ticketFile := fs.String("ticket-file", "", "path to the run's ticket, as the ticket subcommand wrote it")
 	if err := fs.Parse(args); err != nil {
@@ -268,8 +269,8 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 	defer func() { _ = gcs.Close() }()
 
 	logger = logger.With("attempt", e.attemptID, "ticket", t.ID)
-	plan := splitModels(*planModels, runner.DefaultPlanModel())
-	review := splitModels(*reviewModels, runner.DefaultReviewModel())
+	plan := splitModels(*planModels, []string{runner.DefaultPlanModel()})
+	review := splitModels(*reviewModels, runner.DefaultReviewModels())
 	res, err := runner.Build(ctx, runner.BuildDeps{
 		Projections: store.NewBucket(gcs, e.project+"-projections"),
 		Completions: store.NewBucket(gcs, e.project+"-completions"),
@@ -305,12 +306,12 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 	return writeMultilineOutput(e.output, "loop_detail", res.LoopDetail)
 }
 
-// splitModels reads a comma-separated model list, using fallback when the value
-// is blank — what a cleared workflow input passes. A blank entry inside a list
+// splitModels reads a comma-separated model list, using a copy of fallback when
+// the value is blank — what a cleared workflow input passes. A blank entry inside a list
 // is kept so the validator reports it.
-func splitModels(s, fallback string) []string {
+func splitModels(s string, fallback []string) []string {
 	if strings.TrimSpace(s) == "" {
-		return []string{fallback}
+		return slices.Clone(fallback)
 	}
 	parts := strings.Split(s, ",")
 	for i, p := range parts {

@@ -459,11 +459,11 @@ func TestSplitModels(t *testing.T) {
 		"  ":            {runner.DefaultPlanModel()},
 		"a/b,":          {"a/b", ""},
 	} {
-		if got := splitModels(in, runner.DefaultPlanModel()); !slices.Equal(got, want) {
+		if got := splitModels(in, []string{runner.DefaultPlanModel()}); !slices.Equal(got, want) {
 			t.Errorf("splitModels(%q, default) = %q, want %q", in, got, want)
 		}
 	}
-	if got := splitModels("", runner.DefaultReviewModel()); !slices.Equal(got, []string{runner.DefaultReviewModel()}) {
+	if got := splitModels("", runner.DefaultReviewModels()); !slices.Equal(got, runner.DefaultReviewModels()) {
 		t.Errorf("splitModels(\"\", review default) = %q, want the review default", got)
 	}
 }

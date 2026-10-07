@@ -12,13 +12,13 @@ import (
 var modelsJSON []byte
 
 // ModelSet is a provider's models, each read from models.json: the default and
-// its ordered same-provider fallbacks, plus the plan and review phases' own
-// defaults.
+// its ordered same-provider fallbacks, plus the plan phase's default and the
+// review phase's ordered default list.
 type ModelSet struct {
 	Default   string   `json:"default"`
 	Fallbacks []string `json:"fallbacks"`
 	Plan      string   `json:"plan"`
-	Review    string   `json:"review"`
+	Review    []string `json:"review"`
 }
 
 var embeddedModels = mustParseModelSet(modelsJSON)
@@ -30,9 +30,9 @@ func DefaultModel() string { return embeddedModels.Default }
 // models.json.
 func DefaultPlanModel() string { return embeddedModels.Plan }
 
-// DefaultReviewModel is the review model run.yml's review_models input defaults
-// to, used when a ticket names none, read from models.json.
-func DefaultReviewModel() string { return embeddedModels.Review }
+// DefaultReviewModels is the ordered review list run.yml's review_models input
+// defaults to, used when a ticket names none, read from models.json.
+func DefaultReviewModels() []string { return slices.Clone(embeddedModels.Review) }
 
 // parseModelSet decodes and validates a models.json document.
 //
@@ -59,8 +59,9 @@ func mustParseModelSet(b []byte) ModelSet {
 }
 
 // Validate reports whether the set names well-formed models of one provider:
-// the default and its fallbacks, which must also be distinct, plus the plan and
-// review defaults, which may repeat one of them.
+// the default and its fallbacks, which must also be distinct, the plan default,
+// which may repeat one of them, and a non-empty review list with no entry
+// repeated.
 func (s ModelSet) Validate() error {
 	provider := Provider(s.Default)
 	seen := map[string]bool{}
@@ -75,7 +76,10 @@ func (s ModelSet) Validate() error {
 		}
 		seen[m] = true
 	}
-	for _, m := range []string{s.Plan, s.Review} {
+	if err := validateModelList("review", s.Review); err != nil {
+		return err
+	}
+	for _, m := range append([]string{s.Plan}, s.Review...) {
 		switch {
 		case !ValidModel(m):
 			return fmt.Errorf("model %q is not provider/model", m)

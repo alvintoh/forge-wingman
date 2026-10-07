@@ -1,14 +1,17 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -489,9 +492,11 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 
 	switch {
 	case timedOut:
+		logAgentFailure(d.Logger, call, OutcomeAgentFailed, StopAgentTimeout, runErr, stderrPath, c.Secrets)
 		return text, sessionID, stopWith(OutcomeAgentFailed, StopAgentTimeout, fmt.Errorf("agent exceeded %s", timeout))
 	case runErr != nil:
 		outcome, reason := classifyAgentFailure(agent, stderrPath, runErr)
+		logAgentFailure(d.Logger, call, outcome, reason, runErr, stderrPath, c.Secrets)
 		return text, sessionID, stopWith(outcome, reason, runErr)
 	}
 	return text, sessionID, nil
@@ -635,6 +640,10 @@ func bindModel(agent Agent, model string) Agent {
 // gracefully.
 const classifyStderrTail = 64 << 10
 
+const logStderrTail = 2 << 10
+
+const redactedMarker = "[redacted]"
+
 // classifyAgentFailure reads a bounded tail of the agent's stderr file and
 // classifies the failure through the agent's own harness when it has one, else
 // by the assumed provider markers. A read it cannot perform falls back to the
@@ -648,6 +657,65 @@ func classifyAgentFailure(agent Agent, stderrPath string, exitErr error) (Outcom
 		return c.Classify(string(raw), exitErr)
 	}
 	return classifyMarkers(string(raw))
+}
+
+// logAgentFailure logs why an agent run failed: its classification, its exit
+// code (-1 when it did not exit) and the last logStderrTail bytes of its stderr
+// with every secret redacted.
+func logAgentFailure(logger *slog.Logger, call agentCall, outcome Outcome, reason StopReason, runErr error, stderrPath string, secrets []string) {
+	exitCode := -1
+	var exit *exec.ExitError
+	if errors.As(runErr, &exit) {
+		exitCode = exit.ExitCode()
+	}
+	longest := 0
+	for _, s := range secrets {
+		longest = max(longest, len(s))
+	}
+	raw, _ := readTail(stderrPath, int64(logStderrTail+longest))
+	logger.Warn("agentFailed", "phase", string(call.Phase), "round", call.Round, "model", call.Model,
+		"outcome", string(outcome), "reason", string(reason), "exitCode", exitCode,
+		"stderrTail", redactedTail(raw, logStderrTail, secrets))
+}
+
+// redactedTail is the last limit bytes of b with every occurrence of a
+// non-empty secret replaced by redactedMarker, and invalid UTF-8 dropped.
+//
+// An occurrence the cut would split is dropped whole, so b should carry the
+// longest secret's length beyond limit for one ending inside the tail to be
+// redacted rather than dropped.
+func redactedTail(b []byte, limit int, secrets []string) string {
+	var spans [][2]int
+	for _, s := range secrets {
+		if s == "" {
+			continue
+		}
+		for from := 0; ; {
+			i := bytes.Index(b[from:], []byte(s))
+			if i < 0 {
+				break
+			}
+			spans = append(spans, [2]int{from + i, from + i + len(s)})
+			from += i + 1
+		}
+	}
+	slices.SortFunc(spans, func(x, y [2]int) int { return x[0] - y[0] })
+	cut := max(len(b)-limit, 0)
+	var out strings.Builder
+	for _, sp := range spans {
+		switch {
+		case sp[1] <= cut:
+			continue
+		case sp[0] < cut:
+			cut = sp[1]
+			continue
+		}
+		out.Write(b[cut:sp[0]])
+		out.WriteString(redactedMarker)
+		cut = sp[1]
+	}
+	out.Write(b[cut:])
+	return strings.ToValidUTF8(out.String(), "")
 }
 
 // readTail reads at most limit bytes from the end of the file at path.
