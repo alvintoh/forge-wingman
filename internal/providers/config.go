@@ -233,7 +233,7 @@ func (c Config) validate() error {
 		}
 		for model, limit := range p.ModelCaps {
 			switch {
-			case !strings.HasPrefix(model, name+"/") || len(model) == len(name)+1:
+			case !isPlanModel(name, model):
 				return fmt.Errorf("provider %s has a model cap for %q, not a %s model", name, model, name)
 			case limit <= 0:
 				return fmt.Errorf("provider %s model %s cap has no limit", name, model)
@@ -241,16 +241,23 @@ func (c Config) validate() error {
 		}
 		for model, r := range p.Rates {
 			switch {
-			case !strings.HasPrefix(model, name+"/") || len(model) == len(name)+1:
+			case !isPlanModel(name, model):
 				return fmt.Errorf("provider %s has rates for %q, not a %s model", name, model, name)
-			case r.Input < 0 || r.Output < 0 || r.CacheRead < 0 || r.CacheWrite < 0:
+			case min(r.Input, r.Output, r.CacheRead, r.CacheWrite) < 0:
 				return fmt.Errorf("provider %s model %s has a negative rate", name, model)
-			case r.Input == 0 && r.Output == 0 && r.CacheRead == 0 && r.CacheWrite == 0:
+			case r == Rates{}:
 				return fmt.Errorf("provider %s model %s has no rate", name, model)
 			}
 		}
 	}
 	return nil
+}
+
+// isPlanModel reports whether model is a full model id under plan: the plan's
+// prefix followed by a non-empty model name.
+func isPlanModel(plan, model string) bool {
+	rest, ok := strings.CutPrefix(model, plan+"/")
+	return ok && rest != ""
 }
 
 // checkHarnessOrder reports whether a plan's harness order is usable: a default
@@ -292,10 +299,7 @@ func RatesFor(model string) (Rates, bool) { return ratesFor(embeddedConfig, mode
 // ratesFor returns cfg's rate card for model: the plan the model's provider
 // prefix names holds it, keyed by the full model id.
 func ratesFor(cfg Config, model string) (Rates, bool) {
-	plan, _, ok := strings.Cut(model, "/")
-	if !ok {
-		return Rates{}, false
-	}
+	plan, _, _ := strings.Cut(model, "/")
 	rates, ok := cfg.Providers[plan].Rates[model]
 	return rates, ok
 }

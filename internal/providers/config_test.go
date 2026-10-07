@@ -45,6 +45,8 @@ func TestParseConfigRejectsAnInvalidConfig(t *testing.T) {
 		"a model cap naming no model": {configWith(providerFacts + `,"model_caps":{"p/":5}`), "not a p model"},
 		"rates for another provider": {configWith(providerFacts + `,"rates":{"other/model":{"input_usd_per_mtok":1}}`),
 			"not a p model"},
+		"rates naming no model": {configWith(providerFacts + `,"rates":{"p/":{"input_usd_per_mtok":1}}`),
+			"not a p model"},
 		"a negative rate": {configWith(providerFacts + `,"rates":{"p/model":{"input_usd_per_mtok":-1}}`),
 			"negative rate"},
 		"a rate with no rate": {configWith(providerFacts + `,"rates":{"p/model":{}}`), "has no rate"},
@@ -156,7 +158,7 @@ func TestEmbeddedGoatCarriesItsPlanFacts(t *testing.T) {
 
 // TestHarnessesReadsThePlansOrder asserts a plan's harness order reads back with
 // its default first, and is empty for a plan that is not configured, so the
-// router selects from configuration rather than the model prefix (FRG-57).
+// router selects from configuration rather than the model prefix.
 func TestHarnessesReadsThePlansOrder(t *testing.T) {
 	if got := Harnesses("command-code"); !slices.Equal(got, []string{"command-code"}) {
 		t.Fatalf("Harnesses(command-code) = %v, want its one configured harness", got)
@@ -190,8 +192,8 @@ func TestRatesReadThePlansCard(t *testing.T) {
 // TestRatesCostMultipliesTokensByRates asserts the rate card prices a usage from
 // its tokens: cost is the sum of each token class times its rate (FR-22).
 func TestRatesCostMultipliesTokensByRates(t *testing.T) {
-	r := Rates{Input: 1, Output: 2, CacheRead: 0.5}
-	if got := r.CostUSD(1_000_000, 1_000_000, 2_000_000, 0); got != 4 {
+	r := Rates{Input: 1, Output: 2, CacheRead: 0.5, CacheWrite: 3}
+	if got := r.CostUSD(1_000_000, 1_000_000, 2_000_000, 1_000_000); got != 7 {
 		t.Fatalf("CostUSD = %v, want the tokens times the rates", got)
 	}
 }

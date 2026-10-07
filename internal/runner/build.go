@@ -456,7 +456,7 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 	} else if usage, err := SumUsage(out); err != nil {
 		addUsageWarning(sum, err.Error())
 	} else {
-		step.Tokens = meterUsage(usage, call.Model)
+		step.Tokens = meterUsage(usage, call.Model, providers.RatesFor)
 	}
 	if _, err := out.Seek(0, io.SeekStart); err == nil {
 		warnings, _ := UsageWarnings(out)
@@ -513,21 +513,15 @@ func addUsageWarning(sum *Summary, warning string) {
 	}
 }
 
-// meterUsage meters a run's usage: when the plan prices the model, its cost is
-// tokens times the plan's rates, so a harness whose own figure is absent or
-// wrong is still priced (FR-22); a plan with no rate for the model keeps the
-// harness's own figure.
-func meterUsage(u Usage, model string) Usage {
-	rates, ok := providers.RatesFor(model)
+// meterUsage prices a run's usage from the plan's rates for model: the tokens
+// times those rates replace the harness's own cost figure, so a figure that is
+// absent or wrong is still priced (FR-22). A model the plan does not price keeps
+// the harness's figure.
+func meterUsage(u Usage, model string, ratesFor func(string) (providers.Rates, bool)) Usage {
+	rates, ok := ratesFor(model)
 	if !ok {
 		return u
 	}
-	return priceUsage(u, rates)
-}
-
-// priceUsage returns u repriced from the plan's rates: cost is the tokens times
-// the plan's rates, replacing whatever cost the harness reported.
-func priceUsage(u Usage, rates providers.Rates) Usage {
 	u.Cost = rates.CostUSD(u.Input, u.Output, u.CacheRead, u.CacheWrite)
 	return u
 }

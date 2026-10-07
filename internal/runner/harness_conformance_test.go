@@ -168,7 +168,8 @@ func runHarnessConformance(t *testing.T, hc harnessCase) {
 				// The runner prices the run from the plan's rates, so a harness
 				// figure that is absent or wrong is replaced by tokens times
 				// those rates (FR-22).
-				if got := priceUsage(raw, hc.Rates); !approxEqual(got.Cost, want) {
+				plan := func(model string) (providers.Rates, bool) { return hc.Rates, model == hc.Model }
+				if got := meterUsage(raw, hc.Model, plan); !approxEqual(got.Cost, want) {
 					t.Fatalf("priced cost = %v, want tokens x the plan's rates = %v", got.Cost, want)
 				}
 				if name == "figure present" && approxEqual(raw.Cost, want) {

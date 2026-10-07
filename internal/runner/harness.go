@@ -22,8 +22,7 @@ const (
 // Harness is one agent CLI a run can route a phase through, an adapter behind
 // this interface alone.
 type Harness interface {
-	// Name is the harness's own name, the key a plan's configuration selects it
-	// by; it names the adapter's vendor, which no other file names.
+	// Name is the key a plan's configuration selects the harness by.
 	Name() string
 	// Agent returns the agent that runs profile p on model.
 	Agent(p Profile, model string) Agent
@@ -32,9 +31,8 @@ type Harness interface {
 	// Ready reports whether the run is configured to use the harness, nil
 	// when it is (AC7).
 	Ready() error
-	// Conformant reports whether the adapter has passed the shared conformance
-	// suite, nil when it has. The registry exposes only conformant adapters, so
-	// one that fails the suite cannot be selected.
+	// Conformant reports whether the adapter declares itself conformant, nil
+	// when it does; the registry exposes only those.
 	Conformant() error
 }
 
@@ -78,12 +76,17 @@ func (r Router) Run(ctx context.Context, dir, session, prompt, rules string, std
 	return h.Agent(r.profile, r.model).Run(ctx, dir, session, prompt, rules, stdout, stderr)
 }
 
-// Classify classifies a failed run through the harness the model's plan routes
-// to. It does not re-check readiness or fall back: the run already happened, so
-// the classification must reach the harness the plan routes to, never a
-// fallback re-picked here nor a downgraded agent failure (AC3).
+// Classify classifies a failed run through the harness Run picked: a harness's
+// readiness is fixed at construction, so picking again finds the fallback that
+// ran when the default was not ready. When no harness was ready, Run failed
+// before any ran, and the plan's first registered harness classifies it rather
+// than a bare agent failure (AC3).
 func (r Router) Classify(stderrTail string, exitErr error) (Outcome, StopReason) {
-	h := routedHarness(r.harnesses, r.order, Provider(r.model))
+	plan := Provider(r.model)
+	h, err := pickHarness(r.harnesses, r.order, plan)
+	if err != nil {
+		h = routedHarness(r.harnesses, r.order, plan)
+	}
 	if h == nil {
 		return OutcomeAgentFailed, StopAgentExit
 	}
@@ -97,11 +100,9 @@ func (r Router) Gate(model string) error {
 	return err
 }
 
-// pickHarness returns the harness a plan routes to: the first harness the plan
-// names, in order, that is registered and ready, so a plan's fallback is used
-// when its default is unavailable. A plan whose harnesses are all unregistered
-// or unready is refused — an adapter that failed the conformance suite is not
-// in the registry, so it can never be selected.
+// pickHarness returns the first harness the plan names, in order, that is
+// registered and ready, so a plan's fallback runs when its default cannot. A
+// plan whose harnesses are all unregistered or unready is refused.
 func pickHarness(harnesses []Harness, order harnessOrder, plan string) (Harness, error) {
 	names := order(plan)
 	if len(names) == 0 {
@@ -138,9 +139,7 @@ func harnessNamed(harnesses []Harness, name string) Harness {
 }
 
 // routedHarness returns the first harness the plan names that is registered,
-// with no readiness or conformance gate: which harness may run now is decided
-// by pickHarness, but classifying a run that already happened must reach the
-// harness the plan routes to whether or not it is still ready.
+// ready or not.
 func routedHarness(harnesses []Harness, order harnessOrder, plan string) Harness {
 	for _, name := range order(plan) {
 		if h := harnessNamed(harnesses, name); h != nil {
@@ -150,11 +149,8 @@ func routedHarness(harnesses []Harness, order harnessOrder, plan string) Harness
 	return nil
 }
 
-// provenHarnesses returns the adapters that attest conformance, so the registry
-// never exposes one that has not passed the shared suite: an adapter that fails
-// the suite cannot be selected, not merely untested. The suite
-// (TestEveryRegisteredHarnessPassesTheConformanceSuite) runs every adapter this
-// exposes, so the attestation is proven rather than trusted.
+// provenHarnesses returns the candidates whose Conformant reports nil, so an
+// adapter that declares itself unproven is never registered.
 func provenHarnesses(candidates []Harness) []Harness {
 	var proven []Harness
 	for _, h := range candidates {
