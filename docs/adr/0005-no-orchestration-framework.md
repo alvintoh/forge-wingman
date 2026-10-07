@@ -3,12 +3,12 @@
 - **Date:** 2026-09-21
 - **Status:** accepted
 - **Amended 2026-10-05:** the harness is the Command Code CLI on its GOAT plan, not
-  opencode on OpenCode Go — see `adr/0015`. The decision is unchanged: the agent is
+  opencode on OpenCode Go — see the history in `adr/0015`. The decision is unchanged: the agent is
   still a third-party CLI run as a subprocess, so where this record says opencode,
   read the harness.
 - **Amended 2026-10-07:** the harness is omp by default, with opencode as the
-  fallback, chosen by configuration per plan — see `adr/0016`; the Command Code
-  CLI is interactive-only. The provider
+  fallback, chosen by configuration per plan — see `adr/0015`; the Command Code
+  CLI is retired. The provider
   is still GOAT, reached through Command Code's Provider API.
 
 ## Context
