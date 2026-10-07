@@ -170,8 +170,10 @@ func harnessNameAllowed(rel string) bool {
 // and the historical probe results names the retired harness or its model set.
 func TestNoRetiredHarnessIsNamed(t *testing.T) {
 	root := filepath.Join("..", "..")
+	// Copies stamped from elsewhere are exempt: the vault's docs, and the agents
+	// /repo-init composes from poly-mind's stack packs, which name the fallback.
 	cmd := exec.Command("git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ".",
-		":!docs/adr", ":!docs/tech-design-v1.md", ":!probe/results")
+		":!docs/adr", ":!docs/tech-design-v1.md", ":!probe/results", ":!.claude/agents")
 	cmd.Dir = root
 	out, err := cmd.Output()
 	if err != nil {

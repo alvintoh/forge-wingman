@@ -2,7 +2,7 @@
 name: backend-builder
 domain: backend
 description: Implement server-side code — handlers, input validation, data access, error handling — to best practices. The build counterpart to the `backend-reviewer` agent; dispatched by /agent-mode per plan section.
-stacks: [go, gcp, command-code]
+stacks: [go, gcp, command-code, omp, opencode]
 owns-readme: none
 layer: specialized
 ---
@@ -63,11 +63,22 @@ TS-only. The seam test, not performance, decides — see `profile.md`.
   than relying on a global chain, so an unwrapped handler is visible at the call site
   instead of silently unguarded, and have each layer WRITE a status and return rather
   than calling the next handler when it cannot evaluate the principal.
+- **Dev reload: `air` rebuilds and restarts a binary on save**; with templ, run
+  `templ generate --watch` beside it. Local only — neither ships.
 - **Layout: several binaries → `cmd/<name>/main.go`; the logic → `internal/`.** The Go
   team's module-layout guide, for server projects: keep "all Go commands together in a
   `cmd` directory" and the server's packages "in the `internal` directory". Create
   `internal/` when the first logic lands, not as an empty folder.
 - **Money/decimals:** integer minor units, or `shopspring/decimal` — never `float64`.
+- **Truncate a string on a CHARACTER boundary, never `s[:n]` — a protobuf-backed store
+  rejects the whole write.** A Go string is bytes, so `s[:n]` can split a multi-byte
+  character, and proto3 string fields must be valid UTF-8: marshalling fails with
+  `string field contains invalid UTF-8`, which through Firestore or any gRPC client
+  fails the entire write, not the one field. It hides on the error path, because that
+  is where untrusted text (stderr, filenames) gets capped. Normalise with
+  `strings.ToValidUTF8`, then step back with `utf8.RuneStart`. *(Verified 2026-09-25 by
+  marshalling a truncated value: a capped git stderr would have made forge-wingman's
+  run record unwritable.)*
 
 ## Version policy — track current stable, pin it once
 
@@ -101,7 +112,7 @@ TS-only. The seam test, not performance, decides — see `profile.md`.
   `sqlite-vec` via `modernc.org/sqlite/vec` — so CGO-free does not mean
   vector-free.
 - **Migrations: `atlas`.** Declarative — state the desired schema, it computes the
-  migration — with 50+ analyzers that catch destructive and
+  migration — with dozens of built-in checks (the vendor's own wording, verified 2026-09-30) that catch destructive and
   backward-incompatible changes in CI. `goose` remains fine for a small static
   schema; prefer Atlas where losing data would be expensive, since the linting is
   the actual reason to choose it. Performance is not a criterion in this category:
@@ -151,6 +162,8 @@ TS-only. The seam test, not performance, decides — see `profile.md`.
 
 - **`slog` maps straight onto `base/CLAUDE.md`'s countable-log-line rule** — message is the fixed token, every value a separate attr, never interpolated: `slog.Info("cacheMiss", "reason", "key-absent", "key", k)` emits `{"msg":"cacheMiss","reason":"key-absent","key":"…"}` (verified), so an aggregator groups by `msg` and a metric filter has a literal to match. Interpolating an id into the message makes every occurrence unique and defeats the threshold.
 
+## Browser automation from Go
+
 - **Driving a browser from Go: `chromedp` or `go-rod`, never `playwright-go` — and
   check whether you need a browser at all first.** `playwright-go` **ships a ~50MB
   Node.js runtime** and talks to it over stdio (verified 2026-09-15 against its own
@@ -163,8 +176,8 @@ TS-only. The seam test, not performance, decides — see `profile.md`.
   strong and Playwright's ecosystem is the one with momentum, Node cost included;
   the counter-argument is that CDP is a stable protocol and a mature driver does
   not need churn. Stated as a tradeoff because it is one — **no authority ranks
-  these two**, and an earlier version of this bullet called `go-rod` "more
-  ergonomic" on nothing but community repetition. Neither drives Firefox or WebKit.
+  these two**, and "more ergonomic" claims for either rest on community
+  repetition alone. Neither drives Firefox or WebKit.
   Applies only at tier 4 of the acquisition ladder in `playwright.md`.
 
 - **If browser automation is genuinely load-bearing, the honest answer is a
@@ -186,8 +199,8 @@ Reusable recipes for reaching + operating a GCP dev environment (personal cloud;
 
 - **Identity-Aware Proxy enables DIRECTLY on Cloud Run — no external HTTPS load
   balancer.** Google calls this the recommended path, specifically to avoid the
-  load-balancer cost the older pattern carried (~$18/month, which alone can decide
-  against it). IAP authenticates before the request reaches the service: an
+  load-balancer cost the older pattern carried (~$18/month — $0.025/hour for the first 5 forwarding rules — which alone can decide
+  against it; *Verified 2026-09-30: https://cloud.google.com/load-balancing/pricing*). IAP authenticates before the request reaches the service: an
   unauthenticated caller gets Google's sign-in, and the app verifies one signed
   header instead of implementing OAuth, sessions and cookie security.
 - **For a private single-user or small-team surface, IAP beats any auth library.**
@@ -199,6 +212,27 @@ Reusable recipes for reaching + operating a GCP dev environment (personal cloud;
 ## Auth
 
 - `gcloud auth list` to check the session; `gcloud auth login` (browser) for user creds, `gcloud auth application-default login` for ADC that SDKs pick up. Set the project with `gcloud config set project <id>`.
+
+## Region selection
+
+- **Pick the region nearest your AUTOMATED traffic's origin, not your own
+  location.** A human's occasional console click is latency-insensitive; a
+  pipeline firing dozens of times a day is not, and it usually dwarfs manual
+  traffic in volume. For a project whose real writes/reads come from CI
+  (GitHub Actions, a scheduled job), that origin is what to site near.
+- **GitHub-hosted Actions runners are US-based and consolidating further —
+  GitHub's own infra blog states they are "targeting 70% of read traffic and
+  30% of write traffic in Central US."** So a GCP project whose Firestore/GCS
+  traffic mostly comes from GitHub Actions is already well-aligned sitting in
+  `us-central1`; moving it to a region nearer the developer (e.g. Sydney) adds
+  real cross-region latency to every automated run to marginally help rare
+  manual browsing. *(Verified 2026-09-27 against `github.blog`'s July 2026
+  availability report; GitHub does not let you pick or guarantee runner
+  region.)*
+- **A region choice is usually PERMANENT for a stateful resource** — Firestore
+  and most managed databases cannot be moved after creation without an
+  export/delete/recreate/reimport cycle, so get this right before the first
+  write, not after real data exists.
 
 ## Compute (Cloud Run)
 
@@ -214,6 +248,7 @@ Reusable recipes for reaching + operating a GCP dev environment (personal cloud;
 - **Resumable uploads for anything large or from a flaky network** — *documented*: they survive an interrupted transfer instead of restarting it.
 - **Lifecycle rules from day one** — expire or downgrade storage class on a schedule; it is both the cost control and, per the docs, a guard against data being erroneously deleted by your own software.
 - *(Judgment call.)* Prefer **uniform bucket-level access** over per-object ACLs so permissions are readable in one place; reach for the S3-compatible XML API only when an existing S3 client must be reused, not by default.
+- **`gcloud storage cp` reads the destination object before it uploads**, so an identity granted create-only (`roles/storage.objectCreator`) fails with `403 storage.objects.get` even though the upload itself is allowed. For such an identity, POST to the JSON upload endpoint with `ifGenerationMatch=0` instead: 200 means created, 412 means it already exists. Test as that identity — a broader one passes and hides the gap. *(Verified 2026-09-29, `gcloud` 586.0.0 and a real Actions run of a rule-stack publish workflow. In the same run, `gcloud storage cp` to a single pointer object succeeded under `roles/storage.objectUser` scoped to that object by an IAM condition.)*
 
 ## Secrets & config
 
@@ -247,12 +282,22 @@ cloud-neutral half — why to federate, environment-vs-branch scoping — is in
 ```yaml
 permissions: { id-token: write, contents: read }
 # ...
-- uses: google-github-actions/auth@v2   # pin to a SHA for a credentialed job
+- uses: google-github-actions/auth@v3   # pin to a SHA for a credentialed job
   with:
     workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
     # projects/<id>/locations/global/workloadIdentityPools/<pool>/providers/<provider>
     service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 ```
+
+- **The auth action exports the PROJECT too, and derives it — name it at the consumer.**
+  By default (`export_environment_variables: 'true'`) it exports `GOOGLE_CLOUD_PROJECT`,
+  `GCLOUD_PROJECT`, `GCP_PROJECT` and the two `CLOUDSDK_*` project variables, taking
+  the value from `project_id`, else extracting it from `service_account`; it cannot
+  extract one from the WIF provider alone, which carries only the project NUMBER.
+  A step relying on that export names nothing, so give the step an `id` and pass
+  `${{ steps.auth.outputs.project_id }}` explicitly. *(Verified 2026-09-25 against
+  `action.yml` at v3.0.0, after a reviewer read the implicit export as a missing
+  variable.)*
 
 - **The provider MUST carry an attribute condition — this is not optional.** GitHub's guide:
   you *"must define at least one condition, so that untrusted repositories can't request
@@ -264,61 +309,74 @@ permissions: { id-token: write, contents: read }
 
 ### command-code
 
-Vendor mechanics for the **Command Code** CLI (`cmd`) as an agent harness. Inlined
-when a task drives it non-interactively or designs an adapter around it. *(Verified
-2026-10-05 against command-code 1.74.1 on WSL2, by running it; the vendor pages are
-`commandcode.ai/docs/headless` and `/docs/taste`.)*
+Vendor facts for **Command Code's GOAT plan** and its **Provider API**, the endpoint every
+harness here bills model calls through. omp is the interactive harness
+and forge-wingman's runner default (`omp.md`); opencode is the runner fallback (`opencode.md`).
 
-⚠️ **RE-RUN BEFORE QUOTING.** The CLI moves fast (version 1.74 at this date), and a
-frame name or exit code here is a dated observation, not a contract. **Replace a
-line in place** when a re-run changes it.
+*The `cmd` CLI was retired on 2026-10-07 (forge-vault `adr/0015`); omp is the harness (`omp.md`). Its mechanics are in git history.*
 
-## Install and login
-
-- `npm i -g command-code@latest`; the command is `cmd` (`cmdc` on native Windows).
-  It refuses Node 20 and below.
-- **Login is `cmd login`** (`cmd auth login` is rejected). It is an interactive
-  screen that needs a real TTY and crashes under an agent with Ink's raw-mode error,
-  so the owner runs it.
-- **The credential is the file `~/.commandcode/auth.json`** (`apiKey`, `userId`,
-  `userName`, `keyName`, `authenticatedAt`). The CLI does NOT read
-  `COMMANDCODE_API_KEY`, and a saved login silently overrides an env var, so a
-  bad-key test needs an isolated `HOME` holding a bad `auth.json`. A runner must write
-  that file into a per-run `HOME` so the key reaches this harness only.
-
-## Headless
-
-- `cmd -p "<prompt>" --output-format json --model <id>` streams NDJSON: `run_start`,
-  `turn_start`, `model_request_start`, `thinking_*`, `text_delta`, `tool_queued`,
-  `tool_running`, `tool_completed`, `model_request_end` (carries `usage`), `turn_end`,
-  `run_end`, then one `{"type":"result"}` line with `usage` (`inputTokens`,
-  `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`), `durationMs`, `finalText`,
-  `sessionId`, `stopReason`. Failure is a `run_error` event (`TransportError`) and
-  `subtype":"error"`.
-- **`--plan` refuses edit and shell but exits 0**: the refusal is only in `finalText`.
-  Verify read-only by EFFECTS (no new file, empty `git diff`), never by exit code.
-- Exit codes (docs): 0 ok, 3 not authenticated (reproduced), 4 permission denied,
-  5 rate limit, 6 network, 7 server 5xx, 8 max turns, 9 no response, 10 insufficient
-  credits. The limit-declined case cannot be forced and is UNRECORDED.
-- `--yolo` enables writes and shell; default blocks them. `--max-turns` defaults to 100.
-- **Send the prompt on STDIN, never as `-p`'s argument.** `-p` reads a piped stdin prompt
-  (omit the query string) — the only safe route for a projection-sized prompt: Linux caps one
-  argv element at 131072 bytes, so `-p "<190 KB>"` dies with `E2BIG`. (Verified 2026-10-05.)
-- **`--resume <sessionId>` continues a prior conversation**; transcripts live under `HOME`
-  (`~/.commandcode/projects`), so ONE `HOME` for the whole run is what lets a later round resume
-  — a fresh `HOME` per attempt silently starts each round from scratch. *(Docs: the package's
-  `headless.md`.)*
-- **Neutralise the interactive paths for an unattended run: `--skip-onboarding --no-auto-update`.**
-  Onboarding would otherwise prompt, and auto-update would mutate the binary mid-run.
+⚠️ **RE-RUN BEFORE QUOTING.** Prices, caps and the model roster are dated observations.
+**Replace a line in place** when a re-run changes it.
 
 ## Models
 
-`cmd --list-models` (85 at this date). DeepSeek: `deepseek/deepseek-v4.1-flash`,
-`deepseek/deepseek-v4-flash`, `-fast` variants, `deepseek/deepseek-v4-pro`. Free ids
-exist (`poolside/laguna-s-2.1-free`, `inclusionai/ling-3.1-flash:free`,
+`GET https://api.commandcode.ai/provider/v1/models` (85 at this date). DeepSeek:
+`deepseek/deepseek-v4.1-flash`, `deepseek/deepseek-v4-flash`, `-fast` variants,
+`deepseek/deepseek-v4-pro`. Free ids exist (`poolside/laguna-s-2.1-free`, `inclusionai/ling-3.1-flash:free`,
 `stealth/space-bunny-alpha`); their quality and unattended-use terms are UNVERIFIED.
 
-## Prompt caching (measured 2026-10-05)
+<!-- snapshot checked=2026-10-06 refresh="GET api.commandcode.ai/provider/v1/models; commandcode.ai/docs/resources/pricing-limits" -->
+**Prices (checked 2026-10-06, `commandcode.ai/docs/resources/pricing-limits`; per 1M: uncached
+/ output / cache read).** Only DeepSeek models are time-of-use priced (since 2026-08-16): peak is
+01:00-04:00 and 06:00-10:00 UTC Mon-Fri at double the off-peak rate; weekends are all off-peak.
+The last column is the cost per 1M input at 95% cached plus output at 2% of input — the shape
+of our runs (see the caching section). Principle: `agentops.md` §Choosing models.
+
+| Model | Rates | 95%-cached run |
+|---|---|---|
+| Muse Spark 1.3 Contributor | 0.10 / 0.20 / 0.002 | 0.011 |
+| MiMo V2.6 Flash | 0.14 / 0.28 / 0.0028 | 0.015 |
+| DeepSeek V4.1 Flash (off-peak) | 0.15 / 0.60 / 0.003 | 0.022 (peak 0.045) |
+| GPT-6 Luna | 0.10 / 0.50 / 0.01 | 0.025 |
+| Qwen 3.8 Flash | 0.16 / 0.47 / 0.016 | 0.033 |
+| GLM-5.3 Flash | 0.15 / 0.50 / 0.03 | 0.046 |
+| Step 3.7 Flash | 0.20 / 1.15 / 0.04 | 0.071 |
+| DeepSeek V4 Pro (off-peak) | 0.66 / 1.98 / 0.022 | 0.094 (peak 0.19) |
+| MiniMax M3 (50% off, no end date) | 0.30 / 1.20 / 0.06 | 0.096 |
+
+Quality of every model but V4.1 Flash is UNVERIFIED on our tickets. Delete this table once
+FRG-32's weekly refresh writes the model list and prices; point at its output instead.
+
+**The Provider API serves any harness (verified live 2026-10-06).**
+`https://api.commandcode.ai/provider/v1` serves OpenAI-compatible `/chat/completions` and
+Anthropic-compatible `/messages` on the plan's API key, metered against the plan; omp and opencode
+both bill through it. A GOAT key got 200 from `/models` (85 models) and from a Flash completion; `usage.prompt_tokens_details.cache_read_input_tokens` reports cache
+hits. The GOAT plan page says GOAT has API access; an older blog post said "Pro or higher", and the
+plan page wins. Codex CLI cannot use it: since February 2026 Codex speaks only the Responses API.
+**Open question:** the key in use was copied from the retired CLI's `~/.commandcode/auth.json`
+(`apiKey`); whether commandcode.ai issues a GOAT API key without the CLI's `cmd login` is
+UNVERIFIED.
+
+**Two limits apply on GOAT, and both bind.** The plan's windows ($14 per 5 hours, $35 per week,
+$70 per month) cap spend across all models. Each model also has its own monthly cap from the plan's
+"What's included" list, and caps differ by model: DeepSeek V4.1 Flash is $60. Re-read that list
+before quoting another model's cap.
+
+**Billing is list price, no markup (audited 2026-10-07).** The usage page
+(`commandcode.ai/<user>/settings/usage?limit=100`: latest 100 rows only, local time; mode `agent` =
+the retired `cmd`, `custom-agent` = its plan agent, `api` = the Provider API) reproduced
+DeepSeek's off-peak price per request to the cent, cache reads at $0.003/M included.
+
+**Harness A/B on Flash, same task, rules and billing (2026-10-06, n=5 each):** all three 5/5;
+cost per success `cmd` $0.0184, opencode $0.0153, omp $0.0133 (omp's range does not overlap the
+others'); median wall time 139.5 s, 135.0 s, 81.6 s; median output 11.4K, 7.1K, 5.7K tokens, which
+is where the cost gap comes from. In-run cache about 90% for all, not the vendor's ~98%. A raw
+baseline: caching setup alone moved per-task cost 35-43%, more than any harness gap. The method: a
+throwaway HOME per harness holding only the rules and the repo's `CLAUDE.md`; opencode gets
+`instructions: ["CLAUDE.md"]` (it does not resolve `@` imports) and `OPENCODE_DISABLE_CLAUDE_CODE=1`
+(or it loads `~/.claude`); omp's setup is in `omp.md`.
+
+## Prompt caching (measured 2026-10-05, through `cmd`)
 
 - **Measured: 95.7% cache hit** over 514 requests and 222M input tokens on v4.1-flash (Updated
   2026-10-05; was 95.1% at 411 requests). Long sessions reached 94-95.5%; one-shot runs 30-86%
@@ -326,106 +384,248 @@ exist (`poolside/laguna-s-2.1-free`, `inclusionai/ling-3.1-flash:free`,
 - **Whole-context misses are the cost, not the per-turn tail** (Updated 2026-10-05, supersedes
   '~21k per request'): 18 of 411 requests (4%) carried 90% of uncached tokens. Each missed on a
   200-700k context, 0.2-1.8 min after the previous request (so not expiry). A median turn adds
-  0.5k uncached (>99% hit). Probed 2026-10-05: `activate_skill` does NOT cause a miss;
-  `enter_plan_mode` is absent from headless `-p`, so it is untested. 3 of the 18 were the first
+  0.5k uncached (>99% hit). 3 of the 18 were the first
   request after a resume; the other 15 (mid-session, under 2 min apart) are UNEXPLAINED.
-- **`--resume` re-bills the history (measured 2026-10-05):** the first request of each new
-  `cmd -p --resume` process reads only the ~101k stable prefix from cache; the conversation after
-  it (18-22k in the probe) is billed uncached every time. Within one process, requests hit 99% or
-  more. So a runner resuming a large session per round pays nearly the whole context on each
-  resume.
 - **GOAT break-even (derived)**: $70 of credits is ~3.8B tokens a month at 95%, 5B at 97.3%, ~7B
   at 99%. GOAT bills close to DeepSeek's list prices ($3.50 for 190M).
 - **Levers**: keep sessions well under the ~600k contexts that made each miss cost $0.10-0.20
-  (start a fresh session per task rather than one run-long session); keep resumed sessions small,
-  or carry state in a file rather than a resume; no edits to AGENTS.md or the layers
+  (start a fresh session per task rather than one run-long session); carry state in a file rather
+  than a resumed session; no edits to the rule layers or a repo's `AGENTS.md`/`CLAUDE.md`
   mid-session; no model switch mid-session. Narrow file reads barely matter (`read_file` caused
   2.8% of uncached tokens).
-- **Measure it** from `~/.commandcode/projects/*/*.jsonl` (not `*.checkpoints.jsonl`): sum
-  `inputTokens`, `cacheReadTokens`, `outputTokens` per message, **counted once per message `id`**.
-  A resumed session copies its history into a new file, so a plain sum counts it twice (378M vs
-  174M here).
 
-## Taste (learned preferences)
+### omp
 
-Stored in `.commandcode/taste/` (project, shared through git), `~/.commandcode/taste/`
-(global) and a remote copy; `cmd taste enable|disable|push|pull|list|lint|open`.
-Whether it applies in `-p` runs is UNVERIFIED. *(Judgment call: keep it off for a
-runner and a harness bake-off — it is Command Code only, so it confounds a
-same-model comparison.)*
+# omp (oh-my-pi) — agent harness
 
-## Recording fixtures for an adapter (FRG-41 step 0)
+MIT, a fork of pi; package `@oh-my-pi/pi-coding-agent` (18.7.0 measured), binary `omp`, needs
+bun (its `engines` field). Repo: github.com/can1357/oh-my-pi; its `docs/` are the reference.
 
-In a scratch git repo, never the real one: (1) a normal run with `--yolo`; (2) the
-same prompt asking to edit and `touch marker` under `--plan`, then record `ls marker`
-and `git diff --stat`; (3) a bad key via an isolated `HOME`. Save each run's
-`.ndjson`, `.stderr` and `.exit`; scrub paths and any key; copy to the repo's
-`testdata/`; note the version and `npm view command-code@<v> dist.integrity`.
+omp is the interactive harness and forge-wingman's runner default because it measured best
+(§Measured), until another measures better; opencode is the runner fallback (`opencode.md`).
+Model calls bill to the GOAT plan through its Provider API (`command-code.md`).
 
-## Skills, instructions and the rest of a Claude-style setup (audit 2026-10-05)
+## Install
 
-*Measured:* skills. *Documented only* (bundled docs in the npm package, read not run): the rest.
+- **Prerequisite: bun ≥ 1.3.14** (the README's stated floor).
+- **Global install:** `bun install -g @oh-my-pi/pi-coding-agent` — the README's "Bun
+  (recommended)" route. It also lists `curl -fsSL https://omp.sh/install | sh`, Homebrew
+  (`brew install can1357/tap/omp`), Nix, mise and PowerShell. *(Source: the repo README,
+  read 2026-10-07; the bundled `docs/` carry no install command.)* CI pins the version
+  (`@oh-my-pi/pi-coding-agent@<v>`).
+- **Check:** `omp --version` prints `omp/<version>` (`omp/18.7.0` measured).
+- **Agent dir:** `~/.omp/agent` (`config.yml`, `models.yml`, `AGENTS.md`, `.env`);
+  `omp config path` prints the active one. `PI_CODING_AGENT_DIR` relocates it for the default
+  profile, and `--profile <name>` uses `~/.omp/profiles/<name>/agent` (`docs/settings.md`).
 
-- **Skills load from** `~/.commandcode/skills`, `~/.agents/skills`, `<repo>/.commandcode/skills`
-  and `<repo>/.agents/skills`, NOT `.claude/skills`. `cmd skills list -d` names every skill
-  it skipped and why; do not ask the model to list them (it listed 56 of 50). Descriptions are
-  capped at **1024 characters** (the Agent Skills spec), and a
-  longer one skips the whole skill. `drift-audit.sh` fails any description over it.
-- **Project it, do not copy it:** `python3 project-config.py command-code [--repo <repo>]`
-  symlinks poly-mind's skills into `~/.commandcode/skills` and a repo's `.claude/skills` into
-  its `.commandcode/skills` (excluded through `.git/info/exclude`), then runs the loader check.
-  A skill activates through the `activate_skill` tool; one `why` run followed the skill's steps
-  but ended with exit 9 (no final text), so treat skill runs as unproven end to end.
-- **Instructions (measured):** `AGENTS.md`, not `CLAUDE.md` (user `~/.commandcode/AGENTS.md`,
-  project `AGENTS.md` or `.commandcode/AGENTS.md`); `@path` imports work (5 levels, `~/`, absolute,
-  and a RELATIVE `@CLAUDE.md` from a project `AGENTS.md` — verified 2026-10-05, a headless run in
-  forge-wingman answering its own CLAUDE.md convention from the repo `AGENTS.md` alone). It rides in
-  the system prompt every turn. Importing poly-mind's three CLAUDE.md
-  layers took a bare turn from 16.7k to 106k input tokens (cold, 4k cached; the next turn read 98k,
-  92%, from cache), and the agent then applied the commit-message rule unprompted. A runner or
-  bake-off uses an isolated `HOME`, so it never sees this file. `project-config.py` generates it.
-- **Subagents (measured):** `~/.commandcode/agents`, markdown, only `name`, `description`, `tools`,
-  `model` and a few controls read; an omitted `tools:` means NONE (a Claude agent file means all),
-  so the projection writes `tools: "*"`. `project-config.py` generates the 14 agents with each
-  preloaded skill inlined; a headless run delegated
-  to the projected `architecture-reviewer` through the `agent` tool and it answered in role.
-  Tool ids differ (`read_file`, `grep`, `glob`, `shell_command`, `write_file`, `edit_file`).
-- **Hooks (not projected):** `PreToolUse`, `PostToolUse`, `Stop` (forces a revision, capped 3),
-  `SessionStart`; matchers cover only shell, read, write, edit; JSON on stdin and stdout; config
-  in `.commandcode/settings.json`. poly-mind's two hooks key on Claude's `AskUserQuestion` and
-  its transcript format, so they would not match here; they stay Claude-only until rewritten.
-- **MCP (measured):** `.mcp.json` (project) or `~/.commandcode/mcp.json` (user); OAuth tokens in
-  `mcp-tokens.json`. `cmd mcp add --transport http ...` HANGS from an agent shell (it waits on the
-  browser sign-in), so register with `cmd mcp add-json --scope user <name> '{"type":"http","url":"..."}'`
-  (returns at once), then `cmd mcp auth <name>` signs in. It listens on `127.0.0.1:8085` and calls
-  `xdg-open`, which WSL lacks, so it waits unseen: run it in the background with a stub `xdg-open`
-  (a script that appends its argument to a file) first on `PATH`, read the link from the file and
-  give it to the owner. One sign-in holds the port at a time; a stale tab causes "OAuth state
-  parameter mismatch". Both servers then showed `valid` in `cmd mcp auth --list`, and a headless
-  `memory_read` returned the owner's memories. Claude Code reaches mnemoverse
-  through a local stdio server holding an API key; here the remote OAuth connector
-  `https://mcp.mnemoverse.com/mcp` avoids copying that key (same account assumed, UNVERIFIED).
-- ⚠️ **`cmd mcp auth --list` FLAPS and is not evidence on its own.** Verified
-  2026-10-05: it reported `composio: expired` while Composio tools answered every
-  call, then `composio: valid` minutes later with no action taken, and
-  `~/.commandcode/mcp-tokens.json` showed `tokens: {}` throughout. Read it as a
-  hint and confirm with a real call (`memory_stats` for mnemoverse) — a stale
-  `expired` is not a finding. Conversely a re-auth takes effect WITHOUT the restart
-  the CLI advises: a `memory_stats` call answered immediately after
-  `Authentication successful!`.
-- **`/import claude`** copies skills, agents, commands, MCP and memory once: it drifts, so prefer
-  the projection.
+## Running it on any OpenAI-compatible plan
 
-## Running an unattended build through the CLI
+- **Agent dir `$HOME/.omp/agent`.** `AGENTS.md` holds user-level rules, loaded before the
+  per-directory block, so it caches across directories. `models.yml` defines the provider with
+  `baseUrl`, `api: openai-completions`, and `apiKey` holding an ENV VAR NAME: omp reads the value
+  as a name first, so the key never touches disk, and an unset var sends the literal string, so
+  assert it is set. `config.yml` sets each model role, `startup.checkUpdate: false`, telemetry off,
+  `mcp.enableProjectConfig: false`, and `disabledProviders` (claude, codex, opencode, cursor, …)
+  so it loads no other tool's config.
+- **On Command Code, prefer the built-in `commandcode` provider** (`COMMAND_CODE_API_KEY` in the
+  environment, no `models.yml`); the `models.yml` route above is for a plan omp has no provider for.
+- **Headless:** `omp -p --mode json --model <provider>/<model> --no-extensions --no-skills
+  --approval-mode yolo "<prompt>"`.
+- **Project rules:** it reads the repo's `AGENTS.md` and expands `@CLAUDE.md` imports (opencode
+  does not).
+- **Read-only (plan phase):** `--approval-mode always-ask` with no UI refuses edit, write and bash
+  (verified 2026-10-06, tree clean). It is approval gating, not a filesystem sandbox.
+- **Usage:** `message_end` events; `usage.input` excludes cache reads, `usage.output` includes
+  reasoning. omp's own cost figure is unreliable (§Interactive use, Cost), so price the tokens
+  yourself.
+- **Defaults:** thinking `high`, LSP on, 32 built-in tools.
 
-`cmd -p "<prompt>" --yolo --trust --max-turns <n> --model <id> --output-format json` in a worktree.
-`--yolo` skips every permission prompt, so "do not commit or push" in the prompt binds nothing —
-**and the owner's decision (2026-10-05) is that this lane is NOT guarded: it keeps full git and
-`gh` access, on BOTH CLIs.** So `base/hooks/command-code-build-guard.py` is not registered in
-`.commandcode/settings.json` and must not be re-added as a detail — a guard here is a change to
-this decision, and Claude Code has never carried one (its repo-local `.claude/settings.local.json`
-holds only an allow rule). *(Supersedes the 2026-10-05 measurement note that had the guard
-blocking `git commit`; the script is retained, unwired.)*
+## Interactive use (measured 2026-10-07, macOS, omp 18.7.0, bun 1.4.2)
+
+- **Install:** `bun install -g @oh-my-pi/pi-coding-agent@18.7.0`. The binary lands in
+  `~/.bun/bin`, which bun does NOT put on PATH: add `export PATH="$HOME/.bun/bin:$PATH"` to
+  `~/.zshrc`.
+- **Command Code is a built-in provider, `commandcode`** (`docs/providers.md`): omp reads
+  `COMMAND_CODE_API_KEY` (or `/login commandcode`), lists all of Command Code's models (85 on
+  2026-10-07, e.g. `deepseek/deepseek-v4.1-flash` at 1M context), routes Claude models to the
+  Messages API, GPT models to Responses and the rest to Chat Completions, and `omp usage` shows the
+  credit balance and the 5-hour and weekly windows. No `models.yml` is needed. *(Corrects an
+  earlier custom `command-code-goat` provider written on the false belief that omp had none; the
+  id `commandcode` is omp's own and cannot be renamed.)*
+- **`~/.omp/agent/config.yml`** (owner's, 2026-10-07): `modelRoles: {default:
+  commandcode/deepseek/deepseek-v4.1-flash:high}`, `startup: {checkUpdate: false}`,
+  `enabledProviders: [claude]`, `tools: {approvalMode: yolo}`, `advisor: {enabled: false}`,
+  `symbolPreset: nerd` (`unicode` is the fallback where Nerd icons do not draw — the thinking level
+  once showed as `~`). `modelRoles` lives in `config.yml`, not `models.yml` (`docs/models.md`).
+- **`~/.omp/agent/.env`** (mode 600) holds `COMMAND_CODE_API_KEY=…`; omp loads the active agent
+  dir's `.env` for keys not already set (`docs/environment-variables.md`, `$env` loading order
+  step 3). **The owner pastes the key; an agent never types it.** On the first Mac it was copied
+  from the retired CLI's `~/.commandcode/auth.json` (`apiKey`, the login's own `cli-<time>` key);
+  whether commandcode.ai issues a key without `cmd login` is an open question (`command-code.md`).
+- **Check:** `omp models commandcode` lists the models and `omp usage` shows the GOAT windows.
+- **Cost:** run heavy sessions off-peak. DeepSeek's peak is 01:00-04:00 and 06:00-10:00 UTC on
+  weekdays (12:00-15:00 and 17:00-21:00 AEDT, an hour earlier in AEST) at double the price. omp's own
+  cost figure is wrong in both directions (2x high on a custom provider, 2x low in peak on the
+  built-in one), so read `omp usage` or price the tokens. *(Measured 2026-10-07 on FRG-64: 96.7%
+  cache hit over 75 turns.)*
+- **Smoke:** in a scratch git repo, `omp -p --mode json --no-extensions --no-skills
+  --approval-mode yolo "say hi"` exits 0 with `message_end` events whose `provider` is
+  `commandcode` and `model` is `deepseek/deepseek-v4.1-flash`. With `config.yml` set, no `--model` flag is needed.
+- ⚠️ **`-p` reads piped stdin and waits forever on an open pipe** (stderr repeats `Still starting
+  … phase: readPipedInput`). From an agent shell or a backgrounded job, pass `< /dev/null` or pipe
+  the prompt in. *(Verified 2026-10-07: two "hangs" of 3 and 12 minutes were this, not the config.)*
+- ⚠️ **This Mac's omp is locally patched for the `ask` number keys below.** Stock 18.7.0's `ask`
+  dialog has no digit keys (bun's cached `ask-dialog.ts`). On 2026-10-07 an omp session added
+  numbering and 1–9 to the installed `ask-dialog.ts` and rebuilt `dist/cli.js` (original kept as
+  `cli.js.pre-digitselect`). Any reinstall, upgrade or new device drops it until it lands upstream.
+- **Number keys select in BOTH menu types, by different mechanisms.** In the `ask` dialog the
+  numbering is the dialog's own (`pi-tui/src/overlays/ask-dialog.ts`, `#handleQuestionInput`): `1`–`9`
+  jumps to row N and, on a single-select question, confirms it; a multi-select only moves the cursor
+  (`space` toggles), and the unnumbered `Other` row stays arrow-only — so an `ask` label must NOT
+  carry its own `N. ` prefix. In a HookSelector menu (`/review`, the model/session pickers) the digit
+  instead matches a LABEL already starting with `N. ` (`hook-selector.ts`, `#handleQuickSelect`), and
+  stops working once the search query is non-empty. So in `ask` — where we author the labels — ≤9
+  options keeps every row digit-reachable; a HookSelector menu additionally needs numbered labels,
+  which only its own entries supply.
+  *(Verified 2026-10-07 against this Mac's patched omp 18.7.0: source-read, plus a keypress that committed an
+  `ask` option; an earlier same-day note recorded 1 and 2 doing nothing there and did not reproduce.
+  Re-test the picker rather than trusting a note, this one included.)*
+- **An unset role still resolves — and the ADVISOR is what shows a strong OpenAI model beside a
+  DeepSeek default.** Unset roles fall through built-in alias chains (`config/model-resolver.ts`):
+  `advisor` → `slow`, `memory`/`tiny` → `smol`; and the advisor deliberately does not inherit
+  `default` when `slow` is unset, taking `priority.json`'s `slow` list instead, whose first entry is
+  `openai-codex/gpt-5.6-sol`. **`/advisor off` is SESSION-scoped** (it calls
+  `runtime.session.setAdvisorEnabled(false)`), so it never reaches `config.yml` — the persisted
+  `advisor.enabled` governs the NEXT session. Set it with `/settings`, `/advisor …`, or
+  `omp config set advisor.enabled false`; to keep the reviewer and choose its model, pin
+  `modelRoles.advisor`. A session JSONL `model_change` record carries `role`, so `role: "default"`
+  means the SESSION's model changed — not the advisor showing through. *(Verified 2026-10-07:
+  config read-back, `omp config list`, the resolver source, and a session whose `role: "default"`
+  switch to gpt-5.6-sol reverted 82s later with no actor logged.)*
+- **Rules, skills and MCP come from Claude Code's own config.** `enabledProviders: [claude]` opts
+  in omp's `claude` discovery provider (foreign user-level sources are opt-in, `docs/context-files.md`),
+  so omp reads `~/.claude/CLAUDE.md` with its imports (the poly-mind layers), Claude Code's skills
+  and its MCP servers. No projection is needed. *(Verified 2026-10-07: quoted a `base/CLAUDE.md`
+  heading and listed 63 skills.)* **Composio's HTTP MCP needs its own sign-in from omp**, or it fails
+  401 and its tools are skipped: omp has no `mcp` subcommand and no user-level `~/.omp/mcp.json`, so
+  its OAuth token must be minted from inside with `/mcp reauth composio` (slash commands never run
+  at the zsh prompt) plus the browser sign-in on the personal account. Until then every session logs
+  `MCP tool load failed … mcp:composio … HTTP 401` while Claude Code's own `composio` entry reads
+  `✔ Connected` — one gateway, two token stores. **Verify from the log or a real tool call, not the
+  `/mcp` listing.**
+  *(Owner-verified 2026-10-07 in Ghostty: the rules, repo,
+  skills and tool-call checks all worked. The same note claimed `/mcp reauth composio` worked, which
+  the logs then contradicted — every session that day logged the 401 above, so treat a reauth as
+  unverified until the log agrees.)*
+  The runner keeps the opposite: it disables `claude` and other providers so a run loads no user
+  config.
+
+## Unattended build: git and `gh` unguarded
+
+The owner's decision (2026-10-05) binds every harness the runner uses: the build agent keeps full
+git and `gh` access, omp under `--approval-mode yolo` and opencode under `--auto` alike, and no
+harness gets a git/`gh` guard hook. `--approval-mode yolo` skips every prompt, so "do not commit
+or push" in the prompt binds nothing. A guard is a change to this decision, not a detail; Claude
+Code has never carried one.
+
+## Recording fixtures for an adapter
+
+In a scratch git repo, never the real one: (1) a normal run with `--approval-mode yolo`; (2) the
+same prompt asking to edit and `touch marker` under `--approval-mode always-ask`, then record
+`ls marker` and `git diff --stat`; (3) a bad key by leaving the key's env var UNSET, since omp then
+sends the literal var name as the key. Save stdout, stderr and the exit code; scrub paths and any
+key; note the version.
+
+## Measured (2026-10-06, DeepSeek V4.1 Flash via GOAT, same task and rules as cmd and opencode, n=5)
+
+5/5, $0.0133 per success (cmd $0.0184, opencode $0.0153); median 81.6 s (cmd 139.5, opencode
+135.0); median output 5.7K tokens (11.4K, 7.1K). A baseline before any harness tuning; the method
+is in `command-code.md` §Models.
+
+### opencode
+
+# opencode — headless agent harness (forge-wingman's runner fallback)
+
+forge-wingman's runner defaults to omp (`omp.md`) and falls back to **opencode**; omp is also
+the interactive harness, and Command Code's `cmd` CLI is retired. Both bill to GOAT through
+Command Code's Provider API (`command-code.md`). *(Owner decision 2026-10-07, on cost per success:
+omp $0.0133, opencode $0.0153, cmd $0.0184.)* The slots follow measurement: opencode is the
+fallback only while it measures second. Measured on opencode 1.18.30.
+
+⚠️ **RE-RUN BEFORE QUOTING.** A flag, env var or event name here is a dated observation.
+**Replace a line in place** when a re-run changes it.
+
+## Install
+
+- `curl -fsSL https://opencode.ai/install | bash`, `npm install -g opencode-ai` (also bun,
+  pnpm, yarn), or `brew install anomalyco/tap/opencode`; Windows adds choco, scoop and mise.
+  *(Source: opencode.ai/docs, read 2026-10-07. Homebrew core also carries an `opencode`
+  formula, observed via `brew info` on 1.18.30.)* CI pins the version (`opencode-ai@<v>`).
+- **Check:** `opencode --version` prints the bare version (`1.18.30`).
+
+## Running it on GOAT (the runner recipe)
+
+- **Provider:** a custom provider in the config file, through the npm package
+  `@ai-sdk/openai-compatible`, `baseURL` `https://api.commandcode.ai/provider/v1`, and
+  `apiKey: "{env:<VAR>}"` so the key lives in the environment only, never in the file.
+  The model id is `<provider>/deepseek/deepseek-v4.1-flash`, exactly as
+  `opencode models <provider>` lists it.
+
+  ```json
+  {
+    "$schema": "https://opencode.ai/config.json",
+    "provider": {
+      "command-code": {
+        "npm": "@ai-sdk/openai-compatible",
+        "options": {
+          "baseURL": "https://api.commandcode.ai/provider/v1",
+          "apiKey": "{env:COMMAND_CODE_API_KEY}"
+        },
+        "models": { "deepseek/deepseek-v4.1-flash": {} }
+      }
+    },
+    "instructions": ["CLAUDE.md"]
+  }
+  ```
+
+- **Project rules:** opencode does NOT resolve `@` imports in `AGENTS.md`, so a repo whose
+  `AGENTS.md` only imports `CLAUDE.md` gives it nothing. Add `"instructions": ["CLAUDE.md"]`.
+- **Headless:** `opencode run --format json --auto --pure -m <provider>/<model> "<prompt>"`.
+  `--auto` approves every permission request not explicitly denied; `--pure` loads no external
+  plugins.
+- **Isolation:** a throwaway `HOME` plus throwaway `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
+  `XDG_CACHE_HOME` and `XDG_STATE_HOME`; `OPENCODE_CONFIG=<file>`; and
+  - `OPENCODE_DISABLE_CLAUDE_CODE=1`, or it loads `~/.claude` (rules and skills);
+  - `OPENCODE_DISABLE_AUTOUPDATE=1`;
+  - `OPENCODE_DISABLE_MODELS_FETCH=1`.
+- **Git and `gh`:** not guarded. The owner's 2026-10-05 decision binds every runner harness
+  (`omp.md` §Unattended build).
+- **Usage:** read `step_finish` events. `tokens.input` EXCLUDES cache reads (add them back for
+  total input), and reasoning tokens are added to output.
+- **Cost:** it reports `cost: 0` for a custom provider, so price the tokens yourself.
+
+## Read-only plan phase — UNVERIFIED
+
+Not yet tested live here. What the docs say (opencode.ai/docs/agents and /docs/permissions,
+read 2026-10-07): permissions are per tool (`read`, `edit`, `glob`, `grep`, `bash`, `task`,
+`webfetch`, …), each `allow`, `ask` or `deny`, and an agent's `permission` block overrides the
+global one. The `tools` option is deprecated in favour of `permission`. The built-in **plan**
+agent sets edit and bash to **`ask`, not `deny`**, and `--auto` approves everything not
+explicitly denied, so **plan under `--auto` is NOT read-only**. A read-only profile needs explicit
+denies, for example:
+
+```json
+{ "agent": { "plan": { "permission": { "edit": "deny", "bash": "deny" } } } }
+```
+
+Run it with `--agent plan`. Treat it as unverified until a live refusal test passes: ask it to
+edit a file and `touch marker`, then confirm `ls marker` fails and `git diff --stat` is empty.
+
+## Measured (2026-10-06, DeepSeek V4.1 Flash via GOAT, same task and rules as cmd and omp, n=5)
+
+5/5, $0.0153 per success (omp $0.0133, cmd $0.0184); median 135.0 s (omp 81.6, cmd 139.5);
+median output 7.1K tokens (omp 5.7K, cmd 11.4K). A baseline before any harness tuning; the
+method is in `command-code.md` §Models.
 
 ## Return format
 
@@ -436,8 +636,9 @@ blocking `git commit`; the script is retained, unwired.)*
 
 ## This repo
 
-- Go module `github.com/alvintoh/forge-wingman`, `go 1.22` floor, `toolchain go1.27.1`.
-- Binaries: `cmd/dispatcher` (Cloud Run job), `cmd/runner` (GitHub Actions), `cmd/surface` (Cloud Run service behind IAP). Logic goes in `internal/` when the first of it lands.
+- Go module `github.com/alvintoh/forge-wingman`, `go 1.27` floor, `toolchain go1.27.1`.
+- Binaries: `cmd/dispatcher` (Cloud Run job), `cmd/runner` (GitHub Actions), `cmd/surface` (Cloud Run service behind IAP). Logic lives in `internal/`: `dispatcher`, `runner`, `providers`, `store`, `money`.
 - Routing is stdlib `net/http` `ServeMux`; no third-party router (tech-design §Language).
-- Checks: `gofmt -l . && go vet ./... && golangci-lint run && go test -race ./...`; `exhaustive` and `errcheck` are required gates.
-- Design: `docs/tech-design-v1.md`, `docs/adr/0001`-`0011` — copied from the forge-vault vault; never edit them here.
+- Checks: `make check` (gofmt, vet, golangci-lint, `go test -race -shuffle=on -cover ./...`); `exhaustive` and `errcheck` are required gates.
+- Design: `docs/tech-design-v1.md`, `docs/adr/0001`-`0015` — copied from the forge-vault vault; never edit them here.
+- The runner's harness is the Command Code CLI adapter today (`internal/runner/harness_commandcode.go`); omp as default and opencode as fallback are decided (`docs/adr/0015`) and not built yet.

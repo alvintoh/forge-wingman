@@ -1,2 +1,2 @@
-<!-- Command Code reads AGENTS.md, not CLAUDE.md; the import keeps one source of truth. -->
+<!-- omp reads AGENTS.md and expands this import; one source of truth. -->
 @CLAUDE.md
