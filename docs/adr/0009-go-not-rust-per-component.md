@@ -5,6 +5,10 @@
 - **Amended 2026-10-05:** the runner spawns the Command Code CLI, not `opencode run`,
   and the plan/review profile is its `--plan` mode — see `adr/0015`. Nothing here
   turns on which CLI it is: the runner still waits on a remote model.
+- **Amended 2026-10-07:** the harness is omp by default, with opencode as the
+  fallback, chosen by configuration per plan — see `adr/0016`; the Command Code
+  CLI is interactive-only. The provider
+  is still GOAT, reached through Command Code's Provider API.
 
 ## Context
 

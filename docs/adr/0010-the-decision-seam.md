@@ -13,6 +13,10 @@
 - **Amended 2026-10-05:** the build seam's harness and provider are now the
   Command Code CLI and its GOAT plan, not opencode and OpenCode Go — see
   `adr/0015`. The seam split and the decision seam are unchanged.
+- **Amended 2026-10-07:** the harness is omp by default, with opencode as the
+  fallback, chosen by configuration per plan — see `adr/0016`; the Command Code
+  CLI is interactive-only. The provider
+  is still GOAT, reached through Command Code's Provider API.
 
 ## Context
 
