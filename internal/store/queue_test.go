@@ -301,6 +301,36 @@ func TestCandidatesDefaultsAMissingPrivateFieldToTrue(t *testing.T) {
 	}
 }
 
+// TestCandidatesReadsTheBuildModelTheTicketNamed asserts a candidate carries the
+// build model its ticket named, which admission uses to select the model's own
+// cap (FRG-62).
+func TestCandidatesReadsTheBuildModelTheTicketNamed(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	named, unnamed := queuedRun(fresh("queue-cand-model"), 1), queuedRun(fresh("queue-cand-nomodel"), 2)
+	named.Models = runner.ModelLabels{Build: "command-code/deepseek/deepseek-v4.1-flash"}
+	forget(t, client, named.RunID, unnamed.RunID)
+	for _, run := range []dispatcher.Queued{named, unnamed} {
+		if err := q.Enqueue(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := map[string]string{named.RunID: named.Models.Build, unnamed.RunID: ""}
+	cands, err := q.Candidates(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cands {
+		wantModel, ours := want[c.RunID]
+		if !ours {
+			continue
+		}
+		if c.Model != wantModel {
+			t.Fatalf("candidate %s model = %q, want %q", c.RunID, c.Model, wantModel)
+		}
+	}
+}
+
 func TestTryClaimAdmitsARunThatFitsAndBooksItsReservation(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
@@ -372,6 +402,38 @@ func TestTryClaimDefersARunTheProviderWindowWouldBreach(t *testing.T) {
 	}
 	if snap.Data()[waitingOnField] != "5h" {
 		t.Fatalf("waiting on %v, want the binding condition recorded on the row", snap.Data()[waitingOnField])
+	}
+}
+
+// TestTryClaimDefersARunTheModelsOwnCapWouldBreach asserts the plan's per-model
+// cap binds beside its windows (FRG-62): the plan's month window has room for
+// the estimate, but the run's model has spent its own cap.
+func TestTryClaimDefersARunTheModelsOwnCapWouldBreach(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	run := queuedRun(fresh("queue-defer-cap"), 1)
+	run.Models = runner.ModelLabels{Build: "command-code/deepseek/deepseek-v4.1-flash"}
+	forget(t, client, run.RunID)
+	resetLedger(t, client, 1)
+	if err := q.Enqueue(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	tight := dispatcher.BudgetConfig{
+		ProviderWindows: []dispatcher.Window{{Name: "month", Period: 720 * time.Hour, Limit: 70 * money.Dollar}},
+		ModelCaps: map[string]dispatcher.Window{
+			"command-code/deepseek/deepseek-v4.1-flash": {Name: "flash", Period: 720 * time.Hour, Limit: money.Dollar},
+		},
+		Cash:   dispatcher.Window{Name: dispatcher.CeilingCash, Calendar: true, Limit: 1000 * money.Dollar},
+		Runner: dispatcher.RunnerMinutes{FreeMinutes: 1_000_000},
+	}
+	facts := dispatcher.Facts{Limits: dispatcher.DefaultLimits, OpenPRsKnown: true,
+		Model: "command-code/deepseek/deepseek-v4.1-flash"}
+	ok, binding, err := q.TryClaim(ctx, run.RunID, queueAt, tight, facts, dispatcher.Reservation{ProviderCost: 2 * money.Dollar})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok || binding != "flash" {
+		t.Fatalf("ok = %v, binding = %q, want deferred on the model cap", ok, binding)
 	}
 }
 
@@ -1266,5 +1328,23 @@ func TestRecordVerdictRefusesARunThatDoesNotExist(t *testing.T) {
 	q, _ := queue(t)
 	if err := q.RecordVerdict(context.Background(), fresh("queue-verdict-missing"), "allowed"); err == nil {
 		t.Fatal("a verdict was written onto a run that does not exist")
+	}
+}
+
+func TestBuildModelReadsTheTicketsBuildLabel(t *testing.T) {
+	for name, tc := range map[string]struct {
+		row  map[string]any
+		want string
+	}{
+		"a named build model":    {map[string]any{modelLabelsField: map[string]any{"build": "p/model"}}, "p/model"},
+		"labels without build":   {map[string]any{modelLabelsField: map[string]any{"review": "p/other"}}, ""},
+		"no labels at all":       {map[string]any{}, ""},
+		"labels of another type": {map[string]any{modelLabelsField: "p/model"}, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := buildModel(tc.row); got != tc.want {
+				t.Fatalf("buildModel = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

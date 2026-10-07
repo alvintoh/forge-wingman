@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"testing"
+	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/money"
 )
@@ -20,8 +21,11 @@ var windowed = BudgetConfig{
 	Runner: RunnerMinutes{FreeMinutes: 2000},
 }
 
+// settledWindows pairs a settled provider cost with each of windowed's windows.
+func settledWindows(costs ...money.Micros) Settled { return Settled{Windows: costs} }
+
 func TestDecideAdmitsARunThatFitsEveryCeiling(t *testing.T) {
-	fits, binding := Decide(windowed, Totals{}, []money.Micros{0, 0, 0}, 0, 0,
+	fits, binding := Decide(windowed, "", Totals{}, settledWindows(0, 0, 0),
 		Reservation{ProviderCost: 5 * money.Dollar, RunnerMinutes: 100})
 	if !fits || binding != "" {
 		t.Fatalf("fits = %v, binding = %q", fits, binding)
@@ -39,7 +43,7 @@ func TestDecideDefersOnTheFirstProviderWindowItWouldBreach(t *testing.T) {
 		{"the month window, with 5h and week still fitting", []money.Micros{0, 0, 56 * money.Dollar}, "month"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			fits, binding := Decide(windowed, Totals{}, tt.windowSettled, 0, 0,
+			fits, binding := Decide(windowed, "", Totals{}, settledWindows(tt.windowSettled...),
 				Reservation{ProviderCost: 5 * money.Dollar})
 			if fits || binding != tt.want {
 				t.Fatalf("fits = %v, binding = %q, want deferred on %q", fits, binding, tt.want)
@@ -52,7 +56,7 @@ func TestDecideCountsInFlightReservationsTowardEveryWindow(t *testing.T) {
 	// Nothing settled yet, but another run's reservation alone already fills
 	// the 5-hour window: the ledger's in-flight total must be counted, not
 	// only what has settled.
-	fits, binding := Decide(windowed, Totals{ProviderCost: 11 * money.Dollar}, []money.Micros{0, 0, 0}, 0, 0,
+	fits, binding := Decide(windowed, "", Totals{ProviderCost: 11 * money.Dollar}, settledWindows(0, 0, 0),
 		Reservation{ProviderCost: 2 * money.Dollar})
 	if fits || binding != "5h" {
 		t.Fatalf("fits = %v, binding = %q, want deferred on 5h", fits, binding)
@@ -63,7 +67,7 @@ func TestDecideZeroesRunnerMinutesForAPublicTarget(t *testing.T) {
 	// The estimate holds a large minute figure, but the caller is expected to
 	// zero it for a public target before calling Decide; with it zeroed, a
 	// month's worth of minutes settled elsewhere still fits.
-	fits, binding := Decide(windowed, Totals{}, []money.Micros{0, 0, 0}, 0, 1900,
+	fits, binding := Decide(windowed, "", Totals{}, Settled{Windows: []money.Micros{0, 0, 0}, CashMinutes: 1900},
 		Reservation{ProviderCost: money.Dollar, RunnerMinutes: 0})
 	if !fits || binding != "" {
 		t.Fatalf("fits = %v, binding = %q, want a public target's zeroed minutes to fit", fits, binding)
@@ -76,7 +80,7 @@ func TestDecideZeroesRunnerMinutesForAPublicTarget(t *testing.T) {
 // public target's minutes count as zero, so it can never newly breach a
 // ceiling it never touches, however exhausted that ceiling already is.
 func TestDecideNeverBlocksAPublicTargetOnAnAlreadyExhaustedRunnerCeiling(t *testing.T) {
-	fits, binding := Decide(windowed, Totals{}, []money.Micros{0, 0, 0}, 0, 2500,
+	fits, binding := Decide(windowed, "", Totals{}, Settled{Windows: []money.Micros{0, 0, 0}, CashMinutes: 2500},
 		Reservation{ProviderCost: money.Dollar, RunnerMinutes: 0})
 	if !fits || binding != "" {
 		t.Fatalf("fits = %v, binding = %q, want a zero-minute candidate to fit despite the ceiling already being exhausted", fits, binding)
@@ -86,7 +90,7 @@ func TestDecideNeverBlocksAPublicTargetOnAnAlreadyExhaustedRunnerCeiling(t *test
 func TestDecideHardStopsOnRunnerMinutesWithNoPaymentMethodConfigured(t *testing.T) {
 	// A private target pushing total minutes past the free tier, with
 	// RatePerMinute left at its zero default, must defer rather than spend.
-	fits, binding := Decide(windowed, Totals{}, []money.Micros{0, 0, 0}, 0, 1950,
+	fits, binding := Decide(windowed, "", Totals{}, Settled{Windows: []money.Micros{0, 0, 0}, CashMinutes: 1950},
 		Reservation{ProviderCost: money.Dollar, RunnerMinutes: 100})
 	if fits || binding != CeilingRunnerMinutes {
 		t.Fatalf("fits = %v, binding = %q, want deferred on %q", fits, binding, CeilingRunnerMinutes)
@@ -98,14 +102,14 @@ func TestDecideConvertsRunnerMinutesToCashWhenARateIsConfigured(t *testing.T) {
 	cfg.Runner.RatePerMinute = 6000 // $0.006/minute
 	cfg.Cash.Limit = money.Dollar   // a tight cash ceiling so the overage alone breaches it
 
-	fits, binding := Decide(cfg, Totals{}, []money.Micros{0, 0, 0}, 0, 1990,
+	fits, binding := Decide(cfg, "", Totals{}, Settled{Windows: []money.Micros{0, 0, 0}, CashMinutes: 1990},
 		Reservation{ProviderCost: 0, RunnerMinutes: 300}) // 290 minutes over the 2,000 free, at $0.006 = $1.74
 	if fits || binding != CeilingCash {
 		t.Fatalf("fits = %v, binding = %q, want deferred on %q", fits, binding, CeilingCash)
 	}
 
 	cfg.Cash.Limit = money.Dollar * 10
-	fits, binding = Decide(cfg, Totals{}, []money.Micros{0, 0, 0}, 0, 1990,
+	fits, binding = Decide(cfg, "", Totals{}, Settled{Windows: []money.Micros{0, 0, 0}, CashMinutes: 1990},
 		Reservation{ProviderCost: 0, RunnerMinutes: 300})
 	if !fits || binding != "" {
 		t.Fatalf("fits = %v, binding = %q, want the small overage to fit a looser cash ceiling", fits, binding)
@@ -116,7 +120,7 @@ func TestDecideChecksAPerTokenProvidersCostAgainstCashDirectly(t *testing.T) {
 	// No provider windows configured: the provider's own cost is what Cash
 	// exists to bound, so it counts even with no runner minutes at all.
 	cfg := BudgetConfig{Cash: Window{Name: "cash", Calendar: true, Limit: 20 * money.Dollar}, Runner: RunnerMinutes{FreeMinutes: 2000}}
-	fits, binding := Decide(cfg, Totals{}, nil, 15*money.Dollar, 0, Reservation{ProviderCost: 6 * money.Dollar})
+	fits, binding := Decide(cfg, "", Totals{}, Settled{CashCost: 15 * money.Dollar}, Reservation{ProviderCost: 6 * money.Dollar})
 	if fits || binding != CeilingCash {
 		t.Fatalf("fits = %v, binding = %q, want deferred on %q", fits, binding, CeilingCash)
 	}
@@ -129,8 +133,61 @@ func TestDecideNeverChecksAWindowedProvidersCostAgainstCashToo(t *testing.T) {
 	// tight cash ceiling.
 	cfg := windowed
 	cfg.Cash.Limit = money.Dollar // would fail instantly if provider cost were double-counted
-	fits, binding := Decide(cfg, Totals{}, []money.Micros{0, 0, 0}, 0, 0, Reservation{ProviderCost: 5 * money.Dollar})
+	fits, binding := Decide(cfg, "", Totals{}, settledWindows(0, 0, 0), Reservation{ProviderCost: 5 * money.Dollar})
 	if !fits || binding != "" {
 		t.Fatalf("fits = %v, binding = %q, want a windowed provider's cost to bypass cash", fits, binding)
+	}
+}
+
+// capped is a budget whose plan has a roomy monthly window but a $60 monthly
+// cap on one model, as GOAT's DeepSeek V4.1 Flash runs are metered (FRG-62).
+func capped() BudgetConfig {
+	cfg := windowed
+	cfg.ModelCaps = map[string]Window{"p/flash": {Name: "p/flash", Period: 720 * time.Hour, Limit: 60 * money.Dollar}}
+	return cfg
+}
+
+func TestDecideDefersOnTheRunModelsOwnCapBesideItsPlanWindows(t *testing.T) {
+	// The plan's month window ($60) has room for one more run, but the model's
+	// own cap ($60) is already spent: the run is admitted only while BOTH have
+	// room, so it defers on the model's cap.
+	cfg := capped()
+	settled := Settled{Windows: []money.Micros{0, 0, 0}, ModelCap: 58 * money.Dollar}
+	fits, binding := Decide(cfg, "p/flash", Totals{}, settled, Reservation{ProviderCost: 5 * money.Dollar})
+	if fits || binding != "p/flash" {
+		t.Fatalf("fits = %v, binding = %q, want deferred on the model cap", fits, binding)
+	}
+}
+
+func TestDecideAdmitsWhileTheModelsCapStillHasRoom(t *testing.T) {
+	cfg := capped()
+	settled := Settled{Windows: []money.Micros{0, 0, 0}, ModelCap: 40 * money.Dollar}
+	fits, binding := Decide(cfg, "p/flash", Totals{}, settled, Reservation{ProviderCost: 5 * money.Dollar})
+	if !fits || binding != "" {
+		t.Fatalf("fits = %v, binding = %q, want a run inside the model cap admitted", fits, binding)
+	}
+}
+
+func TestDecideAppliesNoCapToAModelWithoutOne(t *testing.T) {
+	// A model the plan sets no cap for is bounded by the plan's windows alone:
+	// another model's spent cap does not withhold it.
+	cfg := capped()
+	settled := Settled{Windows: []money.Micros{0, 0, 0}, ModelCap: 1000 * money.Dollar}
+	fits, binding := Decide(cfg, "p/other", Totals{}, settled, Reservation{ProviderCost: 5 * money.Dollar})
+	if !fits || binding != "" {
+		t.Fatalf("fits = %v, binding = %q, want no cap applied to an uncapped model", fits, binding)
+	}
+}
+
+func TestDecideNamesThePlanWindowWhenItBindsBeforeTheModelCap(t *testing.T) {
+	// The plan's month window is breached first (it is checked ahead of the cap
+	// and is the tighter of the two once the model cap is likewise spent), so
+	// the deferral names the window.
+	cfg := capped()
+	cfg.ProviderWindows = []Window{{Name: "month", Period: 720 * time.Hour, Limit: 50 * money.Dollar}}
+	settled := Settled{Windows: []money.Micros{48 * money.Dollar}, ModelCap: 58 * money.Dollar}
+	_, binding := Decide(cfg, "p/flash", Totals{}, settled, Reservation{ProviderCost: 5 * money.Dollar})
+	if binding != "month" {
+		t.Fatalf("binding = %q, want the plan window checked first", binding)
 	}
 }

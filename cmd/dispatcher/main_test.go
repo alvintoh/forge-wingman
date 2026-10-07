@@ -146,3 +146,24 @@ func TestBudgetConfigCarriesTheProvidersWindows(t *testing.T) {
 		t.Errorf("unconfigured provider = %+v, want no windows and the cash ceiling", b)
 	}
 }
+
+// TestBudgetConfigCarriesTheProvidersModelCaps asserts the dispatcher meters the
+// configured provider's own per-model caps, so a run on a capped model is
+// admitted only while that model has room too (FRG-62).
+func TestBudgetConfigCarriesTheProvidersModelCaps(t *testing.T) {
+	provider := runner.Provider(runner.DefaultModel())
+	want := providers.ModelCaps(provider)
+	got := budgetConfig(provider).ModelCaps
+	if len(want) == 0 || len(got) != len(want) {
+		t.Fatalf("model caps = %+v, want the configured %+v", got, want)
+	}
+	for model, w := range want {
+		g, ok := got[model]
+		if !ok || g.Name != w.Name || g.Period != w.Period || g.Limit != w.Limit {
+			t.Errorf("cap for %s = %+v, want %+v", model, g, w)
+		}
+	}
+	if b := budgetConfig("nobody"); len(b.ModelCaps) != 0 {
+		t.Errorf("unconfigured provider = %+v, want no model caps", b.ModelCaps)
+	}
+}
