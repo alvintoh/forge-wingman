@@ -39,6 +39,10 @@ func TestParseModelSetRejectsAnInvalidSet(t *testing.T) {
 		"empty default":    {`{"default":"","fallbacks":[]}`, "not provider/model"},
 		"unknown field":    {`{"default":"p/a","fallbacks":[],"extra":1}`, "unknown field"},
 		"fallback foreign": {`{"default":"p/a","fallbacks":["command-code/b"]}`, "not a p model"},
+		"malformed plan":   {`{"default":"p/a","fallbacks":[],"plan":"big-pickle","review":"p/r"}`, "not provider/model"},
+		"foreign plan":     {`{"default":"p/a","fallbacks":[],"plan":"q/a","review":"p/r"}`, "not a p model"},
+		"malformed review": {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":""}`, "not provider/model"},
+		"foreign review":   {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":"q/r"}`, "not a p model"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := parseModelSet([]byte(tc.doc))

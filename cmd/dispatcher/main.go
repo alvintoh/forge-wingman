@@ -53,9 +53,9 @@ const (
 )
 
 // budgetConfig is FR-22's admission ceilings for the provider that serves the
-// dispatched model: the provider's own rolling allowance windows, its cash
-// ceiling and its GitHub Actions free-minutes allowance, all read from
-// provider configuration rather than hardcoded. The cash ceiling is a calendar
+// dispatched model: that provider's own rolling allowance windows, plus the
+// cash ceiling and the GitHub Actions free-minutes allowance shared by every
+// provider, all read from provider configuration rather than hardcoded. The cash ceiling is a calendar
 // month (GitHub's own billing cycle); the runner-minutes ceiling is GitHub
 // Actions' free 2,000 minutes/month on a private target repository,
 // hard-stopped there by default (RatePerMinute zero) since no payment method is

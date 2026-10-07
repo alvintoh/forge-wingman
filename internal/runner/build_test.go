@@ -1533,6 +1533,22 @@ func TestRunWorkflowChecksTheBranchPattern(t *testing.T) {
 	}
 }
 
+// inputDefault is the first default declared after a workflow input's name, or
+// "" when the input or its default is missing.
+func inputDefault(yml, input string) string {
+	i := strings.Index(yml, input+":\n")
+	if i < 0 {
+		return ""
+	}
+	rest := yml[i:]
+	j := strings.Index(rest, "default: ")
+	if j < 0 {
+		return ""
+	}
+	line, _, _ := strings.Cut(rest[j+len("default: "):], "\n")
+	return line
+}
+
 func TestWorkflowsCarryThePlanModelsFromTheDefaultToTheRunner(t *testing.T) {
 	read := func(name string) string {
 		b, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", name))
@@ -1542,11 +1558,12 @@ func TestWorkflowsCarryThePlanModelsFromTheDefaultToTheRunner(t *testing.T) {
 		return string(b)
 	}
 	for _, name := range []string{"run.yml", "plan-smoke.yml"} {
-		yml := read(name)
-		i := strings.Index(yml, "plan_models:")
-		if i < 0 || !strings.Contains(yml[i:], "default: "+DefaultPlanModel()+"\n") {
-			t.Errorf("%s: the plan_models input does not default to %s", name, DefaultPlanModel())
+		if got := inputDefault(read(name), "plan_models"); got != DefaultPlanModel() {
+			t.Errorf("%s: the plan_models input defaults to %q, want %s", name, got, DefaultPlanModel())
 		}
+	}
+	if got := inputDefault(read("run.yml"), "review_models"); got != DefaultReviewModel() {
+		t.Errorf("run.yml: the review_models input defaults to %q, want %s", got, DefaultReviewModel())
 	}
 	if !strings.Contains(read("run.yml"), "plan_models: ${{ needs.ticket.outputs.override_plan_models || inputs.plan_models }}") {
 		t.Error("run.yml does not pass plan_models to model.yml")

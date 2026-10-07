@@ -142,7 +142,7 @@ func (c Config) validate() error {
 	return nil
 }
 
-// Windows are provider's own rolling allowance ceilings, in the order the plan
+// Windows are a provider's own rolling allowance ceilings, in the order the plan
 // states them; empty for a provider configured without any, whose cost is then
 // checked against CashLimit.
 func Windows(provider string) []Window {

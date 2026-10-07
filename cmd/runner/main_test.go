@@ -88,6 +88,9 @@ func TestHarnessesWireTheKeyAndHome(t *testing.T) {
 	if cc.Home != filepath.Join("/tmp/r", "commandcode-home") {
 		t.Errorf("home = %q, want it under RUNNER_TEMP", cc.Home)
 	}
+	if got := runner.HarnessSecrets(func(k string) string { return env[k] }); !slices.Contains(got, "k") {
+		t.Errorf("secrets = %q, want the harness key among them", got)
+	}
 }
 
 func TestOwnAttemptID(t *testing.T) {
