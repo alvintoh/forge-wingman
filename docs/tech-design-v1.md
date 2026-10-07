@@ -216,16 +216,16 @@ language. A reusable workflow living in each target repo, called with the run id
 | write the run record and upload completions | FR-6, and NFR-7's stdout prohibition |
 
 ~~*Updated (2026-10-05):* the two phase rows named `opencode run`; the harness is
-Command Code since `adr/0015`.~~
+Command Code since the record then numbered `adr/0015`.~~
 
 *Updated (2026-10-07):* the two phase rows named Command Code's `--plan` and `--yolo`.
 The harness is now configuration per plan: omp by default, opencode as fallback
-(`adr/0016`, FRG-57, FRG-63, FRG-65).
+(`adr/0015`, FRG-57, FRG-63, FRG-65).
 
 **Gates are enforced in three places, deliberately.** The harness's restricted
 profile denies the tool (*Updated (2026-10-07):* each adapter's read-only profile,
 which the conformance suite checks refuses edit, write and shell — omp's
-`--approval-mode always-ask` by default, `adr/0016`; this said Command Code's
+`--approval-mode always-ask` by default, `adr/0015`; this said Command Code's
 `--plan`, and before that opencode's per-agent `permission` block); the runner refuses and records; and the
 capability is **withheld** rather than merely denied — the job the model runs in
 never holds permission to mark a PR ready or to merge, so FR-5's "the runner
@@ -283,15 +283,15 @@ picking the wrong axis. See `adr/0010`.
 
 #### ~~The BUILD seam — opencode~~ ~~The BUILD seam — Command Code~~ The BUILD seam — the harness
 
-**Superseded (2026-10-07) by `adr/0016`, in its harness:** the plan and the harness
+**Superseded (2026-10-07) by `adr/0015`, in its harness:** the plan and the harness
 are separate configuration. The model prefix names the plan; the harness is a default
 and an ordered fallback per plan, behind the `Harness` interface, and every adapter
 passes one conformance suite (FRG-62, FRG-57). Today omp is the default (FRG-63) and
-opencode the fallback (FRG-65); the Command Code CLI is interactive-only, its adapter
-dormant. The plan is still GOAT, reached through Command
+opencode the fallback (FRG-65); the Command Code CLI is retired, its adapter
+removed after FRG-65. The plan is still GOAT, reached through Command
 Code's Provider API.
 
-~~**Superseded (2026-10-05) by `adr/0015`:** the harness is the Command Code CLI and the
+~~**Superseded (2026-10-05) by the record then numbered `adr/0015`:** the harness is the Command Code CLI and the
 provider its GOAT plan ($10/month; $14/5h, $35/7d, $70/month). The seam's shape below
 is unchanged.~~ *The GOAT plan and its windows stand.*
 
@@ -305,7 +305,7 @@ runs long, costs real tokens, and is what FR-22's allowance windows ration.
 **It is not a harness call, and it never touches the build path.** The sizer
 runs inside the DISPATCHER, before a run is enqueued at all — step 3 of the poll
 above. The harness is the runner's; the two never meet. *Updated (2026-10-07):
-this named opencode, `adr/0016`.*
+this named opencode, `adr/0015`.*
 
 **Its shape is a classification: unbounded in, bounded out.**
 `engineering-defaults` names exactly this as the cheapest thing to buy, *"because
@@ -347,7 +347,7 @@ gateway was that NFR-2 bound every party in the data path; **NFR-2 selects on
 performance as of 2026-09-21**, so a gateway costs no verification. What remains
 is that GOAT is $10/month flat against per-token, which FR-6 measures once each harness's
 runs carry a cost (*Updated (2026-10-07):* omp's runs are priced from tokens × the plan's rates
-(FRG-57), as the opencode fallback's must be (FRG-65); the dormant Command Code CLI adapter still waits on FRG-47. *Updated (2026-10-05):* this
+(FRG-57), as the opencode fallback's must be (FRG-65); the retired Command Code CLI adapter is removed after FRG-65. *Updated (2026-10-05):* this
 named OpenCode Go).
 
 ⚠️ **Pin the version either way** — `~typesafe/jev-latest` floats, and a
@@ -358,7 +358,7 @@ FR-14's premise that the model IS configuration.
 **workflows** are *"LLMs and tools orchestrated through predefined code paths"*,
 **agents** *"dynamically direct their own processes and tool usage"*. Forge
 Wingman's agent is squarely the second — and that agent is **the harness's**, not
-ours (*Updated (2026-10-07):* this said opencode's; `adr/0016`). The orchestration already exists as a third-party harness we invoke, so a
+ours (*Updated (2026-10-07):* this said opencode's; `adr/0015`). The orchestration already exists as a third-party harness we invoke, so a
 graph engine would be orchestrating an orchestrator.
 
 > ⚠️ **This reaches the same conclusion as Forge Octant's `adr/0003` from the
@@ -366,12 +366,12 @@ graph engine would be orchestrating an orchestrator.
 > *the model never picks the path*. Here the model does pick the path — we simply
 > do not own the layer where it happens.
 
-**Superseded (2026-10-07) by `adr/0016`, in its mechanism:** caching is per harness
+**Superseded (2026-10-07) by `adr/0015`, in its mechanism:** caching is per harness
 adapter, and the runner measures that the stable rules prefix (FRG-50) holds under
 each. omp's static prompt precedes its per-directory block, so it caches across
 directories on its own.
 
-~~**Superseded (2026-10-05) by `adr/0015`, in its mechanism:** the `x-opencode-session`
+~~**Superseded (2026-10-05) by the record then numbered `adr/0015`, in its mechanism:** the `x-opencode-session`
 header below was opencode's. Under Command Code a per-run HOME and
 `--resume <sessionId>` keep a phase's prefix warm within a run; whether a retry
 reuses the original run's cache is unmeasured, so the ticket-keyed bullet is
@@ -453,4 +453,4 @@ It is the only diagram in this product that names technology.
 | 2 | **Updated (2026-09-25): first full run measured** — one size-S ticket (no plan phase): build 4m13s, whole run 7m06s, ~8 billed runner minutes (each job rounds up to the minute), so ~250 runs/month fit a private target's free 2,000. One sample: close at ≥10 runs per size, with p90 for the per-run cap and the mean for minute budgets. ~~probe cells ran **0.9–8.1 min, median 5.5**, so the ~30 min figure is falsified — but a full plan-build-PR run is still unmeasured, and it decides whether level 2 is free or metered. Run duration is assumed at ~30 min and has never been measured~~ | nothing; FR-6 records it and NFR-4 says measure before tuning |
 | 3 | FR-20's PR actions need a scoped GitHub credential for the operator; the scope set is enumerated but not created | the retry-and-act phase only |
 | 4 | **The decision seam's provider is admissible but unproven.** Jev fits FR-15's shape exactly and NFR-2 no longer bars it, but it has not been scored against the held-out set and it is six days old | nothing at level 0 — FR-15's deterministic signals run first and free, and the classifier decides only the remainder |
-| 5 | **Updated (2026-10-07):** the cost source is per harness adapter. omp's own figure is wrong (it charged peak rates off-peak), so its runs are priced from tokens × the plan's rates (`adr/0016`, FRG-57), as the opencode fallback's must be (FRG-65); the dormant Command Code CLI adapter still waits on FRG-47. **Added (2026-10-05):** a Command Code run records a provider cost of 0, so FR-22's GOAT windows and NFR-1's per-run cost cap meter nothing until FRG-47 fills the cost from the CLI transcript's `costUsd` — `adr/0015` | enforcement of FR-22 and NFR-1's cost cap |
+| 5 | **Updated (2026-10-07):** the cost source is per harness adapter. omp's own figure is wrong (it charged peak rates off-peak), so its runs are priced from tokens × the plan's rates (`adr/0015`, FRG-57), as the opencode fallback's must be (FRG-65); the retired Command Code CLI adapter is removed after FRG-65. **Added (2026-10-05):** a Command Code run records a provider cost of 0, so FR-22's GOAT windows and NFR-1's per-run cost cap meter nothing until FRG-47 fills the cost from the CLI transcript's `costUsd` — the record then numbered `adr/0015` | enforcement of FR-22 and NFR-1's cost cap |
