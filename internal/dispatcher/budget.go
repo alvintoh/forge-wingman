@@ -63,6 +63,11 @@ type BudgetConfig struct {
 	// cash cap. Empty for a per-token provider, whose cost is then checked
 	// against Cash directly.
 	ProviderWindows []Window
+	// ModelCaps are the selected provider's own monthly ceiling per model,
+	// keyed by the full model id a run names. A run on a model that carries one
+	// is bounded by it beside ProviderWindows (FRG-62); a model absent from the
+	// map is bounded by the windows alone.
+	ModelCaps map[string]Window
 	// Cash is NFR-1's $30/month ceiling.
 	Cash Window
 	// Runner is the runner-minutes ceiling, checked independently (FR-22).
@@ -112,6 +117,9 @@ type Candidate struct {
 	Size     string
 	Private  bool
 	Priority int
+	// Model is the build model the run's ticket named, empty when it named
+	// none and the run's own default applies.
+	Model string
 }
 
 // Deferral is a queued run's claim withheld this poll by a budget ceiling or an
@@ -126,20 +134,30 @@ type Deferral struct {
 
 // Decide is FR-22's admission check. It does no IO: reserved is what the
 // ledger currently holds reserved for every run in flight (adr/0003);
-// windowSettled pairs each of cfg.ProviderWindows, in the same order, with
-// the settled provider cost of runs that ended inside it; cashSettledCost and
-// cashSettledMinutes are the equivalent totals summed over Cash's own window.
-// It reports whether estimate fits every ceiling, and names the first one it
-// would breach.
-func Decide(cfg BudgetConfig, reserved Totals, windowSettled []money.Micros, cashSettledCost money.Micros,
-	cashSettledMinutes int64, estimate Reservation) (fits bool, binding string) {
+// settled.Windows pairs each of cfg.ProviderWindows, in the same order, with
+// the settled provider cost of runs that ended inside it, and settled.CashCost
+// and settled.CashMinutes are the equivalent totals summed over Cash's own
+// window. model names the run's build model, selecting which of cfg.ModelCaps
+// (if any) bounds it, with settled.ModelCap the plan's cost inside that cap's
+// own window. It reports whether estimate fits every ceiling, and names the
+// first one it would breach.
+func Decide(cfg BudgetConfig, model string, reserved Totals, settled Settled, estimate Reservation) (fits bool, binding string) {
 	for i, w := range cfg.ProviderWindows {
-		var settled money.Micros
-		if i < len(windowSettled) {
-			settled = windowSettled[i]
+		var windowSettled money.Micros
+		if i < len(settled.Windows) {
+			windowSettled = settled.Windows[i]
 		}
-		if reserved.ProviderCost+settled+estimate.ProviderCost > w.Limit {
+		if reserved.ProviderCost+windowSettled+estimate.ProviderCost > w.Limit {
 			return false, w.Name
+		}
+	}
+
+	// A run whose model carries its own monthly cap is bounded by it beside the
+	// plan's windows: a month with room under the plan-wide window may still
+	// have spent that model's own allowance (FRG-62).
+	if modelCap, ok := cfg.ModelCaps[model]; ok {
+		if reserved.ProviderCost+settled.ModelCap+estimate.ProviderCost > modelCap.Limit {
+			return false, modelCap.Name
 		}
 	}
 
@@ -150,7 +168,7 @@ func Decide(cfg BudgetConfig, reserved Totals, windowSettled []money.Micros, cas
 	// public target's [runner minutes] count as zero").
 	var runnerCost money.Micros
 	if estimate.RunnerMinutes > 0 {
-		totalMinutes := reserved.RunnerMinutes + cashSettledMinutes + estimate.RunnerMinutes
+		totalMinutes := reserved.RunnerMinutes + settled.CashMinutes + estimate.RunnerMinutes
 		if over := totalMinutes - cfg.Runner.FreeMinutes; over > 0 {
 			if cfg.Runner.RatePerMinute <= 0 {
 				return false, CeilingRunnerMinutes
@@ -165,7 +183,7 @@ func Decide(cfg BudgetConfig, reserved Totals, windowSettled []money.Micros, cas
 	// bound.
 	var providerCash money.Micros
 	if len(cfg.ProviderWindows) == 0 {
-		providerCash = reserved.ProviderCost + cashSettledCost + estimate.ProviderCost
+		providerCash = reserved.ProviderCost + settled.CashCost + estimate.ProviderCost
 	}
 	if providerCash+runnerCost > cfg.Cash.Limit {
 		return false, CeilingCash

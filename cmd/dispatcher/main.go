@@ -53,21 +53,31 @@ const (
 )
 
 // budgetConfig is FR-22's admission ceilings for the provider that serves the
-// dispatched model: that provider's own rolling allowance windows, plus the
-// cash ceiling and the GitHub Actions free-minutes allowance shared by every
-// provider, all read from provider configuration rather than hardcoded. The cash ceiling is a calendar
+// dispatched model: that provider's own rolling allowance windows and its
+// per-model monthly caps, plus the cash ceiling and the GitHub Actions
+// free-minutes allowance shared by every provider, all read from provider
+// configuration rather than hardcoded. The cash ceiling is a calendar
 // month (GitHub's own billing cycle); the runner-minutes ceiling is GitHub
 // Actions' free 2,000 minutes/month on a private target repository,
 // hard-stopped there by default (RatePerMinute zero) since no payment method is
 // assumed configured. The windows meter SettledProviderCostMicros, which the
-// harness's runs do not yet fill (FRG-47).
+// harness's runs do not yet fill (FRG-47). A per-model cap binds a run only on
+// the model it names (FRG-62).
 func budgetConfig(provider string) dispatcher.BudgetConfig {
 	var windows []dispatcher.Window
 	for _, w := range providers.Windows(provider) {
 		windows = append(windows, dispatcher.Window{Name: w.Name, Period: w.Period, Limit: w.Limit})
 	}
+	var modelCaps map[string]dispatcher.Window
+	if caps := providers.ModelCaps(provider); len(caps) > 0 {
+		modelCaps = make(map[string]dispatcher.Window, len(caps))
+		for model, w := range caps {
+			modelCaps[model] = dispatcher.Window{Name: w.Name, Period: w.Period, Limit: w.Limit}
+		}
+	}
 	return dispatcher.BudgetConfig{
 		ProviderWindows: windows,
+		ModelCaps:       modelCaps,
 		Cash:            dispatcher.Window{Name: dispatcher.CeilingCash, Calendar: true, Limit: providers.CashLimit()},
 		Runner:          dispatcher.RunnerMinutes{FreeMinutes: providers.RunnerFreeMinutes()},
 	}

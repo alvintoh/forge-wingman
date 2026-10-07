@@ -76,6 +76,9 @@ type Facts struct {
 	Tuning         Tuning
 	Relations      Relations
 	ProviderHalted bool
+	// Model is the run's build model — the model its ticket named, or the run's
+	// own default — which selects any per-model cap that bounds it (FRG-62).
+	Model string
 	// OpenPRs is the count of open agent PRs across the allowlisted
 	// repositories, meaningful only when OpenPRsKnown is set.
 	OpenPRs      int
@@ -84,7 +87,10 @@ type Facts struct {
 
 // Settled is the settled cost of runs inside each window Decide checks.
 type Settled struct {
-	Windows     []money.Micros
+	Windows []money.Micros
+	// ModelCap is the settled provider cost inside the run model's own cap
+	// window; zero when the model carries no cap.
+	ModelCap    money.Micros
 	CashCost    money.Micros
 	CashMinutes int64
 }
@@ -129,7 +135,7 @@ func Admit(in AdmitInput) (ok bool, binding string) {
 		return false, ConditionReviewWIP
 	}
 	s := in.Settled
-	if fits, why := Decide(in.Budget, in.Reserved, s.Windows, s.CashCost, s.CashMinutes, in.Reservation); !fits {
+	if fits, why := Decide(in.Budget, in.Facts.Model, in.Reserved, s, in.Reservation); !fits {
 		return false, why
 	}
 	return true, ""

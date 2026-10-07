@@ -107,6 +107,20 @@ func TestAdmitChecksBudgetLast(t *testing.T) {
 	}
 }
 
+// TestAdmitBoundsARunByItsModelsOwnCap asserts the run's build model selects
+// its per-model cap, checked beside the plan's windows (FRG-62).
+func TestAdmitBoundsARunByItsModelsOwnCap(t *testing.T) {
+	in := admittable()
+	in.Facts.Model = "p/flash"
+	in.Budget.ProviderWindows = []Window{{Name: "month", Period: 720 * time.Hour, Limit: 70 * money.Dollar}}
+	in.Budget.ModelCaps = map[string]Window{"p/flash": {Name: "p/flash", Period: 720 * time.Hour, Limit: 60 * money.Dollar}}
+	in.Settled = Settled{Windows: []money.Micros{0}, ModelCap: 58 * money.Dollar}
+	in.Reservation.ProviderCost = 5 * money.Dollar
+	if ok, binding := Admit(in); ok || binding != "p/flash" {
+		t.Fatalf("ok = %v, binding = %q, want the model cap to withhold it", ok, binding)
+	}
+}
+
 func TestAdmitReadsAnUnsetNAsOne(t *testing.T) {
 	in := admittable()
 	in.N = 0

@@ -20,6 +20,8 @@
   ],
   "providers": {
     "command-code": {
+      "base_url": "https://api.commandcode.ai/provider/v1",
+      "key_secret": "COMMANDCODE_API_KEY",
       "windows": [
         {
           "name": "command-code-goat-5h",
@@ -36,6 +38,12 @@
           "hours": 720,
           "limit_usd": 70
         }
+      ],
+      "model_caps": {
+        "command-code/deepseek/deepseek-v4.1-flash": 60
+      },
+      "harnesses": [
+        "command-code"
       ]
     }
   }

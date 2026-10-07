@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/money"
@@ -24,10 +25,27 @@ type Window struct {
 	Limit  money.Micros
 }
 
-// Provider is one vendor the runner is configured to use, as providers.json
-// describes it.
+// monthlyPeriod is the window a plan's per-model cap is stated over, matching
+// the plan-wide monthly window's own convention: one month, rolling.
+const monthlyPeriod = 720 * time.Hour
+
+// Provider is one vendor plan the runner is configured to use, as
+// providers.json describes it: where the plan's OpenAI-compatible API is, the
+// secret holding its key, its own rolling allowance windows, the monthly cap it
+// sets per model, and the harnesses allowed to run on it.
 type Provider struct {
+	// BaseURL is the plan's OpenAI-compatible API base.
+	BaseURL string
+	// KeySecret names the secret holding the plan's API key.
+	KeySecret string
+	// Windows are the plan-wide rolling allowance ceilings.
 	Windows []Window
+	// ModelCaps are the plan's own monthly ceilings, keyed by the full model id
+	// a run names. A model absent here has no cap of its own and is bounded by
+	// Windows alone.
+	ModelCaps map[string]money.Micros
+	// Harnesses are the harnesses allowed to run on the plan.
+	Harnesses []string
 }
 
 // Config is the runner's provider configuration: the vendor facts that are
@@ -60,7 +78,11 @@ type configDoc struct {
 }
 
 type providerDoc struct {
-	Windows []windowDoc `json:"windows"`
+	BaseURL   string             `json:"base_url"`
+	KeySecret string             `json:"key_secret"`
+	Windows   []windowDoc        `json:"windows"`
+	ModelCaps map[string]float64 `json:"model_caps"`
+	Harnesses []string           `json:"harnesses"`
 }
 
 type windowDoc struct {
@@ -90,13 +112,23 @@ func parseConfig(b []byte) (Config, error) {
 		Providers:           make(map[string]Provider, len(doc.Providers)),
 	}
 	for name, p := range doc.Providers {
-		provider := Provider{}
+		provider := Provider{
+			BaseURL:   p.BaseURL,
+			KeySecret: p.KeySecret,
+			Harnesses: p.Harnesses,
+		}
 		for _, w := range p.Windows {
 			provider.Windows = append(provider.Windows, Window{
 				Name:   w.Name,
 				Period: time.Duration(w.Hours * float64(time.Hour)),
 				Limit:  money.FromUSD(w.LimitUSD),
 			})
+		}
+		if len(p.ModelCaps) > 0 {
+			provider.ModelCaps = make(map[string]money.Micros, len(p.ModelCaps))
+			for model, limitUSD := range p.ModelCaps {
+				provider.ModelCaps[model] = money.FromUSD(limitUSD)
+			}
 		}
 		cfg.Providers[name] = provider
 	}
@@ -128,6 +160,20 @@ func (c Config) validate() error {
 		if name == "" {
 			return errors.New("a provider has an empty name")
 		}
+		if err := checkURL(p.BaseURL); err != nil {
+			return fmt.Errorf("provider %s base URL: %w", name, err)
+		}
+		if p.KeySecret == "" {
+			return fmt.Errorf("provider %s has no key secret", name)
+		}
+		if len(p.Harnesses) == 0 {
+			return fmt.Errorf("provider %s allows no harness", name)
+		}
+		for _, h := range p.Harnesses {
+			if strings.TrimSpace(h) == "" {
+				return fmt.Errorf("provider %s has a harness with no name", name)
+			}
+		}
 		for _, w := range p.Windows {
 			switch {
 			case w.Name == "":
@@ -136,6 +182,14 @@ func (c Config) validate() error {
 				return fmt.Errorf("provider %s window %s has no period", name, w.Name)
 			case w.Limit <= 0:
 				return fmt.Errorf("provider %s window %s has no limit", name, w.Name)
+			}
+		}
+		for model, limit := range p.ModelCaps {
+			switch {
+			case !strings.HasPrefix(model, name+"/") || len(model) == len(name)+1:
+				return fmt.Errorf("provider %s has a model cap for %q, not a %s model", name, model, name)
+			case limit <= 0:
+				return fmt.Errorf("provider %s model %s cap has no limit", name, model)
 			}
 		}
 	}
@@ -147,6 +201,21 @@ func (c Config) validate() error {
 // checked against CashLimit.
 func Windows(provider string) []Window {
 	return slices.Clone(embeddedConfig.Providers[provider].Windows)
+}
+
+// ModelCaps are a provider's own monthly ceilings per model, keyed by the full
+// model id a run names, each over a rolling month; empty for a provider
+// configured without any, whose runs are then bounded by its Windows alone.
+func ModelCaps(provider string) map[string]Window {
+	caps := embeddedConfig.Providers[provider].ModelCaps
+	if len(caps) == 0 {
+		return nil
+	}
+	out := make(map[string]Window, len(caps))
+	for model, limit := range caps {
+		out[model] = Window{Name: model, Period: monthlyPeriod, Limit: limit}
+	}
+	return out
 }
 
 // CashLimit is NFR-1's cash ceiling on provider cost.

@@ -47,12 +47,14 @@ const (
 	blocksField           = "blocks"
 
 	// sizeField and privateField are Record's own fields (runner.Record),
-	// read here to build a Candidate without a second query.
-	sizeField     = "size"
-	privateField  = "private"
-	verdictField  = "provider_verdict"
-	ticketIDField = "ticket_id"
-	outcomeField  = "outcome"
+	// read here to build a Candidate without a second query. modelLabelsField is
+	// read for the build model a ticket named, which selects its per-model cap.
+	sizeField        = "size"
+	privateField     = "private"
+	modelLabelsField = "model_labels"
+	verdictField     = "provider_verdict"
+	ticketIDField    = "ticket_id"
+	outcomeField     = "outcome"
 	// settledAtField, settledProviderCostField and settledRunnerMinutesField
 	// are Record's own settlement fields, written once by runner.Finalize and
 	// summed here for FR-22's window checks.
@@ -170,9 +172,18 @@ func (q *Queue) Candidates(ctx context.Context) ([]dispatcher.Candidate, error) 
 		priority, _ := data[priorityField].(int64)
 		out = append(out, dispatcher.Candidate{
 			RunID: snap.Ref.ID, Repo: repo, Size: size, Private: private, Priority: int(priority),
+			Model: buildModel(data),
 		})
 	}
 	return out, nil
+}
+
+// buildModel is the build model a queued run's ticket named, empty when it named
+// none and the run's own default applies.
+func buildModel(row map[string]any) string {
+	labels, _ := row[modelLabelsField].(map[string]any)
+	model, _ := labels["build"].(string)
+	return model
 }
 
 // ledgerDoc is the dispatch/ledger document's own shape (adr/0003): the
@@ -297,6 +308,13 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 				return err
 			}
 			settled.Windows[i] = sum
+		}
+		if modelCap, ok := cfg.ModelCaps[facts.Model]; ok {
+			sum, _, err := q.settledSince(tx, modelCap.Since(at))
+			if err != nil {
+				return err
+			}
+			settled.ModelCap = sum
 		}
 		settled.CashCost, settled.CashMinutes, err = q.settledSince(tx, cfg.Cash.Since(at))
 		if err != nil {

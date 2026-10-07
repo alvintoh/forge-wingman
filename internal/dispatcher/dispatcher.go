@@ -3,6 +3,7 @@
 package dispatcher
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -403,7 +404,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 			reservation.RunnerMinutes = est.Minutes
 		}
 		facts := Facts{Limits: limits, Tuning: c.Tuning.OrDefault(), ProviderHalted: halted, OpenPRs: prs.count, OpenPRsKnown: prs.known,
-			Relations: relations[cand.RunID]}
+			Relations: relations[cand.RunID], Model: cmp.Or(cand.Model, c.Model)}
 		ok, binding, err := d.Queue.TryClaim(ctx, cand.RunID, d.Now(), c.Budget, facts, reservation)
 		if err != nil {
 			return claims, err
