@@ -119,6 +119,24 @@ cannot read leaves that count unknown, which admits only a lone run.
 `actions: write`: the dispatch is a `workflow_dispatch`, which GitHub refuses
 with 403 "Resource not accessible by personal access token" without it.
 
+`secrets.tf` creates four more, empty and readable by no identity until the code
+that reads each lands and grants its own: `linear-client-id` and
+`linear-client-secret` (the Forge Wingman Linear app, client credentials on),
+`linear-webhook-secret` (Linear issues it once the webhook service has a URL)
+and `notice-webhook-url` (the Forge Slack incoming webhook). `linear-token` holds
+a 30-day client-credentials token minted from the first two:
+
+```sh
+curl -s -X POST https://api.linear.app/oauth/token \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  --data-urlencode grant_type=client_credentials \
+  --data-urlencode "client_id=$CLIENT_ID" --data-urlencode "client_secret=$CLIENT_SECRET" \
+  --data-urlencode 'scope=read,write,app:assignable' | jq -r .access_token
+```
+
+`linear_delegate` is that app's user id, `dbffe977-856f-4b88-a728-3cf2ca54fea6`;
+every apply must pass it.
+
 ### A ticket
 
 A delegated issue is queued only with both labels, and is recorded as refused
