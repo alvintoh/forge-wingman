@@ -42,9 +42,10 @@
       "model_caps": {
         "command-code/deepseek/deepseek-v4.1-flash": 60
       },
-      "harnesses": [
-        "command-code"
-      ]
+      "harnesses": {
+        "default": "command-code",
+        "fallbacks": []
+      }
     }
   }
 }

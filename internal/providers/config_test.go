@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -10,7 +11,7 @@ import (
 
 // providerFacts is a provider entry's required addressing fields, as a case
 // below extends with the field it varies.
-const providerFacts = `"base_url":"https://v.example/v1","key_secret":"k","harnesses":["h"]`
+const providerFacts = `"base_url":"https://v.example/v1","key_secret":"k","harnesses":{"default":"h"}`
 
 // configDoc wraps an entry's own JSON body in a minimal valid document.
 func configWith(providerBody string) string {
@@ -23,12 +24,16 @@ func TestParseConfigRejectsAnInvalidConfig(t *testing.T) {
 		"negative free minutes":  {`{"cash_limit_usd":30,"runner_free_minutes":-1,"providers":{"p":{}}}`, "runner free minutes"},
 		"no provider":            {`{"cash_limit_usd":30,"runner_free_minutes":2000,"providers":{}}`, "no provider"},
 		"an empty provider name": {`{"cash_limit_usd":30,"runner_free_minutes":2000,"providers":{"":{}}}`, "empty name"},
-		"no base URL":            {configWith(`"key_secret":"k","harnesses":["h"]`), "base URL"},
-		"a non-https base URL":   {configWith(`"base_url":"http://v.example/v1","key_secret":"k","harnesses":["h"]`), "not an https URL"},
-		"no key secret":          {configWith(`"base_url":"https://v.example/v1","harnesses":["h"]`), "no key secret"},
+		"no base URL":            {configWith(`"key_secret":"k","harnesses":{"default":"h"}`), "base URL"},
+		"a non-https base URL":   {configWith(`"base_url":"http://v.example/v1","key_secret":"k","harnesses":{"default":"h"}`), "not an https URL"},
+		"no key secret":          {configWith(`"base_url":"https://v.example/v1","harnesses":{"default":"h"}`), "no key secret"},
 		"no harness":             {configWith(`"base_url":"https://v.example/v1","key_secret":"k"`), "allows no harness"},
-		"an empty harness name": {configWith(`"base_url":"https://v.example/v1","key_secret":"k","harnesses":["h"," "]`),
+		"fallbacks without a default": {configWith(`"base_url":"https://v.example/v1","key_secret":"k","harnesses":{"fallbacks":["h"]}`),
+			"no default"},
+		"an empty harness name": {configWith(`"base_url":"https://v.example/v1","key_secret":"k","harnesses":{"default":"h","fallbacks":[" "]}`),
 			"harness with no name"},
+		"a harness listed twice": {configWith(`"base_url":"https://v.example/v1","key_secret":"k","harnesses":{"default":"h","fallbacks":["h"]}`),
+			"lists harness h twice"},
 		"a window with no name": {configWith(providerFacts + `,"windows":[{"hours":5,"limit_usd":1}]`), "no name"},
 		"a window with no period": {configWith(providerFacts + `,"windows":[{"name":"p-5h","limit_usd":1}]`),
 			"no period"},
@@ -38,6 +43,13 @@ func TestParseConfigRejectsAnInvalidConfig(t *testing.T) {
 			"not a p model"},
 		"a model cap with no limit":   {configWith(providerFacts + `,"model_caps":{"p/model":0}`), "cap has no limit"},
 		"a model cap naming no model": {configWith(providerFacts + `,"model_caps":{"p/":5}`), "not a p model"},
+		"rates for another provider": {configWith(providerFacts + `,"rates":{"other/model":{"input_usd_per_mtok":1}}`),
+			"not a p model"},
+		"rates naming no model": {configWith(providerFacts + `,"rates":{"p/":{"input_usd_per_mtok":1}}`),
+			"not a p model"},
+		"a negative rate": {configWith(providerFacts + `,"rates":{"p/model":{"input_usd_per_mtok":-1}}`),
+			"negative rate"},
+		"a rate with no rate": {configWith(providerFacts + `,"rates":{"p/model":{}}`), "has no rate"},
 		"an unknown field": {`{"cash_limit_usd":30,"runner_free_minutes":2000,"providers":{"p":{}},"extra":1}`,
 			"unknown field"},
 	} {
@@ -74,7 +86,7 @@ func TestParseConfigReadsEveryPlanFact(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := cfg.Providers["p"]
-	if p.BaseURL != "https://v.example/v1" || p.KeySecret != "k" || len(p.Harnesses) != 1 || p.Harnesses[0] != "h" {
+	if p.BaseURL != "https://v.example/v1" || p.KeySecret != "k" || p.Harnesses.Default != "h" || len(p.Harnesses.Fallbacks) != 0 {
 		t.Fatalf("plan = %+v, want the base URL, key secret and harnesses read back", p)
 	}
 }
@@ -96,9 +108,9 @@ func TestModelCapsOfAnUnconfiguredProviderAreEmpty(t *testing.T) {
 // and harnesses — is read from a document with no Go change.
 func TestASecondPlanIsAddedByConfigurationAlone(t *testing.T) {
 	doc := `{"cash_limit_usd":30,"runner_free_minutes":2000,"providers":{
-		"command-code":{"base_url":"https://api.example/v1","key_secret":"cc-key","harnesses":["command-code"],
+		"command-code":{"base_url":"https://api.example/v1","key_secret":"cc-key","harnesses":{"default":"command-code"},
 			"windows":[{"name":"cc-5h","hours":5,"limit_usd":14}]},
-		"another-plan":{"base_url":"https://api.other/v1","key_secret":"other-key","harnesses":["one","two"],
+		"another-plan":{"base_url":"https://api.other/v1","key_secret":"other-key","harnesses":{"default":"one","fallbacks":["two"]},
 			"windows":[{"name":"other-month","hours":720,"limit_usd":40}],
 			"model_caps":{"another-plan/vendor/big":25}}}}`
 	cfg, err := parseConfig([]byte(doc))
@@ -112,8 +124,8 @@ func TestASecondPlanIsAddedByConfigurationAlone(t *testing.T) {
 	if p.BaseURL != "https://api.other/v1" || p.KeySecret != "other-key" {
 		t.Fatalf("plan = %+v, want its own base URL and secret", p)
 	}
-	if len(p.Harnesses) != 2 || p.Harnesses[0] != "one" || p.Harnesses[1] != "two" {
-		t.Fatalf("harnesses = %v, want the two the plan allows", p.Harnesses)
+	if p.Harnesses.Default != "one" || len(p.Harnesses.Fallbacks) != 1 || p.Harnesses.Fallbacks[0] != "two" {
+		t.Fatalf("harnesses = %+v, want one defaulting to one and falling back to two", p.Harnesses)
 	}
 	if len(p.Windows) != 1 || p.Windows[0].Limit != 40*money.Dollar {
 		t.Fatalf("windows = %+v, want the plan's own", p.Windows)
@@ -141,5 +153,47 @@ func TestEmbeddedGoatCarriesItsPlanFacts(t *testing.T) {
 	flashCap, ok := caps["command-code/deepseek/deepseek-v4.1-flash"]
 	if !ok || flashCap.Limit != 60*money.Dollar || flashCap.Period != monthlyPeriod {
 		t.Fatalf("flash cap = %+v (ok %v), want $60 over a month", flashCap, ok)
+	}
+}
+
+// TestHarnessesReadsThePlansOrder asserts a plan's harness order reads back with
+// its default first, and is empty for a plan that is not configured, so the
+// router selects from configuration rather than the model prefix.
+func TestHarnessesReadsThePlansOrder(t *testing.T) {
+	if got := Harnesses("command-code"); !slices.Equal(got, []string{"command-code"}) {
+		t.Fatalf("Harnesses(command-code) = %v, want its one configured harness", got)
+	}
+	if got := Harnesses("nobody"); got != nil {
+		t.Fatalf("Harnesses(nobody) = %v, want none", got)
+	}
+}
+
+// TestRatesReadThePlansCard asserts a plan's rate card reads back by full model
+// id, and a model the plan does not price has none, so the runner keeps the
+// harness's own figure for it (FR-22).
+func TestRatesReadThePlansCard(t *testing.T) {
+	cfg, err := parseConfig([]byte(configWith(providerFacts +
+		`,"rates":{"p/model":{"input_usd_per_mtok":0.28,"output_usd_per_mtok":0.42,"cache_read_usd_per_mtok":0.028}}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rates, ok := ratesFor(cfg, "p/model")
+	if !ok || rates.Input != 0.28 || rates.Output != 0.42 || rates.CacheRead != 0.028 {
+		t.Fatalf("rates = %+v (ok %v), want the plan's card", rates, ok)
+	}
+	if _, ok := ratesFor(cfg, "p/other"); ok {
+		t.Fatal("a model the plan does not price had rates")
+	}
+	if _, ok := ratesFor(cfg, "nomodel"); ok {
+		t.Fatal("a model with no provider had rates")
+	}
+}
+
+// TestRatesCostMultipliesTokensByRates asserts the rate card prices a usage from
+// its tokens: cost is the sum of each token class times its rate (FR-22).
+func TestRatesCostMultipliesTokensByRates(t *testing.T) {
+	r := Rates{Input: 1, Output: 2, CacheRead: 0.5, CacheWrite: 3}
+	if got := r.CostUSD(1_000_000, 1_000_000, 2_000_000, 1_000_000); got != 7 {
+		t.Fatalf("CostUSD = %v, want the tokens times the rates", got)
 	}
 }

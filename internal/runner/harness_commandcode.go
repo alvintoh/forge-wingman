@@ -77,8 +77,8 @@ type CommandCodeHarness struct {
 	Home string
 }
 
-// Providers are the model-id prefixes the Command Code CLI serves.
-func (h CommandCodeHarness) Providers() []string { return []string{commandCodeProvider} }
+// Name is the harness's own name, the key a plan's configuration selects it by.
+func (h CommandCodeHarness) Name() string { return commandCodeProvider }
 
 // Agent returns the Command Code agent for profile p.
 func (h CommandCodeHarness) Agent(p Profile, model string) Agent {

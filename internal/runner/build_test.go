@@ -1909,7 +1909,10 @@ func TestRunWorkflowRebaseStepRunsOnAFreshRunner(t *testing.T) {
 			output := filepath.Join(dir, "github_output")
 			cmd := exec.Command("bash", "-e", "-c", script)
 			cmd.Dir = work
+			// user.useConfigOnly stops git inventing an identity from the hostname, as
+			// macOS does, so a missing committer fails here as it does on the runner.
 			cmd.Env = append(os.Environ(), "HOME="+dir, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
+				"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=user.useConfigOnly", "GIT_CONFIG_VALUE_0=true",
 				"BRANCH=wingman/x-1-1", "GITHUB_OUTPUT="+output)
 			if !tc.noIdentity {
 				cmd.Env = append(cmd.Env, "GIT_COMMITTER_NAME="+committerName, "GIT_COMMITTER_EMAIL="+committerEmail)

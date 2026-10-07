@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"slices"
 	"strings"
 
 	"github.com/alvintoh/forge-wingman/internal/providers"
@@ -20,10 +19,11 @@ const (
 	ProfileReview
 )
 
-// Harness is one agent CLI a run can route a phase through.
+// Harness is one agent CLI a run can route a phase through, an adapter behind
+// this interface alone.
 type Harness interface {
-	// Providers are the model-id prefixes the harness serves.
-	Providers() []string
+	// Name is the key a plan's configuration selects the harness by.
+	Name() string
 	// Agent returns the agent that runs profile p on model.
 	Agent(p Profile, model string) Agent
 	// Classify maps a failed run's stderr tail and exit error to an outcome.
@@ -33,65 +33,117 @@ type Harness interface {
 	Ready() error
 }
 
-// Router is an Agent that runs each attempt through the harness serving its
-// model's provider, so one ordered model list can mix harnesses.
+// harnessOrder resolves a plan — a model id's prefix — to the harness names it
+// runs through, in order: the default first, then the ordered fallbacks. It is
+// providers.Harnesses in production, so a plan picks its harness by
+// configuration, never by the model prefix.
+type harnessOrder func(plan string) []string
+
+// Router is an Agent that runs each attempt through the harness its model's
+// plan selects, so one ordered model list can mix harnesses.
 type Router struct {
 	profile   Profile
 	harnesses []Harness
+	order     harnessOrder
 	model     string
 }
 
-// NewRouter returns a router that runs profile through harnesses.
+// NewRouter returns a router that runs profile through harnesses, selecting a
+// model's harness from the plan its provider names.
 func NewRouter(profile Profile, harnesses ...Harness) Router {
-	return Router{profile: profile, harnesses: harnesses}
+	return newRouter(providers.Harnesses, profile, harnesses...)
+}
+
+// newRouter is NewRouter with the plan-to-harness resolver supplied, so a test
+// can route a plan without a providers.json entry.
+func newRouter(order harnessOrder, profile Profile, harnesses ...Harness) Router {
+	return Router{profile: profile, harnesses: harnesses, order: order}
 }
 
 // WithModel returns the router bound to run model.
 func (r Router) WithModel(model string) Agent { r.model = model; return r }
 
-// harness returns the harness serving the router's current model.
-func (r Router) harness() (Harness, bool) { return harnessFor(r.harnesses, Provider(r.model)) }
-
-// harnessFor returns the harness serving provider, if any.
-func harnessFor(harnesses []Harness, provider string) (Harness, bool) {
-	for _, h := range harnesses {
-		if slices.Contains(h.Providers(), provider) {
-			return h, true
-		}
-	}
-	return nil, false
-}
-
-// Run runs the router's profile through the harness serving its model,
-// refusing a model whose harness is not configured (AC7).
+// Run runs the router's profile through the harness the model's plan selects,
+// refusing a model whose plan names no harness the run is configured for (AC7).
 func (r Router) Run(ctx context.Context, dir, session, prompt, rules string, stdout, stderr io.Writer) error {
-	h, ok := r.harness()
-	if !ok {
-		return fmt.Errorf("no harness serves model %q", r.model)
-	}
-	if err := h.Ready(); err != nil {
+	h, err := pickHarness(r.harnesses, r.order, Provider(r.model))
+	if err != nil {
 		return err
 	}
 	return h.Agent(r.profile, r.model).Run(ctx, dir, session, prompt, rules, stdout, stderr)
 }
 
-// Classify classifies a failed run through the harness that ran it.
+// Classify classifies a failed run through the harness Run picked: a harness's
+// readiness is fixed at construction, so picking again finds the fallback that
+// ran when the default was not ready. When no harness was ready, Run failed
+// before any ran, and the plan's first registered harness classifies it rather
+// than a bare agent failure (AC3).
 func (r Router) Classify(stderrTail string, exitErr error) (Outcome, StopReason) {
-	h, ok := r.harness()
-	if !ok {
+	plan := Provider(r.model)
+	h, err := pickHarness(r.harnesses, r.order, plan)
+	if err != nil {
+		h = routedHarness(r.harnesses, r.order, plan)
+	}
+	if h == nil {
 		return OutcomeAgentFailed, StopAgentExit
 	}
 	return h.Classify(stderrTail, exitErr)
 }
 
-// Gate reports whether the run is configured to use model, refusing one no
-// harness serves or whose harness is not configured (AC7).
+// Gate reports whether the run is configured to use model, refusing one whose
+// plan names no harness the run is configured for (AC7).
 func (r Router) Gate(model string) error {
-	h, ok := harnessFor(r.harnesses, Provider(model))
-	if !ok {
-		return fmt.Errorf("no harness serves model %q", model)
+	_, err := pickHarness(r.harnesses, r.order, Provider(model))
+	return err
+}
+
+// pickHarness returns the first harness the plan names, in order, that is
+// registered and ready, so a plan's fallback runs when its default cannot. A
+// plan whose harnesses are all unregistered or unready is refused.
+func pickHarness(harnesses []Harness, order harnessOrder, plan string) (Harness, error) {
+	names := order(plan)
+	if len(names) == 0 {
+		return nil, fmt.Errorf("no harness is configured for plan %q", plan)
 	}
-	return h.Ready()
+	var unready error
+	for _, name := range names {
+		h := harnessNamed(harnesses, name)
+		if h == nil {
+			continue
+		}
+		if err := h.Ready(); err != nil {
+			if unready == nil {
+				unready = err
+			}
+			continue
+		}
+		return h, nil
+	}
+	if unready != nil {
+		return nil, unready
+	}
+	return nil, fmt.Errorf("plan %q names no configured harness", plan)
+}
+
+// harnessNamed returns the harness with this name, if one is registered.
+func harnessNamed(harnesses []Harness, name string) Harness {
+	for _, h := range harnesses {
+		if h.Name() == name {
+			return h
+		}
+	}
+	return nil
+}
+
+// routedHarness returns the first harness the plan names that is registered,
+// ready or not.
+func routedHarness(harnesses []Harness, order harnessOrder, plan string) Harness {
+	for _, name := range order(plan) {
+		if h := harnessNamed(harnesses, name); h != nil {
+			return h
+		}
+	}
+	return nil
 }
 
 // failureClassifier is implemented by an Agent that classifies its own

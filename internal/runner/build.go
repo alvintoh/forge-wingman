@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/alvintoh/forge-wingman/internal/providers"
 )
 
 const (
@@ -454,7 +456,7 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 	} else if usage, err := SumUsage(out); err != nil {
 		addUsageWarning(sum, err.Error())
 	} else {
-		step.Tokens = usage
+		step.Tokens = meterUsage(usage, call.Model, providers.RatesFor)
 	}
 	if _, err := out.Seek(0, io.SeekStart); err == nil {
 		warnings, _ := UsageWarnings(out)
@@ -509,6 +511,19 @@ func addUsageWarning(sum *Summary, warning string) {
 	} else {
 		sum.UsageWarning += "; " + warning
 	}
+}
+
+// meterUsage prices a run's usage from the plan's rates for model: the tokens
+// times those rates replace the harness's own cost figure, so a figure that is
+// absent or wrong is still priced (FR-22). A model the plan does not price keeps
+// the harness's figure.
+func meterUsage(u Usage, model string, ratesFor func(string) (providers.Rates, bool)) Usage {
+	rates, ok := ratesFor(model)
+	if !ok {
+		return u
+	}
+	u.Cost = rates.CostUSD(u.Input, u.Output, u.CacheRead, u.CacheWrite)
+	return u
 }
 
 // ValidatePlanModels reports whether models is a usable plan list: at least
