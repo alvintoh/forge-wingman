@@ -437,6 +437,7 @@ func record(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	prURL := fs.String("pr-url", "", "URL of the opened PR")
 	runResult := fs.String("run-result", "", "result of the run job")
 	prResult := fs.String("pr-result", "", "result of the pr job")
+	prStopReason := fs.String("pr-stop-reason", "", "the pr job's stop_reason output, empty when it pushed")
 	prSeconds := fs.Int("pr-duration-s", 0, "wall-clock seconds the pr job took")
 	checkReport := fs.String("failed-gate", "", "the check job's failed_gate output, empty when it did not run")
 	if err := fs.Parse(args); err != nil {
@@ -464,6 +465,7 @@ func record(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		PRURL:             *prURL,
 		RunResult:         *runResult,
 		PRResult:          *prResult,
+		PRStopReason:      *prStopReason,
 		PRDuration:        time.Duration(*prSeconds) * time.Second,
 		CheckReport:       *checkReport,
 	}, time.Now())

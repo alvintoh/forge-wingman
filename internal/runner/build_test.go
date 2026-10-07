@@ -1614,6 +1614,56 @@ func TestWorkflowsHandTheTicketOffAsAnArtifactNotAJobOutput(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowRebasesTheBranchBeforePushing is the regression for a branch
+// pushed on a stale base: the branch is rebased onto current main before it is
+// pushed, so its delta against main is only the run's own commits, and a
+// conflict stops the run through a named stop reason.
+func TestRunWorkflowRebasesTheBranchBeforePushing(t *testing.T) {
+	yml, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "run.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := string(yml)
+	for _, want := range []string{
+		`git -c transfer.fsckObjects=true fetch "$RUNNER_TEMP/wingman.bundle" "refs/heads/${BRANCH}:refs/heads/${BRANCH}"`,
+		"git fetch --quiet origin main",
+		`git checkout -q "$BRANCH"`,
+		"git rebase origin/main",
+		"git rebase --abort",
+		`echo "stop_reason=rebase-conflict" >> "$GITHUB_OUTPUT"`,
+		"if: steps.rebase.outputs.stop_reason == ''",
+		"if: steps.rebase.outputs.stop_reason != ''",
+		"PR_STOP_REASON: ${{ needs.pr.outputs.stop_reason }}",
+		`-pr-stop-reason "$PR_STOP_REASON"`,
+	} {
+		if !strings.Contains(run, want) {
+			t.Errorf("run.yml lacks %q", want)
+		}
+	}
+	// Order is the point, not presence: a push ahead of the rebase is the defect
+	// this change exists for, and both steps would still be in the file.
+	order := []string{
+		`fetch "$RUNNER_TEMP/wingman.bundle"`,
+		"git fetch --quiet origin main",
+		"git rebase origin/main",
+		`git push origin "refs/heads/${BRANCH}"`,
+		"name: Stop on a conflicting rebase",
+		"name: Open the PR",
+	}
+	prev := -1
+	for _, marker := range order {
+		i := strings.Index(run, marker)
+		if i < 0 {
+			t.Errorf("run.yml lacks %q", marker)
+			continue
+		}
+		if i < prev {
+			t.Errorf("run.yml places %q before the step it must follow", marker)
+		}
+		prev = i
+	}
+}
+
 func TestBranchNameMatchesThePRJobsPattern(t *testing.T) {
 	pattern := regexp.MustCompile(strings.ReplaceAll(branchPattern, "${GITHUB_RUN_ID}", "42"))
 	for _, id := range []string{"ABC-12", "xyz-7", "A1-2-3", "x"} {

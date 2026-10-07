@@ -91,6 +91,12 @@ func TestFinalize(t *testing.T) {
 			OutcomePROpened, "", OutcomeBuilt},
 		{"built but the PR job failed", func(t *testing.T) string { return encoded(t, Summary{Outcome: OutcomeBuilt}) },
 			FinalizeInput{RunResult: "success", PRResult: "failure"}, OutcomeInfraFailure, StopPRJob, OutcomeBuilt},
+		{"built but the rebase conflicted", func(t *testing.T) string { return encoded(t, Summary{Outcome: OutcomeBuilt}) },
+			FinalizeInput{RunResult: "success", PRResult: "failure", PRStopReason: string(StopRebaseConflict)},
+			OutcomeInfraFailure, StopRebaseConflict, OutcomeBuilt},
+		{"built but the PR job failed for an unrecognised reason", func(t *testing.T) string { return encoded(t, Summary{Outcome: OutcomeBuilt}) },
+			FinalizeInput{RunResult: "success", PRResult: "failure", PRStopReason: "something-else"},
+			OutcomeInfraFailure, StopPRJob, OutcomeBuilt},
 		{"a stop is kept", func(t *testing.T) string {
 			return encoded(t, Summary{Outcome: OutcomeStopped, StopReason: StopProjectionMissing, Phase: PhaseProjection})
 		}, FinalizeInput{RunResult: "failure", PRResult: "skipped"}, OutcomeStopped, StopProjectionMissing, OutcomeStopped},

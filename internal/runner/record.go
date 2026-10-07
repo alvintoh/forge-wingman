@@ -65,6 +65,10 @@ const (
 	StopSecretInBranch    StopReason = "secret-in-branch"
 	StopPanic             StopReason = "panic"
 	StopPRJob             StopReason = "pr-job"
+	// StopRebaseConflict reports the run's commits conflicting with main at the
+	// push: the build survives as its bundle artifact, but the branch cannot be
+	// delivered as built.
+	StopRebaseConflict    StopReason = "rebase-conflict"
 	StopSummaryInvalid    StopReason = "summary-invalid"
 	StopSummaryUnreadable StopReason = "summary-unreadable"
 	StopSetup             StopReason = "setup"
@@ -287,9 +291,12 @@ type FinalizeInput struct {
 	PRURL             string
 	// RunResult is the model job's result; success means it finished and reported a
 	// summary, whatever the build's outcome.
-	RunResult  string
-	PRResult   string
-	PRDuration time.Duration
+	RunResult string
+	PRResult  string
+	// PRStopReason is the pr job's own report of why the push could not be made,
+	// empty when it made it.
+	PRStopReason string
+	PRDuration   time.Duration
 	// CheckReport is the check job's failed_gate output, or empty when it did not run.
 	CheckReport string
 }
@@ -340,7 +347,11 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, in Finalize
 			if in.PRResult == "success" && in.PRURL != "" {
 				rec.Outcome = OutcomePROpened
 			} else {
-				rec.Outcome, rec.StopReason = OutcomeInfraFailure, StopPRJob
+				reason := StopPRJob
+				if in.PRStopReason == string(StopRebaseConflict) {
+					reason = StopRebaseConflict
+				}
+				rec.Outcome, rec.StopReason = OutcomeInfraFailure, reason
 			}
 		}
 	}
