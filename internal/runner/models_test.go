@@ -39,10 +39,12 @@ func TestParseModelSetRejectsAnInvalidSet(t *testing.T) {
 		"empty default":    {`{"default":"","fallbacks":[]}`, "not provider/model"},
 		"unknown field":    {`{"default":"p/a","fallbacks":[],"extra":1}`, "unknown field"},
 		"fallback foreign": {`{"default":"p/a","fallbacks":["command-code/b"]}`, "not a p model"},
-		"malformed plan":   {`{"default":"p/a","fallbacks":[],"plan":"big-pickle","review":"p/r"}`, "not provider/model"},
-		"foreign plan":     {`{"default":"p/a","fallbacks":[],"plan":"q/a","review":"p/r"}`, "not a p model"},
-		"malformed review": {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":""}`, "not provider/model"},
-		"foreign review":   {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":"q/r"}`, "not a p model"},
+		"malformed plan":   {`{"default":"p/a","fallbacks":[],"plan":"big-pickle","review":["p/r"]}`, "not provider/model"},
+		"foreign plan":     {`{"default":"p/a","fallbacks":[],"plan":"q/a","review":["p/r"]}`, "not a p model"},
+		"no review":        {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":[]}`, "at least one model"},
+		"malformed review": {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":["p/r",""]}`, "not provider/model"},
+		"foreign review":   {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":["p/r","q/r"]}`, "not a p model"},
+		"repeated review":  {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":["p/r","p/r"]}`, "listed twice"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := parseModelSet([]byte(tc.doc))
@@ -50,6 +52,25 @@ func TestParseModelSetRejectsAnInvalidSet(t *testing.T) {
 				t.Fatalf("err = %v, want one containing %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestEmbeddedReviewModelsAreTwoVendors(t *testing.T) {
+	review := DefaultReviewModels()
+	if len(review) != 2 {
+		t.Fatalf("DefaultReviewModels() = %v, want two entries", review)
+	}
+	vendor := func(m string) string { return strings.Split(m, "/")[1] }
+	if vendor(review[0]) == vendor(review[1]) {
+		t.Errorf("review models %v share a vendor", review)
+	}
+}
+
+func TestDefaultReviewModelsReturnsACopy(t *testing.T) {
+	first := DefaultReviewModels()
+	first[0] = "command-code/mutated"
+	if got := DefaultReviewModels(); got[0] == "command-code/mutated" {
+		t.Fatalf("DefaultReviewModels shares its backing array: %v", got)
 	}
 }
 

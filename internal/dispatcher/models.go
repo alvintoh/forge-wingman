@@ -4,21 +4,27 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
 // checkModels is the refusal a ticket's named models draw, empty when they may
 // run. Each model must be well formed; the review model (the default when none
-// is named) must differ from the build model the run will use; and each provider
+// is named, every entry of the default list) must differ from the build model
+// the run will use; and each provider
 // needs a plan record with its billing recorded, plus the owner's opt-in when it
 // bills per token. The error is a failed plan read, which is not a refusal.
 func checkModels(ctx context.Context, plans ModelPlans, m runner.ModelLabels, defaultModel string) (Refusal, string, error) {
 	if reason, detail := malformedModel(m); reason != "" {
 		return reason, detail, nil
 	}
-	if build, review := cmp.Or(m.Build, defaultModel), cmp.Or(m.Review, runner.DefaultReviewModel()); review == build {
-		return RefusalReviewIsBuild, "review model " + review + " is the build model", nil
+	build, review := cmp.Or(m.Build, defaultModel), []string{m.Review}
+	if m.Review == "" {
+		review = runner.DefaultReviewModels()
+	}
+	if slices.Contains(review, build) {
+		return RefusalReviewIsBuild, "review model " + build + " is the build model", nil
 	}
 	seen := map[string]bool{}
 	for _, model := range append([]string{m.Build, m.Review}, m.Plan...) {
