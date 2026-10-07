@@ -36,7 +36,8 @@ func TestParseConfigRejectsAnInvalidConfig(t *testing.T) {
 			"no limit"},
 		"a model cap for another provider": {configWith(providerFacts + `,"model_caps":{"other/model":5}`),
 			"not a p model"},
-		"a model cap with no limit": {configWith(providerFacts + `,"model_caps":{"p/model":0}`), "cap has no limit"},
+		"a model cap with no limit":   {configWith(providerFacts + `,"model_caps":{"p/model":0}`), "cap has no limit"},
+		"a model cap naming no model": {configWith(providerFacts + `,"model_caps":{"p/":5}`), "not a p model"},
 		"an unknown field": {`{"cash_limit_usd":30,"runner_free_minutes":2000,"providers":{"p":{}},"extra":1}`,
 			"unknown field"},
 	} {
@@ -137,8 +138,8 @@ func TestEmbeddedGoatCarriesItsPlanFacts(t *testing.T) {
 		t.Fatalf("windows = %+v, want $14/5h, $35/week and $70/month", windows)
 	}
 	caps := ModelCaps("command-code")
-	cap, ok := caps["command-code/deepseek/deepseek-v4.1-flash"]
-	if !ok || cap.Limit != 60*money.Dollar || cap.Period != monthlyPeriod {
-		t.Fatalf("flash cap = %+v (ok %v), want $60 over a month", cap, ok)
+	flashCap, ok := caps["command-code/deepseek/deepseek-v4.1-flash"]
+	if !ok || flashCap.Limit != 60*money.Dollar || flashCap.Period != monthlyPeriod {
+		t.Fatalf("flash cap = %+v (ok %v), want $60 over a month", flashCap, ok)
 	}
 }

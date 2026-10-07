@@ -66,7 +66,9 @@ type BudgetConfig struct {
 	// ModelCaps are the selected provider's own monthly ceiling per model,
 	// keyed by the full model id a run names. A run on a model that carries one
 	// is bounded by it beside ProviderWindows (FRG-62); a model absent from the
-	// map is bounded by the windows alone.
+	// map is bounded by the windows alone. A run records one settled cost, not
+	// one per model, so the cap is checked against every model's spend: it binds
+	// early, never late, until runs record cost per model.
 	ModelCaps map[string]Window
 	// Cash is NFR-1's $30/month ceiling.
 	Cash Window

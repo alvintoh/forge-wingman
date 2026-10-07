@@ -1330,3 +1330,21 @@ func TestRecordVerdictRefusesARunThatDoesNotExist(t *testing.T) {
 		t.Fatal("a verdict was written onto a run that does not exist")
 	}
 }
+
+func TestBuildModelReadsTheTicketsBuildLabel(t *testing.T) {
+	for name, tc := range map[string]struct {
+		row  map[string]any
+		want string
+	}{
+		"a named build model":    {map[string]any{modelLabelsField: map[string]any{"build": "p/model"}}, "p/model"},
+		"labels without build":   {map[string]any{modelLabelsField: map[string]any{"review": "p/other"}}, ""},
+		"no labels at all":       {map[string]any{}, ""},
+		"labels of another type": {map[string]any{modelLabelsField: "p/model"}, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := buildModel(tc.row); got != tc.want {
+				t.Fatalf("buildModel = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
