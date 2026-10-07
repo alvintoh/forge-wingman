@@ -55,7 +55,7 @@ func TestCheckModels(t *testing.T) {
 		"a plan list repeating a model":                  {runner.ModelLabels{Plan: []string{"free/a", "free/a"}}, RefusalModelMalformed, nil},
 		"a review model that is the build":               {runner.ModelLabels{Build: "free/a", Review: "free/a"}, RefusalReviewIsBuild, nil},
 		"a review model that is the default build":       {runner.ModelLabels{Review: defaultBuild}, RefusalReviewIsBuild, nil},
-		"a build model that is the default review model": {runner.ModelLabels{Build: runner.DefaultReviewModel}, RefusalReviewIsBuild, nil},
+		"a build model that is the default review model": {runner.ModelLabels{Build: runner.DefaultReviewModel()}, RefusalReviewIsBuild, nil},
 		"a provider with no plan record":                 {runner.ModelLabels{Build: "nobody/a"}, RefusalModelUnconfigured, []string{"nobody"}},
 		"a plan with no billing recorded":                {runner.ModelLabels{Build: "unrecorded/a"}, RefusalModelUnconfigured, []string{"unrecorded"}},
 		"a per-token build model not opted in":           {runner.ModelLabels{Build: "tokens/a"}, RefusalModelNotOptedIn, []string{"tokens"}},

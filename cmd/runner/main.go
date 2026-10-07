@@ -28,7 +28,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -41,9 +40,6 @@ import (
 	"github.com/alvintoh/forge-wingman/internal/runner"
 	"github.com/alvintoh/forge-wingman/internal/store"
 )
-
-// commandCodeBin is the proprietary agent CLI's binary (PACKAGE.txt).
-const commandCodeBin = "cmd"
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -108,8 +104,8 @@ func loadEnv(getenv func(string) string, required ...string) (env, error) {
 		output:   getenv("GITHUB_OUTPUT"),
 		identity: runner.IdentityFromEnv(getenv),
 	}
-	e.secrets = []string{getenv("COMMANDCODE_API_KEY")}
-	e.harnesses = harnesses(getenv)
+	e.secrets = runner.HarnessSecrets(getenv)
+	e.harnesses = runner.Harnesses(getenv)
 	var missing []string
 	for _, name := range required {
 		if getenv(name) == "" {
@@ -247,8 +243,8 @@ func readTicket(path string) (runner.Ticket, error) {
 func build(ctx context.Context, logger *slog.Logger, e env, args []string) error {
 	fs := flag.NewFlagSet("build", flag.ContinueOnError)
 	model := fs.String("model", "", "model, as provider/model")
-	planModels := fs.String("plan-models", runner.DefaultPlanModel, "the plan phase's models in order, comma-separated provider/model; later ones are backups")
-	reviewModels := fs.String("review-models", runner.DefaultReviewModel, "the review phase's models in order, comma-separated provider/model; later ones are backups (FR-14)")
+	planModels := fs.String("plan-models", runner.DefaultPlanModel(), "the plan phase's models in order, comma-separated provider/model; later ones are backups")
+	reviewModels := fs.String("review-models", runner.DefaultReviewModel(), "the review phase's models in order, comma-separated provider/model; later ones are backups (FR-14)")
 	pointer := fs.String("pointer", runner.DefaultPointer, "object naming the current rule-stack sha")
 	ticketFile := fs.String("ticket-file", "", "path to the run's ticket, as the ticket subcommand wrote it")
 	if err := fs.Parse(args); err != nil {
@@ -272,8 +268,8 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 	defer func() { _ = gcs.Close() }()
 
 	logger = logger.With("attempt", e.attemptID, "ticket", t.ID)
-	plan := splitModels(*planModels, runner.DefaultPlanModel)
-	review := splitModels(*reviewModels, runner.DefaultReviewModel)
+	plan := splitModels(*planModels, runner.DefaultPlanModel())
+	review := splitModels(*reviewModels, runner.DefaultReviewModel())
 	res, err := runner.Build(ctx, runner.BuildDeps{
 		Projections: store.NewBucket(gcs, e.project+"-projections"),
 		Completions: store.NewBucket(gcs, e.project+"-completions"),
@@ -307,21 +303,6 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 		return err
 	}
 	return writeMultilineOutput(e.output, "loop_detail", res.LoopDetail)
-}
-
-// harnesses are the agent CLIs a run may route to: Command Code.
-func harnesses(getenv func(string) string) []runner.Harness {
-	var commandCodeHome string
-	if tmp := getenv("RUNNER_TEMP"); tmp != "" {
-		commandCodeHome = filepath.Join(tmp, "commandcode-home")
-	}
-	return []runner.Harness{
-		runner.CommandCodeHarness{
-			Bin:  commandCodeBin,
-			Key:  getenv("COMMANDCODE_API_KEY"),
-			Home: commandCodeHome,
-		},
-	}
 }
 
 // splitModels reads a comma-separated model list, using fallback when the value

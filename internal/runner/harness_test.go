@@ -114,9 +114,9 @@ func TestFilterEnvMatchesAPrefixOnlyForAnUnderscoreName(t *testing.T) {
 	}
 }
 
-// TestNoHarnessIsNamedOutsideItsAdapter keeps the vendor vocabulary inside each
-// adapter and the composition root, so a harness can be swapped without a
-// sweep through the codebase (AC5).
+// TestNoHarnessIsNamedOutsideItsAdapter keeps the vendor vocabulary inside its
+// adapter, so no provider or plan is named in the runner's or dispatcher's Go
+// logic and a provider is swapped by a configuration edit alone (AC5).
 func TestNoHarnessIsNamedOutsideItsAdapter(t *testing.T) {
 	root := filepath.Join("..", "..")
 	var offenders []string
@@ -146,7 +146,8 @@ func TestNoHarnessIsNamedOutsideItsAdapter(t *testing.T) {
 			return err
 		}
 		lower := strings.ToLower(string(b))
-		if strings.Contains(lower, "commandcode") || strings.Contains(lower, "command-code") {
+		if strings.Contains(lower, "commandcode") || strings.Contains(lower, "command-code") ||
+			strings.Contains(lower, "command code") {
 			offenders = append(offenders, rel)
 		}
 		return nil
@@ -159,17 +160,10 @@ func TestNoHarnessIsNamedOutsideItsAdapter(t *testing.T) {
 	}
 }
 
-// harnessNameAllowed lists where a harness name may appear: its own adapter, the
-// composition root, and the vendor-defined values read where they live.
+// harnessNameAllowed lists where a harness name may appear: its own adapter
+// alone, so every provider fact elsewhere is read from configuration.
 func harnessNameAllowed(rel string) bool {
-	switch rel {
-	case "internal/runner/harness_commandcode.go",
-		"internal/runner/build.go",
-		"cmd/runner/main.go",
-		"cmd/dispatcher/main.go":
-		return true
-	}
-	return false
+	return rel == "internal/runner/harness_commandcode.go"
 }
 
 // TestNoRetiredHarnessIsNamed asserts no tracked file outside the vault copies

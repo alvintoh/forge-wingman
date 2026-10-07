@@ -24,6 +24,30 @@ const commandCodeProvider = "command-code"
 // which Classify records as an ordinary agent failure.
 const commandCodeMaxTurns = 200
 
+// commandCodeBin is the proprietary agent CLI's binary (PACKAGE.txt), and
+// commandCodeKeyEnv names the environment variable it reads its API key from.
+const (
+	commandCodeBin    = "cmd"
+	commandCodeKeyEnv = "COMMANDCODE_API_KEY"
+)
+
+// Harnesses returns the agent harnesses a run may route to, from the
+// environment — the composition root's own construction, kept here so the
+// vendor stays named only in its adapter.
+func Harnesses(getenv func(string) string) []Harness {
+	var home string
+	if tmp := getenv("RUNNER_TEMP"); tmp != "" {
+		home = filepath.Join(tmp, "commandcode-home")
+	}
+	return []Harness{CommandCodeHarness{Bin: commandCodeBin, Key: getenv(commandCodeKeyEnv), Home: home}}
+}
+
+// HarnessSecrets are the credentials the harnesses hold, which a run checks
+// against a branch before it is pushed.
+func HarnessSecrets(getenv func(string) string) []string {
+	return []string{getenv(commandCodeKeyEnv)}
+}
+
 // commandCodeTranscripts is where the CLI writes its session transcripts,
 // under HOME: one .jsonl per session, beside a .checkpoints.jsonl it ignores.
 const commandCodeTranscripts = ".commandcode/projects"

@@ -4,6 +4,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/alvintoh/forge-wingman/internal/providers"
 )
 
 func TestEmbeddedModelsNameTheDefault(t *testing.T) {
@@ -37,6 +39,10 @@ func TestParseModelSetRejectsAnInvalidSet(t *testing.T) {
 		"empty default":    {`{"default":"","fallbacks":[]}`, "not provider/model"},
 		"unknown field":    {`{"default":"p/a","fallbacks":[],"extra":1}`, "unknown field"},
 		"fallback foreign": {`{"default":"p/a","fallbacks":["command-code/b"]}`, "not a p model"},
+		"malformed plan":   {`{"default":"p/a","fallbacks":[],"plan":"big-pickle","review":"p/r"}`, "not provider/model"},
+		"foreign plan":     {`{"default":"p/a","fallbacks":[],"plan":"q/a","review":"p/r"}`, "not a p model"},
+		"malformed review": {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":""}`, "not provider/model"},
+		"foreign review":   {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":"q/r"}`, "not a p model"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := parseModelSet([]byte(tc.doc))
@@ -52,5 +58,15 @@ func TestFallbackModelsReturnsACopy(t *testing.T) {
 	first[0] = "command-code/mutated"
 	if got := fallbackModels(DefaultModel()); got[0] == "command-code/mutated" {
 		t.Fatalf("fallbackModels shares its backing array: %v", got)
+	}
+}
+
+// TestDefaultModelProviderHasConfiguredWindows asserts the provider serving the
+// default model has its plan windows configured, so the dispatcher meters it
+// rather than silently falling back to the cash ceiling.
+func TestDefaultModelProviderHasConfiguredWindows(t *testing.T) {
+	provider := Provider(DefaultModel())
+	if windows := providers.Windows(provider); len(windows) == 0 {
+		t.Fatalf("provider %s serving the default model has no configured plan windows", provider)
 	}
 }

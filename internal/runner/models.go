@@ -11,17 +11,28 @@ import (
 //go:embed models.json
 var modelsJSON []byte
 
-// ModelSet is the default model and its ordered same-provider fallbacks;
-// models.json holds the one copy.
+// ModelSet is a provider's models, each read from models.json: the default and
+// its ordered same-provider fallbacks, plus the plan and review phases' own
+// defaults.
 type ModelSet struct {
 	Default   string   `json:"default"`
 	Fallbacks []string `json:"fallbacks"`
+	Plan      string   `json:"plan"`
+	Review    string   `json:"review"`
 }
 
 var embeddedModels = mustParseModelSet(modelsJSON)
 
 // DefaultModel is every dispatched run's starting model, read from models.json.
 func DefaultModel() string { return embeddedModels.Default }
+
+// DefaultPlanModel is the plan phase's model when none is configured, read from
+// models.json.
+func DefaultPlanModel() string { return embeddedModels.Plan }
+
+// DefaultReviewModel is the review model run.yml's review_models input defaults
+// to, used when a ticket names none, read from models.json.
+func DefaultReviewModel() string { return embeddedModels.Review }
 
 // parseModelSet decodes and validates a models.json document.
 //
@@ -47,8 +58,9 @@ func mustParseModelSet(b []byte) ModelSet {
 	return s
 }
 
-// Validate reports whether the set names well-formed, distinct models of one
-// provider.
+// Validate reports whether the set names well-formed models of one provider:
+// the default and its fallbacks, which must also be distinct, plus the plan and
+// review defaults, which may repeat one of them.
 func (s ModelSet) Validate() error {
 	provider := Provider(s.Default)
 	seen := map[string]bool{}
@@ -62,6 +74,14 @@ func (s ModelSet) Validate() error {
 			return fmt.Errorf("model %q is listed twice", m)
 		}
 		seen[m] = true
+	}
+	for _, m := range []string{s.Plan, s.Review} {
+		switch {
+		case !ValidModel(m):
+			return fmt.Errorf("model %q is not provider/model", m)
+		case Provider(m) != provider:
+			return fmt.Errorf("model %q is not a %s model", m, provider)
+		}
 	}
 	return nil
 }

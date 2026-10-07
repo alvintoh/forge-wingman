@@ -31,9 +31,9 @@ func ValidModel(model string) bool {
 	return len(model) <= maxModelBytes && modelPattern.MatchString(model)
 }
 
-// Provider is model's prefix before its first "/" — "command-code" from
-// "command-code/deepseek/deepseek-v4.1-flash" — matching modelPattern's own
-// requirement that every model contain that separator.
+// Provider is model's prefix before its first "/" — "vendor" from
+// "vendor/team/model" — matching modelPattern's own requirement that every
+// model contain that separator.
 func Provider(model string) string {
 	if i := strings.IndexByte(model, '/'); i >= 0 {
 		return model[:i]
@@ -505,13 +505,6 @@ func addUsageWarning(sum *Summary, warning string) {
 		sum.UsageWarning += "; " + warning
 	}
 }
-
-// DefaultPlanModel is the plan phase's model when none is configured.
-const DefaultPlanModel = "command-code/deepseek/deepseek-v4.1-flash"
-
-// DefaultReviewModel is the review model run.yml's review_models input defaults
-// to, used when a ticket names none.
-const DefaultReviewModel = "command-code/meta/muse-spark-1.3-contributor"
 
 // ValidatePlanModels reports whether models is a usable plan list: at least
 // one entry, each well formed and none repeated.

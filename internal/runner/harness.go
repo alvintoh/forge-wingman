@@ -6,6 +6,8 @@ import (
 	"io"
 	"slices"
 	"strings"
+
+	"github.com/alvintoh/forge-wingman/internal/providers"
 )
 
 // Profile is the behaviour an agent runs under: the build phase edits the
@@ -127,48 +129,19 @@ func filterEnv(environ []string, allowed []string) []string {
 	return env
 }
 
-// allowanceMarkers are phrases assumed to appear in an agent's stderr when the
-// provider's own allowance is exhausted mid-build, distinguishing a budget
-// stop (FR-22, never escalated) from an ordinary agent failure (FR-13, which
-// may retry at a higher tier). UNVERIFIED against a live exhaustion: no probe
-// has confirmed a provider's actual wording, so this is a documented
-// assumption pending that verification, not an observed fact — see the PR's
-// Known Limitations.
-var allowanceMarkers = []string{
-	"allowance exhausted",
-	"insufficient credit",
-	"insufficient balance",
-	"quota exceeded",
-	"payment required",
-}
-
-// availabilityMarkers are phrases assumed to appear in an agent's stderr when
-// the requested model itself is unavailable — rate-limited, overloaded, or
-// pulled from the provider's roster — distinguishing an availability stop
-// (AC1's same-provider substitution) from an ordinary agent failure.
-// UNVERIFIED against a live outage, the same as allowanceMarkers.
-var availabilityMarkers = []string{
-	"model not found",
-	"model not available",
-	"model unavailable",
-	"no endpoints found",
-	"rate limited",
-	"overloaded",
-	"service unavailable",
-	"bad gateway",
-}
-
-// classifyMarkers classifies a failed run's stderr by the assumed allowance
-// and availability markers, falling back to the ordinary agent-failure
-// classification.
+// classifyMarkers classifies a failed run's stderr by the configured allowance
+// and availability phrases (providers.json), falling back to the ordinary
+// agent-failure classification. The phrases are UNVERIFIED against a live
+// exhaustion or outage: no probe has confirmed a provider's actual wording, so
+// they are documented assumptions pending that verification.
 func classifyMarkers(stderrTail string) (Outcome, StopReason) {
 	lower := strings.ToLower(stderrTail)
-	for _, marker := range allowanceMarkers {
+	for _, marker := range providers.AllowanceMarkers() {
 		if strings.Contains(lower, marker) {
 			return OutcomeBudgetStop, StopAllowanceExhausted
 		}
 	}
-	for _, marker := range availabilityMarkers {
+	for _, marker := range providers.AvailabilityMarkers() {
 		if strings.Contains(lower, marker) {
 			return OutcomeInfraFailure, StopModelUnavailable
 		}

@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
+	"github.com/alvintoh/forge-wingman/internal/providers"
+	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
 func envOf(kv map[string]string) func(string) string {
@@ -123,5 +125,24 @@ func TestRunRefusesBeforeReadingTheTokens(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	if err := run(context.Background(), logger, envOf(map[string]string{})); err == nil {
 		t.Fatal("polled with nothing configured")
+	}
+}
+
+// TestBudgetConfigCarriesTheProvidersWindows asserts the dispatcher meters the
+// configured provider's own windows, not the cash ceiling alone.
+func TestBudgetConfigCarriesTheProvidersWindows(t *testing.T) {
+	provider := runner.Provider(runner.DefaultModel())
+	want := providers.Windows(provider)
+	got := budgetConfig(provider).ProviderWindows
+	if len(want) == 0 || len(got) != len(want) {
+		t.Fatalf("windows = %+v, want the configured %+v", got, want)
+	}
+	for i, w := range want {
+		if got[i].Name != w.Name || got[i].Period != w.Period || got[i].Limit != w.Limit {
+			t.Errorf("window %d = %+v, want %+v", i, got[i], w)
+		}
+	}
+	if b := budgetConfig("nobody"); len(b.ProviderWindows) != 0 || b.Cash.Limit != providers.CashLimit() {
+		t.Errorf("unconfigured provider = %+v, want no windows and the cash ceiling", b)
 	}
 }

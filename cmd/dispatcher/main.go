@@ -30,7 +30,7 @@ import (
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
-	"github.com/alvintoh/forge-wingman/internal/money"
+	"github.com/alvintoh/forge-wingman/internal/providers"
 	"github.com/alvintoh/forge-wingman/internal/runner"
 	"github.com/alvintoh/forge-wingman/internal/store"
 )
@@ -52,29 +52,25 @@ const (
 	requestTimeout = 30 * time.Second
 )
 
-// budgetConfig is FR-22's admission ceilings: the Command Code GOAT plan's own
-// rolling allowance windows — $14/5h, $35/week, $70/month (verified
-// 2026-10-05: https://commandcode.ai/docs/plans/goat) — checked INSTEAD OF the
-// cash ceiling for provider cost, since its $10/month subscription already
-// satisfies NFR-1's $30 cash cap; the cash ceiling itself, a calendar month
-// (GitHub's own billing cycle); and GitHub Actions' free 2,000 minutes/month
-// on a private target repository, hard-stopped there by default
-// (RatePerMinute zero) since no payment method is assumed configured. The
-// windows meter SettledProviderCostMicros, which Command Code runs do not yet
-// fill (FRG-47).
-//
-// Hardcoded rather than read from the environment: NFR-3 calls every one of
-// these a configuration value, and making a nested structure like this
-// env-configurable is a deliberate scope cut for FRG-20 — see the PR's Known
-// Limitations.
-var budgetConfig = dispatcher.BudgetConfig{
-	ProviderWindows: []dispatcher.Window{
-		{Name: "command-code-goat-5h", Period: 5 * time.Hour, Limit: 14 * money.Dollar},
-		{Name: "command-code-goat-week", Period: 7 * 24 * time.Hour, Limit: 35 * money.Dollar},
-		{Name: "command-code-goat-month", Period: 30 * 24 * time.Hour, Limit: 70 * money.Dollar},
-	},
-	Cash:   dispatcher.Window{Name: dispatcher.CeilingCash, Calendar: true, Limit: 30 * money.Dollar},
-	Runner: dispatcher.RunnerMinutes{FreeMinutes: 2000},
+// budgetConfig is FR-22's admission ceilings for the provider that serves the
+// dispatched model: that provider's own rolling allowance windows, plus the
+// cash ceiling and the GitHub Actions free-minutes allowance shared by every
+// provider, all read from provider configuration rather than hardcoded. The cash ceiling is a calendar
+// month (GitHub's own billing cycle); the runner-minutes ceiling is GitHub
+// Actions' free 2,000 minutes/month on a private target repository,
+// hard-stopped there by default (RatePerMinute zero) since no payment method is
+// assumed configured. The windows meter SettledProviderCostMicros, which the
+// harness's runs do not yet fill (FRG-47).
+func budgetConfig(provider string) dispatcher.BudgetConfig {
+	var windows []dispatcher.Window
+	for _, w := range providers.Windows(provider) {
+		windows = append(windows, dispatcher.Window{Name: w.Name, Period: w.Period, Limit: w.Limit})
+	}
+	return dispatcher.BudgetConfig{
+		ProviderWindows: windows,
+		Cash:            dispatcher.Window{Name: dispatcher.CeilingCash, Calendar: true, Limit: providers.CashLimit()},
+		Runner:          dispatcher.RunnerMinutes{FreeMinutes: providers.RunnerFreeMinutes()},
+	}
 }
 
 func main() {
@@ -230,6 +226,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 	gh := dispatcher.GitHub{Token: githubToken, Workflow: runWorkflow, Branch: runBranch, Client: client}
 	queue := store.NewQueue(fsc)
 	plans := store.NewPlans(fsc)
+	model := runner.DefaultModel()
 	if _, err := dispatcher.Poll(ctx, dispatcher.Deps{
 		Source:     dispatcher.Linear{Token: linear, Delegate: c.delegate, Client: client},
 		Queue:      queue,
@@ -244,7 +241,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		OpenPRs:    gh,
 		Logger:     logger,
 		Now:        time.Now,
-	}, dispatcher.Config{Repos: c.repos, Budget: budgetConfig, Model: runner.DefaultModel(), Limits: c.limits, Tuning: c.tuning}); err != nil {
+	}, dispatcher.Config{Repos: c.repos, Budget: budgetConfig(runner.Provider(model)), Model: model, Limits: c.limits, Tuning: c.tuning}); err != nil {
 		return err
 	}
 	return nil
