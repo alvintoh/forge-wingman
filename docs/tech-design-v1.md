@@ -219,8 +219,8 @@ language. A reusable workflow living in each target repo, called with the run id
 Command Code since `adr/0015`.~~
 
 *Updated (2026-10-07):* the two phase rows named Command Code's `--plan` and `--yolo`.
-The harness is now configuration per plan: omp by default, the Command Code CLI as
-fallback (`adr/0016`, FRG-57, FRG-63).
+The harness is now configuration per plan: omp by default, opencode as fallback
+(`adr/0016`, FRG-57, FRG-63, FRG-65).
 
 **Gates are enforced in three places, deliberately.** The harness's restricted
 profile denies the tool (*Updated (2026-10-07):* each adapter's read-only profile,
@@ -287,7 +287,8 @@ picking the wrong axis. See `adr/0010`.
 are separate configuration. The model prefix names the plan; the harness is a default
 and an ordered fallback per plan, behind the `Harness` interface, and every adapter
 passes one conformance suite (FRG-62, FRG-57). Today omp is the default (FRG-63) and
-the Command Code CLI the fallback. The plan is still GOAT, reached through Command
+opencode the fallback (FRG-65); the Command Code CLI is interactive-only, its adapter
+dormant. The plan is still GOAT, reached through Command
 Code's Provider API.
 
 ~~**Superseded (2026-10-05) by `adr/0015`:** the harness is the Command Code CLI and the
@@ -346,7 +347,7 @@ gateway was that NFR-2 bound every party in the data path; **NFR-2 selects on
 performance as of 2026-09-21**, so a gateway costs no verification. What remains
 is that GOAT is $10/month flat against per-token, which FR-6 measures once each harness's
 runs carry a cost (*Updated (2026-10-07):* omp's runs are priced from tokens × the plan's rates
-(FRG-57); the Command Code CLI fallback still waits on FRG-47. *Updated (2026-10-05):* this
+(FRG-57), as the opencode fallback's must be (FRG-65); the dormant Command Code CLI adapter still waits on FRG-47. *Updated (2026-10-05):* this
 named OpenCode Go).
 
 ⚠️ **Pin the version either way** — `~typesafe/jev-latest` floats, and a
@@ -452,4 +453,4 @@ It is the only diagram in this product that names technology.
 | 2 | **Updated (2026-09-25): first full run measured** — one size-S ticket (no plan phase): build 4m13s, whole run 7m06s, ~8 billed runner minutes (each job rounds up to the minute), so ~250 runs/month fit a private target's free 2,000. One sample: close at ≥10 runs per size, with p90 for the per-run cap and the mean for minute budgets. ~~probe cells ran **0.9–8.1 min, median 5.5**, so the ~30 min figure is falsified — but a full plan-build-PR run is still unmeasured, and it decides whether level 2 is free or metered. Run duration is assumed at ~30 min and has never been measured~~ | nothing; FR-6 records it and NFR-4 says measure before tuning |
 | 3 | FR-20's PR actions need a scoped GitHub credential for the operator; the scope set is enumerated but not created | the retry-and-act phase only |
 | 4 | **The decision seam's provider is admissible but unproven.** Jev fits FR-15's shape exactly and NFR-2 no longer bars it, but it has not been scored against the held-out set and it is six days old | nothing at level 0 — FR-15's deterministic signals run first and free, and the classifier decides only the remainder |
-| 5 | **Updated (2026-10-07):** the cost source is per harness adapter. omp's own figure is wrong (it charged peak rates off-peak), so its runs are priced from tokens × the plan's rates (`adr/0016`, FRG-57); the Command Code CLI fallback still waits on FRG-47. **Added (2026-10-05):** a Command Code run records a provider cost of 0, so FR-22's GOAT windows and NFR-1's per-run cost cap meter nothing until FRG-47 fills the cost from the CLI transcript's `costUsd` — `adr/0015` | enforcement of FR-22 and NFR-1's cost cap |
+| 5 | **Updated (2026-10-07):** the cost source is per harness adapter. omp's own figure is wrong (it charged peak rates off-peak), so its runs are priced from tokens × the plan's rates (`adr/0016`, FRG-57), as the opencode fallback's must be (FRG-65); the dormant Command Code CLI adapter still waits on FRG-47. **Added (2026-10-05):** a Command Code run records a provider cost of 0, so FR-22's GOAT windows and NFR-1's per-run cost cap meter nothing until FRG-47 fills the cost from the CLI transcript's `costUsd` — `adr/0015` | enforcement of FR-22 and NFR-1's cost cap |

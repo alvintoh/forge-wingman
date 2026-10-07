@@ -1,7 +1,7 @@
 # 0015 — Command Code is the agent harness, on its GOAT plan
 
 - **Date:** 2026-10-05
-- **Status:** accepted — the harness and its defaults are built (FRG-41, FRG-44); removing opencode and swapping the windows is FRG-43, in progress; metering the windows is FRG-47, not built; partly superseded by `adr/0016` (the harness half; the GOAT provider decision stands)
+- **Status:** accepted — the harness and its defaults are built (FRG-41, FRG-44); removing opencode and swapping the windows is FRG-43, in progress; metering the windows is FRG-47, not built; partly superseded by `adr/0016` (the harness half: omp is the default, opencode the fallback, and the Command Code CLI interactive-only; the GOAT provider decision stands)
 - **Supersedes:** the harness and provider named in `adr/0005`'s Decision and `adr/0010`'s build seam and *Starting configuration*; `tech-design-v1` §AI *The BUILD seam* and its prompt-caching mechanism; the PRD's OpenCode Go figures under NFR-1 and its *Harness* and *Provider* constraints
 
 ## Context
