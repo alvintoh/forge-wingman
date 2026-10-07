@@ -16,12 +16,11 @@ import (
 )
 
 // fakeHarness serves provider "p" — or its own name — through agent, or a fresh
-// fakeAgent when unset; it is ready and conformant unless a test says otherwise.
+// fakeAgent when unset; it is ready unless a test says otherwise.
 type fakeHarness struct {
 	name     string
 	agent    Agent
 	ready    error
-	conform  error
 	classify func(string, error) (Outcome, StopReason)
 }
 
@@ -43,8 +42,7 @@ func (h fakeHarness) Classify(stderrTail string, err error) (Outcome, StopReason
 	}
 	return classifyMarkers(stderrTail)
 }
-func (h fakeHarness) Ready() error      { return h.ready }
-func (h fakeHarness) Conformant() error { return h.conform }
+func (h fakeHarness) Ready() error { return h.ready }
 
 // planIdentity is the test plan-to-harness resolver: a plan runs the harness
 // named after it, so a fake harness named "p" serves a "p/model" without a
@@ -245,19 +243,6 @@ func TestRouterClassifiesThroughTheHarnessThatRan(t *testing.T) {
 				t.Fatalf("Classify reason = %s, want %s", reason, tc.wantReason)
 			}
 		})
-	}
-}
-
-// TestProvenHarnessesDropsAnAdapterThatIsNotConformant is the runtime half of
-// the selection gate: an adapter that has not passed the suite is not in the
-// registry, so a plan cannot select it (AC4).
-func TestProvenHarnessesDropsAnAdapterThatIsNotConformant(t *testing.T) {
-	proven := provenHarnesses([]Harness{
-		fakeHarness{name: "proven"},
-		fakeHarness{name: "failed", conform: errors.New("the conformance suite failed")},
-	})
-	if len(proven) != 1 || proven[0].Name() != "proven" {
-		t.Fatalf("registry = %v, want only the conformant adapter exposed", proven)
 	}
 }
 

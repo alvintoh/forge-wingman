@@ -31,7 +31,7 @@ const (
 	commandCodeKeyEnv = "COMMANDCODE_API_KEY"
 )
 
-// Harnesses returns the conformant agent harnesses a run may route to, from the
+// Harnesses returns the agent harnesses a run may route to, from the
 // environment — the composition root's own construction, kept here so the
 // vendor stays named only in its adapter.
 func Harnesses(getenv func(string) string) []Harness {
@@ -39,7 +39,7 @@ func Harnesses(getenv func(string) string) []Harness {
 	if tmp := getenv("RUNNER_TEMP"); tmp != "" {
 		home = filepath.Join(tmp, "commandcode-home")
 	}
-	return provenHarnesses([]Harness{CommandCodeHarness{Bin: commandCodeBin, Key: getenv(commandCodeKeyEnv), Home: home}})
+	return []Harness{CommandCodeHarness{Bin: commandCodeBin, Key: getenv(commandCodeKeyEnv), Home: home}}
 }
 
 // HarnessSecrets are the credentials the harnesses hold, which a run checks
@@ -79,10 +79,6 @@ type CommandCodeHarness struct {
 
 // Name is the harness's own name, the key a plan's configuration selects it by.
 func (h CommandCodeHarness) Name() string { return commandCodeProvider }
-
-// Conformant declares the adapter conformant; the shared conformance suite runs
-// against it in CI.
-func (h CommandCodeHarness) Conformant() error { return nil }
 
 // Agent returns the Command Code agent for profile p.
 func (h CommandCodeHarness) Agent(p Profile, model string) Agent {

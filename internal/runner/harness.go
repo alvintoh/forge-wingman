@@ -31,9 +31,6 @@ type Harness interface {
 	// Ready reports whether the run is configured to use the harness, nil
 	// when it is (AC7).
 	Ready() error
-	// Conformant reports whether the adapter declares itself conformant, nil
-	// when it does; the registry exposes only those.
-	Conformant() error
 }
 
 // harnessOrder resolves a plan — a model id's prefix — to the harness names it
@@ -147,18 +144,6 @@ func routedHarness(harnesses []Harness, order harnessOrder, plan string) Harness
 		}
 	}
 	return nil
-}
-
-// provenHarnesses returns the candidates whose Conformant reports nil, so an
-// adapter that declares itself unproven is never registered.
-func provenHarnesses(candidates []Harness) []Harness {
-	var proven []Harness
-	for _, h := range candidates {
-		if h.Conformant() == nil {
-			proven = append(proven, h)
-		}
-	}
-	return proven
 }
 
 // failureClassifier is implemented by an Agent that classifies its own
