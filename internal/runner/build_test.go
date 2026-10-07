@@ -1664,6 +1664,111 @@ func TestRunWorkflowRebasesTheBranchBeforePushing(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowRebaseStepRunsOnAFreshRunner executes run.yml's own rebase
+// script in a scratch repository with no git identity, as on a fresh runner. A
+// rebase writes commits, so without the step's committer env it fails exactly
+// when main has moved; a conflict must be named and anything else must fail.
+func TestRunWorkflowRebaseStepRunsOnAFreshRunner(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	yml, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "run.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := string(yml)
+	step := run[strings.Index(run, "id: rebase"):]
+	step = step[:strings.Index(step, "id: push")]
+	envValue := func(name string) string {
+		m := regexp.MustCompile(`(?m)^\s+` + name + `: (.+)$`).FindStringSubmatch(step)
+		if m == nil {
+			t.Fatalf("rebase step sets no %s", name)
+		}
+		return m[1]
+	}
+	committerName, committerEmail := envValue("GIT_COMMITTER_NAME"), envValue("GIT_COMMITTER_EMAIL")
+	if committerName != commitAuthorName || committerEmail != commitAuthorEmail {
+		t.Errorf("rebase committer = %s <%s>, want the run's identity %s <%s>",
+			committerName, committerEmail, commitAuthorName, commitAuthorEmail)
+	}
+	start := strings.Index(step, "git fetch --quiet origin main")
+	end := strings.LastIndex(step, "\n          fi\n")
+	if start < 0 || end < 0 {
+		t.Fatal("rebase step lacks its fetch-and-rebase block")
+	}
+	script := strings.ReplaceAll(step[start:end+len("\n          fi")], "\n          ", "\n")
+
+	for _, tc := range []struct {
+		name       string
+		mainFile   string
+		noIdentity bool
+		wantFail   bool
+		wantStop   bool
+		wantOnTop  bool
+	}{
+		{"main moved without a conflict", "other.txt", false, false, false, true},
+		{"main moved with a conflict", "run.txt", false, false, true, false},
+		// A failure that is not a conflict must fail the job, never read as one.
+		{"a rebase that fails without a conflict", "other.txt", true, true, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			git := func(cwd string, args ...string) string {
+				t.Helper()
+				cmd := exec.Command("git", append([]string{"-c", "user.name=setup", "-c", "user.email=setup@example.com"}, args...)...)
+				cmd.Dir = cwd
+				cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+				out, err := cmd.CombinedOutput()
+				if err != nil {
+					t.Fatalf("git %v: %v\n%s", args, err, out)
+				}
+				return strings.TrimSpace(string(out))
+			}
+			origin, work := filepath.Join(dir, "origin"), filepath.Join(dir, "work")
+			git(dir, "init", "-q", "--bare", "-b", "main", origin)
+			git(dir, "clone", "-q", origin, work)
+			git(work, "commit", "-q", "--allow-empty", "-m", "base")
+			git(work, "push", "-q", "origin", "HEAD:main")
+			git(work, "checkout", "-q", "-b", "wingman/x-1-1")
+			if err := os.WriteFile(filepath.Join(work, "run.txt"), []byte("run\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			git(work, "add", "run.txt")
+			git(work, "commit", "-q", "-m", "the run's work")
+			git(work, "checkout", "-q", "--detach", "main")
+			// Main moves after the run was dispatched.
+			other := filepath.Join(dir, "other")
+			git(dir, "clone", "-q", origin, other)
+			if err := os.WriteFile(filepath.Join(other, tc.mainFile), []byte("main\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			git(other, "add", tc.mainFile)
+			git(other, "commit", "-q", "-m", "main moved")
+			git(other, "push", "-q", "origin", "HEAD:main")
+
+			output := filepath.Join(dir, "github_output")
+			cmd := exec.Command("bash", "-e", "-c", script)
+			cmd.Dir = work
+			cmd.Env = append(os.Environ(), "HOME="+dir, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
+				"BRANCH=wingman/x-1-1", "GITHUB_OUTPUT="+output)
+			if !tc.noIdentity {
+				cmd.Env = append(cmd.Env, "GIT_COMMITTER_NAME="+committerName, "GIT_COMMITTER_EMAIL="+committerEmail)
+			}
+			if out, err := cmd.CombinedOutput(); (err != nil) != tc.wantFail {
+				t.Fatalf("rebase step error = %v, want failure %v\n%s", err, tc.wantFail, out)
+			}
+			written, _ := os.ReadFile(output)
+			if got := strings.Contains(string(written), "stop_reason=rebase-conflict"); got != tc.wantStop {
+				t.Errorf("stop_reason written = %v, want %v (output %q)", got, tc.wantStop, written)
+			}
+			onTop := git(work, "rev-parse", "wingman/x-1-1~1") == git(work, "rev-parse", "origin/main")
+			if onTop != tc.wantOnTop {
+				t.Errorf("branch rebased onto main = %v, want %v", onTop, tc.wantOnTop)
+			}
+		})
+	}
+}
+
 func TestBranchNameMatchesThePRJobsPattern(t *testing.T) {
 	pattern := regexp.MustCompile(strings.ReplaceAll(branchPattern, "${GITHUB_RUN_ID}", "42"))
 	for _, id := range []string{"ABC-12", "xyz-7", "A1-2-3", "x"} {

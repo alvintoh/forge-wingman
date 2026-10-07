@@ -280,6 +280,11 @@ jobs:
         env:
           BRANCH: ${{ needs.model.outputs.branch }}
           SEGMENT: ${{ needs.pr-meta.outputs.branch_segment }}
+          # A rebase writes new commits and a fresh runner has no git identity, so
+          # without these it fails exactly when main has moved. They must equal
+          # commitAuthorName/Email in internal/runner/identity.go.
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
         run: |
           prefix="wingman/${SEGMENT}-${GITHUB_RUN_ID}-"
           [[ "$BRANCH" =~ ^wingman/[a-z0-9]+(-[a-z0-9]+)*-${GITHUB_RUN_ID}-[0-9]+$ && "$BRANCH" == "$prefix"* && "${BRANCH#"$prefix"}" =~ ^[0-9]+$ ]] \
@@ -288,7 +293,10 @@ jobs:
           git fetch --quiet origin main
           git checkout -q "$BRANCH"
           if ! git rebase origin/main; then
+            # Only a conflict leaves unmerged paths; any other failure is the job's own.
+            conflicted="$(git diff --name-only --diff-filter=U)"
             git rebase --abort
+            [[ -n "$conflicted" ]] || { echo "rebase failed without a conflict"; exit 1; }
             echo "stop_reason=rebase-conflict" >> "$GITHUB_OUTPUT"
           fi
 

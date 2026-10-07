@@ -6,6 +6,8 @@ import (
 	"strings"
 )
 
+// The run's commit identity. run.yml's rebase step sets the same pair as its
+// committer, so the two must change together.
 const (
 	commitAuthorName  = "github-actions[bot]"
 	commitAuthorEmail = "41898282+github-actions[bot]@users.noreply.github.com"
