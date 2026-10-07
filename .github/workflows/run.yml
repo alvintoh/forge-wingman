@@ -241,6 +241,9 @@ jobs:
     outputs:
       url: ${{ steps.open.outputs.url }}
       duration_s: ${{ steps.open.outputs.duration_s }}
+      # Names why the push could not be made, so the record job reports the
+      # condition rather than a bare pr job failure.
+      stop_reason: ${{ steps.rebase.outputs.stop_reason }}
     steps:
       - run: echo "STARTED=$(date +%s)" >> "$GITHUB_ENV"
 
@@ -264,18 +267,52 @@ jobs:
           name: bundle
           path: ${{ runner.temp }}
 
+      # The run built on the main current when it was dispatched; main may have
+      # moved since. Rebasing onto current main first leaves the pushed branch
+      # differing from main only by the run's own commits — a branch still
+      # carrying the base's older workflow file reads to GitHub as a workflow
+      # change, which this App may not make.
+      #
       # The pattern is branchPattern in internal/runner/build_test.go; the prefix pins
       # the branch to the record's ticket.
-      - name: Push the branch
+      - id: rebase
+        name: Rebase onto current main
         env:
           BRANCH: ${{ needs.model.outputs.branch }}
           SEGMENT: ${{ needs.pr-meta.outputs.branch_segment }}
+          # A rebase writes new commits and a fresh runner has no git identity, so
+          # without these it fails exactly when main has moved. They must equal
+          # commitAuthorName/Email in internal/runner/identity.go.
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
         run: |
           prefix="wingman/${SEGMENT}-${GITHUB_RUN_ID}-"
           [[ "$BRANCH" =~ ^wingman/[a-z0-9]+(-[a-z0-9]+)*-${GITHUB_RUN_ID}-[0-9]+$ && "$BRANCH" == "$prefix"* && "${BRANCH#"$prefix"}" =~ ^[0-9]+$ ]] \
             || { echo "unexpected branch name"; exit 1; }
           git -c transfer.fsckObjects=true fetch "$RUNNER_TEMP/wingman.bundle" "refs/heads/${BRANCH}:refs/heads/${BRANCH}"
-          git push origin "refs/heads/${BRANCH}"
+          git fetch --quiet origin main
+          git checkout -q "$BRANCH"
+          if ! git rebase origin/main; then
+            # Only a conflict leaves unmerged paths; any other failure is the job's own.
+            conflicted="$(git diff --name-only --diff-filter=U)"
+            git rebase --abort
+            [[ -n "$conflicted" ]] || { echo "rebase failed without a conflict"; exit 1; }
+            echo "stop_reason=rebase-conflict" >> "$GITHUB_OUTPUT"
+          fi
+
+      - id: push
+        name: Push the branch
+        if: steps.rebase.outputs.stop_reason == ''
+        env:
+          BRANCH: ${{ needs.model.outputs.branch }}
+        run: git push origin "refs/heads/${BRANCH}"
+
+      # The bundle artifact is kept, so a hand rebase recovers the run.
+      - name: Stop on a conflicting rebase
+        if: steps.rebase.outputs.stop_reason != ''
+        run: |
+          echo "::error::the run's commits conflict with main; rebase the bundle artifact by hand"
+          exit 1
 
       # ready is the pre-PR loop's own draft-vs-ready decision (FR-5): a fact
       # about the branch's deterministic checks and review, not the model's
@@ -322,6 +359,7 @@ jobs:
       PR_RESULT: ${{ needs.pr.result }}
       PR_DURATION: ${{ needs.pr.outputs.duration_s || '0' }}
       FAILED_GATE: ${{ needs.check.result != 'skipped' && (needs.check.outputs.failed_gate || 'unfinished') || '' }}
+      PR_STOP_REASON: ${{ needs.pr.outputs.stop_reason }}
       WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -351,7 +389,7 @@ jobs:
           "$RUNNER_TEMP/runner" record
           -run-id "$RUN_ID" -attempt-id "$ATTEMPT_ID" -summary "$SUMMARY" -pr-url "$PR_URL"
           -run-result "$RUN_RESULT" -pr-result "$PR_RESULT" -pr-duration-s "$PR_DURATION"
-          -failed-gate "$FAILED_GATE"
+          -failed-gate "$FAILED_GATE" -pr-stop-reason "$PR_STOP_REASON"
 
       # A summary too large to pass as an argument fails the step before record runs,
       # so record never reports started; any later failure leaves the record as it is.
