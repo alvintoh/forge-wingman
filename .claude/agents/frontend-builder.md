@@ -60,6 +60,10 @@ Reusable best practices for React. A scaffold step inlines these into an agent w
   - **Never put a validation rule or its user-facing message in the widget.** A sibling form will need different policy (optional where another is required), and the escape hatch you would then add is the `rules` prop that already exists.
   - Push DOWN only facts about the widget's *own value* — a predicate such as `isBlankValue` that hides the control's quirks from every caller. See base's *export a question, not the data behind it*.
 
+## A component gets its own DIRECTORY once it owns three files
+
+(component + styles + test), and stays a flat file below that. *(Judgment call — React's own docs decline to prescribe a structure, and colocation is satisfied either way by a shared filename stem, so this threshold is mine rather than a cited practice.)* Three is where flat stops paying: two files sort adjacently and read as a pair, while several three-file components interleave into a directory nobody can scan — 21 loose files in one folder is the tell. Name the directory for the component and use `index.<ext>` inside it, so **consumer imports do not change** (`../hero-band` resolves to the directory) and the promotion is invisible outside the component. Two things to get right when promoting: the moved files' OWN relative imports each gain a level, which is where the mistakes are — a bulk rewrite must fix self-references, local siblings and outside-the-feature paths as three separate cases, not one regex; and **in an EXISTING repo the repo's own convention wins**, so move the whole directory or none of it, and land it as its own reviewable commit rather than inside a feature diff.
+
 ## Async effects (cancellation)
 
 - `useEffect` **cannot be `async`** — React treats the callback's return value as the cleanup function, so returning a promise breaks cleanup. Define an async function *inside* the effect, invoke it, and attach `.catch()` to the promise; the effect's own `return` then stays free for real cleanup.
@@ -104,11 +108,11 @@ Reusable best practices for React. A scaffold step inlines these into an agent w
 
 ## Delivery shape — once a client runtime is earned
 
-Whether a UI needs a client runtime at all is `/tech-design` §3d's client-state test.
+Whether a UI needs a client runtime at all is `/tech-design` (forge-vault skill) §3d's client-state test.
 Once it does, the DELIVERY shape is a second decision: gate it with every row below, each
 with its criterion, ranked per `docs/engineering-defaults.md` §Core Stack. **The row most
 often missed is Next.js static export**, which removes the Node-at-runtime cost the usual
-Next-vs-SPA comparison turns on. *(forge-wingman `adr/0006` omitted it; amended 2026-09-23.)*
+Next-vs-SPA comparison turns on.
 
 | Shape | Choose it when | Rule it out when |
 |---|---|---|
@@ -142,8 +146,7 @@ Reusable best practices for Tailwind CSS. A scaffold step inlines these into an 
   usual reason for skipping Tailwind. That reason does not hold. **A repo whose
   frontend already has a `package.json` — whichever package manager installs it;
   Bun here — uses `@tailwindcss/vite` instead**: Tailwind calls the plugin "the most
-  seamless way to integrate it". *(forge-wingman `adr/0006` chose standalone beside a
-  Vite `web/`; corrected 2026-09-23.)*
+  seamless way to integrate it".
 - **Where standalone IS right, pin its version IN THE REPO, never on the device.**
   One target (a Makefile rule downloading a named release, checksum-verified) that
   local dev and CI both call. A device-wide install via `/onboard-device` is a
@@ -184,7 +187,7 @@ Reusable best practices for TypeScript. A scaffold step inlines these into an ag
 - **`||` and `&&` return an OPERAND, not a boolean — which is what makes the optional-filter guard `...(has && { param })` work, and what makes it misread.** *(Language spec: a logical expression evaluates to one of its operands.)* In `const has = a || b || c`, `has` is the **first truthy operand, or the last one** when all are falsy — so an all-absent case gives `undefined`, never `false`, and logging it prints a date string or a number rather than a boolean. Two consequences at the same call site: the serialised payload beside it is **never falsy** — `JSON.stringify({a,b,c})` with everything `undefined` is the two-character string `"{}"` (see the `undefined`-vs-`null` rule above) — so without the `has` guard an empty `param={}` ships on every call; and `||` falls through on `0` and `''`, so a legitimately-zero filter reads as absent, which is what `??` fixes.
 - **A utility's `undefined` handling encodes PATCH or REPLACE semantics — check which before combining objects.** Verified 2026-09-08: lodash `merge(dest, {k: undefined})` **skips** the source and keeps `dest.k`, while `{...dest, k: undefined}`, `Object.assign` and lodash `assign` all let `undefined` **win**. Skipping is right for a PATCH ("change these fields, leave the rest"); it is wrong for a REPLACE ("derive the whole state from this source"), where `undefined` is a real value meaning *empty* and discarding it silently substitutes stale state. **The tell you need REPLACE: every field is recomputed from one source on every call.** `merge`'s other trait compounds it — it MUTATES its first argument and returns it, so merging into a module-level default writes into that shared object for the life of the module. Note deep-ness and skip-`undefined` are independent behaviours, not cause and effect: `assign` is shallow and still lets `undefined` win. Reach for `merge` only when you genuinely need recursion into nested values; on flat data a spread is safer and non-mutating.
 - **An Invalid Date is TRUTHY, so `if (date)` is an existence check, not a validity check — validate the STRING before parsing.** `new Date('garbage')` and date-fns `parse('garbage', …)` both return a Date *object* whose time is `NaN`, so every `if (checkIn)` guard passes and the failure surfaces later as a `RangeError` thrown out of `format()` or `Intl.DateTimeFormat` — often somewhere that turns it into a 5xx rather than a bad value. Guard with `isValid(d)`, or better validate the source string (regex + calendar round-trip, per base's date rule) so the parse never happens on garbage. **A string check is strictly stronger:** date-fns `parse` accepts `2026-9-5` and yields a valid Date, so `isValid` passes on input a `\d{4}-\d{2}-\d{2}` check rejects. (Verified 2026-09-08 on a property page that 500'd for a week: 1,138 hits, 22 pages indexed by Google under 5xx.)
-- Use `satisfies` to validate object shapes without widening the inferred type
+- **`satisfies` checks a value has AT LEAST the target shape — it does not strip or flag extra properties on a variable.** Excess-property checking only fires on a fresh object literal; a variable (destructured, or otherwise assembled) can carry fields the target type never mentions and still pass `x satisfies T` cleanly. So `satisfies` verifies the fields you *do* care about; it is not what removes the ones you don't — if a value must NOT carry a field (e.g. before serializing it for a narrower wire contract), exclude it explicitly (rest-pattern destructuring, `Omit`, or an explicit object literal), then use `satisfies` to confirm what's left still matches. (Verified: `{ ...dto } satisfies NarrowerMessage` compiles and serializes fine even carrying a field `NarrowerMessage` doesn't declare, because `dto` isn't a literal at that expression.)
 - Prefer discriminated unions over optional fields to model distinct states
 - Type component props explicitly — never rely on inferred JSX prop types
 - Use `as const` for static data arrays and lookup objects
@@ -325,7 +328,7 @@ Reusable best practices for Bun. A scaffold step inlines these into an agent whe
 - Use `bun --watch <entrypoint>` for the inner dev loop on backend services — not `nodemon`
 - Use `bun test` for the test runner — it is built in and works with `@testcontainers/postgresql` for integration tests
 - Lock bun version in CI via `oven-sh/setup-bun@v2` with `bun-version: latest` (or pin a specific version for reproducibility)
-- Cache the Bun install cache in CI: path `~/.bun/install/cache`, key `${{ runner.os }}-bun-${{ hashFiles('bun.lockb') }}`
+- Cache the Bun install cache in CI: path `~/.bun/install/cache`, key `${{ runner.os }}-bun-${{ hashFiles('bun.lock*') }}` (Bun 1.2+ writes the text `bun.lock`; older versions wrote `bun.lockb`. Verified 2026-09-30: bun.com/docs/install/lockfile)
 
 ### accessibility
 
@@ -380,7 +383,7 @@ user-facing UI.
   - **When swapping one colour for another, measure the DELTA, not just the new value** — a swap
     between two already-failing colours can quietly make things worse.
 
-  What to DO about a conflict is base's build-what-the-frame-draws rule; this is about noticing it
+  What to DO about a conflict is `css.md`'s "Build what the frame DRAWS" section; this is about noticing it
   at the moment of choosing. (Verified: `Functional/Success` `#5fbd68`, taken from a success badge
   onto a stepper circle that carries a white numeral, measures **2.34:1** — worse than the
   **2.81:1** olive it replaced, and both under 4.5:1. Neither token's name said so.)
@@ -450,12 +453,12 @@ changes font sizes.
 - **Read the codebase's own shared text variants BEFORE reaching for iOS or Material.** A design
   system already in the repo is the house reference: every other screen uses it, so one that
   diverges makes the user feel a jump walking between them. Grep the shared `Text`/`Typography`
-  component for its size map and quote it; a platform scale is what you cite when no house scale
+  component for its size map and quote it; a platform scale is what `css.md` (§ Type: Apple's scale) applies when no house scale
   exists. **The check that settles it: do the SIBLING screens in the same flow pin their sizes, or
   use the variants?** (Verified: two new screens were the only pinned ones in a six-screen flow, and
   at 20px body ran +4px against every sibling at `sm` — neither the platform nor the design was the
   thing being violated, the flow was.)
-- **A platform scale is a SYSTEM, not a menu — see the precondition rule in `base/CLAUDE.md`.**
+- **A platform scale is a SYSTEM, not a menu — see § Pinned px vs the scaling unit below.**
   Citing one number from iOS while the rest of the scale is your own is borrowing, not conforming.
   The tell: body sits 3px off the platform's while a single heading matches it exactly.
 - **Rank the evidence: design fidelity and flow consistency are CHECKABLE in the repo; a platform
@@ -463,8 +466,9 @@ changes font sizes.
   numbers — it converts an argument about taste into one line of arithmetic (verified: 12px total
   deviation across eight tiers versus 28px for the alternative, which ended the discussion). Where
   the platform reference happens to agree, say it is corroboration, not the argument.
-- **Reference sizes, all UNVERIFIED here — confirm before quoting.** Apple's HIG is JS-rendered and
-  returns an empty shell to a plain fetch. From recollection: iOS Large Title 34 / Title 1 28 /
+- **Reference sizes below are from recollection — confirm against Apple's JSON endpoint (next
+  bullet) before quoting.** Apple's HIG HTML page is JS-rendered and returns an empty shell to a
+  plain fetch, which is why the endpoint exists. From recollection: iOS Large Title 34 / Title 1 28 /
   Title 2 22 / Title 3 20 / **Body 17** / Subheadline 15; Material 3 Display Small 36 / Headline
   Large 32 / Title Large 22 / **Body Large 16** / Body Medium 14. Orientation, never authority.
 
@@ -804,8 +808,8 @@ Subheadline. Express it in `rem`, not `px`:
 | Body | 17 | `1.0625` |
 | Subheadline | 15 | `0.9375` |
 
-**`rem` is the web's Dynamic Type, and that is the whole argument.** `base/CLAUDE.md`
-already records that borrowing a platform number leaves the MECHANISM behind — iOS
+**`rem` is the web's Dynamic Type, and that is the whole argument.** `typography.md`
+(§Pinned px vs the scaling unit) records that borrowing a platform number leaves the MECHANISM behind — iOS
 scales 34pt with Dynamic Type while a pinned px scales with nothing. Expressing the
 same scale in `rem` restores it: the reader's own font-size preference scales
 everything, the way Dynamic Type does on the device the numbers came from. So the
@@ -836,9 +840,9 @@ regardless of units — but it discards a setting the reader deliberately change
 on mobile it combines badly with a `maximum-scale` viewport tag, which removes the
 zoom route too.
 
-**The scale is a STARTING point, not a verdict** — `base/CLAUDE.md` records 34
-wrapping in a 375px column where 32 held. Measure the real string at real value
-lengths before keeping a number.
+**The scale is a STARTING point, not a verdict** — an earlier build found a 34 wrapping in a 375px
+column where 32 held (the original measurement is not recorded). Measure the real string at real value lengths before keeping a
+number (`typography.md` §Measure the real string, not the fixture).
 
 ## A token's `in Figma` comment is not the design — sample the frame
 

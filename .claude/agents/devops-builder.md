@@ -39,21 +39,24 @@ Reusable best practices for GitHub Actions. A scaffold step inlines these into a
 
 - Gate the CI workflow on `pull_request` to `main` only — direct pushes to main are blocked by branch protection, not the workflow trigger
 - The CI job name must exactly match the required status check context string set in branch protection — a mismatch silently bypasses the gate
-- Always install with `--frozen-lockfile` (Bun) or `--ci` (npm) — never allow lockfile mutation during CI
-- Cache Bun dependencies between runs: path `~/.bun/install/cache`, key keyed on `hashFiles('bun.lockb')`, restore-key `${{ runner.os }}-bun-`
+- Always install with `--frozen-lockfile` (Bun) or `npm ci` (npm) — never allow lockfile mutation during CI
+- Cache Bun dependencies between runs: path `~/.bun/install/cache`, key keyed on `hashFiles('bun.lock*')` (text `bun.lock` on Bun 1.2+, `bun.lockb` before), restore-key `${{ runner.os }}-bun-`
 - Run typecheck before lint — type errors are more fundamental; failing fast saves CI minutes
 - Add the `deploy` job in the same workflow file; gate it with `needs: ci` and `if: github.ref == 'refs/heads/main'` — never deploy code that failed quality checks
 - Tag all built artifacts with `${{ github.sha }}` — never tag with `latest`; SHA tags make rollbacks deterministic and auditable
 - **A `workflow_run` chain filtered on `branches: [main]` does NOT cascade on a feature branch — every stage needs its own `workflow_dispatch`.** The filter tests the branch of the *upstream* run, so a multi-stage deploy chain (infra → serverless → app) that self-drives on `main` silently drives nothing on a branch, with no error anywhere: the first stage runs and the rest simply never trigger. Before assuming a chain is running, read each downstream workflow's own trigger block rather than the first one's. *(Verified in a 3-stage chain where only the manually-dispatched stages ever ran.)*
 - **Read the whole trigger GRAPH, not one path through it.** More than one workflow can hang off the same upstream, so a remembered "A → B → C" sequence can be a path rather than the graph, and a hardcoded stage list silently drops a sibling. Derive order from `on.workflow_run.workflows:` (cross-workflow) and `needs:` (intra-workflow) edges.
-- Pin action versions (e.g. `actions/checkout@v4`) to major versions at minimum; use SHA pinning when supply-chain risk is a concern
+- Pin third-party actions to a full-length commit SHA (see *Supply chain*); a major-version tag (e.g. `actions/checkout@v4`) is the convenient tradeoff, least acceptable in a job that holds credentials
 
 ## Claude review bot (`anthropics/claude-code-action`)
 
 Two workflow files, split by trigger — replicate both:
 
-- `claude-code-review.yml` — the *auto* review. `on: pull_request: types: [opened]`,
+- `claude-code-review.yml` — the *auto* review. `on: pull_request: types: [opened, ready_for_review]`,
   with a `prompt:` naming what to review and telling it to post via `gh pr comment`.
+  *(Verified 2026-09-29 on `urban-rest-services`: the run at draft creation was
+  `skipped` and the run at the draft→ready flip reviewed, so there the flip IS the
+  review. A repo on `[opened]` alone behaves as the next bullet describes.)*
 - `claude.yml` — the *on-demand* review. Fires on `issue_comment`,
   `pull_request_review_comment`, `pull_request_review`, `issues`, gated by an `if:`
   requiring `@claude` in the body. No `prompt:` — it follows the comment that
@@ -69,7 +72,7 @@ Two workflow files, split by trigger — replicate both:
   `actions: read` (and `additional_permissions: actions: read`) so it can read CI
   results on the PR.
 - Set the model in BOTH places — `claude_args: '--model haiku'` and
-  `settings.env.CLAUDE_CODE_SUBAGENT_MODEL` — or subagents run on the default.
+  `settings.env.CLAUDE_CODE_SUBAGENT_MODEL` — or subagents run on the default. (Verified 2026-09-30: code.claude.com/docs/en/model-config — `haiku` is a documented alias; `CLAUDE_CODE_SUBAGENT_MODEL` "accepts an alias such as `haiku` or a full model name", and a definition's own `model` field takes precedence.)
 - Scope the on-demand job with `--allowed-tools` limited to the `gh` verbs it needs
   (`pr comment/diff/view/list`, `issue view/list`, `search`).
 
@@ -88,6 +91,14 @@ credentials. The per-cloud instantiation lives in that cloud's pack: `aws.md`, `
   quickstart shows a wildcard that any branch in the repo satisfies, so an unreviewed
   feature branch can assume a prod identity. GCP's docs put it plainly: you *"must define
   at least one condition, so that untrusted repositories can't request access tokens."*
+- **`job_workflow_ref` names the workflow FILE a job runs in, for DIRECT jobs too — so
+  it can bind an identity to one workflow file.** A reusable workflow's jobs carry the
+  called file's ref; a job defined directly carries its own file's ref. GitHub's claim
+  table describes only the reusable case, and a Copilot review flagged direct-job
+  bindings as broken on that reading; the live token disagreed. Map
+  `attribute.job_workflow_ref = assertion.job_workflow_ref` and bind per file. *(Verified
+  2026-09-25 on forge-wingman run 36127978450: the direct `claims` job read
+  `…/infra-smoke.yml@refs/heads/<branch>`.)*
 - **Scope production by ENVIRONMENT, not by branch.** The environment claim composes with
   the approval gate, so the credential cannot be minted until a human approves. Branch
   scoping has no such gate.
@@ -122,6 +133,17 @@ credentials. The per-cloud instantiation lives in that cloud's pack: `aws.md`, `
 
 ## Reusable workflows vs `workflow_run` chaining
 
+- **An untrusted job's output reaches a step only through env or argv, both capped
+  at 128 KiB per string on Linux (`MAX_ARG_STRLEN`)**, below GitHub's 1 MB output
+  limit. A forged oversized output fails the consumer's exec (E2BIG) before any
+  validation runs, so a step that must always write something needs a fallback step
+  that runs without it. Gate that fallback on a marker the consumer writes as its
+  FIRST act (`started=true`), never on its completion output: keyed on completion, it
+  also fires when the consumer ran and failed later, and overwrites what it wrote.
+  *(Copilot on forge-wingman PR #11.)* **And do not depend on a failed called workflow's outputs** —
+  GitHub documents neither way (actions/runner#2495 is about `result`, not outputs):
+  have the producing step exit 0 once it has reported, and fail the run later from
+  the consumer. *(Found in review 2026-09-25.)*
 - **Centralise the pipeline DEFINITION, never its EXECUTION.** Actions events are
   repo-scoped: there is no cross-repo `push` or `pull_request`, and GitHub is explicit that
   *"other `GITHUB_TOKEN`-triggered events do not create workflow runs at all."* So a
@@ -160,6 +182,17 @@ credentials. The per-cloud instantiation lives in that cloud's pack: `aws.md`, `
 - **Use the official `setup-*` action's built-in dependency cache; never hand-roll
   `actions/cache` for packages.** The setup actions key on the lockfile and get restore-keys
   right. Verify the action's major version at write time — these bump often.
+  **Turn that cache OFF only where a DEFAULT-BRANCH run executes untrusted code.**
+  *Established: GitHub documents the attack as cache poisoning.* Caches are branch-scoped:
+  a run restores from its own branch and the default branch, and a pull-request run's cache
+  "can only be restored by re-runs of the pull request" (docs.github.com, *Dependency
+  caching*, verified 2026-10-05), so a feature or agent branch cannot write what `main`
+  restores. The exposure is a workflow dispatched FROM `main` that executes branch code (an
+  agent runner): it saves into `main`'s scope, and a more privileged run restores it. So
+  `cache: false` belongs in that workflow, not in a CI gate whose `main` runs build only
+  merged code. *(Verified 2026-10-05: forge-wingman disabled caching in every workflow, CI
+  included, though only `run.yml` runs agent code under `main`; `go vet` spent 51s of a
+  3-minute job downloading modules from cold.)*
 
 | Language | Action | Cache | Install |
 |---|---|---|---|
@@ -169,6 +202,13 @@ credentials. The per-cloud instantiation lives in that cloud's pack: `aws.md`, `
 
 - **Every language installs from a committed lockfile with a frozen/CI flag.** An install
   that may mutate the lockfile means CI tested a dependency set the commit does not describe.
+  **This covers a TOOL you install for CI, not only the project's own dependencies** — a bare
+  `npm i -g <tool>@<version>` pins the top-level version alone and resolves every dependency
+  beneath it afresh each run, so one commit installs a different tree week to week. Install it
+  from a committed lockfile (`npm ci --prefix <dir>`), and set the runtime its own `engines`
+  field requires — a package needing Node ≥ 22 fails on a runner's default. (Verified 2026-10-05:
+  a CLI installed with `npm i -g command-code@1.74.1` pulled ~50 caret dependencies unpinned;
+  fixed with a committed lockfile plus `setup-node` at 22, the CLI's engines floor.)
 - **Order gates cheapest-and-most-fundamental first** so a run fails fast: format →
   typecheck/vet → lint → test → build. `tsc --noEmit` / `go vet` / `mypy` go *before* the
   linter, because a type error makes every lint finding downstream noise. **Exception: a step
@@ -236,6 +276,60 @@ credentials. The per-cloud instantiation lives in that cloud's pack: `aws.md`, `
 - **Never interpolate `${{ github.event.* }}` into a `run:` block** — pass it via `env:`.
   Interpolation splices attacker-controlled text (PR titles, branch names) into the shell.
 
+## `GITHUB_TOKEN` — what a grant actually unlocks
+
+*Checked 2026-09-25 against GitHub's docs. These traps recur because each grant
+unlocks more than its name suggests; re-verify before leaning on one.*
+
+- **Permission keys are coarse, so withhold a capability with a JOB boundary, not a
+  scope.** There is one `pull-requests` key: the write that creates a PR also marks it
+  ready, edits and labels it. To let a workflow open a PR that untrusted code cannot
+  promote, run the untrusted step in a job granted `contents: read` and open the PR in a
+  separate job of fixed steps; each job is a fresh VM, so the split holds. *(Least
+  privilege is established; the split is derived from the key list.)*
+  **A hosted runner job is ONE trust domain:** its user has passwordless `sudo`, so no
+  supervisor inside the VM — a process group (a `setsid` child escapes it), a cgroup,
+  an env scrub — is a boundary against code the job runs. Use those for cleanup of
+  well-behaved runs, and the job boundary for anything untrusted.
+- **Creating a PR also needs a REPO SETTING, off by default: *Allow GitHub Actions to
+  create and approve pull requests*.** GitHub: it decides *"whether `GITHUB_TOKEN` can
+  create and approve pull requests."* Read it with
+  `gh api repos/<o>/<r>/actions/permissions/workflow` (`can_approve_pull_request_reviews`).
+  Left off, the job does all its work and fails at `gh pr create`. It is per repository,
+  so a workflow copied into a new repo brings the step and not the setting.
+- **A PR opened by `GITHUB_TOKEN` gets CI, approval-gated.** Its `opened`, `synchronize`
+  and `reopened` events create runs *"in an approval-required state"*; other
+  token-triggered events create none (see *Reusable workflows* above). **Three ways
+  out, and one that looks like one:** the job that opens the PR can dispatch CI on the
+  branch — `workflow_dispatch` is the one event the token starts directly, so give CI
+  that trigger and the job `actions: write`; or open the PR with a GitHub App token
+  (GitHub's own fix, which also lifts the repo setting); a PAT works but makes the
+  automation act as you. The approve API does NOT help — it covers *"a pull request
+  from a public fork of a first time contributor"* only. *(Verified 2026-09-25 on
+  forge-wingman: held run `action_required`; dispatched run started unapproved.)*
+- **A GitHub App token needs the App INSTALLED on the repo, and a private App installs
+  only on the account that owns it.** `actions/create-github-app-token` fails with
+  `Not Found` on "get a repository installation" when it is not installed there. The
+  install cannot be checked from the CLI with a PAT: `gh api repos/<o>/<r>/installation`
+  answers *"A JSON web token could not be decoded"* and `gh api user/installations`
+  needs a user-to-server token; only a run proves it. Apps you own are listed under
+  Settings → Developer settings → GitHub Apps; installs under Applications → Installed.
+  *(Verified 2026-10-01 on forge-wingman: the App existed under the owner but was not
+  installed on the repo, and the browser was signed into a different account, so its
+  apps page was empty and a new App's name was reported taken.)*
+- **A workflow that exists only on a non-default branch cannot be dispatched.**
+  `gh workflow run x.yml --ref <branch>` returns `HTTP 404: workflow x.yml not found on
+  the default branch`. For a throwaway workflow, give it a `push:` trigger scoped to
+  that one branch and push; delete the branch after. *(Verified 2026-10-01.)*
+- **`actions/checkout` persists the token by default** (`persist-credentials: true`), so
+  every later step can push with it. Set `false` in any job that runs code you do not trust.
+- **`id-token: write` is job-wide**: every step can mint the OIDC token, so a job that
+  runs untrusted code and holds it hands that code the cloud identity. Same fix: a job
+  boundary.
+- **Artifacts inherit the repository's read access** (GitHub: *"Read access to the
+  repository is required"*), so on a public repo they are public. Never pass a
+  secret-bearing file between jobs as an artifact there.
+
 ## Scope boundary
 
 - This pack covers the **pipeline** — what runs in Actions. The IaC *tool* a deploy job
@@ -243,14 +337,33 @@ credentials. The per-cloud instantiation lives in that cloud's pack: `aws.md`, `
   the infra tooling's own pack, not here. A deploy job's business ends at: assume the
   credential, fetch the artifact, invoke the tool, report the result.
 
+## Copilot code review
+
+- **Two effort levels: Lite (default) and Balanced**, which "use more AI credits"
+  (GitHub docs; Verified 2026-09-30: docs.github.com/en/copilot/concepts/agents/code-review — Lite is the default, est. $0.05-$1 of AI credits per review vs $0.25-$5 for Balanced). The repo default is at Settings → Copilot → Code review → Review
+  effort level; per review, choose it from the Reviewers gear.
+- **Copilot Student includes PR review, on a limited allowance GitHub does not
+  publish.** Observed 2026-09-24: it ran out within a day of light use, then
+  replied "unable to review … reached their quota limit" — and Lite draws on the
+  same quota, so switching back does not restore it before the monthly reset.
+- **A manual re-request ran at Lite with the repo default set to Balanced**
+  (observed once; the setting may govern automatic reviews only, or org repos).
+- **So on a Student plan the local reviewer agents are the primary review and
+  Copilot is a bonus** — they cost no GitHub quota, and they found the first two
+  defects on forge-wingman PR #1 before Copilot ran.
+- **How to detect the outcome:** the review arrives as a PR review by
+  `copilot-pull-request-reviewer[bot]`; a quota block arrives as an issue comment
+  saying "unable to review … quota limit". Poll both (`gh api
+  repos/<o>/<r>/pulls/<n>/reviews` and `…/issues/<n>/comments`) every ~15 s.
+
 ### gcp
 
 Reusable recipes for reaching + operating a GCP dev environment (personal cloud; the company equivalent is `aws`). A scaffold step inlines these when the target repo deploys to GCP. Carries the Cloud-Run function-fire recipe the `aws` pack anticipates.
 
 - **Identity-Aware Proxy enables DIRECTLY on Cloud Run — no external HTTPS load
   balancer.** Google calls this the recommended path, specifically to avoid the
-  load-balancer cost the older pattern carried (~$18/month, which alone can decide
-  against it). IAP authenticates before the request reaches the service: an
+  load-balancer cost the older pattern carried (~$18/month — $0.025/hour for the first 5 forwarding rules — which alone can decide
+  against it; *Verified 2026-09-30: https://cloud.google.com/load-balancing/pricing*). IAP authenticates before the request reaches the service: an
   unauthenticated caller gets Google's sign-in, and the app verifies one signed
   header instead of implementing OAuth, sessions and cookie security.
 - **For a private single-user or small-team surface, IAP beats any auth library.**
@@ -262,6 +375,27 @@ Reusable recipes for reaching + operating a GCP dev environment (personal cloud;
 ## Auth
 
 - `gcloud auth list` to check the session; `gcloud auth login` (browser) for user creds, `gcloud auth application-default login` for ADC that SDKs pick up. Set the project with `gcloud config set project <id>`.
+
+## Region selection
+
+- **Pick the region nearest your AUTOMATED traffic's origin, not your own
+  location.** A human's occasional console click is latency-insensitive; a
+  pipeline firing dozens of times a day is not, and it usually dwarfs manual
+  traffic in volume. For a project whose real writes/reads come from CI
+  (GitHub Actions, a scheduled job), that origin is what to site near.
+- **GitHub-hosted Actions runners are US-based and consolidating further —
+  GitHub's own infra blog states they are "targeting 70% of read traffic and
+  30% of write traffic in Central US."** So a GCP project whose Firestore/GCS
+  traffic mostly comes from GitHub Actions is already well-aligned sitting in
+  `us-central1`; moving it to a region nearer the developer (e.g. Sydney) adds
+  real cross-region latency to every automated run to marginally help rare
+  manual browsing. *(Verified 2026-09-27 against `github.blog`'s July 2026
+  availability report; GitHub does not let you pick or guarantee runner
+  region.)*
+- **A region choice is usually PERMANENT for a stateful resource** — Firestore
+  and most managed databases cannot be moved after creation without an
+  export/delete/recreate/reimport cycle, so get this right before the first
+  write, not after real data exists.
 
 ## Compute (Cloud Run)
 
@@ -277,6 +411,7 @@ Reusable recipes for reaching + operating a GCP dev environment (personal cloud;
 - **Resumable uploads for anything large or from a flaky network** — *documented*: they survive an interrupted transfer instead of restarting it.
 - **Lifecycle rules from day one** — expire or downgrade storage class on a schedule; it is both the cost control and, per the docs, a guard against data being erroneously deleted by your own software.
 - *(Judgment call.)* Prefer **uniform bucket-level access** over per-object ACLs so permissions are readable in one place; reach for the S3-compatible XML API only when an existing S3 client must be reused, not by default.
+- **`gcloud storage cp` reads the destination object before it uploads**, so an identity granted create-only (`roles/storage.objectCreator`) fails with `403 storage.objects.get` even though the upload itself is allowed. For such an identity, POST to the JSON upload endpoint with `ifGenerationMatch=0` instead: 200 means created, 412 means it already exists. Test as that identity — a broader one passes and hides the gap. *(Verified 2026-09-29, `gcloud` 586.0.0 and a real Actions run of a rule-stack publish workflow. In the same run, `gcloud storage cp` to a single pointer object succeeded under `roles/storage.objectUser` scoped to that object by an IAM condition.)*
 
 ## Secrets & config
 
@@ -310,12 +445,22 @@ cloud-neutral half — why to federate, environment-vs-branch scoping — is in
 ```yaml
 permissions: { id-token: write, contents: read }
 # ...
-- uses: google-github-actions/auth@v2   # pin to a SHA for a credentialed job
+- uses: google-github-actions/auth@v3   # pin to a SHA for a credentialed job
   with:
     workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
     # projects/<id>/locations/global/workloadIdentityPools/<pool>/providers/<provider>
     service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 ```
+
+- **The auth action exports the PROJECT too, and derives it — name it at the consumer.**
+  By default (`export_environment_variables: 'true'`) it exports `GOOGLE_CLOUD_PROJECT`,
+  `GCLOUD_PROJECT`, `GCP_PROJECT` and the two `CLOUDSDK_*` project variables, taking
+  the value from `project_id`, else extracting it from `service_account`; it cannot
+  extract one from the WIF provider alone, which carries only the project NUMBER.
+  A step relying on that export names nothing, so give the step an `id` and pass
+  `${{ steps.auth.outputs.project_id }}` explicitly. *(Verified 2026-09-25 against
+  `action.yml` at v3.0.0, after a reviewer read the implicit export as a missing
+  variable.)*
 
 - **The provider MUST carry an attribute condition — this is not optional.** GitHub's guide:
   you *"must define at least one condition, so that untrusted repositories can't request
@@ -332,7 +477,29 @@ Reusable best practices for OpenTofu (Terraform-compatible IaC, no BSL risk). A 
 ## Practices
 
 - Same HCL as Terraform — pick OpenTofu to avoid the BSL licence; providers/modules stay compatible
-- **Remote state with locking** (GCS / S3 + DynamoDB backend); never local state for shared infra — concurrent applies corrupt it
+- **Remote state with locking** (GCS, or S3 with native `use_lockfile=true` locking or a DynamoDB table — both supported, neither deprecated; Verified 2026-09-30: opentofu.org/docs/language/settings/backends/s3/); never local state for shared infra — concurrent applies corrupt it
+- **An apply that dies before it saves state leaves three things to reconcile: the
+  real resource, a stale lock, and possibly a local `errored.tfstate`.** *(Verified
+  2026-09-30 against OpenTofu's docs: `force-unlock` "will not modify your
+  infrastructure"; `state push` refuses a lineage mismatch or a lower serial;
+  `import` needs the `resource` block written first. The docs say nothing about
+  `errored.tfstate` or this ORDER, which is a judgment call proven once, on a
+  Firestore index.)* Confirm no tofu process is running and the lock's `Who` and
+  `Created` are yours; read the remote state object directly and check whether the
+  resource is in it; `force-unlock` only a lock you can attribute; then `import` the
+  real resource (or `state push` the errored file, only if it holds the resource);
+  finish with a targeted plan that reports no changes. Never commit `errored.tfstate`.
+  A targeted plan still needs every required
+  root variable, and placeholders suffice for resources that do not use them.
+- **Re-keying a resource (unkeyed → `for_each`) destroys and creates UNORDERED, so a
+  binding other systems depend on rolls out as expand-contract in CONFIG, not a
+  `-target` apply.** Add the new resource beside the old in one change, verify it
+  serves, delete the old in a second: each plan reads cleanly (add-only, then one
+  destroy) and there is never a moment with zero bindings. A `moved` block does not
+  help when a forcing attribute changes, and `create_before_destroy` orders only one
+  instance. *(Expand-contract is established; Terraform's docs discourage `-target`
+  for routine applies. Found in review 2026-09-25 on forge-wingman's runner binding.)*
+- **`-target` also pulls in what its targets depend on**, including a `depends_on` on a whole `for_each` set, so a targeted plan can add more than the resources you named. Read the plan's add count against your list before applying. *(Verified 2026-09-29 on forge-wingman: five resources named, eight planned — three API enablements came in through one `depends_on`.)*
 - One state per environment, same modules + different `.tfvars` — parity by var files, not copy-paste. **How MANY environments is a judgment call, and the count is the shallow question — an environment earns its place only if some class of failure surfaces THERE and nowhere else.** A staging that cannot faithfully reproduce the integration is not a rehearsal, it is a third place to deploy that manufactures confidence (the same reason prod-E2E against designated test resources is sometimes the honest answer). Practically: **work → dev/staging/prod**, because a release cadence and a QA handoff mean someone who is not the author checks before customers do; **personal → dev/prod**, because it is solo and per-PR preview deployments already do what staging was for. Note the asymmetry — ADDING an environment later is a new state prefix and a new `.tfvars`, while REMOVING one means destroying or orphaning its resources, so under-provisioning is the recoverable mistake.
 - Modules for anything used twice; pin provider + module versions, commit the lock file
 - `plan` in CI on PR, `apply` gated behind review/approval — never auto-apply from a push
@@ -388,6 +555,7 @@ They are complementary, not alternatives.
 ## This repo
 
 - Deployables: `cmd/dispatcher` and `cmd/surface` build from the one `Dockerfile` (`--build-arg CMD=...`); the runner is not an image.
-- CI: `.github/workflows/ci.yml` — a Go job and a web job, `permissions: contents: read`.
-- IaC is OpenTofu from the first deploy (`docs/adr/0008`) and is its own ticket; there is no `infra/` yet.
+- CI: `.github/workflows/ci.yml` — a Go job and a web job, `permissions: contents: read`. The unattended runner is `run.yml` and `model.yml`, plus `plan-smoke.yml`, `model-smoke.yml` and `infra-smoke.yml`.
+- The runner's GitHub App has no `workflows` permission, deliberately: a change under `.github/workflows/` is pushed by hand.
+- IaC is OpenTofu in `infra/` (`docs/adr/0008`); `infra/README.md` covers state and apply.
 - Observability is GCP-native with a liveness alert (`docs/adr/0011`) — not Sentry.
