@@ -366,10 +366,10 @@ func TestBuildRunsTheOmpHarnessFromTheRecordedFixtures(t *testing.T) {
 	}
 }
 
-// TestWorkflowsInstallThePinnedOmp asserts both workflows that run an agent
+// TestWorkflowsInstallThePinnedOmp asserts the workflows that run an agent
 // install omp from its lockfile with bun and check the pinned version.
 func TestWorkflowsInstallThePinnedOmp(t *testing.T) {
-	for _, name := range []string{"model.yml", "plan-smoke.yml"} {
+	for _, name := range []string{"model.yml", "plan-smoke.yml", "review-smoke.yml"} {
 		b, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", name))
 		if err != nil {
 			t.Fatal(err)

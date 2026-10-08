@@ -12,6 +12,7 @@
 //	runner plan-reply      -provider <name> ...      record a vendor reply and the verdict it leads to
 //	runner plan-list                                 print every plan side by side, flagging the ones to look at
 //	runner plan-smoke      -plan-models <list>       prove the plan agent refuses edit, a new file and bash on the list's first and last model
+//	runner review-smoke    -review-models <list>     try the review agent on a fixture diff with each model, passing those whose findings parse at $0
 //
 // build exits 0 when it stops short of a branch but reported why; ticket, pr-meta
 // and record exit 1 for any run that cannot or did not succeed, so the workflow
@@ -133,10 +134,13 @@ func loadEnv(getenv func(string) string, required ...string) (env, error) {
 
 func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(string) string) error {
 	if len(args) == 0 {
-		return errors.New("usage: runner ticket|build|pr-meta|record|enable-provider|reset-breaker|plan-define|plan-verdict|plan-reply|plan-list|plan-smoke [flags]")
+		return errors.New("usage: runner ticket|build|pr-meta|record|enable-provider|reset-breaker|plan-define|plan-verdict|plan-reply|plan-list|plan-smoke|review-smoke [flags]")
 	}
 	if args[0] == "plan-smoke" {
 		return planSmoke(ctx, logger, getenv, args[1:])
+	}
+	if args[0] == "review-smoke" {
+		return reviewSmoke(ctx, logger, getenv, args[1:])
 	}
 	required, known := requiredEnv(args[0])
 	if !known {

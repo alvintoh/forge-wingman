@@ -1891,8 +1891,10 @@ func TestWorkflowsCarryThePlanModelsFromTheDefaultToTheRunner(t *testing.T) {
 			t.Errorf("%s: the plan_models input defaults to %q, want %s", name, got, DefaultPlanModel())
 		}
 	}
-	if got, want := inputDefault(read("run.yml"), "review_models"), strings.Join(DefaultReviewModels(), ","); got != want {
-		t.Errorf("run.yml: the review_models input defaults to %q, want %s", got, want)
+	for _, name := range []string{"run.yml", "review-smoke.yml"} {
+		if got, want := inputDefault(read(name), "review_models"), strings.Join(DefaultReviewModels(), ","); got != want {
+			t.Errorf("%s: the review_models input defaults to %q, want %s", name, got, want)
+		}
 	}
 	if !strings.Contains(read("run.yml"), "plan_models: ${{ needs.ticket.outputs.override_plan_models || inputs.plan_models }}") {
 		t.Error("run.yml does not pass plan_models to model.yml")
