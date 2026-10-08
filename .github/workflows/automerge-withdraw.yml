@@ -35,7 +35,8 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSHER: ${{ github.actor }}
         run: |
-          [[ "$(gh pr view "$PR" --json autoMergeRequest --jq '.autoMergeRequest != null')" == true ]] \
-            || { echo "auto-merge is not requested"; exit 0; }
+          # An assignment fails the step when gh does, so an API error is never read as "not requested".
+          requested="$(gh pr view "$PR" --json autoMergeRequest --jq '.autoMergeRequest != null')"
+          [[ "$requested" == true ]] || { echo "auto-merge is not requested"; exit 0; }
           gh pr merge "$PR" --disable-auto
           gh pr comment "$PR" --body "Auto-merge withdrawn: ${PUSHER} pushed ${HEAD_SHA:0:12} after the run requested it. Merge by hand once reviewed."

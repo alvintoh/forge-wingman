@@ -340,9 +340,10 @@ jobs:
           echo "url=${url}" >> "$GITHUB_OUTPUT"
           echo "duration_s=$(( $(date +%s) - STARTED ))" >> "$GITHUB_OUTPUT"
 
-      # Branch protection's required checks hold the merge; pinning the pushed head
-      # means a later push cannot ride on this request. A failed request leaves a
-      # ready PR for the owner.
+      # Branch protection's required checks hold the merge, so the request is made only
+      # while main requires go and web: without them auto-merge would merge at once.
+      # Pinning the pushed head means a later push cannot ride on this request. A
+      # failed request leaves a ready PR for the owner.
       - id: auto-merge
         name: Request auto-merge
         if: needs.pr-meta.outputs.auto_merge == 'true' && needs.model.outputs.ready == 'true'
@@ -351,6 +352,9 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           URL: ${{ steps.open.outputs.url }}
         run: |
+          required="$(gh api "repos/${GITHUB_REPOSITORY}/rules/branches/main" \
+            --jq '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] | any(. == "go") and any(. == "web")')"
+          [[ "$required" == true ]] || { echo "::warning::main does not require the go and web checks; auto-merge not requested"; exit 0; }
           gh pr merge "$URL" --auto --squash --match-head-commit "$(git rev-parse HEAD)"
           echo "requested=true" >> "$GITHUB_OUTPUT"
 

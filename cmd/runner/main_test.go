@@ -640,6 +640,7 @@ func TestRunWorkflowRequestsAutoMergeOnlyOnPRMetasDecision(t *testing.T) {
 		"AUTO_MERGE_SWITCH: ${{ vars.WINGMAN_AUTO_MERGE }}",
 		`-auto-merge-switch "$AUTO_MERGE_SWITCH"`,
 		"if: needs.pr-meta.outputs.auto_merge == 'true' && needs.model.outputs.ready == 'true'",
+		`any(. == "go") and any(. == "web")`,
 		`gh pr merge "$URL" --auto --squash --match-head-commit`,
 		"AUTO_MERGE: ${{ needs.pr.outputs.auto_merge == 'true' }}",
 		`-auto-merge="$AUTO_MERGE"`,
@@ -658,6 +659,7 @@ func TestWithdrawWorkflowDisablesAutoMergeOnAPushToARunsBranch(t *testing.T) {
 	for _, want := range []string{
 		"pull_request_target:\n    types: [synchronize]",
 		"startsWith(github.event.pull_request.head.ref, 'wingman/')",
+		`requested="$(gh pr view "$PR" --json autoMergeRequest`,
 		`gh pr merge "$PR" --disable-auto`,
 	} {
 		if !strings.Contains(string(yml), want) {
