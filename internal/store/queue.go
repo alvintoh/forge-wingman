@@ -22,8 +22,9 @@ const (
 	// dispatchCollection holds the bookkeeping beside the run records: one
 	// rejected-<ticket id> doc per ticket the queue would not admit, which a
 	// later refusal of the same ticket replaces, one webhook-<session id> doc
-	// per Linear agent session the webhook has taken, and the single ledger
-	// document (adr/0003).
+	// per Linear agent session the webhook has taken, one notice-<id> doc per
+	// systemic-failure notice, the breaker document while a systemic stop
+	// holds dispatch, and the single ledger document (adr/0003).
 	dispatchCollection = "dispatch"
 	rejectedPrefix     = "rejected-"
 	// ledgerDocID is the dispatch/ledger document adr/0003 describes: the
@@ -302,22 +303,7 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 			return err
 		}
 
-		settled := dispatcher.Settled{Windows: make([]money.Micros, len(cfg.ProviderWindows))}
-		for i, w := range cfg.ProviderWindows {
-			sum, _, err := q.settledSince(tx, w.Since(at))
-			if err != nil {
-				return err
-			}
-			settled.Windows[i] = sum
-		}
-		if modelCap, ok := cfg.ModelCaps[facts.Model]; ok {
-			sum, _, err := q.settledSince(tx, modelCap.Since(at))
-			if err != nil {
-				return err
-			}
-			settled.ModelCap = sum
-		}
-		settled.CashCost, settled.CashMinutes, err = q.settledSince(tx, cfg.Cash.Since(at))
+		settled, err := q.settled(tx, cfg, facts.Model, at)
 		if err != nil {
 			return err
 		}
@@ -375,6 +361,52 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 		return false, "", fmt.Errorf("claiming run %s: %w", runID, err)
 	}
 	return claimed, binding, nil
+}
+
+// Spend is what the ledger holds reserved now, and the settled cost inside each
+// of cfg's windows ending at at, read in one read-only transaction.
+func (q *Queue) Spend(ctx context.Context, cfg dispatcher.BudgetConfig, model string, at time.Time) (dispatcher.Totals, dispatcher.Settled, error) {
+	var reserved dispatcher.Totals
+	var settled dispatcher.Settled
+	err := q.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		ledger, err := q.readLedger(tx, q.ledgerRef())
+		if err != nil {
+			return err
+		}
+		reserved = reservedTotals(ledger)
+		settled, err = q.settled(tx, cfg, model, at)
+		return err
+	}, firestore.ReadOnly)
+	if err != nil {
+		return dispatcher.Totals{}, dispatcher.Settled{}, fmt.Errorf("reading the spend at %s: %w", at, err)
+	}
+	return reserved, settled, nil
+}
+
+// settled sums, within tx, the settled cost inside each of cfg's windows
+// ending at at, the run model's own cap among them.
+func (q *Queue) settled(tx *firestore.Transaction, cfg dispatcher.BudgetConfig, model string, at time.Time) (dispatcher.Settled, error) {
+	settled := dispatcher.Settled{Windows: make([]money.Micros, len(cfg.ProviderWindows))}
+	for i, w := range cfg.ProviderWindows {
+		sum, _, err := q.settledSince(tx, w.Since(at))
+		if err != nil {
+			return dispatcher.Settled{}, err
+		}
+		settled.Windows[i] = sum
+	}
+	if modelCap, ok := cfg.ModelCaps[model]; ok {
+		sum, _, err := q.settledSince(tx, modelCap.Since(at))
+		if err != nil {
+			return dispatcher.Settled{}, err
+		}
+		settled.ModelCap = sum
+	}
+	var err error
+	settled.CashCost, settled.CashMinutes, err = q.settledSince(tx, cfg.Cash.Since(at))
+	if err != nil {
+		return dispatcher.Settled{}, err
+	}
+	return settled, nil
 }
 
 // readLedger reads the ledger document within tx, reporting an empty ledger

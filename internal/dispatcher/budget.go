@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/money"
@@ -191,4 +192,34 @@ func Decide(cfg BudgetConfig, model string, reserved Totals, settled Settled, es
 		return false, CeilingCash
 	}
 	return true, ""
+}
+
+// stillBinds reports whether ceiling, the budget ceiling that withheld a run,
+// would still withhold it given the spend as it will stand at the next poll.
+func stillBinds(cfg BudgetConfig, model string, reserved Totals, settled Settled, estimate Reservation, ceiling string) bool {
+	fits, binding := Decide(cfg, model, reserved, settled, estimate)
+	return !fits && binding == ceiling
+}
+
+// ceilingStart is the start of the window ceiling meters at at, false when cfg
+// has no such ceiling. A rolling window's start is the Period-long span at
+// falls in, so it names one window as long as the ceiling binds inside it.
+func (cfg BudgetConfig) ceilingStart(ceiling string, at time.Time) (time.Time, bool) {
+	if ceiling == CeilingCash || ceiling == CeilingRunnerMinutes {
+		return cfg.Cash.Since(at), true
+	}
+	windows := slices.Clone(cfg.ProviderWindows)
+	for _, w := range cfg.ModelCaps {
+		windows = append(windows, w)
+	}
+	for _, w := range windows {
+		if w.Name != ceiling {
+			continue
+		}
+		if w.Calendar {
+			return w.Since(at), true
+		}
+		return at.UTC().Truncate(w.Period), true
+	}
+	return time.Time{}, false
 }

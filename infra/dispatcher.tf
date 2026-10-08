@@ -131,6 +131,8 @@ data "google_project" "this" {
   project_id = var.project_id
 }
 
+# pollInterval and noticeLease in internal/dispatcher/notice.go assume this
+# schedule and the job's timeout.
 resource "google_cloud_scheduler_job" "dispatcher" {
   name      = local.dispatcher
   region    = var.region

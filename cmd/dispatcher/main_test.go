@@ -121,6 +121,22 @@ func TestLoadConfigRefusesAnUnconfiguredJob(t *testing.T) {
 	}
 }
 
+func TestSlackPosterReadsTheWebhookSecretTrimmed(t *testing.T) {
+	token := func(_ context.Context, name string) (string, error) {
+		if name != noticeWebhookSecret {
+			t.Fatalf("read secret %q", name)
+		}
+		return "https://hooks.slack.com/services/T/B/x\n", nil
+	}
+	poster, err := slackPoster(token, nil)(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := poster.(dispatcher.Slack).Webhook; got != "https://hooks.slack.com/services/T/B/x" {
+		t.Fatalf("webhook = %q", got)
+	}
+}
+
 func TestRunRefusesBeforeReadingTheTokens(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	if err := run(context.Background(), logger, envOf(map[string]string{})); err == nil {

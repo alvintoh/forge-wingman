@@ -500,3 +500,44 @@ func TestFinalizeCarriesTheProviderVerdictFromTheExistingRecord(t *testing.T) {
 		t.Fatalf("provider verdict = %q, want restricted carried from the record, not the summary", got)
 	}
 }
+
+func TestFinalizeRecordsTheRunURL(t *testing.T) {
+	store := seeded(t)
+	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: "",
+		RunResult: "failure", PRResult: "skipped", RunURL: "https://github.com/o/r/actions/runs/7"}
+	if _, err := Finalize(context.Background(), store, &fakeLedger{}, in, finalizeNow); err != nil {
+		t.Fatal(err)
+	}
+	if got := store[testRunID].RunURL; got != "https://github.com/o/r/actions/runs/7" {
+		t.Fatalf("run url = %q", got)
+	}
+}
+
+// TestSystemicClassifiesEveryStopReason reads every StopReason record.go
+// declares, so a new one cannot go unclassified.
+func TestSystemicClassifiesEveryStopReason(t *testing.T) {
+	src, err := os.ReadFile("record.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[StopReason][2]bool{
+		"credential-absent":   {true, true},
+		"identity-mismatch":   {true, true},
+		"allowance-exhausted": {true, true},
+		"model-unavailable":   {true, false},
+	}
+	declared := regexp.MustCompile(`Stop\w+\s+StopReason = "([a-z-]+)"`).FindAllSubmatch(src, -1)
+	if len(declared) < len(want) {
+		t.Fatalf("found %d stop reasons in record.go", len(declared))
+	}
+	for _, m := range declared {
+		reason := StopReason(m[1])
+		notify, trips := Record{StopReason: reason}.Systemic()
+		if w := want[reason]; notify != w[0] || trips != w[1] {
+			t.Errorf("%s: notify %v, trips %v; want %v, %v", reason, notify, trips, w[0], w[1])
+		}
+	}
+	if notify, trips := (Record{}).Systemic(); notify || trips {
+		t.Fatal("a run with no stop notified")
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
@@ -623,5 +624,117 @@ func TestRunWorkflowPassesTheBuildSummaryToPRMeta(t *testing.T) {
 		if !strings.Contains(job, want) {
 			t.Errorf("run.yml's pr-meta job lacks %q", want)
 		}
+	}
+}
+
+func TestResetBreakerRefusesAMismatchedIdentity(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	env := map[string]string{"GOOGLE_CLOUD_PROJECT": "p", "WINGMAN_ACCOUNT": "work-account", "GITHUB_REPOSITORY_OWNER": "octo"}
+	err := run(context.Background(), logger, []string{"reset-breaker"}, func(k string) string { return env[k] })
+	if !errors.Is(err, runner.ErrIdentityMismatch) {
+		t.Fatalf("err = %v, want ErrIdentityMismatch", err)
+	}
+}
+
+type fakeNotices struct {
+	raised []dispatcher.Notice
+	err    error
+}
+
+func (n *fakeNotices) Raise(_ context.Context, notice dispatcher.Notice, _ time.Time) error {
+	if n.err != nil {
+		return n.err
+	}
+	n.raised = append(n.raised, notice)
+	return nil
+}
+
+type fakeBreaker struct {
+	tripped []string
+	err     error
+}
+
+func (b *fakeBreaker) Trip(_ context.Context, runID, class string, _ time.Time) error {
+	if b.err != nil {
+		return b.err
+	}
+	b.tripped = append(b.tripped, runID+" "+class)
+	return nil
+}
+
+func TestRaiseSystemicNoticesAndTripsByClass(t *testing.T) {
+	const runURL = "https://github.com/o/r/actions/runs/7"
+	for name, tt := range map[string]struct {
+		reason        runner.StopReason
+		raised, trips bool
+	}{
+		"an identity mismatch notifies and trips": {runner.StopIdentityMismatch, true, true},
+		"a model outage notifies only":            {runner.StopModelUnavailable, true, false},
+		"an agent failure does neither":           {runner.StopAgentExit, false, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			notices, breaker := &fakeNotices{}, &fakeBreaker{}
+			rec := runner.Record{RunID: "ABC-1", StopReason: tt.reason, RunURL: runURL, TicketBody: "secret body"}
+			raiseSystemic(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)), notices, breaker, rec, "42-1", time.Now())
+			if tt.raised != (len(notices.raised) == 1) || tt.trips != (len(breaker.tripped) == 1) {
+				t.Fatalf("raised %v, tripped %v", notices.raised, breaker.tripped)
+			}
+			if tt.raised && notices.raised[0] != (dispatcher.Notice{ID: "ABC-1-42-1", Class: string(tt.reason), Link: runURL}) {
+				t.Fatalf("notice = %+v", notices.raised[0])
+			}
+		})
+	}
+}
+
+func TestRaiseSystemicTripsTheBreakerWhenTheNoticeFails(t *testing.T) {
+	var log strings.Builder
+	breaker := &fakeBreaker{}
+	rec := runner.Record{RunID: "ABC-1", StopReason: runner.StopCredentialAbsent}
+	raiseSystemic(context.Background(), slog.New(slog.NewTextHandler(&log, nil)), &fakeNotices{err: errors.New("firestore down")}, breaker, rec, "42-1", time.Now())
+	if len(breaker.tripped) != 1 || !strings.Contains(log.String(), "noticeNotRaised") {
+		t.Fatalf("tripped %v, log %q", breaker.tripped, log.String())
+	}
+}
+
+func TestRaiseSystemicLogsABreakerItCouldNotTrip(t *testing.T) {
+	var log strings.Builder
+	rec := runner.Record{RunID: "ABC-1", StopReason: runner.StopAllowanceExhausted}
+	raiseSystemic(context.Background(), slog.New(slog.NewTextHandler(&log, nil)), &fakeNotices{}, &fakeBreaker{err: errors.New("firestore down")}, rec, "42-1", time.Now())
+	if !strings.Contains(log.String(), "breakerNotTripped") || strings.Contains(log.String(), "msg=breakerTripped") {
+		t.Fatalf("log %q, want the failed trip reported and no trip claimed", log.String())
+	}
+}
+
+func TestRaiseSystemicKeysANoticeByTheRunAloneForAnUnsafeAttemptID(t *testing.T) {
+	notices := &fakeNotices{}
+	rec := runner.Record{RunID: "ABC-1", StopReason: runner.StopIdentityMismatch}
+	raiseSystemic(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)), notices, &fakeBreaker{}, rec, "42/../1", time.Now())
+	if len(notices.raised) != 1 || notices.raised[0].ID != "ABC-1" {
+		t.Fatalf("raised %+v, want the run id alone", notices.raised)
+	}
+}
+
+// failingRecords holds records it reads but cannot write.
+type failingRecords struct{ recordReader }
+
+func (failingRecords) PutRecord(context.Context, string, runner.Record) error {
+	return errors.New("firestore refused the write")
+}
+
+type noLedger struct{}
+
+func (noLedger) Settle(context.Context, string) error { return nil }
+
+func TestFinalizeRaisesASystemicStopWhoseRecordCannotBeWritten(t *testing.T) {
+	notices, breaker := &fakeNotices{}, &fakeBreaker{}
+	env := map[string]string{"WINGMAN_ACCOUNT": "work-account", "GITHUB_REPOSITORY_OWNER": "octo"}
+	in := runner.FinalizeInput{RunID: "ABC-1", AttemptID: "42-1", Identity: runner.IdentityFromEnv(func(k string) string { return env[k] })}
+	_, err := finalize(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)),
+		failingRecords{recordReader{"ABC-1": {RunID: "ABC-1"}}}, noLedger{}, notices, breaker, in, time.Now())
+	if err == nil {
+		t.Fatal("the failed write was dropped")
+	}
+	if len(notices.raised) != 1 || len(breaker.tripped) != 1 {
+		t.Fatalf("raised %v, tripped %v, want the identity stop raised and tripped", notices.raised, breaker.tripped)
 	}
 }

@@ -5,6 +5,7 @@
 //	runner pr-meta         -run-id <id> ...          render the PR's title and body from the run record
 //	runner record          -run-id <id> -summary ... validate the build's summary and merge it into the run record
 //	runner enable-provider -provider <name>          admit a halted provider back to dispatch (AC5)
+//	runner reset-breaker                             clear the breaker a systemic stop tripped, admitting dispatch again
 //	runner plan-define     -provider <name> ...      record a provider plan's price, billing, limit behaviour, pages and harnesses
 //	runner plan-optin      -provider <name>          record the owner's consent to a per-token provider's spend
 //	runner plan-verdict    -provider <name> ...      record the verdict on a plan's terms with its wording and source
@@ -38,6 +39,7 @@ import (
 	"cloud.google.com/go/firestore"
 	"cloud.google.com/go/storage"
 
+	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 	"github.com/alvintoh/forge-wingman/internal/runner"
 	"github.com/alvintoh/forge-wingman/internal/store"
 )
@@ -87,7 +89,7 @@ type env struct {
 // Actions environment.
 func requiredEnv(command string) ([]string, bool) {
 	switch command {
-	case "ticket", "pr-meta", "enable-provider",
+	case "ticket", "pr-meta", "enable-provider", "reset-breaker",
 		"plan-define", "plan-optin", "plan-verdict", "plan-reply", "plan-list":
 		return []string{"GOOGLE_CLOUD_PROJECT"}, true
 	case "record":
@@ -131,7 +133,7 @@ func loadEnv(getenv func(string) string, required ...string) (env, error) {
 
 func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(string) string) error {
 	if len(args) == 0 {
-		return errors.New("usage: runner ticket|build|pr-meta|record|enable-provider|plan-define|plan-verdict|plan-reply|plan-list|plan-smoke [flags]")
+		return errors.New("usage: runner ticket|build|pr-meta|record|enable-provider|reset-breaker|plan-define|plan-verdict|plan-reply|plan-list|plan-smoke [flags]")
 	}
 	if args[0] == "plan-smoke" {
 		return planSmoke(ctx, logger, getenv, args[1:])
@@ -158,6 +160,8 @@ func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(st
 		return record(ctx, logger, e, args[1:])
 	case "enable-provider":
 		return enableProvider(ctx, logger, e, args[1:])
+	case "reset-breaker":
+		return resetBreaker(ctx, logger, e, args[1:])
 	case "plan-define":
 		return planDefine(ctx, logger, e, args[1:])
 	case "plan-optin":
@@ -441,6 +445,7 @@ func record(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	prStopReason := fs.String("pr-stop-reason", "", "the pr job's stop_reason output, empty when it pushed")
 	prSeconds := fs.Int("pr-duration-s", 0, "wall-clock seconds the pr job took")
 	checkReport := fs.String("failed-gate", "", "the check job's failed_gate output, empty when it did not run")
+	runURL := fs.String("run-url", "", "URL of the workflow run")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -457,7 +462,7 @@ func record(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	}
 	defer func() { _ = fsc.Close() }()
 
-	rec, err := runner.Finalize(ctx, store.NewRecords(fsc), store.NewQueue(fsc), runner.FinalizeInput{
+	rec, err := finalize(ctx, logger, store.NewRecords(fsc), store.NewQueue(fsc), store.NewNotices(fsc), store.NewBreaker(fsc), runner.FinalizeInput{
 		RunID:             *runID,
 		Identity:          e.identity,
 		AttemptID:         *attemptID,
@@ -469,6 +474,7 @@ func record(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		PRStopReason:      *prStopReason,
 		PRDuration:        time.Duration(*prSeconds) * time.Second,
 		CheckReport:       *checkReport,
+		RunURL:            *runURL,
 	}, time.Now())
 	if err != nil {
 		return err
@@ -522,6 +528,85 @@ func enableProvider(ctx context.Context, logger *slog.Logger, e env, args []stri
 		return err
 	}
 	logger.Info("providerEnabled", "provider", *provider)
+	return nil
+}
+
+// noticeRaiser and breakerTripper are what record writes for a systemic stop.
+type noticeRaiser interface {
+	Raise(ctx context.Context, n dispatcher.Notice, at time.Time) error
+}
+
+type breakerTripper interface {
+	Trip(ctx context.Context, runID, class string, at time.Time) error
+}
+
+// finalize writes the run's outcome into its record and raises its systemic
+// notice, even when the record or ledger write then fails, since the stop is
+// known by then.
+func finalize(ctx context.Context, logger *slog.Logger, records runner.RecordStore, ledger runner.Ledger,
+	notices noticeRaiser, breaker breakerTripper, in runner.FinalizeInput, at time.Time) (runner.Record, error) {
+	rec, err := runner.Finalize(ctx, records, ledger, in, at)
+	raiseSystemic(ctx, logger, notices, breaker, rec, in.AttemptID, at)
+	return rec, err
+}
+
+// attemptIDPattern is what a workflow attempt id looks like: run, then attempt.
+var attemptIDPattern = regexp.MustCompile(`^[0-9]{1,20}-[0-9]{1,10}$`)
+
+// raiseSystemic raises the notice for a systemic stop, linked to the run that
+// recorded it, and trips the breaker when its class does. The notice is keyed
+// by run and attempt, so a later attempt after a reset raises its own; an
+// attempt id that cannot name a document falls back to the run alone. Both
+// writes create only what is absent, so a record job run twice raises and
+// trips once.
+func raiseSystemic(ctx context.Context, logger *slog.Logger, notices noticeRaiser, breaker breakerTripper, rec runner.Record, attemptID string, at time.Time) {
+	notify, trips := rec.Systemic()
+	if !notify {
+		return
+	}
+	class := string(rec.StopReason)
+	id := rec.RunID + "-" + attemptID
+	if !attemptIDPattern.MatchString(attemptID) {
+		logger.Error("noticeAttemptInvalid", "run", rec.RunID, "length", len(attemptID))
+		id = rec.RunID
+	}
+	if err := notices.Raise(ctx, dispatcher.Notice{ID: id, Class: class, Link: rec.RunURL}, at); err != nil {
+		logger.Error("noticeNotRaised", "run", rec.RunID, "class", class, "err", err.Error())
+	}
+	if !trips {
+		return
+	}
+	if err := breaker.Trip(ctx, rec.RunID, class, at); err != nil {
+		logger.Error("breakerNotTripped", "run", rec.RunID, "class", class, "err", err.Error())
+		return
+	}
+	logger.Warn("breakerTripped", "run", rec.RunID, "class", class)
+}
+
+// resetBreaker clears the breaker a systemic stop tripped, admitting dispatch
+// again — a manual operator action, never automatic. Its account check only
+// guards against a run on the wrong account by mistake: Firestore IAM decides
+// who may clear the breaker.
+func resetBreaker(ctx context.Context, logger *slog.Logger, e env, args []string) error {
+	fs := flag.NewFlagSet("reset-breaker", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := e.identity.CheckAccount(); err != nil {
+		return err
+	}
+	if e.project == "" {
+		return errors.New("GOOGLE_CLOUD_PROJECT is not set")
+	}
+	fsc, err := firestore.NewClient(ctx, e.project)
+	if err != nil {
+		return fmt.Errorf("firestore client: %w", err)
+	}
+	defer func() { _ = fsc.Close() }()
+	if err := store.NewBreaker(fsc).Reset(ctx); err != nil {
+		return err
+	}
+	logger.Info("breakerReset")
 	return nil
 }
 

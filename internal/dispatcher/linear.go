@@ -32,6 +32,7 @@ const delegatedQuery = `query DelegatedIssues($delegate: ID!, $first: Int, $afte
   ) {
     nodes {
       identifier
+      url
       title
       description
       priority
@@ -84,6 +85,7 @@ type linearResponse struct {
 		Issues struct {
 			Nodes []struct {
 				Identifier  string `json:"identifier"`
+				URL         string `json:"url"`
 				Title       string `json:"title"`
 				Description string `json:"description"`
 				Priority    int    `json:"priority"`
@@ -142,6 +144,7 @@ func (l Linear) Delegated(ctx context.Context) ([]Issue, error) {
 		for _, node := range resp.Data.Issues.Nodes {
 			issue := Issue{
 				ID:       node.Identifier,
+				URL:      node.URL,
 				Title:    node.Title,
 				Body:     node.Description,
 				Priority: node.Priority,

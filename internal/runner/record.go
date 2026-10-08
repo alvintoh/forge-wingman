@@ -94,6 +94,9 @@ const (
 	// availability order failing as unavailable, so dispatch counts this as
 	// an infra stop against the provider rather than an agent failure (AC3).
 	StopModelUnavailable StopReason = "model-unavailable"
+	// StopCredentialAbsent reports a model whose plan's harnesses were all
+	// unready for want of their key.
+	StopCredentialAbsent StopReason = "credential-absent"
 )
 
 // gates are the checks run.yml's check job — and RunChecks, in-job — run on
@@ -165,6 +168,8 @@ type Record struct {
 	JobResults   map[string]string `firestore:"job_results"`
 	StartedAt    time.Time         `firestore:"started_at"`
 	UpdatedAt    time.Time         `firestore:"updated_at"`
+	// RunURL is the GitHub Actions run that recorded the outcome.
+	RunURL string `firestore:"run_url"`
 }
 
 // DiffLines is the size of the branch's diff against its base.
@@ -299,6 +304,7 @@ type FinalizeInput struct {
 	PRDuration   time.Duration
 	// CheckReport is the check job's failed_gate output, or empty when it did not run.
 	CheckReport string
+	RunURL      string
 }
 
 // Finalize writes the run's outcome into its record from the record's ticket, the
@@ -362,6 +368,7 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, in Finalize
 		rec.Phase = PhasePR
 	}
 	rec.FailedGate = FailedGate(in.CheckReport)
+	rec.RunURL = in.RunURL
 	if in.PRDuration > 0 {
 		rec.DurationsMS[string(PhasePR)] = in.PRDuration.Milliseconds()
 	}
@@ -397,6 +404,18 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, in Finalize
 // Succeeded reports whether a run ended where it should: a PR opened, or nothing to change.
 func (r Record) Succeeded() bool {
 	return r.Outcome == OutcomePROpened || r.Outcome == OutcomeNoChanges
+}
+
+// breakerStops are the systemic stops that halt every dispatch until an
+// operator resets the breaker.
+var breakerStops = []StopReason{StopCredentialAbsent, StopIdentityMismatch, StopAllowanceExhausted}
+
+// Systemic reports whether the run's stop is one the owner is told of, and
+// whether it trips the dispatch breaker. A model outage notifies without
+// tripping it, counting toward its provider's halt instead.
+func (r Record) Systemic() (notify, trips bool) {
+	trips = slices.Contains(breakerStops, r.StopReason)
+	return trips || r.StopReason == StopModelUnavailable, trips
 }
 
 func (s Summary) apply(rec *Record) {

@@ -35,7 +35,8 @@ type Harness interface {
 	// Classify maps a failed run's stderr tail and exit error to an outcome.
 	Classify(stderrTail string, exitErr error) (Outcome, StopReason)
 	// Ready reports whether the run is configured to use the harness, nil
-	// when it is (AC7).
+	// when it is (AC7). A refusal is recorded as a missing credential, which
+	// trips the dispatch breaker, so refuse only for want of a key.
 	Ready() error
 }
 
@@ -172,10 +173,20 @@ func pickHarness(harnesses []Harness, order harnessOrder, plan string) (Harness,
 		return h, nil
 	}
 	if unready != nil {
-		return nil, unready
+		return nil, &harnessNotReadyError{Err: unready}
 	}
 	return nil, fmt.Errorf("plan %q names no configured harness", plan)
 }
+
+// harnessNotReadyError reports a plan whose registered harnesses all refused
+// to run, carrying the first one's refusal.
+type harnessNotReadyError struct {
+	Err error
+}
+
+func (e *harnessNotReadyError) Error() string { return e.Err.Error() }
+
+func (e *harnessNotReadyError) Unwrap() error { return e.Err }
 
 // harnessNamed returns the harness with this name, if one is registered.
 func harnessNamed(harnesses []Harness, name string) Harness {

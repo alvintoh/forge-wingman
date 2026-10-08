@@ -66,6 +66,18 @@ type fakeQueue struct {
 	tryClaims []tryClaimCall
 
 	existsErr error
+
+	// reserved and settled are the spend Spend reports at every moment; spends
+	// records each moment it was asked about.
+	reserved Totals
+	settled  Settled
+	spendErr error
+	spends   []time.Time
+}
+
+func (q *fakeQueue) Spend(_ context.Context, _ BudgetConfig, _ string, at time.Time) (Totals, Settled, error) {
+	q.spends = append(q.spends, at)
+	return q.reserved, q.settled, q.spendErr
 }
 
 func (q *fakeQueue) Exists(_ context.Context, runID string) (bool, error) {
@@ -221,9 +233,12 @@ func pollDeps(source Source, q *fakeQueue, w *fakeWorkflow) Deps {
 		Estimator:  fakeEstimator{},
 		Visibility: fakeVisibility{},
 		Providers:  fakeProviders{},
+		Breaker:    fakeBreaker{},
 		OpenPRs:    fakeOpenPRs{},
 		Overrides:  LabelOverrides{},
 		ModelPlans: &fakeModelPlans{},
+		Notices:    &fakeNotices{},
+		OpenPoster: func(context.Context) (Poster, error) { return &fakePoster{}, nil },
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Now:        func() time.Time { return pollAt },
 	}
@@ -236,6 +251,9 @@ func TestPollNamesTheDependencyItWasNotGiven(t *testing.T) {
 		"Estimator":  func(d *Deps) { d.Estimator = nil },
 		"Visibility": func(d *Deps) { d.Visibility = nil },
 		"Providers":  func(d *Deps) { d.Providers = nil },
+		"Breaker":    func(d *Deps) { d.Breaker = nil },
+		"Notices":    func(d *Deps) { d.Notices = nil },
+		"OpenPoster": func(d *Deps) { d.OpenPoster = nil },
 		"OpenPRs":    func(d *Deps) { d.OpenPRs = nil },
 		"Workflow":   func(d *Deps) { d.Workflow = nil },
 		"Overrides":  func(d *Deps) { d.Overrides = nil },

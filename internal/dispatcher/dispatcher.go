@@ -17,6 +17,7 @@ import (
 // Issue is one Linear issue delegated to this agent.
 type Issue struct {
 	ID       string
+	URL      string
 	Title    string
 	Body     string
 	Priority int
@@ -134,6 +135,7 @@ type Deps struct {
 	Estimator  Estimator
 	Visibility RepoVisibility
 	Providers  ProviderHalts
+	Breaker    Breaker
 	OpenPRs    OpenPRCounter
 	Workflow   Workflow
 	Logger     *slog.Logger
@@ -142,6 +144,9 @@ type Deps struct {
 	// checked against; both are required, as an unchecked model could spend per token.
 	Overrides  ModelOverrides
 	ModelPlans ModelPlans
+	Notices    Notices
+	// OpenPoster is called only once a notice is claimed, so a missing destination never blocks dispatch.
+	OpenPoster func(ctx context.Context) (Poster, error)
 	// Plans is optional: left unset, no verdict is looked up.
 	Plans ProviderVerdicts
 	// Verdicts is optional: left unset, no verdict is written to the run.
@@ -159,12 +164,15 @@ func (d Deps) missing() string {
 		{"Estimator", d.Estimator != nil},
 		{"Visibility", d.Visibility != nil},
 		{"Providers", d.Providers != nil},
+		{"Breaker", d.Breaker != nil},
 		{"OpenPRs", d.OpenPRs != nil},
 		{"Workflow", d.Workflow != nil},
 		{"Logger", d.Logger != nil},
 		{"Now", d.Now != nil},
 		{"Overrides", d.Overrides != nil},
 		{"ModelPlans", d.ModelPlans != nil},
+		{"Notices", d.Notices != nil},
+		{"OpenPoster", d.OpenPoster != nil},
 	} {
 		if !dep.set {
 			return dep.name
@@ -224,6 +232,7 @@ type Queue interface {
 	Candidater
 	Claimer
 	Rejector
+	Spender
 }
 
 // Workflow starts one run in its target repository.
@@ -253,7 +262,8 @@ type Result struct {
 }
 
 // Poll admits every issue still delegated, then walks the queue in priority
-// order claiming every run Admit lets start.
+// order claiming every run Admit lets start, and posts the notices waiting,
+// whatever the rest of the poll did.
 // A ticket the queue already holds is left alone; a candidate a condition
 // withholds is deferred, not rejected, and reconsidered next poll; and a run
 // whose dispatch fails is released rather than left claimed, so the next
@@ -262,6 +272,11 @@ func Poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	if name := d.missing(); name != "" {
 		return Result{}, fmt.Errorf("dispatcher dependency %s is not set", name)
 	}
+	res, err := poll(ctx, d, c)
+	return res, errors.Join(err, postNotices(ctx, d))
+}
+
+func poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	issues, err := d.Source.Delegated(ctx)
 	if err != nil {
 		return Result{}, err
@@ -274,10 +289,12 @@ func Poll(ctx context.Context, d Deps, c Config) (Result, error) {
 		}
 	}
 	relations := make(map[string]Relations, len(issues))
+	links := make(map[string]string, len(issues))
 	for _, issue := range issues {
 		relations[issue.ID] = Relations{Known: true, BlockedBy: issue.BlockedBy, Blocks: issue.Blocks}
+		links[issue.ID] = issue.URL
 	}
-	claims, claimErr := admitClaims(ctx, d, c, relations, &res)
+	claims, claimErr := admitClaims(ctx, d, c, relations, links, &res)
 	dispatchErrs := []error{claimErr}
 	for _, claim := range claims {
 		if err := dispatch(ctx, d, claim); err != nil {
@@ -366,13 +383,20 @@ func refuse(ctx context.Context, d Deps, r Rejection, res *Result) error {
 // the condition that bound it.
 //
 // On an error it returns the claims already booked beside it, so the caller can
-// dispatch or release them. The provider halt is read once ahead of the walk,
-// since every candidate starts on the same model, and the open-PR count across
-// the allowlist once, when anything is queued.
-func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Relations, res *Result) ([]Claim, error) {
+// dispatch or release them. The breaker and the provider halt are read once
+// ahead of the walk, since every candidate starts on the same model, and the
+// open-PR count across the allowlist once, when anything is queued. A breaker
+// that cannot be read holds the walk as a tripped one would, and a budget
+// ceiling raises at most one notice.
+func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Relations, links map[string]string, res *Result) ([]Claim, error) {
 	candidates, err := d.Queue.Candidates(ctx)
 	if err != nil {
 		return nil, err
+	}
+	tripped, err := d.Breaker.Tripped(ctx)
+	if err != nil {
+		d.Logger.Warn("breakerCheckFailed", "err", err.Error())
+		tripped = true
 	}
 	provider := runner.Provider(c.Model)
 	halted, err := d.Providers.Halted(ctx, provider)
@@ -387,6 +411,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		prs = countOpenPRs(ctx, d, c.Repos)
 	}
 	var claims []Claim
+	noticed := map[string]bool{}
 	for _, cand := range candidates {
 		est, err := d.Estimator.Estimate(ctx, cand.Size)
 		if err != nil {
@@ -403,8 +428,8 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		if cand.Private {
 			reservation.RunnerMinutes = est.Minutes
 		}
-		facts := Facts{Limits: limits, Tuning: c.Tuning.OrDefault(), ProviderHalted: halted, OpenPRs: prs.count, OpenPRsKnown: prs.known,
-			Relations: relations[cand.RunID], Model: cmp.Or(cand.Model, c.Model)}
+		facts := Facts{Limits: limits, Tuning: c.Tuning.OrDefault(), ProviderHalted: halted, BreakerTripped: tripped,
+			OpenPRs: prs.count, OpenPRsKnown: prs.known, Relations: relations[cand.RunID], Model: cmp.Or(cand.Model, c.Model)}
 		ok, binding, err := d.Queue.TryClaim(ctx, cand.RunID, d.Now(), c.Budget, facts, reservation)
 		if err != nil {
 			return claims, err
@@ -419,6 +444,9 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		}
 		d.Logger.Info("runDeferred", "run", cand.RunID, "ceiling", binding)
 		res.Deferrals = append(res.Deferrals, Deferral{RunID: cand.RunID, Ceiling: binding, At: d.Now()})
+		if !noticed[binding] {
+			noticed[binding] = noticeDeferral(ctx, d, c.Budget, facts.Model, reservation, binding, links[cand.RunID])
+		}
 	}
 	if len(candidates) > 0 && len(res.Deferrals) == len(candidates) {
 		d.Logger.Info("everyCandidateDeferred", "candidates", len(candidates))
