@@ -1022,5 +1022,7 @@ visibility. The two have different fixes, so establish which one you have before
 - `web/`: Vite + React + TypeScript (strict) + TanStack Router + TanStack Form, installed with Bun.
 - Tailwind v4 via `@tailwindcss/vite`; tokens come from `web/src/theme.css`, GENERATED in the vault from `design/tokens.py` — never edit it here.
 - Routes: `/` inbox, `/runs/$runId` run detail, `/stats` statistics (`web/src/main.tsx`).
-- The build lands in `web/dist`, embedded by `web/embed.go` into `cmd/surface`; `bun run dev` proxies `/api` to `:8080`.
+- Checks: `cd web && bun run lint && bun run fmt:check && bun run build` (oxlint, oxfmt, `tsc -b && vite build`).
+- The build lands in `web/dist`, embedded by `web/embed.go` into `cmd/surface`; `make dev` runs both, with `bun run dev` proxying `/api` to `:8080`.
 - NFR-8 is WCAG 2.2 AA and FR-25 names the WAI-ARIA APG listbox pattern — accessibility is a requirement here.
+- README: `frontend-reviewer` owns `README.md` §Develop (the Getting Started material).
