@@ -7,8 +7,8 @@
 // GitHub tokens are read from Secret Manager as the run starts, and
 // WINGMAN_REPOS is the allowlist a ticket's repo: label must name.
 //
-// The job runs under its own service account, holds the store and the two API
-// tokens, and holds nothing that reaches a repository.
+// The job runs under its own service account, holds the store, the two API
+// tokens and the notice webhook, and holds nothing that reaches a repository.
 package main
 
 import (
@@ -47,6 +47,9 @@ const (
 	// problem rather than a redeploy's.
 	linearTokenSecret = "linear-token"
 	githubTokenSecret = "github-token"
+	// noticeWebhookSecret names the Slack webhook notices are posted to, read
+	// only when a notice is waiting.
+	noticeWebhookSecret = "notice-webhook-url"
 	// requestTimeout bounds one call to Linear or GitHub, so a poll cannot sit
 	// on a hung connection until Cloud Run's own deadline.
 	requestTimeout = 30 * time.Second
@@ -208,6 +211,18 @@ func allowlist(raw string) ([]string, error) {
 }
 
 // run polls once: the schedule starts the job, and one execution is one poll.
+// slackPoster opens the Slack poster from the webhook secret, trimmed of the
+// newline a value added with echo carries, which no URL parses with.
+func slackPoster(token func(context.Context, string) (string, error), client *http.Client) func(context.Context) (dispatcher.Poster, error) {
+	return func(ctx context.Context) (dispatcher.Poster, error) {
+		webhook, err := token(ctx, noticeWebhookSecret)
+		if err != nil {
+			return nil, err
+		}
+		return dispatcher.Slack{Webhook: strings.TrimSpace(webhook), Client: client}, nil
+	}
+}
+
 func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) error {
 	c, err := loadConfig(getenv)
 	if err != nil {
@@ -244,6 +259,9 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		Estimator:  store.NewEstimates(fsc),
 		Visibility: gh,
 		Providers:  store.NewProviders(fsc),
+		Breaker:    store.NewBreaker(fsc),
+		Notices:    store.NewNotices(fsc),
+		OpenPoster: slackPoster(secrets.Token, client),
 		Plans:      plans,
 		ModelPlans: plans,
 		Overrides:  dispatcher.LabelOverrides{},

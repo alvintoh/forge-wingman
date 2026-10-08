@@ -360,6 +360,7 @@ jobs:
       PR_DURATION: ${{ needs.pr.outputs.duration_s || '0' }}
       FAILED_GATE: ${{ needs.check.result != 'skipped' && (needs.check.outputs.failed_gate || 'unfinished') || '' }}
       PR_STOP_REASON: ${{ needs.pr.outputs.stop_reason }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -389,7 +390,7 @@ jobs:
           "$RUNNER_TEMP/runner" record
           -run-id "$RUN_ID" -attempt-id "$ATTEMPT_ID" -summary "$SUMMARY" -pr-url "$PR_URL"
           -run-result "$RUN_RESULT" -pr-result "$PR_RESULT" -pr-duration-s "$PR_DURATION"
-          -failed-gate "$FAILED_GATE" -pr-stop-reason "$PR_STOP_REASON"
+          -failed-gate "$FAILED_GATE" -pr-stop-reason "$PR_STOP_REASON" -run-url "$RUN_URL"
 
       # A summary too large to pass as an argument fails the step before record runs,
       # so record never reports started; any later failure leaves the record as it is.
@@ -401,4 +402,4 @@ jobs:
           "$RUNNER_TEMP/runner" record -summary-unreadable
           -run-id "$RUN_ID" -attempt-id "$ATTEMPT_ID" -pr-url "$PR_URL"
           -run-result "$RUN_RESULT" -pr-result "$PR_RESULT" -pr-duration-s "$PR_DURATION"
-          -failed-gate "$FAILED_GATE"
+          -failed-gate "$FAILED_GATE" -run-url "$RUN_URL"

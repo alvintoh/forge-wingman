@@ -208,14 +208,20 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 			return stopWith(OutcomeStopped, StopModelInvalid, err)
 		}
 		// A harness the run is not configured for stops here, before any
-		// agent runs, with the same model-invalid stop (AC7).
+		// agent runs (AC7): a plan whose harnesses all lack their key as a
+		// missing credential, any other as an invalid model.
 		if g, ok := d.Agent.(modelGate); ok {
 			models := append([]string{c.Model}, c.ReviewModels...)
 			if c.Ticket.Size != "S" {
 				models = append(models, c.PlanModels...)
 			}
 			for _, m := range models {
-				if err := g.Gate(m); err != nil {
+				err := g.Gate(m)
+				var notReady *harnessNotReadyError
+				switch {
+				case errors.As(err, &notReady):
+					return stopWith(OutcomeStopped, StopCredentialAbsent, err)
+				case err != nil:
 					return stopWith(OutcomeStopped, StopModelInvalid, err)
 				}
 			}

@@ -34,7 +34,7 @@ func linearServer(t *testing.T, pages []map[string]any) (*httptest.Server, *[]ma
 		if !strings.Contains(req.Query, "$delegate: ID!") {
 			t.Errorf("the query declares $delegate as something other than ID!, which Linear rejects for an id filter: %s", req.Query)
 		}
-		for _, field := range []string{" relations {", " inverseRelations {"} {
+		for _, field := range []string{" relations {", " inverseRelations {", " url\n"} {
 			if !strings.Contains(req.Query, field) {
 				t.Errorf("the query does not ask for%s: %s", field, req.Query)
 			}
@@ -78,6 +78,7 @@ func linearNode(id string, priority int, labels ...string) map[string]any {
 	}
 	return map[string]any{
 		"identifier":  id,
+		"url":         "https://linear.app/w/issue/" + id,
 		"title":       "feat(dispatcher): poll Linear",
 		"description": "Enqueue delegated tickets.",
 		"priority":    priority,
@@ -98,7 +99,7 @@ func TestLinearReadsEveryDelegatedPage(t *testing.T) {
 	if len(issues) != 2 || issues[0].ID != "FRG-18" || issues[1].Priority != 0 {
 		t.Fatalf("issues = %+v", issues)
 	}
-	if !slices.Equal(issues[0].Labels, []string{"size:M"}) || issues[0].Body == "" {
+	if !slices.Equal(issues[0].Labels, []string{"size:M"}) || issues[0].Body == "" || issues[0].URL != "https://linear.app/w/issue/"+issues[0].ID {
 		t.Fatalf("issue = %+v", issues[0])
 	}
 	if len(*seen) != 2 || (*seen)[0]["after"] != nil || (*seen)[1]["after"] != "cursor-1" {

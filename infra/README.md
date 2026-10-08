@@ -85,12 +85,17 @@ repository, the large-run cap, blocking relations and the open-PR review limit
 each withhold a run until a later poll. A dispatch GitHub refuses releases its
 claim, so the next poll takes it again.
 
+A systemic stop — a missing key, an identity mismatch, an exhausted allowance —
+trips the breaker, and every poll admits nothing until `runner reset-breaker`
+clears it. Each poll also posts the waiting systemic-failure notices to Slack
+(`notice.tf` grants the read), class and link only.
+
 Two identities, and no grant in common: the job reads the store, and the
 schedule can only start the job.
 
 | Service account | Grants |
 |---|---|
-| `dispatcher` | Firestore read/write on the queue, read both tokens |
+| `dispatcher` | Firestore read/write on the queue, read both tokens and `notice-webhook-url` |
 | `dispatcher-schedule` | start one execution of the `forge-wingman-dispatcher` job |
 
 Four variables name what OpenTofu cannot guess, and a fifth is optional:
@@ -121,7 +126,8 @@ cannot read leaves that count unknown, which admits only a lone run.
 with 403 "Resource not accessible by personal access token" without it.
 
 `secrets.tf` creates four more, empty and readable by no identity until the code
-that reads each lands and grants its own: `linear-client-id` and
+that reads each lands and grants its own (`notice.tf` grants the dispatcher
+`notice-webhook-url`): `linear-client-id` and
 `linear-client-secret` (the Forge Wingman Linear app, client credentials on),
 `linear-webhook-secret` (Linear issues it once the webhook service has a URL;
 the webhook reads it) and `notice-webhook-url` (the Forge Slack incoming

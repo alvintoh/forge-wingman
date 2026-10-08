@@ -153,6 +153,10 @@ func TestAdmitReportsTheEarlierOfTwoConditionsThatWithhold(t *testing.T) {
 		break_ func(*AdmitInput)
 		want   string
 	}{
+		"the breaker before the provider halt": {func(in *AdmitInput) {
+			in.Facts.BreakerTripped = true
+			in.Facts.ProviderHalted = true
+		}, ConditionCircuitBreaker},
 		"the provider halt before the platform cap": {func(in *AdmitInput) {
 			in.Facts.ProviderHalted = true
 			in.Facts.Limits.PlatformCap = 2

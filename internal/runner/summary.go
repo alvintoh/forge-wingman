@@ -88,6 +88,7 @@ var buildEndings = func() map[ending]bool {
 		{OutcomeStopped, StopTicketMissing, ""}:                    true,
 		{OutcomeStopped, StopTicketNotDelivered, ""}:               true,
 		{OutcomeStopped, StopModelInvalid, PhaseProjection}:        true,
+		{OutcomeStopped, StopCredentialAbsent, PhaseProjection}:    true,
 		{OutcomeStopped, StopProjectionMissing, PhaseProjection}:   true,
 		{OutcomeStopped, StopProjectionInvalid, PhaseProjection}:   true,
 		{OutcomeInfraFailure, StopProjectionRead, PhaseProjection}: true,

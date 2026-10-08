@@ -191,3 +191,50 @@ func TestDecideNamesThePlanWindowWhenItBindsBeforeTheModelCap(t *testing.T) {
 		t.Fatalf("binding = %q, want the plan window checked first", binding)
 	}
 }
+
+func TestStillBindsAtTheNextPoll(t *testing.T) {
+	cfg := BudgetConfig{
+		ProviderWindows: []Window{{Name: "5h", Period: 5 * time.Hour, Limit: 12 * money.Dollar}, {Name: "week", Period: 168 * time.Hour, Limit: 30 * money.Dollar}},
+		Cash:            Window{Name: CeilingCash, Calendar: true, Limit: 20 * money.Dollar},
+	}
+	estimate := Reservation{ProviderCost: 2 * money.Dollar}
+	for name, tt := range map[string]struct {
+		settled Settled
+		ceiling string
+		want    bool
+	}{
+		"settled cost still fills the window":        {settledWindows(10*money.Dollar+1, 0), "5h", true},
+		"exactly at the limit, so it clears":         {settledWindows(10*money.Dollar, 0), "5h", false},
+		"another ceiling binds next poll":            {settledWindows(0, 30*money.Dollar), "5h", false},
+		"a condition is never a budget ceiling here": {settledWindows(20*money.Dollar, 0), ConditionRepoBusy, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := stillBinds(cfg, "", Totals{}, tt.settled, estimate, tt.ceiling); got != tt.want {
+				t.Fatalf("stillBinds = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCeilingStartNamesTheWindowEachCeilingMeters(t *testing.T) {
+	at := time.Date(2026, 9, 27, 9, 15, 0, 0, time.UTC)
+	cfg := BudgetConfig{
+		ProviderWindows: []Window{{Name: "5h", Period: 5 * time.Hour}},
+		ModelCaps:       map[string]Window{"p/m": {Name: "p/m", Period: 720 * time.Hour}},
+		Cash:            Window{Name: CeilingCash, Calendar: true},
+	}
+	month := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	for ceiling, want := range map[string]time.Time{
+		"5h":                 time.Date(2026, 9, 27, 5, 0, 0, 0, time.UTC),
+		"p/m":                time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC),
+		CeilingCash:          month,
+		CeilingRunnerMinutes: month,
+	} {
+		if got, ok := cfg.ceilingStart(ceiling, at); !ok || !got.Equal(want) {
+			t.Errorf("%s: start = %v, %v; want %v", ceiling, got, ok, want)
+		}
+	}
+	if _, ok := cfg.ceilingStart(ConditionRepoBusy, at); ok {
+		t.Error("a condition named a window")
+	}
+}

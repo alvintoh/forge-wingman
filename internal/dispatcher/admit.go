@@ -19,6 +19,8 @@ const (
 	// ConditionEstimateFailed withholds a candidate whose estimate could not be
 	// read, before admission is asked.
 	ConditionEstimateFailed = "estimate-failed"
+	// ConditionCircuitBreaker withholds every candidate while a systemic stop holds dispatch.
+	ConditionCircuitBreaker = "circuit-breaker"
 )
 
 // largeSize is the ticket size whose concurrent runs are capped separately.
@@ -76,6 +78,8 @@ type Facts struct {
 	Tuning         Tuning
 	Relations      Relations
 	ProviderHalted bool
+	// BreakerTripped is set while a systemic stop holds every dispatch.
+	BreakerTripped bool
 	// Model is the run's build model — the model its ticket named, or the run's
 	// own default — which selects any per-model cap that bounds it (FRG-62).
 	Model string
@@ -108,9 +112,10 @@ type AdmitInput struct {
 }
 
 // Admit reports whether the candidate may start now, and otherwise the first
-// condition that withholds it, checked in this order: provider halt, platform
-// cap, N, the concurrent-L cap, one run per repository, a blocking relation
-// with a run in flight, review WIP, then the budget ceilings. It does no IO.
+// condition that withholds it, checked in this order: the circuit breaker,
+// provider halt, platform cap, N, the concurrent-L cap, one run per
+// repository, a blocking relation with a run in flight, review WIP, then the
+// budget ceilings. It does no IO.
 //
 // When the open-PR count could not be read, a candidate is admitted only if
 // nothing is in flight.
@@ -118,6 +123,8 @@ func Admit(in AdmitInput) (ok bool, binding string) {
 	in.N = max(in.N, 1)
 	running := len(in.InFlight)
 	switch {
+	case in.Facts.BreakerTripped:
+		return false, ConditionCircuitBreaker
 	case in.Facts.ProviderHalted:
 		return false, CeilingProviderHalted
 	case running >= in.Facts.Limits.PlatformCap:

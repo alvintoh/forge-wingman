@@ -437,3 +437,19 @@ func TestRegistrationRefusesADuplicateName(t *testing.T) {
 		})
 	}
 }
+
+// TestRouterTypesOnlyAnUnreadyRefusal asserts a plan whose harnesses are all
+// unready refuses as harnessNotReadyError, and a plan naming no registered
+// harness does not.
+func TestRouterTypesOnlyAnUnreadyRefusal(t *testing.T) {
+	var notReady *harnessNotReadyError
+	unready := newRouter(planOrders(map[string][]string{"plan": {"default"}}), ProfileBuild,
+		fakeHarness{name: "default", ready: errors.New("no key")})
+	if err := unready.Gate("plan/x"); !errors.As(err, &notReady) {
+		t.Fatalf("Gate = %v, want a harnessNotReadyError", err)
+	}
+	unregistered := newRouter(planOrders(map[string][]string{"plan": {"missing"}}), ProfileBuild, fakeHarness{name: "default"})
+	if err := unregistered.Gate("plan/x"); err == nil || errors.As(err, &notReady) {
+		t.Fatalf("Gate = %v, want an untyped refusal", err)
+	}
+}

@@ -473,8 +473,8 @@ func TestBuildRefusesACommandCodeModelWithoutTheKey(t *testing.T) {
 		t.Fatal("Build ran a model whose harness has no key")
 	}
 	rec := reported.last(t)
-	if rec.Outcome != OutcomeStopped || rec.StopReason != StopModelInvalid {
-		t.Fatalf("record = %s/%s, want a model-invalid stop", rec.Outcome, rec.StopReason)
+	if rec.Outcome != OutcomeStopped || rec.StopReason != StopCredentialAbsent {
+		t.Fatalf("record = %s/%s, want a credential-absent stop", rec.Outcome, rec.StopReason)
 	}
 	if !strings.Contains(rec.StopDetail, "COMMANDCODE_API_KEY") {
 		t.Fatalf("stop detail %q does not name the missing key", rec.StopDetail)
@@ -501,8 +501,8 @@ func TestBuildGatesEveryModelSlotOnTheKey(t *testing.T) {
 			if _, err := Build(context.Background(), deps, c); err == nil {
 				t.Fatal("Build ran with a keyless harness in the slot")
 			}
-			if rec := reported.last(t); rec.StopReason != StopModelInvalid {
-				t.Fatalf("stop = %s, want a model-invalid stop", rec.StopReason)
+			if rec := reported.last(t); rec.StopReason != StopCredentialAbsent {
+				t.Fatalf("stop = %s, want a credential-absent stop", rec.StopReason)
 			}
 		})
 	}
