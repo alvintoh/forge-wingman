@@ -23,6 +23,24 @@ sibling's plan then has to re-ground against.
 This is a picker-default change, not a rule removal — still gate per ticket,
 just flip which option is recommended.
 
+## Work-in-progress limits
+
+At most **5 tickets in progress in the interactive lane** (you supervise, in
+this directory or a worktree you drive) and **3 in the agentic lane**. Before
+`/spec-plan` starts another interactive ticket, count the owner's In Progress
+tickets in Linear; at 5, finish or park one first. The agentic 3 is the
+dispatcher's `ReviewWIP` (open agent PRs, `internal/dispatcher/admit.go:42`),
+so a run can still start beside two open PRs; the lower ceiling favours
+review quality over throughput.
+
+**Agentic 3 is a trial, not the target.** Raise it toward 5 (the
+`WINGMAN_REVIEW_WIP` key in `dispatcher_settings`, no code change) only when
+both hold: model quota is left over at the end of a typical day, and quality
+holds at 3 (agent PRs merge without extra fix rounds or owner rework). Propose
+the raise with that evidence; never raise it on throughput alone.
+
+*(Owner's instruction, 2026-10-08.)*
+
 ## Tickets the runner will build
 
 The runner reads only a ticket's title and description, and its build agent reads
