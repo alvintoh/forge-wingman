@@ -5,12 +5,15 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/money"
+	"github.com/alvintoh/forge-wingman/internal/providers"
+	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
 var pollAt = time.Date(2026, 9, 27, 9, 15, 0, 0, time.UTC)
@@ -56,9 +59,11 @@ type fakeQueue struct {
 	// bindings maps a candidate's run id to the ceiling TryClaim reports it
 	// would breach; a run id absent from both bindings and unavailable is
 	// claimed.
-	bindings    map[string]string
-	unavailable map[string]bool
-	tryClaimErr error
+	bindings map[string]string
+	// freeBindings is what TryClaim reports for a run asked on a free tier, in place of bindings.
+	freeBindings map[string]string
+	unavailable  map[string]bool
+	tryClaimErr  error
 	// tryClaimErrFor fails TryClaim for one run id only.
 	tryClaimErrFor map[string]error
 
@@ -113,7 +118,11 @@ func (q *fakeQueue) TryClaim(_ context.Context, runID string, _ time.Time, cfg B
 		return false, "", err
 	}
 	q.tryClaims = append(q.tryClaims, tryClaimCall{runID: runID, cfg: cfg, facts: facts, res: res})
-	if binding, ok := q.bindings[runID]; ok {
+	bindings := q.bindings
+	if cfg.ProviderFree {
+		bindings = q.freeBindings
+	}
+	if binding, ok := bindings[runID]; ok {
 		return false, binding, nil
 	}
 	if q.unavailable[runID] {
@@ -878,5 +887,123 @@ func TestPollLogsHowLongEachPhaseTook(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "msg=pollPhase phase=delegated ms=1000") {
 		t.Errorf("delegated phase not timed from its own start:\n%s", logs.String())
+	}
+}
+
+// paidPlan is a dispatch config whose plan has a window, a model cap and two free models.
+var paidPlan = Config{
+	Repos: buildConfig.Repos,
+	Model: "p/paid",
+	Budget: BudgetConfig{
+		ProviderWindows: []Window{{Name: "p-5h", Period: 5 * time.Hour, Limit: 14 * money.Dollar}},
+		ModelCaps:       map[string]Window{"p/paid": {Name: "p/paid", Limit: 60 * money.Dollar}},
+		Cash:            Window{Name: CeilingCash, Calendar: true, Limit: 30 * money.Dollar},
+		Runner:          RunnerMinutes{FreeMinutes: 2000},
+	},
+	LastResort: []string{"p/free-a", "p/free-b"},
+}
+
+func TestPollRunsACandidateOnTheFreeTierOnceAPaidCeilingBinds(t *testing.T) {
+	for name, ceiling := range map[string]string{"a plan window": "p-5h", "a model cap": "p/paid"} {
+		t.Run(name, func(t *testing.T) {
+			q := &fakeQueue{
+				candidates: []Candidate{{RunID: "run-a", Repo: "octo/scratch", Size: "M"}},
+				bindings:   map[string]string{"run-a": ceiling},
+			}
+			deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+			deps.Estimator = fakeEstimator{bySize: map[string]Estimate{"M": {ProviderCost: 2 * money.Dollar, Minutes: 30}}}
+			res, err := Poll(context.Background(), deps, paidPlan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(res.Dispatched, []string{"run-a"}) || len(res.Deferrals) != 0 {
+				t.Fatalf("dispatched %q, deferred %+v, want the run dispatched on the free tier", res.Dispatched, res.Deferrals)
+			}
+			free := q.tryClaims[len(q.tryClaims)-1]
+			if len(q.tryClaims) != 2 || !free.cfg.ProviderFree || len(free.cfg.ProviderWindows) != 0 || len(free.cfg.ModelCaps) != 0 ||
+				free.cfg.Cash != paidPlan.Budget.Cash || free.cfg.Runner != paidPlan.Budget.Runner {
+				t.Fatalf("claims %+v, want a second claim against cash and runner minutes alone", q.tryClaims)
+			}
+			if free.res.ProviderCost != 0 {
+				t.Fatalf("reservation = %+v, want no provider cost on the free tier", free.res)
+			}
+			want := runner.ModelLabels{Build: "p/free-a", Review: "p/free-b", Plan: []string{"p/free-a", "p/free-b"}}
+			if free.facts.Model != "p/free-a" || free.facts.LastResort == nil || !reflect.DeepEqual(*free.facts.LastResort, want) {
+				t.Fatalf("facts = %+v, want the first free model building and the next reviewing", free.facts)
+			}
+		})
+	}
+}
+
+func TestPollLeavesACandidateACeilingOtherThanThePlansOwnWithholds(t *testing.T) {
+	for name, ceiling := range map[string]string{"cash": CeilingCash, "the breaker": ConditionCircuitBreaker, "the provider halt": CeilingProviderHalted} {
+		t.Run(name, func(t *testing.T) {
+			q := &fakeQueue{candidates: []Candidate{{RunID: "run-a"}}, bindings: map[string]string{"run-a": ceiling}}
+			res, err := Poll(context.Background(), pollDeps(fakeSource{}, q, &fakeWorkflow{}), paidPlan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(q.tryClaims) != 1 || len(res.Deferrals) != 1 || res.Deferrals[0].Ceiling != ceiling {
+				t.Fatalf("claims %d, deferrals %+v, want one claim deferred on %s", len(q.tryClaims), res.Deferrals, ceiling)
+			}
+		})
+	}
+}
+
+func TestPollKeepsAPaidCeilingWhenTheFreeTierCannotStaffAReview(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{{RunID: "run-a"}}, bindings: map[string]string{"run-a": "p-5h"}}
+	plan := paidPlan
+	plan.LastResort = []string{"p/free-a"}
+	res, err := Poll(context.Background(), pollDeps(fakeSource{}, q, &fakeWorkflow{}), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(q.tryClaims) != 1 || len(res.Deferrals) != 1 || res.Deferrals[0].Ceiling != "p-5h" {
+		t.Fatalf("claims %d, deferrals %+v, want one claim deferred on the plan window", len(q.tryClaims), res.Deferrals)
+	}
+}
+
+func TestPollDefersAFreeTierClaimOnTheCeilingThatStillBindsIt(t *testing.T) {
+	q := &fakeQueue{
+		candidates:   []Candidate{{RunID: "run-a"}},
+		bindings:     map[string]string{"run-a": "p-5h"},
+		freeBindings: map[string]string{"run-a": CeilingCash},
+	}
+	res, err := Poll(context.Background(), pollDeps(fakeSource{}, q, &fakeWorkflow{}), paidPlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Dispatched) != 0 || len(res.Deferrals) != 1 || res.Deferrals[0].Ceiling != CeilingCash {
+		t.Fatalf("dispatched %q, deferrals %+v, want the run deferred on cash", res.Dispatched, res.Deferrals)
+	}
+}
+
+func TestPollRunsAPrivateCandidateOnTheFreeTierOnlyWithTheOwnersOptIn(t *testing.T) {
+	for name, tt := range map[string]struct {
+		optedIn      bool
+		readErr      error
+		dispatched   int
+		deferredOn   string
+		freeAttempts int
+	}{
+		"without the opt-in":   {optedIn: false, deferredOn: "p-5h"},
+		"with the opt-in":      {optedIn: true, dispatched: 1, freeAttempts: 1},
+		"a failed opt-in read": {optedIn: true, readErr: errors.New("unavailable"), deferredOn: "p-5h"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			q := &fakeQueue{candidates: []Candidate{{RunID: "run-a", Private: true}}, bindings: map[string]string{"run-a": "p-5h"}}
+			deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+			deps.ModelPlans = &fakeModelPlans{plans: map[string]providers.Plan{"p": {PrivateOptIn: tt.optedIn}}, err: tt.readErr}
+			res, err := Poll(context.Background(), deps, paidPlan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(res.Dispatched) != tt.dispatched || len(q.tryClaims) != 1+tt.freeAttempts {
+				t.Fatalf("dispatched %q after %d claims", res.Dispatched, len(q.tryClaims))
+			}
+			if tt.deferredOn != "" && (len(res.Deferrals) != 1 || res.Deferrals[0].Ceiling != tt.deferredOn) {
+				t.Fatalf("deferrals %+v, want the paid ceiling named", res.Deferrals)
+			}
+		})
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"slices"
 
 	"github.com/alvintoh/forge-wingman/internal/money"
+	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
 // The conditions besides a budget ceiling that withhold a candidate; a
@@ -83,6 +84,9 @@ type Facts struct {
 	// Model is the run's build model — the model its ticket named, or the run's
 	// own default — which selects any per-model cap that bounds it (FRG-62).
 	Model string
+	// LastResort names the models of a claim on Model's plan's free tier,
+	// written onto the run record with the claim; nil otherwise.
+	LastResort *runner.ModelLabels
 	// OpenPRs is the count of open agent PRs across the allowlisted
 	// repositories, meaningful only when OpenPRsKnown is set.
 	OpenPRs      int

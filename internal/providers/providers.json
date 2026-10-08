@@ -59,7 +59,26 @@
               { "from": 6, "to": 10 }
             ]
           }
+        },
+        "command-code/poolside/laguna-s-2.1-free": {
+          "input_usd_per_mtok": 0,
+          "output_usd_per_mtok": 0,
+          "cache_read_usd_per_mtok": 0,
+          "cache_write_usd_per_mtok": 0
+        },
+        "command-code/inclusionai/ling-3.1-flash:free": {
+          "input_usd_per_mtok": 0,
+          "output_usd_per_mtok": 0,
+          "cache_read_usd_per_mtok": 0,
+          "cache_write_usd_per_mtok": 0
         }
+      },
+      "last_resort": {
+        "models": [
+          "command-code/inclusionai/ling-3.1-flash:free",
+          "command-code/poolside/laguna-s-2.1-free"
+        ],
+        "measured_on": "2026-10-08"
       }
     }
   }

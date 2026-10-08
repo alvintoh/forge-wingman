@@ -118,6 +118,32 @@ type Provider struct {
 	// in USD per million tokens. A model absent here keeps the harness's own
 	// cost figure.
 	Rates map[string]Rates
+	// LastResort is the plan's own free tier, empty for a plan without one.
+	LastResort LastResort
+}
+
+// LastResort is a plan's free models, in the order a run falls through them
+// once every paid ceiling refuses it.
+type LastResort struct {
+	Models []string
+	// MeasuredOn is the yyyy-mm-dd date the order was measured, or unmeasuredOn.
+	MeasuredOn string
+}
+
+const unmeasuredOn = "unmeasured"
+
+// freeOnly reports whether the plan serves nothing but its free tier: no
+// windows or caps, and every model it prices on the last-resort list.
+func (p Provider) freeOnly() bool {
+	if len(p.LastResort.Models) == 0 || len(p.Windows) > 0 || len(p.ModelCaps) > 0 {
+		return false
+	}
+	for model := range p.Rates {
+		if !slices.Contains(p.LastResort.Models, model) {
+			return false
+		}
+	}
+	return true
 }
 
 // Config is the runner's provider configuration: the vendor facts that are
@@ -150,12 +176,18 @@ type configDoc struct {
 }
 
 type providerDoc struct {
-	BaseURL   string              `json:"base_url"`
-	KeySecret string              `json:"key_secret"`
-	Windows   []windowDoc         `json:"windows"`
-	ModelCaps map[string]float64  `json:"model_caps"`
-	Harnesses harnessDoc          `json:"harnesses"`
-	Rates     map[string]ratesDoc `json:"rates"`
+	BaseURL    string              `json:"base_url"`
+	KeySecret  string              `json:"key_secret"`
+	Windows    []windowDoc         `json:"windows"`
+	ModelCaps  map[string]float64  `json:"model_caps"`
+	Harnesses  harnessDoc          `json:"harnesses"`
+	Rates      map[string]ratesDoc `json:"rates"`
+	LastResort *lastResortDoc      `json:"last_resort"`
+}
+
+type lastResortDoc struct {
+	Models     []string `json:"models"`
+	MeasuredOn string   `json:"measured_on"`
 }
 
 // harnessDoc is a plan's harness order as providers.json writes it: the default
@@ -250,6 +282,12 @@ func parseConfig(b []byte) (Config, error) {
 				provider.Rates[model] = r.rates()
 			}
 		}
+		if p.LastResort != nil {
+			provider.LastResort = LastResort{Models: p.LastResort.Models, MeasuredOn: p.LastResort.MeasuredOn}
+			if provider.LastResort.Models == nil {
+				provider.LastResort.Models = []string{}
+			}
+		}
 		cfg.Providers[name] = provider
 	}
 	if err := cfg.validate(); err != nil {
@@ -276,7 +314,9 @@ func (c Config) validate() error {
 	if len(c.Providers) == 0 {
 		return errors.New("no provider is configured")
 	}
+	paid := false
 	for name, p := range c.Providers {
+		paid = paid || !p.freeOnly()
 		if name == "" {
 			return errors.New("a provider has an empty name")
 		}
@@ -307,19 +347,61 @@ func (c Config) validate() error {
 				return fmt.Errorf("provider %s model %s cap has no limit", name, model)
 			}
 		}
+		if err := checkLastResort(name, p); err != nil {
+			return err
+		}
 		for model, r := range p.Rates {
+			free := slices.Contains(p.LastResort.Models, model)
 			switch {
 			case !isPlanModel(name, model):
 				return fmt.Errorf("provider %s has rates for %q, not a %s model", name, model, name)
 			case min(r.Input, r.Output, r.CacheRead, r.CacheWrite) < 0:
 				return fmt.Errorf("provider %s model %s has a negative rate", name, model)
-			case max(r.Input, r.Output, r.CacheRead, r.CacheWrite) == 0:
+			case free && (r.Peak != nil || max(r.Input, r.Output, r.CacheRead, r.CacheWrite) > 0):
+				return fmt.Errorf("provider %s last-resort model %s is not priced $0", name, model)
+			case !free && max(r.Input, r.Output, r.CacheRead, r.CacheWrite) == 0:
 				return fmt.Errorf("provider %s model %s has no rate", name, model)
 			}
 			if err := checkPeak(r.Peak); err != nil {
 				return fmt.Errorf("provider %s model %s peak: %w", name, model, err)
 			}
 		}
+	}
+	if !paid {
+		return errors.New("every provider is free-only")
+	}
+	return nil
+}
+
+// checkLastResort reports whether a plan's free tier is usable: when present,
+// one or more distinct models of the plan's own, each priced $0 and none
+// carrying a model cap, and a measured date or unmeasuredOn.
+func checkLastResort(provider string, p Provider) error {
+	lr := p.LastResort
+	if lr.Models == nil {
+		return nil
+	}
+	if len(lr.Models) == 0 {
+		return fmt.Errorf("provider %s has a last resort with no models", provider)
+	}
+	if _, err := time.Parse(dateLayout, lr.MeasuredOn); err != nil && lr.MeasuredOn != unmeasuredOn {
+		return fmt.Errorf("provider %s last resort measured_on %q is not a yyyy-mm-dd date or %q", provider, lr.MeasuredOn, unmeasuredOn)
+	}
+	seen := map[string]bool{}
+	for _, model := range lr.Models {
+		_, capped := p.ModelCaps[model]
+		_, priced := p.Rates[model]
+		switch {
+		case !isPlanModel(provider, model):
+			return fmt.Errorf("provider %s has a last-resort model %q, not a %s model", provider, model, provider)
+		case seen[model]:
+			return fmt.Errorf("provider %s lists last-resort model %s twice", provider, model)
+		case capped:
+			return fmt.Errorf("provider %s last-resort model %s has a model cap", provider, model)
+		case !priced:
+			return fmt.Errorf("provider %s last-resort model %s is not priced $0", provider, model)
+		}
+		seen[model] = true
 	}
 	return nil
 }
@@ -421,6 +503,12 @@ func ModelCaps(provider string) map[string]Window {
 		out[model] = Window{Name: model, Period: monthlyPeriod, Limit: limit}
 	}
 	return out
+}
+
+// LastResortModels are a plan's free models in fall-through order, empty for a
+// plan with no free tier.
+func LastResortModels(plan string) []string {
+	return slices.Clone(embeddedConfig.Providers[plan].LastResort.Models)
 }
 
 // CashLimit is NFR-1's cash ceiling on provider cost.

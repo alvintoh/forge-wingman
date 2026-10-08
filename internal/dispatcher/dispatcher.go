@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/providers"
@@ -95,6 +96,9 @@ type Config struct {
 	Limits Limits
 	// Tuning is the concurrency rule's numbers; a zero field takes its default.
 	Tuning Tuning
+	// LastResort is the dispatched plan's free models in fall-through order,
+	// empty for a plan with none.
+	LastResort []string
 }
 
 // ProviderHalts reports whether repeated infra stops have halted dispatch to
@@ -404,7 +408,9 @@ func refuse(ctx context.Context, d Deps, r Rejection, res *Result) error {
 // ahead of the walk, since every candidate starts on the same model, and the
 // open-PR count across the allowlist once, when anything is queued. A breaker
 // that cannot be read holds the walk as a tripped one would, and a budget
-// ceiling raises at most one notice.
+// ceiling raises at most one notice. A candidate the plan's own window or cap
+// withholds is retried on the plan's free tier, a private one only with the
+// owner's private opt-in.
 func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Relations, links map[string]string, res *Result) ([]Claim, error) {
 	candidates, err := d.Queue.Candidates(ctx)
 	if err != nil {
@@ -424,8 +430,10 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 	verdict := lookupVerdict(ctx, d, provider)
 	limits := c.Limits.orDefault()
 	var prs openPRCount
+	var privateOptIn bool
 	if len(candidates) > 0 {
 		prs = countOpenPRs(ctx, d, c.Repos)
+		privateOptIn = lookupPrivateOptIn(ctx, d, c.LastResort)
 	}
 	var claims []Claim
 	noticed := map[string]bool{}
@@ -447,9 +455,25 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		}
 		facts := Facts{Limits: limits, Tuning: c.Tuning.OrDefault(), ProviderHalted: halted, BreakerTripped: tripped,
 			OpenPRs: prs.count, OpenPRsKnown: prs.known, Relations: relations[cand.RunID], Model: cmp.Or(cand.Model, c.Model)}
-		ok, binding, err := d.Queue.TryClaim(ctx, cand.RunID, d.Now(), c.Budget, facts, reservation)
+		budget := c.Budget
+		ok, binding, err := d.Queue.TryClaim(ctx, cand.RunID, d.Now(), budget, facts, reservation)
 		if err != nil {
 			return claims, err
+		}
+		if !ok && budget.isProviderCeiling(binding) && len(c.LastResort) > 1 {
+			if cand.Private && !privateOptIn {
+				d.Logger.Info("lastResortNeedsPrivateOptIn", "run", cand.RunID, "ceiling", binding)
+			} else {
+				paid := binding
+				budget, facts, reservation = budget.lastResort(), onLastResort(facts, c.LastResort), Reservation{RunnerMinutes: reservation.RunnerMinutes}
+				ok, binding, err = d.Queue.TryClaim(ctx, cand.RunID, d.Now(), budget, facts, reservation)
+				if err != nil {
+					return claims, err
+				}
+				if ok {
+					d.Logger.Info("runOnLastResort", "run", cand.RunID, "model", facts.Model, "paidCeiling", paid)
+				}
+			}
 		}
 		if ok {
 			claims = append(claims, Claim{RunID: cand.RunID, Repo: cand.Repo, Priority: cand.Priority, Verdict: verdict})
@@ -462,13 +486,38 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		d.Logger.Info("runDeferred", "run", cand.RunID, "ceiling", binding)
 		res.Deferrals = append(res.Deferrals, Deferral{RunID: cand.RunID, Ceiling: binding, At: d.Now()})
 		if !noticed[binding] {
-			noticed[binding] = noticeDeferral(ctx, d, c.Budget, facts.Model, reservation, binding, links[cand.RunID])
+			noticed[binding] = noticeDeferral(ctx, d, budget, facts.Model, reservation, binding, links[cand.RunID])
 		}
 	}
 	if len(candidates) > 0 && len(res.Deferrals) == len(candidates) {
 		d.Logger.Info("everyCandidateDeferred", "candidates", len(candidates))
 	}
 	return claims, nil
+}
+
+// onLastResort is facts for a claim on the free tier of models: the first
+// model builds and plans and the next reviews, so the build model never
+// reviews its own work.
+func onLastResort(facts Facts, models []string) Facts {
+	labels := runner.ModelLabels{Build: models[0], Review: models[1], Plan: slices.Clone(models)}
+	facts.Model, facts.LastResort = labels.Build, &labels
+	return facts
+}
+
+// lookupPrivateOptIn reads whether the owner has opted private repositories in
+// to the free tier models belong to. A failed read is logged and reads as no
+// opt-in, so a private candidate defers rather than runs unconsented.
+func lookupPrivateOptIn(ctx context.Context, d Deps, models []string) bool {
+	if len(models) == 0 {
+		return false
+	}
+	plan := runner.Provider(models[0])
+	p, _, err := d.ModelPlans.Plan(ctx, plan)
+	if err != nil {
+		d.Logger.Info("privateOptInLookupFailed", "provider", plan, "err", err.Error())
+		return false
+	}
+	return p.PrivateOptIn
 }
 
 // lookupVerdict reads provider's recorded verdict. A failed read is logged and

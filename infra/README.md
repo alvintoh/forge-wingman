@@ -82,8 +82,10 @@ fifteen minutes. One execution is one poll — admit every ticket Linear has
 delegated, then walk the queue in priority order and start every run admission
 lets start: the discovered concurrency limit, the platform cap, one run per
 repository, the large-run cap, blocking relations and the open-PR review limit
-each withhold a run until a later poll. A dispatch GitHub refuses releases its
-claim, so the next poll takes it again.
+each withhold a run until a later poll. A run the plan's own allowance window or
+model cap would withhold starts on the plan's free models instead, a private
+repository's only after `runner plan-optin -private`. A dispatch GitHub refuses
+releases its claim, so the next poll takes it again.
 
 A systemic stop — a missing key, an identity mismatch, an exhausted allowance —
 trips the breaker, and every poll admits nothing until `runner reset-breaker`

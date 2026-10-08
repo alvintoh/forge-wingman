@@ -19,7 +19,9 @@ import (
 // requested size, falling back to the first ever settled run — any size —
 // when none exist for that size yet. A brand new system with no settled runs
 // at all estimates zero, so its own first runs are what seeds every estimate
-// after them, rather than blocking on data that cannot exist yet.
+// after them, rather than blocking on data that cannot exist yet. A run claimed
+// on a plan's free tier is left out: its $0 says nothing of what a paid run
+// costs, and averaging it in would under-reserve the paid windows.
 type Estimates struct {
 	client *firestore.Client
 }
@@ -72,32 +74,35 @@ func (e *Estimates) settledBySize(ctx context.Context, size string) ([]runner.Re
 		if err := snap.DataTo(&rec); err != nil {
 			return nil, fmt.Errorf("decoding run %s: %w", snap.Ref.ID, err)
 		}
-		if !rec.SettledAt.IsZero() {
+		if !rec.SettledAt.IsZero() && !rec.LastResort {
 			out = append(out, rec)
 		}
 	}
 	return out, nil
 }
 
-// firstSettled is the first run ever settled, regardless of size — PRD Q4's
-// fallback for a size no run has settled yet.
+// firstSettled is the first run ever settled on a paid plan, regardless of
+// size — PRD Q4's fallback for a size no run has settled yet.
 func (e *Estimates) firstSettled(ctx context.Context) ([]runner.Record, error) {
 	iter := e.client.Collection(runsCollection).
 		Where(settledAtField, ">", time.Time{}).
 		OrderBy(settledAtField, firestore.Asc).
-		Limit(1).
 		Documents(ctx)
 	defer iter.Stop()
-	snap, err := iter.Next()
-	if errors.Is(err, iterator.Done) {
-		return nil, nil
+	for {
+		snap, err := iter.Next()
+		if errors.Is(err, iterator.Done) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading the first settled run: %w", err)
+		}
+		var rec runner.Record
+		if err := snap.DataTo(&rec); err != nil {
+			return nil, fmt.Errorf("decoding run %s: %w", snap.Ref.ID, err)
+		}
+		if !rec.LastResort {
+			return []runner.Record{rec}, nil
+		}
 	}
-	if err != nil {
-		return nil, fmt.Errorf("reading the first settled run: %w", err)
-	}
-	var rec runner.Record
-	if err := snap.DataTo(&rec); err != nil {
-		return nil, fmt.Errorf("decoding run %s: %w", snap.Ref.ID, err)
-	}
-	return []runner.Record{rec}, nil
 }

@@ -57,6 +57,11 @@ const (
 	verdictField     = "provider_verdict"
 	ticketIDField    = "ticket_id"
 	outcomeField     = "outcome"
+	// planField, lastResortField and lastResortModelsField are Record's own,
+	// written with the claim.
+	planField             = "plan"
+	lastResortField       = "last_resort"
+	lastResortModelsField = "last_resort_models"
 	// settledAtField, settledProviderCostField and settledRunnerMinutesField
 	// are Record's own settlement fields, written once by runner.Finalize and
 	// summed here for FR-22's window checks.
@@ -345,12 +350,19 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 		if err := tx.Set(ledgerRef, ledger); err != nil {
 			return err
 		}
+		var lastResortModels any = firestore.Delete
+		if facts.LastResort != nil {
+			lastResortModels = *facts.LastResort
+		}
 		if err := tx.Update(rowRef, []firestore.Update{
 			{Path: stateField, Value: stateClaimed},
 			{Path: claimedAtField, Value: at},
 			{Path: updatedAtField, Value: at},
 			{Path: claimConcurrencyField, Value: len(running) + 1},
 			{Path: waitingOnField, Value: firestore.Delete},
+			{Path: planField, Value: runner.Provider(facts.Model)},
+			{Path: lastResortField, Value: facts.LastResort != nil},
+			{Path: lastResortModelsField, Value: lastResortModels},
 		}); err != nil {
 			return err
 		}

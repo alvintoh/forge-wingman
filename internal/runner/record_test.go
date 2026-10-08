@@ -481,6 +481,7 @@ func TestFinalizeCarriesTheModelLabelsFromTheExistingRecord(t *testing.T) {
 	store := seeded(t)
 	rec := store[testRunID]
 	rec.ModelLabels = ModelLabels{Build: "p/a", Review: "p/b", Plan: []string{"p/c", "p/d"}}
+	rec.Plan, rec.LastResort, rec.LastResortModels = "p", true, ModelLabels{Build: "p/free"}
 	store[testRunID] = rec
 	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: "",
 		RunResult: "failure", PRResult: "skipped"}
@@ -489,6 +490,19 @@ func TestFinalizeCarriesTheModelLabelsFromTheExistingRecord(t *testing.T) {
 	}
 	if got := store[testRunID].ModelLabels; got.Build != "p/a" || got.Review != "p/b" || !slices.Equal(got.Plan, []string{"p/c", "p/d"}) {
 		t.Fatalf("model labels = %+v, want the ticket's carried through finalize", got)
+	}
+	if got := store[testRunID]; got.Plan != "p" || !got.LastResort || got.LastResortModels.Build != "p/free" {
+		t.Fatalf("plan %q, last resort %v, %+v, want the claim's carried through finalize", got.Plan, got.LastResort, got.LastResortModels)
+	}
+}
+
+func TestRunModelsAreTheFreeTiersOnlyOnAFreeTierClaim(t *testing.T) {
+	named, free := ModelLabels{Build: "p/paid"}, ModelLabels{Build: "p/free"}
+	if got := (Record{ModelLabels: named, LastResortModels: free}).RunModels(); got.Build != "p/paid" {
+		t.Fatalf("RunModels = %+v, want the ticket's on a paid claim", got)
+	}
+	if got := (Record{ModelLabels: named, LastResort: true, LastResortModels: free}).RunModels(); got.Build != "p/free" {
+		t.Fatalf("RunModels = %+v, want the free tier's in place of the ticket's", got)
 	}
 }
 

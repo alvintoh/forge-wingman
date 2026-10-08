@@ -62,6 +62,25 @@ func TestParseConfigRejectsAnInvalidConfig(t *testing.T) {
 			`"peak":{"multiplier":2,"weekday_utc_hours":[{"from":-1,"to":4}]}}}`), "not a range"},
 		"an unknown field": {`{"cash_limit_usd":30,"runner_free_minutes":2000,"providers":{"p":{}},"extra":1}`,
 			"unknown field"},
+		"a last resort with no models": {configWith(providerFacts + `,"last_resort":{"models":[],"measured_on":"unmeasured"}`),
+			"no models"},
+		"a last-resort model of another plan": {configWith(providerFacts + `,"last_resort":{"models":["other/free"],"measured_on":"unmeasured"}`),
+			"last-resort model \"other/free\", not a p model"},
+		"a last-resort model listed twice": {configWith(providerFacts + `,"rates":` + freeRates("p/free") +
+			`,"last_resort":{"models":["p/free","p/free"],"measured_on":"unmeasured"}`), "twice"},
+		"a capped last-resort model": {configWith(providerFacts + `,"model_caps":{"p/free":5},"rates":` + freeRates("p/free") +
+			`,"last_resort":{"models":["p/free"],"measured_on":"unmeasured"}`), "has a model cap"},
+		"an unpriced last-resort model": {configWith(providerFacts + `,"last_resort":{"models":["p/free"],"measured_on":"unmeasured"}`),
+			"not priced $0"},
+		"a priced last-resort model": {configWith(providerFacts + `,"rates":{"p/free":{"input_usd_per_mtok":1}}` +
+			`,"last_resort":{"models":["p/free"],"measured_on":"unmeasured"}`), "not priced $0"},
+		"a last-resort model with a peak": {configWith(providerFacts + `,"rates":{"p/free":{"peak":{"multiplier":2,"weekday_utc_hours":[{"from":1,"to":4}]}}}` +
+			`,"last_resort":{"models":["p/free"],"measured_on":"unmeasured"}`), "not priced $0"},
+		"a last resort measured on no date": {configWith(providerFacts + `,"rates":` + freeRates("p/free") +
+			`,"last_resort":{"models":["p/free"],"measured_on":"soon"}`), "not a yyyy-mm-dd date"},
+		"a last resort naming no models": {configWith(providerFacts + `,"last_resort":{"measured_on":"unmeasured"}`), "no models"},
+		"only free-only plans": {configWith(providerFacts + `,"rates":` + freeRates("p/free") +
+			`,"last_resort":{"models":["p/free"],"measured_on":"2026-10-08"}`), "every provider is free-only"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := parseConfig([]byte(tc.doc))
@@ -69,6 +88,61 @@ func TestParseConfigRejectsAnInvalidConfig(t *testing.T) {
 				t.Fatalf("err = %v, want one containing %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// freeRates is a rate card pricing each model at $0.
+func freeRates(models ...string) string {
+	cards := make([]string, len(models))
+	for i, m := range models {
+		cards[i] = `"` + m + `":{}`
+	}
+	return "{" + strings.Join(cards, ",") + "}"
+}
+
+func TestParseConfigReadsALastResortBesideThePaidModels(t *testing.T) {
+	cfg, err := parseConfig([]byte(configWith(providerFacts +
+		`,"windows":[{"name":"p-5h","hours":5,"limit_usd":14}],"rates":{"p/paid":{"input_usd_per_mtok":1},"p/a":{},"p/b":{}}` +
+		`,"last_resort":{"models":["p/b","p/a"],"measured_on":"unmeasured"}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Providers["p"].LastResort.Models; !slices.Equal(got, []string{"p/b", "p/a"}) {
+		t.Fatalf("last resort = %v, want the configured order", got)
+	}
+}
+
+func TestParseConfigAcceptsAFreeOnlyPlanBesideAPaidOne(t *testing.T) {
+	doc := `{"cash_limit_usd":30,"runner_free_minutes":2000,"providers":{
+		"paid":{` + providerFacts + `,"windows":[{"name":"paid-5h","hours":5,"limit_usd":14}]},
+		"gratis":{` + providerFacts + `,"rates":` + freeRates("gratis/a") + `,"last_resort":{"models":["gratis/a"],"measured_on":"2026-10-08"}}}}`
+	if _, err := parseConfig([]byte(doc)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestParseConfigCountsAPlanWithAnythingPaidAsPaid(t *testing.T) {
+	lastResort := `,"last_resort":{"models":["p/free"],"measured_on":"unmeasured"}`
+	for name, facts := range map[string]string{
+		"a window":    `,"windows":[{"name":"p-5h","hours":5,"limit_usd":14}],"rates":` + freeRates("p/free"),
+		"a model cap": `,"model_caps":{"p/paid":5},"rates":` + freeRates("p/free"),
+		"a paid rate": `,"rates":{"p/paid":{"input_usd_per_mtok":1},"p/free":{}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseConfig([]byte(configWith(providerFacts + facts + lastResort))); err != nil {
+				t.Fatalf("err = %v, want the plan's only provider accepted as paid", err)
+			}
+		})
+	}
+}
+
+func TestEmbeddedGoatFallsToItsOwnFreeModels(t *testing.T) {
+	want := []string{"command-code/inclusionai/ling-3.1-flash:free", "command-code/poolside/laguna-s-2.1-free"}
+	if got := LastResortModels("command-code"); !slices.Equal(got, want) {
+		t.Fatalf("LastResortModels(command-code) = %v, want %v", got, want)
+	}
+	if got := LastResortModels("nobody"); len(got) != 0 {
+		t.Fatalf("LastResortModels(nobody) = %v, want none", got)
 	}
 }
 
