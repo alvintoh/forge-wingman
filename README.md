@@ -51,7 +51,8 @@ a provider with no plan record with its billing recorded, and
 opted in.
 
 The dispatcher looks for new tickets as soon as one is delegated: Linear's webhook
-reaches `cmd/webhook`, which starts a poll within seconds. Cloud Scheduler also wakes
+reaches `cmd/webhook`, which starts a poll at once; Cloud Run takes about 2 minutes to
+start the job's container, and the poll itself takes a few seconds. Cloud Scheduler also wakes
 the job **every 15 minutes**, so a delivery that never arrives costs one interval, not
 the ticket. One execution is one poll.
 

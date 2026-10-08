@@ -208,7 +208,8 @@ A delivery with no usable `agentSession.id` is refused with 400 and logs
 
 Live check, on a test ticket:
 
-1. Delegate it: a job execution starts within seconds, one `runs/` doc appears,
+1. Delegate it: a job execution is created within seconds and its poll runs about
+   2 minutes later, after the container starts; one `runs/` doc appears,
    and the session shows the `thought`.
 2. Force one 500: point the service at a run URI that refuses, delegate a second
    test ticket, then restore the configuration with `tofu apply`. The log must

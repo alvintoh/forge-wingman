@@ -75,7 +75,10 @@ delivery. Choosing it for latency is the owner's call.*
   *Updated (2026-10-08, FRG-34):* it also reads the Linear app's client
   credentials, to mint the token it posts the session acknowledgement with, and
   only after the signature verifies.
-- **Enqueue latency drops from ≤15 minutes to seconds**; throughput does not change,
+- ~~**Enqueue latency drops from ≤15 minutes to seconds**~~ *Updated (2026-10-08):*
+  **enqueue latency drops from ≤15 minutes to about 2 minutes**: the job execution
+  starts within seconds, but Cloud Run's gen2 start-up for a job takes ~2 minutes
+  before the poll's own ~3 s (measured with the poll's phase timings); throughput does not change,
   since 96 polls a day already exceed level 5's 10 runs.
 - **Two paths enqueue, so the enqueue must be idempotent** — the same property the
   claim transaction already has.
