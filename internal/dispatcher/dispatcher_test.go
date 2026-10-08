@@ -861,3 +861,22 @@ func TestPollLogsWhenEveryCandidateIsDeferred(t *testing.T) {
 		})
 	}
 }
+
+func TestPollLogsHowLongEachPhaseTook(t *testing.T) {
+	var logs strings.Builder
+	deps := pollDeps(fakeSource{}, &fakeQueue{}, &fakeWorkflow{})
+	deps.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	clock := pollAt
+	deps.Now = func() time.Time { clock = clock.Add(time.Second); return clock }
+	if _, err := Poll(context.Background(), deps, Config{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, phase := range []string{"delegated", "admit", "claim", "dispatch", "notices"} {
+		if !strings.Contains(logs.String(), "msg=pollPhase phase="+phase+" ms=") {
+			t.Errorf("no pollPhase line for %s in:\n%s", phase, logs.String())
+		}
+	}
+	if !strings.Contains(logs.String(), "msg=pollPhase phase=delegated ms=1000") {
+		t.Errorf("delegated phase not timed from its own start:\n%s", logs.String())
+	}
+}

@@ -273,29 +273,45 @@ func Poll(ctx context.Context, d Deps, c Config) (Result, error) {
 		return Result{}, fmt.Errorf("dispatcher dependency %s is not set", name)
 	}
 	res, err := poll(ctx, d, c)
-	return res, errors.Join(err, postNotices(ctx, d))
+	start := d.Now()
+	noticeErr := postNotices(ctx, d)
+	LogPhase(d.Logger, "notices", start, d.Now())
+	return res, errors.Join(err, noticeErr)
+}
+
+// LogPhase logs how long one phase of a poll took, so a slow poll can be traced
+// to the call it waited on.
+func LogPhase(logger *slog.Logger, phase string, start, end time.Time) {
+	logger.Info("pollPhase", "phase", phase, "ms", end.Sub(start).Milliseconds())
 }
 
 func poll(ctx context.Context, d Deps, c Config) (Result, error) {
+	start := d.Now()
 	issues, err := d.Source.Delegated(ctx)
 	if err != nil {
 		return Result{}, err
 	}
+	LogPhase(d.Logger, "delegated", start, d.Now())
 	res := Result{Seen: len(issues)}
+	start = d.Now()
 	for _, issue := range issues {
 		admitErr := admit(ctx, d, c, issue, &res)
 		if admitErr != nil {
 			return res, admitErr
 		}
 	}
+	LogPhase(d.Logger, "admit", start, d.Now())
 	relations := make(map[string]Relations, len(issues))
 	links := make(map[string]string, len(issues))
 	for _, issue := range issues {
 		relations[issue.ID] = Relations{Known: true, BlockedBy: issue.BlockedBy, Blocks: issue.Blocks}
 		links[issue.ID] = issue.URL
 	}
+	start = d.Now()
 	claims, claimErr := admitClaims(ctx, d, c, relations, links, &res)
+	LogPhase(d.Logger, "claim", start, d.Now())
 	dispatchErrs := []error{claimErr}
+	start = d.Now()
 	for _, claim := range claims {
 		if err := dispatch(ctx, d, claim); err != nil {
 			dispatchErrs = append(dispatchErrs, err)
@@ -303,6 +319,7 @@ func poll(ctx context.Context, d Deps, c Config) (Result, error) {
 		}
 		res.Dispatched = append(res.Dispatched, claim.RunID)
 	}
+	LogPhase(d.Logger, "dispatch", start, d.Now())
 	if err := errors.Join(dispatchErrs...); err != nil {
 		return res, err
 	}

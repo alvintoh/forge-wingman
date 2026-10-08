@@ -242,6 +242,8 @@ func linearCredentials(ctx context.Context, token func(context.Context, string) 
 
 // run polls once: the schedule starts the job, and one execution is one poll.
 func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) error {
+	started := time.Now()
+	logger.Info("dispatcherStarted")
 	c, err := loadConfig(getenv)
 	if err != nil {
 		return err
@@ -267,7 +269,12 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 	}
 	defer func() { _ = fsc.Close() }()
 	tokens := linear.NewPollSource(creds)
-	defer linear.RevokeAll(ctx, tokens, logger)
+	defer func() {
+		start := time.Now()
+		linear.RevokeAll(ctx, tokens, logger)
+		dispatcher.LogPhase(logger, "revoke", start, time.Now())
+	}()
+	dispatcher.LogPhase(logger, "setup", started, time.Now())
 	gh := dispatcher.GitHub{Token: githubToken, Workflow: runWorkflow, Branch: runBranch, Client: client}
 	queue := store.NewQueue(fsc)
 	plans := store.NewPlans(fsc)
