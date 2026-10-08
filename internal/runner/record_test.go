@@ -110,6 +110,11 @@ func TestFinalize(t *testing.T) {
 		{"an identity mismatch is kept", func(t *testing.T) string {
 			return encoded(t, Summary{Outcome: OutcomeStopped, StopReason: StopIdentityMismatch})
 		}, FinalizeInput{RunResult: "success", PRResult: "skipped"}, OutcomeStopped, StopIdentityMismatch, OutcomeStopped},
+		{"a workflow change at commit is kept", func(t *testing.T) string {
+			return encoded(t, Summary{Outcome: OutcomeStopped, StopReason: StopWorkflowChange, Phase: PhaseCommit,
+				Branch: BranchName(testTicket.BranchSegment(), "1-1"),
+				Steps:  []Step{{Phase: PhaseBuild, Round: 1, Model: "command-code/x", CompletionsObject: completionsObject("1-1", PhaseBuild, 1)}}})
+		}, FinalizeInput{RunResult: "success", PRResult: "skipped"}, OutcomeStopped, StopWorkflowChange, OutcomeStopped},
 		{"an invalid summary", func(*testing.T) string { return `{"outcome":"pr-opened"}` },
 			FinalizeInput{RunResult: "success", PRResult: "success", PRURL: "https://github.com/o/r/pull/1"},
 			OutcomeInfraFailure, StopSummaryInvalid, OutcomeInfraFailure},

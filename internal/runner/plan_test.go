@@ -91,3 +91,23 @@ func TestOutOfPlanFiles(t *testing.T) {
 		})
 	}
 }
+
+func TestWorkflowFiles(t *testing.T) {
+	tests := []struct {
+		name  string
+		paths []string
+		want  []string
+	}{
+		{"a workflow among others", []string{"a.go", ".github/workflows/ci.yml"}, []string{".github/workflows/ci.yml"}},
+		{"an unclean path", []string{"./.github/x/../workflows/ci.yml"}, []string{"./.github/x/../workflows/ci.yml"}},
+		{"the directory itself", []string{".github/workflows/"}, []string{".github/workflows/"}},
+		{"near misses", []string{".github/dependabot.yml", "docs/.github/workflows/ci.yml", ".github/workflows.md", ".github/workflows-old/ci.yml"}, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := workflowFiles(tt.paths); !slices.Equal(got, tt.want) {
+				t.Fatalf("workflow files = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

@@ -17,6 +17,8 @@ func TestParsePorcelain(t *testing.T) {
 			[]string{"cmd/surface/main.go", "internal/v.go", "notes.txt"}},
 		{"deleted", " D old.go\x00", []string{"old.go"}},
 		{"rename names both sides", "R  new.go\x00old.go\x00 M x.go\x00", []string{"new.go", "old.go", "x.go"}},
+		{"a working-tree rename names both sides", " R new.go\x00old.go\x00", []string{"new.go", "old.go"}},
+		{"a working-tree copy names both sides", " C new.go\x00old.go\x00", []string{"new.go", "old.go"}},
 		{"spaces are not quoted", "?? a file.go\x00", []string{"a file.go"}},
 	}
 	for _, tt := range tests {

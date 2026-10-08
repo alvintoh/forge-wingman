@@ -149,7 +149,8 @@ const localBranch = BranchPrefix + "wt"
 // never runs unless the identity matches, the ticket is buildable, the model is
 // well formed and the projection was found and valid. A build that edits a
 // file outside its plan is still committed, but never ready, and names those
-// files in its summary.
+// files in its summary. A plan naming a file under .github/workflows/ stops
+// before the build, and a build touching one stops once its commit is bundled.
 func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, err error) {
 	sum := Summary{DurationsMS: map[string]int64{}, StartedAt: d.Now()}
 	defer func() {
@@ -298,6 +299,10 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 				return stopWith(OutcomeStopped, StopPlanInvalid, err)
 			}
 			d.Logger.Info("planFilesParsed", "files", len(planFiles))
+			if wf := workflowFiles(planFiles); len(wf) > 0 {
+				d.Logger.Info("workflowChange", "phase", string(PhasePlan), "files", wf)
+				return stopWith(OutcomeStopped, StopWorkflowChange, workflowChange(wf))
+			}
 			return nil
 		}); err != nil {
 			return BuildResult{}, err
@@ -389,12 +394,23 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 				return stopWith(OutcomeInfraFailure, StopCommit, err)
 			}
 		}
+		touched, err := wt.TouchedPaths(ctx)
+		if err != nil {
+			return stopWith(OutcomeInfraFailure, StopCommit, err)
+		}
 		res.BundlePath = filepath.Join(c.TempDir, bundleName)
 		if err := wt.Bundle(ctx, res.BundlePath, pushBranch); err != nil {
 			return stopWith(OutcomeInfraFailure, StopCommit, err)
 		}
 		res.Changed = true
 		sum.Outcome = OutcomeBuilt
+		// The bundle still uploads, so the work survives for a human to push.
+		if wf := workflowFiles(touched); len(wf) > 0 {
+			sum.Outcome, sum.StopReason = OutcomeStopped, StopWorkflowChange
+			sum.StopDetail = truncate(workflowChange(wf).Error(), stopDetailLimit)
+			sum.Ready, res.Ready = false, false
+			d.Logger.Info("workflowChange", "phase", string(PhaseCommit), "files", wf)
+		}
 		return nil
 	}); err != nil {
 		return BuildResult{}, err

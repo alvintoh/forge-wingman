@@ -350,6 +350,9 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		return err
 	}
 	sum := buildSummary(logger, *summary, buildAttempt(logger, *attemptID, e), rec.Ticket(), time.Now())
+	if err := refuseWorkflowPush(logger, sum); err != nil {
+		return err
+	}
 	title, body, err := renderPR(string(tmpl), rec, sum, runner.FailedGate(*checkReport), *runURL, *loopDetail)
 	if err != nil {
 		return err
@@ -358,6 +361,16 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		return err
 	}
 	return writeMultilineOutput(e.output, "body", body)
+}
+
+// refuseWorkflowPush fails a build that stopped for touching a workflow file,
+// so the pr job, which could not push it, never runs.
+func refuseWorkflowPush(logger *slog.Logger, sum runner.Summary) error {
+	if sum.StopReason != runner.StopWorkflowChange {
+		return nil
+	}
+	logger.Warn("pushRefused", "reason", string(sum.StopReason), "detail", sum.StopDetail)
+	return errRunFailed
 }
 
 // buildSummary is raw parsed as attemptID's build of t, or the zero Summary when

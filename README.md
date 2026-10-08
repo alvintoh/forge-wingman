@@ -50,6 +50,12 @@ a provider with no plan record with its billing recorded, and
 `model-per-token-not-opted-in` for a per-token provider the owner has not
 opted in.
 
+A ticket that changes a file under `.github/workflows/` is built and pushed by
+hand. The run's GitHub App has no permission to push workflow changes, so a plan
+naming one stops before the build starts, and a build that edits one anyway stops
+before the push as `stopped/workflow-change`, naming the files; its commit is kept
+in the run's bundle artifact.
+
 The dispatcher looks for new tickets as soon as one is delegated: Linear's webhook
 reaches `cmd/webhook`, which starts a poll within seconds. Cloud Scheduler also wakes
 the job **every 15 minutes**, so a delivery that never arrives costs one interval, not

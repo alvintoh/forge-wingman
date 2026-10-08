@@ -610,6 +610,99 @@ func TestBuildStopsWhenThePlanAgentNamesNoFiles(t *testing.T) {
 	}
 }
 
+func TestBuildStopsWhenThePlanNamesAWorkflowFile(t *testing.T) {
+	planAgent := &fakeAgent{events: planEvent("```plan-files\nversion.go\n.github/workflows/ci.yml\n```")}
+	buildAgent := &fakeAgent{}
+	objects := validObjects()
+	objects["projections/"+testSHA+"/"+planProjectionFile] = []byte("# Plan rules\n\n" + ticketSentinel)
+	deps, _, reported := testDeps(objects, buildAgent)
+	deps.PlanAgent = planAgent
+	var logs bytes.Buffer
+	deps.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	c := testConfig(t, initRepo(t))
+	c.Ticket.Size = "M"
+
+	if _, err := Build(context.Background(), deps, c); err == nil {
+		t.Fatal("Build succeeded with a plan naming a workflow file")
+	}
+	if buildAgent.calls != 0 {
+		t.Fatalf("build agent ran %d times, want 0", buildAgent.calls)
+	}
+	sum := reported.last(t)
+	if sum.Outcome != OutcomeStopped || sum.StopReason != StopWorkflowChange || sum.Phase != PhasePlan {
+		t.Fatalf("summary = %s/%s at %s", sum.Outcome, sum.StopReason, sum.Phase)
+	}
+	if !strings.Contains(sum.StopDetail, ".github/workflows/ci.yml") || strings.Contains(sum.StopDetail, "version.go") {
+		t.Fatalf("detail = %q, want the workflow file alone", sum.StopDetail)
+	}
+	if !strings.Contains(logs.String(), "msg=workflowChange") || !strings.Contains(logs.String(), ".github/workflows/ci.yml") {
+		t.Fatalf("logs = %q", logs.String())
+	}
+}
+
+func TestBuildStopsBeforeThePushWhenTheBuildTouchesAWorkflowFile(t *testing.T) {
+	writeFile := func(name string) func(string) error {
+		return func(dir string) error {
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o700); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(dir, name), []byte("on: push\n"), 0o600)
+		}
+	}
+	tests := []struct {
+		name     string
+		size     string
+		plan     string
+		existing bool
+		edit     func(string) error
+		want     string
+	}{
+		{"a small build adding one", "S", "", false, writeFile(".github/workflows/ci.yml"), ".github/workflows/ci.yml"},
+		{"a planned build editing one outside its plan", "M", "version.go", false, writeFile(".github/workflows/ci.yml"), ".github/workflows/ci.yml"},
+		{"a build moving one out of the directory", "S", "", true, func(dir string) error {
+			return os.Rename(filepath.Join(dir, ".github/workflows/ci.yml"), filepath.Join(dir, "ci.yml"))
+		}, ".github/workflows/ci.yml"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := initRepo(t)
+			if tt.existing {
+				if err := writeFile(".github/workflows/ci.yml")(repo); err != nil {
+					t.Fatal(err)
+				}
+				mustGit(t, repo, "add", ".github")
+				mustGit(t, repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "ci")
+			}
+			objects := validObjects()
+			objects["projections/"+testSHA+"/"+planProjectionFile] = []byte("# Plan rules\n\n" + ticketSentinel)
+			deps, _, reported := testDeps(objects, &fakeAgent{edit: tt.edit})
+			deps.PlanAgent = &fakeAgent{events: planEvent("```plan-files\n" + tt.plan + "\n```")}
+			var logs bytes.Buffer
+			deps.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+			c := testConfig(t, repo)
+			c.Ticket.Size = tt.size
+
+			res, err := Build(context.Background(), deps, c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !res.Changed || res.Ready {
+				t.Fatalf("changed %v, ready %v, want a bundled commit that is not ready", res.Changed, res.Ready)
+			}
+			if _, err := os.Stat(res.BundlePath); err != nil {
+				t.Fatalf("bundle: %v", err)
+			}
+			sum := reported.last(t)
+			if sum.Outcome != OutcomeStopped || sum.StopReason != StopWorkflowChange || sum.Phase != PhaseCommit {
+				t.Fatalf("summary = %s/%s at %s", sum.Outcome, sum.StopReason, sum.Phase)
+			}
+			if !strings.Contains(sum.StopDetail, tt.want) || !strings.Contains(logs.String(), "msg=workflowChange") {
+				t.Fatalf("detail %q, logs %q, want both naming %s", sum.StopDetail, logs.String(), tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildFailsClosedWithoutAPlanProjection(t *testing.T) {
 	planProjectionPath := "projections/" + testSHA + "/" + planProjectionFile
 	tests := []struct {

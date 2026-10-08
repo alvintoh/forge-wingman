@@ -3,6 +3,7 @@ package runner
 import (
 	"errors"
 	"fmt"
+	"path"
 	"regexp"
 	"strings"
 )
@@ -69,4 +70,27 @@ func outOfPlanFiles(edited, planned []string) []string {
 		}
 	}
 	return extra
+}
+
+// workflowDir is where GitHub reads workflows from; the run's GitHub App holds
+// no permission to push a change there.
+const workflowDir = ".github/workflows"
+
+// errWorkflowChange reports a plan or build touching a file under workflowDir.
+var errWorkflowChange = errors.New("touches files under " + workflowDir + "/, which the run cannot push")
+
+// workflowFiles returns the paths that are workflowDir or sit under it.
+func workflowFiles(paths []string) []string {
+	var hits []string
+	for _, p := range paths {
+		if c := path.Clean(p); c == workflowDir || strings.HasPrefix(c, workflowDir+"/") {
+			hits = append(hits, p)
+		}
+	}
+	return hits
+}
+
+// workflowChange is errWorkflowChange naming files.
+func workflowChange(files []string) error {
+	return fmt.Errorf("%w: %s", errWorkflowChange, strings.Join(files, ", "))
 }
