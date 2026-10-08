@@ -331,8 +331,9 @@ func splitModels(s string, fallback []string) []string {
 	return parts
 }
 
-// prMeta writes the PR's title, body and the branch segment the pushed branch must
-// carry as outputs, rendered from the run record's ticket and the build's summary.
+// prMeta writes the PR's title, body, the branch segment the pushed branch must
+// carry and whether to request auto-merge as outputs, from the run record's ticket
+// and the build's summary.
 func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) error {
 	fs := flag.NewFlagSet("pr-meta", flag.ContinueOnError)
 	runID := fs.String("run-id", "", "run record to read the ticket from")
@@ -342,6 +343,7 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	runURL := fs.String("run-url", "", "URL of the workflow run")
 	loopDetail := fs.String("loop-detail", "", "the pre-PR loop's report of why the PR is a draft (FR-5)")
 	template := fs.String("template", runner.DefaultPRTemplate, "pull request template to render")
+	autoMergeSwitch := fs.String("auto-merge-switch", "", "the WINGMAN_AUTO_MERGE variable; auto-merge is off unless it is \"on\"")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -364,10 +366,33 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	if err != nil {
 		return err
 	}
-	if err := writeOutputs(e.output, map[string]string{"title": title, "branch_segment": rec.Ticket().BranchSegment()}); err != nil {
+	merge := autoMerge(*autoMergeSwitch, *runID, rec.Ticket(), sum, runner.FailedGate(*checkReport))
+	logger.Info("autoMergeDecided", "run", *runID, "autoMerge", merge, "sampled", runner.Sampled(*runID))
+	if err := writeOutputs(e.output, map[string]string{
+		"title":          title,
+		"branch_segment": rec.Ticket().BranchSegment(),
+		"auto_merge":     strconv.FormatBool(merge),
+	}); err != nil {
 		return err
 	}
 	return writeMultilineOutput(e.output, "body", body)
+}
+
+// autoMergeOn is the only WINGMAN_AUTO_MERGE value that lets a run request auto-merge.
+const autoMergeOn = "on"
+
+// autoMerge reports whether the run's PR requests auto-merge: the switch is on
+// and nothing in the run needs the owner.
+func autoMerge(switchValue, runID string, t runner.Ticket, sum runner.Summary, failedGate string) bool {
+	return switchValue == autoMergeOn && !ownerAttention(runID, t, sum, failedGate)
+}
+
+// ownerAttention reports whether the run's PR must wait for the owner rather than
+// merge itself (FR-5, FR-17): not ready, sized L, in the review sample, edited
+// outside the plan, touching a workflow, or failing a check gate.
+func ownerAttention(runID string, t runner.Ticket, sum runner.Summary, failedGate string) bool {
+	return !sum.Ready || (t.Size != "S" && t.Size != "M") || runner.Sampled(runID) ||
+		len(sum.OutOfPlanFiles) > 0 || sum.StopReason == runner.StopWorkflowChange || failedGate != ""
 }
 
 // refuseWorkflowPush fails a build that stopped for touching a workflow file,
@@ -466,6 +491,7 @@ func record(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	prSeconds := fs.Int("pr-duration-s", 0, "wall-clock seconds the pr job took")
 	checkReport := fs.String("failed-gate", "", "the check job's failed_gate output, empty when it did not run")
 	runURL := fs.String("run-url", "", "URL of the workflow run")
+	autoMerge := fs.Bool("auto-merge", false, "the pr job requested auto-merge")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -495,6 +521,7 @@ func record(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		PRDuration:        time.Duration(*prSeconds) * time.Second,
 		CheckReport:       *checkReport,
 		RunURL:            *runURL,
+		AutoMerge:         *autoMerge,
 	}, time.Now())
 	if err != nil {
 		return err

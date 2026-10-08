@@ -496,6 +496,26 @@ func TestFinalizeCarriesTheModelLabelsFromTheExistingRecord(t *testing.T) {
 	}
 }
 
+func TestFinalizeRecordsTheSampleAndTheAutoMergeRequest(t *testing.T) {
+	for _, tt := range []struct {
+		runID              string
+		autoMerge, sampled bool
+	}{
+		{testRunID, true, false},
+		{"run-0", false, true},
+	} {
+		store := fakeRecords{tt.runID: NewRecord(tt.runID, testTicket, seededAt)}
+		in := FinalizeInput{Identity: testIdentity, RunID: tt.runID, AttemptID: "1-1", Summary: "",
+			RunResult: "failure", PRResult: "skipped", AutoMerge: tt.autoMerge}
+		if _, err := Finalize(context.Background(), store, &fakeLedger{}, in, finalizeNow); err != nil {
+			t.Fatal(err)
+		}
+		if got := store[tt.runID]; got.Sampled != tt.sampled || got.AutoMerge != tt.autoMerge {
+			t.Errorf("%s: sampled %v, auto-merge %v, want %v, %v", tt.runID, got.Sampled, got.AutoMerge, tt.sampled, tt.autoMerge)
+		}
+	}
+}
+
 func TestRunModelsAreTheFreeTiersOnlyOnAFreeTierClaim(t *testing.T) {
 	named, free := ModelLabels{Build: "p/paid"}, ModelLabels{Build: "p/free"}
 	if got := (Record{ModelLabels: named, LastResortModels: free}).RunModels(); got.Build != "p/paid" {

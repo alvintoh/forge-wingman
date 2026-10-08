@@ -165,6 +165,10 @@ type Record struct {
 	// loop's checks passed and the review found nothing left open.
 	Ready      bool   `firestore:"ready"`
 	LoopDetail string `firestore:"loop_detail"`
+	// Sampled is whether the run id falls in FR-17's review sample, whatever the run's size.
+	Sampled bool `firestore:"sampled"`
+	// AutoMerge is whether the pr job requested auto-merge on the PR (FR-16).
+	AutoMerge bool `firestore:"auto_merge"`
 	// CommitSubject is the subject the build committed with, and the PR's title.
 	CommitSubject string `firestore:"commit_subject"`
 	// CommitBody is the commit message after its subject.
@@ -311,6 +315,8 @@ type FinalizeInput struct {
 	// empty when it made it.
 	PRStopReason string
 	PRDuration   time.Duration
+	// AutoMerge is whether the pr job requested auto-merge.
+	AutoMerge bool
 	// CheckReport is the check job's failed_gate output, or empty when it did not run.
 	CheckReport string
 	RunURL      string
@@ -378,6 +384,7 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, in Finalize
 		rec.Phase = PhasePR
 	}
 	rec.FailedGate = FailedGate(in.CheckReport)
+	rec.Sampled, rec.AutoMerge = Sampled(in.RunID), in.AutoMerge
 	rec.RunURL = in.RunURL
 	if in.PRDuration > 0 {
 		rec.DurationsMS[string(PhasePR)] = in.PRDuration.Milliseconds()
