@@ -14,7 +14,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
+
+	"github.com/alvintoh/forge-wingman/internal/providers"
 )
 
 // commandCodeProvider is the model-id prefix the Command Code CLI serves.
@@ -24,28 +25,18 @@ const commandCodeProvider = "command-code"
 // which Classify records as an ordinary agent failure.
 const commandCodeMaxTurns = 200
 
-// commandCodeBin is the proprietary agent CLI's binary (PACKAGE.txt), and
-// commandCodeKeyEnv names the environment variable it reads its API key from.
-const (
-	commandCodeBin    = "cmd"
-	commandCodeKeyEnv = "COMMANDCODE_API_KEY"
-)
+// commandCodeBin is the proprietary agent CLI's binary (PACKAGE.txt).
+const commandCodeBin = "cmd"
 
-// Harnesses returns the agent harnesses a run may route to, from the
-// environment — the composition root's own construction, kept here so the
-// vendor stays named only in its adapter.
-func Harnesses(getenv func(string) string) []Harness {
-	var home string
-	if tmp := getenv("RUNNER_TEMP"); tmp != "" {
-		home = filepath.Join(tmp, "commandcode-home")
-	}
-	return []Harness{CommandCodeHarness{Bin: commandCodeBin, Key: getenv(commandCodeKeyEnv), Home: home}}
-}
-
-// HarnessSecrets are the credentials the harnesses hold, which a run checks
-// against a branch before it is pushed.
-func HarnessSecrets(getenv func(string) string) []string {
-	return []string{getenv(commandCodeKeyEnv)}
+func init() {
+	keyEnv := providers.KeySecret(commandCodeProvider)
+	registerHarness(commandCodeProvider, func(getenv func(string) string) Harness {
+		var home string
+		if tmp := getenv("RUNNER_TEMP"); tmp != "" {
+			home = filepath.Join(tmp, "commandcode-home")
+		}
+		return CommandCodeHarness{Bin: commandCodeBin, Key: getenv(keyEnv), Home: home}
+	}, keyEnv)
 }
 
 // commandCodeTranscripts is where the CLI writes its session transcripts,
@@ -88,7 +79,7 @@ func (h CommandCodeHarness) Agent(p Profile, model string) Agent {
 // Ready reports the harness usable only when its key is present (AC7).
 func (h CommandCodeHarness) Ready() error {
 	if h.Key == "" {
-		return errors.New("the command-code harness needs the COMMANDCODE_API_KEY secret")
+		return fmt.Errorf("the command-code harness needs the %s secret", providers.KeySecret(commandCodeProvider))
 	}
 	return nil
 }
@@ -96,7 +87,7 @@ func (h CommandCodeHarness) Ready() error {
 // Classify classifies a failed run by the CLI's documented exit code first,
 // then the assumed provider markers (AC3).
 func (h CommandCodeHarness) Classify(stderrTail string, exitErr error) (Outcome, StopReason) {
-	if code, ok := commandCodeExitCode(exitErr); ok {
+	if code, ok := exitCode(exitErr); ok {
 		if f, ok := commandCodeFailure[code]; ok {
 			return f.outcome, f.reason
 		}
@@ -121,17 +112,6 @@ var commandCodeFailure = map[int]struct {
 	9:  {OutcomeAgentFailed, StopAgentExit},
 	10: {OutcomeBudgetStop, StopAllowanceExhausted},
 }
-
-func commandCodeExitCode(err error) (int, bool) {
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return exitErr.ExitCode(), true
-	}
-	return 0, false
-}
-
-// agentKillGrace is the CLI's WaitDelay: how long Wait lets it linger once its context ends.
-const agentKillGrace = 30 * time.Second
 
 // CommandCodeAgent runs the Command Code CLI for one profile.
 type CommandCodeAgent struct {
@@ -186,54 +166,17 @@ func (a CommandCodeAgent) Run(ctx context.Context, dir, session, prompt, rules s
 	// the job's own without the base set having to exclude it.
 	cmd.Env = append(filterEnv(os.Environ(), agentBaseEnvNames), "HOME="+a.Home)
 	cmd.Stdin = strings.NewReader(prompt)
-	// Files, not buffers: os/exec pipes any other writer, and a background
-	// child holding that pipe would stall Wait for the whole WaitDelay.
-	frames, err := os.CreateTemp(a.Home, "frames-*")
-	if err != nil {
-		return fmt.Errorf("agent output file: %w", err)
-	}
-	defer func() { _ = frames.Close(); _ = os.Remove(frames.Name()) }()
-	cmd.Stdout = frames
-	errFile, ok := stderr.(*os.File)
-	if !ok {
-		if errFile, err = os.CreateTemp(a.Home, "stderr-*"); err != nil {
-			return fmt.Errorf("agent output file: %w", err)
-		}
-		defer func() { _ = errFile.Close(); _ = os.Remove(errFile.Name()) }()
-	}
-	cmd.Stderr = errFile
-	cmd.WaitDelay = agentKillGrace
-	ownProcessGroup(cmd)
 	before, beforeErr := commandCodeCostByID(a.Home)
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("agent run: %w", err)
-	}
-	runErr := cmd.Wait()
-	killProcessGroup(cmd)
-	cost := commandCodeRunCost(a.Home, before, beforeErr, runErr == nil)
-	if !ok {
-		if _, err := errFile.Seek(0, io.SeekStart); err != nil {
-			return fmt.Errorf("agent output file: %w", err)
+	return runAgentCLI(cmd, a.Home, stderr, func(frames io.Reader, runErr error) error {
+		cost := commandCodeRunCost(a.Home, before, beforeErr, runErr == nil)
+		if err := translateCommandCodeFrames(frames, stdout, stderr); err != nil {
+			return err
 		}
-		if _, err := io.Copy(stderr, errFile); err != nil {
-			return fmt.Errorf("agent stderr: %w", err)
+		if err := json.NewEncoder(stdout).Encode(cost); err != nil {
+			return fmt.Errorf("agent cost event: %w", err)
 		}
-	}
-	if _, err := frames.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("agent output file: %w", err)
-	}
-	// Translate whatever the CLI wrote, even on a failure, so the failed run's
-	// usage and final text are still recorded.
-	if err := translateCommandCodeFrames(frames, stdout, stderr); err != nil {
-		return err
-	}
-	if err := json.NewEncoder(stdout).Encode(cost); err != nil {
-		return fmt.Errorf("agent cost event: %w", err)
-	}
-	if runErr != nil {
-		return fmt.Errorf("agent run: %w", runErr)
-	}
-	return nil
+		return nil
+	})
 }
 
 // commandCodeRunCost is the event carrying the cost of the messages that
@@ -351,20 +294,9 @@ func writeCommandCodeAuth(home, key string) error {
 }
 
 // writeCommandCodeMemory writes rules to the CLI's user memory file, or removes
-// it when rules is empty, so a round with no projection never inherits a
-// previous round's from the run's shared HOME.
+// it when rules is empty.
 func writeCommandCodeMemory(home, rules string) error {
-	path := filepath.Join(home, filepath.FromSlash(commandCodeMemoryFile))
-	if rules == "" {
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("command code memory file: %w", err)
-		}
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("command code memory directory: %w", err)
-	}
-	if err := os.WriteFile(path, []byte(rules), 0o600); err != nil {
+	if err := writeAgentFile(filepath.Join(home, filepath.FromSlash(commandCodeMemoryFile)), rules); err != nil {
 		return fmt.Errorf("command code memory file: %w", err)
 	}
 	return nil
@@ -427,31 +359,10 @@ type commandCodeErrorBody struct {
 	Message string `json:"message"`
 }
 
-// commandCodeMetaEvent reports a session id in the runner's own event shape.
-type commandCodeMetaEvent struct {
-	Type      string `json:"type"`
-	SessionID string `json:"sessionID"`
-}
-
-// commandCodeTextEvent is a text part in the runner's own event shape.
-type commandCodeTextEvent struct {
-	Type string `json:"type"`
-	Part struct {
-		Text string `json:"text"`
-	} `json:"part"`
-}
-
 // commandCodeErrorEvent is an error part in the runner's own event shape.
 type commandCodeErrorEvent struct {
 	Type  string               `json:"type"`
 	Error commandCodeErrorBody `json:"error"`
-}
-
-func commandCodeText(text string) commandCodeTextEvent {
-	var e commandCodeTextEvent
-	e.Type = "text"
-	e.Part.Text = text
-	return e
 }
 
 // commandCodeStepEvent shapes one turn's usage as the runner's own step_finish
@@ -487,13 +398,13 @@ func translateCommandCodeFrames(r io.Reader, stdout, stderr io.Writer) error {
 			}
 		case "result":
 			if frame.SessionID != "" {
-				if err := enc.Encode(commandCodeMetaEvent{Type: "result", SessionID: frame.SessionID}); err != nil {
+				if err := enc.Encode(sessionEvent{Type: "result", SessionID: frame.SessionID}); err != nil {
 					return err
 				}
 			}
 			// The result line's final text is authoritative, so the last text
 			// event always holds it, even when an earlier message was longer.
-			if err := enc.Encode(commandCodeText(frame.FinalText)); err != nil {
+			if err := enc.Encode(newTextEvent(frame.FinalText)); err != nil {
 				return err
 			}
 		}
@@ -509,12 +420,12 @@ func emitCommandCodeEvent(enc *json.Encoder, stderr io.Writer, raw json.RawMessa
 	switch ev.Type {
 	case "run_start":
 		if ev.SessionID != "" {
-			return enc.Encode(commandCodeMetaEvent{Type: "run_start", SessionID: ev.SessionID})
+			return enc.Encode(sessionEvent{Type: "run_start", SessionID: ev.SessionID})
 		}
 	case "message_end":
 		for _, c := range ev.Content {
 			if c.Type == "text" && c.Text != "" {
-				if err := enc.Encode(commandCodeText(c.Text)); err != nil {
+				if err := enc.Encode(newTextEvent(c.Text)); err != nil {
 					return err
 				}
 			}

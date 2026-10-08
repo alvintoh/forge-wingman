@@ -8,3 +8,4 @@
 .terraform/
 __pycache__/
 /tools/command-code/node_modules/
+/tools/omp/node_modules/

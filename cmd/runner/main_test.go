@@ -71,25 +71,29 @@ func TestRecordNeedsTheRunsIdentity(t *testing.T) {
 	}
 }
 
-// TestHarnessesWireTheKeyAndHome asserts the Command Code harness takes the
-// secret's key and keeps its HOME under the job's temp directory, so a later
-// round finds the earlier session.
+// TestHarnessesWireTheKeyAndHome asserts each harness takes the plan's key and
+// keeps its HOME under the job's temp directory, so a later round finds the
+// earlier session, and that the key they share is checked once.
 func TestHarnessesWireTheKeyAndHome(t *testing.T) {
 	env := map[string]string{"COMMANDCODE_API_KEY": "k", "RUNNER_TEMP": "/tmp/r"}
 	var cc runner.CommandCodeHarness
+	var omp runner.OmpHarness
 	for _, h := range runner.Harnesses(func(k string) string { return env[k] }) {
-		if c, ok := h.(runner.CommandCodeHarness); ok {
-			cc = c
+		switch h := h.(type) {
+		case runner.CommandCodeHarness:
+			cc = h
+		case runner.OmpHarness:
+			omp = h
 		}
 	}
-	if cc.Key != "k" {
-		t.Errorf("key = %q, want the secret's", cc.Key)
+	if cc.Key != "k" || omp.Key != "k" {
+		t.Errorf("keys = %q and %q, want the secret's", cc.Key, omp.Key)
 	}
-	if cc.Home != filepath.Join("/tmp/r", "commandcode-home") {
-		t.Errorf("home = %q, want it under RUNNER_TEMP", cc.Home)
+	if cc.Home != filepath.Join("/tmp/r", "commandcode-home") || omp.Home != filepath.Join("/tmp/r", "omp-home") {
+		t.Errorf("homes = %q and %q, want each under RUNNER_TEMP", cc.Home, omp.Home)
 	}
-	if got := runner.HarnessSecrets(func(k string) string { return env[k] }); !slices.Contains(got, "k") {
-		t.Errorf("secrets = %q, want the harness key among them", got)
+	if got := runner.HarnessSecrets(func(k string) string { return env[k] }); !slices.Equal(got, []string{"k"}) {
+		t.Errorf("secrets = %q, want the shared key once", got)
 	}
 }
 

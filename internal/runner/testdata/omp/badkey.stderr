@@ -1,0 +1,16 @@
+19310 | `);await this.sendCustomMessage({customType:"todo-error-reminder",content:g,display:!1,details:{toolName:a,errorText:m}},{deliverAs:"nextTurn"})}if(d?.toolName==="checkpoint"&&!u){let m=this.sessionManager.getEntries(),g=null;for(let h=m.length-1;h>=0;h--){let y=m[h];if(y.type==="message"&&y.message===e.message){g=y.id;break}}if(this.#vt)this.#vt.checkpointEntryId=g}if(d?.toolName==="rewind"&&!u&&this.#vt){let m=f?Fp(f,"report")?.trim()??"":"",g=p?.find((y)=>y.type==="text")?.text?.trim()??"",h=m||g;if(h.length>0)this.#Pt=h}}}if(e.type==="agent_end"){let a=e.messages,l=this.agent.state.messages,u=this.#nt.abortPending,p=(_)=>this.#So(e,l,_),c=this.getSessionStats().tokens;await this.#B.onAgentEnd({currentUsage:{input:c.input,output:c.output,cacheRead:c.cacheRead,cacheWrite:c.cacheWrite}});let d=[...a].reverse().find((_)=>_.role==="assistant"),f=this.#Tn??d;if(this.#Tn=void 0,!f){this.#Wt=void 0,oe("agent_end maintenance routing",{reason:"no-assistant-message",goalModeEnabled:this.#N?.enabled===!0,goalStatus:t
+19311 | 
+19312 | `),r.length>0?r:void 0,this.#Ke,t,"queued")};async#Qo(e,t,s,n,o,r){let i=this.#Ot,a=this.#ce&&r==="direct",l=()=>this.#Ke===n&&this.#Ot===i&&(!this.#ce||a)&&!o?.aborted,u={baseXdevCatalogDelivered:!1,commit:()=>{return}};for(let p=0;p<W0l;p++){if(await this.#it.transition,!l())return u;let c=this.#i.baseSystemPrompt,d=await this.#i.buildSystemPromptForAgentStart(t,l,o);if(!l())return u;let f=await this.#ae?.emitBeforeAgentStart(t,s,d.systemPrompt);if(!l())return u;let m=()=>{if(f?.systemPrompt===void 0)return!0;let y=this.#i.baseSystemPrompt;return c===y||c.length===y.length&&c.every((T,R)=>T===y[R])};if(!m())continue;let g=[],h="attribution"in e?e.attribution:void 0;for(let y of f?.messages??[]){let T=Qx(y),R=y!==null&&typeof y==="object"&&!Array.isArray(y)&&(y.attribution==="user"||y.attribution==="agent");if(g.push(await this.#vn({role:"custom",customType:T.customType,content:T.content,display:T.display,details:T.details,attribution:R?T.attribution:h??(e.role==="user"?"user":"agent"),timestamp:Date.now()})
+19313 | 
+19314 | Use /login, set an API key environment variable, or create ${ur()}
+19315 | Then use /model to select a model.`);if(!await this.#he.getApiKey(this.model,this.sessionId))throw Error(`No API key found for ${this.model.provider}.
+                                                                                                                ^
+error: No API key found for commandcode.
+
+Use /login, set an API key environment variable, or create /scratch/agent/agent.db
+      at #Qn (/home/user/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js:19315:105)
+      at async #Ko (/home/user/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js:19309:41242)
+
+
+[Recovery]
+  Main: omp --resume 01a11898-b471-713a-9777-6f9129f59d7f

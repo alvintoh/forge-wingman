@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/providers"
 )
@@ -33,11 +34,12 @@ type harnessCase struct {
 	// Model is a well-formed model id the adapter accepts.
 	Model string
 	// New builds the adapter wired to a fake CLI replaying fixture ("normal",
-	// "readonly", "badkey"), returning the invocations it records and its HOME,
-	// where the credential is written.
+	// "readonly", "badkey") with conformanceKey as its key, returning the
+	// invocations it records and its HOME.
 	New func(t *testing.T, fixture string) (Harness, func() []harnessInvocation, string)
 	// CredentialPath is the file under HOME the adapter writes its key to,
-	// relative to HOME, deleted after each attempt (FR-11).
+	// relative to HOME, deleted after each attempt (FR-11); empty for an
+	// adapter that writes none.
 	CredentialPath string
 	// ResumeFlag names the argument the adapter passes to continue a session
 	// across rounds (FR-28).
@@ -48,16 +50,23 @@ type harnessCase struct {
 	BuildFlag    string
 	// LimitExit is the adapter's documented allowance-limit exit code.
 	LimitExit int
+	// LimitByMarker is set for a CLI with no limit exit code, which reports the
+	// limit only in its error text; LimitExit is then unused.
+	LimitByMarker bool
 	// Rates is the model's rate card as the plan prices it, which the runner
 	// meters from when the harness's own figure is absent or wrong (FR-22).
 	Rates providers.Rates
 }
 
+// conformanceKey is the key every case's adapter runs on, distinct enough that
+// finding it in a file under HOME means the adapter wrote it there.
+const conformanceKey = "conformance-key-6d1f2a"
+
 // runHarnessConformance runs the one contract every adapter must pass before a
 // plan may select it: the prompts it takes, the profile that refuses to edit,
 // its session continuity, the events it translates to the runner's shape, the
-// tokens the runner meters from, the exits it classifies, and the credential it
-// deletes.
+// tokens the runner meters from, the exits it classifies, and the key it
+// leaves nowhere on disk.
 func runHarnessConformance(t *testing.T, hc harnessCase) {
 	t.Helper()
 
@@ -80,7 +89,7 @@ func runHarnessConformance(t *testing.T, hc harnessCase) {
 		}
 	})
 
-	t.Run("a read-only profile refuses edit and shell", func(t *testing.T) {
+	t.Run("a read-only profile refuses an edit, a new file and shell", func(t *testing.T) {
 		h, runs, _ := hc.New(t, "readonly")
 		res, err := PlanSmoke(context.Background(), h.Agent(ProfilePlan, hc.Model), hc.Model, t.TempDir())
 		if err != nil {
@@ -147,6 +156,11 @@ func runHarnessConformance(t *testing.T, hc harnessCase) {
 	})
 
 	t.Run("cost is tokens times the plan's rates", func(t *testing.T) {
+		// Twice the case's rates, so a harness figure that happens to match the
+		// plan's own card cannot pass for a repricing.
+		card := hc.Rates
+		card.Input, card.Output, card.CacheRead, card.CacheWrite = 2*card.Input, 2*card.Output, 2*card.CacheRead, 2*card.CacheWrite
+		plan := func(model string) (providers.Rates, bool) { return card, model == hc.Model }
 		for name, fixture := range map[string]string{"figure absent": "unpriced", "figure present": "normal"} {
 			t.Run(name, func(t *testing.T) {
 				h, _, _ := hc.New(t, fixture)
@@ -161,19 +175,31 @@ func runHarnessConformance(t *testing.T, hc harnessCase) {
 				if raw.Input == 0 || raw.Output == 0 {
 					t.Fatalf("the run carries no tokens to meter: %+v", raw)
 				}
-				want := hc.Rates.CostUSD(raw.Input, raw.Output, raw.CacheRead, raw.CacheWrite)
-				if want <= 0 {
+				// Every step prices between the card's off-peak and peak rates,
+				// one figure when the card has no peak (FR-22).
+				offPeak := providers.Rates{Input: card.Input, Output: card.Output, CacheRead: card.CacheRead, CacheWrite: card.CacheWrite}
+				low := offPeak.CostUSD(raw.Input, raw.Output, raw.CacheRead, raw.CacheWrite)
+				high := card.At(time.Time{}).CostUSD(raw.Input, raw.Output, raw.CacheRead, raw.CacheWrite)
+				if low <= 0 {
 					t.Fatal("the case supplies no plan rates, so repricing is unproven")
 				}
-				// The runner prices the run from the plan's rates, so a harness
-				// figure that is absent or wrong is replaced by tokens times
-				// those rates (FR-22).
-				plan := func(model string) (providers.Rates, bool) { return hc.Rates, model == hc.Model }
-				if got := meterUsage(raw, hc.Model, plan); !approxEqual(got.Cost, want) {
-					t.Fatalf("priced cost = %v, want tokens x the plan's rates = %v", got.Cost, want)
+				got, err := meterUsage(strings.NewReader(out.String()), hc.Model, plan)
+				if err != nil {
+					t.Fatal(err)
 				}
-				if name == "figure present" && approxEqual(raw.Cost, want) {
-					t.Fatalf("the fixture's harness figure %v already equals the plan's rates, so repricing is not shown", raw.Cost)
+				// A harness that does not time its steps keeps the figure it billed;
+				// one that does is repriced step by step.
+				if name == "figure present" && !stepsTimed(t, out.String()) {
+					if !approxEqual(got.Cost, raw.Cost) {
+						t.Fatalf("priced cost = %v, want the untimed harness's own figure %v", got.Cost, raw.Cost)
+					}
+					return
+				}
+				if got.Cost < low-1e-12 || got.Cost > high+1e-12 {
+					t.Fatalf("priced cost = %v, want tokens x the plan's rates, within [%v, %v]", got.Cost, low, high)
+				}
+				if name == "figure present" && approxEqual(raw.Cost, got.Cost) {
+					t.Fatalf("the harness figure %v survived the plan's pricing", raw.Cost)
 				}
 			})
 		}
@@ -196,13 +222,24 @@ func runHarnessConformance(t *testing.T, hc harnessCase) {
 			t.Skip("no sh to produce an exit code")
 		}
 		h, _, _ := hc.New(t, "normal")
-		err := exec.Command("sh", "-c", "exit "+strconv.Itoa(hc.LimitExit)).Run()
-		if outcome, reason := h.Classify("", err); outcome != OutcomeBudgetStop || reason != StopAllowanceExhausted {
-			t.Fatalf("exit %d classified %s/%s, want the allowance stop", hc.LimitExit, outcome, reason)
+		code, stderrTail := hc.LimitExit, ""
+		switch {
+		case hc.LimitByMarker:
+			markers := providers.AllowanceMarkers()
+			if len(markers) == 0 {
+				t.Fatal("no allowance marker is configured, so a limit reported in text cannot be classified")
+			}
+			code, stderrTail = 1, markers[0]
+		case code == 0:
+			t.Fatal("the case names no limit exit code and does not report the limit by marker")
+		}
+		err := exec.Command("sh", "-c", "exit "+strconv.Itoa(code)).Run()
+		if outcome, reason := h.Classify(stderrTail, err); outcome != OutcomeBudgetStop || reason != StopAllowanceExhausted {
+			t.Fatalf("exit %d with stderr %q classified %s/%s, want the allowance stop", code, stderrTail, outcome, reason)
 		}
 	})
 
-	t.Run("the credential is deleted after each attempt", func(t *testing.T) {
+	t.Run("the key is not left on disk after each attempt", func(t *testing.T) {
 		for _, fixture := range []string{"normal", "badkey"} {
 			t.Run(fixture, func(t *testing.T) {
 				h, _, home := hc.New(t, fixture)
@@ -212,12 +249,54 @@ func runHarnessConformance(t *testing.T, hc harnessCase) {
 				if wantsSuccess := fixture == "normal"; (err == nil) != wantsSuccess {
 					t.Fatalf("the %s fixture: err = %v, want success %v", fixture, err, wantsSuccess)
 				}
-				if _, err := os.Stat(filepath.Join(home, filepath.FromSlash(hc.CredentialPath))); !errors.Is(err, fs.ErrNotExist) {
-					t.Fatalf("the credential outlived the %s attempt (stat err %v)", fixture, err)
+				if hc.CredentialPath != "" {
+					if _, err := os.Stat(filepath.Join(home, filepath.FromSlash(hc.CredentialPath))); !errors.Is(err, fs.ErrNotExist) {
+						t.Fatalf("the credential outlived the %s attempt (stat err %v)", fixture, err)
+					}
+				}
+				err = filepath.WalkDir(home, func(path string, d fs.DirEntry, err error) error {
+					if err != nil || d.IsDir() {
+						return err
+					}
+					b, err := os.ReadFile(path)
+					if err == nil && strings.Contains(string(b), conformanceKey) {
+						t.Errorf("the key outlived the %s attempt in %s", fixture, path)
+					}
+					return err
+				})
+				if err != nil {
+					t.Fatal(err)
 				}
 			})
 		}
 	})
+}
+
+// conformanceCases holds each adapter's entry to the suite, added from its own
+// test file's init. A harness the registry exposes with no entry here fails
+// TestEveryRegisteredHarnessPassesTheConformanceSuite, so it cannot be selected.
+var conformanceCases = map[string]harnessCase{}
+
+// addConformanceCase adds an adapter's case, panicking on a name already added.
+func addConformanceCase(hc harnessCase) {
+	if _, ok := conformanceCases[hc.Name]; ok {
+		panic("conformance case " + hc.Name + " is added twice")
+	}
+	conformanceCases[hc.Name] = hc
+}
+
+// stepsTimed reports whether every step_finish in events carries its time.
+func stepsTimed(t *testing.T, events string) bool {
+	t.Helper()
+	timed := true
+	if err := scanEvents(strings.NewReader(events), func(e event) {
+		if e.Type == "step_finish" && e.Part.Time == 0 {
+			timed = false
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return timed
 }
 
 // TestEveryRegisteredHarnessPassesTheConformanceSuite is the selection gate: a

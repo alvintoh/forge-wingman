@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "description": "Pins the omp agent CLI and every dependency it installs, for model.yml and plan-smoke.yml.",
+  "dependencies": {
+    "@oh-my-pi/pi-coding-agent": "18.7.0"
+  }
+}

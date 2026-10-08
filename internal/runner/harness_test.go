@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/providers"
 )
@@ -246,20 +248,71 @@ func TestRouterClassifiesThroughTheHarnessThatRan(t *testing.T) {
 	}
 }
 
-// TestMeterUsageRepricesFromThePlansRates asserts the runner prices a run from
-// the plan's rates — tokens times the rates, replacing the harness's own figure
-// — and keeps the harness figure when the plan does not price the model (FR-22).
+// TestMeterUsageRepricesFromThePlansRates asserts the runner prices a timed
+// run from the plan's rates — tokens times the rates, replacing the harness's
+// own step and cost-event figures — and keeps those figures when the plan does
+// not price the model (FR-22).
 func TestMeterUsageRepricesFromThePlansRates(t *testing.T) {
-	u := Usage{Input: 1_000_000, Output: 1_000_000, CacheRead: 2_000_000, Cost: 9}
+	wednesday := time.Date(2026, 10, 7, 23, 0, 0, 0, time.UTC).UnixMilli()
+	stream := stepFinish(1_000_000, 1_000_000, 2_000_000, 4, wednesday) + `{"type":"cost","part":{"cost":5}}` + "\n"
 	plan := func(model string) (providers.Rates, bool) {
 		return providers.Rates{Input: 0.28, Output: 0.42, CacheRead: 0.028}, model == "plan/model"
 	}
-	if got := meterUsage(u, "plan/model", plan); !approxEqual(got.Cost, 0.756) {
+	if got, _ := meterUsage(strings.NewReader(stream), "plan/model", plan); !approxEqual(got.Cost, 0.756) {
 		t.Fatalf("priced cost = %v, want tokens x the plan's rates = 0.756", got.Cost)
 	}
-	if got := meterUsage(u, "nobody/model", plan); !approxEqual(got.Cost, 9) {
-		t.Fatalf("metered cost = %v, want the harness's own figure kept", got.Cost)
+	if got, _ := meterUsage(strings.NewReader(stream), "nobody/model", plan); !approxEqual(got.Cost, 9) {
+		t.Fatalf("metered cost = %v, want the harness's own figures kept", got.Cost)
 	}
+}
+
+// TestMeterUsagePricesEachStepAtItsOwnTime asserts a run crossing into a peak
+// window prices each step at the rates in force when it was made, and that an
+// untimed step prices at peak unless the run carries the harness's own cost.
+func TestMeterUsagePricesEachStepAtItsOwnTime(t *testing.T) {
+	plan := func(string) (providers.Rates, bool) {
+		return providers.Rates{Input: 1, Output: 1, Peak: &providers.Peak{Multiplier: 2,
+			Hours: []providers.HourRange{{From: 6, To: 10}}}}, true
+	}
+	// A Wednesday, a minute either side of 06:00 UTC.
+	before := time.Date(2026, 10, 7, 5, 59, 0, 0, time.UTC).UnixMilli()
+	after := time.Date(2026, 10, 7, 6, 1, 0, 0, time.UTC).UnixMilli()
+	const harnessCost = `{"type":"cost","part":{"cost":0.25}}` + "\n"
+	for name, tt := range map[string]struct {
+		stream string
+		want   float64
+	}{
+		"crossing 06:00":  {stepFinish(1_000_000, 0, 0, 0, before) + stepFinish(1_000_000, 0, 0, 0, after), 1 + 2},
+		"an untimed step": {stepFinish(1_000_000, 0, 0, 0, before) + stepFinish(1_000_000, 0, 0, 0, 0), 1 + 2},
+		"an untimed step beside the harness's cost": {
+			stepFinish(1_000_000, 0, 0, 0, before) + stepFinish(1_000_000, 0, 0, 0.5, 0) + harnessCost, 1 + 0.5 + 0.25},
+		"timed steps beside a cost event": {
+			stepFinish(1_000_000, 0, 0, 0, before) + stepFinish(1_000_000, 0, 0, 0, after) + harnessCost, 1 + 2},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := meterUsage(strings.NewReader(tt.stream), "plan/model", plan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !approxEqual(got.Cost, tt.want) || got.Steps != 2 || got.Input != 2_000_000 {
+				t.Fatalf("usage = %+v, want cost %v over 2 steps", got, tt.want)
+			}
+		})
+	}
+}
+
+// stepFinish is one step_finish event in the runner's own shape, at timeMS
+// epoch milliseconds, or untimed when zero.
+func stepFinish(input, output, cacheRead int64, cost float64, timeMS int64) string {
+	var e event
+	e.Type = "step_finish"
+	e.Part.Tokens.Input, e.Part.Tokens.Output, e.Part.Tokens.Cache.Read = input, output, cacheRead
+	e.Part.Cost, e.Part.Time = cost, timeMS
+	b, err := json.Marshal(e)
+	if err != nil {
+		panic(err)
+	}
+	return string(b) + "\n"
 }
 
 // TestFilterEnvMatchesAPrefixOnlyForAnUnderscoreName asserts a plain allowed
@@ -305,7 +358,7 @@ func TestNoHarnessIsNamedOutsideItsAdapter(t *testing.T) {
 		}
 		lower := strings.ToLower(string(b))
 		if strings.Contains(lower, "commandcode") || strings.Contains(lower, "command-code") ||
-			strings.Contains(lower, "command code") {
+			strings.Contains(lower, "command code") || ompVocabulary.MatchString(lower) {
 			offenders = append(offenders, rel)
 		}
 		return nil
@@ -318,10 +371,13 @@ func TestNoHarnessIsNamedOutsideItsAdapter(t *testing.T) {
 	}
 }
 
+// ompVocabulary matches omp's names as words, so "compile" is not one.
+var ompVocabulary = regexp.MustCompile(`oh-my-pi|\bomp\b`)
+
 // harnessNameAllowed lists where a harness name may appear: its own adapter
 // alone, so every provider fact elsewhere is read from configuration.
 func harnessNameAllowed(rel string) bool {
-	return rel == "internal/runner/harness_commandcode.go"
+	return rel == "internal/runner/harness_commandcode.go" || rel == "internal/runner/harness_omp.go"
 }
 
 // TestNoRetiredHarnessIsNamed asserts no tracked file outside the vault copies
@@ -353,5 +409,31 @@ func TestNoRetiredHarnessIsNamed(t *testing.T) {
 	}
 	if len(offenders) > 0 {
 		t.Fatalf("the retired harness is named in: %v", offenders)
+	}
+}
+
+// TestRegistrationRefusesADuplicateName asserts a harness name, or a
+// conformance case, registered a second time panics rather than shadowing the
+// first.
+func TestRegistrationRefusesADuplicateName(t *testing.T) {
+	for name, register := range map[string]func(){
+		"harness": func() {
+			registerHarness(harnessRegistry[0].name, harnessRegistry[0].build, harnessRegistry[0].secretEnv)
+		},
+		"conformance case": func() {
+			for _, hc := range conformanceCases {
+				addConformanceCase(hc)
+				return
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("a duplicate registration did not panic")
+				}
+			}()
+			register()
+		})
 	}
 }

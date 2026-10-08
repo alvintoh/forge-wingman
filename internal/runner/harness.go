@@ -2,9 +2,15 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/providers"
 )
@@ -31,6 +37,52 @@ type Harness interface {
 	// Ready reports whether the run is configured to use the harness, nil
 	// when it is (AC7).
 	Ready() error
+}
+
+// harnessRegistration is one adapter's entry in the registry: its name, how to
+// build it from the environment, and the variable holding the key it runs on.
+type harnessRegistration struct {
+	name      string
+	build     func(getenv func(string) string) Harness
+	secretEnv string
+}
+
+var harnessRegistry []harnessRegistration
+
+// registerHarness adds an adapter to the registry; each adapter calls it from
+// its own init, so a vendor is named only in its adapter's file. A name
+// registered twice panics.
+func registerHarness(name string, build func(getenv func(string) string) Harness, secretEnv string) {
+	for _, r := range harnessRegistry {
+		if r.name == name {
+			panic(fmt.Sprintf("harness %q is registered twice", name))
+		}
+	}
+	harnessRegistry = append(harnessRegistry, harnessRegistration{name: name, build: build, secretEnv: secretEnv})
+}
+
+// Harnesses returns the agent harnesses a run may route to, built from the
+// environment.
+func Harnesses(getenv func(string) string) []Harness {
+	harnesses := make([]Harness, 0, len(harnessRegistry))
+	for _, r := range harnessRegistry {
+		harnesses = append(harnesses, r.build(getenv))
+	}
+	return harnesses
+}
+
+// HarnessSecrets are the credentials the harnesses hold, which a run checks
+// against a branch before it is pushed; a key two harnesses share is listed once.
+func HarnessSecrets(getenv func(string) string) []string {
+	var names, secrets []string
+	for _, r := range harnessRegistry {
+		if slices.Contains(names, r.secretEnv) {
+			continue
+		}
+		names = append(names, r.secretEnv)
+		secrets = append(secrets, getenv(r.secretEnv))
+	}
+	return secrets
 }
 
 // harnessOrder resolves a plan — a model id's prefix — to the harness names it
@@ -179,6 +231,83 @@ func filterEnv(environ []string, allowed []string) []string {
 		}
 	}
 	return env
+}
+
+// agentKillGrace is an agent CLI's WaitDelay: how long Wait lets it linger once its context ends.
+const agentKillGrace = 30 * time.Second
+
+// runAgentCLI runs an agent CLI's prepared cmd, then hands its stdout to
+// translate with the process's own exit error, even on a failure, so a failed
+// run's usage and final text are still recorded.
+//
+// Output goes to files under scratch, not buffers: os/exec pipes any other
+// writer, and a background child holding that pipe would stall Wait for the
+// whole WaitDelay.
+func runAgentCLI(cmd *exec.Cmd, scratch string, stderr io.Writer, translate func(stdout io.Reader, runErr error) error) error {
+	frames, err := os.CreateTemp(scratch, "frames-*")
+	if err != nil {
+		return fmt.Errorf("agent output file: %w", err)
+	}
+	defer func() { _ = frames.Close(); _ = os.Remove(frames.Name()) }()
+	cmd.Stdout = frames
+	errFile, ok := stderr.(*os.File)
+	if !ok {
+		if errFile, err = os.CreateTemp(scratch, "stderr-*"); err != nil {
+			return fmt.Errorf("agent output file: %w", err)
+		}
+		defer func() { _ = errFile.Close(); _ = os.Remove(errFile.Name()) }()
+	}
+	cmd.Stderr = errFile
+	cmd.WaitDelay = agentKillGrace
+	ownProcessGroup(cmd)
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("agent run: %w", err)
+	}
+	runErr := cmd.Wait()
+	killProcessGroup(cmd)
+	if !ok {
+		if _, err := errFile.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("agent output file: %w", err)
+		}
+		if _, err := io.Copy(stderr, errFile); err != nil {
+			return fmt.Errorf("agent stderr: %w", err)
+		}
+	}
+	if _, err := frames.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("agent output file: %w", err)
+	}
+	if err := translate(frames, runErr); err != nil {
+		return err
+	}
+	if runErr != nil {
+		return fmt.Errorf("agent run: %w", runErr)
+	}
+	return nil
+}
+
+// writeAgentFile writes body to path, creating its directory, or removes path
+// when body is empty, so a later round in the same HOME never inherits an
+// earlier round's file.
+func writeAgentFile(path, body string) error {
+	if body == "" {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(body), 0o600)
+}
+
+// exitCode is a failed agent process's own exit code, when it exited at all.
+func exitCode(err error) (int, bool) {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode(), true
+	}
+	return 0, false
 }
 
 // classifyMarkers classifies a failed run's stderr by the configured allowance

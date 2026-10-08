@@ -262,7 +262,9 @@ func TestCommandCodeAgentNeedsAHome(t *testing.T) {
 
 // TestBuildRunsTheCommandCodeHarnessFromTheRecordedFixtures drives the real
 // adapter against the recorded normal run and asserts the recorded usage, the
-// transcript's cost, final text and session reach the Step (AC1).
+// transcript's cost, final text and session reach the Step (AC1). The plan
+// prices this model, but the CLI's steps carry no time, so its billed figure
+// stands.
 func TestBuildRunsTheCommandCodeHarnessFromTheRecordedFixtures(t *testing.T) {
 	const model = "command-code/deepseek/deepseek-v4.1-flash"
 	bin, attempts := scriptedCommandCode(t, "normal", transcriptMessage("d666e9bd", "0.0030955680000000004"))
@@ -525,12 +527,7 @@ func TestModelWorkflowInstallsAndAuthorisesTheCommandCodeHarness(t *testing.T) {
 	}
 }
 
-// conformanceCases is the Command Code adapter's entry to the shared harness
-// conformance suite. A harness the registry exposes with no entry here fails
-// TestEveryRegisteredHarnessPassesTheConformanceSuite, so it cannot be selected.
-var conformanceCases = map[string]harnessCase{
-	commandCodeConformance().Name: commandCodeConformance(),
-}
+func init() { addConformanceCase(commandCodeConformance()) }
 
 // commandCodeConformance wires the Command Code adapter to the shared suite: a
 // fake CLI replaying the recorded fixtures, the arguments the adapter's profile
@@ -558,7 +555,7 @@ func commandCodeConformance() harnessCase {
 			}
 			bin, attempts := scriptedCommandCode(t, replay, transcripts...)
 			home := t.TempDir()
-			h := CommandCodeHarness{Bin: bin, Key: "k", Home: home}
+			h := CommandCodeHarness{Bin: bin, Key: conformanceKey, Home: home}
 			return h, func() []harnessInvocation {
 				var runs []harnessInvocation
 				for _, a := range attempts() {
@@ -663,27 +660,34 @@ func TestCommandCodeAgentBillsEachAttemptOnlyItsOwnMessages(t *testing.T) {
 }
 
 // TestBuildRecordsAWarningWhenTheCommandCodeCostIsUnavailable asserts a run
-// whose transcripts are missing or unreadable still succeeds, with no cost and
-// a usage warning on the summary.
+// whose transcripts are missing or unreadable still succeeds with a usage
+// warning on the summary: unpriced when the plan does not price the model, and
+// at the peak rate when it does.
 func TestBuildRecordsAWarningWhenTheCommandCodeCostIsUnavailable(t *testing.T) {
-	for name, transcript := range map[string]string{
-		"no transcript":          "",
-		"unparseable transcript": transcriptMessage("d666e9bd", "0.002") + "garbled{",
+	for name, tt := range map[string]struct {
+		transcript, model string
+		want              float64
+	}{
+		"no transcript":          {"", "command-code/x", 0},
+		"unparseable transcript": {transcriptMessage("d666e9bd", "0.002") + "garbled{", "command-code/x", 0},
+		// 45386 x $0.30 + 384 x $1.20 + 35072 x $0.006, per million: GOAT's peak card.
+		"no transcript, a priced model": {"", "command-code/deepseek/deepseek-v4.1-flash", 0.014287032},
 	} {
+		transcript := tt.transcript
 		t.Run(name, func(t *testing.T) {
 			bin, _ := scriptedCommandCode(t, "normal", transcript)
 			deps, _, reported := testDeps(validObjects(), nil)
 			deps.Agent = testRouter(ProfileBuild, CommandCodeHarness{Bin: bin, Key: "k", Home: t.TempDir()}, fakeHarness{})
 			c := testConfig(t, initRepo(t))
-			c.Model = "command-code/x"
+			c.Model = tt.model
 			c.ReviewModels = []string{"p/r"}
 
 			if _, err := Build(context.Background(), deps, c); err != nil {
 				t.Fatal(err)
 			}
 			rec := reported.last(t)
-			if rec.Steps[0].Tokens.Cost != 0 {
-				t.Errorf("cost = %v, want 0", rec.Steps[0].Tokens.Cost)
+			if !approxEqual(rec.Steps[0].Tokens.Cost, tt.want) {
+				t.Errorf("cost = %v, want %v", rec.Steps[0].Tokens.Cost, tt.want)
 			}
 			if !strings.Contains(rec.UsageWarning, "transcript cost unavailable") {
 				t.Errorf("usage warning = %q, want the unavailable cost named", rec.UsageWarning)
