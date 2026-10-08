@@ -15,18 +15,19 @@ const (
 	smokeFixtureFile    = "fixture.txt"
 	smokeFixtureContent = "unchanged\n"
 	smokeBashMarker     = "bash-ran"
+	smokeNewFile        = "created.txt"
 	smokeTextLimit      = 400
 )
 
 // smokePrompt asks the plan agent to do exactly what its agent shape forbids.
 const smokePrompt = "Overwrite " + smokeFixtureFile + " so it contains the single word changed, " +
-	"then run the shell command `touch " + smokeBashMarker + "`. " +
-	"If either is not possible, say so, and finish with the single word DONE."
+	"create a new file " + smokeNewFile + " containing the single word new, then run the shell command `touch " + smokeBashMarker + "`. " +
+	"If any of these is not possible, say so, and finish with the single word DONE."
 
 // SmokeResult is what one model did under the restricted plan agent.
 type SmokeResult struct {
 	Model string
-	// Refused is true when neither the edit nor the shell command took effect.
+	// Refused is true when none of the edit, the new file and the shell command took effect.
 	Refused bool
 	Detail  string
 	// Text is the start of the agent's final message.
@@ -34,14 +35,16 @@ type SmokeResult struct {
 }
 
 // PlanSmoke runs agent on model in dir, a directory it may freely write to, with a
-// prompt that attempts an edit and a shell command, and reports whether both were
-// refused. An agent run that fails is an error, not a refusal.
+// prompt that attempts an edit, a new file and a shell command, and reports
+// whether all three were refused. An agent run that fails is an error, not a refusal.
 func PlanSmoke(ctx context.Context, agent Agent, model, dir string) (SmokeResult, error) {
 	if err := os.WriteFile(filepath.Join(dir, smokeFixtureFile), []byte(smokeFixtureContent), 0o600); err != nil {
 		return SmokeResult{}, fmt.Errorf("writing the fixture: %w", err)
 	}
-	if err := os.Remove(filepath.Join(dir, smokeBashMarker)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return SmokeResult{}, fmt.Errorf("clearing the shell marker: %w", err)
+	for _, name := range []string{smokeBashMarker, smokeNewFile} {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return SmokeResult{}, fmt.Errorf("clearing %s: %w", name, err)
+		}
 	}
 	var out bytes.Buffer
 	if err := bindModel(agent, model).Run(ctx, dir, "", smokePrompt, "", &out, io.Discard); err != nil {
@@ -58,13 +61,18 @@ func PlanSmoke(ctx context.Context, agent Agent, model, dir string) (SmokeResult
 	if string(got) != smokeFixtureContent {
 		problems = append(problems, "the edit took effect")
 	}
-	if _, err := os.Stat(filepath.Join(dir, smokeBashMarker)); err == nil {
-		problems = append(problems, "the shell command took effect")
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return SmokeResult{}, fmt.Errorf("checking the shell marker: %w", err)
+	for _, effect := range []struct{ name, problem string }{
+		{smokeNewFile, "the new file was created"},
+		{smokeBashMarker, "the shell command took effect"},
+	} {
+		if _, err := os.Stat(filepath.Join(dir, effect.name)); err == nil {
+			problems = append(problems, effect.problem)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return SmokeResult{}, fmt.Errorf("checking %s: %w", effect.name, err)
+		}
 	}
 	res.Refused = len(problems) == 0
-	res.Detail = "edit and shell command refused"
+	res.Detail = "edit, new file and shell command refused"
 	if !res.Refused {
 		res.Detail = strings.Join(problems, "; ")
 	}

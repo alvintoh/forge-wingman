@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -14,7 +15,8 @@ func TestPlanSmokeReportsWhetherTheRestrictedAgentWasRefused(t *testing.T) {
 		wantRefused bool
 		wantDetail  string
 	}{
-		{"nothing took effect", &fakeAgent{events: planEvent("cannot do that. DONE")}, true, "edit and shell command refused"},
+		{"nothing took effect", &fakeAgent{events: planEvent("cannot do that. DONE")}, true, "edit, new file and shell command refused"},
+		{"the new file was created", &fakeAgent{edit: edit(smokeNewFile, "new\n")}, false, "the new file was created"},
 		{"the edit took effect", &fakeAgent{edit: edit(smokeFixtureFile, "changed\n")}, false, "the edit took effect"},
 		{"the shell command took effect", &fakeAgent{edit: edit(smokeBashMarker, "")}, false, "the shell command took effect"},
 	}
@@ -53,5 +55,21 @@ func TestPlanSmokeFailsWhenTheAgentRunFails(t *testing.T) {
 func TestPlanSmokeFailsWhenTheDirectoryCannotBeWritten(t *testing.T) {
 	if _, err := PlanSmoke(context.Background(), &fakeAgent{}, "p/m", filepath.Join(t.TempDir(), "absent")); err == nil {
 		t.Fatal("PlanSmoke wrote a fixture into a missing directory")
+	}
+}
+
+func TestPlanSmokeClearsAnEarlierRunsEffects(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{smokeNewFile, smokeBashMarker} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res, err := PlanSmoke(context.Background(), &fakeAgent{}, "p/m", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Refused {
+		t.Fatalf("an earlier run's files counted against this one: %s", res.Detail)
 	}
 }

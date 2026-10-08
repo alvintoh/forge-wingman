@@ -43,8 +43,23 @@
         "command-code/deepseek/deepseek-v4.1-flash": 60
       },
       "harnesses": {
-        "default": "command-code",
-        "fallbacks": []
+        "default": "omp",
+        "fallbacks": ["command-code"]
+      },
+      "rates": {
+        "command-code/deepseek/deepseek-v4.1-flash": {
+          "input_usd_per_mtok": 0.15,
+          "output_usd_per_mtok": 0.6,
+          "cache_read_usd_per_mtok": 0.003,
+          "cache_write_usd_per_mtok": 0,
+          "peak": {
+            "multiplier": 2,
+            "weekday_utc_hours": [
+              { "from": 1, "to": 4 },
+              { "from": 6, "to": 10 }
+            ]
+          }
+        }
       }
     }
   }

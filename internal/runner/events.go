@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"time"
+
+	"github.com/alvintoh/forge-wingman/internal/providers"
 )
 
 var maxEventLine = 64 << 20
@@ -35,9 +38,32 @@ type event struct {
 			} `json:"cache"`
 		} `json:"tokens"`
 		Cost float64 `json:"cost"`
+		// Time is when a step's request was made, in epoch milliseconds; zero when the harness does not say.
+		Time int64 `json:"time,omitempty"`
 	} `json:"part"`
 	// Warning is a usage_warning event's text: usage the harness could not measure.
 	Warning string `json:"warning,omitempty"`
+}
+
+// sessionEvent reports a session id in the runner's own event shape.
+type sessionEvent struct {
+	Type      string `json:"type"`
+	SessionID string `json:"sessionID"`
+}
+
+// textEvent is a text part in the runner's own event shape.
+type textEvent struct {
+	Type string `json:"type"`
+	Part struct {
+		Text string `json:"text"`
+	} `json:"part"`
+}
+
+func newTextEvent(text string) textEvent {
+	var e textEvent
+	e.Type = "text"
+	e.Part.Text = text
+	return e
 }
 
 // scanEvents calls visit for every JSON event in the agent's event stream,
@@ -70,12 +96,31 @@ func stepUsage(e event) Usage {
 // events carry none; a cost event is not a step.
 //
 // Lines that are not JSON events are skipped.
-func SumUsage(r io.Reader) (Usage, error) {
+func SumUsage(r io.Reader) (Usage, error) { return sumUsage(r, nil) }
+
+// sumUsage is SumUsage, priced from rates when rates is non-nil: a timed step
+// at the rates in force at its time, replacing the harness's figure. Untimed
+// steps keep the harness's own figures when the run carries a cost event, and
+// otherwise price at peak; a run whose steps are all timed ignores cost events.
+func sumUsage(r io.Reader, rates *providers.Rates) (Usage, error) {
 	var u Usage
+	var untimed int
+	var untimedOwn, untimedPeak, eventCost float64
+	var costEvent bool
 	err := scanEvents(r, func(e event) {
 		switch e.Type {
 		case "step_finish":
 			s := stepUsage(e)
+			switch {
+			case rates == nil:
+			case e.Part.Time == 0:
+				untimed++
+				untimedOwn += s.Cost
+				untimedPeak += rates.At(time.Time{}).CostUSD(s.Input, s.Output, s.CacheRead, s.CacheWrite)
+				s.Cost = 0
+			default:
+				s.Cost = rates.At(time.UnixMilli(e.Part.Time)).CostUSD(s.Input, s.Output, s.CacheRead, s.CacheWrite)
+			}
 			u.Input += s.Input
 			u.Output += s.Output
 			u.Reasoning += s.Reasoning
@@ -84,9 +129,20 @@ func SumUsage(r io.Reader) (Usage, error) {
 			u.Cost += s.Cost
 			u.Steps++
 		case "cost":
-			u.Cost += e.Part.Cost
+			if rates == nil {
+				u.Cost += e.Part.Cost
+			}
+			eventCost += e.Part.Cost
+			costEvent = true
 		}
 	})
+	switch {
+	case untimed == 0:
+	case costEvent:
+		u.Cost += untimedOwn + eventCost
+	default:
+		u.Cost += untimedPeak
+	}
 	return u, err
 }
 

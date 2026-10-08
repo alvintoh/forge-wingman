@@ -45,6 +45,49 @@ type Rates struct {
 	Output     float64
 	CacheRead  float64
 	CacheWrite float64
+	// Peak is the card's time-of-use surcharge; nil for a card priced the same at every hour.
+	Peak *Peak
+}
+
+// Peak is a time-of-use surcharge: Monday to Friday, inside any of Hours (UTC),
+// every rate is multiplied by Multiplier. A vendor's off-peak public holidays are
+// not modelled, so they meter at peak, never under.
+type Peak struct {
+	Multiplier float64
+	Hours      []HourRange
+}
+
+// HourRange is the hours [From, To) of a UTC day.
+type HourRange struct {
+	From int
+	To   int
+}
+
+// At returns the rates in force at t: the card's own, multiplied when t falls
+// inside a peak window. A zero t, a step whose time is unknown, prices at peak,
+// so a window is over-metered rather than under.
+func (r Rates) At(t time.Time) Rates {
+	flat := Rates{Input: r.Input, Output: r.Output, CacheRead: r.CacheRead, CacheWrite: r.CacheWrite}
+	if r.Peak == nil || (!t.IsZero() && !r.Peak.covers(t)) {
+		return flat
+	}
+	m := r.Peak.Multiplier
+	return Rates{Input: flat.Input * m, Output: flat.Output * m, CacheRead: flat.CacheRead * m, CacheWrite: flat.CacheWrite * m}
+}
+
+// covers reports whether t falls inside one of the peak windows.
+func (p Peak) covers(t time.Time) bool {
+	t = t.UTC()
+	if wd := t.Weekday(); wd == time.Saturday || wd == time.Sunday {
+		return false
+	}
+	h := t.Hour()
+	for _, w := range p.Hours {
+		if h >= w.From && h < w.To {
+			return true
+		}
+	}
+	return false
 }
 
 // CostUSD is the USD cost of a usage of tokens at these rates.
@@ -125,10 +168,35 @@ type harnessDoc struct {
 // ratesDoc is one model's rate card as providers.json writes it: US dollars per
 // million tokens, by token class.
 type ratesDoc struct {
-	Input      float64 `json:"input_usd_per_mtok"`
-	Output     float64 `json:"output_usd_per_mtok"`
-	CacheRead  float64 `json:"cache_read_usd_per_mtok"`
-	CacheWrite float64 `json:"cache_write_usd_per_mtok"`
+	Input      float64  `json:"input_usd_per_mtok"`
+	Output     float64  `json:"output_usd_per_mtok"`
+	CacheRead  float64  `json:"cache_read_usd_per_mtok"`
+	CacheWrite float64  `json:"cache_write_usd_per_mtok"`
+	Peak       *peakDoc `json:"peak"`
+}
+
+// peakDoc is a rate card's surcharge as providers.json writes it: the
+// multiplier, and the weekday UTC hour ranges it applies in, each [from, to).
+type peakDoc struct {
+	Multiplier      float64        `json:"multiplier"`
+	WeekdayUTCHours []hourRangeDoc `json:"weekday_utc_hours"`
+}
+
+type hourRangeDoc struct {
+	From int `json:"from"`
+	To   int `json:"to"`
+}
+
+// rates converts a rate card from its document shape.
+func (d ratesDoc) rates() Rates {
+	r := Rates{Input: d.Input, Output: d.Output, CacheRead: d.CacheRead, CacheWrite: d.CacheWrite}
+	if d.Peak != nil {
+		r.Peak = &Peak{Multiplier: d.Peak.Multiplier}
+		for _, h := range d.Peak.WeekdayUTCHours {
+			r.Peak.Hours = append(r.Peak.Hours, HourRange(h))
+		}
+	}
+	return r
 }
 
 type windowDoc struct {
@@ -179,7 +247,7 @@ func parseConfig(b []byte) (Config, error) {
 		if len(p.Rates) > 0 {
 			provider.Rates = make(map[string]Rates, len(p.Rates))
 			for model, r := range p.Rates {
-				provider.Rates[model] = Rates(r)
+				provider.Rates[model] = r.rates()
 			}
 		}
 		cfg.Providers[name] = provider
@@ -245,9 +313,32 @@ func (c Config) validate() error {
 				return fmt.Errorf("provider %s has rates for %q, not a %s model", name, model, name)
 			case min(r.Input, r.Output, r.CacheRead, r.CacheWrite) < 0:
 				return fmt.Errorf("provider %s model %s has a negative rate", name, model)
-			case r == Rates{}:
+			case max(r.Input, r.Output, r.CacheRead, r.CacheWrite) == 0:
 				return fmt.Errorf("provider %s model %s has no rate", name, model)
 			}
+			if err := checkPeak(r.Peak); err != nil {
+				return fmt.Errorf("provider %s model %s peak: %w", name, model, err)
+			}
+		}
+	}
+	return nil
+}
+
+// checkPeak reports whether a surcharge is usable: a multiplier of at least 1
+// and one or more non-empty hour ranges within a day.
+func checkPeak(p *Peak) error {
+	if p == nil {
+		return nil
+	}
+	if p.Multiplier < 1 {
+		return fmt.Errorf("multiplier %v is below 1", p.Multiplier)
+	}
+	if len(p.Hours) == 0 {
+		return errors.New("no hours")
+	}
+	for _, h := range p.Hours {
+		if h.From < 0 || h.To > 24 || h.From >= h.To {
+			return fmt.Errorf("hours %d-%d are not a range within a day", h.From, h.To)
 		}
 	}
 	return nil
@@ -291,6 +382,9 @@ func Harnesses(plan string) []string {
 	}
 	return append([]string{order.Default}, order.Fallbacks...)
 }
+
+// KeySecret names the secret holding the plan's API key, empty for a plan that is not configured.
+func KeySecret(plan string) string { return embeddedConfig.Providers[plan].KeySecret }
 
 // RatesFor returns the plan's rate card for model, and whether the plan prices
 // it. A model the plan does not price keeps the harness's own cost figure.

@@ -453,10 +453,10 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 		Detail: truncate(call.Detail, stopDetailLimit)}
 	if _, err := out.Seek(0, io.SeekStart); err != nil {
 		addUsageWarning(sum, err.Error())
-	} else if usage, err := SumUsage(out); err != nil {
+	} else if usage, err := meterUsage(out, call.Model, providers.RatesFor); err != nil {
 		addUsageWarning(sum, err.Error())
 	} else {
-		step.Tokens = meterUsage(usage, call.Model, providers.RatesFor)
+		step.Tokens = usage
 	}
 	if _, err := out.Seek(0, io.SeekStart); err == nil {
 		warnings, _ := UsageWarnings(out)
@@ -513,17 +513,16 @@ func addUsageWarning(sum *Summary, warning string) {
 	}
 }
 
-// meterUsage prices a run's usage from the plan's rates for model: the tokens
-// times those rates replace the harness's own cost figure, so a figure that is
-// absent or wrong is still priced (FR-22). A model the plan does not price keeps
-// the harness's figure.
-func meterUsage(u Usage, model string, ratesFor func(string) (providers.Rates, bool)) Usage {
+// meterUsage totals a run's event stream, pricing it from the plan's rates for
+// model, so a figure that is absent or wrong is still priced (FR-22); sumUsage
+// says which steps keep the harness's own figure. A model the plan does not
+// price keeps the harness's figures.
+func meterUsage(r io.Reader, model string, ratesFor func(string) (providers.Rates, bool)) (Usage, error) {
 	rates, ok := ratesFor(model)
 	if !ok {
-		return u
+		return SumUsage(r)
 	}
-	u.Cost = rates.CostUSD(u.Input, u.Output, u.CacheRead, u.CacheWrite)
-	return u
+	return sumUsage(r, &rates)
 }
 
 // ValidatePlanModels reports whether models is a usable plan list: at least

@@ -1,0 +1,12 @@
+package: @oh-my-pi/pi-coding-agent
+version: 18.7.0
+install: bun install -g @oh-my-pi/pi-coding-agent@18.7.0 (binary: omp; bun >= 1.3.14, captured on bun 1.4.2)
+model used: commandcode/deepseek/deepseek-v4.1-flash (omp's built-in commandcode provider)
+captured: 2026-10-07T23:00Z (off-peak), macOS
+auth: COMMAND_CODE_API_KEY in the environment; nothing written to disk
+isolation: env -i, HOME and PI_CODING_AGENT_DIR in a scratch dir, config.yml {startup.checkUpdate: false, mcp.enableProjectConfig: false, setupVersion: 2}
+flags: -p --mode json --model <id> --no-extensions --no-skills --session-dir <dir> --approval-mode yolo|always-ask, prompt on stdin
+readonly: always-ask; edit, write and bash each refused ("requires approval but no interactive UI available"); readonly.effects shows no marker, marker2 or diff
+badkey: COMMAND_CODE_API_KEY unset; exit 1, "No API key found" on stderr
+usage: assistant message_end carries usage {input (excludes cacheRead), output, cacheRead, cacheWrite, cost} and timestamp (epoch ms); session id on the first line's session event
+limit-declined case: not captured (cannot be forced)

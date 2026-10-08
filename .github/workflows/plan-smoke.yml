@@ -1,4 +1,4 @@
-# Proves the restricted plan agent refuses edit and bash on the plan list's first and
+# Proves the restricted plan agent refuses an edit, a new file and bash on the plan list's first and
 # last model, against a fixture, and writes each model and outcome to the job summary.
 # Manual: it spends model calls. Needs the COMMANDCODE_API_KEY secret; no cloud identity.
 name: plan-smoke
@@ -31,6 +31,17 @@ jobs:
 
       - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
 
+      # The bun version is model.yml's; omp's is tools/omp's lockfile.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+
+      - name: Install omp
+        run: |
+          bun install --frozen-lockfile --cwd tools/omp
+          echo "$GITHUB_WORKSPACE/tools/omp/node_modules/.bin" >> "$GITHUB_PATH"
+          test "$(tools/omp/node_modules/.bin/omp --version)" = "omp/$(jq -r '.dependencies["@oh-my-pi/pi-coding-agent"]' tools/omp/package.json)"
+
       # The Node version is model.yml's; the CLI's is tools/command-code's lockfile.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -42,7 +53,7 @@ jobs:
           echo "$GITHUB_WORKSPACE/tools/command-code/node_modules/.bin" >> "$GITHUB_PATH"
           test "$(tools/command-code/node_modules/.bin/cmd --version)" = "$(jq -r '.dependencies["command-code"]' tools/command-code/package.json)"
 
-      - name: Prove the plan agent refuses edit and bash
+      - name: Prove the plan agent refuses an edit, a new file and bash
         env:
           PLAN_MODELS: ${{ inputs.plan_models }}
           COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}

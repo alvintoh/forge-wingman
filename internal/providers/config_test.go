@@ -50,6 +50,16 @@ func TestParseConfigRejectsAnInvalidConfig(t *testing.T) {
 		"a negative rate": {configWith(providerFacts + `,"rates":{"p/model":{"input_usd_per_mtok":-1}}`),
 			"negative rate"},
 		"a rate with no rate": {configWith(providerFacts + `,"rates":{"p/model":{}}`), "has no rate"},
+		"a peak below 1": {configWith(providerFacts + `,"rates":{"p/model":{"input_usd_per_mtok":1,` +
+			`"peak":{"multiplier":0.5,"weekday_utc_hours":[{"from":1,"to":4}]}}}`), "below 1"},
+		"a peak with no hours": {configWith(providerFacts + `,"rates":{"p/model":{"input_usd_per_mtok":1,` +
+			`"peak":{"multiplier":2}}}`), "no hours"},
+		"a peak past midnight": {configWith(providerFacts + `,"rates":{"p/model":{"input_usd_per_mtok":1,` +
+			`"peak":{"multiplier":2,"weekday_utc_hours":[{"from":22,"to":25}]}}}`), "not a range"},
+		"an empty peak range": {configWith(providerFacts + `,"rates":{"p/model":{"input_usd_per_mtok":1,` +
+			`"peak":{"multiplier":2,"weekday_utc_hours":[{"from":4,"to":4}]}}}`), "not a range"},
+		"a peak before midnight": {configWith(providerFacts + `,"rates":{"p/model":{"input_usd_per_mtok":1,` +
+			`"peak":{"multiplier":2,"weekday_utc_hours":[{"from":-1,"to":4}]}}}`), "not a range"},
 		"an unknown field": {`{"cash_limit_usd":30,"runner_free_minutes":2000,"providers":{"p":{}},"extra":1}`,
 			"unknown field"},
 	} {
@@ -160,8 +170,8 @@ func TestEmbeddedGoatCarriesItsPlanFacts(t *testing.T) {
 // its default first, and is empty for a plan that is not configured, so the
 // router selects from configuration rather than the model prefix.
 func TestHarnessesReadsThePlansOrder(t *testing.T) {
-	if got := Harnesses("command-code"); !slices.Equal(got, []string{"command-code"}) {
-		t.Fatalf("Harnesses(command-code) = %v, want its one configured harness", got)
+	if got := Harnesses("command-code"); !slices.Equal(got, []string{"omp", "command-code"}) {
+		t.Fatalf("Harnesses(command-code) = %v, want omp then the command-code fallback", got)
 	}
 	if got := Harnesses("nobody"); got != nil {
 		t.Fatalf("Harnesses(nobody) = %v, want none", got)
@@ -195,5 +205,74 @@ func TestRatesCostMultipliesTokensByRates(t *testing.T) {
 	r := Rates{Input: 1, Output: 2, CacheRead: 0.5, CacheWrite: 3}
 	if got := r.CostUSD(1_000_000, 1_000_000, 2_000_000, 1_000_000); got != 7 {
 		t.Fatalf("CostUSD = %v, want the tokens times the rates", got)
+	}
+}
+
+// TestRatesAtPricesByTimeOfUse asserts a card with a peak doubles inside each
+// weekday window, keeps its own rates outside them and at weekends, and prices
+// an unknown time at peak.
+func TestRatesAtPricesByTimeOfUse(t *testing.T) {
+	card := Rates{Input: 0.15, Output: 0.6, CacheRead: 0.003,
+		Peak: &Peak{Multiplier: 2, Hours: []HourRange{{From: 1, To: 4}, {From: 6, To: 10}}}}
+	offPeak := Rates{Input: 0.15, Output: 0.6, CacheRead: 0.003}
+	peak := Rates{Input: 0.3, Output: 1.2, CacheRead: 0.006}
+	// 2026-10-07 is a Wednesday.
+	at := func(day, hour, minute int) time.Time { return time.Date(2026, 10, day, hour, minute, 0, 0, time.UTC) }
+	for name, tt := range map[string]struct {
+		at   time.Time
+		want Rates
+	}{
+		"off-peak":                 {at(7, 23, 0), offPeak},
+		"inside the first window":  {at(7, 2, 30), peak},
+		"inside the second window": {at(7, 9, 59), peak},
+		"a window's first hour":    {at(7, 6, 0), peak},
+		"a window's end hour":      {at(7, 10, 0), offPeak},
+		"between the windows":      {at(7, 5, 59), offPeak},
+		"saturday in a window":     {at(10, 2, 0), offPeak},
+		"sunday in a window":       {at(11, 7, 0), offPeak},
+		"another zone, same hour":  {at(7, 7, 0).In(time.FixedZone("AEDT", 11*3600)), peak},
+		"an unknown time":          {time.Time{}, peak},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := card.At(tt.at); got != tt.want {
+				t.Fatalf("At = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+	if got := offPeak.At(time.Time{}); got != offPeak {
+		t.Fatalf("a card with no peak at an unknown time = %+v, want its own rates", got)
+	}
+}
+
+// TestRatesReadThePeak asserts a card's surcharge reads back from its document.
+func TestRatesReadThePeak(t *testing.T) {
+	cfg, err := parseConfig([]byte(configWith(providerFacts + `,"rates":{"p/model":{"input_usd_per_mtok":1,` +
+		`"peak":{"multiplier":2,"weekday_utc_hours":[{"from":1,"to":4},{"from":6,"to":10}]}}}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rates, _ := ratesFor(cfg, "p/model")
+	if rates.Peak == nil || rates.Peak.Multiplier != 2 ||
+		!slices.Equal(rates.Peak.Hours, []HourRange{{From: 1, To: 4}, {From: 6, To: 10}}) {
+		t.Fatalf("peak = %+v, want x2 over 01-04 and 06-10", rates.Peak)
+	}
+}
+
+// TestParseConfigAcceptsARateCardsBoundaries asserts the limits a card may sit
+// on are valid: a cache-write rate alone, a multiplier of exactly 1, and a
+// window running to midnight.
+func TestParseConfigAcceptsARateCardsBoundaries(t *testing.T) {
+	for name, rates := range map[string]string{
+		"a cache-write rate alone": `{"cache_write_usd_per_mtok":1}`,
+		"a multiplier of 1": `{"input_usd_per_mtok":1,` +
+			`"peak":{"multiplier":1,"weekday_utc_hours":[{"from":1,"to":4}]}}`,
+		"a window to midnight": `{"input_usd_per_mtok":1,` +
+			`"peak":{"multiplier":2,"weekday_utc_hours":[{"from":0,"to":24}]}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseConfig([]byte(configWith(providerFacts + `,"rates":{"p/model":` + rates + `}`))); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
