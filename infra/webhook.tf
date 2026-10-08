@@ -69,6 +69,7 @@ resource "google_cloud_run_v2_service" "webhook" {
           cpu    = "1"
           memory = "256Mi"
         }
+        cpu_idle = true
       }
 
       env {
