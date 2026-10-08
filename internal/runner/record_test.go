@@ -422,6 +422,12 @@ func TestFinalizeSettlesTheLedgerWithTheRunsActualCost(t *testing.T) {
 	}
 }
 
+func TestBillableMinutesLeavesOutTheChecksThePhasesAlreadyHold(t *testing.T) {
+	if got := BillableMinutes(map[string]int64{"build": 90_000, "checks": 60_000}); got != 2 {
+		t.Fatalf("billable minutes = %d, want 2 from the build's 90s alone", got)
+	}
+}
+
 func TestFinalizeZeroesSettledRunnerMinutesForAPublicTarget(t *testing.T) {
 	store := seeded(t) // Private defaults to false
 	sum := Summary{

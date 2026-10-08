@@ -263,16 +263,18 @@ type Ledger interface {
 const msPerMinute = 60_000
 
 // BillableMinutes approximates a run's own GitHub Actions minutes from its
-// timed phases (projection, worktree, build, commit, pr), rounding up since
-// GitHub bills whole minutes. The true billed figure also includes checkout
-// and job setup this run does not time, and is only knowable from GitHub's
-// own API once the whole workflow has finished — which is after the record
-// job itself runs — so this is a deliberate estimate of it (FR-22), not the
-// billed truth.
+// timed phases (projection, worktree, build, commit, pr) — not the checks,
+// whose time those phases already hold — rounding up since GitHub bills whole
+// minutes. The true billed figure also includes checkout and job setup this
+// run does not time, and is only knowable from GitHub's own API once the whole
+// workflow has finished — which is after the record job itself runs — so this
+// is a deliberate estimate of it (FR-22), not the billed truth.
 func BillableMinutes(durationsMS map[string]int64) int64 {
 	var totalMS int64
-	for _, ms := range durationsMS {
-		totalMS += ms
+	for p, ms := range durationsMS {
+		if p != checksDuration {
+			totalMS += ms
+		}
 	}
 	if totalMS <= 0 {
 		return 0

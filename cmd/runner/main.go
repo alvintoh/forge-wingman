@@ -29,7 +29,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -259,7 +261,13 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 	reviewModels := fs.String("review-models", strings.Join(runner.DefaultReviewModels(), ","), "the review phase's models in order, comma-separated provider/model; later ones are backups (FR-14)")
 	pointer := fs.String("pointer", runner.DefaultPointer, "object naming the current rule-stack sha")
 	ticketFile := fs.String("ticket-file", "", "path to the run's ticket, as the ticket subcommand wrote it")
+	checksImage := fs.String("checks-image", "", "Go image, pinned by digest, to run the pre-PR checks in; empty runs them on the host")
 	if err := fs.Parse(args); err != nil {
+		return setupFailed(logger, e.output, err)
+	}
+	const repo = "."
+	checks, err := checkRunner(ctx, *checksImage, e.tempDir, repo)
+	if err != nil {
 		return setupFailed(logger, e.output, err)
 	}
 	if err := writeOutputs(e.output, map[string]string{"attempt_id": e.attemptID}); err != nil {
@@ -288,13 +296,13 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 		Agent:       runner.NewRouter(runner.ProfileBuild, e.harnesses...),
 		PlanAgent:   runner.NewRouter(runner.ProfilePlan, e.harnesses...),
 		ReviewAgent: runner.NewRouter(runner.ProfileReview, e.harnesses...),
-		Checks:      runner.RunChecks,
+		Checks:      checks,
 		Report:      func(s runner.Summary) error { return writeSummary(e.output, s) },
 		Logger:      logger,
 		Now:         time.Now,
 	}, runner.BuildConfig{
 		AttemptID:    e.attemptID,
-		Repo:         ".",
+		Repo:         repo,
 		TempDir:      e.tempDir,
 		Pointer:      *pointer,
 		Model:        *model,
@@ -315,6 +323,32 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 		return err
 	}
 	return writeMultilineOutput(e.output, "loop_detail", res.LoopDetail)
+}
+
+// checkRunner is the pre-PR loop's checks: in a container of image when one is
+// given, with its module cache under tempDir and repo's git common directory
+// resolved now, before any agent runs; else on the host.
+func checkRunner(ctx context.Context, image, tempDir, repo string) (runner.CheckRunner, error) {
+	if image == "" {
+		return runner.RunChecks, nil
+	}
+	linter, err := exec.LookPath("golangci-lint")
+	if err != nil {
+		return nil, fmt.Errorf("checks linter: %w", err)
+	}
+	if linter, err = filepath.Abs(linter); err != nil {
+		return nil, fmt.Errorf("checks linter: %w", err)
+	}
+	gitDir, err := runner.GitCommonDir(ctx, repo)
+	if err != nil {
+		return nil, fmt.Errorf("checks git common dir: %w", err)
+	}
+	c := runner.ContainerChecks{Image: image, ModCache: filepath.Join(tempDir, "checks-modcache"), Linter: linter,
+		GitCommonDir: gitDir}
+	if err := c.Validate(); err != nil {
+		return nil, err
+	}
+	return c.Run, nil
 }
 
 // splitModels reads a comma-separated model list, using a copy of fallback when
