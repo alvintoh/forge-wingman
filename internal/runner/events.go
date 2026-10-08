@@ -41,8 +41,6 @@ type event struct {
 		// Time is when a step's request was made, in epoch milliseconds; zero when the harness does not say.
 		Time int64 `json:"time,omitempty"`
 	} `json:"part"`
-	// Warning is a usage_warning event's text: usage the harness could not measure.
-	Warning string `json:"warning,omitempty"`
 }
 
 // sessionEvent reports a session id in the runner's own event shape.
@@ -91,58 +89,36 @@ func stepUsage(e event) Usage {
 		CacheWrite: t.Cache.Write, Cost: e.Part.Cost, Steps: 1}
 }
 
-// SumUsage totals the step_finish events in the agent's JSON event stream,
-// plus the cost of any cost event, which a harness emits when its per-step
-// events carry none; a cost event is not a step.
+// SumUsage totals the step_finish events in the agent's JSON event stream.
 //
 // Lines that are not JSON events are skipped.
 func SumUsage(r io.Reader) (Usage, error) { return sumUsage(r, nil) }
 
-// sumUsage is SumUsage, priced from rates when rates is non-nil: a timed step
-// at the rates in force at its time, replacing the harness's figure. Untimed
-// steps keep the harness's own figures when the run carries a cost event, and
-// otherwise price at peak; a run whose steps are all timed ignores cost events.
+// sumUsage is SumUsage, priced from rates when rates is non-nil: each step at
+// the rates in force at its time, replacing the harness's figure, and an
+// untimed step at peak.
 func sumUsage(r io.Reader, rates *providers.Rates) (Usage, error) {
 	var u Usage
-	var untimed int
-	var untimedOwn, untimedPeak, eventCost float64
-	var costEvent bool
 	err := scanEvents(r, func(e event) {
-		switch e.Type {
-		case "step_finish":
-			s := stepUsage(e)
-			switch {
-			case rates == nil:
-			case e.Part.Time == 0:
-				untimed++
-				untimedOwn += s.Cost
-				untimedPeak += rates.At(time.Time{}).CostUSD(s.Input, s.Output, s.CacheRead, s.CacheWrite)
-				s.Cost = 0
-			default:
-				s.Cost = rates.At(time.UnixMilli(e.Part.Time)).CostUSD(s.Input, s.Output, s.CacheRead, s.CacheWrite)
-			}
-			u.Input += s.Input
-			u.Output += s.Output
-			u.Reasoning += s.Reasoning
-			u.CacheRead += s.CacheRead
-			u.CacheWrite += s.CacheWrite
-			u.Cost += s.Cost
-			u.Steps++
-		case "cost":
-			if rates == nil {
-				u.Cost += e.Part.Cost
-			}
-			eventCost += e.Part.Cost
-			costEvent = true
+		if e.Type != "step_finish" {
+			return
 		}
+		s := stepUsage(e)
+		if rates != nil {
+			var at time.Time
+			if e.Part.Time != 0 {
+				at = time.UnixMilli(e.Part.Time)
+			}
+			s.Cost = rates.At(at).CostUSD(s.Input, s.Output, s.CacheRead, s.CacheWrite)
+		}
+		u.Input += s.Input
+		u.Output += s.Output
+		u.Reasoning += s.Reasoning
+		u.CacheRead += s.CacheRead
+		u.CacheWrite += s.CacheWrite
+		u.Cost += s.Cost
+		u.Steps++
 	})
-	switch {
-	case untimed == 0:
-	case costEvent:
-		u.Cost += untimedOwn + eventCost
-	default:
-		u.Cost += untimedPeak
-	}
 	return u, err
 }
 
@@ -156,18 +132,6 @@ func RequestUsage(r io.Reader) ([]Usage, error) {
 		}
 	})
 	return reqs, err
-}
-
-// UsageWarnings returns the text of every usage_warning event in the agent's
-// JSON event stream, in order.
-func UsageWarnings(r io.Reader) ([]string, error) {
-	var warnings []string
-	err := scanEvents(r, func(e event) {
-		if e.Type == "usage_warning" && e.Warning != "" {
-			warnings = append(warnings, e.Warning)
-		}
-	})
-	return warnings, err
 }
 
 // FinalText returns the last text part in the agent's JSON event stream, empty

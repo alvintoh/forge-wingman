@@ -14,21 +14,21 @@ import (
 	"time"
 )
 
-func fakeCLIAgent(t *testing.T, body string) (agent CommandCodeAgent, dir string) {
+func fakeCLIAgent(t *testing.T, body string) (agent OmpAgent, dir string) {
 	t.Helper()
 	dir = t.TempDir()
-	bin := filepath.Join(dir, "cmd")
+	bin := filepath.Join(dir, "omp")
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\ncat > /dev/null\n"+body), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return CommandCodeAgent{Bin: bin, Key: "k", Home: t.TempDir(), Model: "command-code/x"}, dir
+	return OmpAgent{Bin: bin, Key: "k", Home: t.TempDir(), Model: "command-code/x"}, dir
 }
 
 func alive(pid int) bool {
 	return syscall.Kill(pid, 0) == nil
 }
 
-func TestCommandCodeAgentRunLeavesNoChildBehind(t *testing.T) {
+func TestAgentRunLeavesNoChildBehind(t *testing.T) {
 	agent, dir := fakeCLIAgent(t, "sleep 300 &\necho $! > child.pid\n")
 	out, err := os.Create(filepath.Join(t.TempDir(), "events"))
 	if err != nil {
@@ -57,7 +57,7 @@ func TestCommandCodeAgentRunLeavesNoChildBehind(t *testing.T) {
 	}
 }
 
-func TestCommandCodeAgentRunStopsAtTheDeadline(t *testing.T) {
+func TestAgentRunStopsAtTheDeadline(t *testing.T) {
 	agent, dir := fakeCLIAgent(t, "sleep 300\n")
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()

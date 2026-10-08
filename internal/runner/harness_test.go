@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -48,7 +49,7 @@ func (h fakeHarness) Ready() error { return h.ready }
 
 // planIdentity is the test plan-to-harness resolver: a plan runs the harness
 // named after it, so a fake harness named "p" serves a "p/model" without a
-// providers.json entry, and the command-code harness serves its own plan.
+// providers.json entry.
 func planIdentity(plan string) []string { return []string{plan} }
 
 // testRouter is NewRouter with planIdentity, so a test can bind a router to
@@ -57,31 +58,21 @@ func testRouter(profile Profile, harnesses ...Harness) Router {
 	return newRouter(planIdentity, profile, harnesses...)
 }
 
-func TestCommandCodeHarnessNamesItself(t *testing.T) {
-	if got := (CommandCodeHarness{}).Name(); got != "command-code" {
-		t.Fatalf("name = %q, want command-code", got)
-	}
-}
-
 func TestRouterRunsTheHarnessItsModelNames(t *testing.T) {
-	ccBin, ccAttempts := scriptedCommandCode(t, "normal")
-	other := &fakeAgent{}
-	r := testRouter(ProfileBuild,
-		CommandCodeHarness{Bin: ccBin, Key: "k", Home: t.TempDir()},
-		fakeHarness{agent: other},
-	)
+	first, other := &fakeAgent{}, &fakeAgent{}
+	r := testRouter(ProfileBuild, fakeHarness{name: "q", agent: first}, fakeHarness{agent: other})
 
 	var out, errBuf strings.Builder
-	if err := r.WithModel("command-code/x").Run(context.Background(), t.TempDir(), "", "p", "", &out, &errBuf); err != nil {
+	if err := r.WithModel("q/x").Run(context.Background(), t.TempDir(), "", "p", "", &out, &errBuf); err != nil {
 		t.Fatal(err)
 	}
-	if len(ccAttempts()) != 1 || other.calls != 0 {
-		t.Fatalf("the command-code model did not route to the command-code harness alone")
+	if first.calls != 1 || other.calls != 0 {
+		t.Fatalf("the q model did not route to the q harness alone")
 	}
 	if err := r.WithModel("p/y").Run(context.Background(), t.TempDir(), "", "p", "", &out, &errBuf); err != nil {
 		t.Fatal(err)
 	}
-	if len(ccAttempts()) != 1 || other.calls != 1 {
+	if first.calls != 1 || other.calls != 1 {
 		t.Fatalf("the p model did not route to its own harness alone")
 	}
 }
@@ -98,27 +89,71 @@ func TestRouterRefusesAnUnservedModel(t *testing.T) {
 }
 
 func TestRouterRunRefusesAnUnreadyHarness(t *testing.T) {
-	r := testRouter(ProfileBuild, CommandCodeHarness{Bin: "cmd"})
+	r := testRouter(ProfileBuild, fakeHarness{ready: errors.New("the p harness needs its key")})
 	var out, errBuf strings.Builder
-	err := r.WithModel("command-code/x").Run(context.Background(), t.TempDir(), "", "p", "", &out, &errBuf)
-	if err == nil || !strings.Contains(err.Error(), "COMMANDCODE_API_KEY") {
-		t.Fatalf("err = %v, want the harness's missing-key refusal", err)
+	err := r.WithModel("p/x").Run(context.Background(), t.TempDir(), "", "p", "", &out, &errBuf)
+	if err == nil || !strings.Contains(err.Error(), "needs its key") {
+		t.Fatalf("err = %v, want the harness's own refusal", err)
 	}
 }
 
-// TestCommandCodeHarnessIsReadyWithItsKey asserts the harness is refused
-// without its key and ready with it (AC7).
-func TestCommandCodeHarnessIsReadyWithItsKey(t *testing.T) {
-	for name, tt := range map[string]struct {
-		h     CommandCodeHarness
-		ready bool
-	}{
-		"no key": {CommandCodeHarness{}, false},
-		"a key":  {CommandCodeHarness{Key: "k"}, true},
+// TestClassifyAgentFailureDispatchesToTheAgentsHarness asserts the failure is
+// classified through the harness that ran the model, not the generic markers.
+func TestClassifyAgentFailureDispatchesToTheAgentsHarness(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stderr")
+	if err := os.WriteFile(path, []byte("no marker matches this"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	budget := func(string, error) (Outcome, StopReason) { return OutcomeBudgetStop, StopAllowanceExhausted }
+	router := testRouter(ProfileBuild, fakeHarness{classify: budget}).WithModel("p/x")
+	if outcome, reason := classifyAgentFailure(router, path, errors.New("exit status 5")); outcome != OutcomeBudgetStop || reason != StopAllowanceExhausted {
+		t.Fatalf("classifyAgentFailure = %s/%s, want the harness's allowance classification", outcome, reason)
+	}
+}
+
+// TestBuildRefusesAModelWithoutItsHarnessKey asserts a harness without its key
+// stops the run before any agent starts (AC7).
+func TestBuildRefusesAModelWithoutItsHarnessKey(t *testing.T) {
+	deps, _, reported := testDeps(validObjects(), &fakeAgent{})
+	deps.Agent = testRouter(ProfileBuild, fakeHarness{name: "q", ready: errors.New("the q harness needs the Q_KEY secret")}, fakeHarness{})
+	c := testConfig(t, initRepo(t))
+	c.Model = "q/x"
+	c.ReviewModels = []string{"p/r"}
+
+	if _, err := Build(context.Background(), deps, c); err == nil {
+		t.Fatal("Build ran a model whose harness has no key")
+	}
+	rec := reported.last(t)
+	if rec.Outcome != OutcomeStopped || rec.StopReason != StopCredentialAbsent {
+		t.Fatalf("record = %s/%s, want a credential-absent stop", rec.Outcome, rec.StopReason)
+	}
+	if !strings.Contains(rec.StopDetail, "Q_KEY") {
+		t.Fatalf("stop detail %q does not name the missing key", rec.StopDetail)
+	}
+}
+
+// TestBuildGatesEveryModelSlotOnTheKey asserts the missing-key gate covers the
+// review model and, for a ticket that plans, every plan model (AC7).
+func TestBuildGatesEveryModelSlotOnTheKey(t *testing.T) {
+	for name, set := range map[string]func(*BuildConfig){
+		"review": func(c *BuildConfig) { c.ReviewModels = []string{"q/x"} },
+		"plan": func(c *BuildConfig) {
+			c.Ticket.Size = "M"
+			c.PlanModels = []string{"p/p", "q/x"}
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if err := tt.h.Ready(); (err == nil) != tt.ready {
-				t.Fatalf("Ready() = %v, want ready %v", err, tt.ready)
+			deps, _, reported := testDeps(validObjects(), &fakeAgent{})
+			deps.Agent = testRouter(ProfileBuild, fakeHarness{name: "q", ready: errors.New("no key")}, fakeHarness{})
+			c := testConfig(t, initRepo(t))
+			c.Model = "p/b"
+			c.ReviewModels = []string{"p/r"}
+			set(&c)
+			if _, err := Build(context.Background(), deps, c); err == nil {
+				t.Fatal("Build ran with a keyless harness in the slot")
+			}
+			if rec := reported.last(t); rec.StopReason != StopCredentialAbsent {
+				t.Fatalf("stop = %s, want a credential-absent stop", rec.StopReason)
 			}
 		})
 	}
@@ -202,8 +237,8 @@ func TestRouterRefusesAPlanWhoseHarnessesAreAllUnready(t *testing.T) {
 // resolver wires a configured plan to its harness, and refuses one it has no
 // configuration for (AC3).
 func TestRouterSelectsFromTheEmbeddedPlanConfiguration(t *testing.T) {
-	bin, attempts := scriptedCommandCode(t, "normal")
-	r := NewRouter(ProfileBuild, CommandCodeHarness{Bin: bin, Key: "k", Home: t.TempDir()})
+	bin, attempts := scriptedOmp(t, "normal")
+	r := NewRouter(ProfileBuild, OmpHarness{Bin: bin, Key: "k", Home: t.TempDir()})
 	if err := r.Gate("command-code/x"); err != nil {
 		t.Fatalf("Gate = %v, want the plan's configured harness", err)
 	}
@@ -214,7 +249,7 @@ func TestRouterSelectsFromTheEmbeddedPlanConfiguration(t *testing.T) {
 	if len(attempts()) != 1 {
 		t.Fatalf("the configured plan's harness ran %d times, want 1", len(attempts()))
 	}
-	if err := NewRouter(ProfileBuild, CommandCodeHarness{Bin: bin, Key: "k"}).Gate("unconfigured/x"); err == nil {
+	if err := NewRouter(ProfileBuild, OmpHarness{Bin: bin, Key: "k"}).Gate("unconfigured/x"); err == nil {
 		t.Fatal("a plan with no harness configuration was gated in")
 	}
 }
@@ -250,25 +285,25 @@ func TestRouterClassifiesThroughTheHarnessThatRan(t *testing.T) {
 
 // TestMeterUsageRepricesFromThePlansRates asserts the runner prices a timed
 // run from the plan's rates — tokens times the rates, replacing the harness's
-// own step and cost-event figures — and keeps those figures when the plan does
-// not price the model (FR-22).
+// own figure — and keeps that figure when the plan does not price the model
+// (FR-22).
 func TestMeterUsageRepricesFromThePlansRates(t *testing.T) {
 	wednesday := time.Date(2026, 10, 7, 23, 0, 0, 0, time.UTC).UnixMilli()
-	stream := stepFinish(1_000_000, 1_000_000, 2_000_000, 4, wednesday) + `{"type":"cost","part":{"cost":5}}` + "\n"
+	stream := stepFinish(1_000_000, 1_000_000, 2_000_000, 4, wednesday)
 	plan := func(model string) (providers.Rates, bool) {
 		return providers.Rates{Input: 0.28, Output: 0.42, CacheRead: 0.028}, model == "plan/model"
 	}
 	if got, _ := meterUsage(strings.NewReader(stream), "plan/model", plan); !approxEqual(got.Cost, 0.756) {
 		t.Fatalf("priced cost = %v, want tokens x the plan's rates = 0.756", got.Cost)
 	}
-	if got, _ := meterUsage(strings.NewReader(stream), "nobody/model", plan); !approxEqual(got.Cost, 9) {
+	if got, _ := meterUsage(strings.NewReader(stream), "nobody/model", plan); !approxEqual(got.Cost, 4) {
 		t.Fatalf("metered cost = %v, want the harness's own figures kept", got.Cost)
 	}
 }
 
 // TestMeterUsagePricesEachStepAtItsOwnTime asserts a run crossing into a peak
 // window prices each step at the rates in force when it was made, and that an
-// untimed step prices at peak unless the run carries the harness's own cost.
+// untimed step prices at peak in place of the harness's own figure.
 func TestMeterUsagePricesEachStepAtItsOwnTime(t *testing.T) {
 	plan := func(string) (providers.Rates, bool) {
 		return providers.Rates{Input: 1, Output: 1, Peak: &providers.Peak{Multiplier: 2,
@@ -277,17 +312,12 @@ func TestMeterUsagePricesEachStepAtItsOwnTime(t *testing.T) {
 	// A Wednesday, a minute either side of 06:00 UTC.
 	before := time.Date(2026, 10, 7, 5, 59, 0, 0, time.UTC).UnixMilli()
 	after := time.Date(2026, 10, 7, 6, 1, 0, 0, time.UTC).UnixMilli()
-	const harnessCost = `{"type":"cost","part":{"cost":0.25}}` + "\n"
 	for name, tt := range map[string]struct {
 		stream string
 		want   float64
 	}{
 		"crossing 06:00":  {stepFinish(1_000_000, 0, 0, 0, before) + stepFinish(1_000_000, 0, 0, 0, after), 1 + 2},
-		"an untimed step": {stepFinish(1_000_000, 0, 0, 0, before) + stepFinish(1_000_000, 0, 0, 0, 0), 1 + 2},
-		"an untimed step beside the harness's cost": {
-			stepFinish(1_000_000, 0, 0, 0, before) + stepFinish(1_000_000, 0, 0, 0.5, 0) + harnessCost, 1 + 0.5 + 0.25},
-		"timed steps beside a cost event": {
-			stepFinish(1_000_000, 0, 0, 0, before) + stepFinish(1_000_000, 0, 0, 0, after) + harnessCost, 1 + 2},
+		"an untimed step": {stepFinish(1_000_000, 0, 0, 0, before) + stepFinish(1_000_000, 0, 0, 0.5, 0), 1 + 2},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := meterUsage(strings.NewReader(tt.stream), "plan/model", plan)
@@ -300,6 +330,8 @@ func TestMeterUsagePricesEachStepAtItsOwnTime(t *testing.T) {
 		})
 	}
 }
+
+func approxEqual(a, b float64) bool { return math.Abs(a-b) < 1e-12 }
 
 // stepFinish is one step_finish event in the runner's own shape, at timeMS
 // epoch milliseconds, or untimed when zero.
@@ -358,7 +390,7 @@ func TestNoHarnessIsNamedOutsideItsAdapter(t *testing.T) {
 		}
 		lower := strings.ToLower(string(b))
 		if strings.Contains(lower, "commandcode") || strings.Contains(lower, "command-code") ||
-			strings.Contains(lower, "command code") || ompVocabulary.MatchString(lower) {
+			strings.Contains(lower, "command code") || strings.Contains(lower, "opencode") || ompVocabulary.MatchString(lower) {
 			offenders = append(offenders, rel)
 		}
 		return nil
@@ -377,15 +409,15 @@ var ompVocabulary = regexp.MustCompile(`oh-my-pi|\bomp\b`)
 // harnessNameAllowed lists where a harness name may appear: its own adapter
 // alone, so every provider fact elsewhere is read from configuration.
 func harnessNameAllowed(rel string) bool {
-	return rel == "internal/runner/harness_commandcode.go" || rel == "internal/runner/harness_omp.go"
+	return rel == "internal/runner/harness_omp.go" || rel == "internal/runner/harness_opencode.go"
 }
 
-// TestNoRetiredHarnessIsNamed asserts no tracked file outside the vault copies
-// and the historical probe results names the retired harness or its model set.
-func TestNoRetiredHarnessIsNamed(t *testing.T) {
+// TestNoRetiredModelSetIsNamed asserts no tracked file outside the vault copies
+// and the historical probe results names the retired free model set.
+func TestNoRetiredModelSetIsNamed(t *testing.T) {
 	root := filepath.Join("..", "..")
 	// Copies stamped from elsewhere are exempt: the vault's docs, and the agents
-	// /repo-init composes from poly-mind's stack packs, which name the fallback.
+	// /repo-init composes from poly-mind's stack packs.
 	cmd := exec.Command("git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ".",
 		":!docs/adr", ":!docs/tech-design-v1.md", ":!probe/results", ":!.claude/agents")
 	cmd.Dir = root
@@ -393,7 +425,7 @@ func TestNoRetiredHarnessIsNamed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("git ls-files: %v", err)
 	}
-	retired := regexp.MustCompile(`(?i:open[c]ode|\bz[e]n\b)`)
+	retired := regexp.MustCompile(`(?i:\bz[e]n\b)`)
 	var offenders []string
 	for _, rel := range strings.Split(strings.TrimRight(string(out), "\x00"), "\x00") {
 		b, err := os.ReadFile(filepath.Join(root, rel))
@@ -408,7 +440,7 @@ func TestNoRetiredHarnessIsNamed(t *testing.T) {
 		}
 	}
 	if len(offenders) > 0 {
-		t.Fatalf("the retired harness is named in: %v", offenders)
+		t.Fatalf("the retired model set is named in: %v", offenders)
 	}
 }
 

@@ -386,6 +386,9 @@ func Harnesses(plan string) []string {
 // KeySecret names the secret holding the plan's API key, empty for a plan that is not configured.
 func KeySecret(plan string) string { return embeddedConfig.Providers[plan].KeySecret }
 
+// BaseURL is the plan's OpenAI-compatible API base, empty for a plan that is not configured.
+func BaseURL(plan string) string { return embeddedConfig.Providers[plan].BaseURL }
+
 // RatesFor returns the plan's rate card for model, and whether the plan prices
 // it. A model the plan does not price keeps the harness's own cost figure.
 func RatesFor(model string) (Rates, bool) { return ratesFor(embeddedConfig, model) }

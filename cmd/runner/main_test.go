@@ -77,21 +77,21 @@ func TestRecordNeedsTheRunsIdentity(t *testing.T) {
 // earlier session, and that the key they share is checked once.
 func TestHarnessesWireTheKeyAndHome(t *testing.T) {
 	env := map[string]string{"COMMANDCODE_API_KEY": "k", "RUNNER_TEMP": "/tmp/r"}
-	var cc runner.CommandCodeHarness
+	var oc runner.OpencodeHarness
 	var omp runner.OmpHarness
 	for _, h := range runner.Harnesses(func(k string) string { return env[k] }) {
 		switch h := h.(type) {
-		case runner.CommandCodeHarness:
-			cc = h
+		case runner.OpencodeHarness:
+			oc = h
 		case runner.OmpHarness:
 			omp = h
 		}
 	}
-	if cc.Key != "k" || omp.Key != "k" {
-		t.Errorf("keys = %q and %q, want the secret's", cc.Key, omp.Key)
+	if oc.Key != "k" || omp.Key != "k" {
+		t.Errorf("keys = %q and %q, want the secret's", oc.Key, omp.Key)
 	}
-	if cc.Home != filepath.Join("/tmp/r", "commandcode-home") || omp.Home != filepath.Join("/tmp/r", "omp-home") {
-		t.Errorf("homes = %q and %q, want each under RUNNER_TEMP", cc.Home, omp.Home)
+	if oc.Home != filepath.Join("/tmp/r", "opencode-home") || omp.Home != filepath.Join("/tmp/r", "omp-home") {
+		t.Errorf("homes = %q and %q, want each under RUNNER_TEMP", oc.Home, omp.Home)
 	}
 	if got := runner.HarnessSecrets(func(k string) string { return env[k] }); !slices.Equal(got, []string{"k"}) {
 		t.Errorf("secrets = %q, want the shared key once", got)

@@ -45,7 +45,7 @@ func TestBuildPlanPhaseWalksTheModelListOnTheRealAgent(t *testing.T) {
 			var gotModels, stepModels []string
 			for _, a := range attempts() {
 				gotModels = append(gotModels, a.model)
-				if a.flag != "--plan" {
+				if a.flag != "always-ask" {
 					t.Fatalf("attempt %+v, want the plan profile on every model", a)
 				}
 			}

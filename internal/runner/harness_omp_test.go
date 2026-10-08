@@ -365,33 +365,6 @@ func TestBuildRunsTheOmpHarnessFromTheRecordedFixtures(t *testing.T) {
 	}
 }
 
-// TestRouterRunsOmpAndFallsBackToCommandCode asserts the embedded plan
-// configuration runs omp first, and the command-code harness when omp is not
-// ready.
-func TestRouterRunsOmpAndFallsBackToCommandCode(t *testing.T) {
-	for name, tt := range map[string]struct {
-		ompKey         string
-		wantOmp, wantC int
-	}{
-		"omp ready":     {"k", 1, 0},
-		"omp not ready": {"", 0, 1},
-	} {
-		t.Run(name, func(t *testing.T) {
-			ompBin, ompRuns := scriptedOmp(t, "normal")
-			ccBin, ccRuns := scriptedCommandCode(t, "normal")
-			omp := OmpHarness{Bin: ompBin, Key: tt.ompKey, Home: t.TempDir()}
-			cc := CommandCodeHarness{Bin: ccBin, Key: "k", Home: t.TempDir()}
-			var out, errBuf strings.Builder
-			if err := NewRouter(ProfileBuild, omp, cc).WithModel(ompTestModel).Run(context.Background(), t.TempDir(), "", "p", "", &out, &errBuf); err != nil {
-				t.Fatal(err)
-			}
-			if len(ompRuns()) != tt.wantOmp || len(ccRuns()) != tt.wantC {
-				t.Fatalf("omp ran %d and command-code %d times, want %d and %d", len(ompRuns()), len(ccRuns()), tt.wantOmp, tt.wantC)
-			}
-		})
-	}
-}
-
 // TestWorkflowsInstallThePinnedOmp asserts both workflows that run an agent
 // install omp from its lockfile with bun and check the pinned version.
 func TestWorkflowsInstallThePinnedOmp(t *testing.T) {

@@ -25,9 +25,6 @@ func TestSumUsage(t *testing.T) {
 			`{"type":"text","part":{"text":"hello","tokens":{"input":999}}}`,
 			step("50", "10", "3", "2000", "4", "0.25"),
 		}, "\n"), Usage{Input: 150, Output: 30, Reasoning: 3, CacheRead: 3000, CacheWrite: 4, Cost: 0.75, Steps: 2}},
-		{"a cost event adds cost but is not a step", step("100", "20", "0", "1000", "0", "0") + "\n" +
-			`{"type":"cost","part":{"cost":0.0030955680000000004}}`,
-			Usage{Input: 100, Output: 20, CacheRead: 1000, Cost: 0.0030955680000000004, Steps: 1}},
 		{"malformed lines are skipped", "not json\n" + step("1", "2", "0", "0", "0", "0") + "\n{",
 			Usage{Input: 1, Output: 2, Steps: 1}},
 	}
