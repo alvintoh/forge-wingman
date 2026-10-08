@@ -1,7 +1,0 @@
-{
-  "private": true,
-  "description": "Pins the Command Code CLI and every dependency it installs, for model.yml and plan-smoke.yml.",
-  "dependencies": {
-    "command-code": "1.74.1"
-  }
-}

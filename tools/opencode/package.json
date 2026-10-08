@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "description": "Pins the opencode agent CLI and every dependency it installs, for model.yml and plan-smoke.yml.",
+  "dependencies": {
+    "opencode-ai": "1.18.30"
+  }
+}

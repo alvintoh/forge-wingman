@@ -44,7 +44,7 @@
       },
       "harnesses": {
         "default": "omp",
-        "fallbacks": ["command-code"]
+        "fallbacks": ["opencode"]
       },
       "rates": {
         "command-code/deepseek/deepseek-v4.1-flash": {

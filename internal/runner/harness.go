@@ -312,15 +312,6 @@ func writeAgentFile(path, body string) error {
 	return os.WriteFile(path, []byte(body), 0o600)
 }
 
-// exitCode is a failed agent process's own exit code, when it exited at all.
-func exitCode(err error) (int, bool) {
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return exitErr.ExitCode(), true
-	}
-	return 0, false
-}
-
 // classifyMarkers classifies a failed run's stderr by the configured allowance
 // and availability phrases (providers.json), falling back to the ordinary
 // agent-failure classification. The phrases are UNVERIFIED against a live

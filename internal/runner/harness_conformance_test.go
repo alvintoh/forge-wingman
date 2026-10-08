@@ -153,6 +153,13 @@ func runHarnessConformance(t *testing.T, hc harnessCase) {
 		if id, _ := SessionID(strings.NewReader(out.String())); id == "" {
 			t.Error("the translated events carry no session id")
 		}
+		if err := scanEvents(strings.NewReader(out.String()), func(e event) {
+			if e.Type == "step_finish" && e.Part.Time == 0 {
+				t.Error("a step carries no time, so it prices at peak")
+			}
+		}); err != nil {
+			t.Fatal(err)
+		}
 	})
 
 	t.Run("cost is tokens times the plan's rates", func(t *testing.T) {
@@ -186,14 +193,6 @@ func runHarnessConformance(t *testing.T, hc harnessCase) {
 				got, err := meterUsage(strings.NewReader(out.String()), hc.Model, plan)
 				if err != nil {
 					t.Fatal(err)
-				}
-				// A harness that does not time its steps keeps the figure it billed;
-				// one that does is repriced step by step.
-				if name == "figure present" && !stepsTimed(t, out.String()) {
-					if !approxEqual(got.Cost, raw.Cost) {
-						t.Fatalf("priced cost = %v, want the untimed harness's own figure %v", got.Cost, raw.Cost)
-					}
-					return
 				}
 				if got.Cost < low-1e-12 || got.Cost > high+1e-12 {
 					t.Fatalf("priced cost = %v, want tokens x the plan's rates, within [%v, %v]", got.Cost, low, high)
@@ -283,20 +282,6 @@ func addConformanceCase(hc harnessCase) {
 		panic("conformance case " + hc.Name + " is added twice")
 	}
 	conformanceCases[hc.Name] = hc
-}
-
-// stepsTimed reports whether every step_finish in events carries its time.
-func stepsTimed(t *testing.T, events string) bool {
-	t.Helper()
-	timed := true
-	if err := scanEvents(strings.NewReader(events), func(e event) {
-		if e.Type == "step_finish" && e.Part.Time == 0 {
-			timed = false
-		}
-	}); err != nil {
-		t.Fatal(err)
-	}
-	return timed
 }
 
 // TestEveryRegisteredHarnessPassesTheConformanceSuite is the selection gate: a

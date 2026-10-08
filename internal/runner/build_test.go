@@ -2079,7 +2079,6 @@ func TestRunAgentLogsEveryModelRequest(t *testing.T) {
 		`{"type":"step_finish","part":{"tokens":{"input":14946,"output":104,"cache":{"read":5248}}}}`,
 		`{"type":"text","part":{"text":"reading"}}`,
 		`{"type":"step_finish","part":{"tokens":{"input":15210,"output":96,"cache":{"read":14848}}}}`,
-		`{"type":"cost","part":{"cost":0.0030955680000000004}}`,
 	}, "\n") + "\n"}
 	deps, _, _ := testDeps(validObjects(), agent)
 	var logs bytes.Buffer

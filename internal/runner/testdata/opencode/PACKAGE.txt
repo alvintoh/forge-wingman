@@ -1,0 +1,14 @@
+package: opencode-ai
+version: 1.18.30
+integrity: sha512-oLcOLQE4XzDKy6T5L5d1RdVJvXHXwVlD4hRF5V317JbUQorrl2EyDdGZk5kbgv675J9FXp8usg92MZbEWhh6gQ==
+install: npm ci --prefix tools/opencode (binary: opencode; the platform binary arrives as an optional dependency)
+model used: command-code/deepseek/deepseek-v4.1-flash (a custom provider through @ai-sdk/openai-compatible, baseURL https://api.commandcode.ai/provider/v1)
+captured: 2026-10-08T02:31Z (peak), macOS
+auth: COMMAND_CODE_API_KEY in the environment, named by the config's {env:COMMAND_CODE_API_KEY}; nothing written to disk
+isolation: env -i, HOME and every XDG_* dir in a scratch dir, OPENCODE_CONFIG=<file>, OPENCODE_DISABLE_CLAUDE_CODE=1, OPENCODE_DISABLE_AUTOUPDATE=1, OPENCODE_DISABLE_MODELS_FETCH=1
+isolation added after capture: OPENCODE_DISABLE_PROJECT_CONFIG=1, since a repository's opencode.json or .opencode/ overrode the read-only agent's denies (opencode debug agent, offline); CLAUDE.md is then named by absolute path
+flags: run --format json --pure -m <id> --dir <dir> (--auto | --agent wingman-readonly), prompt on stdin; a resume adds -s <session>
+readonly: agent wingman-readonly, mode primary, permission {edit, bash, task: deny}; denying edit also removes the write tool (opencode debug agent); no --auto; readonly.effects shows no marker, marker2 or diff
+badkey: COMMAND_CODE_API_KEY unset; exit 1, an error event (APIError 401), empty stderr
+usage: step_finish part.tokens {input (excludes cache.read), output (excludes reasoning), reasoning, cache.read, cache.write}, cost 0; the step's time is the event's outer timestamp (epoch ms, step end); every event carries a top-level sessionID
+limit-declined case: not captured (cannot be forced)

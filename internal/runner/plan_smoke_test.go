@@ -40,7 +40,7 @@ func TestPlanSmokeRunsTheScriptedBinaryUnderThePlanProfileOnTheGivenModel(t *tes
 		t.Fatal(err)
 	}
 	got := attempts()
-	if len(got) != 1 || got[0] != (fallbackAttempt{"command-code/given", "--plan"}) || !res.Refused {
+	if len(got) != 1 || got[0] != (fallbackAttempt{"command-code/given", "always-ask"}) || !res.Refused {
 		t.Fatalf("attempts %+v, result %+v", got, res)
 	}
 }

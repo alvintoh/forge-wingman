@@ -42,16 +42,16 @@ jobs:
           echo "$GITHUB_WORKSPACE/tools/omp/node_modules/.bin" >> "$GITHUB_PATH"
           test "$(tools/omp/node_modules/.bin/omp --version)" = "omp/$(jq -r '.dependencies["@oh-my-pi/pi-coding-agent"]' tools/omp/package.json)"
 
-      # The Node version is model.yml's; the CLI's is tools/command-code's lockfile.
+      # The Node version is model.yml's; opencode's is tools/opencode's lockfile.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
-      - name: Install command-code
+      - name: Install opencode
         run: |
-          npm ci --prefix tools/command-code --no-audit --no-fund
-          echo "$GITHUB_WORKSPACE/tools/command-code/node_modules/.bin" >> "$GITHUB_PATH"
-          test "$(tools/command-code/node_modules/.bin/cmd --version)" = "$(jq -r '.dependencies["command-code"]' tools/command-code/package.json)"
+          npm ci --prefix tools/opencode --no-audit --no-fund
+          echo "$GITHUB_WORKSPACE/tools/opencode/node_modules/.bin" >> "$GITHUB_PATH"
+          test "$(tools/opencode/node_modules/.bin/opencode --version)" = "$(jq -r '.dependencies["opencode-ai"]' tools/opencode/package.json)"
 
       - name: Prove the plan agent refuses an edit, a new file and bash
         env:
