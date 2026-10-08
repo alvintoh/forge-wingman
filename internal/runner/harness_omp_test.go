@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -384,5 +385,25 @@ func TestWorkflowsInstallThePinnedOmp(t *testing.T) {
 				t.Errorf("%s has no %q", name, want)
 			}
 		}
+	}
+}
+
+func TestOmpRunsAGoatFreeModelMeteredAtNothing(t *testing.T) {
+	const model = "command-code/poolside/laguna-s-2.1-free"
+	bin, attempts := scriptedOmp(t, "laguna-s-2.1-free")
+	var out strings.Builder
+	h := OmpHarness{Bin: bin, Key: conformanceKey, Home: t.TempDir()}
+	if err := h.Agent(ProfileBuild, model).Run(context.Background(), t.TempDir(), "", "p", "", &out, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if got := attempts(); len(got) != 1 || !slices.Contains(got[0].args, "commandcode/poolside/laguna-s-2.1-free") {
+		t.Fatalf("attempts = %+v, want one run naming the free model to omp's own provider", got)
+	}
+	u, err := meterUsage(strings.NewReader(out.String()), model, providers.RatesFor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Input == 0 || u.Output == 0 || u.Cost != 0 {
+		t.Fatalf("usage = %+v, want tokens metered at $0", u)
 	}
 }

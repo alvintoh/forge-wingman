@@ -10,3 +10,4 @@ readonly: always-ask; edit, write and bash each refused ("requires approval but 
 badkey: COMMAND_CODE_API_KEY unset; exit 1, "No API key found" on stderr
 usage: assistant message_end carries usage {input (excludes cacheRead), output, cacheRead, cacheWrite, cost} and timestamp (epoch ms); session id on the first line's session event
 limit-declined case: not captured (cannot be forced)
+laguna-s-2.1-free: the normal prompt on commandcode/poolside/laguna-s-2.1-free (GOAT's free tier), same isolation and flags; captured 2026-10-08, omp 18.7.0; exit 0, two assistant message_end events on api openai-completions, every cost figure 0

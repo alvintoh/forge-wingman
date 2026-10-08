@@ -238,3 +238,16 @@ func TestCeilingStartNamesTheWindowEachCeilingMeters(t *testing.T) {
 		t.Error("a condition named a window")
 	}
 }
+
+func TestDecideChecksOnlyRunnerCostAgainstCashOnAFreeTier(t *testing.T) {
+	free := windowed.lastResort()
+	free.Runner.RatePerMinute = money.Dollar / 100
+	spent := Settled{CashCost: 25 * money.Dollar}
+	if fits, binding := Decide(free, "", Totals{ProviderCost: 5 * money.Dollar}, spent, Reservation{RunnerMinutes: 100}); !fits {
+		t.Fatalf("binding = %q, want paid provider spend not counted against cash", binding)
+	}
+	spent.CashMinutes = 2000 + 2100
+	if fits, binding := Decide(free, "", Totals{}, spent, Reservation{RunnerMinutes: 100}); fits || binding != CeilingCash {
+		t.Fatalf("fits = %v, binding = %q, want runner overage still bound by cash", fits, binding)
+	}
+}

@@ -51,8 +51,8 @@ func (p *Plans) PutDefinition(ctx context.Context, provider string, def prov.Def
 		data := map[string]any{"definition": def}
 		paths := []firestore.FieldPath{{"definition"}}
 		if before.Definition.Billing != def.Billing {
-			data["opted_in"] = false
-			paths = append(paths, firestore.FieldPath{"opted_in"})
+			data["opted_in"], data["private_opt_in"] = false, false
+			paths = append(paths, firestore.FieldPath{"opted_in"}, firestore.FieldPath{"private_opt_in"})
 		}
 		return tx.Set(ref, data, firestore.Merge(paths...))
 	})
@@ -99,12 +99,23 @@ func (p *Plans) AddReply(ctx context.Context, provider string, reply prov.Reply,
 // SetOptIn records whether the owner consents to spend on provider's per-token
 // plan, which must already be defined.
 func (p *Plans) SetOptIn(ctx context.Context, provider string, optedIn bool) error {
-	_, err := p.doc(provider).Update(ctx, []firestore.Update{{Path: "opted_in", Value: optedIn}})
+	return p.setConsent(ctx, provider, "opted_in", optedIn)
+}
+
+// SetPrivateOptIn records whether the owner consents to private repositories'
+// runs on provider's free tier, which must already be defined.
+func (p *Plans) SetPrivateOptIn(ctx context.Context, provider string, optedIn bool) error {
+	return p.setConsent(ctx, provider, "private_opt_in", optedIn)
+}
+
+// setConsent writes one of the owner's consent fields on provider's plan.
+func (p *Plans) setConsent(ctx context.Context, provider, field string, optedIn bool) error {
+	_, err := p.doc(provider).Update(ctx, []firestore.Update{{Path: field, Value: optedIn}})
 	if status.Code(err) == codes.NotFound {
 		return fmt.Errorf("plan %s is not defined", provider)
 	}
 	if err != nil {
-		return fmt.Errorf("recording the opt-in on plan %s: %w", provider, err)
+		return fmt.Errorf("recording %s on plan %s: %w", field, provider, err)
 	}
 	return nil
 }

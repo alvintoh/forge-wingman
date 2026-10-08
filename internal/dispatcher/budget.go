@@ -75,6 +75,9 @@ type BudgetConfig struct {
 	Cash Window
 	// Runner is the runner-minutes ceiling, checked independently (FR-22).
 	Runner RunnerMinutes
+	// ProviderFree is set for a run on a plan's free tier, whose provider cost
+	// Cash does not bound.
+	ProviderFree bool
 }
 
 // Reservation is one candidate run's claim on the budget: its estimated
@@ -185,13 +188,32 @@ func Decide(cfg BudgetConfig, model string, reserved Totals, settled Settled, es
 	// per-token provider has no windows, so its cost is what Cash exists to
 	// bound.
 	var providerCash money.Micros
-	if len(cfg.ProviderWindows) == 0 {
+	if len(cfg.ProviderWindows) == 0 && !cfg.ProviderFree {
 		providerCash = reserved.ProviderCost + settled.CashCost + estimate.ProviderCost
 	}
 	if providerCash+runnerCost > cfg.Cash.Limit {
 		return false, CeilingCash
 	}
 	return true, ""
+}
+
+// isProviderCeiling reports whether binding names one of the plan's own windows or model caps.
+func (cfg BudgetConfig) isProviderCeiling(binding string) bool {
+	if slices.ContainsFunc(cfg.ProviderWindows, func(w Window) bool { return w.Name == binding }) {
+		return true
+	}
+	for _, w := range cfg.ModelCaps {
+		if w.Name == binding {
+			return true
+		}
+	}
+	return false
+}
+
+// lastResort is the budget a run on a plan's free tier is admitted against:
+// cash and runner minutes, with none of the plan's own windows or caps.
+func (cfg BudgetConfig) lastResort() BudgetConfig {
+	return BudgetConfig{Cash: cfg.Cash, Runner: cfg.Runner, ProviderFree: true}
 }
 
 // stillBinds reports whether ceiling, the budget ceiling that withheld a run,

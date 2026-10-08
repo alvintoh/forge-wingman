@@ -97,6 +97,8 @@ type Plan struct {
 	Replies []Reply `firestore:"replies"`
 	// OptedIn is the owner's consent to a per-token provider's spend, written only by plan-optin.
 	OptedIn bool `firestore:"opted_in"`
+	// PrivateOptIn is the owner's consent to private repositories' runs on the plan's free tier, written only by plan-optin -private.
+	PrivateOptIn bool `firestore:"private_opt_in"`
 }
 
 // Configured reports whether the owner has recorded how the plan bills.

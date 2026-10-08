@@ -138,6 +138,12 @@ type Record struct {
 	ProviderVerdict providers.Verdict `firestore:"provider_verdict"`
 	// ModelLabels is what the ticket named at admission, never rewritten by the run.
 	ModelLabels ModelLabels `firestore:"model_labels"`
+	// Plan is the provider plan the run was claimed on.
+	Plan string `firestore:"plan"`
+	// LastResort is set when the run was claimed on the plan's free tier,
+	// whose models LastResortModels names in place of ModelLabels.
+	LastResort       bool        `firestore:"last_resort"`
+	LastResortModels ModelLabels `firestore:"last_resort_models"`
 	// SettledAt, SettledProviderCostMicros and SettledRunnerMinutes are
 	// written once, by Finalize: the run's actual cost, settled against the
 	// dispatch/ledger reservation the claim booked (adr/0003). Zero until
@@ -334,6 +340,7 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, in Finalize
 	rec.Private = existing.Private
 	rec.ProviderVerdict = existing.ProviderVerdict
 	rec.ModelLabels = existing.ModelLabels
+	rec.Plan, rec.LastResort, rec.LastResortModels = existing.Plan, existing.LastResort, existing.LastResortModels
 	identityErr := in.Identity.CheckAccount()
 	sum, err := ParseSummary(in.Summary, in.AttemptID, t, now)
 	switch {
@@ -404,13 +411,23 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, in Finalize
 	return rec, nil
 }
 
+// RunModels are the models the run's phases start on: the free tier's when it
+// was claimed on one, else what the ticket named.
+func (r Record) RunModels() ModelLabels {
+	if r.LastResort {
+		return r.LastResortModels
+	}
+	return r.ModelLabels
+}
+
 // Succeeded reports whether a run ended where it should: a PR opened, or nothing to change.
 func (r Record) Succeeded() bool {
 	return r.Outcome == OutcomePROpened || r.Outcome == OutcomeNoChanges
 }
 
 // breakerStops are the systemic stops that halt every dispatch until an
-// operator resets the breaker.
+// operator resets the breaker. An exhausted allowance is one only once the
+// plan's free models have refused too.
 var breakerStops = []StopReason{StopCredentialAbsent, StopIdentityMismatch, StopAllowanceExhausted}
 
 // Systemic reports whether the run's stop is one the owner is told of, and

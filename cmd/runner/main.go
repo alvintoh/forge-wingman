@@ -7,7 +7,7 @@
 //	runner enable-provider -provider <name>          admit a halted provider back to dispatch (AC5)
 //	runner reset-breaker                             clear the breaker a systemic stop tripped, admitting dispatch again
 //	runner plan-define     -provider <name> ...      record a provider plan's price, billing, limit behaviour, pages and harnesses
-//	runner plan-optin      -provider <name>          record the owner's consent to a per-token provider's spend
+//	runner plan-optin      -provider <name>          record the owner's consent to a per-token provider's spend, or with -private to private repos on its free tier
 //	runner plan-verdict    -provider <name> ...      record the verdict on a plan's terms with its wording and source
 //	runner plan-reply      -provider <name> ...      record a vendor reply and the verdict it leads to
 //	runner plan-list                                 print every plan side by side, flagging the ones to look at
@@ -196,7 +196,10 @@ func ticket(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	}
 	t := rec.Ticket()
 	logger.Info("ticketRead", "run", *runID, "ticket", t.ID)
-	return writeTicket(*out, e.output, t, rec.ModelLabels)
+	if rec.LastResort && rec.LastResortModels.Build == "" {
+		return fmt.Errorf("run %s was claimed on a free tier but names no free model", *runID)
+	}
+	return writeTicket(*out, e.output, t, rec.RunModels())
 }
 
 // writeTicket writes the ticket to path and the models it named to $GITHUB_OUTPUT.

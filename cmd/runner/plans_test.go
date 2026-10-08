@@ -5,10 +5,18 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"cloud.google.com/go/firestore"
+
+	"github.com/alvintoh/forge-wingman/internal/providers"
 	"github.com/alvintoh/forge-wingman/internal/runner"
+	"github.com/alvintoh/forge-wingman/internal/store"
 )
 
 func planEnv(account string) func(string) string {
@@ -55,5 +63,102 @@ func TestOpenPlansNeedsNoProviderForAListing(t *testing.T) {
 	_, _, err := openPlans(context.Background(), e, "", false, nil)
 	if err == nil || !strings.Contains(err.Error(), "GOOGLE_CLOUD_PROJECT") {
 		t.Fatalf("err = %v, want it to get past the provider check and stop at the missing project", err)
+	}
+}
+
+func TestPlanOptInPrivateRecordsOnlyThePrivateOptIn(t *testing.T) {
+	if os.Getenv("FIRESTORE_EMULATOR_HOST") == "" {
+		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
+	}
+	ctx := context.Background()
+	client, err := firestore.NewClient(ctx, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := "plan-optin-private-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	t.Cleanup(func() {
+		_, _ = client.Collection("provider_plans").Doc(provider).Delete(context.Background())
+		_ = client.Close()
+	})
+	plans := store.NewPlans(client)
+	if err := plans.PutDefinition(ctx, provider, providers.Definition{Name: "n", Billing: providers.BillingAllowance}); err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := run(ctx, logger, []string{"plan-optin", "-provider", provider, "-private"}, planEnv("octo")); err != nil {
+		t.Fatal(err)
+	}
+	plan, _, err := plans.Plan(ctx, provider)
+	if err != nil || !plan.PrivateOptIn || plan.OptedIn {
+		t.Fatalf("plan %+v, err %v, want only the private opt-in recorded", plan, err)
+	}
+}
+
+func TestTicketHandsTheBuildTheFreeTiersModelsOnAFreeTierClaim(t *testing.T) {
+	if os.Getenv("FIRESTORE_EMULATOR_HOST") == "" {
+		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
+	}
+	ctx := context.Background()
+	client, err := firestore.NewClient(ctx, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := "ticket-free-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	t.Cleanup(func() {
+		_, _ = client.Collection("runs").Doc(runID).Delete(context.Background())
+		_ = client.Close()
+	})
+	rec := runner.NewRecord(runID, runner.Ticket{ID: "ABC-1", Title: "t", Size: "S", Body: "b"}, time.Now())
+	rec.ModelLabels = runner.ModelLabels{Build: "p/paid"}
+	rec.LastResort, rec.LastResortModels = true, runner.ModelLabels{Build: "p/free-a", Review: "p/free-b", Plan: []string{"p/free-a"}}
+	if err := store.NewRecords(client).PutRecord(ctx, runID, rec); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	env := map[string]string{"GOOGLE_CLOUD_PROJECT": "p", "RUNNER_TEMP": dir, "GITHUB_RUN_ID": "42", "GITHUB_RUN_ATTEMPT": "1",
+		"WINGMAN_ACCOUNT": "octo", "GITHUB_REPOSITORY_OWNER": "octo", "GITHUB_OUTPUT": filepath.Join(dir, "output")}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := run(ctx, logger, []string{"ticket", "-run-id", runID, "-out", filepath.Join(dir, "ticket.json")}, func(k string) string { return env[k] }); err != nil {
+		t.Fatal(err)
+	}
+	out, err := os.ReadFile(env["GITHUB_OUTPUT"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "override_model=p/free-a") || strings.Contains(string(out), "p/paid") {
+		t.Fatalf("GITHUB_OUTPUT = %q, want the free tier's build model in place of the ticket's", out)
+	}
+}
+
+func TestTicketRefusesAFreeTierClaimNamingNoFreeModel(t *testing.T) {
+	if os.Getenv("FIRESTORE_EMULATOR_HOST") == "" {
+		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
+	}
+	ctx := context.Background()
+	client, err := firestore.NewClient(ctx, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := "ticket-nofree-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	t.Cleanup(func() {
+		_, _ = client.Collection("runs").Doc(runID).Delete(context.Background())
+		_ = client.Close()
+	})
+	rec := runner.NewRecord(runID, runner.Ticket{ID: "ABC-1", Title: "t", Size: "S", Body: "b"}, time.Now())
+	rec.ModelLabels = runner.ModelLabels{Build: "p/paid"}
+	rec.LastResort = true
+	if err := store.NewRecords(client).PutRecord(ctx, runID, rec); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	env := map[string]string{"GOOGLE_CLOUD_PROJECT": "p", "RUNNER_TEMP": dir, "GITHUB_RUN_ID": "42", "GITHUB_RUN_ATTEMPT": "1",
+		"WINGMAN_ACCOUNT": "octo", "GITHUB_REPOSITORY_OWNER": "octo", "GITHUB_OUTPUT": filepath.Join(dir, "output")}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	err = run(ctx, logger, []string{"ticket", "-run-id", runID, "-out", filepath.Join(dir, "ticket.json")}, func(k string) string { return env[k] })
+	if err == nil || !strings.Contains(err.Error(), "names no free model") {
+		t.Fatalf("err = %v, want the ticket refused rather than built on the paid model", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "ticket.json")); statErr == nil {
+		t.Fatal("ticket.json written for a free-tier claim with no free model")
 	}
 }

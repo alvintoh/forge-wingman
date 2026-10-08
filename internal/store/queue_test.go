@@ -5,6 +5,7 @@ import (
 	"errors"
 	"maps"
 	"os"
+	"reflect"
 	"slices"
 	"strconv"
 	"sync"
@@ -1346,5 +1347,47 @@ func TestBuildModelReadsTheTicketsBuildLabel(t *testing.T) {
 				t.Fatalf("buildModel = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestTryClaimOnAFreeTierRecordsThePlanAndItsModels(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	run := queuedRun(fresh("queue-claim-free"), 1)
+	forget(t, client, run.RunID)
+	resetLedger(t, client, 1)
+	if err := q.Enqueue(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	free := runner.ModelLabels{Build: "command-code/free-a", Review: "command-code/free-b", Plan: []string{"command-code/free-a", "command-code/free-b"}}
+	facts := openFacts
+	facts.Model, facts.LastResort = free.Build, &free
+	if ok, binding, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, facts, dispatcher.Reservation{RunnerMinutes: 12}); err != nil || !ok {
+		t.Fatalf("ok = %v, binding = %q, err = %v", ok, binding, err)
+	}
+	rec, err := NewRecords(client).GetRecord(ctx, run.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Plan != "command-code" || !rec.LastResort || !reflect.DeepEqual(rec.RunModels(), free) {
+		t.Fatalf("plan %q, last resort %v, models %+v, want the free tier's plan and models", rec.Plan, rec.LastResort, rec.RunModels())
+	}
+	if entry := readLedgerDoc(t, client).Reservations[run.RunID]; entry.ProviderCostMicros != 0 || entry.RunnerMinutes != 12 {
+		t.Fatalf("reservation = %+v, want runner minutes and no provider cost", entry)
+	}
+
+	if err := q.Release(ctx, run.RunID, queueAt); err != nil {
+		t.Fatal(err)
+	}
+	facts.Model, facts.LastResort = "command-code/paid", nil
+	if ok, _, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, facts, dispatcher.Reservation{}); err != nil || !ok {
+		t.Fatalf("ok = %v, err = %v, want the run reclaimed on the paid plan", ok, err)
+	}
+	rec, err = NewRecords(client).GetRecord(ctx, run.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.LastResort || !reflect.DeepEqual(rec.LastResortModels, runner.ModelLabels{}) {
+		t.Fatalf("last resort %v, models %+v, want both cleared by a paid claim", rec.LastResort, rec.LastResortModels)
 	}
 }

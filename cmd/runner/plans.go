@@ -51,12 +51,13 @@ func planDefine(ctx context.Context, logger *slog.Logger, e env, args []string) 
 }
 
 // planOptIn records the owner's consent to spend on a per-token provider, or
-// withdraws it. The dispatcher never writes it, so a ticket cannot opt a
-// provider in.
+// with -private to private repositories' runs on its free tier, or withdraws
+// it. The dispatcher never writes either, so a ticket cannot opt a provider in.
 func planOptIn(ctx context.Context, logger *slog.Logger, e env, args []string) error {
 	fs := flag.NewFlagSet("plan-optin", flag.ContinueOnError)
 	provider := fs.String("provider", "", "provider whose per-token spend the owner accepts; per provider, and cleared if its billing is later changed")
 	optedIn := fs.Bool("opted-in", true, "false withdraws the opt-in")
+	private := fs.Bool("private", false, "record the opt-in to private repositories' runs on the provider's free tier instead")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -65,10 +66,14 @@ func planOptIn(ctx context.Context, logger *slog.Logger, e env, args []string) e
 		return err
 	}
 	defer closeStore()
-	if err := plans.SetOptIn(ctx, *provider, *optedIn); err != nil {
+	set := plans.SetOptIn
+	if *private {
+		set = plans.SetPrivateOptIn
+	}
+	if err := set(ctx, *provider, *optedIn); err != nil {
 		return err
 	}
-	logger.Info("planOptInRecorded", "provider", *provider, "optedIn", *optedIn)
+	logger.Info("planOptInRecorded", "provider", *provider, "optedIn", *optedIn, "private", *private)
 	return nil
 }
 

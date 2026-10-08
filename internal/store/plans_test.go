@@ -220,18 +220,39 @@ func TestPutDefinitionWithdrawsTheOptInWhenBillingChanges(t *testing.T) {
 	if err := p.SetOptIn(ctx, id, true); err != nil {
 		t.Fatal(err)
 	}
+	if err := p.SetPrivateOptIn(ctx, id, true); err != nil {
+		t.Fatal(err)
+	}
 	free := planDef
 	free.Billing = prov.BillingFree
 	if err := p.PutDefinition(ctx, id, free); err != nil {
 		t.Fatal(err)
 	}
-	if got := readPlan(t, client, id); got.OptedIn || got.Definition.Billing != prov.BillingFree {
-		t.Fatalf("plan = %+v, want the new billing with the opt-in withdrawn", got)
+	if got := readPlan(t, client, id); got.OptedIn || got.PrivateOptIn || got.Definition.Billing != prov.BillingFree {
+		t.Fatalf("plan = %+v, want the new billing with both opt-ins withdrawn", got)
 	}
 	if err := p.PutDefinition(ctx, id, planDef); err != nil {
 		t.Fatal(err)
 	}
 	if got := readPlan(t, client, id); got.OptedIn || got.Definition.Billing != prov.BillingPerToken {
 		t.Fatalf("plan = %+v, want per-token again without the earlier opt-in", got)
+	}
+}
+
+func TestSetPrivateOptInLeavesTheSpendOptInAlone(t *testing.T) {
+	id, undefined := fresh("plan-private"), fresh("plan-private-none")
+	p, client := planStore(t, id, undefined)
+	ctx := context.Background()
+	if err := p.PutDefinition(ctx, id, planDef); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SetPrivateOptIn(ctx, id, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := readPlan(t, client, id); !got.PrivateOptIn || got.OptedIn {
+		t.Fatalf("plan = %+v, want only the private opt-in recorded", got)
+	}
+	if err := p.SetPrivateOptIn(ctx, undefined, true); err == nil || !strings.Contains(err.Error(), "is not defined") {
+		t.Fatalf("err = %v, want a refusal naming the undefined plan", err)
 	}
 }
