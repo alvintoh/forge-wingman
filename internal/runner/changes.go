@@ -27,7 +27,7 @@ func ParsePorcelain(out []byte) ([]string, error) {
 			return nil, fmt.Errorf("%w: entry of %d bytes", ErrPorcelain, len(e))
 		}
 		paths = append(paths, string(e[3:]))
-		if e[0] == 'R' || e[0] == 'C' {
+		if e[0] == 'R' || e[0] == 'C' || e[1] == 'R' || e[1] == 'C' {
 			i++
 			if i >= len(entries) {
 				return nil, fmt.Errorf("%w: rename without its source", ErrPorcelain)
@@ -82,6 +82,16 @@ func (w Worktree) Commit(ctx context.Context, message string) ([]string, error) 
 		}
 	}
 	diff, err := w.git(ctx, "diff", "--name-only", "-z", w.Base, "HEAD")
+	if err != nil {
+		return nil, err
+	}
+	return splitNUL(diff), nil
+}
+
+// TouchedPaths returns every path the branch adds, changes or removes since the
+// base, counting a rename as both its source and its destination.
+func (w Worktree) TouchedPaths(ctx context.Context) ([]string, error) {
+	diff, err := w.git(ctx, "diff", "--name-only", "--no-renames", "-z", w.Base, "HEAD")
 	if err != nil {
 		return nil, err
 	}

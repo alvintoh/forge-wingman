@@ -535,9 +535,9 @@ func prTemplate(t *testing.T) string {
 	return string(b)
 }
 
-func encodedSummary(t *testing.T, attemptID string, now time.Time) string {
+func encodedSummary(t *testing.T, attemptID string, now time.Time, edits ...func(*runner.Summary)) string {
 	tk := prRecord.Ticket()
-	raw, err := runner.Summary{
+	sum := runner.Summary{
 		Outcome: runner.OutcomeBuilt,
 		Phase:   runner.PhaseCommit,
 		Steps: []runner.Step{{Phase: runner.PhaseBuild, Round: 1, Model: "command-code/x",
@@ -548,7 +548,11 @@ func encodedSummary(t *testing.T, attemptID string, now time.Time) string {
 		CommitSubject:  "feat(runner): ABC-1 add the widget",
 		PRSummary:      "Adds the widget the runner needs.",
 		StartedAt:      now.Add(-time.Hour),
-	}.Encode()
+	}
+	for _, edit := range edits {
+		edit(&sum)
+	}
+	raw, err := sum.Encode()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -624,6 +628,34 @@ func TestRunWorkflowPassesTheBuildSummaryToPRMeta(t *testing.T) {
 		if !strings.Contains(job, want) {
 			t.Errorf("run.yml's pr-meta job lacks %q", want)
 		}
+	}
+}
+
+func TestRefuseWorkflowPush(t *testing.T) {
+	now := time.Now()
+	stopped := func(s *runner.Summary) {
+		s.Outcome, s.StopReason = runner.OutcomeStopped, runner.StopWorkflowChange
+		s.StopDetail = "touches files under .github/workflows/, which the run cannot push: .github/workflows/ci.yml"
+	}
+	for name, tt := range map[string]struct {
+		raw     string
+		refused bool
+	}{
+		"a workflow change is refused": {encodedSummary(t, "42-1", now, stopped), true},
+		"a built summary is not":       {encodedSummary(t, "42-1", now), false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var log strings.Builder
+			logger := slog.New(slog.NewTextHandler(&log, nil))
+			err := refuseWorkflowPush(logger, buildSummary(logger, tt.raw, "42-1", prRecord.Ticket(), now))
+			if tt.refused != errors.Is(err, errRunFailed) {
+				t.Fatalf("err = %v, want refused %v", err, tt.refused)
+			}
+			if tt.refused != strings.Contains(log.String(), "msg=pushRefused") ||
+				tt.refused != strings.Contains(log.String(), ".github/workflows/ci.yml") {
+				t.Fatalf("log = %q", log.String())
+			}
+		})
 	}
 }
 

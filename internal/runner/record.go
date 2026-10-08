@@ -97,6 +97,9 @@ const (
 	// StopCredentialAbsent reports a model whose plan's harnesses were all
 	// unready for want of their key.
 	StopCredentialAbsent StopReason = "credential-absent"
+	// StopWorkflowChange reports a plan or build touching a file under
+	// .github/workflows/, which the run's GitHub App has no permission to push.
+	StopWorkflowChange StopReason = "workflow-change"
 )
 
 // gates are the checks run.yml's check job — and RunChecks, in-job — run on
