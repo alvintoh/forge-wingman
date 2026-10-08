@@ -77,7 +77,13 @@ Auto-merge is off until both are set:
 
 With both set, a ready S or M PR that is not in the review sample, edits nothing
 outside its plan and fails no check gate requests a squash auto-merge. A push to
-its branch afterwards withdraws it (`automerge-withdraw.yml`).
+its branch afterwards withdraws it (`automerge-withdraw.yml`). The request is made
+only while `main` requires `go` and `web`.
+
+Do not set `WINGMAN_AUTO_MERGE` to `on` yet. The decision reads `ready` and the
+out-of-plan list from the model job's outputs, and the build agent has a shell on
+that runner, so it could forge them. The switch is safe once the review runs in its
+own job and the plan's file list comes from a trusted record.
 
 ## Rolling out the publisher
 
