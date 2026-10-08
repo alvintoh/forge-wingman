@@ -1,11 +1,13 @@
 # One run of the ticket in run record `run_id`, job by job: `ticket` reads it from the
 # record; `model` (model.yml) builds, holding no GitHub token and no credential that can
 # reach a run record; `check` runs the gates on the bundled branch with no token and no
-# secret; `pr-meta` renders the PR from the record under the runner identity; `pr` opens
-# the draft with fixed steps, holding GitHub write and no GCP identity; `record`
-# validates the model's summary and merges the outcome into the record whatever happened.
+# secret; `pr-meta` renders the PR from the record under the runner identity and decides
+# auto-merge; `pr` opens the PR with fixed steps, holding GitHub write and no GCP
+# identity; `record` validates the model's summary and merges the outcome into the record
+# whatever happened.
 # Needs the GCP_WIF_PROVIDER, GCP_SERVICE_ACCOUNT, GCP_MODEL_SERVICE_ACCOUNT and
-# WINGMAN_ACCOUNT variables (infra/README.md) and the COMMANDCODE_API_KEY secret. Workload Identity Federation trusts main only, so dispatch
+# WINGMAN_ACCOUNT variables (infra/README.md) and the COMMANDCODE_API_KEY secret; the
+# WINGMAN_AUTO_MERGE variable is optional and off unless set to `on`. Workload Identity Federation trusts main only, so dispatch
 # from main.
 name: run
 
@@ -195,6 +197,7 @@ jobs:
       title: ${{ steps.meta.outputs.title }}
       branch_segment: ${{ steps.meta.outputs.branch_segment }}
       body: ${{ steps.meta.outputs.body }}
+      auto_merge: ${{ steps.meta.outputs.auto_merge }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -224,10 +227,12 @@ jobs:
           LOOP_DETAIL: ${{ needs.model.outputs.loop_detail }}
           ATTEMPT_ID: ${{ needs.model.outputs.attempt_id }}
           SUMMARY: ${{ needs.model.outputs.summary }}
+          AUTO_MERGE_SWITCH: ${{ vars.WINGMAN_AUTO_MERGE }}
           WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
         run: >-
           "$RUNNER_TEMP/runner" pr-meta -run-id "$RUN_ID" -failed-gate "$FAILED_GATE" -run-url "$RUN_URL"
           -loop-detail "$LOOP_DETAIL" -attempt-id "$ATTEMPT_ID" -summary "$SUMMARY"
+          -auto-merge-switch "$AUTO_MERGE_SWITCH"
 
   pr:
     needs: [model, pr-meta]
@@ -244,6 +249,7 @@ jobs:
       # Names why the push could not be made, so the record job reports the
       # condition rather than a bare pr job failure.
       stop_reason: ${{ steps.rebase.outputs.stop_reason }}
+      auto_merge: ${{ steps.auto-merge.outputs.requested }}
     steps:
       - run: echo "STARTED=$(date +%s)" >> "$GITHUB_ENV"
 
@@ -334,6 +340,20 @@ jobs:
           echo "url=${url}" >> "$GITHUB_OUTPUT"
           echo "duration_s=$(( $(date +%s) - STARTED ))" >> "$GITHUB_OUTPUT"
 
+      # Branch protection's required checks hold the merge; pinning the pushed head
+      # means a later push cannot ride on this request. A failed request leaves a
+      # ready PR for the owner.
+      - id: auto-merge
+        name: Request auto-merge
+        if: needs.pr-meta.outputs.auto_merge == 'true' && needs.model.outputs.ready == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          URL: ${{ steps.open.outputs.url }}
+        run: |
+          gh pr merge "$URL" --auto --squash --match-head-commit "$(git rev-parse HEAD)"
+          echo "requested=true" >> "$GITHUB_OUTPUT"
+
       # workflow_dispatch is the one GITHUB_TOKEN event that starts a run without approval.
       # The PR is the deliverable, so a failed dispatch leaves CI to be started by hand.
       - name: Start CI on the branch
@@ -360,6 +380,7 @@ jobs:
       PR_DURATION: ${{ needs.pr.outputs.duration_s || '0' }}
       FAILED_GATE: ${{ needs.check.result != 'skipped' && (needs.check.outputs.failed_gate || 'unfinished') || '' }}
       PR_STOP_REASON: ${{ needs.pr.outputs.stop_reason }}
+      AUTO_MERGE: ${{ needs.pr.outputs.auto_merge == 'true' }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
     steps:
@@ -391,6 +412,7 @@ jobs:
           -run-id "$RUN_ID" -attempt-id "$ATTEMPT_ID" -summary "$SUMMARY" -pr-url "$PR_URL"
           -run-result "$RUN_RESULT" -pr-result "$PR_RESULT" -pr-duration-s "$PR_DURATION"
           -failed-gate "$FAILED_GATE" -pr-stop-reason "$PR_STOP_REASON" -run-url "$RUN_URL"
+          -auto-merge="$AUTO_MERGE"
 
       # A summary too large to pass as an argument fails the step before record runs,
       # so record never reports started; any later failure leaves the record as it is.

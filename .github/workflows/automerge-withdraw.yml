@@ -1,0 +1,41 @@
+# Withdraws auto-merge from a run's PR when anyone pushes to its branch after the
+# run requested it, so a push nobody reviewed never merges on the run's request.
+# pull_request_target runs this file as it is on main, so a branch cannot rewrite
+# it; it never checks the branch out.
+name: automerge-withdraw
+
+on:
+  pull_request_target:
+    types: [synchronize]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  withdraw:
+    if: >-
+      startsWith(github.event.pull_request.head.ref, 'wingman/') &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # GitHub lets those with write access to the repository disable auto-merge;
+    # pull-requests: write is for the comment.
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Withdraw auto-merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSHER: ${{ github.actor }}
+        run: |
+          [[ "$(gh pr view "$PR" --json autoMergeRequest --jq '.autoMergeRequest != null')" == true ]] \
+            || { echo "auto-merge is not requested"; exit 0; }
+          gh pr merge "$PR" --disable-auto
+          gh pr comment "$PR" --body "Auto-merge withdrawn: ${PUSHER} pushed ${HEAD_SHA:0:12} after the run requested it. Merge by hand once reviewed."

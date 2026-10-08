@@ -631,6 +631,44 @@ func TestRunWorkflowPassesTheBuildSummaryToPRMeta(t *testing.T) {
 	}
 }
 
+func TestRunWorkflowRequestsAutoMergeOnlyOnPRMetasDecision(t *testing.T) {
+	yml, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "run.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"AUTO_MERGE_SWITCH: ${{ vars.WINGMAN_AUTO_MERGE }}",
+		`-auto-merge-switch "$AUTO_MERGE_SWITCH"`,
+		"if: needs.pr-meta.outputs.auto_merge == 'true' && needs.model.outputs.ready == 'true'",
+		`gh pr merge "$URL" --auto --squash --match-head-commit`,
+		"AUTO_MERGE: ${{ needs.pr.outputs.auto_merge == 'true' }}",
+		`-auto-merge="$AUTO_MERGE"`,
+	} {
+		if !strings.Contains(string(yml), want) {
+			t.Errorf("run.yml lacks %q", want)
+		}
+	}
+}
+
+func TestWithdrawWorkflowDisablesAutoMergeOnAPushToARunsBranch(t *testing.T) {
+	yml, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "automerge-withdraw.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"pull_request_target:\n    types: [synchronize]",
+		"startsWith(github.event.pull_request.head.ref, 'wingman/')",
+		`gh pr merge "$PR" --disable-auto`,
+	} {
+		if !strings.Contains(string(yml), want) {
+			t.Errorf("automerge-withdraw.yml lacks %q", want)
+		}
+	}
+	if strings.Contains(string(yml), "actions/checkout") {
+		t.Error("automerge-withdraw.yml checks out the branch it runs for")
+	}
+}
+
 func TestRefuseWorkflowPush(t *testing.T) {
 	now := time.Now()
 	stopped := func(s *runner.Summary) {
@@ -654,6 +692,40 @@ func TestRefuseWorkflowPush(t *testing.T) {
 			if tt.refused != strings.Contains(log.String(), "msg=pushRefused") ||
 				tt.refused != strings.Contains(log.String(), ".github/workflows/ci.yml") {
 				t.Fatalf("log = %q", log.String())
+			}
+		})
+	}
+}
+
+func TestAutoMerge(t *testing.T) {
+	// run-0 falls in the review sample and run-abc-12 does not.
+	const unsampled, sampled = "run-abc-12", "run-0"
+	for name, tt := range map[string]struct {
+		switchValue, runID, size, failedGate string
+		edit                                 func(*runner.Summary)
+		want                                 bool
+	}{
+		"a ready M run requests it":       {"on", unsampled, "M", "", nil, true},
+		"a ready S run requests it":       {"on", unsampled, "S", "", nil, true},
+		"an L run does not":               {"on", unsampled, "L", "", nil, false},
+		"a sampled run does not":          {"on", sampled, "M", "", nil, false},
+		"a draft does not":                {"on", unsampled, "M", "", func(s *runner.Summary) { s.Ready = false }, false},
+		"an out-of-plan edit does not":    {"on", unsampled, "M", "", func(s *runner.Summary) { s.OutOfPlanFiles = []string{"x.go"} }, false},
+		"a workflow change does not":      {"on", unsampled, "M", "", func(s *runner.Summary) { s.StopReason = runner.StopWorkflowChange }, false},
+		"a failed check gate does not":    {"on", unsampled, "M", "test", nil, false},
+		"the switch unset does not":       {"", unsampled, "M", "", nil, false},
+		"any value but on does not":       {"true", unsampled, "M", "", nil, false},
+		"the switch in capitals does not": {"ON", unsampled, "M", "", nil, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sum := runner.Summary{Outcome: runner.OutcomeBuilt, Ready: true}
+			if tt.edit != nil {
+				tt.edit(&sum)
+			}
+			tk := prRecord.Ticket()
+			tk.Size = tt.size
+			if got := autoMerge(tt.switchValue, tt.runID, tk, sum, tt.failedGate); got != tt.want {
+				t.Fatalf("autoMerge = %v, want %v", got, tt.want)
 			}
 		})
 	}

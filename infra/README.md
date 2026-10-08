@@ -57,6 +57,28 @@ The rule stack's publish workflow needs two variables on that repository:
 | `GCP_WIF_PROVIDER` | `rule_stack_workload_identity_provider` |
 | `GCP_PUBLISHER_SERVICE_ACCOUNT` | `publisher_service_account` |
 
+## Pull requests and auto-merge
+
+run.yml's pr job opens the PR with the run's GitHub App installation token
+(`WINGMAN_APP_CLIENT_ID` variable, `WINGMAN_APP_PRIVATE_KEY` secret), set by hand.
+The App needs Contents and Pull requests read/write on this repository and no
+Workflows permission, so a run can never push a change under `.github/workflows/`.
+
+`main` is held by the `protect-main` ruleset: the `go` and `web` checks must pass,
+and no approval is required. An auto-merge request waits on those checks; the
+runner only requests it and can change none of them.
+
+Auto-merge is off until both are set:
+
+| Setting | Value |
+|---|---|
+| Repository "Allow auto-merge" (`allow_auto_merge`) | on |
+| `WINGMAN_AUTO_MERGE` variable | `on`; any other value or none leaves it off |
+
+With both set, a ready S or M PR that is not in the review sample, edits nothing
+outside its plan and fails no check gate requests a squash auto-merge. A push to
+its branch afterwards withdraws it (`automerge-withdraw.yml`).
+
 ## Rolling out the publisher
 
 1. Merge.
