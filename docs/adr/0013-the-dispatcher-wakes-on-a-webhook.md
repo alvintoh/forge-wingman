@@ -2,6 +2,7 @@
 
 - **Date:** 2026-09-24
 - **Status:** accepted — built in Phase 3, with the dispatcher it wakes
+- *Updated (2026-10-08, FRG-22 planning): the webhook also acknowledges the agent session, so it holds `linear-token`; the row is a marker keyed on the agent SESSION id, so a redelivery is a no-op while a new session on the same issue is acknowledged and woken; one run per issue stays guaranteed by the poll's `runs/<identifier>` create.*
 - **Supersedes:** `tech-design-v1.md` §Two containers that deliberately do NOT exist,
   *"No inbound webhook receiver"*
 
@@ -50,9 +51,12 @@ Linear: you delegate a ticket
    unchanged. It cannot sit behind IAP, since Linear cannot authenticate to it, so
    it verifies the HMAC-SHA256 `Linear-Signature` over the raw body and rejects
    anything else.
-2. **It only enqueues and wakes.** Write a new-ticket row keyed on the issue id —
-   a duplicate write is a no-op, because the poll can deliver the same ticket — then
-   start a dispatcher execution, and return inside Linear's 5-second limit. Sizing,
+2. **It only enqueues and wakes.** Write a marker row keyed on the agent session id —
+   a redelivery of the same session is a no-op, and the poll's own `runs/<identifier>`
+   create keeps one run per issue when the poll delivers the same ticket — acknowledge the agent session with a `thought` (Linear marks a session
+   unresponsive without one inside 10 seconds), then start a dispatcher execution, and
+   return inside Linear's 5-second limit. Only `created` events act; it also rejects a
+   `webhookTimestamp` older than 60 seconds, as Linear recommends. Sizing,
    selection and the budget guard stay in the dispatcher (`adr/0003`).
 3. **The poll stays at 15 minutes.** FR-1's tolerance becomes the WORST case — a lost
    webhook — rather than the normal one.
@@ -64,7 +68,9 @@ delivery. Choosing it for latency is the owner's call.*
 ## Consequences
 
 - **A public attack surface exists**, bounded to one route that verifies a signature
-  and writes one row. It holds no credential beyond the store and the job trigger.
+  and writes one row. ~~It holds no credential beyond the store and the job trigger.~~
+  *Updated (2026-10-08):* it also holds `linear-token`, used only to post the
+  session acknowledgement, and only after the signature verifies.
 - **Enqueue latency drops from ≤15 minutes to seconds**; throughput does not change,
   since 96 polls a day already exceed level 5's 10 runs.
 - **Two paths enqueue, so the enqueue must be idempotent** — the same property the

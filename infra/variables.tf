@@ -38,6 +38,12 @@ variable "dispatcher_image" {
   type = string
 }
 
+# The Dockerfile builds the webhook's image with CMD=webhook; as with the
+# dispatcher's, nothing here pushes it.
+variable "webhook_image" {
+  type = string
+}
+
 # The Linear agent the job acts for, as Linear's own id for it. A poll refuses
 # to admit anything if the token it reads is a different agent's.
 variable "linear_delegate" {

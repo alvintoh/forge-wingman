@@ -50,19 +50,21 @@ a provider with no plan record with its billing recorded, and
 `model-per-token-not-opted-in` for a per-token provider the owner has not
 opted in.
 
-The dispatcher looks for new tickets **every 15 minutes**: Cloud Scheduler wakes the
-job, and one execution is one poll. A ticket delegated just after a poll waits for
-the next one.
+The dispatcher looks for new tickets as soon as one is delegated: Linear's webhook
+reaches `cmd/webhook`, which starts a poll within seconds. Cloud Scheduler also wakes
+the job **every 15 minutes**, so a delivery that never arrives costs one interval, not
+the ticket. One execution is one poll.
 
 ## Shape
 
-One repository, one product, two projects — the Go module and `web/` — and three
+One repository, one product, two projects — the Go module and `web/` — and four
 deployables sharing one store. The projects share no packages across the language
 line, so there is no workspace and no `apps/` level:
 
 | Path | Deployable | Trigger |
 |---|---|---|
-| `cmd/dispatcher` | Cloud Run job | Cloud Scheduler, every 15 min |
+| `cmd/dispatcher` | Cloud Run job | the webhook, and Cloud Scheduler every 15 min |
+| `cmd/webhook` | public Cloud Run service; Linear's signature is the gate | Linear's agent-session webhook |
 | `cmd/runner` | Go binary in a per-repo GitHub Actions workflow | dispatched per run |
 | `cmd/surface` | Cloud Run service behind IAP, serving `web/` | HTTP |
 | `web/` | Vite + React + TanStack Router/Form SPA, embedded in `surface` | — |

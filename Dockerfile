@@ -1,5 +1,6 @@
-# One image recipe for both Cloud Run deployables: CMD=surface (the default)
-# or CMD=dispatcher. The runner is not an image — GitHub Actions runs it.
+# One image recipe for every Cloud Run deployable: CMD=surface (the default),
+# CMD=dispatcher or CMD=webhook. The runner is not an image — GitHub Actions
+# runs it.
 
 FROM oven/bun:1 AS web
 WORKDIR /src/web

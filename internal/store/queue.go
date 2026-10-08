@@ -19,9 +19,10 @@ import (
 )
 
 const (
-	// dispatchCollection holds the bookkeeping the dispatcher owns: one
+	// dispatchCollection holds the bookkeeping beside the run records: one
 	// rejected-<ticket id> doc per ticket the queue would not admit, which a
-	// later refusal of the same ticket replaces, and the single ledger
+	// later refusal of the same ticket replaces, one webhook-<session id> doc
+	// per Linear agent session the webhook has taken, and the single ledger
 	// document (adr/0003).
 	dispatchCollection = "dispatch"
 	rejectedPrefix     = "rejected-"

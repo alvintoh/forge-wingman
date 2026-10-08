@@ -43,3 +43,12 @@ output "dispatcher_schedule" {
 output "dispatcher_secrets" {
   value = sort(tolist(local.dispatcher_secrets))
 }
+
+output "webhook_service_account" {
+  value = google_service_account.webhook.email
+}
+
+# The address to give the Linear app as its webhook URL.
+output "webhook_url" {
+  value = "${google_cloud_run_v2_service.webhook.uri}/linear"
+}
