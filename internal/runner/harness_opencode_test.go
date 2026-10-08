@@ -609,10 +609,10 @@ func TestRouterRunsOmpAndFallsBackToOpencode(t *testing.T) {
 	}
 }
 
-// TestWorkflowsInstallThePinnedOpencode asserts both workflows that run an
+// TestWorkflowsInstallThePinnedOpencode asserts the workflows that run an
 // agent install opencode from its lockfile with npm and check the pinned version.
 func TestWorkflowsInstallThePinnedOpencode(t *testing.T) {
-	for _, name := range []string{"model.yml", "plan-smoke.yml"} {
+	for _, name := range []string{"model.yml", "plan-smoke.yml", "review-smoke.yml"} {
 		b, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", name))
 		if err != nil {
 			t.Fatal(err)

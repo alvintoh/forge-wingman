@@ -1,0 +1,65 @@
+# Runs the restricted review agent on a fixture diff with each review model in turn, and writes each
+# model's outcome, cost and whether it flagged the planted defect to the job summary. A model passes
+# when its findings parse and the plan meters its run at $0; the job fails only when none passes.
+# Manual: it spends model calls. Needs the COMMANDCODE_API_KEY secret; no cloud identity.
+name: review-smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      review_models:
+        description: the review models to try, comma-separated provider/model; none may be the build model or one of its fallbacks
+        type: string
+        default: command-code/meta/muse-spark-1.3-contributor,command-code/poolside/laguna-s-2.1-free
+      build_model:
+        description: the build model, as provider/model; empty uses the default in internal/runner/models.json
+        type: string
+
+permissions: {}
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
+
+      # The bun version is model.yml's; omp's is tools/omp's lockfile.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+
+      - name: Install omp
+        run: |
+          bun install --frozen-lockfile --cwd tools/omp
+          echo "$GITHUB_WORKSPACE/tools/omp/node_modules/.bin" >> "$GITHUB_PATH"
+          test "$(tools/omp/node_modules/.bin/omp --version)" = "omp/$(jq -r '.dependencies["@oh-my-pi/pi-coding-agent"]' tools/omp/package.json)"
+
+      # The Node version is model.yml's; opencode's is tools/opencode's lockfile.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Install opencode
+        run: |
+          npm ci --prefix tools/opencode --no-audit --no-fund
+          echo "$GITHUB_WORKSPACE/tools/opencode/node_modules/.bin" >> "$GITHUB_PATH"
+          test "$(tools/opencode/node_modules/.bin/opencode --version)" = "$(jq -r '.dependencies["opencode-ai"]' tools/opencode/package.json)"
+
+      - name: Try each review model on the fixture diff
+        env:
+          REVIEW_MODELS: ${{ inputs.review_models }}
+          BUILD_MODEL: ${{ inputs.build_model }}
+          COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
+        run: '"$RUNNER_TEMP/runner" review-smoke -review-models "$REVIEW_MODELS" -build-model "$BUILD_MODEL"'
