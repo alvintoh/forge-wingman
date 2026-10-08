@@ -25,13 +25,6 @@ resource "google_secret_manager_secret_iam_member" "webhook_signing" {
   member    = google_service_account.webhook.member
 }
 
-# The session acknowledgement is the only call the webhook makes with it.
-resource "google_secret_manager_secret_iam_member" "webhook_linear_token" {
-  secret_id = google_secret_manager_secret.dispatcher["linear-token"].id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = google_service_account.webhook.member
-}
-
 resource "google_cloud_run_v2_job_iam_member" "webhook_invoker" {
   project  = var.project_id
   name     = google_cloud_run_v2_job.dispatcher.name
@@ -89,7 +82,6 @@ resource "google_cloud_run_v2_service" "webhook" {
   depends_on = [
     google_project_iam_member.webhook_datastore,
     google_secret_manager_secret_iam_member.webhook_signing,
-    google_secret_manager_secret_iam_member.webhook_linear_token,
     google_secret_manager_secret_iam_member.webhook_linear_app,
     google_cloud_run_v2_job_iam_member.webhook_invoker,
     google_project_service.this,
