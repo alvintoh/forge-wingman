@@ -2,7 +2,7 @@
 name: backend-reviewer
 domain: backend
 description: Review server-side code — input validation, error handling, data access, and security.
-stacks: [go, gcp, command-code, omp, opencode]
+stacks: [go, gcp, command-code, omp, opencode, linear]
 owns-readme: Environment Variables
 layer: specialized
 ---
@@ -455,10 +455,32 @@ Model calls bill to the GOAT plan through its Provider API (`command-code.md`).
   earlier custom `command-code-goat` provider written on the false belief that omp had none; the
   id `commandcode` is omp's own and cannot be renamed.)*
 - **`~/.omp/agent/config.yml`** (owner's, 2026-10-07): `modelRoles: {default:
-  commandcode/deepseek/deepseek-v4.1-flash:high}`, `startup: {checkUpdate: false}`,
+  commandcode/deepseek/deepseek-v4.1-flash:high, plan/slow: …flash:max}`, `retry.fallbackChains:
+  {default: [commandcode/poolside/laguna-s-2.1-free, commandcode/inclusionai/ling-3.1-flash:free]}`, `startup: {checkUpdate: false}`,
   `enabledProviders: [claude]`, `tools: {approvalMode: yolo}`, `advisor: {enabled: false}`,
   `symbolPreset: nerd` (`unicode` is the fallback where Nerd icons do not draw — the thinking level
-  once showed as `~`). `modelRoles` lives in `config.yml`, not `models.yml` (`docs/models.md`).
+  once showed as `~`), plus the look keys an onboarding agent would otherwise miss: `composer:
+  {shape: band}`, `theme: {dark: titanium}`, `display: {collapseCompacted: true, hideToolActivity:
+  true}`, `hideThinkingBlock: false` and `setupVersion` (omp's marker that the setup wizard has run
+  — the wizard reopens without it). **Only three of those values differ from 18.7.0's stock
+  defaults: `symbolPreset: nerd` (`unicode`), `startup.checkUpdate: false` (`true`) and
+  `display.hideToolActivity: true` (`false` — the owner's "hide output"; the registry's own words
+  are "Hide model-initiated tool calls and results from the transcript").** `titanium`, `band`,
+  `collapseCompacted: true`, `hideThinkingBlock: false`, `tools.approvalMode: yolo` and
+  `defaultThinkingLevel: high` are stock, so a key missing from the file is not a missing setting
+  (verified 2026-10-08 against the WSL device's `config.yml`, `omp config list` and the installed
+  registry). The terminal's own FACE must be the Nerd Font — an install alone is not in force, and
+  GDI+ is not a valid probe for the glyphs; `/onboard-device` step 8's Nerd Font row has the
+  measurement. `modelRoles` lives in `config.yml`, not `models.yml` (`docs/models.md`). `~/.omp/agent/mcp.json`
+  hides opensafari and the 5 Playwright servers from omp (`disabledServers`). **Tips:** `/fresh` resets a
+  stale prompt cache without losing the transcript; `ultrathink` in a prompt asks for the deepest
+  reasoning on that turn. **Measured 2026-10-07:** hiding those 6 MCP servers cut the starting prompt
+  by only 344 tokens (62,456 → 62,112); the start is mostly the rule layers and skill list, which
+  caching covers. **A built-in model's limits can be wrong:** omp asks Ling 3.1 Flash (free) for 64,000
+  output tokens and Command Code rejects anything over 32,768, so `models.yml` `modelOverrides` caps it
+  (verified 2026-10-07; re-check after an omp upgrade). **Open measurement:** Muse Spark 1.3 Contributor
+  costs about half of Flash per run on GOAT and Meta reports it far stronger on coding; compare it
+  against Flash on our tasks before using it as a primary (training rights go to Meta).
 - **`~/.omp/agent/.env`** (mode 600) holds `COMMAND_CODE_API_KEY=…`; omp loads the active agent
   dir's `.env` for keys not already set (`docs/environment-variables.md`, `$env` loading order
   step 3). **The owner pastes the key; an agent never types it.** On the first Mac it was copied
@@ -476,22 +498,28 @@ Model calls bill to the GOAT plan through its Provider API (`command-code.md`).
 - ⚠️ **`-p` reads piped stdin and waits forever on an open pipe** (stderr repeats `Still starting
   … phase: readPipedInput`). From an agent shell or a backgrounded job, pass `< /dev/null` or pipe
   the prompt in. *(Verified 2026-10-07: two "hangs" of 3 and 12 minutes were this, not the config.)*
-- ⚠️ **This Mac's omp is locally patched for the `ask` number keys below.** Stock 18.7.0's `ask`
-  dialog has no digit keys (bun's cached `ask-dialog.ts`). On 2026-10-07 an omp session added
-  numbering and 1–9 to the installed `ask-dialog.ts` and rebuilt `dist/cli.js` (original kept as
-  `cli.js.pre-digitselect`). Any reinstall, upgrade or new device drops it until it lands upstream.
-- **Number keys select in BOTH menu types, by different mechanisms.** In the `ask` dialog the
-  numbering is the dialog's own (`pi-tui/src/overlays/ask-dialog.ts`, `#handleQuestionInput`): `1`–`9`
-  jumps to row N and, on a single-select question, confirms it; a multi-select only moves the cursor
-  (`space` toggles), and the unnumbered `Other` row stays arrow-only — so an `ask` label must NOT
-  carry its own `N. ` prefix. In a HookSelector menu (`/review`, the model/session pickers) the digit
-  instead matches a LABEL already starting with `N. ` (`hook-selector.ts`, `#handleQuickSelect`), and
-  stops working once the search query is non-empty. So in `ask` — where we author the labels — ≤9
-  options keeps every row digit-reachable; a HookSelector menu additionally needs numbered labels,
-  which only its own entries supply.
-  *(Verified 2026-10-07 against this Mac's patched omp 18.7.0: source-read, plus a keypress that committed an
-  `ask` option; an earlier same-day note recorded 1 and 2 doing nothing there and did not reproduce.
-  Re-test the picker rather than trusting a note, this one included.)*
+- ⚠️ **The `ask` number keys below are a LOCAL PATCH — stock omp has none.** Stock 18.7.0's
+  `#handleQuestionInput` handles page/up/down, `n`, Enter and Space only. Apply
+  `patch-omp-ask-digit-select.py` (poly-mind root) to the installed bundle: it numbers the option
+  rows `N. `, adds `1`-`9`, keeps the original as `cli.js.pre-digitselect`, and refuses to write if
+  an anchor moved. **Do not try the package's own `gen:bundle`** — it expects the monorepo
+  (`bun --cwd=../stats run gen:stats`) and DELETES `dist/cli.js` before failing *(verified
+  2026-10-07, restored from the backup)*. A reinstall or upgrade restores the unpatched bundle:
+  re-run the script, which `/onboard-device` step 8 now checks for.
+- **Number keys select in BOTH menu types, by different mechanisms.** In the `ask` dialog, once the
+  patch above is applied, the numbering is the dialog's own (`pi-tui/src/overlays/ask-dialog.ts`,
+  `#handleQuestionInput`): `1`–`9` jumps to row N and, on a single-select question, confirms it; a
+  multi-select only moves the cursor (`space` toggles), and the unnumbered `Other` row stays
+  arrow-only — so an `ask` label must NOT carry its own `N. ` prefix. In a HookSelector menu
+  (`/review`, the model/session pickers) the digit instead matches a LABEL already starting with
+  `N. ` (`hook-selector.ts`, `#handleQuickSelect`), and stops working once the search query is
+  non-empty. So in `ask` — where we author the labels — ≤9 options keeps every row digit-reachable;
+  a HookSelector menu additionally needs numbered labels, which only its own entries supply.
+  *(Verified 2026-10-07 on the WSL device's patched omp 18.7.0, from a real pty session: `2`
+  committed the second option in one keystroke, and the rows rendered `1. red` / `2. green` /
+  `3. blue` with `Other (type your own)` unnumbered. The ANSI fallback renderer is patched by the
+  same script but was not the path exercised — re-test the picker rather than trusting a note,
+  this one included.)*
 - **An unset role still resolves — and the ADVISOR is what shows a strong OpenAI model beside a
   DeepSeek default.** Unset roles fall through built-in alias chains (`config/model-resolver.ts`):
   `advisor` → `slow`, `memory`/`tiny` → `smol`; and the advisor deliberately does not inherit
@@ -598,36 +626,77 @@ fallback only while it measures second. Measured on opencode 1.18.30.
 - **Isolation:** a throwaway `HOME` plus throwaway `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
   `XDG_CACHE_HOME` and `XDG_STATE_HOME`; `OPENCODE_CONFIG=<file>`; and
   - `OPENCODE_DISABLE_CLAUDE_CODE=1`, or it loads `~/.claude` (rules and skills);
+  - `OPENCODE_DISABLE_PROJECT_CONFIG=1`, or a repo's `opencode.json` / `.opencode/` overrides
+    your agents' permissions; name instruction files by ABSOLUTE path, since relative ones
+    resolve against the project config this disables;
   - `OPENCODE_DISABLE_AUTOUPDATE=1`;
   - `OPENCODE_DISABLE_MODELS_FETCH=1`.
+- **`$HOME/.opencode/` is a GLOBAL config dir** read regardless of those flags: an
+  `opencode.json`, `agent/*.md` or `plugin/*.js` planted there by an earlier round overrides
+  permissions or runs code. Between rounds that share a HOME, wipe everything except
+  `XDG_DATA_HOME/opencode` (sessions; nothing there is loaded as config, verified). Pass `--pure`.
 - **Git and `gh`:** not guarded. The owner's 2026-10-05 decision binds every runner harness
   (`omp.md` §Unattended build).
-- **Usage:** read `step_finish` events. `tokens.input` EXCLUDES cache reads (add them back for
-  total input), and reasoning tokens are added to output.
+- **Usage:** read `step_finish` events. `tokens.input` EXCLUDES cache reads, and
+  `tokens.output` EXCLUDES reasoning (measured: total = input + output + reasoning + cache
+  read), so add reasoning to output yourself. The part has no time; the event's outer
+  `timestamp` (epoch ms, step end) is the step's time.
+- **Events:** no separate session event; every event carries a top-level `sessionID`;
+  resume with `-s <id>`. A bad key exits 1 with one `error` event and empty stderr.
 - **Cost:** it reports `cost: 0` for a custom provider, so price the tokens yourself.
 
-## Read-only plan phase — UNVERIFIED
+## Read-only plan phase (verified 2026-10-08, 1.18.30)
 
-Not yet tested live here. What the docs say (opencode.ai/docs/agents and /docs/permissions,
-read 2026-10-07): permissions are per tool (`read`, `edit`, `glob`, `grep`, `bash`, `task`,
-`webfetch`, …), each `allow`, `ask` or `deny`, and an agent's `permission` block overrides the
-global one. The `tools` option is deprecated in favour of `permission`. The built-in **plan**
-agent sets edit and bash to **`ask`, not `deny`**, and `--auto` approves everything not
-explicitly denied, so **plan under `--auto` is NOT read-only**. A read-only profile needs explicit
-denies, for example:
-
-```json
-{ "agent": { "plan": { "permission": { "edit": "deny", "bash": "deny" } } } }
-```
-
-Run it with `--agent plan`. Treat it as unverified until a live refusal test passes: ask it to
-edit a file and `touch marker`, then confirm `ls marker` fails and `git diff --stat` is empty.
+- A dedicated agent with `"mode": "primary"` and `permission` denying **`edit`, `bash` and
+  `task`**, run with `--agent <name>` and **never `--auto`**. Denying `edit` also turns off
+  `write`. `task` must be denied too: its `general` subagent has edit, write and bash.
+- **An unknown or disabled `--agent` silently falls back to the full-tools `build` agent**
+  (stderr: "Falling back to default agent"). Put the same denies at the TOP-LEVEL
+  `permission` as well, and fail the run on that message.
+- Live proof: asked to edit a file, create `marker` and run `touch marker2`, it refused all
+  three; `ls` found neither file and `git diff --stat` was empty. Check offline any time with
+  `opencode debug agent <name>` (no model call).
 
 ## Measured (2026-10-06, DeepSeek V4.1 Flash via GOAT, same task and rules as cmd and omp, n=5)
 
 5/5, $0.0153 per success (omp $0.0133, cmd $0.0184); median 135.0 s (omp 81.6, cmd 139.5);
 median output 7.1K tokens (omp 5.7K, cmd 11.4K). A baseline before any harness tuning; the
 method is in `command-code.md` §Models.
+
+### linear
+
+# Linear — API, OAuth apps and agents
+
+Verified live 2026-10-08 (forge-wingman FRG-15, FRG-22). Re-run before quoting.
+
+## Auth
+- `Authorization: <token>` and `Authorization: Bearer <token>` are both accepted for an
+  OAuth token.
+- A refused token answers **HTTP 401** with `errors[0].extensions.code:
+  "AUTHENTICATION_ERROR"`; handle either signal.
+- `userUpdate` on another user (an app user's handle) and the `webhooks` query need the
+  `admin` scope; a member-scoped token is refused even for a workspace admin.
+
+## Client-credentials tokens (app actor)
+- 30 days, no refresh token; mint a new one on 401. Requesting different scopes
+  revokes every app token.
+- While one exists, an authorization-code exchange is refused: "Scope updates are not
+  supported for client credentials tokens". Revoke first (`POST /oauth/revoke`, form
+  field `token`).
+
+## Agent apps and webhooks
+- **A workspace's copy of the app webhook is created only when the workspace
+  AUTHORIZES the app by an authorization-code exchange.** Turning webhooks on for an
+  app already used through client credentials delivers nothing — agent sessions are
+  created on delegation and go `stale`, and no request is ever sent.
+- Fix: revoke the client-credentials token → authorize with `actor=app` → exchange the
+  code (revoke that token if unused) → mint a new client-credentials token.
+- That workspace webhook signs with **its own** secret: copy the signing secret again
+  after authorizing; the earlier one fails every signature.
+- Acknowledge a `created` session within ~10 s with `agentActivityCreate`
+  (`agentSessionId`, `content: {type: "thought", body}`), or it goes `stale`.
+- Deleting an app leaves its user as a deactivated record holding its handle;
+  rename it (admin) to free the handle.
 
 ## Return format
 
@@ -637,9 +706,11 @@ method is in `command-code.md` §Models.
 
 ## This repo
 
-- Go module `github.com/alvintoh/forge-wingman`, `go 1.27` floor, `toolchain go1.27.1`.
-- Binaries: `cmd/dispatcher` (Cloud Run job), `cmd/runner` (GitHub Actions), `cmd/surface` (Cloud Run service behind IAP). Logic lives in `internal/`: `dispatcher`, `runner`, `providers`, `store`, `money`.
-- Routing is stdlib `net/http` `ServeMux`; no third-party router (tech-design §Language).
-- Checks: `make check` (gofmt, vet, golangci-lint, `go test -race -shuffle=on -cover ./...`); `exhaustive` and `errcheck` are required gates.
+- Go module `github.com/alvintoh/forge-wingman`, `go 1.27` floor, `toolchain go1.27.1` (`go.mod` is authoritative over the README's floor).
+- Deployables: `cmd/dispatcher` (Cloud Run job), `cmd/webhook` (public Cloud Run service; Linear's `Linear-Signature` HMAC is the gate, and it wakes the dispatcher), `cmd/runner` (Go binary in GitHub Actions), `cmd/surface` (Cloud Run service behind IAP). Logic lives in `internal/`: `dispatcher`, `webhook`, `linear` (the shared GraphQL client), `runner`, `providers`, `store`, `money`.
+- Runner harnesses: omp is the default and opencode the fallback, chosen per provider by `harnesses` in `internal/providers/providers.json`; adapters are `internal/runner/harness_omp.go` and `internal/runner/harness_opencode.go`, with `harness_conformance_test.go` holding both to one contract. `command-code` is only the provider every model call bills through (the GOAT plan), not a harness.
+- Systemic stops: `internal/store/breaker.go` trips the breaker and `internal/dispatcher/notice.go` posts the notices to Slack; `runner reset-breaker` clears it.
+- Routing is stdlib `net/http` `ServeMux`; no third-party router.
+- Gate: `make check` (gofmt, vet, golangci-lint, `go test -race -shuffle=on -cover ./...`). The `internal/store` tests skip unless `FIRESTORE_EMULATOR_HOST` is set; `.github/workflows/ci.yml` starts the emulator on `:8080` and sets it.
 - Design: `docs/tech-design-v1.md`, `docs/adr/0001`-`0015` — copied from the forge-vault vault; never edit them here.
-- The runner's harness is the Command Code CLI adapter today (`internal/runner/harness_commandcode.go`); omp as default and opencode as fallback are decided (`docs/adr/0015`) and not built yet.
+- README: `backend-reviewer` owns the Environment Variables section of `README.md` (none exists yet; add it there, not in `infra/README.md`).

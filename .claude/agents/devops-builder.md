@@ -554,8 +554,10 @@ They are complementary, not alternatives.
 
 ## This repo
 
-- Deployables: `cmd/dispatcher` and `cmd/surface` build from the one `Dockerfile` (`--build-arg CMD=...`); the runner is not an image.
-- CI: `.github/workflows/ci.yml` — a Go job and a web job, `permissions: contents: read`. The unattended runner is `run.yml` and `model.yml`, plus `plan-smoke.yml`, `model-smoke.yml` and `infra-smoke.yml`.
+- Deployables: `cmd/dispatcher`, `cmd/webhook` and `cmd/surface` build from the one `Dockerfile` (`--build-arg CMD=...`, default `surface`); the runner is not an image.
+- CI: `.github/workflows/ci.yml` — a Go job (starts the Firestore emulator for the store tests, then gofmt, vet, golangci-lint, `go test -race`) and a web job (`bun run lint`, `fmt:check`, `build`), `permissions: contents: read`. The unattended runner is `run.yml` and `model.yml`, plus `plan-smoke.yml`, `model-smoke.yml` and `infra-smoke.yml`.
 - The runner's GitHub App has no `workflows` permission, deliberately: a change under `.github/workflows/` is pushed by hand.
-- IaC is OpenTofu in `infra/` (`docs/adr/0008`); `infra/README.md` covers state and apply.
+- IaC is OpenTofu in `infra/` (`docs/adr/0008`): `dispatcher.tf`, `webhook.tf` (the public Linear webhook service), `notice.tf` (the dispatcher's read of `notice-webhook-url`), `secrets.tf`, `identity.tf`, `firestore.tf`, `storage.tf`. `tofu -chdir=infra plan|apply`; images are pushed by hand and passed by digest (`dispatcher_image`, `webhook_image`).
+- `infra/README.md` owns state, identities, repository variables and each rollout.
 - Observability is GCP-native with a liveness alert (`docs/adr/0011`) — not Sentry.
+- README: `devops-reviewer` owns `README.md` §Deploy, which defers to `infra/README.md`.

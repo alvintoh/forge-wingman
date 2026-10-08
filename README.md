@@ -91,5 +91,5 @@ make check
 cd web && bun run lint && bun run fmt:check && bun run build
 ```
 
-Go's `go.mod` carries a **1.22 floor** (stdlib `ServeMux` routing) and the **toolchain**
-that builds it; raise the toolchain deliberately.
+Go's `go.mod` sets **`go 1.27`** (anything from 1.22 has the stdlib `ServeMux` routing the
+services use) and the **toolchain** that builds it; raise the toolchain deliberately.
