@@ -1,18 +1,12 @@
 package dispatcher
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"strings"
-)
 
-// linearEndpoint is Linear's GraphQL API; the tests point Linear.Endpoint at a
-// server of their own.
-const linearEndpoint = "https://api.linear.app/graphql"
+	"github.com/alvintoh/forge-wingman/internal/linear"
+)
 
 // blocksRelation is the type of a Linear issue relation whose issue blocks its
 // related issue.
@@ -81,8 +75,7 @@ type Linear struct {
 	Page     int
 }
 
-// linearResponse is one GraphQL reply. Errors arrive beside the data, with a
-// 200 status, so both are decoded together.
+// linearResponse is one GraphQL reply's data.
 type linearResponse struct {
 	Data struct {
 		Viewer struct {
@@ -122,9 +115,6 @@ type linearResponse struct {
 			} `json:"pageInfo"`
 		} `json:"issues"`
 	} `json:"data"`
-	Errors []struct {
-		Message string `json:"message"`
-	} `json:"errors"`
 }
 
 // Delegated returns every issue still delegated to the configured agent,
@@ -188,51 +178,9 @@ func (l Linear) page(ctx context.Context, after string, size int) (linearRespons
 		First    int    `json:"first"`
 		After    string `json:"after,omitempty"`
 	}{Delegate: l.Delegate, First: size, After: after}
-	body, err := json.Marshal(map[string]any{"query": delegatedQuery, "variables": variables})
-	if err != nil {
-		return resp, fmt.Errorf("encoding the Linear query: %w", err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, l.endpoint(), bytes.NewReader(body))
-	if err != nil {
-		return resp, fmt.Errorf("building the Linear request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", l.Token)
-	client := l.Client
-	if client == nil {
-		client = http.DefaultClient
-	}
-	res, err := client.Do(req)
-	if err != nil {
-		return resp, fmt.Errorf("reading Linear: %w", err)
-	}
-	defer func() { _ = res.Body.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(res.Body, maxLinearResponseBytes+1))
-	if err != nil {
-		return resp, fmt.Errorf("reading Linear's reply: %w", err)
-	}
-	if len(raw) > maxLinearResponseBytes {
-		return resp, fmt.Errorf("the reply is over %d bytes", maxLinearResponseBytes)
-	}
-	if res.StatusCode != http.StatusOK {
-		return resp, fmt.Errorf("Linear answered %s: %s", res.Status, snippet(raw))
-	}
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return resp, fmt.Errorf("decoding Linear's reply: %w", err)
-	}
-	if len(resp.Errors) > 0 {
-		var msgs []string
-		for _, e := range resp.Errors {
-			msgs = append(msgs, e.Message)
-		}
-		return resp, fmt.Errorf("Linear refused the query: %s", strings.Join(msgs, "; "))
+	api := linear.Client{Endpoint: l.Endpoint, Token: l.Token, HTTP: l.Client, MaxReply: maxLinearResponseBytes}
+	if err := api.Do(ctx, delegatedQuery, variables, &resp.Data); err != nil {
+		return resp, err
 	}
 	return resp, nil
-}
-
-func (l Linear) endpoint() string {
-	if l.Endpoint == "" {
-		return linearEndpoint
-	}
-	return l.Endpoint
 }

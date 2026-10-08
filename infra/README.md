@@ -93,11 +93,12 @@ schedule can only start the job.
 | `dispatcher` | Firestore read/write on the queue, read both tokens |
 | `dispatcher-schedule` | start one execution of the `forge-wingman-dispatcher` job |
 
-Three variables name what OpenTofu cannot guess, and a fourth is optional:
+Four variables name what OpenTofu cannot guess, and a fifth is optional:
 
 | Variable | What it is |
 |---|---|
 | `dispatcher_image` | the image to run. The `Dockerfile` builds it with `CMD=dispatcher`; nothing here pushes it, so push it yourself and name the digest |
+| `webhook_image` | the webhook service's image, built with `CMD=webhook`; pushed and named by digest the same way |
 | `linear_delegate` | the Linear id of the agent the job acts for; a poll whose token is another agent's admits nothing |
 | `linear_repositories` | the allowlist. Empty admits nothing, so a forgotten one refuses every ticket rather than dispatching |
 | `dispatcher_settings` | optional. A map of `WINGMAN_PLATFORM_CAP`, `WINGMAN_LARGE_CAP`, `WINGMAN_REVIEW_WIP`, `WINGMAN_STABLE_RUNS`, `WINGMAN_RISE_WITHIN` and `WINGMAN_HALVE_BEYOND` to a value; a key left out keeps its default |
@@ -122,9 +123,10 @@ with 403 "Resource not accessible by personal access token" without it.
 `secrets.tf` creates four more, empty and readable by no identity until the code
 that reads each lands and grants its own: `linear-client-id` and
 `linear-client-secret` (the Forge Wingman Linear app, client credentials on),
-`linear-webhook-secret` (Linear issues it once the webhook service has a URL)
-and `notice-webhook-url` (the Forge Slack incoming webhook). `linear-token` holds
-a 30-day client-credentials token minted from the first two:
+`linear-webhook-secret` (Linear issues it once the webhook service has a URL;
+the webhook reads it) and `notice-webhook-url` (the Forge Slack incoming
+webhook). `linear-token` holds a 30-day client-credentials token minted from
+the first two:
 
 ```sh
 curl -s -X POST https://api.linear.app/oauth/token \
@@ -154,6 +156,60 @@ one issue to the agent, then read the job's log for the poll that took it.
 
 ```sh
 gcloud logging read 'resource.type="cloud_run_job"' --freshness=1h --limit=50
+```
+
+## Webhook
+
+`webhook.tf` is the service Linear delivers agent-session events to. It is
+public (`invoker_iam_disabled`), because Linear calls without a Google
+identity: the `Linear-Signature` HMAC over the body is the gate, and a delivery
+older than 60 seconds is refused. A verified `AgentSessionEvent` with action
+`created` writes `dispatch/webhook-<agent session id>`, posts a `thought` on the
+session and starts one execution of the dispatcher job; anything else verified
+is answered 200 and ignored. A redelivery of a marked session does neither
+again, while a new session on the same issue does both. The poll creates
+`runs/<identifier>` exactly once, so however many sessions and schedules wake
+it, an issue gets one run.
+
+| Service account | Grants |
+|---|---|
+| `webhook` | Firestore read/write, read `linear-webhook-secret` and `linear-token`, start one execution of the dispatcher job |
+
+`webhook_image` is the image, built with `CMD=webhook`; every apply must pass it,
+as it passes `dispatcher_image`. With no signing secret the service still starts
+and refuses every delivery with 401, re-reading the secret at most every 30
+seconds until it has one, so adding the first value needs no restart. Once it
+has a value it keeps it: rotating the signing secret needs a new revision.
+`linear-token` is re-read when Linear refuses it, at most every 30 seconds, so
+its monthly rotation needs none. A failed wake removes the marker and answers
+500, so Linear's retry wakes the job again.
+
+Rollout: push the image, apply, give the Linear app the `webhook_url` output
+as its webhook URL with agent session events on, then add the signing secret
+Linear issues.
+
+```sh
+printf %s "$SIGNING_SECRET" | gcloud secrets versions add linear-webhook-secret --data-file=-
+```
+
+A delivery with no usable `agentSession.id` is refused with 400 and logs
+`webhookRejected` with the payload's field names, never its values.
+
+Live check, on a test ticket:
+
+1. Delegate it: a job execution starts within seconds, one `runs/` doc appears,
+   and the session shows the `thought`.
+2. Force one 500: point the service at a run URI that refuses, delegate a second
+   test ticket, then restore the configuration with `tofu apply`. The log must
+   show `webhookWakeFailed`, then Linear's retry about a minute later reaching
+   `webhookWoke`. A `webhookRejected` with `reason: stale` on the retry means
+   Linear resends the original `webhookTimestamp`, and retries can never pass
+   the 60-second window.
+
+```sh
+gcloud run services update forge-wingman-webhook --region=us-central1 \
+  --update-env-vars=DISPATCHER_RUN_URI=https://us-central1-run.googleapis.com/v2/projects/forge-wingman/locations/us-central1/jobs/missing:run
+gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="forge-wingman-webhook"' --freshness=10m --limit=50
 ```
 
 ## Rolling out the model identity

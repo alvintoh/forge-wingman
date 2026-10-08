@@ -136,8 +136,8 @@ func TestLinearReportsAQueryItCannotRun(t *testing.T) {
 			defer srv.Close()
 			_, err := Linear{Endpoint: linearURL(srv), Token: "t", Delegate: "agent-1",
 				Client: srv.Client()}.Delegated(context.Background())
-			if err == nil {
-				t.Fatal("admitted a reply it cannot use")
+			if err == nil || errors.Is(err, ErrDelegateMismatch) {
+				t.Fatalf("err = %v, want the query's own failure", err)
 			}
 		})
 	}
