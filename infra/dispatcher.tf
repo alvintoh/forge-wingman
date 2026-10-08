@@ -4,9 +4,9 @@ locals {
   # The v2 run endpoint for a regional job; the job resource does not export it.
   dispatcher_run_uri = "https://${var.region}-run.googleapis.com/v2/projects/${var.project_id}/locations/${var.region}/jobs/${local.dispatcher}:run"
 
-  # The tokens the job polls with. The values are added by hand, so an apply
+  # The token the job reads GitHub with. The value is added by hand, so an apply
   # never carries a credential and a rotation is not a redeploy.
-  dispatcher_secrets = toset(["linear-token", "github-token"])
+  dispatcher_secrets = toset(["github-token"])
 }
 
 # The identity one poll runs under: it reads its credentials and the queue, and

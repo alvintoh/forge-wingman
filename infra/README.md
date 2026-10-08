@@ -110,12 +110,11 @@ Four variables name what OpenTofu cannot guess, and a fifth is optional:
 
 ### Secrets
 
-The apply creates `linear-token` and `github-token` with no value in them; the
-job reads each secret's latest version as a run starts, so a rotation is the
-next run's business and not a redeploy's.
+The apply creates `github-token` with no value in it; the job reads the
+secret's latest version as a run starts, so a rotation is the next run's
+business and not a redeploy's.
 
 ```sh
-printf %s "$LINEAR_TOKEN" | gcloud secrets versions add linear-token --data-file=-
 printf %s "$GITHUB_TOKEN" | gcloud secrets versions add github-token --data-file=-
 ```
 
@@ -132,16 +131,9 @@ two client credentials): `linear-client-id` and
 `linear-client-secret` (the Forge Wingman Linear app, client credentials on),
 `linear-webhook-secret` (Linear issues it once the webhook service has a URL;
 the webhook reads it) and `notice-webhook-url` (the Forge Slack incoming
-webhook). `linear-token` holds a 30-day client-credentials token minted from
-the first two:
-
-```sh
-curl -s -X POST https://api.linear.app/oauth/token \
-  -H 'Content-Type: application/x-www-form-urlencoded' \
-  --data-urlencode grant_type=client_credentials \
-  --data-urlencode "client_id=$CLIENT_ID" --data-urlencode "client_secret=$CLIENT_SECRET" \
-  --data-urlencode 'scope=read,write,app:assignable' | jq -r .access_token
-```
+webhook). No Linear access token is stored: the dispatcher mints one per poll
+and the webhook one per instance, from the first two, and both revoke what
+they mint.
 
 `linear_delegate` is that app's user id, `dbffe977-856f-4b88-a728-3cf2ca54fea6`;
 every apply must pass it.
@@ -180,7 +172,7 @@ it, an issue gets one run.
 
 | Service account | Grants |
 |---|---|
-| `webhook` | Firestore read/write, read `linear-webhook-secret`, `linear-token`, `linear-client-id` and `linear-client-secret`, start one execution of the dispatcher job |
+| `webhook` | Firestore read/write, read `linear-webhook-secret`, `linear-client-id` and `linear-client-secret`, start one execution of the dispatcher job |
 
 `webhook_image` is the image, built with `CMD=webhook`; every apply must pass it,
 as it passes `dispatcher_image`. With no signing secret the service still starts
@@ -203,7 +195,7 @@ nothing, and the exchange is refused while such a token exists ("Scope updates
 are not supported for client credentials tokens"). So: revoke the client
 credentials token (`POST https://api.linear.app/oauth/revoke`), open the
 authorize URL with `actor=app`, exchange the returned code and revoke that token,
-then mint a new client-credentials token into `linear-token`. The workspace's
+then let the services mint their own client-credentials tokens again. The workspace's
 webhook signs with its own secret, so copy the signing secret again afterwards
 and start a new revision.
 

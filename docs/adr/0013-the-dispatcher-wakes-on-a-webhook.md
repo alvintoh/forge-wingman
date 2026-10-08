@@ -2,7 +2,8 @@
 
 - **Date:** 2026-09-24
 - **Status:** accepted — built in Phase 3, with the dispatcher it wakes
-- *Updated (2026-10-08, FRG-22 planning): the webhook also acknowledges the agent session, so it holds `linear-token`; the row is a marker keyed on the agent SESSION id, so a redelivery is a no-op while a new session on the same issue is acknowledged and woken; one run per issue stays guaranteed by the poll's `runs/<identifier>` create.*
+- *Updated (2026-10-08, FRG-22 planning): the webhook also acknowledges the agent session~~, so it holds `linear-token`~~; the row is a marker keyed on the agent SESSION id, so a redelivery is a no-op while a new session on the same issue is acknowledged and woken; one run per issue stays guaranteed by the poll's `runs/<identifier>` create.*
+- *Updated (2026-10-08, FRG-34): no Linear access token is stored. The webhook mints its own from the app's client credentials (`linear-client-id`, `linear-client-secret`), re-mints when Linear refuses it, and revokes it on shutdown; `linear-token` is deleted.*
 - **Supersedes:** `tech-design-v1.md` §Two containers that deliberately do NOT exist,
   *"No inbound webhook receiver"*
 
@@ -69,8 +70,11 @@ delivery. Choosing it for latency is the owner's call.*
 
 - **A public attack surface exists**, bounded to one route that verifies a signature
   and writes one row. ~~It holds no credential beyond the store and the job trigger.~~
-  *Updated (2026-10-08):* it also holds `linear-token`, used only to post the
-  session acknowledgement, and only after the signature verifies.
+  ~~*Updated (2026-10-08):* it also holds `linear-token`, used only to post the
+  session acknowledgement, and only after the signature verifies.~~
+  *Updated (2026-10-08, FRG-34):* it also reads the Linear app's client
+  credentials, to mint the token it posts the session acknowledgement with, and
+  only after the signature verifies.
 - **Enqueue latency drops from ≤15 minutes to seconds**; throughput does not change,
   since 96 polls a day already exceed level 5's 10 runs.
 - **Two paths enqueue, so the enqueue must be idempotent** — the same property the
