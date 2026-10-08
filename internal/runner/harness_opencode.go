@@ -2,6 +2,7 @@ package runner
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -103,10 +104,11 @@ func (a OpencodeAgent) Run(ctx context.Context, dir, session, prompt, rules stri
 	if !ok || rest == "" {
 		return fmt.Errorf("the opencode harness runs only %s models, not %q", opencodePlan, a.Model)
 	}
-	// A global config left by an earlier round could add an MCP server to this
-	// one; the sessions a resume needs live in the data directory instead.
-	if err := os.RemoveAll(filepath.Join(a.Home, ".config", "opencode")); err != nil {
-		return fmt.Errorf("opencode global config: %w", err)
+	// opencode reads config, agents and plugins from several places under HOME,
+	// any of which an earlier build round could have written; only the
+	// sessions a resume needs survive.
+	if err := removeAllExcept(a.Home, filepath.Join(a.Home, opencodeSessionDir)); err != nil {
+		return fmt.Errorf("opencode home: %w", err)
 	}
 	rulesPath, configPath := filepath.Join(a.Home, opencodeRulesFile), filepath.Join(a.Home, opencodeConfigFile)
 	if err := writeAgentFile(rulesPath, rules); err != nil {
@@ -115,7 +117,7 @@ func (a OpencodeAgent) Run(ctx context.Context, dir, session, prompt, rules stri
 	if rules == "" {
 		rulesPath = ""
 	}
-	config, err := opencodeConfig(rest, rulesPath, filepath.Join(dir, "CLAUDE.md"))
+	config, err := opencodeConfig(rest, rulesPath, filepath.Join(dir, "CLAUDE.md"), a.Profile != ProfileBuild)
 	if err != nil {
 		return fmt.Errorf("opencode config: %w", err)
 	}
@@ -148,9 +150,75 @@ func (a OpencodeAgent) Run(ctx context.Context, dir, session, prompt, rules stri
 		"OPENCODE_DISABLE_MODELS_FETCH=1",
 		opencodeKeyEnv+"="+a.Key)
 	cmd.Stdin = strings.NewReader(prompt)
-	return runAgentCLI(cmd, a.Home, stderr, func(events io.Reader, _ error) error {
-		return translateOpencodeEvents(events, stdout, stderr)
+	watched := &markerWriter{w: stderr, marker: []byte(opencodeFallbackMarker)}
+	return runAgentCLI(cmd, a.Home, watched, func(events io.Reader, _ error) error {
+		if err := translateOpencodeEvents(events, stdout, stderr); err != nil {
+			return err
+		}
+		if watched.seen {
+			return errOpencodeFallback
+		}
+		return nil
 	})
+}
+
+// opencodeSessionDir is where opencode keeps its sessions under Home: its
+// XDG_DATA_HOME directory.
+var opencodeSessionDir = filepath.Join(".local", "share", "opencode")
+
+// opencodeFallbackMarker is what opencode prints when the agent a run names
+// does not exist, before running its default agent, which may edit.
+const opencodeFallbackMarker = "Falling back to default agent"
+
+var errOpencodeFallback = errors.New("opencode ran its default agent in place of the one named")
+
+// removeAllExcept removes everything under root but keep, a path inside it. A
+// symlink on the way to keep is removed rather than followed.
+func removeAllExcept(root, keep string) error {
+	rel, err := filepath.Rel(root, keep)
+	if err != nil {
+		return err
+	}
+	dir := root
+	for _, name := range strings.Split(rel, string(filepath.Separator)) {
+		entries, err := os.ReadDir(dir)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if e.Name() != name {
+				if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+					return err
+				}
+			}
+		}
+		dir = filepath.Join(dir, name)
+		if info, err := os.Lstat(dir); err == nil && !info.IsDir() {
+			return os.Remove(dir)
+		}
+	}
+	return nil
+}
+
+// markerWriter passes writes through to w and records whether marker appeared,
+// even split across writes.
+type markerWriter struct {
+	w      io.Writer
+	marker []byte
+	tail   []byte
+	seen   bool
+}
+
+func (m *markerWriter) Write(p []byte) (int, error) {
+	buf := append(m.tail, p...)
+	if bytes.Contains(buf, m.marker) {
+		m.seen = true
+	}
+	m.tail = append([]byte(nil), buf[max(0, len(buf)-len(m.marker)+1):]...)
+	return m.w.Write(p)
 }
 
 // opencodeConfigDoc is the part of opencode's config file the adapter writes.
@@ -159,6 +227,7 @@ type opencodeConfigDoc struct {
 	Share        string                         `json:"share"`
 	Provider     map[string]opencodeProviderDoc `json:"provider"`
 	Instructions []string                       `json:"instructions"`
+	Permission   map[string]string              `json:"permission,omitempty"`
 	Agent        map[string]opencodeAgentDoc    `json:"agent"`
 }
 
@@ -180,8 +249,10 @@ type opencodeAgentDoc struct {
 // the plan's provider, whose key the config names but never holds, the rules
 // file when there is one ahead of the repository's CLAUDE.md, and the
 // read-only agent. claudeMD is absolute: with project config disabled,
-// opencode no longer finds a relative instruction file in the repository.
-func opencodeConfig(model, rulesPath, claudeMD string) (string, error) {
+// opencode no longer finds a relative instruction file in the repository. A
+// readOnly config denies at the top level too, so the default agent opencode
+// falls back to cannot edit either.
+func opencodeConfig(model, rulesPath, claudeMD string, readOnly bool) (string, error) {
 	provider := opencodeProviderDoc{NPM: "@ai-sdk/openai-compatible", Models: map[string]struct{}{model: {}}}
 	provider.Options.BaseURL = providers.BaseURL(opencodePlan)
 	provider.Options.APIKey = "{env:" + opencodeKeyEnv + "}"
@@ -191,8 +262,11 @@ func opencodeConfig(model, rulesPath, claudeMD string) (string, error) {
 		Instructions: []string{claudeMD},
 		Agent: map[string]opencodeAgentDoc{opencodeReadOnlyAgent: {
 			Mode:       "primary",
-			Permission: map[string]string{"edit": "deny", "bash": "deny", "task": "deny"},
+			Permission: opencodeReadOnlyDenies(),
 		}},
+	}
+	if readOnly {
+		doc.Permission = opencodeReadOnlyDenies()
 	}
 	if rulesPath != "" {
 		doc.Instructions = append([]string{rulesPath}, doc.Instructions...)
@@ -202,6 +276,10 @@ func opencodeConfig(model, rulesPath, claudeMD string) (string, error) {
 		return "", err
 	}
 	return string(b) + "\n", nil
+}
+
+func opencodeReadOnlyDenies() map[string]string {
+	return map[string]string{"edit": "deny", "bash": "deny", "task": "deny"}
 }
 
 // opencodeEvent is one line of opencode's JSON output.
@@ -237,15 +315,18 @@ type opencodeTokens struct {
 // translateOpencodeEvents rewrites opencode's events as the runner's own event
 // shape: the session, each text part, and one step per step_finish, stamped
 // with the event's time and with reasoning counted in its output. An error
-// event is echoed to stderr, where Classify reads it (AC3).
+// event is echoed to stderr, where Classify reads it (AC3); the fallback
+// warning on a line of its own fails the run.
 func translateOpencodeEvents(r io.Reader, stdout, stderr io.Writer) error {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, min(64*1024, maxEventLine)), maxEventLine)
 	enc := json.NewEncoder(stdout)
 	var session string
+	var fellBack bool
 	for sc.Scan() {
 		var ev opencodeEvent
 		if json.Unmarshal(sc.Bytes(), &ev) != nil {
+			fellBack = fellBack || bytes.Contains(sc.Bytes(), []byte(opencodeFallbackMarker))
 			continue
 		}
 		if session == "" && ev.SessionID != "" {
@@ -258,7 +339,13 @@ func translateOpencodeEvents(r io.Reader, stdout, stderr io.Writer) error {
 			return err
 		}
 	}
-	return sc.Err()
+	if err := sc.Err(); err != nil {
+		return err
+	}
+	if fellBack {
+		return errOpencodeFallback
+	}
+	return nil
 }
 
 func emitOpencodeEvent(enc *json.Encoder, stderr io.Writer, ev opencodeEvent) error {

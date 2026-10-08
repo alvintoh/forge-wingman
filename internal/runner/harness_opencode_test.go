@@ -248,15 +248,23 @@ func TestOpencodeAgentResumesUnderOneHomeWithTheKeyInItsEnvironment(t *testing.T
 	}
 }
 
-// TestOpencodeAgentClearsAPlantedGlobalConfigAndKeepsItsSessions asserts a
-// global config an earlier round left under HOME is gone before opencode
-// starts, while the session store a resume reads stays.
+// TestOpencodeAgentClearsAPlantedGlobalConfigAndKeepsItsSessions asserts
+// whatever an earlier round left under HOME — config, agents, plugins, any
+// other file — is gone before opencode starts, while the session store a
+// resume reads stays.
 func TestOpencodeAgentClearsAPlantedGlobalConfigAndKeepsItsSessions(t *testing.T) {
 	bin, attempts := scriptedOpencode(t, "normal")
 	home := t.TempDir()
 	global := filepath.Join(home, ".config", "opencode", "opencode.json")
 	db := filepath.Join(home, ".local", "share", "opencode", "opencode.db")
-	for _, path := range []string{global, db} {
+	planted := []string{global,
+		filepath.Join(home, ".opencode", "opencode.json"),
+		filepath.Join(home, ".opencode", "agent", "x.md"),
+		filepath.Join(home, ".opencode", "plugin", "p.js"),
+		filepath.Join(home, ".local", "share", "stray"),
+		filepath.Join(home, "stray"),
+	}
+	for _, path := range append([]string{db}, planted...) {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -276,8 +284,125 @@ func TestOpencodeAgentClearsAPlantedGlobalConfigAndKeepsItsSessions(t *testing.T
 	if strings.Contains(got[0].files, global) || !strings.Contains(got[0].files, db) {
 		t.Fatalf("opencode saw %q, want the session db and no planted global config", got[0].files)
 	}
+	for _, path := range planted {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s survived the run's start: %v", path, err)
+		}
+	}
 	if i := slices.Index(got[0].args, "-s"); i < 0 || got[0].args[i+1] != "ses_1" {
 		t.Fatalf("args %v do not resume ses_1", got[0].args)
+	}
+}
+
+// TestRemoveAllExceptRemovesASymlinkOnTheWay asserts a symlink standing where
+// the kept path's directory should be is removed, not followed.
+func TestRemoveAllExceptRemovesASymlinkOnTheWay(t *testing.T) {
+	home, outside := t.TempDir(), t.TempDir()
+	victim := filepath.Join(outside, "victim")
+	if err := os.WriteFile(victim, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(home, ".local")); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeAllExcept(home, filepath.Join(home, opencodeSessionDir)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(victim); err != nil {
+		t.Fatalf("a file behind the symlink was removed: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(home, ".local")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the symlink survived: %v", err)
+	}
+}
+
+// TestOpencodeAgentFailsWhenHomeCannotBeCleared asserts a run whose HOME
+// keeps a file it cannot remove does not start opencode.
+func TestOpencodeAgentFailsWhenHomeCannotBeCleared(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root removes a file from a read-only directory")
+	}
+	bin, attempts := scriptedOpencode(t, "normal")
+	home := t.TempDir()
+	locked := filepath.Join(home, ".opencode")
+	if err := os.MkdirAll(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "opencode.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	var out, errBuf strings.Builder
+	agent := OpencodeHarness{Bin: bin, Key: "k", Home: home}.Agent(ProfileReview, opencodeTestModel)
+	if err := agent.Run(context.Background(), t.TempDir(), "", "p", "", &out, &errBuf); err == nil {
+		t.Fatal("the run started with HOME uncleared")
+	}
+	if len(attempts()) != 0 {
+		t.Fatal("opencode started with HOME uncleared")
+	}
+}
+
+// TestOpencodeAgentFailsWhenOpencodeFallsBack asserts a run whose named agent
+// opencode did not find, and so replaced with its default, fails, whichever
+// stream carries the warning.
+func TestOpencodeAgentFailsWhenOpencodeFallsBack(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake opencode is a shell script, which Windows cannot execute")
+	}
+	for name, redirect := range map[string]string{"stderr": " >&2", "stdout": ""} {
+		t.Run(name, func(t *testing.T) {
+			bin := filepath.Join(t.TempDir(), "opencode")
+			script := "#!/bin/sh\ncat > /dev/null\necho '! agent \"wingman-readonly\" not found. Falling back to default agent'" + redirect + "\n"
+			if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			var out, errBuf strings.Builder
+			agent := OpencodeHarness{Bin: bin, Key: "k", Home: t.TempDir()}.Agent(ProfileReview, opencodeTestModel)
+			if err := agent.Run(context.Background(), t.TempDir(), "", "p", "", &out, &errBuf); !errors.Is(err, errOpencodeFallback) {
+				t.Fatalf("err = %v, want the fallback refused", err)
+			}
+		})
+	}
+}
+
+// TestMarkerWriterSeesAMarkerSplitAcrossWrites asserts the fallback warning is
+// caught when a copy delivers it in two writes, and everything passes through.
+func TestMarkerWriterSeesAMarkerSplitAcrossWrites(t *testing.T) {
+	var out strings.Builder
+	w := &markerWriter{w: &out, marker: []byte(opencodeFallbackMarker)}
+	for _, chunk := range []string{"! agent not found. Falling back", " to default agent\n"} {
+		if _, err := w.Write([]byte(chunk)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !w.seen || !strings.Contains(out.String(), opencodeFallbackMarker) {
+		t.Fatalf("seen = %v, out = %q, want the split marker seen and passed through", w.seen, out.String())
+	}
+}
+
+// TestBuildFailsTheRoundWhenOpencodeFallsBack asserts the refused fallback
+// stops a build as an ordinary agent failure.
+func TestBuildFailsTheRoundWhenOpencodeFallsBack(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake opencode is a shell script, which Windows cannot execute")
+	}
+	bin := filepath.Join(t.TempDir(), "opencode")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\ncat > /dev/null\necho 'Falling back to default agent' >&2\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	deps, _, reported := testDeps(validObjects(), nil)
+	deps.Agent = OpencodeHarness{Bin: bin, Key: "k", Home: t.TempDir()}.Agent(ProfileBuild, opencodeTestModel)
+	c := testConfig(t, initRepo(t))
+	c.Model = opencodeTestModel
+	c.ReviewModels = []string{"p/r"}
+	if _, err := Build(context.Background(), deps, c); err == nil {
+		t.Fatal("Build succeeded after opencode fell back to its default agent")
+	}
+	if rec := reported.last(t); rec.Outcome != OutcomeAgentFailed {
+		t.Fatalf("outcome = %s, want an agent failure", rec.Outcome)
 	}
 }
 
@@ -318,6 +443,11 @@ func TestOpencodeAgentChoosesTheProfile(t *testing.T) {
 			for _, tool := range []string{"edit", "bash", "task"} {
 				if agent.Mode != "primary" || agent.Permission[tool] != "deny" {
 					t.Fatalf("read-only agent = %+v, want a primary agent denying %s", agent, tool)
+				}
+			}
+			for _, tool := range []string{"edit", "bash", "task"} {
+				if denied := config.Permission[tool] == "deny"; denied == tt.auto {
+					t.Fatalf("top-level permission = %v, want %s denied %v", config.Permission, tool, !tt.auto)
 				}
 			}
 		})
