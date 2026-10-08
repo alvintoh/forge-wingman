@@ -14,8 +14,8 @@ import (
 func serve(t *testing.T, status int, reply string) string {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "token-1" {
-			t.Errorf("Authorization = %q, want the token as given", got)
+		if got := r.Header.Get("Authorization"); got != "Bearer token-1" {
+			t.Errorf("Authorization = %q, want the token as a bearer token", got)
 		}
 		w.WriteHeader(status)
 		_, _ = io.WriteString(w, reply)

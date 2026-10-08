@@ -3,12 +3,14 @@
 // It reads the issues Linear has delegated to the configured agent, queues the
 // ones it can build, and dispatches the queued runs admission lets start, in
 // priority order, each into the repository its ticket names. Everything it
-// holds is a reference to a value provisioned with the job: the Linear and
-// GitHub tokens are read from Secret Manager as the run starts, and
-// WINGMAN_REPOS is the allowlist a ticket's repo: label must name.
+// holds is a reference to a value provisioned with the job: the Linear app's
+// client credentials and the GitHub token are read from Secret Manager as the
+// run starts, and WINGMAN_REPOS is the allowlist a ticket's repo: label must
+// name. Each poll mints its own Linear token and revokes it as the poll ends.
 //
-// The job runs under its own service account, holds the store, the two API
-// tokens and the notice webhook, and holds nothing that reaches a repository.
+// The job runs under its own service account, holds the store, the Linear
+// credentials, the GitHub token and the notice webhook, and holds nothing that
+// reaches a repository.
 package main
 
 import (
@@ -30,6 +32,7 @@ import (
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
+	"github.com/alvintoh/forge-wingman/internal/linear"
 	"github.com/alvintoh/forge-wingman/internal/providers"
 	"github.com/alvintoh/forge-wingman/internal/runner"
 	"github.com/alvintoh/forge-wingman/internal/store"
@@ -41,12 +44,13 @@ const (
 	// jobs refuse any other ref.
 	runWorkflow = "run.yml"
 	runBranch   = "main"
-	// linearTokenSecret and githubTokenSecret name the Secret Manager secrets
-	// the job reads its API tokens from, which infra/ creates without a value:
-	// the tokens themselves are added by hand, and a rotation is the next run's
-	// problem rather than a redeploy's.
-	linearTokenSecret = "linear-token"
-	githubTokenSecret = "github-token"
+	// linearClientIDSecret, linearClientSecretSecret and githubTokenSecret name
+	// the Secret Manager secrets the job reads its API credentials from, which
+	// infra/ creates without a value: the values are added by hand, and a
+	// rotation is the next run's problem rather than a redeploy's.
+	linearClientIDSecret     = "linear-client-id"
+	linearClientSecretSecret = "linear-client-secret"
+	githubTokenSecret        = "github-token"
 	// noticeWebhookSecret names the Slack webhook notices are posted to, read
 	// only when a notice is waiting.
 	noticeWebhookSecret = "notice-webhook-url"
@@ -210,7 +214,6 @@ func allowlist(raw string) ([]string, error) {
 	return repos, nil
 }
 
-// run polls once: the schedule starts the job, and one execution is one poll.
 // slackPoster opens the Slack poster from the webhook secret, trimmed of the
 // newline a value added with echo carries, which no URL parses with.
 func slackPoster(token func(context.Context, string) (string, error), client *http.Client) func(context.Context) (dispatcher.Poster, error) {
@@ -223,6 +226,21 @@ func slackPoster(token func(context.Context, string) (string, error), client *ht
 	}
 }
 
+// linearCredentials reads the Linear app's client credentials, each trimmed of
+// the newline a value added with echo carries.
+func linearCredentials(ctx context.Context, token func(context.Context, string) (string, error), client *http.Client) (linear.Credentials, error) {
+	id, err := token(ctx, linearClientIDSecret)
+	if err != nil {
+		return linear.Credentials{}, err
+	}
+	secret, err := token(ctx, linearClientSecretSecret)
+	if err != nil {
+		return linear.Credentials{}, err
+	}
+	return linear.Credentials{ClientID: strings.TrimSpace(id), ClientSecret: strings.TrimSpace(secret), HTTP: client}, nil
+}
+
+// run polls once: the schedule starts the job, and one execution is one poll.
 func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) error {
 	c, err := loadConfig(getenv)
 	if err != nil {
@@ -234,7 +252,8 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 	}
 	defer func() { _ = secretsClient.Close() }()
 	secrets := dispatcher.NewSecrets(c.project, secretsClient)
-	linear, err := secrets.Token(ctx, linearTokenSecret)
+	client := &http.Client{Timeout: requestTimeout}
+	creds, err := linearCredentials(ctx, secrets.Token, client)
 	if err != nil {
 		return err
 	}
@@ -247,13 +266,14 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		return fmt.Errorf("firestore client: %w", err)
 	}
 	defer func() { _ = fsc.Close() }()
-	client := &http.Client{Timeout: requestTimeout}
+	tokens := linear.NewPollSource(creds)
+	defer linear.RevokeAll(ctx, tokens, logger)
 	gh := dispatcher.GitHub{Token: githubToken, Workflow: runWorkflow, Branch: runBranch, Client: client}
 	queue := store.NewQueue(fsc)
 	plans := store.NewPlans(fsc)
 	model := runner.DefaultModel()
 	if _, err := dispatcher.Poll(ctx, dispatcher.Deps{
-		Source:     dispatcher.Linear{Token: linear, Delegate: c.delegate, Client: client},
+		Source:     dispatcher.Linear{Tokens: tokens, Delegate: c.delegate, Client: client},
 		Queue:      queue,
 		Verdicts:   queue,
 		Estimator:  store.NewEstimates(fsc),

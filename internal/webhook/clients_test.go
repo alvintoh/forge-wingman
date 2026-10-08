@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -20,7 +20,7 @@ func linearServer(t *testing.T, status int, reply string) (*httptest.Server, *ma
 	t.Helper()
 	var got map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "token-1" {
+		if r.Header.Get("Authorization") != "Bearer token-1" {
 			t.Errorf("Authorization = %q", r.Header.Get("Authorization"))
 		}
 		raw, _ := io.ReadAll(r.Body)
@@ -34,7 +34,7 @@ func linearServer(t *testing.T, status int, reply string) (*httptest.Server, *ma
 
 func TestAcknowledgePostsAThought(t *testing.T) {
 	srv, got := linearServer(t, 200, `{"data":{"agentActivityCreate":{"success":true}}}`)
-	l := Linear{Endpoint: srv.URL, Token: fixedSecret("token-1")}
+	l := Linear{Endpoint: srv.URL, Tokens: heldToken("token-1")}
 	if err := l.Acknowledge(context.Background(), "session-1"); err != nil {
 		t.Fatal(err)
 	}
@@ -56,89 +56,47 @@ func TestLinearFailures(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv, _ := linearServer(t, tc.status, tc.reply)
-			if err := (Linear{Endpoint: srv.URL, Token: fixedSecret("token-1")}).Acknowledge(context.Background(), "session-1"); err == nil {
+			if err := (Linear{Endpoint: srv.URL, Tokens: heldToken("token-1")}).Acknowledge(context.Background(), "session-1"); err == nil {
 				t.Fatal("acknowledged")
 			}
 		})
 	}
 }
 
-// rotatingServer refuses every token but "token-2", the way Linear refuses a
-// token that has expired.
-func rotatingServer(t *testing.T, refusal string, status int) (*httptest.Server, *[]string) {
-	t.Helper()
-	var seen []string
+// heldToken is a token that is never refreshed.
+type heldToken string
+
+func (h heldToken) Token(context.Context) (string, error) { return string(h), nil }
+
+func (h heldToken) Refresh(context.Context, string) (string, error) {
+	return "", errors.New("a held token is not refreshed")
+}
+
+func TestAcknowledgeRetriesWithAReMintedToken(t *testing.T) {
+	var mints int
+	mint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mints++
+		_, _ = fmt.Fprintf(w, `{"access_token":"token-%d"}`, mints)
+	}))
+	t.Cleanup(mint.Close)
+	var sent []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen = append(seen, r.Header.Get("Authorization"))
-		if r.Header.Get("Authorization") != "token-2" {
-			w.WriteHeader(status)
-			_, _ = io.WriteString(w, refusal)
+		sent = append(sent, r.Header.Get("Authorization"))
+		if r.Header.Get("Authorization") != "Bearer token-2" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, `{"errors":[{"message":"unauthorized"}]}`)
 			return
 		}
 		_, _ = io.WriteString(w, `{"data":{"agentActivityCreate":{"success":true}}}`)
 	}))
 	t.Cleanup(srv.Close)
-	return srv, &seen
-}
-
-func TestAcknowledgeRereadsARefusedToken(t *testing.T) {
-	for _, tc := range []struct {
-		name, refusal string
-		status        int
-	}{
-		{"http 401", `{"errors":[{"message":"unauthorized"}]}`, 401},
-		{"graphql authentication error", `{"errors":[{"message":"Authentication required","extensions":{"code":"AUTHENTICATION_ERROR"}}]}`, 400},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			srv, seen := rotatingServer(t, tc.refusal, tc.status)
-			var reads int
-			token := NewSecret("linear-token", "token-1", func(context.Context) (string, error) {
-				reads++
-				return "token-2", nil
-			}, func() time.Time { return receivedAt }, slog.New(slog.DiscardHandler))
-			l := Linear{Endpoint: srv.URL, Token: token}
-			if err := l.Acknowledge(context.Background(), "session-1"); err != nil {
-				t.Fatal(err)
-			}
-			if reads != 1 || strings.Join(*seen, ",") != "token-1,token-2" {
-				t.Fatalf("reads %d, tokens sent %v", reads, *seen)
-			}
-		})
+	tokens := linear.NewCachedSource(linear.Credentials{ClientID: "client-1", ClientSecret: "secret-1",
+		TokenURL: mint.URL, HTTP: mint.Client()}, func() time.Time { return receivedAt })
+	if err := (Linear{Endpoint: srv.URL, Tokens: tokens}).Acknowledge(context.Background(), "session-1"); err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestAcknowledgeDoesNotRereadInsideTheWindow(t *testing.T) {
-	srv, seen := rotatingServer(t, `{}`, 401)
-	now := receivedAt
-	var reads int
-	token := NewSecret("linear-token", "token-1", func(context.Context) (string, error) {
-		reads++
-		return "token-1", nil
-	}, func() time.Time { return now }, slog.New(slog.DiscardHandler))
-	l := Linear{Endpoint: srv.URL, Token: token}
-	for range 2 {
-		if err := l.Acknowledge(context.Background(), "session-1"); !errors.Is(err, linear.ErrUnauthenticated) {
-			t.Fatalf("err = %v, want ErrUnauthenticated", err)
-		}
-		now = now.Add(reloadEvery - time.Second)
-	}
-	if reads != 1 || len(*seen) != 2 {
-		t.Fatalf("reads %d, requests %d: want one re-read and no retry with the same token", reads, len(*seen))
-	}
-}
-
-func TestAnotherRefusalIsNotRetried(t *testing.T) {
-	srv, seen := rotatingServer(t, `{"errors":[{"message":"session not found"}]}`, 200)
-	var reads int
-	token := NewSecret("linear-token", "token-1", func(context.Context) (string, error) {
-		reads++
-		return "token-2", nil
-	}, func() time.Time { return receivedAt }, slog.New(slog.DiscardHandler))
-	if err := (Linear{Endpoint: srv.URL, Token: token}).Acknowledge(context.Background(), "session-1"); err == nil {
-		t.Fatal("acknowledged")
-	}
-	if reads != 0 || len(*seen) != 1 {
-		t.Fatalf("reads %d, requests %d", reads, len(*seen))
+	if mints != 2 || strings.Join(sent, ",") != "Bearer token-1,Bearer token-2" {
+		t.Fatalf("%d mints, tokens sent %v", mints, sent)
 	}
 }
 
