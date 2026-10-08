@@ -178,9 +178,17 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		}
 	}()
 
-	timed := func(p Phase, f func() error) error {
+	// timed runs one phase, recording its duration and logging its start. agent
+	// and model are the phase's own when it runs one — empty for a phase that
+	// runs no agent — so the start line names the harness and model beside the
+	// phase.
+	timed := func(p Phase, agent Agent, model string, f func() error) error {
 		sum.Phase = p
-		d.Logger.Info("phaseStarted", "phase", string(p))
+		attrs := []any{"phase", string(p)}
+		if agent != nil {
+			attrs = append(attrs, "harness", harnessFor(agent, model), "model", model)
+		}
+		d.Logger.Info("phaseStarted", attrs...)
 		start := d.Now()
 		ferr := f()
 		sum.DurationsMS[string(p)] = d.Now().Sub(start).Milliseconds()
@@ -195,7 +203,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 	}
 
 	var rules, prompt string
-	if err := timed(PhaseProjection, func() error {
+	if err := timed(PhaseProjection, nil, "", func() error {
 		if !ValidModel(c.Model) {
 			return stopWith(OutcomeStopped, StopModelInvalid, errors.New("model is not provider/model"))
 		}
@@ -251,7 +259,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 	// validation check; the worktree instead sits on the fixed localBranch.
 	pushBranch := BranchName(c.Ticket.BranchSegment(), c.AttemptID)
 	var wt Worktree
-	if err := timed(PhaseWorktree, func() error {
+	if err := timed(PhaseWorktree, nil, "", func() error {
 		var err error
 		wt, err = AddWorktree(ctx, c.Repo, filepath.Join(c.TempDir, "wt"), localBranch)
 		if err != nil {
@@ -266,7 +274,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 
 	var planFiles []string
 	if c.Ticket.Size != "S" {
-		if err := timed(PhasePlan, func() error {
+		if err := timed(PhasePlan, d.PlanAgent, c.PlanModels[0], func() error {
 			p, err := FetchPlanProjection(ctx, d.Projections, c.Pointer)
 			var missing *MissingError
 			switch {
@@ -300,7 +308,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 	var loopDetail, session string
 	var lastRound int
 	var msg CommitMessage
-	if err := timed(PhaseBuild, func() error {
+	if err := timed(PhaseBuild, d.Agent, c.Model, func() error {
 		var err error
 		checksOK, loopDetail, session, lastRound, err = runCheckLoop(ctx, d, c, wt, &sum, rules, prompt, &msg)
 		return err
@@ -312,7 +320,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 	if checksOK {
 		// Unlike the check loop above, a review-phase failure never stops the
 		// build: it forces a draft naming the failure instead (FR-5).
-		_ = timed(PhaseReview, func() error {
+		_ = timed(PhaseReview, d.ReviewAgent, c.ReviewModels[0], func() error {
 			var rerr error
 			ready, loopDetail, rerr = runReview(ctx, d, c, wt, &sum, rules, session, lastRound, &msg)
 			if rerr != nil {
@@ -332,7 +340,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 	sum.Ready = ready
 	sum.LoopDetail = truncate(loopDetail, stopDetailLimit)
 	res = BuildResult{Branch: pushBranch, Ready: ready, LoopDetail: loopDetail}
-	if err := timed(PhaseCommit, func() error {
+	if err := timed(PhaseCommit, nil, "", func() error {
 		if err := wt.Verify(ctx); err != nil {
 			switch {
 			case errors.Is(err, ErrGitTampered):
@@ -455,8 +463,8 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 		}
 	}
 
-	step := Step{Phase: call.Phase, Round: call.Round, Model: call.Model, CompletionsObject: completions,
-		Detail: truncate(call.Detail, stopDetailLimit)}
+	step := Step{Phase: call.Phase, Round: call.Round, Model: call.Model, Harness: harnessFor(agent, call.Model),
+		CompletionsObject: completions, Detail: truncate(call.Detail, stopDetailLimit)}
 	if _, err := out.Seek(0, io.SeekStart); err != nil {
 		addUsageWarning(sum, err.Error())
 	} else if usage, err := meterUsage(out, call.Model, providers.RatesFor); err != nil {
@@ -631,6 +639,16 @@ func runAgentInOrder(ctx context.Context, d BuildDeps, c BuildConfig, call agent
 // phase's own ordered fallbacks.
 func movesToNextModel(reason StopReason) bool {
 	return reason == StopModelUnavailable || reason == StopAllowanceExhausted
+}
+
+// harnessFor names the harness agent runs model through, empty when the agent
+// routes no harness (anything but a Router) or the model's plan names none the
+// run can use.
+func harnessFor(agent Agent, model string) string {
+	if n, ok := agent.(harnessNamer); ok {
+		return n.HarnessFor(model)
+	}
+	return ""
 }
 
 // modelBinder is implemented by an agent whose model can be swapped per attempt.

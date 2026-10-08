@@ -283,6 +283,82 @@ func TestBuildCommitsAndBundlesTheAgentsEdits(t *testing.T) {
 	}
 }
 
+// TestBuildRecordsTheHarnessThatRanEachStep asserts every step names the
+// harness its model's plan routes to, the fallback included when the default is
+// not ready (AC1, AC2).
+func TestBuildRecordsTheHarnessThatRanEachStep(t *testing.T) {
+	for name, tt := range map[string]struct {
+		defaultReady error
+		want         string
+	}{
+		"the plan's default": {nil, "default"},
+		"the plan's fallback when the default is not ready": {errors.New("the default has no key"), "fallback"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			order := planOrders(map[string][]string{"p": {"default", "fallback"}})
+			harnesses := func(agent Agent) []Harness {
+				return []Harness{fakeHarness{name: "default", ready: tt.defaultReady, agent: agent},
+					fakeHarness{name: "fallback", agent: agent}}
+			}
+			buildAgent := &fakeAgent{edit: edit("version.go", "package x\n")}
+			reviewAgent := &fakeAgent{events: reviewEvent("")}
+			deps, _, reported := testDeps(validObjects(), buildAgent)
+			deps.Agent = newRouter(order, ProfileBuild, harnesses(buildAgent)...)
+			deps.ReviewAgent = newRouter(order, ProfileReview, harnesses(reviewAgent)...)
+			c := testConfig(t, initRepo(t))
+
+			if _, err := Build(context.Background(), deps, c); err != nil {
+				t.Fatal(err)
+			}
+			steps := reported.last(t).Steps
+			if len(steps) != 2 {
+				t.Fatalf("steps = %+v, want the build round then the review pass", steps)
+			}
+			for _, st := range steps {
+				if st.Harness != tt.want {
+					t.Errorf("step %s/%d harness = %q, want %q", st.Phase, st.Round, st.Harness, tt.want)
+				}
+			}
+		})
+	}
+}
+
+// TestBuildLogsTheHarnessAndModelWhenAPhaseStarts asserts an agent phase logs
+// exactly one start line naming the harness and model it begins with (AC3).
+func TestBuildLogsTheHarnessAndModelWhenAPhaseStarts(t *testing.T) {
+	buildAgent := &fakeAgent{edit: edit("version.go", "package x\n")}
+	deps, _, _ := testDeps(validObjects(), buildAgent)
+	deps.Agent = testRouter(ProfileBuild, fakeHarness{name: "p", agent: buildAgent})
+	deps.ReviewAgent = testRouter(ProfileReview, fakeHarness{name: "p", agent: &fakeAgent{events: reviewEvent("")}})
+	var logs bytes.Buffer
+	deps.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	line := phaseStartLine(t, logs.String(), PhaseBuild)
+	if !strings.Contains(line, "harness=p") || !strings.Contains(line, "model=p/m") {
+		t.Fatalf("build phase start = %q, want it to name the harness and model", line)
+	}
+}
+
+// phaseStartLine returns a phase's one phaseStarted log line, failing when the
+// build logged more or fewer for it.
+func phaseStartLine(t *testing.T, logs string, phase Phase) string {
+	t.Helper()
+	var lines []string
+	for _, line := range strings.Split(logs, "\n") {
+		if strings.Contains(line, "msg=phaseStarted") && strings.Contains(line, "phase="+string(phase)) {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) != 1 {
+		t.Fatalf("%d phaseStarted lines for %s, want 1: %q", len(lines), phase, lines)
+	}
+	return lines[0]
+}
+
 func TestBuildReportsAFailedAgent(t *testing.T) {
 	objects := fakeObjects{
 		DefaultPointer: []byte(testSHA),

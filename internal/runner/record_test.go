@@ -255,6 +255,7 @@ func TestFinalizeWritesTheWholeRecordFromTheSummary(t *testing.T) {
 			Phase:             PhaseBuild,
 			Round:             1,
 			Model:             "command-code/x",
+			Harness:           "omp",
 			Tokens:            Usage{Input: 10, Output: 2, CacheRead: 90, Cost: 0.5, Steps: 1},
 			DurationMS:        1200,
 			CompletionsObject: completionsObject("1-1", PhaseBuild, 1),

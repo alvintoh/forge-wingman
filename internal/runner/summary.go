@@ -65,6 +65,9 @@ type Step struct {
 	Phase Phase  `firestore:"phase" json:"phase"`
 	Round int    `firestore:"round" json:"round"`
 	Model string `firestore:"model" json:"model"`
+	// Harness is the agent CLI this step ran through, from the plan its model
+	// names; empty for a step no harness ran.
+	Harness string `firestore:"harness" json:"harness,omitempty"`
 	// Detail names what drove this round (FR-6): the failing gate for a
 	// check-rebuild round, or the review's findings for the fix round; empty
 	// for the initial build round and for the review round itself.
@@ -304,10 +307,14 @@ func hasStep(steps []Step, phase Phase) bool {
 	return false
 }
 
-// validate checks a step's model, tokens and completions object against attemptID's run.
+// validate checks a step's model, harness, tokens and completions object
+// against attemptID's run.
 func (st Step) validate(attemptID string) error {
 	if !ValidModel(st.Model) {
 		return errors.New("model is not provider/model")
+	}
+	if st.Harness != "" && !knownHarness(st.Harness) {
+		return fmt.Errorf("harness %q is not one this run can route to", truncate(st.Harness, logErrorLimit))
 	}
 	if err := st.Tokens.validate(); err != nil {
 		return err
