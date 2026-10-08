@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -36,6 +38,59 @@ func TestMux(t *testing.T) {
 			}
 			if tt.wantBody != "" && !strings.Contains(rec.Body.String(), tt.wantBody) {
 				t.Fatalf("body = %q, want it to contain %q", rec.Body.String(), tt.wantBody)
+			}
+		})
+	}
+}
+
+func TestHealthz(t *testing.T) {
+	tests := []struct {
+		name       string
+		info       *debug.BuildInfo
+		ok         bool
+		wantCommit string
+	}{
+		{
+			name:       "revision from a git checkout",
+			info:       &debug.BuildInfo{Settings: []debug.BuildSetting{{Key: "vcs.revision", Value: "1a2b3c4"}}},
+			ok:         true,
+			wantCommit: "1a2b3c4",
+		},
+		{
+			name:       "build info without a revision",
+			info:       &debug.BuildInfo{},
+			ok:         true,
+			wantCommit: "unknown",
+		},
+		{
+			name:       "binary without build info",
+			info:       nil,
+			ok:         false,
+			wantCommit: "unknown",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			readBuildInfo = func() (*debug.BuildInfo, bool) { return tt.info, tt.ok }
+			t.Cleanup(func() { readBuildInfo = debug.ReadBuildInfo })
+
+			rec := httptest.NewRecorder()
+			newMux(fstest.MapFS{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+			}
+			var got struct {
+				Status string `json:"status"`
+				Commit string `json:"commit"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("unmarshal body %q: %v", rec.Body.String(), err)
+			}
+			if got.Status != "ok" {
+				t.Errorf("status field = %q, want %q", got.Status, "ok")
+			}
+			if got.Commit != tt.wantCommit {
+				t.Errorf("commit field = %q, want %q", got.Commit, tt.wantCommit)
 			}
 		})
 	}

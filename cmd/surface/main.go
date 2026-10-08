@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -20,6 +21,25 @@ import (
 // commitSHA is the git commit the binary was built from, injected at build time
 // via -ldflags "-X main.commitSHA=<sha>"; "dev" for a local build.
 var commitSHA = "dev"
+
+// readBuildInfo is overridden in tests to supply build info.
+var readBuildInfo = debug.ReadBuildInfo
+
+// buildCommit reads the git revision Go embeds at build time, returning
+// "unknown" when the binary carries none — a build outside a VCS checkout or
+// with buildvcs disabled.
+func buildCommit() string {
+	info, ok := readBuildInfo()
+	if !ok {
+		return "unknown"
+	}
+	for _, setting := range info.Settings {
+		if setting.Key == "vcs.revision" {
+			return setting.Value
+		}
+	}
+	return "unknown"
+}
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -77,7 +97,11 @@ func newMux(spa fs.FS) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(struct {
+			Status string `json:"status"`
+			Commit string `json:"commit"`
+		}{"ok", buildCommit()})
 	})
 	mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
