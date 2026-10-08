@@ -188,6 +188,17 @@ Rollout: push the image, apply, give the Linear app the `webhook_url` output
 as its webhook URL with agent session events on, then add the signing secret
 Linear issues.
 
+Linear creates a workspace's copy of the app webhook only when that workspace
+AUTHORIZES the app, by an authorization-code exchange. Turning webhooks on for an
+app the workspace already uses through client-credentials tokens delivers
+nothing, and the exchange is refused while such a token exists ("Scope updates
+are not supported for client credentials tokens"). So: revoke the client
+credentials token (`POST https://api.linear.app/oauth/revoke`), open the
+authorize URL with `actor=app`, exchange the returned code and revoke that token,
+then mint a new client-credentials token into `linear-token`. The workspace's
+webhook signs with its own secret, so copy the signing secret again afterwards
+and start a new revision.
+
 ```sh
 printf %s "$SIGNING_SECRET" | gcloud secrets versions add linear-webhook-secret --data-file=-
 ```
