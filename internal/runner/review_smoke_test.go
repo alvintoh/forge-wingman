@@ -64,8 +64,8 @@ func TestReviewSmokeReviewsTheFixtureDiffAgainstItsTicket(t *testing.T) {
 
 func TestReviewSmokeReportsAnUnreadableReviewWithItsCost(t *testing.T) {
 	res, err := ReviewSmoke(context.Background(), &fakeAgent{events: usedTokens + planEvent("looks fine")}, pricedReviewModel, t.TempDir(), nil)
-	if !errors.Is(err, ErrReviewSmokeOutput) {
-		t.Fatalf("err = %v, want ErrReviewSmokeOutput", err)
+	if !errors.Is(err, ErrReviewOutput) {
+		t.Fatalf("err = %v, want ErrReviewOutput", err)
 	}
 	if res.Text != "looks fine" || res.Cost <= 0 {
 		t.Fatalf("result = %+v", res)
@@ -75,7 +75,7 @@ func TestReviewSmokeReportsAnUnreadableReviewWithItsCost(t *testing.T) {
 func TestReviewSmokeRedactsSecretsFromAFailedRun(t *testing.T) {
 	agent := &fakeAgent{stderr: "auth failed for key sk-live-123\n", err: errors.New("exit status 1")}
 	_, err := ReviewSmoke(context.Background(), agent, freeReviewModel, t.TempDir(), []string{"sk-live-123"})
-	if err == nil || errors.Is(err, ErrReviewSmokeOutput) {
+	if err == nil || errors.Is(err, ErrReviewOutput) {
 		t.Fatalf("err = %v, want an agent failure", err)
 	}
 	if msg := err.Error(); strings.Contains(msg, "sk-live-123") || !strings.Contains(msg, "auth failed for key [redacted]") ||
@@ -102,7 +102,7 @@ func TestReviewSmokeFailsWhenTheDirectoryCannotBeWritten(t *testing.T) {
 func TestReviewSmokeRunsTheScriptedBinaryUnderTheReviewProfileOnTheGivenModel(t *testing.T) {
 	bin, attempts := scriptedCLIAgent(t, "", "command-code/given")
 	_, err := ReviewSmoke(context.Background(), scriptedAgent(t, bin, ProfileReview, "command-code/ignored"), "command-code/given", t.TempDir(), nil)
-	if !errors.Is(err, ErrReviewSmokeOutput) {
+	if !errors.Is(err, ErrReviewOutput) {
 		t.Fatalf("err = %v, want the scripted plan reply read as no review", err)
 	}
 	if got := attempts(); len(got) != 1 || got[0] != (fallbackAttempt{"command-code/given", "always-ask"}) {

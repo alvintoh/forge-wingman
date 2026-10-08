@@ -109,7 +109,7 @@ func reviewSmokeModel(ctx context.Context, agent runner.Agent, model string, tim
 	switch {
 	case errors.Is(runErr, context.DeadlineExceeded):
 		outcome, cost, detail = "timed out", "—", "exceeded "+timeout.String()
-	case errors.Is(runErr, runner.ErrReviewSmokeOutput):
+	case errors.Is(runErr, runner.ErrReviewOutput):
 		outcome, detail = "findings unreadable", res.Text
 	case runErr != nil:
 		outcome, cost, detail = "agent failed", "—", runErr.Error()

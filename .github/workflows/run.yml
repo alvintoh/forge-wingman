@@ -2,8 +2,8 @@
 # record; `model` (model.yml) builds, holding no GitHub token and no credential that can
 # reach a run record; `check` runs the gates on the bundled branch with no token and no
 # secret; `pr-meta` renders the PR from the record under the runner identity and decides
-# auto-merge; `pr` opens the PR with fixed steps, holding GitHub write and no GCP
-# identity; `record` validates the model's summary and merges the outcome into the record
+# auto-merge eligibility; `pr` opens the PR with fixed steps, holding GitHub write and no
+# GCP identity; `record` validates the model's summary and merges the outcome into the record
 # whatever happened.
 # Needs the GCP_WIF_PROVIDER, GCP_SERVICE_ACCOUNT, GCP_MODEL_SERVICE_ACCOUNT and
 # WINGMAN_ACCOUNT variables (infra/README.md) and the COMMANDCODE_API_KEY secret; the
@@ -249,7 +249,7 @@ jobs:
       # Names why the push could not be made, so the record job reports the
       # condition rather than a bare pr job failure.
       stop_reason: ${{ steps.rebase.outputs.stop_reason }}
-      auto_merge: ${{ steps.auto-merge.outputs.requested }}
+      auto_merge: ${{ steps.eligible.outputs.labelled }}
     steps:
       - run: echo "STARTED=$(date +%s)" >> "$GITHUB_ENV"
 
@@ -340,23 +340,18 @@ jobs:
           echo "url=${url}" >> "$GITHUB_OUTPUT"
           echo "duration_s=$(( $(date +%s) - STARTED ))" >> "$GITHUB_OUTPUT"
 
-      # Branch protection's required checks hold the merge, so the request is made only
-      # while main requires go and web: without them auto-merge would merge at once.
-      # Pinning the pushed head means a later push cannot ride on this request. A
-      # failed request leaves a ready PR for the owner.
-      - id: auto-merge
-        name: Request auto-merge
-        if: needs.pr-meta.outputs.auto_merge == 'true' && needs.model.outputs.ready == 'true'
+      # The label only marks the PR eligible: pr-review.yml requests auto-merge once its
+      # review of the PR is clean. A failed label leaves the PR for the owner.
+      - id: eligible
+        name: Mark the PR eligible for auto-merge
+        if: needs.pr-meta.outputs.auto_merge == 'true'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           URL: ${{ steps.open.outputs.url }}
         run: |
-          required="$(gh api "repos/${GITHUB_REPOSITORY}/rules/branches/main" \
-            --jq '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] | any(. == "go") and any(. == "web")')"
-          [[ "$required" == true ]] || { echo "::warning::main does not require the go and web checks; auto-merge not requested"; exit 0; }
-          gh pr merge "$URL" --auto --squash --match-head-commit "$(git rev-parse HEAD)"
-          echo "requested=true" >> "$GITHUB_OUTPUT"
+          gh pr edit "$URL" --add-label wingman:auto-merge-eligible
+          echo "labelled=true" >> "$GITHUB_OUTPUT"
 
       # workflow_dispatch is the one GITHUB_TOKEN event that starts a run without approval.
       # The PR is the deliverable, so a failed dispatch leaves CI to be started by hand.

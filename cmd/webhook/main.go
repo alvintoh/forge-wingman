@@ -32,10 +32,8 @@ import (
 )
 
 const (
-	webhookSecret      = "linear-webhook-secret"
-	linearClientID     = "linear-client-id"
-	linearClientSecret = "linear-client-secret"
-	cloudPlatform      = "https://www.googleapis.com/auth/cloud-platform"
+	webhookSecret = "linear-webhook-secret"
+	cloudPlatform = "https://www.googleapis.com/auth/cloud-platform"
 )
 
 func main() {
@@ -116,11 +114,11 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 	if err != nil {
 		return err
 	}
-	clientID, err := optionalSecret(ctx, secrets, linearClientID, logger)
+	clientID, err := optionalSecret(ctx, secrets, linear.DispatchApp.ClientID, logger)
 	if err != nil {
 		return err
 	}
-	clientSecret, err := optionalSecret(ctx, secrets, linearClientSecret, logger)
+	clientSecret, err := optionalSecret(ctx, secrets, linear.DispatchApp.ClientSecret, logger)
 	if err != nil {
 		return err
 	}

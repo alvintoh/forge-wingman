@@ -15,9 +15,12 @@ import (
 )
 
 const (
-	// scope is the one scope every token is minted with: minting with another
-	// revokes every token the app holds.
-	scope            = "read,write,app:assignable"
+	// scope is the scope tokens are minted with by default. One app's tokens
+	// must all share one scope: minting with another revokes every token the
+	// app holds, so a caller wanting a different scope uses its own app.
+	scope = "read,write,app:assignable"
+	// ReadScope is the scope a read-only app's tokens are minted with.
+	ReadScope        = "read"
 	defaultTokenURL  = "https://api.linear.app/oauth/token"
 	defaultRevokeURL = "https://api.linear.app/oauth/revoke"
 	maxOAuthReply    = 64 << 10
@@ -32,6 +35,8 @@ var errRefreshSpent = errors.New("linear: the poll's one token refresh is spent"
 type Credentials struct {
 	ClientID     string
 	ClientSecret string
+	// Scope is the scope tokens are minted with; empty means scope.
+	Scope string
 	// TokenURL overrides the mint address; empty means Linear's own.
 	TokenURL string
 	// RevokeURL overrides the revoke address; empty means Linear's own.
@@ -40,16 +45,47 @@ type Credentials struct {
 	HTTP *http.Client
 }
 
-// mint exchanges the credentials for a new access token carrying scope.
+// AppSecrets name the Secret Manager secrets holding one Linear app's client credentials.
+type AppSecrets struct {
+	ClientID     string
+	ClientSecret string
+}
+
+var (
+	// DispatchApp is the app the dispatcher and the webhook act as.
+	DispatchApp = AppSecrets{ClientID: "linear-client-id", ClientSecret: "linear-client-secret"}
+	// ReviewApp is the read-only app the pull request review reads tickets as.
+	ReviewApp = AppSecrets{ClientID: "linear-review-client-id", ClientSecret: "linear-review-client-secret"}
+)
+
+// ReadCredentials reads app's client credentials through read, each trimmed
+// of the newline a value added with echo carries.
+func ReadCredentials(ctx context.Context, app AppSecrets, read func(context.Context, string) (string, error), client *http.Client) (Credentials, error) {
+	id, err := read(ctx, app.ClientID)
+	if err != nil {
+		return Credentials{}, err
+	}
+	secret, err := read(ctx, app.ClientSecret)
+	if err != nil {
+		return Credentials{}, err
+	}
+	return Credentials{ClientID: strings.TrimSpace(id), ClientSecret: strings.TrimSpace(secret), HTTP: client}, nil
+}
+
+// mint exchanges the credentials for a new access token carrying their scope.
 func (c Credentials) mint(ctx context.Context) (string, error) {
 	if c.ClientID == "" || c.ClientSecret == "" {
 		return "", errors.New("minting a Linear token: no client credentials")
+	}
+	minted := c.Scope
+	if minted == "" {
+		minted = scope
 	}
 	raw, err := c.post(ctx, c.TokenURL, defaultTokenURL, url.Values{
 		"grant_type":    {"client_credentials"},
 		"client_id":     {c.ClientID},
 		"client_secret": {c.ClientSecret},
-		"scope":         {scope},
+		"scope":         {minted},
 	})
 	if err != nil {
 		return "", fmt.Errorf("minting a Linear token: %w", err)

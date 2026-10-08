@@ -654,7 +654,7 @@ func TestRunWorkflowPassesTheBuildSummaryToPRMeta(t *testing.T) {
 	}
 }
 
-func TestRunWorkflowRequestsAutoMergeOnlyOnPRMetasDecision(t *testing.T) {
+func TestRunWorkflowMarksAutoMergeEligibilityOnlyOnPRMetasDecision(t *testing.T) {
 	yml, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "run.yml"))
 	if err != nil {
 		t.Fatal(err)
@@ -662,15 +662,18 @@ func TestRunWorkflowRequestsAutoMergeOnlyOnPRMetasDecision(t *testing.T) {
 	for _, want := range []string{
 		"AUTO_MERGE_SWITCH: ${{ vars.WINGMAN_AUTO_MERGE }}",
 		`-auto-merge-switch "$AUTO_MERGE_SWITCH"`,
-		"if: needs.pr-meta.outputs.auto_merge == 'true' && needs.model.outputs.ready == 'true'",
-		`any(. == "go") and any(. == "web")`,
-		`gh pr merge "$URL" --auto --squash --match-head-commit`,
+		"if: needs.pr-meta.outputs.auto_merge == 'true'\n",
+		`gh pr edit "$URL" --add-label ` + autoMergeEligibleLabel,
+		"auto_merge: ${{ steps.eligible.outputs.labelled }}",
 		"AUTO_MERGE: ${{ needs.pr.outputs.auto_merge == 'true' }}",
 		`-auto-merge="$AUTO_MERGE"`,
 	} {
 		if !strings.Contains(string(yml), want) {
 			t.Errorf("run.yml lacks %q", want)
 		}
+	}
+	if strings.Contains(string(yml), "gh pr merge") {
+		t.Error("run.yml requests auto-merge itself; only a clean review may")
 	}
 }
 

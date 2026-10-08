@@ -27,6 +27,7 @@ this repository — the model's included — cannot become the runner.
 | `runner` | `run.yml`, `infra-smoke.yml` | Firestore read/write, completions create, projections read |
 | `wingman-model` | `model.yml`, `model-smoke.yml` | completions create, projections read |
 | `wingman-publisher` | any job of the rule stack on `main` | projections create; get and overwrite of `projections/current` only |
+| `wingman-pr-review` | `pr-review.yml` | read of `linear-review-client-id` and `linear-review-client-secret` only |
 
 The publisher is the one identity for another repository: the rule stack, which is
 private, so nothing here names it. It has its own provider, `rule-stack`, whose
@@ -43,12 +44,17 @@ Set from the outputs after `apply`:
 | `GCP_WIF_PROVIDER` | `workload_identity_provider` |
 | `GCP_SERVICE_ACCOUNT` | `runner_service_account` |
 | `GCP_MODEL_SERVICE_ACCOUNT` | `model_service_account` |
+| `GCP_PR_REVIEW_SERVICE_ACCOUNT` | `pr_review_service_account` |
 
 `WINGMAN_ACCOUNT` is set by hand, not from an output: it must name the repository's
 owner. When it does not, run.yml's ticket, model and pr-meta jobs refuse to run and
 the record job records identity-mismatch.
 
 The `COMMANDCODE_API_KEY` repository secret is the Command Code key every model slot runs on.
+
+`WINGMAN_PR_REVIEW_MODELS` is optional: the models `pr-review.yml` reviews with, in order,
+comma-separated provider/model. Unset, it reviews with
+`command-code/poolside/laguna-s-2.1-free`; a paid model is an edit of the variable.
 
 The rule stack's publish workflow needs two variables on that repository:
 
@@ -75,15 +81,45 @@ Auto-merge is off until both are set:
 | Repository "Allow auto-merge" (`allow_auto_merge`) | on |
 | `WINGMAN_AUTO_MERGE` variable | `on`; any other value or none leaves it off |
 
-With both set, a ready S or M PR that is not in the review sample, edits nothing
-outside its plan and fails no check gate requests a squash auto-merge. A push to
-its branch afterwards withdraws it (`automerge-withdraw.yml`). The request is made
-only while `main` requires `go` and `web`.
+With both set, a run's S or M PR that is not in the review sample, edits nothing
+outside its plan and fails no check gate gets the `wingman:auto-merge-eligible`
+label, which must exist in the repository. `pr-review.yml` reviews every ready PR
+against its Linear ticket and, only when the review is clean, the PR carries that
+label and its head is still the commit it reviewed, requests a squash auto-merge
+pinned to that commit. A push to a run's branch afterwards withdraws it
+(`automerge-withdraw.yml`). The request is made only while `main` requires `go`
+and `web`.
 
-Do not set `WINGMAN_AUTO_MERGE` to `on` yet. The decision reads `ready` and the
-out-of-plan list from the model job's outputs, and the build agent has a shell on
-that runner, so it could forge them. The switch is safe once the review runs in its
-own job and the plan's file list comes from a trusted record.
+Do not set `WINGMAN_AUTO_MERGE` to `on` yet. The review's verdict comes from its
+own job, but the out-of-plan list still comes from the model job's outputs, and the
+build agent has a shell on that runner, so it could forge it. The switch is safe once
+the plan's file list comes from a trusted record.
+
+The review itself is not proof against the build agent either: the agent writes the
+diff the reviewer reads, so it can plant instructions that steer one model to a clean
+review. The required checks, the review sample and independent specialist reviews
+narrow that; none closes it.
+
+## Pull request review
+
+`pr-review.yml` runs on `pull_request_target` as the file is on `main`, for a
+non-draft PR from this repository into `main`, and never checks out or runs the
+PR's code. Its `context` job runs as `wingman-pr-review`, mints a read-scoped
+token on a second Linear app to read the ticket the PR's title or body names, and
+reads the diff through the API; its `review` job holds only the model key; its `post` job comments,
+sets the `wingman-review` status on the reviewed commit and makes the merge
+request with the App token. A PR naming no ticket gets an `error` status saying why
+and no review. The status is not a required check, so a PR is never blocked by it.
+
+The second app exists because one app's tokens must all share one scope: a
+client-credentials mint with a different scope revokes every token the app holds,
+so a read token minted on the dispatcher's app would revoke the dispatcher's and
+the webhook's. To set it up:
+
+1. In Linear, create an OAuth application with client credentials enabled and the
+   `read` scope only.
+2. Add its client id and secret as the first versions of `linear-review-client-id`
+   and `linear-review-client-secret`, by hand, after `tofu apply` creates them.
 
 ## Rolling out the publisher
 

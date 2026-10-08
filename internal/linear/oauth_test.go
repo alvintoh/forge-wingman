@@ -79,6 +79,18 @@ func TestMintPostsTheClientCredentialsGrant(t *testing.T) {
 	}
 }
 
+func TestMintCarriesTheCredentialsScope(t *testing.T) {
+	o := &oauthServer{}
+	creds := o.start(t)
+	creds.Scope = ReadScope
+	if _, err := creds.mint(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := o.forms[0]["scope"]; got != "read" {
+		t.Fatalf("scope = %q, want read", got)
+	}
+}
+
 func TestMintFails(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -328,5 +340,38 @@ func TestRevokeAllOutlivesTheCallersContextAndOnlyWarns(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "level=WARN msg=linearRevokeFailed") {
 		t.Fatalf("logged %q", logs.String())
+	}
+}
+
+func TestReadCredentialsReadsTheAppsOwnSecretsTrimmed(t *testing.T) {
+	values := map[string]string{
+		"linear-client-id": "dispatch-id\n", "linear-client-secret": " dispatch-secret\n",
+		"linear-review-client-id": "review-id\n", "linear-review-client-secret": " review-secret\n",
+	}
+	token := func(_ context.Context, name string) (string, error) { return values[name], nil }
+	for app, want := range map[string][2]string{
+		"dispatch": {"dispatch-id", "dispatch-secret"},
+		"review":   {"review-id", "review-secret"},
+	} {
+		secrets := DispatchApp
+		if app == "review" {
+			secrets = ReviewApp
+		}
+		creds, err := ReadCredentials(context.Background(), secrets, token, nil)
+		if err != nil || creds.ClientID != want[0] || creds.ClientSecret != want[1] {
+			t.Errorf("%s: credentials = %q, %q, %v", app, creds.ClientID, creds.ClientSecret, err)
+		}
+	}
+}
+
+func TestReadCredentialsFailsOnAnUnreadableSecret(t *testing.T) {
+	token := func(_ context.Context, name string) (string, error) {
+		if name == "linear-client-secret" {
+			return "", errors.New("reading secret linear-client-secret: denied")
+		}
+		return "client-1", nil
+	}
+	if _, err := ReadCredentials(context.Background(), DispatchApp, token, nil); err == nil {
+		t.Fatal("read credentials without the client secret")
 	}
 }
