@@ -25,7 +25,7 @@ monolith either. Each deployable has a different *trigger* and a different
 | Container | Forced by | Trigger | Attendance |
 |---|---|---|---|
 | **dispatcher** | FR-1 poll, FR-15 sizing, FR-22 selection, FR-23 notice | the webhook, or Cloud Scheduler ≤15 min as backstop | unattended |
-| **webhook** | `adr/0013` — enqueue in seconds | Linear `AgentSessionEvent`, public, signature-verified | unattended |
+| **webhook** | `adr/0013` — enqueue in ~2 min (job start-up) | Linear `AgentSessionEvent`, public, signature-verified | unattended |
 | **runner** | FR-2 worktree-per-run, FR-3/4 phases | dispatched per run | unattended |
 | **surface** | FR-20 browse + statistics, FR-24 retry, FR-25 keyboard | HTTP, behind IAP | interactive |
 | **store** | FR-6 record + completions, NFR-7 90-day bound | — | foundational |
@@ -188,7 +188,8 @@ One Go binary entrypoint (`cmd/dispatcher`). Per poll:
 7. **Dispatch** by `workflow_dispatch` against the target repository.
 8. **Notify** per FR-23 — link-only, and only for the five recurring classes
    (FR-11, FR-12, FR-18, NFR-1, FR-26's infrastructure stop). The same classes trip
-   FR-27's circuit breaker, so no further run is admitted until a manual reset.
+   FR-27's circuit breaker, so no further run is admitted until a manual reset —
+   except FR-26's infrastructure stop, which counts toward the provider halt instead.
 
 **Why a Job and not a service:** nothing calls it over HTTP. It is started by the schedule or by the webhook's run request (`adr/0013`), and the public endpoint lives in the webhook service, not here.
 
