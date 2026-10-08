@@ -54,6 +54,7 @@ func TestParseSummaryRejects(t *testing.T) {
 		{"the pr phase", func(s *Summary) { s.Phase = PhasePR }},
 		{"no phase", func(s *Summary) { s.Phase = "" }},
 		{"a malformed model", func(s *Summary) { s.Steps[0].Model = "big pickle" }},
+		{"a step naming a harness this run cannot route to", func(s *Summary) { s.Steps[0].Harness = "no-such-harness" }},
 		{"negative tokens", func(s *Summary) { s.Steps[0].Tokens.Input = -1 }},
 		{"a negative cost", func(s *Summary) { s.Steps[0].Tokens.Cost = -0.1 }},
 		{"negative diff lines", func(s *Summary) { s.DiffLines.Removed = -1 }},

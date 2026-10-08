@@ -207,6 +207,27 @@ func TestRouterFallsBackToThePlansNextHarness(t *testing.T) {
 	}
 }
 
+// TestRouterNamesTheHarnessItPicks asserts HarnessFor names the harness Run
+// selects — the plan's default when it is ready, the fallback when it is not,
+// and none for a plan no configuration serves (AC1, AC2).
+func TestRouterNamesTheHarnessItPicks(t *testing.T) {
+	orders := map[string][]string{"plan": {"default", "fallback"}}
+	ready := newRouter(planOrders(orders), ProfileBuild,
+		fakeHarness{name: "default", agent: &fakeAgent{}}, fakeHarness{name: "fallback", agent: &fakeAgent{}})
+	if got := ready.HarnessFor("plan/x"); got != "default" {
+		t.Fatalf("HarnessFor = %q, want the plan's ready default", got)
+	}
+	falling := newRouter(planOrders(orders), ProfileBuild,
+		fakeHarness{name: "default", ready: errors.New("the default has no key")}, fakeHarness{name: "fallback", agent: &fakeAgent{}})
+	if got := falling.HarnessFor("plan/x"); got != "fallback" {
+		t.Fatalf("HarnessFor = %q, want the fallback that ran", got)
+	}
+	unserved := newRouter(planOrders(nil), ProfileBuild, fakeHarness{name: "adapter"})
+	if got := unserved.HarnessFor("plan/x"); got != "" {
+		t.Fatalf("HarnessFor = %q, want none for an unconfigured plan", got)
+	}
+}
+
 // TestRouterRefusesAPlanItHasNoHarnessFor asserts a plan no configuration names
 // is refused, so an unregistered model never runs.
 func TestRouterRefusesAPlanItHasNoHarnessFor(t *testing.T) {

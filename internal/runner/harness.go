@@ -86,6 +86,17 @@ func HarnessSecrets(getenv func(string) string) []string {
 	return secrets
 }
 
+// knownHarness reports whether name is a registered harness, so a summary's
+// step names a harness this runner could have run.
+func knownHarness(name string) bool {
+	for _, r := range harnessRegistry {
+		if r.name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // harnessOrder resolves a plan — a model id's prefix — to the harness names it
 // runs through, in order: the default first, then the ordered fallbacks. It is
 // providers.Harnesses in production, so a plan picks its harness by
@@ -148,6 +159,17 @@ func (r Router) Classify(stderrTail string, exitErr error) (Outcome, StopReason)
 func (r Router) Gate(model string) error {
 	_, err := pickHarness(r.harnesses, r.order, Provider(model))
 	return err
+}
+
+// HarnessFor returns the harness the router runs model through — the plan's
+// first registered harness that is ready, the same pick Run makes — or empty
+// when the plan names no harness the run can use.
+func (r Router) HarnessFor(model string) string {
+	h, err := pickHarness(r.harnesses, r.order, Provider(model))
+	if err != nil {
+		return ""
+	}
+	return h.Name()
 }
 
 // pickHarness returns the first harness the plan names, in order, that is
@@ -218,6 +240,13 @@ type failureClassifier interface {
 // modelGate is implemented by an Agent that can veto a model before it runs.
 type modelGate interface {
 	Gate(model string) error
+}
+
+// harnessNamer is implemented by an Agent that routes a model through a harness
+// and can name the one it picks, so a step and its phase's start line record
+// which harness ran.
+type harnessNamer interface {
+	HarnessFor(model string) string
 }
 
 // agentBaseEnvNames are the variables every agent process inherits, before a
