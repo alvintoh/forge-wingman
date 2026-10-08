@@ -3,7 +3,7 @@ locals {
 }
 
 # The identity the webhook runs under: it writes its marker, reads the signing
-# secret and the agent's token, and can start a poll.
+# secret and the Linear app's credentials, and can start a poll.
 resource "google_service_account" "webhook" {
   account_id   = "webhook"
   display_name = "Forge Wingman webhook"
@@ -90,6 +90,7 @@ resource "google_cloud_run_v2_service" "webhook" {
     google_project_iam_member.webhook_datastore,
     google_secret_manager_secret_iam_member.webhook_signing,
     google_secret_manager_secret_iam_member.webhook_linear_token,
+    google_secret_manager_secret_iam_member.webhook_linear_app,
     google_cloud_run_v2_job_iam_member.webhook_invoker,
     google_project_service.this,
   ]

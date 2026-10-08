@@ -127,7 +127,8 @@ with 403 "Resource not accessible by personal access token" without it.
 
 `secrets.tf` creates four more, empty and readable by no identity until the code
 that reads each lands and grants its own (`notice.tf` grants the dispatcher
-`notice-webhook-url`): `linear-client-id` and
+`notice-webhook-url`; `linear_app.tf` grants the dispatcher and the webhook the
+two client credentials): `linear-client-id` and
 `linear-client-secret` (the Forge Wingman Linear app, client credentials on),
 `linear-webhook-secret` (Linear issues it once the webhook service has a URL;
 the webhook reads it) and `notice-webhook-url` (the Forge Slack incoming
@@ -179,15 +180,16 @@ it, an issue gets one run.
 
 | Service account | Grants |
 |---|---|
-| `webhook` | Firestore read/write, read `linear-webhook-secret` and `linear-token`, start one execution of the dispatcher job |
+| `webhook` | Firestore read/write, read `linear-webhook-secret`, `linear-token`, `linear-client-id` and `linear-client-secret`, start one execution of the dispatcher job |
 
 `webhook_image` is the image, built with `CMD=webhook`; every apply must pass it,
 as it passes `dispatcher_image`. With no signing secret the service still starts
 and refuses every delivery with 401, re-reading the secret at most every 30
 seconds until it has one, so adding the first value needs no restart. Once it
 has a value it keeps it: rotating the signing secret needs a new revision.
-`linear-token` is re-read when Linear refuses it, at most every 30 seconds, so
-its monthly rotation needs none. A failed wake removes the marker and answers
+The service mints its own Linear token from the client credentials on first
+use, mints a successor when Linear refuses it, at most every 30 seconds, and
+revokes it on shutdown. A failed wake removes the marker and answers
 500, so Linear's retry wakes the job again.
 
 Rollout: push the image, apply, give the Linear app the `webhook_url` output

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"slices"
@@ -134,6 +135,27 @@ func TestSlackPosterReadsTheWebhookSecretTrimmed(t *testing.T) {
 	}
 	if got := poster.(dispatcher.Slack).Webhook; got != "https://hooks.slack.com/services/T/B/x" {
 		t.Fatalf("webhook = %q", got)
+	}
+}
+
+func TestLinearCredentialsReadsBothSecretsTrimmed(t *testing.T) {
+	values := map[string]string{linearClientIDSecret: "client-1\n", linearClientSecretSecret: " secret-1\n"}
+	token := func(_ context.Context, name string) (string, error) { return values[name], nil }
+	creds, err := linearCredentials(context.Background(), token, nil)
+	if err != nil || creds.ClientID != "client-1" || creds.ClientSecret != "secret-1" {
+		t.Fatalf("credentials = %q, %q, %v", creds.ClientID, creds.ClientSecret, err)
+	}
+}
+
+func TestLinearCredentialsFailsOnAnUnreadableSecret(t *testing.T) {
+	token := func(_ context.Context, name string) (string, error) {
+		if name == linearClientSecretSecret {
+			return "", errors.New("reading secret linear-client-secret: denied")
+		}
+		return "client-1", nil
+	}
+	if _, err := linearCredentials(context.Background(), token, nil); err == nil {
+		t.Fatal("read credentials without the client secret")
 	}
 }
 

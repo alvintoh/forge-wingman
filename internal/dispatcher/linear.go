@@ -68,7 +68,7 @@ const delegatedQuery = `query DelegatedIssues($delegate: ID!, $first: Int, $afte
 // Linear reads the issues delegated to one Linear agent.
 type Linear struct {
 	Endpoint string
-	Token    string
+	Tokens   linear.TokenSource
 	// Delegate is the agent the poll acts for, the id Linear's viewer query
 	// must return for every page.
 	Delegate string
@@ -181,9 +181,9 @@ func (l Linear) page(ctx context.Context, after string, size int) (linearRespons
 		First    int    `json:"first"`
 		After    string `json:"after,omitempty"`
 	}{Delegate: l.Delegate, First: size, After: after}
-	api := linear.Client{Endpoint: l.Endpoint, Token: l.Token, HTTP: l.Client, MaxReply: maxLinearResponseBytes}
-	if err := api.Do(ctx, delegatedQuery, variables, &resp.Data); err != nil {
-		return resp, err
-	}
-	return resp, nil
+	err := linear.DoRefreshing(ctx, l.Tokens, func(token string) error {
+		api := linear.Client{Endpoint: l.Endpoint, Token: token, HTTP: l.Client, MaxReply: maxLinearResponseBytes}
+		return api.Do(ctx, delegatedQuery, variables, &resp.Data)
+	})
+	return resp, err
 }

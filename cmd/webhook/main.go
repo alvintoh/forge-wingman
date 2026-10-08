@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -25,14 +26,16 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
+	"github.com/alvintoh/forge-wingman/internal/linear"
 	"github.com/alvintoh/forge-wingman/internal/store"
 	"github.com/alvintoh/forge-wingman/internal/webhook"
 )
 
 const (
-	webhookSecret = "linear-webhook-secret"
-	linearToken   = "linear-token"
-	cloudPlatform = "https://www.googleapis.com/auth/cloud-platform"
+	webhookSecret      = "linear-webhook-secret"
+	linearClientID     = "linear-client-id"
+	linearClientSecret = "linear-client-secret"
+	cloudPlatform      = "https://www.googleapis.com/auth/cloud-platform"
 )
 
 func main() {
@@ -113,7 +116,11 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 	if err != nil {
 		return err
 	}
-	token, err := optionalSecret(ctx, secrets, linearToken, logger)
+	clientID, err := optionalSecret(ctx, secrets, linearClientID, logger)
+	if err != nil {
+		return err
+	}
+	clientSecret, err := optionalSecret(ctx, secrets, linearClientSecret, logger)
 	if err != nil {
 		return err
 	}
@@ -126,19 +133,21 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 	if err != nil {
 		return fmt.Errorf("google credentials: %w", err)
 	}
-	held := func(name, value string) *webhook.Secret {
-		return webhook.NewSecret(name, value, func(ctx context.Context) (string, error) {
-			return secrets.Token(ctx, name)
-		}, time.Now, logger)
-	}
-	sessions := webhook.Linear{Token: held(linearToken, token)}
+	tokens := linear.NewCachedSource(linear.Credentials{
+		ClientID:     strings.TrimSpace(clientID),
+		ClientSecret: strings.TrimSpace(clientSecret),
+	}, time.Now)
+	defer linear.RevokeAll(ctx, tokens, logger)
+	sessions := webhook.Linear{Tokens: tokens}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.Handle("POST /linear", webhook.Handler{
-		Key:      held(webhookSecret, signing),
+		Key: webhook.NewSecret(webhookSecret, signing, func(ctx context.Context) (string, error) {
+			return secrets.Token(ctx, webhookSecret)
+		}, time.Now, logger),
 		Markers:  store.NewMarkers(fsc),
 		Sessions: sessions,
 		Poll:     webhook.Job{RunURI: c.runURI, Client: gcp},

@@ -9,7 +9,7 @@ locals {
   dispatcher_secrets = toset(["linear-token", "github-token"])
 }
 
-# The identity one poll runs under: it reads the two tokens and the queue, and
+# The identity one poll runs under: it reads its credentials and the queue, and
 # holds nothing on a repository.
 resource "google_service_account" "dispatcher" {
   account_id   = "dispatcher"
@@ -108,7 +108,10 @@ resource "google_cloud_run_v2_job" "dispatcher" {
     }
   }
 
-  depends_on = [google_project_service.this]
+  depends_on = [
+    google_secret_manager_secret_iam_member.dispatcher_linear_app,
+    google_project_service.this,
+  ]
 }
 
 resource "google_cloud_run_v2_job_iam_member" "dispatcher_invoker" {

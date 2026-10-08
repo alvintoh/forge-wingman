@@ -2,7 +2,6 @@ package webhook
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/alvintoh/forge-wingman/internal/linear"
@@ -16,7 +15,7 @@ const (
 // Linear calls Linear's GraphQL API with the agent's token.
 type Linear struct {
 	Endpoint string
-	Token    *Secret
+	Tokens   linear.TokenSource
 }
 
 // Acknowledge posts a thought activity on the session, which Linear needs
@@ -31,30 +30,14 @@ func (l Linear) Acknowledge(ctx context.Context, sessionID string) error {
 		"agentSessionId": sessionID,
 		"content":        map[string]string{"type": "thought", "body": acknowledgement},
 	}
-	if err := l.do(ctx, activityMutation, map[string]any{"input": input}, &data); err != nil {
+	err := linear.DoRefreshing(ctx, l.Tokens, func(token string) error {
+		return linear.Client{Endpoint: l.Endpoint, Token: token}.Do(ctx, activityMutation, map[string]any{"input": input}, &data)
+	})
+	if err != nil {
 		return fmt.Errorf("acknowledging session %s: %w", sessionID, err)
 	}
 	if !data.AgentActivityCreate.Success {
 		return fmt.Errorf("acknowledging session %s: Linear reported no success", sessionID)
 	}
 	return nil
-}
-
-// do calls Linear once, and once more if Linear refused the token and the
-// token held after a re-read differs: the token rotates while the service runs.
-func (l Linear) do(ctx context.Context, query string, variables, out any) error {
-	token := l.Token.Value()
-	err := l.client(token).Do(ctx, query, variables, out)
-	if !errors.Is(err, linear.ErrUnauthenticated) {
-		return err
-	}
-	rotated := l.Token.Reload(ctx)
-	if rotated == token {
-		return err
-	}
-	return l.client(rotated).Do(ctx, query, variables, out)
-}
-
-func (l Linear) client(token string) linear.Client {
-	return linear.Client{Endpoint: l.Endpoint, Token: token}
 }

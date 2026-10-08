@@ -26,8 +26,7 @@ const (
 // GraphQL error whose extensions code is AUTHENTICATION_ERROR.
 var ErrUnauthenticated = errors.New("linear: unauthenticated")
 
-// Client calls Linear with one token. The token is sent as the Authorization
-// header exactly as given, which Linear accepts with or without "Bearer ".
+// Client calls Linear with one token, sent as a bearer token.
 type Client struct {
 	// Endpoint overrides the API address; empty means Linear's own.
 	Endpoint string
@@ -55,7 +54,7 @@ func (c Client) Do(ctx context.Context, query string, variables, out any) error 
 		return fmt.Errorf("building the Linear request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", c.Token)
+	req.Header.Set("Authorization", "Bearer "+c.Token)
 	client := c.HTTP
 	if client == nil {
 		client = http.DefaultClient
