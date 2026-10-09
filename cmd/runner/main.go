@@ -13,6 +13,9 @@
 //	runner plan-list                                 print every plan side by side, flagging the ones to look at
 //	runner plan-smoke      -plan-models <list>       prove the plan agent refuses edit, a new file and bash on the list's first and last model
 //	runner review-smoke    -review-models <list>     try the review agent on a fixture diff with each model, passing those whose findings parse at $0
+//	runner pr-review-context -pr <n> -out <path>     write a pull request's diff and the ticket it names, read from Linear
+//	runner pr-review       -context <path> ...       review the context on each model in turn and write the verdict
+//	runner pr-review-post  -pr <n> -verdict <path>   post the review comment and status, and decide the auto-merge request
 //
 // build exits 0 when it stops short of a branch but reported why; ticket, pr-meta
 // and record exit 1 for any run that cannot or did not succeed, so the workflow
@@ -136,13 +139,20 @@ func loadEnv(getenv func(string) string, required ...string) (env, error) {
 
 func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(string) string) error {
 	if len(args) == 0 {
-		return errors.New("usage: runner ticket|build|pr-meta|record|enable-provider|reset-breaker|plan-define|plan-verdict|plan-reply|plan-list|plan-smoke|review-smoke [flags]")
+		return errors.New("usage: runner ticket|build|pr-meta|record|enable-provider|reset-breaker|plan-define|plan-verdict|plan-reply|plan-list|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post [flags]")
 	}
 	if args[0] == "plan-smoke" {
 		return planSmoke(ctx, logger, getenv, args[1:])
 	}
-	if args[0] == "review-smoke" {
+	switch args[0] {
+	case "review-smoke":
 		return reviewSmoke(ctx, logger, getenv, args[1:])
+	case "pr-review-context":
+		return prReviewContext(ctx, logger, getenv, args[1:])
+	case "pr-review":
+		return prReview(ctx, logger, getenv, args[1:])
+	case "pr-review-post":
+		return prReviewPost(ctx, logger, getenv, args[1:])
 	}
 	required, known := requiredEnv(args[0])
 	if !known {
@@ -366,7 +376,7 @@ func splitModels(s string, fallback []string) []string {
 }
 
 // prMeta writes the PR's title, body, the branch segment the pushed branch must
-// carry and whether to request auto-merge as outputs, from the run record's ticket
+// carry and whether to mark it eligible for auto-merge as outputs, from the run record's ticket
 // and the build's summary.
 func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) error {
 	fs := flag.NewFlagSet("pr-meta", flag.ContinueOnError)
@@ -415,8 +425,9 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 // autoMergeOn is the only WINGMAN_AUTO_MERGE value that lets a run request auto-merge.
 const autoMergeOn = "on"
 
-// autoMerge reports whether the run's PR requests auto-merge: the switch is on
-// and nothing in the run needs the owner.
+// autoMerge reports whether the run's PR is marked eligible for auto-merge,
+// which pr-review.yml requests once its review is clean: the switch is on and
+// nothing in the run needs the owner.
 func autoMerge(switchValue, runID string, t runner.Ticket, sum runner.Summary, failedGate string) bool {
 	return switchValue == autoMergeOn && !ownerAttention(runID, t, sum, failedGate)
 }
@@ -525,7 +536,7 @@ func record(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	prSeconds := fs.Int("pr-duration-s", 0, "wall-clock seconds the pr job took")
 	checkReport := fs.String("failed-gate", "", "the check job's failed_gate output, empty when it did not run")
 	runURL := fs.String("run-url", "", "URL of the workflow run")
-	autoMerge := fs.Bool("auto-merge", false, "the pr job requested auto-merge")
+	autoMerge := fs.Bool("auto-merge", false, "the pr job marked the PR eligible for auto-merge")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

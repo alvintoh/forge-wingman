@@ -15,10 +15,10 @@ import (
 
 const (
 	githubEndpoint = "https://api.github.com"
-	// githubAPIVersion is the REST version the workflow-dispatch documentation
+	// GitHubAPIVersion is the REST version the workflow-dispatch documentation
 	// is written against; GitHub ignores the header's version rather than the
 	// shape of the request.
-	githubAPIVersion = "2026-03-10"
+	GitHubAPIVersion = "2026-03-10"
 	// maxErrorBytes caps how much of a refusal is kept for the log, since a
 	// failure is reported by its message and not by the rest of the body.
 	maxErrorBytes = 512
@@ -153,7 +153,7 @@ func (g GitHub) do(ctx context.Context, method, endpoint string, reqBody io.Read
 	if reqBody != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	req.Header.Set("X-GitHub-Api-Version", githubAPIVersion)
+	req.Header.Set("X-GitHub-Api-Version", GitHubAPIVersion)
 	client := g.Client
 	if client == nil {
 		client = http.DefaultClient

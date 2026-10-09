@@ -14,6 +14,10 @@ output "model_service_account" {
   value = google_service_account.model.email
 }
 
+output "pr_review_service_account" {
+  value = google_service_account.pr_review.email
+}
+
 output "publisher_service_account" {
   value = google_service_account.publisher.email
 }

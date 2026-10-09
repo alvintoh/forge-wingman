@@ -1,0 +1,202 @@
+# Reviews a ready pull request against the acceptance criteria of the Linear ticket it
+# names, posts one review comment and the wingman-review status, and requests auto-merge
+# only for a clean review of a PR the run marked eligible, at the head it reviewed.
+# pull_request_target runs this file as it is on main and never checks out or runs the
+# PR's code: the diff comes from the API and is data to the reviewer. Each job holds
+# one credential: `context` the pr-review identity and a read token, `review` the model
+# key alone, `post` comment and status writes plus the App token for the merge request.
+# Needs the GCP_WIF_PROVIDER and GCP_PR_REVIEW_SERVICE_ACCOUNT variables, the
+# COMMANDCODE_API_KEY secret and the App's client id and key (infra/README.md);
+# WINGMAN_PR_REVIEW_MODELS is optional.
+name: pr-review
+
+on:
+  pull_request_target:
+    types: [opened, ready_for_review, reopened]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  context:
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      pull-requests: read
+    outputs:
+      skip: ${{ steps.context.outputs.skip }}
+      skip_reason: ${{ steps.context.outputs.skip_reason }}
+      head_sha: ${{ steps.context.outputs.head_sha }}
+    steps:
+      # The base branch's code, never the PR's.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_PR_REVIEW_SERVICE_ACCOUNT }}
+
+      - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
+
+      - id: context
+        name: Read the diff and the ticket it names
+        env:
+          GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: '"$RUNNER_TEMP/runner" pr-review-context -pr "$PR" -out "$RUNNER_TEMP/context.json"'
+
+      - if: steps.context.outputs.skip == 'false'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pr-review-context
+          path: ${{ runner.temp }}/context.json
+          if-no-files-found: error
+          retention-days: 1
+
+  # The diff and the ticket reach a model here, so the job holds the model key and nothing else.
+  review:
+    needs: context
+    if: needs.context.outputs.skip == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions: {}
+    steps:
+      # The base branch's code, never the PR's.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
+
+      # The bun version is model.yml's; omp's is tools/omp's lockfile.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+
+      - name: Install omp
+        run: |
+          bun install --frozen-lockfile --cwd tools/omp
+          echo "$GITHUB_WORKSPACE/tools/omp/node_modules/.bin" >> "$GITHUB_PATH"
+          test "$(tools/omp/node_modules/.bin/omp --version)" = "omp/$(jq -r '.dependencies["@oh-my-pi/pi-coding-agent"]' tools/omp/package.json)"
+
+      # The Node version is model.yml's; opencode's is tools/opencode's lockfile.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Install opencode
+        run: |
+          npm ci --prefix tools/opencode --no-audit --no-fund
+          echo "$GITHUB_WORKSPACE/tools/opencode/node_modules/.bin" >> "$GITHUB_PATH"
+          test "$(tools/opencode/node_modules/.bin/opencode --version)" = "$(jq -r '.dependencies["opencode-ai"]' tools/opencode/package.json)"
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: pr-review-context
+          path: ${{ runner.temp }}
+
+      - name: Review the diff against the ticket
+        env:
+          # The default is the one model review-smoke has metered at $0.
+          MODELS: ${{ vars.WINGMAN_PR_REVIEW_MODELS || 'command-code/poolside/laguna-s-2.1-free' }}
+          COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
+        run: '"$RUNNER_TEMP/runner" pr-review -context "$RUNNER_TEMP/context.json" -out "$RUNNER_TEMP/verdict.json" -models "$MODELS"'
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pr-review-verdict
+          path: ${{ runner.temp }}/verdict.json
+          if-no-files-found: error
+          retention-days: 1
+
+  # The verdict is untrusted data here: pr-review-post validates it and posts the
+  # findings where they can neither render HTML nor mention anyone.
+  post:
+    needs: [context, review]
+    if: ${{ !cancelled() && needs.context.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pull-requests: write
+      statuses: write
+    steps:
+      # The base branch's code, never the PR's.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
+
+      # Absent when the review did not finish, which posts as no verdict.
+      - if: needs.review.result == 'success'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: pr-review-verdict
+          path: ${{ runner.temp }}/review
+
+      - id: post
+        name: Post the review and its status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REVIEWED_SHA: ${{ needs.context.outputs.head_sha || github.event.pull_request.head.sha }}
+          SKIP_REASON: ${{ needs.context.outputs.skip_reason }}
+          CONTEXT_RESULT: ${{ needs.context.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          verdict="$RUNNER_TEMP/review/verdict.json"
+          [[ -f "$verdict" ]] || verdict=""
+          "$RUNNER_TEMP/runner" pr-review-post -pr "$PR" -reviewed-sha "$REVIEWED_SHA" -verdict "$verdict" \
+            -skip-reason "$SKIP_REASON" -context-result "$CONTEXT_RESULT" -run-url "$RUN_URL"
+
+      # The App token makes the merge's push start downstream workflows. Branch protection's
+      # required checks hold the merge, so the request is made only while main requires go
+      # and web; pinning the reviewed head means a later push cannot ride on it. A failed
+      # request leaves the PR for the owner.
+      - id: app-token
+        if: steps.post.outputs.merge == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.WINGMAN_APP_CLIENT_ID }}
+          private-key: ${{ secrets.WINGMAN_APP_PRIVATE_KEY }}
+
+      - name: Request auto-merge
+        if: steps.post.outputs.merge == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          REVIEWED_SHA: ${{ needs.context.outputs.head_sha }}
+        run: |
+          required="$(gh api "repos/${GITHUB_REPOSITORY}/rules/branches/main" \
+            --jq '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] | any(. == "go") and any(. == "web")')"
+          [[ "$required" == true ]] || { echo "::warning::main does not require the go and web checks; auto-merge not requested"; exit 0; }
+          gh pr merge "$PR" --auto --squash --match-head-commit "$REVIEWED_SHA"

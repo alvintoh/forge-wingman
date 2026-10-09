@@ -84,9 +84,14 @@ func (t Ticket) Subject() string {
 	return t.ID + " " + t.Title
 }
 
-// Text renders the ticket as it appears at the end of the prompt.
+// Text renders the ticket as it appears at the end of the prompt, naming its
+// size when it has one.
 func (t Ticket) Text() string {
-	return "## " + t.ID + ": " + t.Title + " (size " + t.Size + ")\n\n" + t.Body
+	head := "## " + t.ID + ": " + t.Title
+	if t.Size != "" {
+		head += " (size " + t.Size + ")"
+	}
+	return head + "\n\n" + t.Body
 }
 
 // Encode renders the ticket as one line of JSON, leaving HTML characters unescaped.

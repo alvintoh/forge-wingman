@@ -1,5 +1,6 @@
-# Withdraws auto-merge from a run's PR when anyone pushes to its branch after the
-# run requested it, so a push nobody reviewed never merges on the run's request.
+# Takes a run's PR out of auto-merge when anyone pushes to its branch: removes the
+# eligibility label, so no later review can request a merge, and withdraws a request
+# already made, so a push nobody reviewed never merges.
 # pull_request_target runs this file as it is on main, so a branch cannot rewrite
 # it; it never checks the branch out.
 name: automerge-withdraw
@@ -35,7 +36,11 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSHER: ${{ github.actor }}
         run: |
-          # An assignment fails the step when gh does, so an API error is never read as "not requested".
+          # An assignment fails the step when gh does, so an API error is never read as "not labelled".
+          labelled="$(gh pr view "$PR" --json labels --jq 'any(.labels[]; .name == "wingman:auto-merge-eligible")')"
+          if [[ "$labelled" == true ]]; then
+            gh pr edit "$PR" --remove-label wingman:auto-merge-eligible
+          fi
           requested="$(gh pr view "$PR" --json autoMergeRequest --jq '.autoMergeRequest != null')"
           [[ "$requested" == true ]] || { echo "auto-merge is not requested"; exit 0; }
           gh pr merge "$PR" --disable-auto

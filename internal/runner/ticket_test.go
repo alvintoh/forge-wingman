@@ -65,6 +65,14 @@ func TestTicketTextCarriesTheTitle(t *testing.T) {
 	}
 }
 
+func TestTicketTextOmitsAnAbsentSize(t *testing.T) {
+	tk := testTicket
+	tk.Size = ""
+	if got := tk.Text(); got != "## ABC-12: feat(x): add a file\n\nAdd a file." {
+		t.Fatalf("text = %q", got)
+	}
+}
+
 func TestTicketValidateBoundsTheEncodedTicket(t *testing.T) {
 	tk := testTicket
 	tk.Body = strings.Repeat("\x01", maxTicketBodyBytes)

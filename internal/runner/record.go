@@ -167,7 +167,7 @@ type Record struct {
 	LoopDetail string `firestore:"loop_detail"`
 	// Sampled is whether the run id falls in FR-17's review sample, whatever the run's size.
 	Sampled bool `firestore:"sampled"`
-	// AutoMerge is whether the pr job requested auto-merge on the PR (FR-16).
+	// AutoMerge is whether the pr job marked the PR eligible for auto-merge (FR-16).
 	AutoMerge bool `firestore:"auto_merge"`
 	// CommitSubject is the subject the build committed with, and the PR's title.
 	CommitSubject string `firestore:"commit_subject"`
@@ -317,7 +317,7 @@ type FinalizeInput struct {
 	// empty when it made it.
 	PRStopReason string
 	PRDuration   time.Duration
-	// AutoMerge is whether the pr job requested auto-merge.
+	// AutoMerge is whether the pr job marked the PR eligible for auto-merge.
 	AutoMerge bool
 	// CheckReport is the check job's failed_gate output, or empty when it did not run.
 	CheckReport string

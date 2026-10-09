@@ -1,9 +1,11 @@
 locals {
-  # The Linear app's credentials and the notice destination. Values are added by
-  # hand, and each consumer grants its own identity access when it lands.
+  # The two Linear apps' credentials and the notice destination. Values are added
+  # by hand, and each consumer grants its own identity access when it lands.
   app_secrets = toset([
     "linear-client-id",
     "linear-client-secret",
+    "linear-review-client-id",
+    "linear-review-client-secret",
     "linear-webhook-secret",
     "notice-webhook-url",
   ])

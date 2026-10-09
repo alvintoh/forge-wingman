@@ -23,6 +23,15 @@ resource "google_service_account" "publisher" {
   depends_on = [google_project_service.this]
 }
 
+# The identity pr-review.yml's context job runs under: it reads the Linear app's client
+# credentials to mint a read token, and holds nothing else.
+resource "google_service_account" "pr_review" {
+  account_id   = "wingman-pr-review"
+  display_name = "Forge Wingman PR review"
+
+  depends_on = [google_project_service.this]
+}
+
 locals {
   # A job's token names the workflow file its steps come from; for a job outside a
   # reusable workflow that is checked by the README's rollout step 1, not assumed.
@@ -93,6 +102,12 @@ resource "google_service_account_iam_member" "model_wif" {
   service_account_id = google_service_account.model.name
   role               = "roles/iam.workloadIdentityUser"
   member             = format(local.workflow_principal, each.value)
+}
+
+resource "google_service_account_iam_member" "pr_review_wif" {
+  service_account_id = google_service_account.pr_review.name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = format(local.workflow_principal, "pr-review.yml")
 }
 
 resource "google_project_iam_member" "runner_datastore" {
