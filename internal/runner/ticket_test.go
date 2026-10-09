@@ -2,6 +2,7 @@ package runner
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -27,6 +28,13 @@ func TestTicketValidateRejects(t *testing.T) {
 		"no body":                 func(tk *Ticket) { tk.Body = "\n" },
 		"a body over the limit":   func(tk *Ticket) { tk.Body = strings.Repeat("a", maxTicketBodyBytes+1) },
 		"a body that is not UTF8": func(tk *Ticket) { tk.Body = "a\xffb" },
+		"a free list with an empty entry": func(tk *Ticket) {
+			tk.FreeModels = []string{"p/free-a", ""}
+		},
+		"a free list repeating a model": func(tk *Ticket) {
+			tk.FreeModels = []string{"p/free-a", "p/free-a"}
+		},
+		"a free model that is not provider/model": func(tk *Ticket) { tk.FreeModels = []string{"free-a"} },
 	} {
 		t.Run(name, func(t *testing.T) {
 			tk := testTicket
@@ -87,6 +95,7 @@ func TestTicketValidateBoundsTheEncodedTicket(t *testing.T) {
 func TestParseTicketRoundTripsEncode(t *testing.T) {
 	tk := testTicket
 	tk.Body = "Line one.\nLine two, with <b>&</b>."
+	tk.FreeModels = []string{"p/free-a", "p/free-b"}
 	raw, err := tk.Encode()
 	if err != nil {
 		t.Fatal(err)
@@ -95,7 +104,7 @@ func TestParseTicketRoundTripsEncode(t *testing.T) {
 		t.Fatalf("encoded ticket spans lines: %q", raw)
 	}
 	got, err := ParseTicket(raw)
-	if err != nil || got != tk {
+	if err != nil || !reflect.DeepEqual(got, tk) {
 		t.Fatalf("ticket %+v, err %v", got, err)
 	}
 	for name, raw := range map[string]string{

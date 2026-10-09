@@ -89,7 +89,9 @@ type BuildConfig struct {
 	// (FR-28), ordered like PlanModels: the first entry is the main model and
 	// later ones are backups the phase moves to when the one before is
 	// unavailable or out of allowance. None may be Model, so the review is
-	// never the builder checking its own work.
+	// never the builder checking its own work. A free-tier run ignores it:
+	// Ticket.FreeModels decides the build's and the review's models instead
+	// (AC1, AC2).
 	ReviewModels []string
 	AgentTimeout time.Duration
 	// Secrets are checked against the branch before it is bundled, so an
@@ -212,7 +214,15 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 				return stopWith(OutcomeStopped, StopModelInvalid, err)
 			}
 		}
-		if err := ValidateReviewModels(c.ReviewModels, c.Model); err != nil {
+		// A free-tier run's phases take their models from the ticket's free
+		// list, so its start model must be that list's first and its review
+		// list need not be the ticket's (AC1, AC2).
+		if free := c.Ticket.FreeModels; len(free) > 0 {
+			if c.Model != free[0] {
+				return stopWith(OutcomeStopped, StopModelInvalid,
+					fmt.Errorf("build model %q is not the free tier's first model %q", c.Model, free[0]))
+			}
+		} else if err := ValidateReviewModels(c.ReviewModels, c.Model); err != nil {
 			return stopWith(OutcomeStopped, StopModelInvalid, err)
 		}
 		// A harness the run is not configured for stops here, before any
@@ -220,6 +230,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		// missing credential, any other as an invalid model.
 		if g, ok := d.Agent.(modelGate); ok {
 			models := append([]string{c.Model}, c.ReviewModels...)
+			models = append(models, c.Ticket.FreeModels...)
 			if c.Ticket.Size != "S" {
 				models = append(models, c.PlanModels...)
 			}
@@ -324,9 +335,14 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 	if checksOK {
 		// Unlike the check loop above, a review-phase failure never stops the
 		// build: it forces a draft naming the failure instead (FR-5).
-		_ = timed(PhaseReview, d.ReviewAgent, c.ReviewModels[0], func() error {
+		reviewModels := reviewOrder(c, &sum)
+		reviewModel := ""
+		if len(reviewModels) > 0 {
+			reviewModel = reviewModels[0]
+		}
+		_ = timed(PhaseReview, d.ReviewAgent, reviewModel, func() error {
 			var rerr error
-			ready, loopDetail, rerr = runReview(ctx, d, c, wt, &sum, rules, session, lastRound, &msg)
+			ready, loopDetail, rerr = runReview(ctx, d, c, wt, &sum, rules, session, lastRound, reviewModels, &msg)
 			if rerr != nil {
 				ready = false
 				loopDetail = reviewFailureDetail(rerr)
@@ -594,15 +610,6 @@ func validateModelList(label string, models []string) error {
 		seen[m] = true
 	}
 	return nil
-}
-
-// runAgentWithFallback runs call on its model, moving to the same-provider
-// fallbacks of fallbackModels(call.Model) when one is unavailable or out of
-// allowance.
-func runAgentWithFallback(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, agent Agent, dir, prompt string, sum *Summary) (text, session string, round int, err error) {
-	// An exhausted allowance advances along this phase's own ordered fallbacks
-	// rather than stopping the build.
-	return runAgentInOrder(ctx, d, c, call, append([]string{call.Model}, fallbackModels(call.Model)...), agent, dir, prompt, sum)
 }
 
 // runAgentInOrder runs call via runAgent on each of models in turn, advancing

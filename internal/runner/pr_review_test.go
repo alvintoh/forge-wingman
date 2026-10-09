@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -60,7 +61,7 @@ func TestParsePRReviewContextAcceptsAValidContext(t *testing.T) {
 			c := validPRContext()
 			edit(&c)
 			got, err := ParsePRReviewContext(encodeJSON(t, c))
-			if err != nil || got.Ticket != c.Ticket || got.Diff != c.Diff {
+			if err != nil || !reflect.DeepEqual(got.Ticket, c.Ticket) || got.Diff != c.Diff {
 				t.Fatalf("got %+v, err = %v", got, err)
 			}
 		})

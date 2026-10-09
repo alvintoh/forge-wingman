@@ -212,9 +212,15 @@ func ValidRunID(id string) bool {
 	return runIDPattern.MatchString(id)
 }
 
-// Ticket is the ticket the record names.
+// Ticket is the ticket the record names, carrying the plan's free models when
+// the run was claimed on the free tier, which its ticket file hands the build
+// (AC1, AC2).
 func (r Record) Ticket() Ticket {
-	return Ticket{ID: r.TicketID, Title: r.TicketTitle, Size: r.Size, SizedBy: r.SizedBy, Body: r.TicketBody}
+	t := Ticket{ID: r.TicketID, Title: r.TicketTitle, Size: r.Size, SizedBy: r.SizedBy, Body: r.TicketBody}
+	if r.LastResort {
+		t.FreeModels = slices.Clone(r.LastResortModels.Plan)
+	}
+	return t
 }
 
 // ReadRun returns run runID's record. A missing record or an unbuildable ticket

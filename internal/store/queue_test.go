@@ -160,7 +160,7 @@ func TestEnqueueWritesTheRunRecordQueued(t *testing.T) {
 	if err := snap.DataTo(&rec); err != nil {
 		t.Fatal(err)
 	}
-	if rec.Ticket() != run.Ticket || !rec.StartedAt.Equal(queueAt) || !rec.UpdatedAt.Equal(queueAt) || !rec.Private {
+	if !reflect.DeepEqual(rec.Ticket(), run.Ticket) || !rec.StartedAt.Equal(queueAt) || !rec.UpdatedAt.Equal(queueAt) || !rec.Private {
 		t.Fatalf("record = %+v", rec)
 	}
 	// A poll that finds the same ticket delegated again must not start a second run.
