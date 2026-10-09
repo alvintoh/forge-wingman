@@ -1,0 +1,25 @@
+{"type":"session","version":3,"id":"01a11ef8-6b24-71ae-a022-2f15ddb85c45","timestamp":"2026-10-09T04:42:39.268Z","cwd":"/scratch/repo"}
+{"type":"advisor_cost_changed"}
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"Reply with the single word done"}],"attribution":"user","timestamp":1791520960972}}
+{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"Reply with the single word done"}],"attribution":"user","timestamp":1791520960972}}
+{"type":"message_start","message":{"role":"assistant","content":[{"type":"thinking","thinking":"The user is","thinkingSignature":"reasoning_content"}],"api":"openai-completions","provider":"commandcode","model":"inclusionai/ling-3.1-flash:free","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1791520981683,"responseId":"32bc6f20a7c6b0931f958395fbcdd3c6"}}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_start","contentIndex":0}}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"The"}}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":" user is"}}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":" asking me to reply"}}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":" with the"}}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":" single word \"done"}}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"\". This is a"}}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":" simple instruction."}}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":" Let"}}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":" me just reply"}}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":" with \"done\"."}}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_end","contentIndex":0,"content":"The user is asking me to reply with the single word \"done\". This is a simple instruction. Let me just reply with \"done\"."}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_start","contentIndex":1}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":1,"delta":"done"}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_end","contentIndex":1,"content":"done"}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"The user is asking me to reply with the single word \"done\". This is a simple instruction. Let me just reply with \"done\".","thinkingSignature":"reasoning_content"},{"type":"text","text":"done"}],"api":"openai-completions","provider":"commandcode","model":"inclusionai/ling-3.1-flash:free","usage":{"input":59312,"output":31,"cacheRead":0,"cacheWrite":0,"totalTokens":59343,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1791520981683,"responseId":"32bc6f20a7c6b0931f958395fbcdd3c6","duration":15539.532000000003,"ttft":15236.284791000002,"completedAt":1791520997224}}
+{"type":"turn_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"The user is asking me to reply with the single word \"done\". This is a simple instruction. Let me just reply with \"done\".","thinkingSignature":"reasoning_content"},{"type":"text","text":"done"}],"api":"openai-completions","provider":"commandcode","model":"inclusionai/ling-3.1-flash:free","usage":{"input":59312,"output":31,"cacheRead":0,"cacheWrite":0,"totalTokens":59343,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1791520981683,"responseId":"32bc6f20a7c6b0931f958395fbcdd3c6","duration":15539.532000000003,"ttft":15236.284791000002},"toolResults":[]}
+{"type":"agent_end","messages":[{"role":"user","content":[{"type":"text","text":"Reply with the single word done"}],"attribution":"user","timestamp":1791520960972},{"role":"assistant","content":[{"type":"thinking","thinking":"The user is asking me to reply with the single word \"done\". This is a simple instruction. Let me just reply with \"done\".","thinkingSignature":"reasoning_content"},{"type":"text","text":"done"}],"api":"openai-completions","provider":"commandcode","model":"inclusionai/ling-3.1-flash:free","usage":{"input":59312,"output":31,"cacheRead":0,"cacheWrite":0,"totalTokens":59343,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1791520981683,"responseId":"32bc6f20a7c6b0931f958395fbcdd3c6","duration":15539.532000000003,"ttft":15236.284791000002}],"isTerminal":true,"yielded":true}

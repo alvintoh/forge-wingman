@@ -444,3 +444,28 @@ func TestOmpRunsAGoatFreeModelMeteredAtNothing(t *testing.T) {
 		t.Fatalf("usage = %+v, want tokens metered at $0", u)
 	}
 }
+
+// TestOmpRunsTheFreeListsTailModelMeteredAtNothing covers ling 3.1 Flash, the
+// tail of GOAT's free list. It answers only when the request's output ceiling is
+// the 32768 its API caps at, which the plan's output_caps now supply; before
+// that, every run of it died at `exit status 1` (plan-smoke 37881527153, fixed
+// by 37884808729).
+func TestOmpRunsTheFreeListsTailModelMeteredAtNothing(t *testing.T) {
+	const model = "command-code/inclusionai/ling-3.1-flash:free"
+	bin, attempts := scriptedOmp(t, "ling-3.1-flash-free")
+	var out strings.Builder
+	h := OmpHarness{Bin: bin, Key: conformanceKey, Home: t.TempDir()}
+	if err := h.Agent(ProfileBuild, model).Run(context.Background(), t.TempDir(), "", "p", "", &out, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if got := attempts(); len(got) != 1 || !slices.Contains(got[0].args, "commandcode/inclusionai/ling-3.1-flash:free") {
+		t.Fatalf("attempts = %+v, want one run naming the free model to omp's own provider", got)
+	}
+	u, err := meterUsage(strings.NewReader(out.String()), model, providers.RatesFor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Input != 59312 || u.Output != 31 || u.Cost != 0 {
+		t.Fatalf("usage = %+v, want the recorded 59312 in / 31 out at $0", u)
+	}
+}
