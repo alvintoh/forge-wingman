@@ -111,6 +111,10 @@ type Provider struct {
 	// a run names. A model absent here has no cap of its own and is bounded by
 	// Windows alone.
 	ModelCaps map[string]money.Micros
+	// OutputCaps are the plan's own per-model output-token ceilings, keyed by the
+	// full model id a run names. A model absent here is asked for with the
+	// harness's own default, which some APIs reject outright.
+	OutputCaps map[string]int
 	// Harnesses is the plan's harness order: the default first, then its
 	// ordered fallbacks.
 	Harnesses HarnessOrder
@@ -180,6 +184,7 @@ type providerDoc struct {
 	KeySecret  string              `json:"key_secret"`
 	Windows    []windowDoc         `json:"windows"`
 	ModelCaps  map[string]float64  `json:"model_caps"`
+	OutputCaps map[string]int      `json:"output_caps"`
 	Harnesses  harnessDoc          `json:"harnesses"`
 	Rates      map[string]ratesDoc `json:"rates"`
 	LastResort *lastResortDoc      `json:"last_resort"`
@@ -274,6 +279,12 @@ func parseConfig(b []byte) (Config, error) {
 			provider.ModelCaps = make(map[string]money.Micros, len(p.ModelCaps))
 			for model, limitUSD := range p.ModelCaps {
 				provider.ModelCaps[model] = money.FromUSD(limitUSD)
+			}
+		}
+		if len(p.OutputCaps) > 0 {
+			provider.OutputCaps = make(map[string]int, len(p.OutputCaps))
+			for model, maxTokens := range p.OutputCaps {
+				provider.OutputCaps[model] = maxTokens
 			}
 		}
 		if len(p.Rates) > 0 {
@@ -501,6 +512,21 @@ func ModelCaps(provider string) map[string]Window {
 	out := make(map[string]Window, len(caps))
 	for model, limit := range caps {
 		out[model] = Window{Name: model, Period: monthlyPeriod, Limit: limit}
+	}
+	return out
+}
+
+// OutputCaps are a provider's own per-model output-token ceilings, keyed by the
+// full model id a run names; empty for a provider configured without any, whose
+// harnesses are then asked for their own default.
+func OutputCaps(provider string) map[string]int {
+	caps := embeddedConfig.Providers[provider].OutputCaps
+	if len(caps) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(caps))
+	for model, maxTokens := range caps {
+		out[model] = maxTokens
 	}
 	return out
 }
