@@ -134,7 +134,12 @@ TS-only. The seam test, not performance, decides — see `profile.md`.
 - **A handful of browser JS does not justify TypeScript in a Go repo.** TS earns
   its toolchain by volume and by the number of boundaries types cross; thirty
   lines of event handlers cross none. JSDoc gives editor type-checking at zero
-  build cost. Revisit at a few hundred lines.
+  build cost — **but only under `// @ts-check`** (or `checkJs`); without it the
+  types are comments, and nothing enforces them in CI either way. Revisit at a
+  few hundred lines. **When it does become TypeScript, compile it with esbuild's
+  Go API** (`github.com/evanw/esbuild/pkg/api`) from `go generate`, so the repo
+  gains no Node — esbuild strips types without checking them, so checking stays
+  the editor's job unless `tsc` is admitted to CI (a tradeoff).
 
 ## File naming
 
@@ -241,6 +246,7 @@ Reusable recipes for reaching + operating a GCP dev environment (personal cloud;
 - **Serverless default**: deploy scale-to-zero (`gcloud run deploy`), Hono on Bun. Move to **always-on** (min-instances ≥ 1) or GKE only when a workload must hold a connection open (stream/socket/long task — see `architecture` execution split)
 - Fire a deployed service directly for testing against a **designated test resource only** — never prod data; pass ids as env, never hardcoded
 - Front Cloud SQL via the Auth Proxy/connector (see `postgres`)
+- **A Cloud Run job's start-up can dwarf its work, and jobs run only on gen2.** Google: jobs "only use the second generation execution environment, and this cannot be changed", and gen2 "has longer cold start times" (docs.cloud.google.com/run/docs/about-execution-environments, read 2026-10-08). Measured the same day on forge-wingman's dispatcher, an 11 MB static Go binary: ~2 min from task start to `main`, against 2.7 s of work. So a job is wrong for a path that must act in seconds; that belongs in a service. And a job's start time is not when your code runs: log a line at process start to tell them apart.
 
 ## Object storage (GCS)
 
@@ -454,19 +460,20 @@ Model calls bill to the GOAT plan through its Provider API (`command-code.md`).
   credit balance and the 5-hour and weekly windows. No `models.yml` is needed. *(Corrects an
   earlier custom `command-code-goat` provider written on the false belief that omp had none; the
   id `commandcode` is omp's own and cannot be renamed.)*
-- **`~/.omp/agent/config.yml`** (owner's, 2026-10-07): `modelRoles: {default:
+- **`~/.omp/agent/config.yml`** (owner's, re-read 2026-10-09): `modelRoles: {default:
   commandcode/deepseek/deepseek-v4.1-flash:high, plan/slow: …flash:max}`, `retry.fallbackChains:
   {default: [commandcode/poolside/laguna-s-2.1-free, commandcode/inclusionai/ling-3.1-flash:free]}`, `startup: {checkUpdate: false}`,
   `enabledProviders: [claude]`, `tools: {approvalMode: yolo}`, `advisor: {enabled: false}`,
   `symbolPreset: nerd` (`unicode` is the fallback where Nerd icons do not draw — the thinking level
   once showed as `~`), plus the look keys an onboarding agent would otherwise miss: `composer:
   {shape: band}`, `theme: {dark: titanium}`, `display: {collapseCompacted: true, hideToolActivity:
-  true}`, `hideThinkingBlock: false` and `setupVersion` (omp's marker that the setup wizard has run
-  — the wizard reopens without it). **Only three of those values differ from 18.7.0's stock
-  defaults: `symbolPreset: nerd` (`unicode`), `startup.checkUpdate: false` (`true`) and
+  true}`, `hideThinkingBlock: true` and `setupVersion` (omp's marker that the setup wizard has run
+  — the wizard reopens without it). **Only four of those values differ from 18.7.0's stock
+  defaults: `symbolPreset: nerd` (`unicode`), `startup.checkUpdate: false` (`true`),
   `display.hideToolActivity: true` (`false` — the owner's "hide output"; the registry's own words
-  are "Hide model-initiated tool calls and results from the transcript").** `titanium`, `band`,
-  `collapseCompacted: true`, `hideThinkingBlock: false`, `tools.approvalMode: yolo` and
+  are "Hide model-initiated tool calls and results from the transcript") and `hideThinkingBlock:
+  true` (`false` — "Hide Thinking Blocks").** `titanium`, `band`,
+  `collapseCompacted: true`, `tools.approvalMode: yolo` and
   `defaultThinkingLevel: high` are stock, so a key missing from the file is not a missing setting
   (verified 2026-10-08 against the WSL device's `config.yml`, `omp config list` and the installed
   registry). The terminal's own FACE must be the Nerd Font — an install alone is not in force, and
@@ -498,19 +505,38 @@ Model calls bill to the GOAT plan through its Provider API (`command-code.md`).
 - ⚠️ **`-p` reads piped stdin and waits forever on an open pipe** (stderr repeats `Still starting
   … phase: readPipedInput`). From an agent shell or a backgrounded job, pass `< /dev/null` or pipe
   the prompt in. *(Verified 2026-10-07: two "hangs" of 3 and 12 minutes were this, not the config.)*
-- ⚠️ **The `ask` number keys below are a LOCAL PATCH — stock omp has none.** Stock 18.7.0's
-  `#handleQuestionInput` handles page/up/down, `n`, Enter and Space only. Apply
-  `patch-omp-ask-digit-select.py` (poly-mind root) to the installed bundle: it numbers the option
-  rows `N. `, adds `1`-`9`, keeps the original as `cli.js.pre-digitselect`, and refuses to write if
-  an anchor moved. **Do not try the package's own `gen:bundle`** — it expects the monorepo
+- **The `ask` row numbers and number keys are NOT upstream — `patch-omp-ask.py` provides both.**
+  Stock `#K` builds option rows with bare labels and `#handleQuestionInput` has no digit branch.
+  *(Superseded 2026-10-09, WSL: the entry here said 18.7.0 shipped both, from a Mac reading of a
+  bundle the retired digit-select script had already patched. npm's own tarballs for 18.7.0 through
+  18.8.6 carry neither, and the WSL stock bundle is byte-identical to npm's 18.7.0. Check a
+  "stock" claim against `npm pack @oh-my-pi/pi-coding-agent@<v>`, never against an installed
+  bundle that may be patched.)*
+- **`n` is NOTE, not select — and it always costs a second Enter.** `#handleQuestionInput` runs
+  `#promptForNote` on the highlighted row (the footer reads `${enter} select · n note`, beside a
+  Note button). `#promptForNote` (`ask-dialog.ts:1348`) opens a prompt titled `Note for <row>` and
+  then only stores what you typed as `state.note` — **it never commits the row**. So the sequence
+  is note → `Enter` returns you to the question → `Enter` again selects. Two Enters is the
+  designed path, one action per Enter, not a glitch. To select in one keystroke, press the digit,
+  or press Enter without `n` first. *(Mechanism read from the installed source 2026-10-09; the
+  digit half verified live — `2` committed `green` with no Enter on a PATCHED bundle, WSL 2026-10-09.)*
+- **`patch-omp-ask.py` (poly-mind root) is the ONE patch for the `ask` dialog** — no radio
+  circle, one-Enter notes, a numbered `Other` you type into directly. Run it `--check` first; the
+  steps and effects live in `/onboard-device` step 10. *(Updated 2026-10-09: replaces four
+  per-feature scripts whose chained backups made restore order-dependent.)*
+- **The radio circle is gone from single-select rows** where the patch is applied: rows read `❯ 1. red`, as in Claude Code; multi-select keeps its checkboxes.
+  *(Verified 2026-10-09, Mac, scripted pty.)*
+- **Do not try the package's own `gen:bundle`** — it expects the monorepo
   (`bun --cwd=../stats run gen:stats`) and DELETES `dist/cli.js` before failing *(verified
-  2026-10-07, restored from the backup)*. A reinstall or upgrade restores the unpatched bundle:
-  re-run the script, which `/onboard-device` step 8 now checks for.
-- **Number keys select in BOTH menu types, by different mechanisms.** In the `ask` dialog, once the
-  patch above is applied, the numbering is the dialog's own (`pi-tui/src/overlays/ask-dialog.ts`,
-  `#handleQuestionInput`): `1`–`9` jumps to row N and, on a single-select question, confirms it; a
-  multi-select only moves the cursor (`space` toggles), and the unnumbered `Other` row stays
-  arrow-only — so an `ask` label must NOT carry its own `N. ` prefix. In a HookSelector menu
+  2026-10-07, restored from the backup)*. Where the patch IS applied, a reinstall or upgrade
+  replaces the bundle: re-run the script, or `--restore` from `cli.js.pre-ask`.
+- **Number keys select in BOTH menu types, by different mechanisms.** In the `ask` dialog the
+  numbering comes from `patch-omp-ask.py` (stock omp numbers nothing): `1`–`9` jumps to row N
+  and, on a single-select question, confirms it; a multi-select only moves the cursor (`space`
+  toggles). `Other` gets the next number, its digit moves onto it, and typing there fills the
+  row in place, Enter submitting *(verified 2026-10-09, Mac, scripted pty: `4`, `nav` ⌫ `y 42`,
+  Enter returned `User provided custom input: nay 42`, no editor opened)* — so an `ask`
+  label must NOT carry its own `N. ` prefix. In a HookSelector menu
   (`/review`, the model/session pickers) the digit instead matches a LABEL already starting with
   `N. ` (`hook-selector.ts`, `#handleQuickSelect`), and stops working once the search query is
   non-empty. So in `ask` — where we author the labels — ≤9 options keeps every row digit-reachable;
@@ -618,8 +644,11 @@ fallback only while it measures second. Measured on opencode 1.18.30.
   }
   ```
 
-- **Project rules:** opencode does NOT resolve `@` imports in `AGENTS.md`, so a repo whose
-  `AGENTS.md` only imports `CLAUDE.md` gives it nothing. Add `"instructions": ["CLAUDE.md"]`.
+- **Rules:** opencode does NOT resolve `@` imports, in `AGENTS.md` or in `~/.claude/CLAUDE.md`
+  (loaded as plain text), so an import-only entry file gives it nothing. List each file in
+  `instructions`: `"CLAUDE.md"` for the repo, plus the poly-mind layers by absolute path for
+  interactive use. *(Verified 2026-10-09, 1.18.32: without the list, the model reported no Gate
+  Decisions section; with it, YES.)*
 - **Headless:** `opencode run --format json --auto --pure -m <provider>/<model> "<prompt>"`.
   `--auto` approves every permission request not explicitly denied; `--pure` loads no external
   plugins.
@@ -644,6 +673,16 @@ fallback only while it measures second. Measured on opencode 1.18.30.
 - **Events:** no separate session event; every event carries a top-level `sessionID`;
   resume with `-s <id>`. A bad key exits 1 with one `error` event and empty stderr.
 - **Cost:** it reports `cost: 0` for a custom provider, so price the tokens yourself.
+
+## Interactive use (verified 2026-10-09, 1.18.32, WSL)
+
+- Install it natively in the Linux home. On WSL, a Windows npm shim on PATH reads the Windows
+  `~/.claude`, not poly-mind.
+- `mcp` in `~/.config/opencode/opencode.json` repeats Claude Code's user-scope servers, which
+  opencode does not read. Authorise a remote server with `opencode mcp auth <name>`; pass a secret
+  with `{file:<600-mode path>}`, never inline.
+- **Zen free models run only inside opencode.** A direct `/zen/v1/chat/completions` call returns
+  `FreeTierError` with or without a key, so neither omp nor the runner can use them.
 
 ## Read-only plan phase (verified 2026-10-08, 1.18.30)
 
@@ -697,6 +736,78 @@ Verified live 2026-10-08 (forge-wingman FRG-15, FRG-22). Re-run before quoting.
   (`agentSessionId`, `content: {type: "thought", body}`), or it goes `stale`.
 - Deleting an app leaves its user as a deactivated record holding its handle;
   rename it (admin) to free the handle.
+- Ask the user mid-session with an `elicitation` activity; `signal: "select"` with
+  `signalMetadata: {options: [{label, value}]}` offers choices, but the user may still
+  reply in free text, so read replies leniently.
+- The reply arrives as a `prompted` AgentSessionEvent with its text in
+  `agentActivity.body`; answer the webhook within 5 s.
+- A session's state follows the agent's last activity; there is no status setter.
+- Not documented: whether agent sessions render or can be answered in Linear's
+  mobile apps.
+  (Verified 2026-10-08: developer docs agent-signals and agent-interaction pages, plus
+  schema introspection.)
+
+## Issue model, PR linking and merge automation
+
+**Issue model — no Epic, and that is deliberate.** A Jira Epic conflates two jobs and
+Linear splits them: a **Project** when the container has a target date and an
+accountable lead, a **parent issue with sub-issues** when it is only *"these belong
+together"*. *(Vendor-documented: a project is "a unit of work that has a clear outcome
+or planned completion date".)* **An issue belongs to exactly one Project**, with
+sub-issues-assigned-to-different-projects as the documented workaround — so overlapping
+Jira Epics must be designed out up front. Above projects sit **Initiatives**; a sprint
+is a **Cycle**.
+
+**The issue prefix is the TEAM identifier, not a project key.** *(3 letters is
+convention, not a rule — Linear's own docs use `ENG-123`; no enforced character limit
+could be confirmed from Linear's docs or API, so do not assert one. A `^[A-Z]{2,5}$`
+seen in the wild is one third-party integration's regex, not a spec.)* Linear lets you
+change it in team settings; git does not. The prefix is already in branch names, PR
+titles and commit messages, and renaming also forces the GitHub **Autolink** rules to
+be reconfigured — durable by CONSEQUENCE, not by rule. Corollary: because the prefix
+follows the TEAM, wanting two prefixes (`WEB`, `API`) means two teams, not two projects.
+
+**Keep the ACs, drop the user-story scaffolding.** Linear's own method carries a section
+titled *"Write issues not user stories"*, calling them *"an anti-pattern in product
+development"* — *"time-consuming to write and read"*, they *"obscure the work to be
+done"* — and prescribes *"short and simple issue titles that directly state what the task
+is"*, with descriptions *"optional–not required"*. A ported Jira body still renders (full
+markdown, no ADF); it just reads as imported. The ACs stay — they are the falsifiable part
+every testing table and `/feat-test` run maps back to.
+
+**PR linking — a magic word, or none at all.** Linear links a PR by issue id in the
+branch name or PR title, and a **magic word** before the id in the title or body also
+moves the status on merge. The closing set is broad
+(`close`/`fix`/`resolve`/`complete`/`implement` + inflections), so a natural title like
+`feat: implements <TEAM>-123 …` silently closes an issue that may be only partly
+delivered — bypassing the draft-PR merge gate by verb choice. Use `ref`/`part of`/
+`towards` for partial work, `relates to` for a bare relation, `skip`/`ignore` to suppress
+linking.
+
+**And NO verb is required at all when a team has configured git-automation-states.** A
+bare identifier ANYWHERE in a PR's title or body links it, full stop — and once linked,
+that issue rides the team's own configured automation (`gitAutomationStates`: PR open →
+In Review, PR merge → Done) regardless of whether the mention was deliberate. Linear's
+detection is a plain string match on the id pattern, not a check that the PR implements
+that ticket.
+- *(Verified 2026-09-28: a PR titled "...found reviewing FRG-19" — no magic word, and
+  FRG-19 was not the ticket being merged — auto-linked FRG-19 and moved it to Done on
+  merge, while FRG-19's own code was still sitting on an unpushed local branch. Deleting
+  Linear's attachment record did not stick — the automation re-evaluates from the live
+  GitHub PR, so the fix required renaming the PR's title on GitHub to remove the literal
+  substring.)*
+- **Careful wording is prevention, not proof** — read back which issues the PR actually
+  links to (`LINEAR_GET_LINEAR_ISSUE` on any ticket the title/body could plausibly match,
+  checking `attachments.nodes`) and confirm the set is exactly what was intended, BEFORE
+  the PR merges — that's the window where a wrong link can still be fixed (rename the
+  title, or delete the attachment).
+- **A ticket delivered in SEVERAL PRs:** the merge of any one of them marks the ticket
+  Done, so leave the id out of a non-final PR (accepting the branch name may still link
+  it — read the attachments back before merging), or merge, read the state back at once,
+  and restore it, saying so in the report. *(Verified 2026-10-03: FRG-32 part 1 merged in
+  alvintoh/forge-wingman and the ticket read Done 30 seconds later, while part 2 was
+  unbuilt; restored to In Progress by id. The link arrived minutes after the PR was
+  opened, so an empty attachments list right after opening proves nothing.)*
 
 ## Return format
 
