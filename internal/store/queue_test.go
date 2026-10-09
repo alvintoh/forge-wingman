@@ -304,7 +304,7 @@ func TestCandidatesDefaultsAMissingPrivateFieldToTrue(t *testing.T) {
 
 // TestCandidatesReadsTheBuildModelTheTicketNamed asserts a candidate carries the
 // build model its ticket named, which admission uses to select the model's own
-// cap (FRG-62).
+// cap.
 func TestCandidatesReadsTheBuildModelTheTicketNamed(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
@@ -407,7 +407,7 @@ func TestTryClaimDefersARunTheProviderWindowWouldBreach(t *testing.T) {
 }
 
 // TestTryClaimDefersARunTheModelsOwnCapWouldBreach asserts the plan's per-model
-// cap binds beside its windows (FRG-62): the plan's month window has room for
+// cap binds beside its windows: the plan's month window has room for
 // the estimate, but the run's model has spent its own cap.
 func TestTryClaimDefersARunTheModelsOwnCapWouldBreach(t *testing.T) {
 	q, client := queue(t)

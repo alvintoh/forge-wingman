@@ -187,7 +187,7 @@ func TestModelCapsOfAnUnconfiguredProviderAreEmpty(t *testing.T) {
 	}
 }
 
-// TestASecondPlanIsAddedByConfigurationAlone is FRG-62's configuration-only
+// TestASecondPlanIsAddedByConfigurationAlone is the configuration-only
 // proof: a whole second plan — its API base, key secret, windows, per-model cap
 // and harnesses — is read from a document with no Go change.
 func TestASecondPlanIsAddedByConfigurationAlone(t *testing.T) {

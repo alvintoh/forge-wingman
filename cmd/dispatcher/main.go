@@ -66,8 +66,8 @@ const (
 // Actions' free 2,000 minutes/month on a private target repository,
 // hard-stopped there by default (RatePerMinute zero) since no payment method is
 // assumed configured. The windows meter SettledProviderCostMicros, which the
-// harness's runs do not yet fill (FRG-47). A per-model cap binds a run only on
-// the model it names (FRG-62).
+// harness's runs do not yet fill; TODO(FRG-47) tracks that. A per-model cap
+// binds a run only on the model it names.
 func budgetConfig(provider string) dispatcher.BudgetConfig {
 	var windows []dispatcher.Window
 	for _, w := range providers.Windows(provider) {

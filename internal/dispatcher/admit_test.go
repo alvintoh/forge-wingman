@@ -108,7 +108,7 @@ func TestAdmitChecksBudgetLast(t *testing.T) {
 }
 
 // TestAdmitBoundsARunByItsModelsOwnCap asserts the run's build model selects
-// its per-model cap, checked beside the plan's windows (FRG-62).
+// its per-model cap, checked beside the plan's windows.
 func TestAdmitBoundsARunByItsModelsOwnCap(t *testing.T) {
 	in := admittable()
 	in.Facts.Model = "p/flash"

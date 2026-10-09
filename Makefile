@@ -24,6 +24,7 @@ ui: web/node_modules
 # The whole Go gate, as CI runs it.
 check:
 	test -z "$$(gofmt -l .)"
+	@! git ls-files '*.go' | xargs grep -nE '//.*\bFRG-[0-9]+' | grep -v 'TODO(' || { echo 'Go comment names a ticket; say what the code does (TODO(FRG-n) only for unresolved work)'; exit 1; }
 	go vet ./...
 	golangci-lint run
 	go test -race -shuffle=on -cover ./...

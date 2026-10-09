@@ -82,7 +82,7 @@ type Facts struct {
 	// BreakerTripped is set while a systemic stop holds every dispatch.
 	BreakerTripped bool
 	// Model is the run's build model — the model its ticket named, or the run's
-	// own default — which selects any per-model cap that bounds it (FRG-62).
+	// own default — which selects any per-model cap that bounds it.
 	Model string
 	// LastResort names the models of a claim on Model's plan's free tier,
 	// written onto the run record with the claim; nil otherwise.
