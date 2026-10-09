@@ -42,6 +42,9 @@
       "model_caps": {
         "command-code/deepseek/deepseek-v4.1-flash": 60
       },
+      "output_caps": {
+        "command-code/inclusionai/ling-3.1-flash:free": 32768
+      },
       "harnesses": {
         "default": "omp",
         "fallbacks": ["opencode"]

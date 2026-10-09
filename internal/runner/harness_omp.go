@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/alvintoh/forge-wingman/internal/providers"
@@ -37,6 +38,10 @@ const (
 	ompSessionDir = "sessions"
 	ompRulesFile  = "AGENTS.md"
 	ompConfigFile = "config.yml"
+	// ompModelsFile holds the plan's per-model overrides: omp asks for the
+	// output maximum its own registry states, and an API that caps lower
+	// rejects the request outright.
+	ompModelsFile = "models.yml"
 )
 
 // ompConfig turns off the update check, project MCP servers and telemetry
@@ -49,6 +54,25 @@ mcp:
 telemetry:
   otlpExportEnabled: false
 `
+
+// ompModels renders the plan's output caps as omp's modelOverrides, keyed by the
+// id omp itself knows the model by. Empty when the plan caps no model, so a plan
+// without caps writes no file and keeps the harness's own default.
+func ompModels(caps map[string]int) string {
+	var overrides []string
+	for model, maxTokens := range caps {
+		id, ok := strings.CutPrefix(model, ompPlan+"/")
+		if !ok || id == "" {
+			continue
+		}
+		overrides = append(overrides, fmt.Sprintf("      %q:\n        maxTokens: %d\n", id, maxTokens))
+	}
+	if len(overrides) == 0 {
+		return ""
+	}
+	slices.Sort(overrides)
+	return "providers:\n  " + ompProvider + ":\n    modelOverrides:\n" + strings.Join(overrides, "")
+}
 
 func init() {
 	keyEnv := providers.KeySecret(ompPlan)
@@ -123,6 +147,11 @@ func (a OmpAgent) Run(ctx context.Context, dir, session, prompt, rules string, s
 	}
 	if err := writeAgentFile(filepath.Join(agentDir, ompConfigFile), ompConfig); err != nil {
 		return fmt.Errorf("omp config: %w", err)
+	}
+	if body := ompModels(providers.OutputCaps(ompPlan)); body != "" {
+		if err := writeAgentFile(filepath.Join(agentDir, ompModelsFile), body); err != nil {
+			return fmt.Errorf("omp models: %w", err)
+		}
 	}
 	approval := "always-ask"
 	if a.Profile == ProfileBuild {

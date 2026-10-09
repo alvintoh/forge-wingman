@@ -219,6 +219,43 @@ func TestOmpAgentResumesUnderOneHomeWithTheKeyInItsEnvironment(t *testing.T) {
 	}
 }
 
+// TestOmpAgentWritesThePlansOutputCap asserts the plan's per-model ceiling
+// reaches omp's own override file. omp asks its registry for the model's stated
+// maximum, and an API that caps lower rejects the request outright: ling 3.1
+// Flash answers 400 to max_tokens 64000 and 200 to 32768 (run 37881527153).
+func TestOmpAgentWritesThePlansOutputCap(t *testing.T) {
+	bin, _ := scriptedOmp(t, "normal")
+	home := t.TempDir()
+	agent := OmpHarness{Bin: bin, Key: "k", Home: home}.Agent(ProfileBuild, "command-code/inclusionai/ling-3.1-flash:free")
+	if err := agent.Run(context.Background(), t.TempDir(), "", "p", "", io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, "agent", "models.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "providers:\n  commandcode:\n    modelOverrides:\n      \"inclusionai/ling-3.1-flash:free\":\n        maxTokens: 32768\n"
+	if string(raw) != want {
+		t.Fatalf("models.yml = %q, want %q", raw, want)
+	}
+}
+
+// TestOmpModelsCapsOnlyThePlansOwnModels keeps the override file to the plan's
+// own models: another plan's model has no ceiling here, and the file is left out
+// entirely when nothing is capped, so omp keeps its own default.
+func TestOmpModelsCapsOnlyThePlansOwnModels(t *testing.T) {
+	for name, caps := range map[string]map[string]int{
+		"no caps":           nil,
+		"another plan only": {"other/plan/model": 10},
+		"a bare model id":   {"ling-3.1-flash:free": 10},
+		"an empty model id": {"command-code/": 10},
+	} {
+		if got := ompModels(caps); got != "" {
+			t.Errorf("%s: ompModels = %q, want no file", name, got)
+		}
+	}
+}
+
 // TestOmpAgentChoosesTheApprovalMode asserts only the build profile runs
 // unprompted; plan and review need approval no headless run can give (AC2).
 func TestOmpAgentChoosesTheApprovalMode(t *testing.T) {
