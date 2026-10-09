@@ -4,6 +4,8 @@
 # arrives as an artifact run.yml's ticket job uploads — never a job output, which GitHub
 # drops when the text matches a value masked in that job — and the record job validates
 # the summary this emits and writes the record. No GitHub token reaches the model's environment.
+# With `stage: plan` (FRG-33) the agent runs the plan phase alone and uploads its file list
+# as the `plan` artifact for run.yml's trusted record-plan-stage job instead.
 # Needs the GCP_WIF_PROVIDER, GCP_MODEL_SERVICE_ACCOUNT and WINGMAN_ACCOUNT variables and
 # the COMMANDCODE_API_KEY secret (infra/README.md), which both harnesses run on.
 name: model
@@ -24,6 +26,11 @@ on:
       # plan_models is the plan phase's ordered list, kept apart from model: the first entry is the
       # main model and later ones are backups for when it is unavailable or out of allowance.
       plan_models:
+        type: string
+        required: true
+      # stage is the two-stage dispatch's phase (FRG-33): `plan` runs the plan phase alone under the
+      # read-only profile and uploads its file list, `build` builds from a plan already recorded.
+      stage:
         type: string
         required: true
     secrets:
@@ -130,6 +137,7 @@ jobs:
 
       - id: build
         name: Build
+        if: inputs.stage != 'plan'
         env:
           GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}
           MODEL: ${{ inputs.model }}
@@ -138,6 +146,26 @@ jobs:
           WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
           COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
         run: '"$RUNNER_TEMP/runner" build -model "$MODEL" -review-models "$REVIEW_MODELS" -plan-models "$PLAN_MODELS" -ticket-file "$RUNNER_TEMP/ticket.json" -checks-image "$CHECKS_IMAGE"'
+
+      # The plan stage (FRG-33) runs the plan phase alone, under the plan profile's read-only
+      # harnesses; the plan artifact travels to the trusted record-plan-stage job, which re-checks it.
+      - id: plan
+        name: Plan
+        if: inputs.stage == 'plan'
+        env:
+          GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}
+          PLAN_MODELS: ${{ inputs.plan_models }}
+          WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
+          COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
+        run: '"$RUNNER_TEMP/runner" plan-stage -plan-models "$PLAN_MODELS" -ticket-file "$RUNNER_TEMP/ticket.json" -out "$RUNNER_TEMP/plan.json"'
+
+      - if: inputs.stage == 'plan'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: plan
+          path: ${{ runner.temp }}/plan.json
+          if-no-files-found: error
+          retention-days: 1
 
       # wingman.bundle here and in run.yml's check and pr jobs is bundleName in internal/runner/build.go.
       - if: steps.build.outputs.changed == 'true'
