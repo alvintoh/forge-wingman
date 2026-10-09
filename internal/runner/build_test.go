@@ -183,6 +183,27 @@ func testConfig(t *testing.T, repo string) BuildConfig {
 	}
 }
 
+// freeTierConfig is a free-tier run's config: the first free model is the
+// run's build model and the ticket carries the whole list, as the run's ticket
+// file does (AC1, AC2).
+func freeTierConfig(t *testing.T, free ...string) BuildConfig {
+	t.Helper()
+	c := testConfig(t, initRepo(t))
+	c.Model, c.Ticket.FreeModels = free[0], free
+	return c
+}
+
+// stepModels are sum's steps of phase p, in the order they ran.
+func stepModels(sum Summary, p Phase) []string {
+	var models []string
+	for _, st := range sum.Steps {
+		if st.Phase == p {
+			models = append(models, st.Model)
+		}
+	}
+	return models
+}
+
 func TestBuildFailsClosedWithoutAProjection(t *testing.T) {
 	projectionPath := "projections/" + testSHA + "/" + buildProjectionFile
 	tests := []struct {
@@ -1361,12 +1382,7 @@ func TestReviewAdvancesTheReviewOrderOnAllowanceExhaustion(t *testing.T) {
 	if review.calls != 2 {
 		t.Fatalf("review agent ran %d times, want 2: an exhausted allowance moves on to the backup", review.calls)
 	}
-	var models []string
-	for _, st := range reported.last(t).Steps {
-		if st.Phase == PhaseReview {
-			models = append(models, st.Model)
-		}
-	}
+	models := stepModels(reported.last(t), PhaseReview)
 	if !slices.Equal(models, c.ReviewModels) {
 		t.Fatalf("review ran on %v, want the ordered list %v", models, c.ReviewModels)
 	}
@@ -1413,14 +1429,162 @@ func TestReviewMovesToItsBackupWhenTheFirstModelIsUnavailable(t *testing.T) {
 	if _, err := Build(context.Background(), deps, c); err != nil {
 		t.Fatal(err)
 	}
-	var models []string
-	for _, st := range reported.last(t).Steps {
-		if st.Phase == PhaseReview {
-			models = append(models, st.Model)
-		}
-	}
+	models := stepModels(reported.last(t), PhaseReview)
 	if !slices.Equal(models, c.ReviewModels) {
 		t.Fatalf("review ran on %v, want %v: the backup completes the review", models, c.ReviewModels)
+	}
+}
+
+func TestFreeTierReviewRunsOnTheFreeModelThatDidNotBuild(t *testing.T) {
+	deps, _, reported := testDeps(validObjects(), &fakeAgent{edit: edit("version.go", "package x\n")})
+	deps.ReviewAgent = &fakeAgent{events: reviewEvent("")}
+	c := freeTierConfig(t, "p/free-a", "p/free-b")
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	sum := reported.last(t)
+	if got := stepModels(sum, PhaseBuild); !slices.Equal(got, []string{"p/free-a"}) {
+		t.Fatalf("build ran on %v, want the free list's first model", got)
+	}
+	if got := stepModels(sum, PhaseReview); !slices.Equal(got, []string{"p/free-b"}) {
+		t.Fatalf("review ran on %v, want the free model the build did not use", got)
+	}
+	if !sum.Ready {
+		t.Fatalf("ready = false (%q), want a clean review to leave the run ready", sum.LoopDetail)
+	}
+}
+
+func TestFreeTierBuildFallsThroughTheFreeModels(t *testing.T) {
+	build := exitClassifiedAgent{&fakeAgent{
+		edit: edit("version.go", "package x\n"),
+		errFn: func(call int) error {
+			if call == 1 {
+				return exitWith(t, 7)
+			}
+			return nil
+		},
+	}}
+	deps, _, reported := testDeps(validObjects(), &fakeAgent{})
+	deps.Agent, deps.ReviewAgent = build, &fakeAgent{events: reviewEvent("")}
+	c := freeTierConfig(t, "p/free-a", "p/free-b", "p/free-c")
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	sum := reported.last(t)
+	if got := stepModels(sum, PhaseBuild); !slices.Equal(got, []string{"p/free-a", "p/free-b"}) {
+		t.Fatalf("build ran on %v, want the unavailable model's successor", got)
+	}
+	if got := stepModels(sum, PhaseReview); !slices.Equal(got, []string{"p/free-c"}) {
+		t.Fatalf("review ran on %v, want the free model left after both build attempts", got)
+	}
+	if !sum.Ready {
+		t.Fatalf("ready = false (%q), want a clean review to leave the run ready", sum.LoopDetail)
+	}
+}
+
+func TestFreeTierRunWithNoFreeModelLeftDraftsWithoutAReview(t *testing.T) {
+	build := exitClassifiedAgent{&fakeAgent{
+		edit: edit("version.go", "package x\n"),
+		errFn: func(call int) error {
+			if call == 1 {
+				return exitWith(t, 7)
+			}
+			return nil
+		},
+	}}
+	review := &fakeAgent{events: reviewEvent("")}
+	deps, _, reported := testDeps(validObjects(), &fakeAgent{})
+	deps.Agent, deps.ReviewAgent = build, review
+	c := freeTierConfig(t, "p/free-a", "p/free-b")
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if review.calls != 0 {
+		t.Fatalf("the review ran %d times, want none: the build used every free model", review.calls)
+	}
+	sum := reported.last(t)
+	if sum.Ready {
+		t.Fatal("ready = true, want a draft with no free model left to review")
+	}
+	if !strings.Contains(sum.LoopDetail, "none was left to review") {
+		t.Fatalf("loop detail = %q, want it to name the missing reviewer", sum.LoopDetail)
+	}
+	if got := stepModels(sum, PhaseReview); len(got) != 0 {
+		t.Fatalf("review steps = %v, want none", got)
+	}
+}
+
+func TestFreeTierReReviewRunsOnTheFreeModelLeftAfterTheFixRound(t *testing.T) {
+	const finding = "the retry never bounds its attempts"
+	build := &fakeAgent{edit: edit("version.go", "package x\n")}
+	review := &fakeAgent{eventsFn: func(call int) string {
+		if call == 1 {
+			return reviewEvent(finding)
+		}
+		return reviewEvent("")
+	}}
+	deps, _, reported := testDeps(validObjects(), build)
+	deps.ReviewAgent = review
+	c := freeTierConfig(t, "p/free-a", "p/free-b")
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	sum := reported.last(t)
+	if got := stepModels(sum, PhaseReview); !slices.Equal(got, []string{"p/free-b", "p/free-b"}) {
+		t.Fatalf("review ran on %v, want the free model left after the build on both passes", got)
+	}
+	if !sum.Ready {
+		t.Fatalf("ready = false (%q), want a fixed diff, cleanly re-reviewed, to leave the run ready", sum.LoopDetail)
+	}
+}
+
+func TestFreeTierFixRoundDoesNotFallThroughToTheReviewModel(t *testing.T) {
+	const finding = "the retry never bounds its attempts"
+	build := exitClassifiedAgent{&fakeAgent{
+		edit: edit("version.go", "package x\n"),
+		errFn: func(call int) error {
+			if call == 2 {
+				return exitWith(t, 7)
+			}
+			return nil
+		},
+	}}
+	review := &fakeAgent{events: reviewEvent(finding)}
+	deps, _, reported := testDeps(validObjects(), &fakeAgent{})
+	deps.Agent, deps.ReviewAgent = build, review
+	c := freeTierConfig(t, "p/free-a", "p/free-b")
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	sum := reported.last(t)
+	if got := stepModels(sum, PhaseBuild); !slices.Equal(got, []string{"p/free-a", "p/free-a"}) {
+		t.Fatalf("build ran on %v, want the fix round to stay on the model that built the run", got)
+	}
+	if sum.Ready {
+		t.Fatal("ready = true, want a draft: the fix round had no model to run on")
+	}
+}
+
+func TestBuildStopsWhenTheFreeListDoesNotStartOnTheBuildModel(t *testing.T) {
+	agent := &fakeAgent{}
+	deps, _, reported := testDeps(validObjects(), agent)
+	c := testConfig(t, initRepo(t))
+	c.Model = "p/paid"
+	c.Ticket.FreeModels = []string{"p/free-a", "p/free-b"}
+
+	if _, err := Build(context.Background(), deps, c); err == nil {
+		t.Fatal("Build accepted a free list its build model does not start")
+	}
+	if agent.calls != 0 {
+		t.Fatalf("agent ran %d times, want 0", agent.calls)
+	}
+	if sum := reported.last(t); sum.Outcome != OutcomeStopped || sum.StopReason != StopModelInvalid {
+		t.Fatalf("summary = %s/%s, want stopped/model-invalid", sum.Outcome, sum.StopReason)
 	}
 }
 

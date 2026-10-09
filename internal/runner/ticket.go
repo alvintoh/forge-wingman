@@ -37,10 +37,16 @@ type Ticket struct {
 	Size    string `json:"size"`
 	SizedBy string `json:"sized_by,omitempty"`
 	Body    string `json:"body"`
+	// FreeModels is the plan's free models in fall-through order, which the
+	// run's ticket file carries to a free-tier run's build: the build phase
+	// falls through them and the review draws from what is left (AC1, AC2).
+	// Empty on a paid run.
+	FreeModels []string `json:"free_models,omitempty"`
 }
 
 // Validate reports whether the ticket has an id, a one-line title, a size of S, M
-// or L and a body, each within its limit.
+// or L, a body and, when it names free models, a usable free list, each within
+// its limit.
 func (t Ticket) Validate() error {
 	switch {
 	case len(t.ID) > maxTicketIDBytes || !ticketIDPattern.MatchString(t.ID):
@@ -53,6 +59,11 @@ func (t Ticket) Validate() error {
 		return fmt.Errorf("%w: sized-by is over %d bytes or not one printable line", ErrTicketInvalid, maxSizedByBytes)
 	case strings.TrimSpace(t.Body) == "" || len(t.Body) > maxTicketBodyBytes || !utf8.ValidString(t.Body):
 		return fmt.Errorf("%w: body is empty, over %d bytes or not UTF-8", ErrTicketInvalid, maxTicketBodyBytes)
+	}
+	if len(t.FreeModels) > 0 {
+		if err := validateModelList("free", t.FreeModels); err != nil {
+			return fmt.Errorf("%w: %w", ErrTicketInvalid, err)
+		}
 	}
 	if raw, err := t.Encode(); err != nil || len(raw) > maxEncodedTicketBytes {
 		return fmt.Errorf("%w: encoded ticket is over %d bytes", ErrTicketInvalid, maxEncodedTicketBytes)

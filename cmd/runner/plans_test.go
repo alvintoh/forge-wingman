@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -127,6 +128,14 @@ func TestTicketHandsTheBuildTheFreeTiersModelsOnAFreeTierClaim(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "override_model=p/free-a") || strings.Contains(string(out), "p/paid") {
 		t.Fatalf("GITHUB_OUTPUT = %q, want the free tier's build model in place of the ticket's", out)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "ticket.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := runner.ParseTicket(string(raw))
+	if err != nil || !slices.Equal(got.FreeModels, []string{"p/free-a"}) {
+		t.Fatalf("ticket file %q parsed to free models %v, err %v", raw, got.FreeModels, err)
 	}
 }
 

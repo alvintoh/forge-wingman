@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"testing"
@@ -142,7 +143,7 @@ func TestFinalize(t *testing.T) {
 			if got.DurationsMS["pr"] != 3000 || !got.UpdatedAt.Equal(finalizeNow) || got.PRURL != in.PRURL {
 				t.Fatalf("record = %+v", got)
 			}
-			if got.RunID != testRunID || got.Ticket() != testTicket {
+			if got.RunID != testRunID || !reflect.DeepEqual(got.Ticket(), testTicket) {
 				t.Fatalf("record lost the run or ticket: %+v", got)
 			}
 		})
@@ -160,7 +161,7 @@ func TestFinalizeWritesTheSeededRecordKeepingItsTicketAndStart(t *testing.T) {
 		t.Fatalf("store holds %d records, want the seeded one only", len(store))
 	}
 	got := store[testRunID]
-	if got.Ticket() != testTicket || got.Branch != "wingman/abc-12-1-1" || got.Outcome != OutcomePROpened ||
+	if !reflect.DeepEqual(got.Ticket(), testTicket) || got.Branch != "wingman/abc-12-1-1" || got.Outcome != OutcomePROpened ||
 		!got.StartedAt.Equal(seededAt) {
 		t.Fatalf("record = %+v", got)
 	}
@@ -371,7 +372,7 @@ func TestRecordSucceeded(t *testing.T) {
 func TestReadRun(t *testing.T) {
 	store := seeded(t)
 	got, err := ReadRun(context.Background(), store, testRunID)
-	if err != nil || got.Ticket() != testTicket {
+	if err != nil || !reflect.DeepEqual(got.Ticket(), testTicket) {
 		t.Fatalf("ticket %+v, err %v", got.Ticket(), err)
 	}
 	var stopped *StopError
@@ -529,6 +530,21 @@ func TestRunModelsAreTheFreeTiersOnlyOnAFreeTierClaim(t *testing.T) {
 	}
 	if got := (Record{ModelLabels: named, LastResort: true, LastResortModels: free}).RunModels(); got.Build != "p/free" {
 		t.Fatalf("RunModels = %+v, want the free tier's in place of the ticket's", got)
+	}
+}
+
+func TestTheRecordsTicketCarriesTheFreeModelsOnlyOnAFreeTierClaim(t *testing.T) {
+	free := ModelLabels{Build: "p/free-a", Review: "p/free-b", Plan: []string{"p/free-a", "p/free-b"}}
+	tk := (Record{TicketID: "ABC-12", TicketTitle: "t", Size: "S", TicketBody: "b",
+		ModelLabels: ModelLabels{Build: "p/paid", Plan: []string{"p/paid-a", "p/paid-b"}},
+		LastResort:  true, LastResortModels: free}).Ticket()
+	if !slices.Equal(tk.FreeModels, free.Plan) {
+		t.Fatalf("free models = %v, want the free tier's %v", tk.FreeModels, free.Plan)
+	}
+	paid := (Record{TicketID: "ABC-12", TicketTitle: "t", Size: "S", TicketBody: "b",
+		ModelLabels: ModelLabels{Build: "p/paid", Plan: []string{"p/paid-a", "p/paid-b"}}}).Ticket()
+	if len(paid.FreeModels) != 0 {
+		t.Fatalf("free models = %v, want none on a paid claim", paid.FreeModels)
 	}
 }
 
