@@ -129,6 +129,11 @@ var buildEndings = func() map[ending]bool {
 	return m
 }()
 
+// checksDuration is the DurationsMS key for the run's total check time. That
+// time is already inside the build and review phases' own durations, so
+// BillableMinutes leaves it out.
+const checksDuration = "checks"
+
 var buildPhases = map[Phase]bool{
 	PhaseProjection: true, PhaseWorktree: true, PhasePlan: true, PhaseBuild: true, PhaseReview: true, PhaseCommit: true,
 }
@@ -266,8 +271,8 @@ func (s Summary) validate(attemptID string, t Ticket, now time.Time) error {
 		}
 	}
 	for p, ms := range s.DurationsMS {
-		if !buildPhases[Phase(p)] {
-			return fmt.Errorf("duration for %q, which is not a build phase", truncate(p, logErrorLimit))
+		if !buildPhases[Phase(p)] && p != checksDuration {
+			return fmt.Errorf("duration for %q, which is not a build phase or the checks", truncate(p, logErrorLimit))
 		}
 		if ms < 0 || ms > maxPhaseDuration.Milliseconds() {
 			return fmt.Errorf("duration %d ms for %s is out of range", ms, p)

@@ -66,8 +66,7 @@ type BuildDeps struct {
 	// ReviewAgent runs the pre-PR loop's review pass (FR-28), restricted the
 	// same way PlanAgent is.
 	ReviewAgent Agent
-	// Checks runs the repository's own quality gates for the pre-PR loop —
-	// RunChecks in production.
+	// Checks runs the repository's own quality gates for the pre-PR loop.
 	Checks CheckRunner
 	Report func(Summary) error
 	Logger *slog.Logger

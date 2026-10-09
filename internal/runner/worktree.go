@@ -63,6 +63,20 @@ func AddWorktree(ctx context.Context, repo, dir, branch string) (Worktree, error
 	return w, nil
 }
 
+// GitCommonDir is repo's git common directory as an absolute path, resolved
+// as AddWorktree resolves a worktree's.
+func GitCommonDir(ctx context.Context, repo string) (string, error) {
+	bin, err := exec.LookPath("git")
+	if err != nil {
+		return "", fmt.Errorf("finding git: %w", err)
+	}
+	out, err := runGit(ctx, bin, repo, nil, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // protectedFiles are the files whose content decides what git executes.
 func (w Worktree) protectedFiles() []string {
 	return []string{

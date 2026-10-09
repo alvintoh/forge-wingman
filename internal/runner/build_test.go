@@ -992,6 +992,49 @@ func TestPrePRLoopRebuildsOnceOnAFailingCheckThenPasses(t *testing.T) {
 	}
 }
 
+func TestPrePRLoopRecordsCheckTimeAndLogsEachRound(t *testing.T) {
+	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
+	deps, _, reported := testDeps(validObjects(), agent)
+	var logs bytes.Buffer
+	deps.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
+	clock := time.Now()
+	deps.Now = func() time.Time { return clock }
+	calls := 0
+	deps.Checks = func(context.Context, string) (string, string, error) {
+		calls++
+		clock = clock.Add(3 * time.Second)
+		if calls == 1 {
+			return checkVet, "vet failed", nil
+		}
+		return "", "", nil
+	}
+
+	if _, err := Build(context.Background(), deps, testConfig(t, initRepo(t))); err != nil {
+		t.Fatal(err)
+	}
+	if got := reported.last(t).DurationsMS["checks"]; got != 6000 {
+		t.Fatalf("checks duration = %d ms, want 6000 across both rounds", got)
+	}
+	type roundLine struct {
+		Round      int
+		FailedGate string
+		DurationMS int64
+	}
+	var rounds []roundLine
+	for l := range strings.Lines(logs.String()) {
+		if strings.Contains(l, `"msg":"checkRound"`) {
+			var r roundLine
+			if err := json.Unmarshal([]byte(l), &r); err != nil {
+				t.Fatal(err)
+			}
+			rounds = append(rounds, r)
+		}
+	}
+	if want := []roundLine{{1, "vet", 3000}, {2, "", 3000}}; !slices.Equal(rounds, want) {
+		t.Fatalf("checkRound lines = %+v, want %+v", rounds, want)
+	}
+}
+
 func TestPrePRLoopGivesUpAfterThreeRoundsStillFailing(t *testing.T) {
 	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
 	deps, _, reported := testDeps(validObjects(), agent)

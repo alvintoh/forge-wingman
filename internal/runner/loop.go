@@ -117,7 +117,7 @@ func runCheckLoop(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, 
 
 	var lastGate, lastOutput string
 	for rebuildRound := 1; ; rebuildRound++ {
-		gate, output, cerr := d.Checks(ctx, wt.Dir)
+		gate, output, cerr := timedChecks(ctx, d, sum, wt.Dir, round)
 		if cerr != nil {
 			return false, "", session, round, stopWith(OutcomeInfraFailure, StopChecksRun, cerr)
 		}
@@ -139,6 +139,17 @@ func runCheckLoop(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, 
 		msg.adopt(text, c.Ticket.ID)
 	}
 	return false, checkGiveUpDetail(lastGate, lastOutput, round), session, round, nil
+}
+
+// timedChecks runs d.Checks once against the build round's work, adding its
+// time to the run's checks duration and logging the round.
+func timedChecks(ctx context.Context, d BuildDeps, sum *Summary, dir string, round int) (gate, output string, err error) {
+	start := d.Now()
+	gate, output, err = d.Checks(ctx, dir)
+	elapsed := d.Now().Sub(start).Milliseconds()
+	sum.DurationsMS[checksDuration] += elapsed
+	d.Logger.Info("checkRound", "round", round, "failedGate", gate, "durationMS", elapsed, "ran", err == nil)
+	return gate, output, err
 }
 
 // reviewPass runs one review pass over the worktree's pending diff and
@@ -217,7 +228,7 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 	}
 	msg.adopt(fixText, c.Ticket.ID)
 
-	gate, output, cerr := d.Checks(ctx, wt.Dir)
+	gate, output, cerr := timedChecks(ctx, d, sum, wt.Dir, fixCall.Round)
 	if cerr != nil {
 		return false, "", stopWith(OutcomeInfraFailure, StopChecksRun, cerr)
 	}

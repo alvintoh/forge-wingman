@@ -20,6 +20,21 @@ const (
 	checkTest  = "test"
 )
 
+// gofmtArgs is the gofmt gate's command line, run before exitGates.
+var gofmtArgs = []string{"gofmt", "-l", "."}
+
+// exitGates are the gates after gofmt, each judged by its exit status, in
+// Makefile's check order.
+var exitGates = []struct {
+	gate string
+	bin  string
+	args []string
+}{
+	{checkVet, "go", []string{"vet", "./..."}},
+	{checkLint, "golangci-lint", []string{"run"}},
+	{checkTest, "go", []string{"test", "-race", "-shuffle=on", "-cover", "./..."}},
+}
+
 // checkEnvNames are the variables a check gate's subprocess inherits: the Go
 // toolchain's and golangci-lint's own needs, deliberately not an agent's API
 // key or the workload-identity credentials model.yml's auth
@@ -33,17 +48,20 @@ var checkEnvNames = []string{
 	"LC_", "XDG_",
 }
 
-// checkCmdEnv is the environment every RunChecks subprocess runs under. This
-// is a partial mitigation, not full isolation: a credentials file already on
-// disk from an earlier auth step could still be read by its path; full
-// isolation is tracked in FRG-30.
+// checkCmdEnv is the environment every RunChecks subprocess runs under. It
+// withholds what the job holds in its environment, not what it holds on disk:
+// the boundary for a credentials file and the network is ContainerChecks, whose
+// gates run in a container with no network that mounts the worktree, the module
+// and build caches and the linter, and none of the job's home, temp or workspace
+// directories.
 func checkCmdEnv() []string {
 	return filterEnv(os.Environ(), checkEnvNames)
 }
 
 // CheckRunner runs the target repository's own quality gates against dir —
-// RunChecks in production, a fake in a test that exercises the pre-PR loop's
-// wiring without shelling out to a real Go toolchain.
+// ContainerChecks.Run in production, RunChecks where no checks image is
+// configured, a fake in a test that exercises the pre-PR loop's wiring without
+// shelling out to a real Go toolchain.
 type CheckRunner func(ctx context.Context, dir string) (failedGate, output string, err error)
 
 // RunChecks runs the repository's own quality gates against dir, in the same
@@ -63,15 +81,7 @@ func RunChecks(ctx context.Context, dir string) (string, string, error) {
 	} else if failed {
 		return checkGofmt, output, nil
 	}
-	for _, g := range []struct {
-		gate string
-		bin  string
-		args []string
-	}{
-		{checkVet, "go", []string{"vet", "./..."}},
-		{checkLint, "golangci-lint", []string{"run"}},
-		{checkTest, "go", []string{"test", "-race", "-shuffle=on", "-cover", "./..."}},
-	} {
+	for _, g := range exitGates {
 		output, failed, err := runGate(ctx, dir, g.bin, g.args...)
 		if err != nil {
 			return "", "", fmt.Errorf("running %s: %w", g.gate, err)
@@ -88,7 +98,7 @@ func RunChecks(ctx context.Context, dir string) (string, string, error) {
 // exits 0 whether or not it lists anything.
 func runGofmt(ctx context.Context, dir string) (failed bool, output string, err error) {
 	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, "gofmt", "-l", ".")
+	cmd := exec.CommandContext(ctx, gofmtArgs[0], gofmtArgs[1:]...)
 	cmd.Dir = dir
 	cmd.Env = checkCmdEnv()
 	cmd.Stderr = &stderr
@@ -96,12 +106,17 @@ func runGofmt(ctx context.Context, dir string) (failed bool, output string, err 
 	var exitErr *exec.ExitError
 	switch {
 	case runErr == nil:
-		return len(bytes.TrimSpace(out)) > 0, string(out), nil
+		return gofmtListed(out), string(out), nil
 	case errors.As(runErr, &exitErr):
 		return true, string(out) + stderr.String(), nil
 	default:
 		return false, "", fmt.Errorf("gofmt: %w", runErr)
 	}
+}
+
+// gofmtListed reports whether gofmt -l's stdout names a file to reformat.
+func gofmtListed(stdout []byte) bool {
+	return len(bytes.TrimSpace(stdout)) > 0
 }
 
 // runGate runs bin with args against dir, reporting a non-zero exit as a

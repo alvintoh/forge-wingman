@@ -603,6 +603,29 @@ func TestRenderPRFallsBackToTheTicketWithoutAUsableSummary(t *testing.T) {
 	}
 }
 
+func TestCheckRunnerRefusesAnImageNotPinnedByDigest(t *testing.T) {
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "golangci-lint"), []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	ctx := context.Background()
+	if _, err := checkRunner(ctx, "golang:1.27.1", t.TempDir(), "."); err == nil {
+		t.Fatal("checkRunner accepted an image pinned by tag alone")
+	}
+	if _, err := checkRunner(ctx, "golang:1.27.1@sha256:"+strings.Repeat("a", 64), t.TempDir(), "."); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCheckRunnerRunsOnTheHostWithNoImage(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	checks, err := checkRunner(context.Background(), "", t.TempDir(), t.TempDir())
+	if err != nil || checks == nil {
+		t.Fatalf("checkRunner with no image = %v, %v; want the host runner and no lookups", checks != nil, err)
+	}
+}
+
 func TestBuildAttemptKeepsOnlyThisRunsAttempts(t *testing.T) {
 	e := env{runID: "42", attempt: 2, attemptID: "42-2"}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))

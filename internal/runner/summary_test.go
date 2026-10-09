@@ -38,6 +38,18 @@ func TestParseSummaryAcceptsWhatABuildReports(t *testing.T) {
 	}
 }
 
+func TestParseSummaryAcceptsTheChecksDuration(t *testing.T) {
+	s := validSummary()
+	s.DurationsMS["checks"] = 4000
+	raw, err := s.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseSummary(raw, "1-1", testTicket, finalizeNow); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestParseSummaryRejects(t *testing.T) {
 	tests := []struct {
 		name   string
