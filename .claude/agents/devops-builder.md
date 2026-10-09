@@ -244,6 +244,16 @@ credentials. The per-cloud instantiation lives in that cloud's pack: `aws.md`, `
   other's lane. Trade-off worth stating: per-SHA lanes mean a newer commit no longer cancels
   an older commit's run. (Verified 2026-09-21: 21 cancelled runs — one started 06:27:34 on
   `main` and was killed 06:28:04 by a `preview` run that began 06:27:49.)
+- **A workflow on `pull_request: types: [... edited ...]` restarts CI whenever the PR's
+  title, body or base changes, and under `cancel-in-progress: true` the restart KILLS the
+  run already going.** GitHub's `edited` activity covers title/body/base edits, not code.
+  So a body edit made after a push throws away a run that may be most of the way through.
+  **The tell is a `cancelled` run whose replacement started the minute a PR body was
+  saved**, with no new commit. Fold body edits into the same moment as the push, or edit
+  before the run starts, rather than editing afterwards. Check a repo's trigger list
+  before editing an open PR whose CI is running. *(Verified 2026-10-08, urban-rest-web
+  #716: `pr-test.yml` lists `edited`, and a body edit cancelled the 4e8a686b run 5
+  minutes in. That repo's run takes 23-30 min, so each edit costs that again.)*
 - **A step you ADD to CI gets its cost MEASURED as a share of the job and stated in
   the PR — the total is what people react to, and the total is usually dominated by
   something that was already there.** Pull per-step durations
@@ -402,6 +412,7 @@ Reusable recipes for reaching + operating a GCP dev environment (personal cloud;
 - **Serverless default**: deploy scale-to-zero (`gcloud run deploy`), Hono on Bun. Move to **always-on** (min-instances ≥ 1) or GKE only when a workload must hold a connection open (stream/socket/long task — see `architecture` execution split)
 - Fire a deployed service directly for testing against a **designated test resource only** — never prod data; pass ids as env, never hardcoded
 - Front Cloud SQL via the Auth Proxy/connector (see `postgres`)
+- **A Cloud Run job's start-up can dwarf its work, and jobs run only on gen2.** Google: jobs "only use the second generation execution environment, and this cannot be changed", and gen2 "has longer cold start times" (docs.cloud.google.com/run/docs/about-execution-environments, read 2026-10-08). Measured the same day on forge-wingman's dispatcher, an 11 MB static Go binary: ~2 min from task start to `main`, against 2.7 s of work. So a job is wrong for a path that must act in seconds; that belongs in a service. And a job's start time is not when your code runs: log a line at process start to tell them apart.
 
 ## Object storage (GCS)
 
