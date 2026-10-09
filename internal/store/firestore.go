@@ -44,12 +44,42 @@ func (r *Records) GetRecord(ctx context.Context, id string) (runner.Record, erro
 // PutRecord replaces each field rec names in the record whole, keeping the fields
 // rec does not name and creating the record if it is absent.
 func (r *Records) PutRecord(ctx context.Context, id string, rec runner.Record) error {
-	data := fields(rec)
+	return merge(ctx, r.client.Collection(runsCollection).Doc(id), rec)
+}
+
+// GetPlan reads the plan stage's fields from run id. A run whose plan stage has
+// not run yet reads as the zero PlanRecord.
+func (r *Records) GetPlan(ctx context.Context, id string) (runner.PlanRecord, error) {
+	snap, err := r.client.Collection(runsCollection).Doc(id).Get(ctx)
+	if status.Code(err) == codes.NotFound {
+		return runner.PlanRecord{}, fmt.Errorf("%s: %w", id, runner.ErrRecordNotFound)
+	}
+	if err != nil {
+		return runner.PlanRecord{}, err
+	}
+	var p runner.PlanRecord
+	if err := snap.DataTo(&p); err != nil {
+		return runner.PlanRecord{}, fmt.Errorf("decoding run %s's plan: %w", id, err)
+	}
+	return p, nil
+}
+
+// WritePlan writes the plan stage's fields onto run id, keeping every field it
+// does not name — which is why the plan's data lives outside runner.Record, so
+// it survives the record Finalize later rebuilds whole (FRG-33).
+func (r *Records) WritePlan(ctx context.Context, id string, p runner.PlanRecord) error {
+	return merge(ctx, r.client.Collection(runsCollection).Doc(id), p)
+}
+
+// merge replaces each field v names in doc whole, keeping the fields v does not
+// name and creating the document if it is absent.
+func merge(ctx context.Context, doc *firestore.DocumentRef, v any) error {
+	data := fields(v)
 	paths := make([]firestore.FieldPath, 0, len(data))
 	for name := range data {
 		paths = append(paths, firestore.FieldPath{name})
 	}
-	_, err := r.client.Collection(runsCollection).Doc(id).Set(ctx, data, firestore.Merge(paths...))
+	_, err := doc.Set(ctx, data, firestore.Merge(paths...))
 	return err
 }
 

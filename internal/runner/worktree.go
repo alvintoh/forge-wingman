@@ -77,6 +77,20 @@ func GitCommonDir(ctx context.Context, repo string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// HeadSHA is repo's current HEAD commit: the base a plan is made against, which
+// the record keeps so a later re-plan can tell what changed under it (FRG-33).
+func HeadSHA(ctx context.Context, repo string) (string, error) {
+	bin, err := exec.LookPath("git")
+	if err != nil {
+		return "", fmt.Errorf("finding git: %w", err)
+	}
+	out, err := runGit(ctx, bin, repo, nil, "rev-parse", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // protectedFiles are the files whose content decides what git executes.
 func (w Worktree) protectedFiles() []string {
 	return []string{

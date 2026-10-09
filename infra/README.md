@@ -52,6 +52,13 @@ the record job records identity-mismatch.
 
 The `COMMANDCODE_API_KEY` repository secret is the Command Code key every model slot runs on.
 
+`WINGMAN_DISPATCHER_RUN_URI` is the dispatcher job's Cloud Run run endpoint, which
+run.yml's `record-plan-stage` job calls to wake the dispatcher for the build stage
+(`https://<region>-run.googleapis.com/v2/projects/<project>/locations/<region>/jobs/forge-wingman-dispatcher:run`,
+the `dispatcher_run_uri` local in `dispatcher.tf`). The plan stage is inert until
+the dispatcher sends `stage=plan`, and that wake needs the runner identity to be
+able to invoke the job.
+
 `WINGMAN_PR_REVIEW_MODELS` is optional: the models `pr-review.yml` reviews with, in order,
 comma-separated provider/model. Unset, it reviews with
 `command-code/poolside/laguna-s-2.1-free`; a paid model is an edit of the variable.

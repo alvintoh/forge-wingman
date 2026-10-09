@@ -581,6 +581,63 @@ func TestBuildRunsThePlanPhaseForAnMOrLTicket(t *testing.T) {
 	}
 }
 
+// TestBuildSkipsThePlanPhaseWhenTheTicketCarriesThePlanFiles covers the two-stage
+// hand-off (FRG-33): a build the plan stage already fronted is handed its plan
+// through the ticket and must not call the plan agent again.
+func TestBuildSkipsThePlanPhaseWhenTheTicketCarriesThePlanFiles(t *testing.T) {
+	buildAgent := &fakeAgent{edit: func(dir string) error {
+		return os.WriteFile(filepath.Join(dir, "version.go"), []byte("package x\n"), 0o600)
+	}}
+	planAgent := &fakeAgent{}
+	deps, _, reported := testDeps(validObjects(), buildAgent)
+	deps.PlanAgent = planAgent
+	c := testConfig(t, initRepo(t))
+	c.Ticket.Size = "M"
+	c.Ticket.PlanFiles = []string{"version.go"}
+
+	res, err := Build(context.Background(), deps, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planAgent.calls != 0 {
+		t.Fatalf("plan agent ran %d times with the plan handed in, want 0", planAgent.calls)
+	}
+	if !res.Changed || !res.Ready {
+		t.Fatalf("changed %v, ready %v; want a ready build inside the handed plan", res.Changed, res.Ready)
+	}
+	rec := reported.last(t)
+	if len(rec.OutOfPlanFiles) != 0 {
+		t.Fatalf("out of plan = %q, want none", rec.OutOfPlanFiles)
+	}
+	if _, ok := rec.DurationsMS[string(PhasePlan)]; ok {
+		t.Fatal("a build handed its plan recorded a plan phase duration")
+	}
+}
+
+// TestBuildChecksAnEditedFileOutsideAHandedPlan is the same hand-off's other
+// half: the out-of-plan check still runs when planning was skipped.
+func TestBuildChecksAnEditedFileOutsideAHandedPlan(t *testing.T) {
+	buildAgent := &fakeAgent{edit: func(dir string) error {
+		return os.WriteFile(filepath.Join(dir, "extra.go"), []byte("package x\n"), 0o600)
+	}}
+	deps, _, reported := testDeps(validObjects(), buildAgent)
+	deps.PlanAgent = &fakeAgent{}
+	c := testConfig(t, initRepo(t))
+	c.Ticket.Size = "M"
+	c.Ticket.PlanFiles = []string{"version.go"}
+
+	res, err := Build(context.Background(), deps, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Changed || res.Ready {
+		t.Fatalf("changed %v, ready %v; want a committed draft", res.Changed, res.Ready)
+	}
+	if got := reported.last(t).OutOfPlanFiles; !slices.Equal(got, []string{"extra.go"}) {
+		t.Fatalf("out of plan = %q, want [extra.go]", got)
+	}
+}
+
 func TestBuildCommitsADraftWhenTheBuildEditsOutsideThePlan(t *testing.T) {
 	planAgent := &fakeAgent{events: planEvent("```plan-files\nversion.go\n```")}
 	buildAgent := &fakeAgent{edit: func(dir string) error {

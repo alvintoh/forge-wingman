@@ -42,6 +42,11 @@ type Ticket struct {
 	// falls through them and the review draws from what is left (AC1, AC2).
 	// Empty on a paid run.
 	FreeModels []string `json:"free_models,omitempty"`
+	// PlanFiles is the plan stage's file list, which the run's ticket file
+	// carries to the build: a build handed a plan skips planning and still
+	// checks what it edited against this list (FRG-33). Empty until the plan
+	// stage has recorded one.
+	PlanFiles []string `json:"plan_files,omitempty"`
 }
 
 // Validate reports whether the ticket has an id, a one-line title, a size of S, M

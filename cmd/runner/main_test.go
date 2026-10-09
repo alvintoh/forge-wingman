@@ -874,3 +874,79 @@ func TestFinalizeRaisesASystemicStopWhoseRecordCannotBeWritten(t *testing.T) {
 		t.Fatalf("raised %v, tripped %v, want the identity stop raised and tripped", notices.raised, breaker.tripped)
 	}
 }
+
+func TestPlanStageNeedsAnOutPath(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := planStage(context.Background(), logger, env{}, nil); err == nil ||
+		!strings.Contains(err.Error(), "-out") {
+		t.Fatalf("err = %v, want a missing -out path refused before any model call", err)
+	}
+}
+
+func TestRecordPlanStageNeedsADispatcherURI(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	e := env{identity: runner.Identity{Account: "octo", Owner: "octo"}}
+	err := recordPlanStage(context.Background(), logger, e,
+		[]string{"-run-id", "run-1", "-plan-file", filepath.Join(t.TempDir(), "plan.json")})
+	if err == nil || !strings.Contains(err.Error(), "-dispatcher-uri") {
+		t.Fatalf("err = %v, want a missing dispatcher URI refused", err)
+	}
+}
+
+func TestRecordPlanStageRefusesAMismatchedIdentity(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	e := env{identity: runner.Identity{Account: "work-account", Owner: "octo"}}
+	err := recordPlanStage(context.Background(), logger, e,
+		[]string{"-run-id", "run-1", "-plan-file", "x", "-dispatcher-uri", "https://example.test"})
+	if !errors.Is(err, runner.ErrIdentityMismatch) {
+		t.Fatalf("err = %v, want ErrIdentityMismatch", err)
+	}
+}
+
+// TestRunWorkflowGatesTheStageOnTheDispatcher is the regression for FRG-33's
+// dormancy: the two-stage dispatch is inert until the dispatcher sends
+// stage=plan, and then the build-side jobs are skipped rather than run against
+// a plan-stage branch.
+func TestRunWorkflowGatesTheStageOnTheDispatcher(t *testing.T) {
+	yml, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "run.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(yml)
+	if want := "      stage:\n        description: the stage to run — plan or build\n        type: string\n        default: build\n        required: true\n"; !strings.Contains(s, want) {
+		t.Errorf("run.yml lacks the stage input:\n%q", want)
+	}
+	for _, want := range []string{
+		"stage: ${{ inputs.stage }}",
+		"if: inputs.stage != 'plan' && needs.model.outputs.changed == 'true'\n",
+		"if: always() && inputs.stage != 'plan' && github.ref == 'refs/heads/main'\n",
+		"  record-plan-stage:\n",
+		"if: github.ref == 'refs/heads/main' && inputs.stage == 'plan'",
+		"record-plan-stage\n          -run-id \"$RUN_ID\" -plan-file \"$RUNNER_TEMP/plan.json\" -dispatcher-uri \"$DISPATCHER_RUN_URI\"",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("run.yml lacks %q", want)
+		}
+	}
+	if n := strings.Count(s, "inputs.stage != 'plan'"); n != 4 {
+		t.Errorf("run.yml gates %d jobs on the stage, want 4 (check, pr-meta, pr, record)", n)
+	}
+}
+
+func TestModelWorkflowRunsThePlanStageForThePlanStream(t *testing.T) {
+	yml, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "model.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(yml)
+	for _, want := range []string{
+		"      stage:\n        type: string\n        required: true\n",
+		"if: inputs.stage != 'plan'\n",
+		`"$RUNNER_TEMP/runner" plan-stage -plan-models "$PLAN_MODELS" -ticket-file "$RUNNER_TEMP/ticket.json" -out "$RUNNER_TEMP/plan.json"`,
+		"name: plan\n          path: ${{ runner.temp }}/plan.json\n",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("model.yml lacks %q", want)
+		}
+	}
+}

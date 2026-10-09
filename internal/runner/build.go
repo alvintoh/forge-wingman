@@ -152,6 +152,10 @@ const localBranch = BranchPrefix + "wt"
 // file outside its plan is still committed, but never ready, and names those
 // files in its summary. A plan naming a file under .github/workflows/ stops
 // before the build, and a build touching one stops once its commit is bundled.
+//
+// A ticket carrying plan files was already planned by the plan stage (FRG-33),
+// so Build skips planning and checks what it edited against the list it was
+// handed instead.
 func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, err error) {
 	sum := Summary{DurationsMS: map[string]int64{}, StartedAt: d.Now()}
 	defer func() {
@@ -283,39 +287,19 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		return BuildResult{}, err
 	}
 
+	// A ticket the plan stage already fronted carries its plan, so the build
+	// skips planning; an S ticket is never planned either way.
 	var planFiles []string
 	if c.Ticket.Size != "S" {
-		if err := timed(PhasePlan, d.PlanAgent, c.PlanModels[0], func() error {
-			p, err := FetchPlanProjection(ctx, d.Projections, c.Pointer)
-			var missing *MissingError
-			switch {
-			case errors.As(err, &missing):
-				return stopWith(OutcomeStopped, StopProjectionMissing, err)
-			case errors.Is(err, ErrPointerInvalid):
-				return stopWith(OutcomeStopped, StopProjectionInvalid, err)
-			case err != nil:
-				return stopWith(OutcomeInfraFailure, StopProjectionRead, err)
-			}
-			planRules, planPrompt, err := PlanPrompt(p.Text, c.Ticket)
-			if err != nil {
-				return stopWith(OutcomeStopped, StopProjectionInvalid, err)
-			}
-			call := agentCall{Phase: PhasePlan, Round: 1, Model: c.PlanModels[0], Rules: planRules, Timeout: roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now())}
-			text, _, _, err := runAgentInOrder(ctx, d, c, call, c.PlanModels, d.PlanAgent, wt.Dir, planPrompt, &sum)
-			if err != nil {
+		planFiles = c.Ticket.PlanFiles
+		if len(planFiles) == 0 {
+			if err := timed(PhasePlan, d.PlanAgent, c.PlanModels[0], func() error {
+				var err error
+				planFiles, err = runPlanPhase(ctx, d, c, wt.Dir, &sum)
 				return err
+			}); err != nil {
+				return BuildResult{}, err
 			}
-			if planFiles, err = parsePlanFiles(text); err != nil {
-				return stopWith(OutcomeStopped, StopPlanInvalid, err)
-			}
-			d.Logger.Info("planFilesParsed", "files", len(planFiles))
-			if wf := workflowFiles(planFiles); len(wf) > 0 {
-				d.Logger.Info("workflowChange", "phase", string(PhasePlan), "files", wf)
-				return stopWith(OutcomeStopped, StopWorkflowChange, workflowChange(wf))
-			}
-			return nil
-		}); err != nil {
-			return BuildResult{}, err
 		}
 	}
 
@@ -431,6 +415,45 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		return BuildResult{}, err
 	}
 	return res, nil
+}
+
+// runPlanPhase fetches the plan projection, runs the plan agent in dir under the
+// ticket's plan models, and returns the repository-relative files the plan
+// names. A plan naming a file under .github/workflows/ stops the run before any
+// build (FRG-61), since the run's App cannot push a workflow change. Both Build
+// and the plan stage's own dispatch share it, so a ticket is planned the same
+// way whichever stage runs it.
+func runPlanPhase(ctx context.Context, d BuildDeps, c BuildConfig, dir string, sum *Summary) ([]string, error) {
+	p, err := FetchPlanProjection(ctx, d.Projections, c.Pointer)
+	var missing *MissingError
+	switch {
+	case errors.As(err, &missing):
+		return nil, stopWith(OutcomeStopped, StopProjectionMissing, err)
+	case errors.Is(err, ErrPointerInvalid):
+		return nil, stopWith(OutcomeStopped, StopProjectionInvalid, err)
+	case err != nil:
+		return nil, stopWith(OutcomeInfraFailure, StopProjectionRead, err)
+	}
+	planRules, planPrompt, err := PlanPrompt(p.Text, c.Ticket)
+	if err != nil {
+		return nil, stopWith(OutcomeStopped, StopProjectionInvalid, err)
+	}
+	call := agentCall{Phase: PhasePlan, Round: 1, Model: c.PlanModels[0], Rules: planRules,
+		Timeout: roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now())}
+	text, _, _, err := runAgentInOrder(ctx, d, c, call, c.PlanModels, d.PlanAgent, dir, planPrompt, sum)
+	if err != nil {
+		return nil, err
+	}
+	files, err := parsePlanFiles(text)
+	if err != nil {
+		return nil, stopWith(OutcomeStopped, StopPlanInvalid, err)
+	}
+	d.Logger.Info("planFilesParsed", "files", len(files))
+	if wf := workflowFiles(files); len(wf) > 0 {
+		d.Logger.Info("workflowChange", "phase", string(PhasePlan), "files", wf)
+		return nil, stopWith(OutcomeStopped, StopWorkflowChange, workflowChange(wf))
+	}
+	return files, nil
 }
 
 // agentCall is one agent invocation's identity within a build: which
