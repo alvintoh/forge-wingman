@@ -225,8 +225,8 @@ func readCapped(path string) ([]byte, error) {
 
 // prReviewPost publishes a review: one marked comment, created or edited, and
 // the wingman-review status on the reviewed sha. It writes merge=true only when
-// the review is clean, the pull request is labelled eligible, open, not a
-// draft, and its head is still the reviewed sha.
+// the review is clean, the pull request is a run's, labelled eligible, open,
+// not a draft, and its head is still the reviewed sha.
 func prReviewPost(ctx context.Context, logger *slog.Logger, getenv func(string) string, args []string) error {
 	fs := flag.NewFlagSet("pr-review-post", flag.ContinueOnError)
 	number := fs.Int("pr", 0, "the reviewed pull request")
@@ -331,7 +331,8 @@ func planPost(skipReason, contextResult string, v runner.PRVerdict, verdictErr e
 
 // mergeReady reports whether a clean review may request auto-merge on p.
 func mergeReady(p pull, reviewedSHA string) bool {
-	return p.State == "open" && !p.Draft && p.hasLabel(autoMergeEligibleLabel) && p.Head.SHA == reviewedSHA
+	return p.State == "open" && !p.Draft && strings.HasPrefix(p.Head.Ref, runner.BranchPrefix) &&
+		p.hasLabel(autoMergeEligibleLabel) && p.Head.SHA == reviewedSHA
 }
 
 // upsertComment edits the marked comment this workflow posted before, or creates one.

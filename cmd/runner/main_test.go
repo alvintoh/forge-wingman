@@ -687,10 +687,14 @@ func TestWithdrawWorkflowDisablesAutoMergeOnAPushToARunsBranch(t *testing.T) {
 		"startsWith(github.event.pull_request.head.ref, 'wingman/')",
 		`requested="$(gh pr view "$PR" --json autoMergeRequest`,
 		`gh pr merge "$PR" --disable-auto`,
+		`gh pr edit "$PR" --remove-label wingman:auto-merge-eligible`,
 	} {
 		if !strings.Contains(string(yml), want) {
 			t.Errorf("automerge-withdraw.yml lacks %q", want)
 		}
+	}
+	if strings.Index(string(yml), "--remove-label") > strings.Index(string(yml), "auto-merge is not requested") {
+		t.Error("automerge-withdraw.yml can exit before it removes the eligibility label")
 	}
 	if strings.Contains(string(yml), "actions/checkout") {
 		t.Error("automerge-withdraw.yml checks out the branch it runs for")

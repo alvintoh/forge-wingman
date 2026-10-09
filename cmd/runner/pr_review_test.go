@@ -85,7 +85,7 @@ func openPull(title, body, sha string, labels ...string) map[string]any {
 		ls = append(ls, map[string]string{"name": l})
 	}
 	return map[string]any{"title": title, "body": body, "state": "open", "draft": false, "labels": ls,
-		"head": map[string]string{"sha": sha}, "base": map[string]string{"sha": baseSHA}}
+		"head": map[string]string{"sha": sha, "ref": "wingman/abc-12-1-1"}, "base": map[string]string{"sha": baseSHA}}
 }
 
 func readOutput(t *testing.T, getenv func(string) string) string {
@@ -259,6 +259,7 @@ func TestMergeReady(t *testing.T) {
 		"after a push":                 {eligible(func(p *pull) { p.Head.SHA = movedSHA }), false},
 		"closed":                       {eligible(func(p *pull) { p.State = "closed" }), false},
 		"back in draft":                {eligible(func(p *pull) { p.Draft = true }), false},
+		"not a run's branch":           {eligible(func(p *pull) { p.Head.Ref = "feature/x" }), false},
 	} {
 		if got := mergeReady(tt.p, headSHA); got != tt.want {
 			t.Errorf("%s: mergeReady = %v, want %v", name, got, tt.want)

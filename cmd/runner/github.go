@@ -41,6 +41,7 @@ type pull struct {
 	} `json:"labels"`
 	Head struct {
 		SHA string `json:"sha"`
+		Ref string `json:"ref"`
 	} `json:"head"`
 	Base struct {
 		SHA string `json:"sha"`

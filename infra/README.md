@@ -86,8 +86,8 @@ outside its plan and fails no check gate gets the `wingman:auto-merge-eligible`
 label, which must exist in the repository. `pr-review.yml` reviews every ready PR
 against its Linear ticket and, only when the review is clean, the PR carries that
 label and its head is still the commit it reviewed, requests a squash auto-merge
-pinned to that commit. A push to a run's branch afterwards withdraws it
-(`automerge-withdraw.yml`). The request is made only while `main` requires `go`
+pinned to that commit, and only on a run's `wingman/` branch. A push to that branch
+removes the label and withdraws any request (`automerge-withdraw.yml`). The request is made only while `main` requires `go`
 and `web`.
 
 Do not set `WINGMAN_AUTO_MERGE` to `on` yet. The review's verdict comes from its
