@@ -165,7 +165,7 @@ func TestBudgetConfigCarriesTheProvidersWindows(t *testing.T) {
 
 // TestBudgetConfigCarriesTheProvidersModelCaps asserts the dispatcher meters the
 // configured provider's own per-model caps, so a run on a capped model is
-// admitted only while that model has room too (FRG-62).
+// admitted only while that model has room too.
 func TestBudgetConfigCarriesTheProvidersModelCaps(t *testing.T) {
 	provider := runner.Provider(runner.DefaultModel())
 	want := providers.ModelCaps(provider)

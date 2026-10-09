@@ -140,7 +140,7 @@ func TestDecideNeverChecksAWindowedProvidersCostAgainstCashToo(t *testing.T) {
 }
 
 // capped is a budget whose plan has a roomy monthly window but a $60 monthly
-// cap on one model, as GOAT's DeepSeek V4.1 Flash runs are metered (FRG-62).
+// cap on one model, as GOAT's DeepSeek V4.1 Flash runs are metered.
 func capped() BudgetConfig {
 	cfg := windowed
 	cfg.ModelCaps = map[string]Window{"p/flash": {Name: "p/flash", Period: 720 * time.Hour, Limit: 60 * money.Dollar}}

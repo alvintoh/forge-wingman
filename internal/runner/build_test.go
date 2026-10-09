@@ -2111,10 +2111,10 @@ func TestWorkflowsCarryThePlanModelsFromTheDefaultToTheRunner(t *testing.T) {
 	}
 }
 
-// TestWorkflowsHandTheTicketOffAsAnArtifactNotAJobOutput is the regression for
-// FRG-60: GitHub drops any job output holding a value masked in that job, so the
-// ticket travels as a file the ticket job uploads and the model job downloads,
-// never as a job output or a job input.
+// TestWorkflowsHandTheTicketOffAsAnArtifactNotAJobOutput guards against a
+// GitHub limit: it drops any job output holding a value masked in that job, so
+// the ticket travels as a file the ticket job uploads and the model job
+// downloads, never as a job output or a job input.
 func TestWorkflowsHandTheTicketOffAsAnArtifactNotAJobOutput(t *testing.T) {
 	read := func(name string) string {
 		b, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", name))

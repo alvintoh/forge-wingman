@@ -66,7 +66,7 @@ type BudgetConfig struct {
 	ProviderWindows []Window
 	// ModelCaps are the selected provider's own monthly ceiling per model,
 	// keyed by the full model id a run names. A run on a model that carries one
-	// is bounded by it beside ProviderWindows (FRG-62); a model absent from the
+	// is bounded by it beside ProviderWindows; a model absent from the
 	// map is bounded by the windows alone. A run records one settled cost, not
 	// one per model, so the cap is checked against every model's spend: it binds
 	// early, never late, until runs record cost per model.
@@ -160,7 +160,7 @@ func Decide(cfg BudgetConfig, model string, reserved Totals, settled Settled, es
 
 	// A run whose model carries its own monthly cap is bounded by it beside the
 	// plan's windows: a month with room under the plan-wide window may still
-	// have spent that model's own allowance (FRG-62).
+	// have spent that model's own allowance.
 	if modelCap, ok := cfg.ModelCaps[model]; ok {
 		if reserved.ProviderCost+settled.ModelCap+estimate.ProviderCost > modelCap.Limit {
 			return false, modelCap.Name
