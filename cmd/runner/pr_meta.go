@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -49,6 +50,9 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	// unreadPlanned records that the set of concurrent runs could not be read,
+	// which leaves the overlap unknown rather than absent.
+	unreadPlanned := false
 	if err := e.identity.CheckAccount(); err != nil {
 		return err
 	}
@@ -67,17 +71,18 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		return err
 	}
 	plan, err := records.GetPlan(ctx, *runID)
-	if err != nil {
+	if err != nil && !errors.Is(err, runner.ErrRecordNotFound) {
 		return err
 	}
 	planned, err := store.NewQueue(fsc).Planned(ctx)
 	if err != nil {
-		return err
+		// A read that fails is an unknown set of concurrent runs, not an empty
+		// one: the overlap is left unread rather than the run stranded, the
+		// way an unreadable bundle is.
+		logger.Warn("plannedRunsUnread", "run", *runID, "err", err.Error())
+		planned, unreadPlanned = nil, true
 	}
 	sum := buildSummary(logger, *summary, buildAttempt(logger, *attemptID, e), rec.Ticket(), time.Now())
-	if err := refuseWorkflowPush(logger, sum); err != nil {
-		return err
-	}
 	changed, err := runner.Bundle{Path: *bundle, Repo: workRepo, Branch: *branch, Base: mainRef,
 		RunID: e.runID}.ChangedFiles(ctx)
 	if err != nil {
@@ -85,11 +90,22 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	}
 	check := prCheck{
 		Changed:   changed,
-		Unread:    err != nil,
+		Unread:    err != nil || unreadPlanned,
 		OutOfPlan: outOfPlan(plan, changed),
 		Overlap:   planOverlap(rec.Ticket().Size, *repository, changed, planned),
 	}
-	title, body, err := renderPR(string(tmpl), rec, sum, runner.FailedGate(*checkReport), *runURL, *loopDetail, check.Overlap, check.OutOfPlan)
+	// A workflow file in the write set is refused from the write set the
+	// branch carries — the run's own App cannot push one — and falls back to
+	// the build's stop only where that write set could not be read.
+	if wf := runner.WorkflowFiles(check.Changed); len(wf) > 0 {
+		return refuseWorkflowPush(logger, sum, wf)
+	}
+	if check.Unread {
+		if err := refuseWorkflowPush(logger, sum, nil); err != nil {
+			return err
+		}
+	}
+	title, body, err := renderPR(string(tmpl), rec, sum, runner.FailedGate(*checkReport), *runURL, *loopDetail, check)
 	if err != nil {
 		return err
 	}
@@ -201,13 +217,16 @@ func autoMerge(switchValue, runID string, t runner.Ticket, sum runner.Summary, f
 	return switchValue == autoMergeOn && !ownerAttention(runID, t, sum, failedGate, check)
 }
 
-// refuseWorkflowPush fails a build that stopped for touching a workflow file,
-// so the pr job, which could not push it, never runs.
-func refuseWorkflowPush(logger *slog.Logger, sum runner.Summary) error {
-	if sum.StopReason != runner.StopWorkflowChange {
+// refuseWorkflowPush fails a build whose write set touches a workflow file, so
+// the pr job, which could not push it, never runs. The files are the branch's
+// own; with none given — the write set could not be read — the build's own stop
+// is what is left to go on.
+func refuseWorkflowPush(logger *slog.Logger, sum runner.Summary, workflowFiles []string) error {
+	if len(workflowFiles) == 0 && sum.StopReason != runner.StopWorkflowChange {
 		return nil
 	}
-	logger.Warn("pushRefused", "reason", string(sum.StopReason), "detail", sum.StopDetail)
+	logger.Warn("pushRefused", "reason", string(runner.StopWorkflowChange), "detail", sum.StopDetail,
+		"files", workflowFiles)
 	return errRunFailed
 }
 
@@ -228,12 +247,12 @@ func buildSummary(logger *slog.Logger, raw, attemptID string, t runner.Ticket, n
 
 // renderPR is the PR's title and body for rec's ticket, taken from the build's
 // summary: the record gains the build's fields only after the PR opens.
-// loopDetail is the pre-PR loop's report of why it is a draft, overlap names the
-// in-flight run whose plan these files touch, and outOfPlan the edited files the
-// run's plan did not name — both of which also keep it a draft.
-func renderPR(tmpl string, rec runner.Record, sum runner.Summary, failedGate, runURL, loopDetail, overlap string, outOfPlan []string) (title, body string, err error) {
+// loopDetail is the pre-PR loop's report of why it is a draft, and check names
+// what pr-meta established about the write set — each of which also keeps it
+// a draft.
+func renderPR(tmpl string, rec runner.Record, sum runner.Summary, failedGate, runURL, loopDetail string, check prCheck) (title, body string, err error) {
 	t := rec.Ticket()
-	body, err = runner.PRBody(tmpl, t, sum.PRSummary, failedGate, runURL, loopDetail, overlap, outOfPlan)
+	body, err = runner.PRBody(tmpl, t, sum.PRSummary, failedGate, runURL, loopDetail, check.Overlap, check.OutOfPlan, check.Unread)
 	if err != nil {
 		return "", "", err
 	}

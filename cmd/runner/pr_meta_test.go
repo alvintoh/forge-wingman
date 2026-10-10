@@ -94,23 +94,25 @@ func TestRefuseWorkflowPush(t *testing.T) {
 		s.Outcome, s.StopReason = runner.OutcomeStopped, runner.StopWorkflowChange
 		s.StopDetail = "touches files under .github/workflows/, which the run cannot push: .github/workflows/ci.yml"
 	}
+	wf := []string{".github/workflows/ci.yml"}
 	for name, tt := range map[string]struct {
 		raw     string
+		files   []string
 		refused bool
 	}{
-		"a workflow change is refused": {encodedSummary(t, "42-1", now, stopped), true},
-		"a built summary is not":       {encodedSummary(t, "42-1", now), false},
+		"a workflow file in the write set is refused":        {encodedSummary(t, "42-1", now), wf, true},
+		"a workflow change the build stopped for is refused": {encodedSummary(t, "42-1", now, stopped), nil, true},
+		"a built summary is not":                             {encodedSummary(t, "42-1", now), nil, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var log strings.Builder
 			logger := slog.New(slog.NewTextHandler(&log, nil))
-			err := refuseWorkflowPush(logger, buildSummary(logger, tt.raw, "42-1", prRecord.Ticket(), now))
+			err := refuseWorkflowPush(logger, buildSummary(logger, tt.raw, "42-1", prRecord.Ticket(), now), tt.files)
 			if tt.refused != errors.Is(err, errRunFailed) {
 				t.Fatalf("err = %v, want refused %v", err, tt.refused)
 			}
-			if tt.refused != strings.Contains(log.String(), "msg=pushRefused") ||
-				tt.refused != strings.Contains(log.String(), ".github/workflows/ci.yml") {
-				t.Fatalf("log = %q", log.String())
+			if tt.refused && !strings.Contains(log.String(), "msg=pushRefused") {
+				t.Fatalf("log = %q, want the refusal logged", log.String())
 			}
 		})
 	}
@@ -129,7 +131,7 @@ func TestRenderPRFallsBackToTheTicketWithoutAUsableSummary(t *testing.T) {
 		var log strings.Builder
 		logger := slog.New(slog.NewTextHandler(&log, nil))
 		sum := buildSummary(logger, tt.raw, "42-1", prRecord.Ticket(), now)
-		title, body, err := renderPR(prTemplate(t), prRecord, sum, "", "https://example.test/run", "", "", nil)
+		title, body, err := renderPR(prTemplate(t), prRecord, sum, "", "https://example.test/run", "", prCheck{})
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -157,7 +159,7 @@ func TestRenderPRNamesWhatPRMetaComputedNotWhatTheModelClaimed(t *testing.T) {
 		OutOfPlan: outOfPlan(runner.PlanRecord{Files: planned}, planned),
 		Overlap:   "M-2",
 	}
-	title, body, err := renderPR(prTemplate(t), prRecord, sum, "", "https://example.test/run", "", check.Overlap, check.OutOfPlan)
+	title, body, err := renderPR(prTemplate(t), prRecord, sum, "", "https://example.test/run", "", check)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,4 +300,41 @@ func openStep(yml string) string {
 	_, step, _ := strings.Cut(after, "\n      - id: open\n")
 	step, _, _ = strings.Cut(step, "\n\n")
 	return step
+}
+
+func TestPRBodyNamesAnUnreadWriteSetAsWhyThePRIsADraft(t *testing.T) {
+	now := time.Now()
+	sum := buildSummary(slog.New(slog.NewTextHandler(io.Discard, nil)),
+		encodedSummary(t, "42-1", now), "42-1", prRecord.Ticket(), now)
+	_, body, err := renderPR(prTemplate(t), prRecord, sum, "", "https://example.test/run", "",
+		prCheck{Unread: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "**Write set unread:**") {
+		t.Fatalf("body = %q, want the unread write set named as why the PR is a draft", body)
+	}
+}
+
+func TestDraftPRNamesEveryReasonTheWriteSetHoldsItBack(t *testing.T) {
+	now := time.Now()
+	ready := buildSummary(slog.New(slog.NewTextHandler(io.Discard, nil)),
+		encodedSummary(t, "42-1", now), "42-1", prRecord.Ticket(), now)
+	ready.Ready = true
+	for name, tt := range map[string]struct {
+		check prCheck
+		want  bool
+	}{
+		"a clear write set":          {prCheck{}, false},
+		"an unread write set":        {prCheck{Unread: true}, true},
+		"an edit outside the plan":   {prCheck{OutOfPlan: []string{"a.go"}}, true},
+		"a concurrent run's plan":    {prCheck{Overlap: "FRG-79"}, true},
+		"a planned read that failed": {prCheck{Overlap: "", Unread: true}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := draftPR(ready, tt.check); got != tt.want {
+				t.Fatalf("draftPR = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }

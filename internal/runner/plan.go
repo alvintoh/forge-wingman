@@ -82,7 +82,10 @@ const workflowDir = ".github/workflows"
 // errWorkflowChange reports a plan or build touching a file under workflowDir.
 var errWorkflowChange = errors.New("touches files under " + workflowDir + "/, which the run cannot push")
 
-// workflowFiles returns the paths that are workflowDir or sit under it.
+// WorkflowFiles returns the paths that are workflowDir or sit under it.
+func WorkflowFiles(paths []string) []string {
+	return workflowFiles(paths)
+}
 func workflowFiles(paths []string) []string {
 	var hits []string
 	for _, p := range paths {

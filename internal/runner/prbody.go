@@ -32,7 +32,7 @@ var errTemplate = errors.New("pull request template lacks the ticket line, summa
 // names the in-flight run whose plan these files touch, empty when none does.
 // outOfPlan are the edited files the run's plan did not name, which also keep it
 // a draft.
-func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail, overlap string, outOfPlan []string) (string, error) {
+func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail, overlap string, outOfPlan []string, writeSetUnread bool) (string, error) {
 	summary := plainText(prSummary)
 	if summary == "" {
 		summary = "`" + t.ID + "`: " + t.Title
@@ -65,6 +65,9 @@ func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail
 			if overlap != "" {
 				notes = append(notes, "", "**Concurrent run:** kept this a draft — "+
 					codeSpan(overlap)+" plans to write some of these files")
+			}
+			if writeSetUnread {
+				notes = append(notes, "", "**Write set unread:** kept this a draft — the files this run changed could not be read from its bundle, so nothing about its write set is known")
 			}
 			if len(outOfPlan) > 0 {
 				spans := make([]string, len(outOfPlan))
