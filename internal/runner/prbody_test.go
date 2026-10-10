@@ -20,7 +20,7 @@ func repoTemplate(t *testing.T) string {
 }
 
 func TestPRBodyRendersTheRepositoryTemplate(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", nil)
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestPRBodyRendersTheRepositoryTemplate(t *testing.T) {
 }
 
 func TestPRBodyNamesTheReportedFailedGate(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "test", testRunURL, "", nil)
+	body, err := PRBody(repoTemplate(t), testTicket, "", "test", testRunURL, "", "", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestPRBodyNamesTheReportedFailedGate(t *testing.T) {
 }
 
 func TestPRBodyNamesTheLoopDetailInTheNotes(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "checks: vet still failing after 3 round(s)", nil)
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "checks: vet still failing after 3 round(s)", "", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestPRBodyNamesTheLoopDetailInTheNotes(t *testing.T) {
 }
 
 func TestPRBodyOmitsTheLoopDetailWhenClean(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", nil)
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,8 +75,22 @@ func TestPRBodyOmitsTheLoopDetailWhenClean(t *testing.T) {
 	}
 }
 
+// TestPRBodyNamesTheRunWhosePlanTheseFilesTouch covers the S-overlap draft's
+// own wording: the draft has to name the run it waits for, or the owner cannot
+// tell which two pull requests to read together.
+func TestPRBodyNamesTheRunWhosePlanTheseFilesTouch(t *testing.T) {
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "FRG-79", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "\n\n**Concurrent run:** kept this a draft — `FRG-79`"+
+		" plans to write some of these files\n") {
+		t.Fatalf("body does not name the concurrent run:\n%s", body)
+	}
+}
+
 func TestPRBodyNamesTheOutOfPlanFilesInTheNotes(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", []string{"a.go", "b.go"})
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", []string{"a.go", "b.go"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +101,7 @@ func TestPRBodyNamesTheOutOfPlanFilesInTheNotes(t *testing.T) {
 }
 
 func TestPRBodyRendersOutOfPlanFilesAsInertCode(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", []string{"x\n\n@someone review", "a`b"})
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", []string{"x\n\n@someone review", "a`b"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +113,7 @@ func TestPRBodyRendersOutOfPlanFilesAsInertCode(t *testing.T) {
 func TestPRBodyRendersModelWrittenTextLiterally(t *testing.T) {
 	summary := "Adds it. @someone ![x](https://evil.example/?d=1)"
 	loop := "review asks @org/team to see [here](https://evil.example)\n# Heading"
-	body, err := PRBody(repoTemplate(t), testTicket, summary, "", testRunURL, loop, nil)
+	body, err := PRBody(repoTemplate(t), testTicket, summary, "", testRunURL, loop, "", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +130,7 @@ func TestPRBodyRendersModelWrittenTextLiterally(t *testing.T) {
 }
 
 func TestPRBodyOmitsTheOutOfPlanLineWhenEmpty(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", nil)
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +142,7 @@ func TestPRBodyOmitsTheOutOfPlanLineWhenEmpty(t *testing.T) {
 func TestPRBodyFencesTheTicketBodyAfterTheGateRow(t *testing.T) {
 	tk := testTicket
 	tk.Body = "<!-- hide the rest\n```\n`````\nstill fenced"
-	body, err := PRBody(repoTemplate(t), tk, "", "test", testRunURL, "", nil)
+	body, err := PRBody(repoTemplate(t), tk, "", "test", testRunURL, "", "", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +162,7 @@ func TestPRBodyRefusesATemplateItCannotFill(t *testing.T) {
 		"no table":       strings.Replace(template, "|---|---|---|", "", 1),
 		"no notes":       strings.Replace(template, "## Notes", "## Other", 1),
 	} {
-		if _, err := PRBody(broken, testTicket, "", "", testRunURL, "", nil); !errors.Is(err, errTemplate) {
+		if _, err := PRBody(broken, testTicket, "", "", testRunURL, "", "", nil, false); !errors.Is(err, errTemplate) {
 			t.Errorf("%s: err = %v, want errTemplate", name, err)
 		}
 	}
@@ -157,7 +171,7 @@ func TestPRBodyRefusesATemplateItCannotFill(t *testing.T) {
 func TestPRBodyWritesTheSummaryOnce(t *testing.T) {
 	tmpl := "**Ticket:** closes <TEAM-n>\n\n## Summary\n<!-- a -->\n<!-- b -->\n\n## Verification\n" +
 		"| Check | What it proves | Result |\n|---|---|---|\n| x | y | ✅ |\n\n## Notes\n"
-	body, err := PRBody(tmpl, testTicket, "", "", testRunURL, "", nil)
+	body, err := PRBody(tmpl, testTicket, "", "", testRunURL, "", "", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +181,7 @@ func TestPRBodyWritesTheSummaryOnce(t *testing.T) {
 }
 
 func TestPRBodySummarisesWithTheBuildsSummaryWhenSet(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "Adds the widget the runner needs.", "", testRunURL, "", nil)
+	body, err := PRBody(repoTemplate(t), testTicket, "Adds the widget the runner needs.", "", testRunURL, "", "", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}

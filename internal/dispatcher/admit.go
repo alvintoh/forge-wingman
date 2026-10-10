@@ -58,7 +58,9 @@ func (l Limits) orDefault() Limits {
 	return l
 }
 
-// InFlight is one run the ledger holds a reservation for.
+// InFlight is one run whose planned write set is known and whose run is in
+// flight: the ledger holds a reservation for a claimed one, and a run whose
+// plan stage has settled waits in planned for its build with none.
 type InFlight struct {
 	Ticket string
 	Repo   string
@@ -68,7 +70,7 @@ type InFlight struct {
 	// unknown set, not an empty one.
 	Files []string
 	// Stage is the stage the reservation was claimed for; empty for a
-	// single-stage claim.
+	// single-stage claim, and for a run no reservation covers.
 	Stage string
 }
 

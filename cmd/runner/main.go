@@ -394,116 +394,6 @@ func splitModels(s string, fallback []string) []string {
 	return parts
 }
 
-// prMeta writes the PR's title, body, the branch segment the pushed branch must
-// carry and whether to mark it eligible for auto-merge as outputs, from the run record's ticket
-// and the build's summary.
-func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) error {
-	fs := flag.NewFlagSet("pr-meta", flag.ContinueOnError)
-	runID := fs.String("run-id", "", "run record to read the ticket from")
-	attemptID := fs.String("attempt-id", e.attemptID, "workflow attempt the build ran in")
-	summary := fs.String("summary", "", "the build's summary, as JSON")
-	checkReport := fs.String("failed-gate", "", "the check job's failed_gate output")
-	runURL := fs.String("run-url", "", "URL of the workflow run")
-	loopDetail := fs.String("loop-detail", "", "the pre-PR loop's report of why the PR is a draft (FR-5)")
-	template := fs.String("template", runner.DefaultPRTemplate, "pull request template to render")
-	autoMergeSwitch := fs.String("auto-merge-switch", "", "the WINGMAN_AUTO_MERGE variable; auto-merge is off unless it is \"on\"")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if err := e.identity.CheckAccount(); err != nil {
-		return err
-	}
-	tmpl, err := os.ReadFile(*template)
-	if err != nil {
-		return fmt.Errorf("reading the PR template: %w", err)
-	}
-	rec, err := readRunRecord(ctx, logger, e.project, *runID)
-	if err != nil {
-		return err
-	}
-	sum := buildSummary(logger, *summary, buildAttempt(logger, *attemptID, e), rec.Ticket(), time.Now())
-	if err := refuseWorkflowPush(logger, sum); err != nil {
-		return err
-	}
-	title, body, err := renderPR(string(tmpl), rec, sum, runner.FailedGate(*checkReport), *runURL, *loopDetail)
-	if err != nil {
-		return err
-	}
-	merge := autoMerge(*autoMergeSwitch, *runID, rec.Ticket(), sum, runner.FailedGate(*checkReport))
-	logger.Info("autoMergeDecided", "run", *runID, "autoMerge", merge, "sampled", runner.Sampled(*runID))
-	if err := writeOutputs(e.output, map[string]string{
-		"title":          title,
-		"branch_segment": rec.Ticket().BranchSegment(),
-		"auto_merge":     strconv.FormatBool(merge),
-	}); err != nil {
-		return err
-	}
-	return writeMultilineOutput(e.output, "body", body)
-}
-
-// autoMergeOn is the only WINGMAN_AUTO_MERGE value that lets a run request auto-merge.
-const autoMergeOn = "on"
-
-// autoMerge reports whether the run's PR is marked eligible for auto-merge,
-// which pr-review.yml requests once its review is clean: the switch is on and
-// nothing in the run needs the owner.
-func autoMerge(switchValue, runID string, t runner.Ticket, sum runner.Summary, failedGate string) bool {
-	return switchValue == autoMergeOn && !ownerAttention(runID, t, sum, failedGate)
-}
-
-// ownerAttention reports whether the run's PR must wait for the owner rather than
-// merge itself (FR-5, FR-17): not ready, sized L, in the review sample, edited
-// outside the plan, touching a workflow, or failing a check gate.
-func ownerAttention(runID string, t runner.Ticket, sum runner.Summary, failedGate string) bool {
-	return !sum.Ready || (t.Size != "S" && t.Size != "M") || runner.Sampled(runID) ||
-		len(sum.OutOfPlanFiles) > 0 || sum.StopReason == runner.StopWorkflowChange || failedGate != ""
-}
-
-// refuseWorkflowPush fails a build that stopped for touching a workflow file,
-// so the pr job, which could not push it, never runs.
-func refuseWorkflowPush(logger *slog.Logger, sum runner.Summary) error {
-	if sum.StopReason != runner.StopWorkflowChange {
-		return nil
-	}
-	logger.Warn("pushRefused", "reason", string(sum.StopReason), "detail", sum.StopDetail)
-	return errRunFailed
-}
-
-// buildSummary is raw parsed as attemptID's build of t, or the zero Summary when
-// raw is empty or rejected, so the PR falls back to the ticket rather than
-// failing to open.
-func buildSummary(logger *slog.Logger, raw, attemptID string, t runner.Ticket, now time.Time) runner.Summary {
-	if raw == "" {
-		return runner.Summary{}
-	}
-	sum, err := runner.ParseSummary(raw, attemptID, t, now)
-	if err != nil {
-		logger.Warn("summaryRejected", "err", err.Error())
-		return runner.Summary{}
-	}
-	return sum
-}
-
-// renderPR is the PR's title and body for rec's ticket, taken from the build's
-// summary: the record gains the build's fields only after the PR opens.
-func renderPR(tmpl string, rec runner.Record, sum runner.Summary, failedGate, runURL, loopDetail string) (title, body string, err error) {
-	t := rec.Ticket()
-	body, err = runner.PRBody(tmpl, t, sum.PRSummary, failedGate, runURL, loopDetail, sum.OutOfPlanFiles)
-	if err != nil {
-		return "", "", err
-	}
-	return prTitle(sum, t), body, nil
-}
-
-// prTitle is the subject the build committed with, or the ticket's Subject for
-// a summary that carries none.
-func prTitle(sum runner.Summary, t runner.Ticket) string {
-	if sum.CommitSubject != "" {
-		return sum.CommitSubject
-	}
-	return t.Subject()
-}
-
 // buildAttempt is id when it names an attempt of this run, and the current
 // attempt otherwise.
 func buildAttempt(logger *slog.Logger, id string, e env) string {
@@ -517,17 +407,8 @@ func buildAttempt(logger *slog.Logger, id string, e env) string {
 	return id
 }
 
-// readRunRecord reads run runID's record, logging why and failing the run when
-// the record is missing or its ticket cannot be built.
-func readRunRecord(ctx context.Context, logger *slog.Logger, project, runID string) (runner.Record, error) {
-	fsc, err := recordsClient(ctx, project, runID)
-	if err != nil {
-		return runner.Record{}, err
-	}
-	defer func() { _ = fsc.Close() }()
-	return runRecord(ctx, logger, store.NewRecords(fsc), runID)
-}
-
+// runRecord reads run runID's record, failing the run when the record is
+// missing or its ticket cannot be built.
 func runRecord(ctx context.Context, logger *slog.Logger, r runner.RecordReader, runID string) (runner.Record, error) {
 	rec, err := runner.ReadRun(ctx, r, runID)
 	var stopped *runner.StopError

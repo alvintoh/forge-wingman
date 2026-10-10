@@ -216,6 +216,51 @@ func (q *Queue) Candidates(ctx context.Context) ([]dispatcher.Candidate, error) 
 	return out, nil
 }
 
+// Planned lists every run whose plan stage has recorded a write set and whose
+// own run has not been recorded yet: the rows in state planned or claimed that
+// carry plan_files and no settled_at. A two-stage run waits in planned between
+// its plan stage and its build — a window no ledger reservation covers, since
+// settling the plan drops it — so a pull request asking what it could collide
+// with reads the rows rather than the ledger.
+//
+// This scans every run row in either state, the way Candidates scans the queued
+// ones, and filters in Go: accepted at this project's personal-scale volume,
+// same as the settled-cost scans.
+func (q *Queue) Planned(ctx context.Context) ([]dispatcher.InFlight, error) {
+	iter := q.client.Collection(runsCollection).
+		Where(stateField, "in", []string{statePlanned, stateClaimed}).
+		Documents(ctx)
+	defer iter.Stop()
+	var out []dispatcher.InFlight
+	for {
+		snap, err := iter.Next()
+		if errors.Is(err, iterator.Done) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("listing planned runs: %w", err)
+		}
+		data := snap.Data()
+		files := stringList(data, planFilesField)
+		if len(files) == 0 || settled(data) {
+			continue
+		}
+		out = append(out, dispatcher.InFlight{
+			Ticket: str(data, ticketIDField), Repo: str(data, repoField), Size: str(data, sizeField),
+			Files: files,
+		})
+	}
+	return out, nil
+}
+
+// settled reports whether row's run has been recorded, which only the record job
+// writes. The field is written either way, so a zero time is what an unrecorded
+// run holds.
+func settled(row map[string]any) bool {
+	at, ok := row[settledAtField].(time.Time)
+	return ok && !at.IsZero()
+}
+
 // stringList is row's field as a string list, empty when it holds none.
 func stringList(row map[string]any, field string) []string {
 	var out []string
@@ -226,6 +271,12 @@ func stringList(row map[string]any, field string) []string {
 		}
 	}
 	return out
+}
+
+// str is row's field as a string, empty when it holds none.
+func str(row map[string]any, field string) string {
+	v, _ := row[field].(string)
+	return v
 }
 
 // buildModel is the build model a queued run's ticket named, empty when it named
@@ -296,24 +347,10 @@ func (d ledgerDoc) concurrency() dispatcher.Concurrency {
 
 // subject is the candidate a run row describes.
 func subject(row map[string]any) dispatcher.Subject {
-	str := func(field string) string {
-		v, _ := row[field].(string)
-		return v
-	}
-	ids := func(field string) []string {
-		var out []string
-		list, _ := row[field].([]any)
-		for _, v := range list {
-			if id, ok := v.(string); ok {
-				out = append(out, id)
-			}
-		}
-		return out
-	}
 	return dispatcher.Subject{
-		Ticket: str(ticketIDField), Repo: str(repoField), Size: str(sizeField),
-		BlockedBy: ids(blockedByField), Blocks: ids(blocksField),
-		Files: ids(planFilesField),
+		Ticket: str(row, ticketIDField), Repo: str(row, repoField), Size: str(row, sizeField),
+		BlockedBy: stringList(row, blockedByField), Blocks: stringList(row, blocksField),
+		Files: stringList(row, planFilesField),
 	}
 }
 

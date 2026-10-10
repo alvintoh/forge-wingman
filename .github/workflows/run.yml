@@ -1,10 +1,11 @@
 # One run of the ticket in run record `run_id`, job by job: `ticket` reads it from the
 # record; `model` (model.yml) builds, holding no GitHub token and no credential that can
 # reach a run record; `check` runs the gates on the bundled branch with no token and no
-# secret; `pr-meta` renders the PR from the record under the runner identity and decides
-# auto-merge eligibility; `pr` opens the PR with fixed steps, holding GitHub write and no
-# GCP identity; `record` validates the model's summary and merges the outcome into the record
-# whatever happened. With `stage: plan` (FRG-33) the model job runs the plan phase alone and
+# secret; `pr-meta` renders the PR from the record under the runner identity, derives the
+# branch's write set from its bundle and decides draft and auto-merge eligibility; `pr`
+# opens the PR with fixed steps, holding GitHub write and no GCP identity; `record`
+# validates the model's summary and merges the outcome into the record whatever happened.
+# With `stage: plan` (FRG-33) the model job runs the plan phase alone and
 # `record-plan-stage` records it instead, while check, pr-meta, pr and record are skipped.
 # Needs the GCP_WIF_PROVIDER, GCP_SERVICE_ACCOUNT, GCP_MODEL_SERVICE_ACCOUNT and
 # WINGMAN_ACCOUNT variables (infra/README.md) and the COMMANDCODE_API_KEY secret; the
@@ -256,10 +257,19 @@ jobs:
       branch_segment: ${{ steps.meta.outputs.branch_segment }}
       body: ${{ steps.meta.outputs.body }}
       auto_merge: ${{ steps.meta.outputs.auto_merge }}
+      # draft is the PR's own draft decision (FR-5), which the pr job opens it
+      # with: the pre-PR loop's, an edit outside the run's plan, or a
+      # concurrent run's plan these files touch.
+      draft: ${{ steps.meta.outputs.draft }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The branch's changed files are read out of its bundle, diffed against
+          # this main: the bundle carries the commits since the base the branch
+          # was cut from, so the checkout must hold main's history whole rather
+          # than its tip alone for that base to be there at all.
+          fetch-depth: 0
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -274,6 +284,13 @@ jobs:
 
       - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
 
+      # Nothing on GitHub carries the branch yet — the pr job pushes it — so the
+      # write set it produced is read from the bundle the model job uploaded.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bundle
+          path: ${{ runner.temp }}
+
       # A check job that never named a gate reports "unfinished", which the PR names as check.
       - id: meta
         name: Render the PR from the run record and the build's summary
@@ -286,11 +303,14 @@ jobs:
           ATTEMPT_ID: ${{ needs.model.outputs.attempt_id }}
           SUMMARY: ${{ needs.model.outputs.summary }}
           AUTO_MERGE_SWITCH: ${{ vars.WINGMAN_AUTO_MERGE }}
+          BRANCH: ${{ needs.model.outputs.branch }}
+          REPOSITORY: ${{ github.repository }}
           WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
         run: >-
           "$RUNNER_TEMP/runner" pr-meta -run-id "$RUN_ID" -failed-gate "$FAILED_GATE" -run-url "$RUN_URL"
           -loop-detail "$LOOP_DETAIL" -attempt-id "$ATTEMPT_ID" -summary "$SUMMARY"
           -auto-merge-switch "$AUTO_MERGE_SWITCH"
+          -bundle "$RUNNER_TEMP/wingman.bundle" -branch "$BRANCH" -repository "$REPOSITORY"
 
   pr:
     needs: [model, pr-meta]
@@ -378,10 +398,9 @@ jobs:
           echo "::error::the run's commits conflict with main; rebase the bundle artifact by hand"
           exit 1
 
-      # ready is the pre-PR loop's own draft-vs-ready decision (FR-5): a fact
-      # about the branch's deterministic checks and review, not the model's
-      # own claim, so it is trustworthy here despite the model job being
-      # otherwise untrusted.
+      # draft is pr-meta's own decision (FR-5), read from the trusted job rather
+      # than from the model job's own claim: the pre-PR loop's, an edit outside
+      # the run's plan, or a concurrent run's plan these files touch.
       - id: open
         name: Open the PR
         env:
@@ -389,11 +408,11 @@ jobs:
           BRANCH: ${{ needs.model.outputs.branch }}
           TITLE: ${{ needs.pr-meta.outputs.title }}
           BODY: ${{ needs.pr-meta.outputs.body }}
-          READY: ${{ needs.model.outputs.ready }}
+          DRAFT: ${{ needs.pr-meta.outputs.draft }}
         run: |
           printf '%s\n' "$BODY" > "$RUNNER_TEMP/pr-body.md"
           draft=(--draft)
-          [[ "$READY" == "true" ]] && draft=()
+          [[ "$DRAFT" != "true" ]] && draft=()
           url=$(gh pr create "${draft[@]}" --base main --head "$BRANCH" --title "$TITLE" --body-file "$RUNNER_TEMP/pr-body.md")
           echo "url=${url}" >> "$GITHUB_OUTPUT"
           echo "duration_s=$(( $(date +%s) - STARTED ))" >> "$GITHUB_OUTPUT"
