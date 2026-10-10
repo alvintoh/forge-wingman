@@ -36,6 +36,7 @@ import (
 	"github.com/alvintoh/forge-wingman/internal/providers"
 	"github.com/alvintoh/forge-wingman/internal/runner"
 	"github.com/alvintoh/forge-wingman/internal/store"
+	"github.com/alvintoh/forge-wingman/internal/webhook"
 )
 
 const (
@@ -110,6 +111,9 @@ type config struct {
 	limits   dispatcher.Limits
 	tuning   dispatcher.Tuning
 	twoStage bool
+	// decisionTimeout is how long a run waits on an owner decision; zero takes
+	// the code default.
+	decisionTimeout time.Duration
 }
 
 func loadConfig(getenv func(string) string) (config, error) {
@@ -138,6 +142,13 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, err
 	}
 	c.twoStage = strings.EqualFold(strings.TrimSpace(getenv("WINGMAN_TWO_STAGE")), "on")
+	if raw := strings.TrimSpace(getenv("WINGMAN_DECISION_TIMEOUT")); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d <= 0 {
+			return config{}, fmt.Errorf("WINGMAN_DECISION_TIMEOUT = %q is not a positive duration", raw)
+		}
+		c.decisionTimeout = d
+	}
 	return c, nil
 }
 
@@ -280,9 +291,11 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		Overrides:  dispatcher.LabelOverrides{},
 		Workflow:   gh,
 		OpenPRs:    gh,
+		Decisions:  queue,
+		Elicit:     webhook.Linear{Tokens: tokens},
 		Logger:     logger,
 		Now:        time.Now,
-	}, dispatcher.Config{Repos: c.repos, Budget: budgetConfig(runner.Provider(model)), Model: model, Limits: c.limits, Tuning: c.tuning, LastResort: providers.LastResortModels(runner.Provider(model)), TwoStage: c.twoStage}); err != nil {
+	}, dispatcher.Config{Repos: c.repos, Budget: budgetConfig(runner.Provider(model)), Model: model, Limits: c.limits, Tuning: c.tuning, LastResort: providers.LastResortModels(runner.Provider(model)), TwoStage: c.twoStage, DecisionTimeout: c.decisionTimeout}); err != nil {
 		return err
 	}
 	return nil

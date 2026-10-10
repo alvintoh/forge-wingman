@@ -47,6 +47,10 @@ type Ticket struct {
 	// checks what it edited against this list. Empty until the plan
 	// stage has recorded one.
 	PlanFiles []string `json:"plan_files,omitempty"`
+	// Decisions are the owner decisions this run's plan already settled, which
+	// its ticket file carries into the resumed plan's prompt so the plan need
+	// not ask them again. Empty until the owner has answered one.
+	Decisions []Answer `json:"decisions,omitempty"`
 }
 
 // Validate reports whether the ticket has an id, a one-line title, a size of S, M
@@ -67,6 +71,11 @@ func (t Ticket) Validate() error {
 	}
 	if len(t.FreeModels) > 0 {
 		if err := validateModelList("free", t.FreeModels); err != nil {
+			return fmt.Errorf("%w: %w", ErrTicketInvalid, err)
+		}
+	}
+	for _, a := range t.Decisions {
+		if err := checkAnswer(a); err != nil {
 			return fmt.Errorf("%w: %w", ErrTicketInvalid, err)
 		}
 	}
@@ -101,13 +110,20 @@ func (t Ticket) Subject() string {
 }
 
 // Text renders the ticket as it appears at the end of the prompt, naming its
-// size when it has one.
+// size when it has one and the decisions the owner has already made.
 func (t Ticket) Text() string {
 	head := "## " + t.ID + ": " + t.Title
 	if t.Size != "" {
 		head += " (size " + t.Size + ")"
 	}
-	return head + "\n\n" + t.Body
+	text := head + "\n\n" + t.Body
+	if len(t.Decisions) > 0 {
+		text += "\n\n## Decisions the owner has already made\n"
+		for _, a := range t.Decisions {
+			text += "\n- " + a.Question + ": " + a.Choice
+		}
+	}
+	return text
 }
 
 // Encode renders the ticket as one line of JSON, leaving HTML characters unescaped.

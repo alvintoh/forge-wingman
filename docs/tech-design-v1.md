@@ -190,6 +190,17 @@ One Go binary entrypoint (`cmd/dispatcher`). Per poll:
    (FR-11, FR-12, FR-18, NFR-1, FR-26's infrastructure stop). The same classes trip
    FR-27's circuit breaker, so no further run is admitted until a manual reset —
    except FR-26's infrastructure stop, which counts toward the provider halt instead.
+9. **Ask the owner, at the poll's end** (FR-33). A run whose plan raised a decision it
+   may not take alone parks in the `waiting` state — holding no runner and no
+   reservation — while the poll posts that decision into the run's Linear agent
+   session as one selection activity: at most four options, the recommended first,
+   each carrying its cost. A reply matching an option resumes the run with the answer
+   on its record (its `decisions` list, kept outside `runner.Record` so `Finalize`
+   cannot clobber it); a free-text reply matching none re-posts the same options and
+   never guesses; and no reply within the configured window (default 24 hours) stops
+   the run as waiting-on-owner with one notice. The ask is once-only because the row
+   records when it was posted, so the question is neither dropped nor repeated, and
+   the dispatcher is its one decider (`adr/0013`) — the poll both posts and matches.
 
 **Why a Job and not a service:** nothing calls it over HTTP. It is started by the schedule or by the webhook's run request (`adr/0013`), and the public endpoint lives in the webhook service, not here.
 

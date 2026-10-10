@@ -35,6 +35,12 @@ func TestTicketValidateRejects(t *testing.T) {
 			tk.FreeModels = []string{"p/free-a", "p/free-a"}
 		},
 		"a free model that is not provider/model": func(tk *Ticket) { tk.FreeModels = []string{"free-a"} },
+		"a decision with no choice": func(tk *Ticket) {
+			tk.Decisions = []Answer{{Question: "Which flag?", Choice: ""}}
+		},
+		"a decision with no question": func(tk *Ticket) {
+			tk.Decisions = []Answer{{Question: " ", Choice: "reuse"}}
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			tk := testTicket
@@ -78,6 +84,18 @@ func TestTicketTextOmitsAnAbsentSize(t *testing.T) {
 	tk.Size = ""
 	if got := tk.Text(); got != "## ABC-12: feat(x): add a file\n\nAdd a file." {
 		t.Fatalf("text = %q", got)
+	}
+}
+
+// TestTicketTextCarriesTheAnsweredDecisions: the resumed plan sees the answers
+// already made, so it does not ask them again.
+func TestTicketTextCarriesTheAnsweredDecisions(t *testing.T) {
+	tk := testTicket
+	tk.Decisions = []Answer{{Question: "Which flag?", Choice: "Reuse the existing flag"}}
+	want := "## ABC-12: feat(x): add a file (size S)\n\nAdd a file.\n\n" +
+		"## Decisions the owner has already made\n\n- Which flag?: Reuse the existing flag"
+	if got := tk.Text(); got != want {
+		t.Fatalf("text = %q, want %q", got, want)
 	}
 }
 

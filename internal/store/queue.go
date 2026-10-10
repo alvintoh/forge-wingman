@@ -59,6 +59,20 @@ const (
 	planSpendMicrosField  = "plan_spend_micros"
 	planSpendMinutesField = "plan_spend_minutes"
 
+	// decisionsField is the list of decisions a run has parked on, written
+	// outside runner.Record so Finalize's whole-field rebuild cannot clobber it.
+	// stateWaitingField is the pause that accompanies it.
+	decisionsField = "decisions"
+	// runURLField is the Actions run that recorded the row's outcome: the plan
+	// stage's own run while the row waits, later superseded by Finalize.
+	runURLField = "run_url"
+	// stopReasonField, stopDetailField and buildOutcomeField are Record's own
+	// stop fields, written directly by StopWaiting since a parked run never
+	// finalizes through a runner job.
+	stopReasonField   = "stop_reason"
+	stopDetailField   = "stop_detail"
+	buildOutcomeField = "build_outcome"
+
 	// sizeField and privateField are Record's own fields (runner.Record),
 	// read here to build a Candidate without a second query. modelLabelsField is
 	// read for the build model a ticket named, which selects its per-model cap.
@@ -93,6 +107,10 @@ const (
 	stateQueued  = "queued"
 	statePlanned = "planned"
 	stateClaimed = "claimed"
+	// stateWaiting is a run parked on an owner decision: it holds no runner
+	// and no reservation, and Candidates never lists it. The recorded outcome
+	// is what keeps a stopped waiting run from being claimed again.
+	stateWaiting = "waiting"
 )
 
 // planKeySuffix keys a plan-stage reservation beside the run's own in the
@@ -659,10 +677,11 @@ func (q *Queue) RecordVerdict(ctx context.Context, runID string, verdict prov.Ve
 //
 // A plan-stage reservation — keyed PlanKey(runID) — settles differently: the
 // plan stage ran no build, so it says nothing about running at N and is not
-// observed. Its reserved estimate is what its stage cost, since the plan job
-// reports no summary; that figure is written onto the run row outside the
-// record, where the budget windows sum it beside a run's own settlement, and
-// the row moves to planned for its build to claim.
+// observed. Its reserved estimate accumulates onto the plan spend already on
+// the run row — a run that plans again after being suspended counts every plan
+// — since the plan job reports no summary; that figure is summed by the budget
+// windows beside a run's own settlement, and the row moves to planned for its
+// build to claim.
 func (q *Queue) Settle(ctx context.Context, runID string) error {
 	ledgerRef := q.ledgerRef()
 	rowRef := q.client.Collection(runsCollection).Doc(strings.TrimSuffix(runID, planKeySuffix))
@@ -676,16 +695,20 @@ func (q *Queue) Settle(ctx context.Context, runID string) error {
 			return nil
 		}
 		if entry.Stage == dispatcher.StagePlan {
-			if err := tx.Update(rowRef, []firestore.Update{
-				{Path: stateField, Value: statePlanned},
-				{Path: planSpendMicrosField, Value: int64(entry.ProviderCostMicros)},
-				{Path: planSpendMinutesField, Value: entry.RunnerMinutes},
-			}); err != nil {
+			var row planRow
+			snap, err := tx.Get(rowRef)
+			if err != nil {
 				return err
 			}
-			return tx.Update(ledgerRef, []firestore.Update{
-				{FieldPath: firestore.FieldPath{"reservations", runID}, Value: firestore.Delete},
-			})
+			if err := snap.DataTo(&row); err != nil {
+				return err
+			}
+			updates, ledgerUpdates := planSettle(runID, entry, row)
+			updates = append(updates, firestore.Update{Path: stateField, Value: statePlanned})
+			if err := tx.Update(rowRef, updates); err != nil {
+				return err
+			}
+			return tx.Update(ledgerRef, ledgerUpdates)
 		}
 		cur := ledger.concurrency()
 		obs, err := q.observe(tx, rowRef, ledger)
@@ -713,6 +736,28 @@ func (q *Queue) Settle(ctx context.Context, runID string) error {
 		return fmt.Errorf("settling run %s: %w", runID, err)
 	}
 	return nil
+}
+
+// planRow is the row state a plan-stage reservation settles onto: the plan
+// spend it accumulates, which a run that plans more than once (suspended, then
+// resumed) sums rather than overwrites.
+type planRow struct {
+	PlanSpendMicros  int64 `firestore:"plan_spend_micros"`
+	PlanSpendMinutes int64 `firestore:"plan_spend_minutes"`
+}
+
+// planSettle books a plan-stage reservation as settled: its reserved estimate
+// accumulates onto the row's plan spend, and the ledger key is dropped. Settle
+// and Suspend share it so the two cannot drift on what a settled plan costs.
+func planSettle(key string, entry reservationEntry, row planRow) ([]firestore.Update, []firestore.Update) {
+	rowUpdates := []firestore.Update{
+		{Path: planSpendMicrosField, Value: row.PlanSpendMicros + int64(entry.ProviderCostMicros)},
+		{Path: planSpendMinutesField, Value: row.PlanSpendMinutes + entry.RunnerMinutes},
+	}
+	ledgerUpdates := []firestore.Update{
+		{FieldPath: firestore.FieldPath{"reservations", key}, Value: firestore.Delete},
+	}
+	return rowUpdates, ledgerUpdates
 }
 
 // Reject records why the queue would not admit a ticket, replacing any earlier
