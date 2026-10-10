@@ -111,3 +111,55 @@ func TestWorkflowFiles(t *testing.T) {
 		})
 	}
 }
+
+// TestPlanStageResultCheck covers the trusted record job's re-check of the
+// model job's plan: the plan travels untrusted, so an unusable one must never
+// reach a record write.
+func TestPlanStageResultCheck(t *testing.T) {
+	sha := strings.Repeat("a", 40)
+	tests := []struct {
+		name string
+		res  PlanStageResult
+		sent error
+		ok   bool
+	}{
+		{"a usable plan", PlanStageResult{Files: []string{"a.go", "a_test.go"}, BaseSHA: sha}, nil, true},
+		{"no files", PlanStageResult{BaseSHA: sha}, errPlanFiles, false},
+		{"an absolute path", PlanStageResult{Files: []string{"/etc/passwd"}, BaseSHA: sha}, errPlanFiles, false},
+		{"a path outside the repository", PlanStageResult{Files: []string{"../x.go"}, BaseSHA: sha}, errPlanFiles, false},
+		{"a workflow file", PlanStageResult{Files: []string{".github/workflows/ci.yml"}, BaseSHA: sha}, errWorkflowChange, false},
+		{"a base that is not a sha", PlanStageResult{Files: []string{"a.go"}, BaseSHA: "main"}, nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.res.Check()
+			if tt.ok != (err == nil) {
+				t.Fatalf("err = %v, want ok %v", err, tt.ok)
+			}
+			if tt.sent != nil && !errors.Is(err, tt.sent) {
+				t.Fatalf("err = %v, want %v", err, tt.sent)
+			}
+		})
+	}
+}
+
+func TestParsePlanStageRejectsUnknownFieldsAndTrailingData(t *testing.T) {
+	sha := strings.Repeat("a", 40)
+	good, err := EncodePlanStage(PlanStageResult{Files: []string{"a.go"}, BaseSHA: sha})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParsePlanStage(good)
+	if err != nil || !slices.Equal(got.Files, []string{"a.go"}) || got.BaseSHA != sha {
+		t.Fatalf("plan %+v, err %v", got, err)
+	}
+	for name, raw := range map[string]string{
+		"an unknown field": `{"files":["a.go"],"base_sha":"` + sha + `","extra":1}`,
+		"trailing data":    string(good) + `{}`,
+		"no files":         `{"files":[],"base_sha":"` + sha + `"}`,
+	} {
+		if _, err := ParsePlanStage([]byte(raw)); err == nil {
+			t.Errorf("%s: parsed", name)
+		}
+	}
+}

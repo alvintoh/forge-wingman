@@ -163,13 +163,15 @@ func (w *fakeWorkflow) Dispatch(_ context.Context, c Claim) error {
 }
 
 // fakeEstimator reports the estimate configured for each size, defaulting to
-// a zero estimate for a size it holds none for. errBySize fails one size
-// specifically, so a test can prove a failed estimate withholds only that
-// candidate; err fails every size.
+// a zero estimate for a size it holds none for. planBySize is the same for the
+// plan stage. errBySize fails one size specifically, so a test can prove a
+// failed estimate withholds only that candidate; err fails every size.
 type fakeEstimator struct {
-	bySize    map[string]Estimate
-	err       error
-	errBySize map[string]error
+	bySize     map[string]Estimate
+	planBySize map[string]Estimate
+	planErr    error
+	err        error
+	errBySize  map[string]error
 }
 
 func (e fakeEstimator) Estimate(_ context.Context, size string) (Estimate, error) {
@@ -180,6 +182,16 @@ func (e fakeEstimator) Estimate(_ context.Context, size string) (Estimate, error
 		return Estimate{}, e.err
 	}
 	return e.bySize[size], nil
+}
+
+func (e fakeEstimator) EstimatePlan(_ context.Context, size string) (Estimate, error) {
+	if e.planErr != nil {
+		return Estimate{}, e.planErr
+	}
+	if est, ok := e.planBySize[size]; ok {
+		return est, nil
+	}
+	return e.Estimate(context.Background(), size)
 }
 
 // fakeVisibility reports the visibility configured for each repository,
@@ -468,8 +480,8 @@ func TestPollBuildsTheReservationFromTheEstimateAndVisibility(t *testing.T) {
 		t.Fatalf("TryClaim called %d times, want 2 (the walk continues past a claim)", len(q.tryClaims))
 	}
 	got := q.tryClaims[0]
-	if got.runID != "FRG-18" || got.res != (Reservation{ProviderCost: 5 * money.Dollar, RunnerMinutes: 40}) {
-		t.Fatalf("reservation = %+v, want the private target's estimated minutes counted", got)
+	if got.runID != "FRG-18" || got.res.ProviderCost != 5*money.Dollar || got.res.RunnerMinutes != 40 {
+		t.Fatalf("reservation = %+v, want the private target's estimated minutes counted", got.res)
 	}
 }
 
@@ -1005,5 +1017,116 @@ func TestPollRunsAPrivateCandidateOnTheFreeTierOnlyWithTheOwnersOptIn(t *testing
 				t.Fatalf("deferrals %+v, want the paid ceiling named", res.Deferrals)
 			}
 		})
+	}
+}
+
+func TestClaimStageDispatchesTheStageTheRunIsReadyFor(t *testing.T) {
+	for name, tt := range map[string]struct {
+		cand     Candidate
+		twoStage bool
+		want     string
+	}{
+		"a planned run claims its build": {Candidate{Size: "M", Stage: StageBuild}, true, StageBuild},
+		"an unplanned M claims its plan": {Candidate{Size: "M"}, true, StagePlan},
+		"an unplanned L claims its plan": {Candidate{Size: "L"}, true, StagePlan},
+		"an S run is never plan-staged":  {Candidate{Size: "S"}, true, ""},
+		"the switch off stages nothing":  {Candidate{Size: "M"}, false, ""},
+		"the switch off ignores a plan":  {Candidate{Size: "M", Stage: StageBuild}, false, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := claimStage(tt.cand, tt.twoStage); got != tt.want {
+				t.Fatalf("claimStage = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPollClaimsAPlanStageOnThePlanEstimateAndDispatchesItWithTheStage(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{{RunID: "run-a", Repo: "octo/scratch", Size: "M", Private: true}}}
+	w := &fakeWorkflow{}
+	deps := pollDeps(fakeSource{}, q, w)
+	deps.Estimator = fakeEstimator{
+		bySize:     map[string]Estimate{"M": {ProviderCost: 2 * money.Dollar, Minutes: 30}},
+		planBySize: map[string]Estimate{"M": {ProviderCost: money.Dollar, Minutes: 5}},
+	}
+	cfg := buildConfig
+	cfg.TwoStage = true
+	res, err := Poll(context.Background(), deps, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(q.tryClaims) != 1 || len(res.Dispatched) != 1 {
+		t.Fatalf("claims %d, dispatched %q, want one plan claim dispatched", len(q.tryClaims), res.Dispatched)
+	}
+	if got := q.tryClaims[0].res; got.Stage != StagePlan || got.ProviderCost != money.Dollar || got.RunnerMinutes != 5 {
+		t.Fatalf("reservation = %+v, want the plan stage's own estimate", got)
+	}
+	if len(w.claims) != 1 || w.claims[0].Stage != StagePlan {
+		t.Fatalf("dispatches = %+v, want the plan stage dispatched with stage=plan", w.claims)
+	}
+}
+
+func TestPollClaimsAPlannedRunForItsBuildWithItsWriteSet(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{{
+		RunID: "run-a", Repo: "octo/scratch", Size: "M", Private: true,
+		Stage: StageBuild, PlanFiles: []string{"a.go", "b.go"},
+	}}}
+	w := &fakeWorkflow{}
+	deps := pollDeps(fakeSource{}, q, w)
+	deps.Estimator = fakeEstimator{bySize: map[string]Estimate{"M": {ProviderCost: 2 * money.Dollar, Minutes: 30}}}
+	cfg := buildConfig
+	cfg.TwoStage = true
+	res, err := Poll(context.Background(), deps, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Dispatched) != 1 {
+		t.Fatalf("dispatched %q, want one", res.Dispatched)
+	}
+	got := q.tryClaims[0].res
+	if got.Stage != StageBuild || got.ProviderCost != 2*money.Dollar || !slices.Equal(got.Files, []string{"a.go", "b.go"}) {
+		t.Fatalf("reservation = %+v, want the build estimate on the planned write set", got)
+	}
+	if w.claims[0].Stage != StageBuild {
+		t.Fatalf("claim stage = %q, want %s: the build it claims for", w.claims[0].Stage, StageBuild)
+	}
+}
+
+func TestPollDefersAPlannedRunRatherThanMixTiersWithinIt(t *testing.T) {
+	q := &fakeQueue{
+		candidates:   []Candidate{{RunID: "run-a", Stage: StageBuild, PlanFiles: []string{"a.go"}}},
+		bindings:     map[string]string{"run-a": "p-5h"},
+		freeBindings: map[string]string{"run-a": CeilingCash},
+	}
+	plan := paidPlan
+	plan.TwoStage = true
+	plan.LastResort = []string{"p/free-a"}
+	res, err := Poll(context.Background(), pollDeps(fakeSource{}, q, &fakeWorkflow{}), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(q.tryClaims) != 1 {
+		t.Fatalf("TryClaim called %d times, want one: a build-stage claim never falls back to the free tier", len(q.tryClaims))
+	}
+	if len(res.Deferrals) != 1 || res.Deferrals[0].Ceiling != "p-5h" {
+		t.Fatalf("deferrals = %+v, want the run deferred on its plan window", res.Deferrals)
+	}
+}
+
+func TestPollDefersAPlanStageWhosePlanEstimateCannotBeRead(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{{RunID: "run-a", Size: "M"}}}
+	deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	deps.Estimator = fakeEstimator{
+		bySize:  map[string]Estimate{"M": {ProviderCost: 2 * money.Dollar, Minutes: 30}},
+		planErr: errors.New("unavailable"),
+	}
+	cfg := buildConfig
+	cfg.TwoStage = true
+	res, err := Poll(context.Background(), deps, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(q.tryClaims) != 0 || len(res.Deferrals) != 1 || res.Deferrals[0].Ceiling != ConditionEstimateFailed {
+		t.Fatalf("claims %d, deferrals %+v, want the plan claim deferred on the estimate", len(q.tryClaims), res.Deferrals)
 	}
 }

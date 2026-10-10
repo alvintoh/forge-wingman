@@ -38,6 +38,29 @@ func TestFieldsNamesEveryRecordFieldByItsFirestoreTag(t *testing.T) {
 	}
 }
 
+// TestFieldsNamesEveryPlanRecordFieldByItsFirestoreTag guards the plan stage's
+// row shape: WritePlan writes exactly the fields fields() finds, so a
+// mistagged or optioned field would silently not reach the record.
+func TestFieldsNamesEveryPlanRecordFieldByItsFirestoreTag(t *testing.T) {
+	got := fields(runner.PlanRecord{Files: []string{"a.go"}, BaseSHA: "abc"})
+	typ := reflect.TypeFor[runner.PlanRecord]()
+	if len(got) != typ.NumField() {
+		t.Fatalf("%d fields, want %d", len(got), typ.NumField())
+	}
+	for f := range typ.Fields() {
+		tag := f.Tag.Get("firestore")
+		if !plainTag.MatchString(tag) {
+			t.Errorf("field %s has tag %q; fields applies no tag options", f.Name, tag)
+		}
+		if _, ok := got[tag]; !ok {
+			t.Errorf("field %s is not written as %q", f.Name, tag)
+		}
+	}
+	if _, ok := got["plan_files"]; !ok {
+		t.Error("the plan's files are not written as plan_files")
+	}
+}
+
 func TestFieldsSkipsAndStripsTagOptions(t *testing.T) {
 	got := fields(struct {
 		A int `firestore:"a,omitempty"`

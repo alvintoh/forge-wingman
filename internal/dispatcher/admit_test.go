@@ -195,3 +195,73 @@ func TestAdmitReportsTheEarlierOfTwoConditionsThatWithhold(t *testing.T) {
 		})
 	}
 }
+
+// TestAdmitSharesARepositoryBetweenKnownDisjointWriteSets is AC4, AC5 and AC7:
+// two runs in one repository whose plans name different files are admitted
+// together, while either side's unknown write set keeps the interim
+// one-run-per-repository rule. The plan stage's agent writes nothing, so a
+// plan-stage run collides with no candidate on either side of the test.
+func TestAdmitSharesARepositoryBetweenKnownDisjointWriteSets(t *testing.T) {
+	planned := func(files ...string) Subject {
+		return Subject{Ticket: "run-9", Repo: "octo/scratch", Size: "M", Stage: StageBuild, Files: files}
+	}
+	for name, tt := range map[string]struct {
+		candidate Subject
+		inFlight  []InFlight
+		want      bool
+	}{
+		"disjoint write sets share the repository": {
+			planned("a.go", "b.go"),
+			[]InFlight{{Ticket: "run-1", Repo: "octo/scratch", Size: "M", Stage: StageBuild, Files: []string{"c.go"}}},
+			true,
+		},
+		"an intersecting write set holds the later run": {
+			planned("a.go", "b.go"),
+			[]InFlight{{Ticket: "run-1", Repo: "octo/scratch", Size: "M", Stage: StageBuild, Files: []string{"b.go", "z.go"}}},
+			false,
+		},
+		"a candidate with no plan holds the interim rule": {
+			Subject{Ticket: "run-9", Repo: "octo/scratch", Size: "M", Stage: StageBuild},
+			[]InFlight{{Ticket: "run-1", Repo: "octo/scratch", Size: "M", Stage: StageBuild, Files: []string{"c.go"}}},
+			false,
+		},
+		"an in-flight run with no plan holds the interim rule": {
+			planned("a.go"),
+			[]InFlight{{Ticket: "run-1", Repo: "octo/scratch", Size: "M", Stage: StageBuild}},
+			false,
+		},
+		"a single-stage in-flight run holds the interim rule": {
+			planned("a.go"),
+			[]InFlight{{Ticket: "run-1", Repo: "octo/scratch", Size: "M"}},
+			false,
+		},
+		"a plan-stage run collides with nothing": {
+			planned("a.go"),
+			[]InFlight{{Ticket: "run-1", Repo: "octo/scratch", Size: "M", Stage: StagePlan}},
+			true,
+		},
+		"a plan-stage candidate collides with nothing": {
+			Subject{Ticket: "run-9", Repo: "octo/scratch", Size: "M", Stage: StagePlan},
+			[]InFlight{{Ticket: "run-1", Repo: "octo/scratch", Size: "M", Stage: StageBuild, Files: []string{"a.go"}}},
+			true,
+		},
+		"a run in another repository is not consulted": {
+			planned("a.go"),
+			[]InFlight{{Ticket: "run-1", Repo: "octo/other", Size: "M", Stage: StageBuild, Files: []string{"a.go"}}},
+			true,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			in := admittable()
+			in.Candidate = tt.candidate
+			in.InFlight = tt.inFlight
+			ok, binding := Admit(in)
+			if ok != tt.want {
+				t.Fatalf("ok = %v, binding = %q, want ok = %v", ok, binding, tt.want)
+			}
+			if !ok && binding != ConditionRepoBusy {
+				t.Fatalf("binding = %q, want %s", binding, ConditionRepoBusy)
+			}
+		})
+	}
+}

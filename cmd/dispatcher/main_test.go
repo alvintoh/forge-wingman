@@ -183,3 +183,26 @@ func TestBudgetConfigCarriesTheProvidersModelCaps(t *testing.T) {
 		t.Errorf("unconfigured provider = %+v, want no model caps", b.ModelCaps)
 	}
 }
+
+func TestLoadConfigReadsTheTwoStageSwitch(t *testing.T) {
+	for name, tt := range map[string]struct {
+		value string
+		want  bool
+	}{
+		"on":              {"on", true},
+		"ON with padding": {"  On ", true},
+		"unset":           {"", false},
+		"off":             {"off", false},
+		"anything else":   {"someday", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, err := loadConfig(configEnv(map[string]string{"WINGMAN_TWO_STAGE": tt.value}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.twoStage != tt.want {
+				t.Fatalf("twoStage = %v for %q, want %v", c.twoStage, tt.value, tt.want)
+			}
+		})
+	}
+}

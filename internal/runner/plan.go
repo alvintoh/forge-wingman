@@ -1,11 +1,14 @@
 package runner
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // planFileListInstruction tells the plan agent the exact format its final
@@ -93,4 +96,72 @@ func workflowFiles(paths []string) []string {
 // workflowChange is errWorkflowChange naming files.
 func workflowChange(files []string) error {
 	return fmt.Errorf("%w: %s", errWorkflowChange, strings.Join(files, ", "))
+}
+
+// PlanStageResult is the plan stage's output for the trusted record job: the
+// repository-relative files the plan names and the commit the plan was made
+// against. It travels as an artifact, since the model job's identity cannot
+// write the run record.
+type PlanStageResult struct {
+	Files   []string `json:"files"`
+	BaseSHA string   `json:"base_sha"`
+}
+
+// Check reports whether r is a usable plan stage result read back from the
+// model job: at least one file, each repository-relative, none under
+// .github/workflows/, and a commit sha for the base. The model job is
+// untrusted, so the trusted record job re-checks its plan here before any
+// record write.
+func (r PlanStageResult) Check() error {
+	if len(r.Files) == 0 {
+		return fmt.Errorf("%w: the plan names no files", errPlanFiles)
+	}
+	for _, f := range r.Files {
+		if !repoRelative(f) {
+			return fmt.Errorf("%w: %q is not a repository-relative path", errPlanFiles, truncate(f, logErrorLimit))
+		}
+	}
+	if wf := workflowFiles(r.Files); len(wf) > 0 {
+		return workflowChange(wf)
+	}
+	if !shaPattern.MatchString(r.BaseSHA) {
+		return fmt.Errorf("plan base %q is not a commit sha", truncate(r.BaseSHA, logErrorLimit))
+	}
+	return nil
+}
+
+// EncodePlanStage renders r as the plan artifact's one-line JSON content.
+func EncodePlanStage(r PlanStageResult) ([]byte, error) {
+	b, err := json.Marshal(r)
+	if err != nil {
+		return nil, err
+	}
+	return append(b, '\n'), nil
+}
+
+// ParsePlanStage decodes a plan artifact the model job wrote and checks it.
+func ParsePlanStage(raw []byte) (PlanStageResult, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var r PlanStageResult
+	if err := dec.Decode(&r); err != nil {
+		return PlanStageResult{}, fmt.Errorf("decoding the plan: %w", err)
+	}
+	if dec.More() {
+		return PlanStageResult{}, errors.New("trailing data after the plan")
+	}
+	if err := r.Check(); err != nil {
+		return PlanStageResult{}, err
+	}
+	return r, nil
+}
+
+// PlanRecord is the plan stage's own data on a run row, written by the trusted
+// record-plan-stage job and read by the ticket job that carries it to the build.
+// It is kept apart from Record so Finalize — which rewrites every field Record
+// names and keeps those it does not — leaves the plan intact.
+type PlanRecord struct {
+	Files     []string  `firestore:"plan_files"`
+	BaseSHA   string    `firestore:"plan_base_sha"`
+	SettledAt time.Time `firestore:"plan_settled_at"`
 }

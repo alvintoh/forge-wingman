@@ -55,10 +55,18 @@ type GitHub struct {
 // ticket's repo: label was allowlisted to. Any 2xx is a dispatch: GitHub
 // documented 204 for this endpoint when it was added and answers 200 with the
 // run's URLs now, and both mean the run was started.
+//
+// A claim of the plan stage dispatches with stage=plan, which gates the
+// workflows' jobs onto the plan; every other claim dispatches no stage, which
+// the workflows' own default reads as build.
 func (g GitHub) Dispatch(ctx context.Context, c Claim) error {
+	inputs := map[string]string{"run_id": c.RunID}
+	if c.Stage == StagePlan {
+		inputs["stage"] = StagePlan
+	}
 	body, err := json.Marshal(map[string]any{
 		"ref":    g.Branch,
-		"inputs": map[string]string{"run_id": c.RunID},
+		"inputs": inputs,
 	})
 	if err != nil {
 		return fmt.Errorf("encoding the dispatch request: %w", err)

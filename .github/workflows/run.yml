@@ -4,7 +4,8 @@
 # secret; `pr-meta` renders the PR from the record under the runner identity and decides
 # auto-merge eligibility; `pr` opens the PR with fixed steps, holding GitHub write and no
 # GCP identity; `record` validates the model's summary and merges the outcome into the record
-# whatever happened.
+# whatever happened. With `stage: plan` (FRG-33) the model job runs the plan phase alone and
+# `record-plan-stage` records it instead, while check, pr-meta, pr and record are skipped.
 # Needs the GCP_WIF_PROVIDER, GCP_SERVICE_ACCOUNT, GCP_MODEL_SERVICE_ACCOUNT and
 # WINGMAN_ACCOUNT variables (infra/README.md) and the COMMANDCODE_API_KEY secret; the
 # WINGMAN_AUTO_MERGE variable is optional and off unless set to `on`. Workload Identity Federation trusts main only, so dispatch
@@ -36,6 +37,15 @@ on:
           and the rest are backups, used when the one before is unavailable or out of allowance.
         type: string
         default: command-code/deepseek/deepseek-v4.1-flash
+      # stage is the two-stage dispatch's phase (FRG-33): `plan` runs the plan
+      # phase alone under the read-only profile and records it; `build` (the
+      # default) builds from a plan already recorded. Until the dispatcher sends
+      # `plan`, only build runs, so nothing changes.
+      stage:
+        description: the stage to run — plan or build
+        type: string
+        default: build
+        required: true
 
 permissions: {}
 
@@ -112,14 +122,62 @@ jobs:
       model: ${{ needs.ticket.outputs.override_model || needs.ticket.outputs.model }}
       review_models: ${{ needs.ticket.outputs.override_review_models || inputs.review_models }}
       plan_models: ${{ needs.ticket.outputs.override_plan_models || inputs.plan_models }}
+      stage: ${{ inputs.stage }}
     secrets:
       COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
+
+  # The trusted half of the plan stage (FRG-33): it re-checks the model job's
+  # plan, writes it and its base onto the run record, settles the run's plan
+  # reservation and wakes the dispatcher for the build stage. It holds the
+  # runner identity, since the model job cannot reach a run record.
+  record-plan-stage:
+    needs: [ticket, model]
+    if: github.ref == 'refs/heads/main' && inputs.stage == 'plan'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RUN_ID: ${{ inputs.run_id }}
+      WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
+
+      # A missing plan artifact fails the re-check rather than writing a record.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: plan
+          path: ${{ runner.temp }}
+
+      - name: Record the plan stage
+        env:
+          GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}
+          DISPATCHER_RUN_URI: ${{ vars.WINGMAN_DISPATCHER_RUN_URI }}
+        run: >-
+          "$RUNNER_TEMP/runner" record-plan-stage
+          -run-id "$RUN_ID" -plan-file "$RUNNER_TEMP/plan.json" -dispatcher-uri "$DISPATCHER_RUN_URI"
 
   # The branch's code runs here, so the job holds nothing it could misuse. Each gate is
   # a fixed step, so the branch cannot redefine one; a failing gate is named, not fatal.
   check:
     needs: model
-    if: needs.model.outputs.changed == 'true'
+    if: inputs.stage != 'plan' && needs.model.outputs.changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # No id-token grant is what keeps the runner identity out of the branch's code.
@@ -187,7 +245,7 @@ jobs:
 
   pr-meta:
     needs: [model, check]
-    if: ${{ !cancelled() && needs.model.result == 'success' && needs.model.outputs.changed == 'true' }}
+    if: ${{ !cancelled() && inputs.stage != 'plan' && needs.model.result == 'success' && needs.model.outputs.changed == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -236,7 +294,7 @@ jobs:
 
   pr:
     needs: [model, pr-meta]
-    if: ${{ !cancelled() && needs.model.result == 'success' && needs.model.outputs.changed == 'true' && needs.pr-meta.result == 'success' }}
+    if: ${{ !cancelled() && inputs.stage != 'plan' && needs.model.result == 'success' && needs.model.outputs.changed == 'true' && needs.pr-meta.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # contents/pull-requests write now come from the App token below, not GITHUB_TOKEN;
@@ -364,7 +422,7 @@ jobs:
 
   record:
     needs: [ticket, model, check, pr-meta, pr]
-    if: always() && github.ref == 'refs/heads/main'
+    if: always() && inputs.stage != 'plan' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

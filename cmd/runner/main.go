@@ -2,6 +2,8 @@
 //
 //	runner ticket          -run-id <id> -out <path> write the run record's ticket to a file for the model job
 //	runner build           -model <provider/model>  fetch the projection, run the agent, bundle the branch, emit a summary
+//	runner plan-stage      -ticket-file <path> -out <path>  run the plan phase alone and write its file list for the record job
+//	runner record-plan-stage -run-id <id> -plan-file <path>  re-check the plan, record it, settle it and wake the dispatcher
 //	runner pr-meta         -run-id <id> ...          render the PR's title and body from the run record
 //	runner record          -run-id <id> -summary ... validate the build's summary and merge it into the run record
 //	runner enable-provider -provider <name>          admit a halted provider back to dispatch (AC5)
@@ -63,7 +65,8 @@ func main() {
 	os.Exit(code)
 }
 
-// errRunFailed is the result of ticket, pr-meta or record for a run that cannot or did not succeed.
+// errRunFailed is the result of ticket, plan-stage, record-plan-stage, pr-meta or
+// record for a run that cannot or did not succeed.
 var errRunFailed = errors.New("run did not succeed")
 
 // exitCode is 0 for a build stop whose summary was reported, which the record
@@ -98,9 +101,9 @@ func requiredEnv(command string) ([]string, bool) {
 	case "ticket", "pr-meta", "enable-provider", "reset-breaker",
 		"plan-define", "plan-optin", "plan-verdict", "plan-reply", "plan-list":
 		return []string{"GOOGLE_CLOUD_PROJECT"}, true
-	case "record":
+	case "record", "record-plan-stage":
 		return []string{"GOOGLE_CLOUD_PROJECT", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"}, true
-	case "build":
+	case "build", "plan-stage":
 		return []string{"GOOGLE_CLOUD_PROJECT", "RUNNER_TEMP", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"}, true
 	}
 	return nil, false
@@ -139,7 +142,7 @@ func loadEnv(getenv func(string) string, required ...string) (env, error) {
 
 func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(string) string) error {
 	if len(args) == 0 {
-		return errors.New("usage: runner ticket|build|pr-meta|record|enable-provider|reset-breaker|plan-define|plan-verdict|plan-reply|plan-list|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post [flags]")
+		return errors.New("usage: runner ticket|build|plan-stage|record-plan-stage|pr-meta|record|enable-provider|reset-breaker|plan-define|plan-verdict|plan-reply|plan-list|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post [flags]")
 	}
 	if args[0] == "plan-smoke" {
 		return planSmoke(ctx, logger, getenv, args[1:])
@@ -170,6 +173,10 @@ func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(st
 		return ticket(ctx, logger, e, args[1:])
 	case "build":
 		return build(ctx, logger, e, args[1:])
+	case "plan-stage":
+		return planStage(ctx, logger, e, args[1:])
+	case "record-plan-stage":
+		return recordPlanStage(ctx, logger, e, args[1:])
 	case "pr-meta":
 		return prMeta(ctx, logger, e, args[1:])
 	case "record":
@@ -193,9 +200,10 @@ func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(st
 	}
 }
 
-// ticket writes the run record's ticket to the file -out names, and fails when
-// the identity does not match, the record is missing or its ticket cannot be
-// built.
+// ticket writes the run record's ticket to the file -out names — carrying the
+// plan stage's file list when one is recorded, so the build skips planning —
+// and fails when the identity does not match, the record is missing or its
+// ticket cannot be built.
 func ticket(ctx context.Context, logger *slog.Logger, e env, args []string) error {
 	fs := flag.NewFlagSet("ticket", flag.ContinueOnError)
 	runID := fs.String("run-id", "", "run record to read the ticket from")
@@ -206,7 +214,13 @@ func ticket(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	if err := e.identity.CheckAccount(); err != nil {
 		return err
 	}
-	rec, err := readRunRecord(ctx, logger, e.project, *runID)
+	fsc, err := recordsClient(ctx, e.project, *runID)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = fsc.Close() }()
+	records := store.NewRecords(fsc)
+	rec, err := runRecord(ctx, logger, records, *runID)
 	if err != nil {
 		return err
 	}
@@ -215,6 +229,11 @@ func ticket(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	if rec.LastResort && rec.LastResortModels.Build == "" {
 		return fmt.Errorf("run %s was claimed on a free tier but names no free model", *runID)
 	}
+	plan, err := records.GetPlan(ctx, *runID)
+	if err != nil {
+		return err
+	}
+	t.PlanFiles = plan.Files
 	return writeTicket(*out, e.output, t, rec.RunModels())
 }
 

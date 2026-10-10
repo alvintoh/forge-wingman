@@ -122,6 +122,18 @@ resource "google_cloud_run_v2_job_iam_member" "dispatcher_invoker" {
   member   = google_service_account.dispatcher_schedule.member
 }
 
+# The two-stage dispatch's record-plan-stage job runs under the runner
+# identity and wakes the dispatcher for the build stage, the way the webhook
+# does. It wakes a poll and nothing else: the dispatcher's own admissions are
+# unchanged by who asks.
+resource "google_cloud_run_v2_job_iam_member" "dispatcher_runner_invoker" {
+  project  = var.project_id
+  name     = google_cloud_run_v2_job.dispatcher.name
+  location = google_cloud_run_v2_job.dispatcher.location
+  role     = "roles/run.invoker"
+  member   = google_service_account.runner.member
+}
+
 # The Scheduler service agent mints the access token the call carries, so it
 # must be allowed to act as the schedule's own account.
 resource "google_service_account_iam_member" "dispatcher_schedule_act_as" {
