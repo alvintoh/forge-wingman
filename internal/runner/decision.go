@@ -5,6 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+
+	"golang.org/x/text/collate"
+	"golang.org/x/text/language"
 )
 
 // The bounds a decision is held to. The plan stage's own re-check enforces
@@ -85,17 +89,26 @@ func (d Decision) Check() error {
 	return nil
 }
 
+// matchCollators folds case, width and diacritics when a reply is matched
+// against an option, so a reply typed on a phone still names the option it
+// means: strasse and straße both name STRASSE. A Collator carries scratch state
+// for the comparison it is running, so one is borrowed per match rather than
+// shared between goroutines.
+var matchCollators = sync.Pool{New: func() any { return collate.New(language.Und, collate.Loose) }}
+
 // Match returns the option a free-text reply names: the first whose value or
-// label equals the reply, trimmed and case-folded. A reply matching none is no
-// match — an owner's words are never guessed at.
+// label equals the reply, folded as above. A reply matching none is no match —
+// an owner's words are never guessed at.
 func (d Decision) Match(reply string) (DecisionOption, bool) {
-	want := strings.ToLower(strings.TrimSpace(reply))
+	want := strings.TrimSpace(reply)
 	if want == "" {
 		return DecisionOption{}, false
 	}
+	c := matchCollators.Get().(*collate.Collator)
+	defer matchCollators.Put(c)
 	for _, o := range d.Options {
-		if strings.ToLower(strings.TrimSpace(o.Value)) == want ||
-			strings.ToLower(strings.TrimSpace(o.Label)) == want {
+		if c.CompareString(want, strings.TrimSpace(o.Value)) == 0 ||
+			c.CompareString(want, strings.TrimSpace(o.Label)) == 0 {
 			return o, true
 		}
 	}
