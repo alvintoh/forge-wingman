@@ -182,6 +182,27 @@ func TestComparisonLeavesOutARunThatReachedNoAgent(t *testing.T) {
 	}
 }
 
+// TestComparisonReportsNoEmptyName: a document written before the run carried
+// labels has no model to credit and no provider to bill, so it appears under
+// neither rather than under an empty name.
+func TestComparisonReportsNoEmptyName(t *testing.T) {
+	_, client := queue(t)
+	bare := fresh("bare")
+	forget(t, client, bare)
+	comparedRecord(t, client, bare, comparedRun{settledAt: queueAt, cost: money.Dollar})
+
+	got, err := NewRecords(client).Comparison(context.Background(), queueAt.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m, ok := findModel(got.Models, ""); ok {
+		t.Fatalf("reported a model with no name: %+v", m)
+	}
+	if p, ok := findProvider(got.Providers, ""); ok {
+		t.Fatalf("reported a provider with no name: %+v", p)
+	}
+}
+
 func TestComparisonListsDriftedRunsNewestFirst(t *testing.T) {
 	_, client := queue(t)
 	older, newer := fresh("drift-older"), fresh("drift-newer")

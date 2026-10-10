@@ -106,16 +106,21 @@ func (r *Records) Comparison(ctx context.Context, since time.Time) (Comparison, 
 			continue
 		}
 		model := rec.RunModels().Build
-		m := models[model]
-		if m == nil {
-			m = &modelTotal{}
-			models[model] = m
+		// A record written before the labels existed carries no model to
+		// credit, so it is left out of the model totals rather than reported
+		// under an empty name.
+		if model != "" {
+			m := models[model]
+			if m == nil {
+				m = &modelTotal{}
+				models[model] = m
+			}
+			m.tickets++
+			if rec.Succeeded() {
+				m.passed++
+			}
+			m.cost += rec.SettledProviderCostMicros
 		}
-		m.tickets++
-		if rec.Succeeded() {
-			m.passed++
-		}
-		m.cost += rec.SettledProviderCostMicros
 
 		if countsForProviderSpend(rec) {
 			p := providers[rec.Plan]
@@ -175,12 +180,13 @@ type providerTotal struct {
 }
 
 // countsForProviderSpend reports whether rec's settled cost belongs in its
-// provider's own paid totals. A run claimed on a free tier cost nothing, so its
-// zero says nothing about what that provider's paid runs cost — the estimator
-// leaves it out for the same reason. Every provider figure the comparison
-// reports and the baseline Finalize flags a run against is this one rule, so it
-// is written once here rather than at each aggregation.
-func countsForProviderSpend(rec runner.Record) bool { return !rec.LastResort }
+// provider's own paid totals. A run claimed on a free tier cost nothing, and a
+// record with no provider has no one to attribute its cost to, so neither says
+// anything about what a provider's paid runs cost — the estimator leaves a free
+// run out for the same reason. Every provider figure the comparison reports and
+// the baseline Finalize flags a run against is this one rule, so it is written
+// once here rather than at each aggregation.
+func countsForProviderSpend(rec runner.Record) bool { return rec.Plan != "" && !rec.LastResort }
 
 // countsForTrailingCost reports whether rec belongs in plan's trailing average.
 func countsForTrailingCost(rec runner.Record, plan, excludeRunID string) bool {
