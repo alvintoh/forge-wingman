@@ -169,9 +169,11 @@ jobs:
         env:
           GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}
           DISPATCHER_RUN_URI: ${{ vars.WINGMAN_DISPATCHER_RUN_URI }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: >-
           "$RUNNER_TEMP/runner" record-plan-stage
           -run-id "$RUN_ID" -plan-file "$RUNNER_TEMP/plan.json" -dispatcher-uri "$DISPATCHER_RUN_URI"
+          -run-url "$RUN_URL"
 
   # The branch's code runs here, so the job holds nothing it could misuse. Each gate is
   # a fixed step, so the branch cannot redefine one; a failing gate is named, not fatal.

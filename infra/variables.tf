@@ -69,7 +69,8 @@ variable "dispatcher_settings" {
     condition = alltrue([for k in keys(var.dispatcher_settings) : contains([
       "WINGMAN_PLATFORM_CAP", "WINGMAN_LARGE_CAP", "WINGMAN_REVIEW_WIP",
       "WINGMAN_STABLE_RUNS", "WINGMAN_RISE_WITHIN", "WINGMAN_HALVE_BEYOND",
+      "WINGMAN_DECISION_TIMEOUT",
     ], k)])
-    error_message = "dispatcher_settings may only set the WINGMAN_ concurrency limits and tuning."
+    error_message = "dispatcher_settings may only set the WINGMAN_ concurrency limits, tuning and decision timeout."
   }
 }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/linear"
+	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
 // linearServer answers every request with reply and keeps the last request body.
@@ -133,5 +134,55 @@ func TestWake(t *testing.T) {
 				t.Errorf("%s %s", method, path)
 			}
 		})
+	}
+}
+
+// TestElicitAsksASelectionActivity covers AC2: one elicitation activity, the
+// select signal, the recommendation first, each option carrying its cost.
+func TestElicitAsksASelectionActivity(t *testing.T) {
+	srv, got := linearServer(t, 200, `{"data":{"agentActivityCreate":{"success":true}}}`)
+	l := Linear{Endpoint: srv.URL, Tokens: heldToken("token-1")}
+	d := runner.Decision{
+		Question: "Which flag should the run use?",
+		Context:  []string{"line one", "line two"},
+		Options: []runner.DecisionOption{
+			{Label: "Reuse the existing flag", Value: "reuse", Cost: "no new config"},
+			{Label: "Add a new flag", Value: "new", Cost: "one more env var"},
+		},
+	}
+	if err := l.Elicit(context.Background(), "session-1", d); err != nil {
+		t.Fatal(err)
+	}
+	input := (*got)["variables"].(map[string]any)["input"].(map[string]any)
+	if input["agentSessionId"] != "session-1" {
+		t.Errorf("agentSessionId = %v", input["agentSessionId"])
+	}
+	content := input["content"].(map[string]any)
+	if content["type"] != "elicitation" || content["signal"] != "select" {
+		t.Errorf("content = %v", content)
+	}
+	if content["body"] != "Which flag should the run use?\n\nline one\nline two" {
+		t.Errorf("body = %q", content["body"])
+	}
+	options := content["signalMetadata"].(map[string]any)["options"].([]any)
+	if len(options) != 2 {
+		t.Fatalf("options = %v", options)
+	}
+	first := options[0].(map[string]any)
+	if first["label"] != "Reuse the existing flag — no new config" || first["value"] != "reuse" {
+		t.Errorf("first option = %v", first)
+	}
+	second := options[1].(map[string]any)
+	if second["label"] != "Add a new flag — one more env var" || second["value"] != "new" {
+		t.Errorf("second option = %v", second)
+	}
+}
+
+func TestElicitReportsNoSuccess(t *testing.T) {
+	srv, _ := linearServer(t, 200, `{"data":{"agentActivityCreate":{"success":false}}}`)
+	err := (Linear{Endpoint: srv.URL, Tokens: heldToken("token-1")}).Elicit(context.Background(), "session-1",
+		runner.Decision{Question: "Q?"})
+	if err == nil {
+		t.Fatal("asked with no success reported")
 	}
 }

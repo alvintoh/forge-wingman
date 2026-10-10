@@ -107,6 +107,9 @@ type Config struct {
 	// build. Off by default; a run plans inside its own build job, and the
 	// stage input the workflows carry goes unsent.
 	TwoStage bool
+	// DecisionTimeout is how long a run waits on an owner decision before it is
+	// stopped as waiting-on-owner. Zero takes the default.
+	DecisionTimeout time.Duration
 }
 
 // ProviderHalts reports whether repeated infra stops have halted dispatch to
@@ -163,6 +166,10 @@ type Deps struct {
 	Plans ProviderVerdicts
 	// Verdicts is optional: left unset, no verdict is written to the run.
 	Verdicts VerdictRecorder
+	// Elicit asks the owner a decision in a run's Linear agent session, and
+	// Decisions is the store's decision surface a poll reads and writes.
+	Elicit    Elicitor
+	Decisions Decisions
 }
 
 // missing names the first dependency left unset, or "" when all are wired.
@@ -185,6 +192,8 @@ func (d Deps) missing() string {
 		{"ModelPlans", d.ModelPlans != nil},
 		{"Notices", d.Notices != nil},
 		{"OpenPoster", d.OpenPoster != nil},
+		{"Elicit", d.Elicit != nil},
+		{"Decisions", d.Decisions != nil},
 	} {
 		if !dep.set {
 			return dep.name
@@ -286,9 +295,12 @@ func Poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	}
 	res, err := poll(ctx, d, c)
 	start := d.Now()
+	decideErr := postDecisions(ctx, d, c)
+	LogPhase(d.Logger, "decisions", start, d.Now())
+	start = d.Now()
 	noticeErr := postNotices(ctx, d)
 	LogPhase(d.Logger, "notices", start, d.Now())
-	return res, errors.Join(err, noticeErr)
+	return res, errors.Join(err, decideErr, noticeErr)
 }
 
 // LogPhase logs how long one phase of a poll took, so a slow poll can be traced

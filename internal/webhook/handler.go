@@ -10,11 +10,14 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
 const (
 	agentSessionEvent = "AgentSessionEvent"
 	actionCreated     = "created"
+	actionPrompted    = "prompted"
 	maxBodyBytes      = 1 << 20
 	requestBudget     = 4 * time.Second
 	callTimeout       = 2 * time.Second
@@ -41,18 +44,25 @@ type Waker interface {
 	Wake(ctx context.Context) error
 }
 
+// Replier records the owner's answer to a run's pending decision, reporting
+// whether it recorded one.
+type Replier interface {
+	Reply(ctx context.Context, runID, sessionID, text string, at time.Time) (bool, error)
+}
+
 // Handler answers Linear's webhook deliveries.
 //
-// Only a verified, fresh AgentSessionEvent with action created acts: it marks
-// the session, then acknowledges it and wakes the dispatcher. A redelivery of
-// a marked session answers 200 and does neither again; a new session on the
-// same issue acts, and the poll's own run record keeps it to one run. A failed
-// wake removes the marker and answers 500, so Linear's retry wakes again.
+// Only a verified, fresh AgentSessionEvent acts. A created one marks the
+// session, acknowledges it and wakes the dispatcher; a redelivery of a marked
+// session answers 200 and does neither again. A prompted one — the owner
+// answering a run's decision — records the reply and wakes the dispatcher,
+// which does the matching and the resume itself; the handler decides nothing.
 type Handler struct {
 	Key      *Secret
 	Markers  Markers
 	Sessions Acknowledger
 	Poll     Waker
+	Replier  Replier
 	Logger   *slog.Logger
 	Now      func() time.Time
 }
@@ -68,6 +78,10 @@ type event struct {
 			Identifier string `json:"identifier"`
 		} `json:"issue"`
 	} `json:"agentSession"`
+	// AgentActivity carries the owner's reply text on a prompted event.
+	AgentActivity struct {
+		Body string `json:"body"`
+	} `json:"agentActivity"`
 }
 
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -94,7 +108,16 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-	if ev.Type != agentSessionEvent || ev.Action != actionCreated {
+	if ev.Type != agentSessionEvent {
+		h.Logger.Info("webhookIgnored", "type", ev.Type, "action", ev.Action)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if ev.Action == actionPrompted {
+		h.answerPrompted(w, r, ev, now)
+		return
+	}
+	if ev.Action != actionCreated {
 		h.Logger.Info("webhookIgnored", "type", ev.Type, "action", ev.Action)
 		w.WriteHeader(http.StatusOK)
 		return
@@ -126,6 +149,37 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.Logger.Info("webhookWoke", "session", session, "issue", issue)
+	w.WriteHeader(http.StatusOK)
+}
+
+// answerPrompted records the owner's reply to a run's decision and wakes the
+// dispatcher, which does the matching, the resume and the deadline. The handler
+// decides nothing itself: a reply is a fact, and the dispatcher is its one
+// home. A failed record or wake answers 500 so Linear retries; both are
+// idempotent, so a redelivery is harmless.
+func (h Handler) answerPrompted(w http.ResponseWriter, r *http.Request, ev event, now time.Time) {
+	session, runID := ev.AgentSession.ID, ev.AgentSession.Issue.Identifier
+	if !runner.ValidRunID(runID) {
+		h.Logger.Warn("webhookRejected", "reason", "no-run", "session", session)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), requestBudget)
+	defer cancel()
+	recorded, err := h.Replier.Reply(ctx, runID, session, ev.AgentActivity.Body, now)
+	if err != nil {
+		h.Logger.Error("webhookFailed", "reason", "reply", "run", runID, "session", session, "err", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	callCtx, cancelCall := context.WithTimeout(ctx, callTimeout)
+	defer cancelCall()
+	if err := h.Poll.Wake(callCtx); err != nil {
+		h.Logger.Error("webhookWakeFailed", "run", runID, "session", session, "err", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	h.Logger.Info("webhookReplied", "run", runID, "session", session, "recorded", recorded)
 	w.WriteHeader(http.StatusOK)
 }
 

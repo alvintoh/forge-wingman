@@ -49,9 +49,9 @@ func PlanStage(ctx context.Context, d BuildDeps, c BuildConfig) (PlanStageResult
 		return PlanStageResult{}, stopWith(OutcomeInfraFailure, StopWorktree, err)
 	}
 	sum := Summary{DurationsMS: map[string]int64{}, StartedAt: d.Now()}
-	files, err := runPlanPhase(ctx, d, c, c.Repo, &sum)
+	files, decision, err := runPlanPhase(ctx, d, c, c.Repo, &sum)
 	if err != nil {
 		return PlanStageResult{}, err
 	}
-	return PlanStageResult{Files: files, BaseSHA: base}, nil
+	return PlanStageResult{Files: files, BaseSHA: base, Decision: decision}, nil
 }

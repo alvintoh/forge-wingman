@@ -100,6 +100,10 @@ const (
 	// StopWorkflowChange reports a plan or build touching a file under
 	// .github/workflows/, which the run's GitHub App has no permission to push.
 	StopWorkflowChange StopReason = "workflow-change"
+	// StopWaitingOnOwner reports a run parked on an owner decision the owner
+	// did not answer within the configured window, so the dispatcher stopped it
+	// rather than hold it forever.
+	StopWaitingOnOwner StopReason = "waiting-on-owner"
 )
 
 // gates are the checks run.yml's check job — and RunChecks, in-job — run on

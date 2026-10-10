@@ -149,6 +149,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		Markers:  store.NewMarkers(fsc),
 		Sessions: sessions,
 		Poll:     webhook.Job{RunURI: c.runURI, Client: gcp},
+		Replier:  store.NewQueue(fsc),
 		Logger:   logger,
 		Now:      time.Now,
 	})

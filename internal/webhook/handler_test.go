@@ -78,6 +78,26 @@ func (f *fakeWaker) Wake(context.Context) error {
 	return f.err
 }
 
+// fakeReplier records the replies the handler hands it.
+type fakeReplier struct {
+	mu       sync.Mutex
+	err      error
+	recorded bool
+	calls    []replyCall
+}
+
+type replyCall struct {
+	runID, sessionID, text string
+	at                     time.Time
+}
+
+func (f *fakeReplier) Reply(_ context.Context, runID, sessionID, text string, at time.Time) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, replyCall{runID: runID, sessionID: sessionID, text: text, at: at})
+	return f.recorded, f.err
+}
+
 // fixedSecret holds a value that never needs re-reading.
 func fixedSecret(value string) *Secret {
 	return NewSecret("test", value, func(context.Context) (string, error) { return "", nil },
@@ -109,7 +129,8 @@ func deliver(h Handler, body []byte, secret string) int {
 func handler(markers Markers, acker Acknowledger, waker Waker) Handler {
 	return Handler{
 		Key: fixedSecret(testSecret), Markers: markers, Sessions: acker, Poll: waker,
-		Logger: slog.New(slog.DiscardHandler), Now: func() time.Time { return receivedAt },
+		Replier: &fakeReplier{recorded: true},
+		Logger:  slog.New(slog.DiscardHandler), Now: func() time.Time { return receivedAt },
 	}
 }
 
@@ -140,7 +161,7 @@ func TestHandler(t *testing.T) {
 		{name: "over the size limit", body: append(created, bytes.Repeat([]byte(" "), maxBodyBytes)...), want: 400},
 		{name: "no timestamp", body: []byte(`{"type":"AgentSessionEvent","action":"created"}`), want: 401},
 		{name: "malformed", body: []byte(`{"type":`), want: 400},
-		{name: "prompted", body: delivery("prompted", "session-1", receivedAt), want: 200},
+		{name: "prompted", body: delivery("prompted", "session-1", receivedAt), want: 200, woken: true},
 		{name: "another event", body: bytes.Replace(created, []byte("AgentSessionEvent"), []byte("Issue"), 1), want: 200},
 		{name: "no session", body: delivery("created", "", receivedAt), want: 400},
 		{name: "session not a safe id", body: delivery("created", "a/b", receivedAt), want: 400},
@@ -288,5 +309,81 @@ func TestAFailedWakeUnmarksAfterTheRequestIsGone(t *testing.T) {
 	h.ServeHTTP(httptest.NewRecorder(), req)
 	if markers.held["session-1"] {
 		t.Fatal("the marker survived a failed wake")
+	}
+}
+
+// replyDelivery is a prompted payload carrying the owner's reply text.
+func replyDelivery(session, issue, body string, sentAt time.Time) []byte {
+	escaped := strings.NewReplacer(`"`, `\"`, "\n", `\n`).Replace(body)
+	return []byte(`{"type":"AgentSessionEvent","action":"prompted","webhookTimestamp":` +
+		strconv.FormatInt(sentAt.UnixMilli(), 10) + `,"agentSession":{"id":"` + session +
+		`","issue":{"id":"issue-uuid-1","identifier":"` + issue + `"}},"agentActivity":{"id":"act-1","body":"` + escaped + `"}}`)
+}
+
+// TestPromptedRecordsTheReplyAndWakes covers AC3: the webhook records the
+// reply as a fact and wakes the dispatcher, deciding nothing itself.
+func TestPromptedRecordsTheReplyAndWakes(t *testing.T) {
+	markers, acker, waker := &fakeMarkers{}, &fakeAcker{}, &fakeWaker{}
+	replier := &fakeReplier{recorded: true}
+	h := handler(markers, acker, waker)
+	h.Replier = replier
+	body := replyDelivery("session-1", "ABC-22", "reuse the existing flag", receivedAt)
+	if got := deliver(h, body, testSecret); got != 200 {
+		t.Fatalf("status = %d, want 200", got)
+	}
+	if len(replier.calls) != 1 {
+		t.Fatalf("reply calls = %d, want 1", len(replier.calls))
+	}
+	got := replier.calls[0]
+	if got.runID != "ABC-22" || got.sessionID != "session-1" || got.text != "reuse the existing flag" || !got.at.Equal(receivedAt) {
+		t.Fatalf("reply = %+v", got)
+	}
+	if waker.woken != 1 {
+		t.Fatalf("woken = %d, want 1", waker.woken)
+	}
+	if len(markers.marked) != 0 || len(acker.sessions) != 0 {
+		t.Fatalf("a prompted event marked %v and acked %v", markers.marked, acker.sessions)
+	}
+}
+
+// TestPromptedRecordsNothingWhenTheRunWaitsOnNoDecision covers AC4: a reply the
+// store records nothing for (no pending decision, or a mismatched session) is
+// still answered, and still wakes the dispatcher.
+func TestPromptedRecordsNothingWhenTheRunWaitsOnNoDecision(t *testing.T) {
+	replier := &fakeReplier{recorded: false}
+	h := handler(&fakeMarkers{}, &fakeAcker{}, &fakeWaker{})
+	h.Replier = replier
+	if got := deliver(h, replyDelivery("session-1", "ABC-22", "hello", receivedAt), testSecret); got != 200 {
+		t.Fatalf("status = %d, want 200", got)
+	}
+	if len(replier.calls) != 1 {
+		t.Fatalf("reply calls = %d, want 1", len(replier.calls))
+	}
+}
+
+func TestPromptedRejectsAnUnusableRunID(t *testing.T) {
+	replier := &fakeReplier{recorded: true}
+	h := handler(&fakeMarkers{}, &fakeAcker{}, &fakeWaker{})
+	h.Replier = replier
+	if got := deliver(h, replyDelivery("session-1", "not/a/run", "x", receivedAt), testSecret); got != 400 {
+		t.Fatalf("status = %d, want 400", got)
+	}
+	if len(replier.calls) != 0 {
+		t.Fatalf("recorded %v for an unusable run id", replier.calls)
+	}
+}
+
+func TestPromptedFailsWhenTheReplyCannotBeRecorded(t *testing.T) {
+	h := handler(&fakeMarkers{}, &fakeAcker{}, &fakeWaker{})
+	h.Replier = &fakeReplier{err: errors.New("unavailable")}
+	if got := deliver(h, replyDelivery("session-1", "ABC-22", "x", receivedAt), testSecret); got != 500 {
+		t.Fatalf("status = %d, want 500", got)
+	}
+}
+
+func TestPromptedFailsWhenTheWakeFails(t *testing.T) {
+	h := handler(&fakeMarkers{}, &fakeAcker{}, &fakeWaker{err: errors.New("unavailable")})
+	if got := deliver(h, replyDelivery("session-1", "ABC-22", "x", receivedAt), testSecret); got != 500 {
+		t.Fatalf("status = %d, want 500", got)
 	}
 }

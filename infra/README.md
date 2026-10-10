@@ -179,7 +179,7 @@ Four variables name what OpenTofu cannot guess, and a fifth is optional:
 | `webhook_image` | the webhook service's image, built with `CMD=webhook`; pushed and named by digest the same way |
 | `linear_delegate` | the Linear id of the agent the job acts for; a poll whose token is another agent's admits nothing |
 | `linear_repositories` | the allowlist. Empty admits nothing, so a forgotten one refuses every ticket rather than dispatching |
-| `dispatcher_settings` | optional. A map of `WINGMAN_PLATFORM_CAP`, `WINGMAN_LARGE_CAP`, `WINGMAN_REVIEW_WIP`, `WINGMAN_STABLE_RUNS`, `WINGMAN_RISE_WITHIN` and `WINGMAN_HALVE_BEYOND` to a value; a key left out keeps its default |
+| `dispatcher_settings` | optional. A map of `WINGMAN_PLATFORM_CAP`, `WINGMAN_LARGE_CAP`, `WINGMAN_REVIEW_WIP`, `WINGMAN_STABLE_RUNS`, `WINGMAN_RISE_WITHIN`, `WINGMAN_HALVE_BEYOND` and `WINGMAN_DECISION_TIMEOUT` to a value; a key left out keeps its default. `WINGMAN_DECISION_TIMEOUT` is how long a run waits on an owner decision (e.g. `24h`) before it is stopped as waiting-on-owner |
 
 ### Secrets
 
