@@ -319,3 +319,32 @@ func TestDecisionsReadsTheAnswersInOrder(t *testing.T) {
 		t.Fatalf("answers = %v", got)
 	}
 }
+
+// TestAStoppedWaitTakesNoReplyAndNoAnswer: once the wait ended as
+// waiting-on-owner the run is done, so neither a late reply nor an answer puts
+// it back in the queue.
+func TestAStoppedWaitTakesNoReplyAndNoAnswer(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	id := parkedRun(t, q, client)
+	if err := q.Posted(ctx, id, "session-1", queueAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.StopWaiting(ctx, id, storeDecision, queueAt.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	recorded, err := q.Reply(ctx, id, "session-1", "reuse", queueAt.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recorded {
+		t.Fatal("recorded a reply on a run already stopped as waiting-on-owner")
+	}
+	if err := q.Answer(ctx, id, "Reuse the existing flag", queueAt.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	row := readDecisions(t, client, id)
+	if row.State != stateWaiting || row.Decisions[0].Answer != "" || row.Decisions[0].Reply != "" {
+		t.Fatalf("row = %+v, want a stopped wait left alone", row)
+	}
+}

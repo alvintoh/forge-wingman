@@ -179,3 +179,17 @@ func TestPollRetriesWhenTheNoticeCannotBeRaised(t *testing.T) {
 		t.Fatalf("retry raised %+v, stopped %+v", notices.raised, dec.stopped)
 	}
 }
+
+// TestPollMeasuresTheDeadlineFromTheLastWordAfterAReask: a decision re-asked
+// after an unmatched reply measures its window from that reply rather than from
+// the question that predates it, so a run the owner is still talking about is
+// never stopped mid-conversation.
+func TestPollMeasuresTheDeadlineFromTheLastWordAfterAReask(t *testing.T) {
+	dec := &fakeDecisions{waiting: []WaitingRun{waitingRun(pollAt.Add(-25*time.Hour), pollAt.Add(-2*time.Hour), "do something else", pollAt.Add(-2*time.Hour))}, sessions: map[string]string{"FRG-71": "session-1"}}
+	if _, err := Poll(context.Background(), decisionDeps(dec, &fakeElicitor{}, &fakeNotices{}), decisionConfig); err != nil {
+		t.Fatal(err)
+	}
+	if len(dec.stopped) != 0 {
+		t.Fatalf("stopped a run whose question was re-asked two hours ago: %+v", dec.stopped)
+	}
+}
