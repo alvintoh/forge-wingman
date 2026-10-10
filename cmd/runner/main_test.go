@@ -713,7 +713,7 @@ func TestFinalizeRaisesASystemicStopWhoseRecordCannotBeWritten(t *testing.T) {
 	env := map[string]string{"WINGMAN_ACCOUNT": "work-account", "GITHUB_REPOSITORY_OWNER": "octo"}
 	in := runner.FinalizeInput{RunID: "ABC-1", AttemptID: "42-1", Identity: runner.IdentityFromEnv(func(k string) string { return env[k] })}
 	_, err := finalize(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)),
-		failingRecords{recordReader{"ABC-1": {RunID: "ABC-1"}}}, noLedger{}, notices, breaker, in, time.Now())
+		failingRecords{recordReader{"ABC-1": {RunID: "ABC-1"}}}, noLedger{}, nil, notices, breaker, in, time.Now())
 	if err == nil {
 		t.Fatal("the failed write was dropped")
 	}
