@@ -117,7 +117,7 @@ func (r *Records) Comparison(ctx context.Context, since time.Time) (Comparison, 
 		}
 		m.cost += rec.SettledProviderCostMicros
 
-		if !rec.LastResort {
+		if countsForProviderSpend(rec) {
 			p := providers[rec.Plan]
 			if p == nil {
 				p = &providerTotal{}
@@ -174,9 +174,17 @@ type providerTotal struct {
 	cost, peakCost, offPeakCost         money.Micros
 }
 
+// countsForProviderSpend reports whether rec's settled cost belongs in its
+// provider's own paid totals. A run claimed on a free tier cost nothing, so its
+// zero says nothing about what that provider's paid runs cost — the estimator
+// leaves it out for the same reason. Every provider figure the comparison
+// reports and the baseline Finalize flags a run against is this one rule, so it
+// is written once here rather than at each aggregation.
+func countsForProviderSpend(rec runner.Record) bool { return !rec.LastResort }
+
 // countsForTrailingCost reports whether rec belongs in plan's trailing average.
 func countsForTrailingCost(rec runner.Record, plan, excludeRunID string) bool {
-	return rec.Plan == plan && rec.RunID != excludeRunID && !rec.LastResort && len(rec.Steps) > 0
+	return rec.Plan == plan && rec.RunID != excludeRunID && countsForProviderSpend(rec) && len(rec.Steps) > 0
 }
 
 // settledSince is every run that has settled at or after since, in the order

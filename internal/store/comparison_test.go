@@ -20,6 +20,10 @@ type comparedRun struct {
 	settledAt                         time.Time
 	cost                              money.Micros
 	lastResort                        bool
+	// noSteps writes the document with no step at all, which Finalize never
+	// produces (it settles only a run that reached an agent) and the
+	// comparison still has to read.
+	noSteps bool
 }
 
 // comparedRecord writes id as the run Finalize would leave it, with the
@@ -44,10 +48,12 @@ func comparedRecord(t *testing.T, client *firestore.Client, id string, c compare
 	rec.Outcome = c.outcome
 	rec.TimeOfUse = c.timeOfUse
 	rec.CostDrift = c.costDrift
-	rec.Steps = []runner.Step{{
-		Phase: runner.PhaseBuild, Round: 1, Model: c.model,
-		Tokens: runner.Usage{Cost: c.cost.USD()}, At: started,
-	}}
+	if !c.noSteps {
+		rec.Steps = []runner.Step{{
+			Phase: runner.PhaseBuild, Round: 1, Model: c.model,
+			Tokens: runner.Usage{Cost: c.cost.USD()}, At: started,
+		}}
+	}
 	if _, err := client.Collection(runsCollection).Doc(id).Set(context.Background(), fields(rec)); err != nil {
 		t.Fatal(err)
 	}
@@ -152,6 +158,27 @@ func TestComparisonReportsEachModelsRunsAndEachProvidersTimeOfUse(t *testing.T) 
 	if !slices.IsSortedFunc(got.Models, func(a, b ModelComparison) int { return strings.Compare(a.Model, b.Model) }) ||
 		!slices.IsSortedFunc(got.Providers, func(a, b ProviderComparison) int { return strings.Compare(a.Provider, b.Provider) }) {
 		t.Fatalf("models %+v or providers %+v are not in a stable order", got.Models, got.Providers)
+	}
+}
+
+func TestComparisonLeavesOutARunThatReachedNoAgent(t *testing.T) {
+	_, client := queue(t)
+	plan, ran, stopped := fresh("nosteps"), fresh("nosteps-ran"), fresh("nosteps-stopped")
+	forget(t, client, ran, stopped)
+	comparedRecord(t, client, ran, comparedRun{plan: plan, model: "command-code/x", settledAt: queueAt, cost: money.Dollar})
+	comparedRecord(t, client, stopped, comparedRun{plan: plan, model: "command-code/x", settledAt: queueAt, cost: 100 * money.Dollar, noSteps: true})
+
+	got, err := NewRecords(client).Comparison(context.Background(), queueAt.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Models) != 1 || got.Models[0].Model != "command-code/x" || got.Models[0].Tickets != 1 {
+		t.Fatalf("models = %+v, want only the run that reached an agent", got.Models)
+	}
+	if p, ok := findProvider(got.Providers, plan); !ok {
+		t.Fatalf("providers = %+v, want this test's provider", got.Providers)
+	} else if p.Sample != 1 || p.TrailingCostPerTicket != money.Dollar {
+		t.Fatalf("provider = %+v, want the one run that reached an agent counted once", p)
 	}
 }
 
