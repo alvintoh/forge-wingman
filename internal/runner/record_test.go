@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alvintoh/forge-wingman/internal/money"
 	"github.com/alvintoh/forge-wingman/internal/providers"
 )
 
@@ -47,6 +48,7 @@ func encoded(t *testing.T, s Summary) string {
 		s.Steps = []Step{{
 			Phase: PhaseBuild, Round: 1, Model: "command-code/x",
 			CompletionsObject: completionsObject("1-1", PhaseBuild, 1),
+			At:                finalizeNow.Add(-30 * time.Minute),
 		}}
 	}
 	raw, err := s.Encode()
@@ -114,7 +116,8 @@ func TestFinalize(t *testing.T) {
 		{"a workflow change at commit is kept", func(t *testing.T) string {
 			return encoded(t, Summary{Outcome: OutcomeStopped, StopReason: StopWorkflowChange, Phase: PhaseCommit,
 				Branch: BranchName(testTicket.BranchSegment(), "1-1"),
-				Steps:  []Step{{Phase: PhaseBuild, Round: 1, Model: "command-code/x", CompletionsObject: completionsObject("1-1", PhaseBuild, 1)}}})
+				Steps: []Step{{Phase: PhaseBuild, Round: 1, Model: "command-code/x",
+					CompletionsObject: completionsObject("1-1", PhaseBuild, 1), At: finalizeNow.Add(-30 * time.Minute)}}})
 		}, FinalizeInput{RunResult: "success", PRResult: "skipped"}, OutcomeStopped, StopWorkflowChange, OutcomeStopped},
 		{"an invalid summary", func(*testing.T) string { return `{"outcome":"pr-opened"}` },
 			FinalizeInput{RunResult: "success", PRResult: "success", PRURL: "https://github.com/o/r/pull/1"},
@@ -129,7 +132,7 @@ func TestFinalize(t *testing.T) {
 			in.Summary = tt.summary(t)
 			in.PRDuration = 3 * time.Second
 
-			if _, err := Finalize(context.Background(), store, &fakeLedger{}, in, finalizeNow); err != nil {
+			if _, err := Finalize(context.Background(), store, &fakeLedger{}, nil, in, finalizeNow); err != nil {
 				t.Fatal(err)
 			}
 			got := store[testRunID]
@@ -154,7 +157,7 @@ func TestFinalizeWritesTheSeededRecordKeepingItsTicketAndStart(t *testing.T) {
 	store := seeded(t)
 	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: encoded(t, Summary{Outcome: OutcomeBuilt}),
 		RunResult: "success", PRResult: "success", PRURL: "https://github.com/o/r/pull/1"}
-	if _, err := Finalize(context.Background(), store, &fakeLedger{}, in, finalizeNow); err != nil {
+	if _, err := Finalize(context.Background(), store, &fakeLedger{}, nil, in, finalizeNow); err != nil {
 		t.Fatal(err)
 	}
 	if len(store) != 1 {
@@ -179,7 +182,7 @@ func TestFinalizeRecordsWhyThereWasNoTicket(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", RunResult: "skipped", PRResult: "skipped"}
-			rec, err := Finalize(context.Background(), tt.store, &fakeLedger{}, in, finalizeNow)
+			rec, err := Finalize(context.Background(), tt.store, &fakeLedger{}, nil, in, finalizeNow)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -202,7 +205,7 @@ func TestFinalizeRecordsWhyThereWasNoTicket(t *testing.T) {
 func TestFinalizeNeverSettlesARunThatNeverReachedAnAgent(t *testing.T) {
 	ticketless := Record{RunID: testRunID, TicketID: "ABC-12", TicketTitle: "a title and nothing else"}
 	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", RunResult: "skipped", PRResult: "skipped"}
-	rec, err := Finalize(context.Background(), fakeRecords{testRunID: ticketless}, &fakeLedger{}, in, finalizeNow)
+	rec, err := Finalize(context.Background(), fakeRecords{testRunID: ticketless}, &fakeLedger{}, nil, in, finalizeNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +219,7 @@ func TestFinalizeNeverSettlesARunThatNeverReachedAnAgent(t *testing.T) {
 
 func TestFinalizeFailsWhenTheRecordCannotBeRead(t *testing.T) {
 	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1"}
-	if _, err := Finalize(context.Background(), unreadableRecords{}, &fakeLedger{}, in, finalizeNow); err == nil {
+	if _, err := Finalize(context.Background(), unreadableRecords{}, &fakeLedger{}, nil, in, finalizeNow); err == nil {
 		t.Fatal("Finalize wrote a record it could not read")
 	}
 }
@@ -241,7 +244,7 @@ func TestFinalizeRecordsTheFailedGateOfAnOpenedPR(t *testing.T) {
 			store := seeded(t)
 			in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: encoded(t, Summary{Outcome: OutcomeBuilt}),
 				RunResult: "success", PRResult: "success", PRURL: "https://github.com/o/r/pull/1", CheckReport: report}
-			if _, err := Finalize(context.Background(), store, &fakeLedger{}, in, finalizeNow); err != nil {
+			if _, err := Finalize(context.Background(), store, &fakeLedger{}, nil, in, finalizeNow); err != nil {
 				t.Fatal(err)
 			}
 			got := store[testRunID]
@@ -265,6 +268,7 @@ func TestFinalizeWritesTheWholeRecordFromTheSummary(t *testing.T) {
 			Tokens:            Usage{Input: 10, Output: 2, CacheRead: 90, Cost: 0.5, Steps: 1},
 			DurationMS:        1200,
 			CompletionsObject: completionsObject("1-1", PhaseBuild, 1),
+			At:                finalizeNow.Add(-5 * time.Minute),
 		}},
 		EditedFiles:    []string{"version.go"},
 		OutOfPlanFiles: []string{"version.go"},
@@ -280,7 +284,7 @@ func TestFinalizeWritesTheWholeRecordFromTheSummary(t *testing.T) {
 	store := seeded(t)
 	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: encoded(t, sum), RunResult: "success",
 		PRResult: "success", PRURL: "https://github.com/o/r/pull/1"}
-	if _, err := Finalize(context.Background(), store, &fakeLedger{}, in, finalizeNow); err != nil {
+	if _, err := Finalize(context.Background(), store, &fakeLedger{}, nil, in, finalizeNow); err != nil {
 		t.Fatal(err)
 	}
 	got := store[testRunID]
@@ -300,15 +304,15 @@ func TestFinalizeSumsTokensAcrossSteps(t *testing.T) {
 		Branch:  BranchName(testTicket.BranchSegment(), "1-1"),
 		Steps: []Step{
 			{Phase: PhaseBuild, Round: 1, Model: "command-code/x", Tokens: Usage{Input: 10, Output: 2, Steps: 1},
-				CompletionsObject: completionsObject("1-1", PhaseBuild, 1)},
+				CompletionsObject: completionsObject("1-1", PhaseBuild, 1), At: finalizeNow.Add(-30 * time.Minute)},
 			{Phase: PhaseBuild, Round: 2, Model: "command-code/x", Tokens: Usage{Input: 5, Output: 1, Steps: 1},
-				CompletionsObject: completionsObject("1-1", PhaseBuild, 2)},
+				CompletionsObject: completionsObject("1-1", PhaseBuild, 2), At: finalizeNow.Add(-20 * time.Minute)},
 		},
 	}
 	store := seeded(t)
 	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: encoded(t, sum),
 		RunResult: "success", PRResult: "success", PRURL: "https://github.com/o/r/pull/1"}
-	if _, err := Finalize(context.Background(), store, &fakeLedger{}, in, finalizeNow); err != nil {
+	if _, err := Finalize(context.Background(), store, &fakeLedger{}, nil, in, finalizeNow); err != nil {
 		t.Fatal(err)
 	}
 	got := store[testRunID]
@@ -332,7 +336,7 @@ func TestFinalizeConvergesWhenTheFailedJobIsRerun(t *testing.T) {
 	for i, s := range steps {
 		s.in.RunID, s.in.AttemptID, s.in.Identity = testRunID, "1-1", testIdentity
 		s.in.Summary = raw
-		if _, err := Finalize(context.Background(), store, &fakeLedger{}, s.in, finalizeNow); err != nil {
+		if _, err := Finalize(context.Background(), store, &fakeLedger{}, nil, s.in, finalizeNow); err != nil {
 			t.Fatal(err)
 		}
 		got := store[testRunID]
@@ -346,7 +350,7 @@ func TestFinalizeConvergesWhenTheFailedJobIsRerun(t *testing.T) {
 func TestFinalizeRecordsAnUnreadableSummary(t *testing.T) {
 	store := seeded(t)
 	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", SummaryUnreadable: true, RunResult: "success", PRResult: "skipped"}
-	rec, err := Finalize(context.Background(), store, &fakeLedger{}, in, finalizeNow)
+	rec, err := Finalize(context.Background(), store, &fakeLedger{}, nil, in, finalizeNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,13 +400,14 @@ func TestFinalizeSettlesTheLedgerWithTheRunsActualCost(t *testing.T) {
 			Phase: PhaseBuild, Round: 1, Model: "command-code/x",
 			Tokens:            Usage{Input: 10, Output: 2, Cost: 0.123456, Steps: 1},
 			CompletionsObject: completionsObject("1-1", PhaseBuild, 1),
+			At:                finalizeNow.Add(-30 * time.Minute),
 		}},
 		DurationsMS: map[string]int64{"build": 90_000}, // 1.5 minutes, rounds up to 2
 	}
 	ledger := &fakeLedger{}
 	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: encoded(t, sum),
 		RunResult: "success", PRResult: "success", PRURL: "https://github.com/o/r/pull/1"}
-	if _, err := Finalize(context.Background(), store, ledger, in, finalizeNow); err != nil {
+	if _, err := Finalize(context.Background(), store, ledger, nil, in, finalizeNow); err != nil {
 		t.Fatal(err)
 	}
 	got := store[testRunID]
@@ -434,12 +439,12 @@ func TestFinalizeZeroesSettledRunnerMinutesForAPublicTarget(t *testing.T) {
 	sum := Summary{
 		Outcome: OutcomeBuilt, Phase: PhaseCommit, Branch: BranchName(testTicket.BranchSegment(), "1-1"),
 		Steps: []Step{{Phase: PhaseBuild, Round: 1, Model: "command-code/x", Tokens: Usage{Cost: 1},
-			CompletionsObject: completionsObject("1-1", PhaseBuild, 1)}},
+			CompletionsObject: completionsObject("1-1", PhaseBuild, 1), At: finalizeNow.Add(-30 * time.Minute)}},
 		DurationsMS: map[string]int64{"build": 120_000},
 	}
 	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: encoded(t, sum),
 		RunResult: "success", PRResult: "success", PRURL: "https://github.com/o/r/pull/1"}
-	if _, err := Finalize(context.Background(), store, &fakeLedger{}, in, finalizeNow); err != nil {
+	if _, err := Finalize(context.Background(), store, &fakeLedger{}, nil, in, finalizeNow); err != nil {
 		t.Fatal(err)
 	}
 	if got := store[testRunID].SettledRunnerMinutes; got != 0 {
@@ -452,7 +457,7 @@ func TestFinalizeFailsWhenTheLedgerCannotBeSettled(t *testing.T) {
 	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: encoded(t, Summary{Outcome: OutcomeBuilt}),
 		RunResult: "success", PRResult: "success", PRURL: "https://github.com/o/r/pull/1"}
 	ledger := &fakeLedger{err: errors.New("firestore unreachable")}
-	if _, err := Finalize(context.Background(), store, ledger, in, finalizeNow); err == nil {
+	if _, err := Finalize(context.Background(), store, ledger, nil, in, finalizeNow); err == nil {
 		t.Fatal("Finalize succeeded despite the ledger failing to settle")
 	}
 }
@@ -472,7 +477,7 @@ func TestFinalizeRecordsAnIdentityMismatchAheadOfEverythingElse(t *testing.T) {
 			in := tt.in
 			in.RunID, in.AttemptID = testRunID, "1-1"
 			in.Identity = Identity{Account: "work-account", Owner: "octo"}
-			rec, err := Finalize(context.Background(), tt.store, &fakeLedger{}, in, finalizeNow)
+			rec, err := Finalize(context.Background(), tt.store, &fakeLedger{}, nil, in, finalizeNow)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -492,7 +497,7 @@ func TestFinalizeCarriesTheModelLabelsFromTheExistingRecord(t *testing.T) {
 	store[testRunID] = rec
 	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: "",
 		RunResult: "failure", PRResult: "skipped"}
-	if _, err := Finalize(context.Background(), store, &fakeLedger{}, in, finalizeNow); err != nil {
+	if _, err := Finalize(context.Background(), store, &fakeLedger{}, nil, in, finalizeNow); err != nil {
 		t.Fatal(err)
 	}
 	if got := store[testRunID].ModelLabels; got.Build != "p/a" || got.Review != "p/b" || !slices.Equal(got.Plan, []string{"p/c", "p/d"}) {
@@ -514,7 +519,7 @@ func TestFinalizeRecordsTheSampleAndTheAutoMergeRequest(t *testing.T) {
 		store := fakeRecords{tt.runID: NewRecord(tt.runID, testTicket, seededAt)}
 		in := FinalizeInput{Identity: testIdentity, RunID: tt.runID, AttemptID: "1-1", Summary: "",
 			RunResult: "failure", PRResult: "skipped", AutoMerge: tt.autoMerge}
-		if _, err := Finalize(context.Background(), store, &fakeLedger{}, in, finalizeNow); err != nil {
+		if _, err := Finalize(context.Background(), store, &fakeLedger{}, nil, in, finalizeNow); err != nil {
 			t.Fatal(err)
 		}
 		if got := store[tt.runID]; got.Sampled != tt.sampled || got.AutoMerge != tt.autoMerge {
@@ -555,7 +560,7 @@ func TestFinalizeCarriesTheProviderVerdictFromTheExistingRecord(t *testing.T) {
 	store[testRunID] = rec
 	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: "",
 		RunResult: "failure", PRResult: "skipped"}
-	if _, err := Finalize(context.Background(), store, &fakeLedger{}, in, finalizeNow); err != nil {
+	if _, err := Finalize(context.Background(), store, &fakeLedger{}, nil, in, finalizeNow); err != nil {
 		t.Fatal(err)
 	}
 	if got := store[testRunID].ProviderVerdict; got != "restricted" {
@@ -567,11 +572,241 @@ func TestFinalizeRecordsTheRunURL(t *testing.T) {
 	store := seeded(t)
 	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: "",
 		RunResult: "failure", PRResult: "skipped", RunURL: "https://github.com/o/r/actions/runs/7"}
-	if _, err := Finalize(context.Background(), store, &fakeLedger{}, in, finalizeNow); err != nil {
+	if _, err := Finalize(context.Background(), store, &fakeLedger{}, nil, in, finalizeNow); err != nil {
 		t.Fatal(err)
 	}
 	if got := store[testRunID].RunURL; got != "https://github.com/o/r/actions/runs/7" {
 		t.Fatalf("run url = %q", got)
+	}
+}
+
+// fakeTrailing is a ProviderCostReader that answers with a fixed mean and
+// sample, recording what it was asked.
+type fakeTrailing struct {
+	mean   money.Micros
+	sample int
+	err    error
+	calls  []trailingCall
+}
+
+// trailingCall is one ProviderTrailingCost call's arguments.
+type trailingCall struct {
+	plan    string
+	since   time.Time
+	exclude string
+}
+
+func (f *fakeTrailing) ProviderTrailingCost(_ context.Context, plan string, since time.Time, excludeRunID string) (money.Micros, int, error) {
+	f.calls = append(f.calls, trailingCall{plan: plan, since: since, exclude: excludeRunID})
+	if f.err != nil {
+		return 0, 0, f.err
+	}
+	return f.mean, f.sample, nil
+}
+
+// settledOn is a built run whose one step, on model, cost cost.
+func settledOn(model string, cost float64) Summary {
+	return Summary{
+		Outcome: OutcomeBuilt,
+		Phase:   PhaseCommit,
+		Branch:  BranchName(testTicket.BranchSegment(), "1-1"),
+		Steps: []Step{{
+			Phase: PhaseBuild, Round: 1, Model: model, Tokens: Usage{Cost: cost, Steps: 1},
+			CompletionsObject: completionsObject("1-1", PhaseBuild, 1),
+			At:                finalizeNow.Add(-30 * time.Minute),
+		}},
+	}
+}
+
+// seededOn is seeded, with the run's provider plan named.
+func seededOn(t *testing.T, plan string) fakeRecords {
+	t.Helper()
+	store := seeded(t)
+	rec := store[testRunID]
+	rec.Plan = plan
+	store[testRunID] = rec
+	return store
+}
+
+// finalizeRun is Finalize with the identity, run and attempt every test here
+// names, so only the case under test is spelled out.
+func finalizeRun(t *testing.T, store fakeRecords, reader ProviderCostReader, raw string, now time.Time) Record {
+	t.Helper()
+	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: raw,
+		RunResult: "success", PRResult: "success", PRURL: "https://github.com/o/r/pull/1"}
+	rec, err := Finalize(context.Background(), store, &fakeLedger{}, reader, in, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rec
+}
+
+func TestFinalizeFlagsARunCostingWellAboveItsProvidersTrailingAverage(t *testing.T) {
+	store := seededOn(t, "command-code")
+	reader := &fakeTrailing{mean: money.Dollar, sample: 10}
+
+	rec := finalizeRun(t, store, reader, encoded(t, settledOn("command-code/x", 2)), finalizeNow)
+	want := "cost $2.0000 is 100% above the $1.0000 average of 10 of this provider's runs"
+	if rec.CostDrift != want || store[testRunID].CostDrift != want {
+		t.Fatalf("cost drift = %q (record %q), want %q", rec.CostDrift, store[testRunID].CostDrift, want)
+	}
+	if len(reader.calls) != 1 {
+		t.Fatalf("the provider was asked %d times, want once", len(reader.calls))
+	}
+	call := reader.calls[0]
+	if call.plan != "command-code" || call.exclude != testRunID || !call.since.Equal(finalizeNow.Add(-TrailingWindow)) {
+		t.Fatalf("asked for %+v, want this run's plan over the trailing window with the run itself left out", call)
+	}
+}
+
+// TestFinalizeFlagsOnlyARunPastTheDriftThreshold pins the 25% band itself, at
+// its own boundary: a run exactly a quarter above the average is not flagged,
+// and one cent of a micro past it is.
+func TestFinalizeFlagsOnlyARunPastTheDriftThreshold(t *testing.T) {
+	for name, tt := range map[string]struct {
+		cost      float64
+		wantDrift bool
+	}{
+		"well above the average": {2, true},
+		"just past the band":     {1.2501, true},
+		"exactly at the band":    {1.25, false},
+		"inside the band":        {1.1, false},
+		"below the average":      {0.5, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := seededOn(t, "command-code")
+			reader := &fakeTrailing{mean: money.Dollar, sample: 10}
+
+			rec := finalizeRun(t, store, reader, encoded(t, settledOn("command-code/x", tt.cost)), finalizeNow)
+			if got := rec.CostDrift != ""; got != tt.wantDrift {
+				t.Fatalf("cost drift = %q at $%v against a $1 average, want flagged %v", rec.CostDrift, tt.cost, tt.wantDrift)
+			}
+			if store[testRunID].CostDrift != rec.CostDrift {
+				t.Fatalf("recorded %q, want the returned %q", store[testRunID].CostDrift, rec.CostDrift)
+			}
+		})
+	}
+}
+
+func TestFinalizeLeavesTheDriftFlagEmptyWithoutEnoughOfTheProvidersHistory(t *testing.T) {
+	store := seededOn(t, "command-code")
+	reader := &fakeTrailing{mean: money.Dollar, sample: minDriftSample - 1}
+
+	rec := finalizeRun(t, store, reader, encoded(t, settledOn("command-code/x", 10)), finalizeNow)
+	if rec.CostDrift != "" {
+		t.Fatalf("cost drift = %q over %d settled runs, want none under %d", rec.CostDrift, reader.sample, minDriftSample)
+	}
+	if len(reader.calls) != 1 {
+		t.Fatalf("the provider was asked %d times, want the mean to be what withheld the flag", len(reader.calls))
+	}
+}
+
+func TestFinalizeLeavesTheDriftFlagEmptyWithoutAProviderToAsk(t *testing.T) {
+	for name, tt := range map[string]struct {
+		plan      string
+		trail     *fakeTrailing
+		wantAsked bool
+	}{
+		"no reader":                     {plan: "command-code"},
+		"a history that cannot be read": {plan: "command-code", trail: &fakeTrailing{err: errors.New("firestore unreachable")}, wantAsked: true},
+		"no provider on the record":     {trail: &fakeTrailing{mean: money.Dollar, sample: 10}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := seededOn(t, tt.plan)
+			var reader ProviderCostReader
+			if tt.trail != nil {
+				reader = tt.trail
+			}
+
+			rec := finalizeRun(t, store, reader, encoded(t, settledOn("command-code/x", 10)), finalizeNow)
+			if rec.CostDrift != "" {
+				t.Fatalf("cost drift = %q, want none", rec.CostDrift)
+			}
+			if !rec.SettledAt.Equal(finalizeNow) {
+				t.Fatalf("settled at %v, want the run still settled with the comparison withheld", rec.SettledAt)
+			}
+			if tt.trail != nil && (len(tt.trail.calls) > 0) != tt.wantAsked {
+				t.Fatalf("the provider was asked %d times, want asked %v", len(tt.trail.calls), tt.wantAsked)
+			}
+		})
+	}
+}
+
+func TestFinalizeNeverComparesARunThatNeverReachedAnAgent(t *testing.T) {
+	store := seededOn(t, "command-code")
+	reader := &fakeTrailing{mean: money.Dollar, sample: 10}
+
+	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", RunResult: "failure", PRResult: "skipped"}
+	rec, err := Finalize(context.Background(), store, &fakeLedger{}, reader, in, finalizeNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.CostDrift != "" || len(reader.calls) != 0 {
+		t.Fatalf("cost drift = %q over %d reads, want a run with no cost left out of the comparison", rec.CostDrift, len(reader.calls))
+	}
+}
+
+func TestFinalizeTagsTheRunWithTheTimeOfUseItsStepsFellIn(t *testing.T) {
+	const priced, free = "command-code/deepseek/deepseek-v4.1-flash", "command-code/poolside/laguna-s-2.1-free"
+	// A Monday, inside the priced card's own 01:00-04:00 UTC window.
+	peak := time.Date(2026, 9, 28, 2, 0, 0, 0, time.UTC)
+	// The same Monday, outside every window.
+	offPeak := time.Date(2026, 9, 28, 5, 0, 0, 0, time.UTC)
+	for name, tt := range map[string]struct {
+		model string
+		at    time.Time
+		want  string
+	}{
+		"a step priced at peak":                  {priced, peak, TimeOfUsePeak},
+		"a step priced off peak":                 {priced, offPeak, TimeOfUseOffPeak},
+		"a plan that does not price by the hour": {free, peak, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			started, now := tt.at.Add(-time.Hour), tt.at.Add(time.Hour)
+			store := fakeRecords{testRunID: NewRecord(testRunID, testTicket, started)}
+			sum := Summary{
+				Outcome: OutcomeBuilt, Phase: PhaseCommit, Branch: BranchName(testTicket.BranchSegment(), "1-1"),
+				Steps: []Step{{
+					Phase: PhaseBuild, Round: 1, Model: tt.model, Tokens: Usage{Cost: 1, Steps: 1},
+					CompletionsObject: completionsObject("1-1", PhaseBuild, 1), At: tt.at,
+				}},
+				StartedAt: started,
+			}
+
+			rec := finalizeRun(t, store, nil, encoded(t, sum), now)
+			if rec.TimeOfUse != tt.want {
+				t.Fatalf("time of use = %q, want %q", rec.TimeOfUse, tt.want)
+			}
+			if store[testRunID].TimeOfUse != tt.want {
+				t.Fatalf("recorded %q, want %q", store[testRunID].TimeOfUse, tt.want)
+			}
+		})
+	}
+}
+
+func TestTimeOfUseIsTheBucketTheRunsOwnStepsFellIn(t *testing.T) {
+	const priced = "command-code/deepseek/deepseek-v4.1-flash"
+	peak := time.Date(2026, 9, 28, 2, 0, 0, 0, time.UTC)    // a Monday, inside the card's 01:00-04:00 window
+	offPeak := time.Date(2026, 9, 28, 5, 0, 0, 0, time.UTC) // the same Monday, outside every window
+	weekend := time.Date(2026, 9, 26, 2, 0, 0, 0, time.UTC) // a Saturday, inside the hours but never at peak
+	for name, tt := range map[string]struct {
+		steps []Step
+		want  string
+	}{
+		"a step priced at peak":                       {[]Step{{Model: priced, At: peak}}, TimeOfUsePeak},
+		"a step priced off peak":                      {[]Step{{Model: priced, At: offPeak}}, TimeOfUseOffPeak},
+		"a weekend step inside the hours":             {[]Step{{Model: priced, At: weekend}}, TimeOfUseOffPeak},
+		"any peak step wins over the rest":            {[]Step{{Model: priced, At: offPeak}, {Model: priced, At: peak}}, TimeOfUsePeak},
+		"a plan that does not price by the hour":      {[]Step{{Model: "command-code/poolside/laguna-s-2.1-free", At: peak}}, ""},
+		"a model no plan prices":                      {[]Step{{Model: "nowhere/nothing", At: peak}}, ""},
+		"a step whose time is unknown prices at peak": {[]Step{{Model: priced}}, TimeOfUsePeak},
+		"no steps at all":                             {nil, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := timeOfUse(tt.steps); got != tt.want {
+				t.Fatalf("time of use = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

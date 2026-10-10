@@ -98,7 +98,7 @@ func TestPutRecordAgainstTheEmulator(t *testing.T) {
 	}
 	in := runner.FinalizeInput{RunID: id, AttemptID: "1-1", RunResult: "failure", PRResult: "skipped",
 		Identity: runner.Identity{Account: "octo", Owner: "octo"}}
-	if _, err := runner.Finalize(ctx, recs, NewQueue(client), in, started.Add(time.Hour)); err != nil {
+	if _, err := runner.Finalize(ctx, recs, NewQueue(client), recs, in, started.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 

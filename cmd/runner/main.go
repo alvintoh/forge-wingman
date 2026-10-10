@@ -572,7 +572,8 @@ func record(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	}
 	defer func() { _ = fsc.Close() }()
 
-	rec, err := finalize(ctx, logger, store.NewRecords(fsc), store.NewQueue(fsc), store.NewNotices(fsc), store.NewBreaker(fsc), runner.FinalizeInput{
+	records := store.NewRecords(fsc)
+	rec, err := finalize(ctx, logger, records, store.NewQueue(fsc), records, store.NewNotices(fsc), store.NewBreaker(fsc), runner.FinalizeInput{
 		RunID:             *runID,
 		Identity:          e.identity,
 		AttemptID:         *attemptID,
@@ -655,8 +656,8 @@ type breakerTripper interface {
 // notice, even when the record or ledger write then fails, since the stop is
 // known by then.
 func finalize(ctx context.Context, logger *slog.Logger, records runner.RecordStore, ledger runner.Ledger,
-	notices noticeRaiser, breaker breakerTripper, in runner.FinalizeInput, at time.Time) (runner.Record, error) {
-	rec, err := runner.Finalize(ctx, records, ledger, in, at)
+	reader runner.ProviderCostReader, notices noticeRaiser, breaker breakerTripper, in runner.FinalizeInput, at time.Time) (runner.Record, error) {
+	rec, err := runner.Finalize(ctx, records, ledger, reader, in, at)
 	raiseSystemic(ctx, logger, notices, breaker, rec, in.AttemptID, at)
 	return rec, err
 }

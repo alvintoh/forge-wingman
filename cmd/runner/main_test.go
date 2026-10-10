@@ -541,7 +541,7 @@ func encodedSummary(t *testing.T, attemptID string, now time.Time, edits ...func
 		Outcome: runner.OutcomeBuilt,
 		Phase:   runner.PhaseCommit,
 		Steps: []runner.Step{{Phase: runner.PhaseBuild, Round: 1, Model: "command-code/x",
-			CompletionsObject: "completions/" + attemptID + "-build-1.jsonl"}},
+			CompletionsObject: "completions/" + attemptID + "-build-1.jsonl", At: now.Add(-30 * time.Minute)}},
 		EditedFiles:    []string{"widget.go", "extra.go"},
 		OutOfPlanFiles: []string{"extra.go"},
 		Branch:         runner.BranchName(tk.BranchSegment(), attemptID),
@@ -866,7 +866,7 @@ func TestFinalizeRaisesASystemicStopWhoseRecordCannotBeWritten(t *testing.T) {
 	env := map[string]string{"WINGMAN_ACCOUNT": "work-account", "GITHUB_REPOSITORY_OWNER": "octo"}
 	in := runner.FinalizeInput{RunID: "ABC-1", AttemptID: "42-1", Identity: runner.IdentityFromEnv(func(k string) string { return env[k] })}
 	_, err := finalize(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)),
-		failingRecords{recordReader{"ABC-1": {RunID: "ABC-1"}}}, noLedger{}, notices, breaker, in, time.Now())
+		failingRecords{recordReader{"ABC-1": {RunID: "ABC-1"}}}, noLedger{}, nil, notices, breaker, in, time.Now())
 	if err == nil {
 		t.Fatal("the failed write was dropped")
 	}

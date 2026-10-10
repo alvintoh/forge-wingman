@@ -518,7 +518,7 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 	}
 
 	step := Step{Phase: call.Phase, Round: call.Round, Model: call.Model, Harness: harnessFor(agent, call.Model),
-		CompletionsObject: completions, Detail: truncate(call.Detail, stopDetailLimit)}
+		CompletionsObject: completions, Detail: truncate(call.Detail, stopDetailLimit), At: start}
 	if _, err := out.Seek(0, io.SeekStart); err != nil {
 		addUsageWarning(sum, err.Error())
 	} else if usage, err := meterUsage(out, call.Model, providers.RatesFor); err != nil {
