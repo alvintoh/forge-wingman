@@ -131,7 +131,8 @@ func newMux(spa fs.FS, logger *slog.Logger, comparison ComparisonReader) *http.S
 
 // comparisonResponse is the comparison endpoint's wire shape. It carries
 // aggregates only: the run records it reads hold ticket titles and bodies, and
-// this endpoint is public, so none of them is ever served from here.
+// what gates this binary today is IAP rather than the endpoint itself, so none
+// of them is ever served from here.
 type comparisonResponse struct {
 	Models    []modelComparison    `json:"models"`
 	Providers []providerComparison `json:"providers"`
