@@ -1498,6 +1498,91 @@ func TestReleaseReturnsABuildStageClaimToPlanned(t *testing.T) {
 	}
 }
 
+// TestPlannedListsTheRunsAWriteSetIsKnownFor is what the S-overlap draft reads:
+// the runs whose plans are still in flight. The one waiting between its stages
+// is the case a ledger read would miss, since settling its plan dropped the only
+// reservation it ever held.
+func TestPlannedListsTheRunsAWriteSetIsKnownFor(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	waiting := queuedRun(fresh("queue-planned-waiting"), 1)
+	building := queuedRun(fresh("queue-planned-building"), 1)
+	done := queuedRun(fresh("queue-planned-done"), 1)
+	single := queuedRun(fresh("queue-planned-single"), 1)
+	forget(t, client, waiting.RunID, building.RunID, done.RunID, single.RunID)
+	resetLedger(t, client, 5)
+	for _, r := range []dispatcher.Queued{waiting, building, done, single} {
+		if err := q.Enqueue(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Its plan stage settled, so it waits for its build with its plan standing
+	// and no reservation at all.
+	for _, r := range []dispatcher.Queued{waiting, building, done} {
+		if _, _, err := q.TryClaim(ctx, r.RunID, queueAt, generousBudget, openFacts, dispatcher.Reservation{
+			ProviderCost: money.FromUSD(0.05), Stage: dispatcher.StagePlan,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := NewRecords(client).WritePlan(ctx, r.RunID, runner.PlanRecord{
+			Files: []string{r.RunID + ".go"}, BaseSHA: "abcdef0123456789abcdef0123456789abcdef01",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := q.Settle(ctx, PlanKey(r.RunID)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Its build is claimed, and its record then written: a settled run's plan is
+	// history, not a write set in flight.
+	for _, r := range []dispatcher.Queued{building, done} {
+		if _, _, err := q.TryClaim(ctx, r.RunID, queueAt, generousBudget, openFacts, dispatcher.Reservation{
+			ProviderCost: money.Dollar, Stage: dispatcher.StageBuild, Files: []string{r.RunID + ".go"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := NewRecords(client).PutRecord(ctx, done.RunID, runner.Record{
+		RunID: done.RunID, SettledAt: queueAt, SettledProviderCostMicros: money.Dollar,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Settle(ctx, done.RunID); err != nil {
+		t.Fatal(err)
+	}
+	// A single-stage run holds no plan to write, so its write set is unknown.
+	if _, _, err := q.TryClaim(ctx, single.RunID, queueAt, generousBudget, openFacts,
+		dispatcher.Reservation{ProviderCost: money.Dollar}); err != nil {
+		t.Fatal(err)
+	}
+
+	flight, err := q.Planned(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]dispatcher.InFlight{}
+	for _, f := range flight {
+		got[f.Ticket] = f
+	}
+	for _, r := range []dispatcher.Queued{waiting, building} {
+		f, ok := got[r.RunID]
+		if !ok {
+			t.Fatalf("%s is not listed among %v", r.RunID, flight)
+		}
+		if !slices.Equal(f.Files, []string{r.RunID + ".go"}) || f.Repo != r.Repo || f.Size != "M" {
+			t.Fatalf("%s = %+v, want its own write set", r.RunID, f)
+		}
+	}
+	// A recorded run's plan is finished, and a run with no plan writes an
+	// unknown set: neither is what a pull request opening now can collide with.
+	if _, listed := got[done.RunID]; listed {
+		t.Errorf("%s is listed though its run is recorded", done.RunID)
+	}
+	if _, listed := got[single.RunID]; listed {
+		t.Errorf("%s is listed though it holds no plan", single.RunID)
+	}
+}
+
 func TestTryClaimAdmitsTwoRunsInOneRepositoryWithDisjointWriteSets(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()

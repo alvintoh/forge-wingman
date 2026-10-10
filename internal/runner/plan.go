@@ -60,8 +60,8 @@ func parsePlanFiles(text string) ([]string, error) {
 	return files, nil
 }
 
-// outOfPlanFiles returns the edited files absent from the plan's file list.
-func outOfPlanFiles(edited, planned []string) []string {
+// OutOfPlanFiles returns the edited files absent from the plan's file list.
+func OutOfPlanFiles(edited, planned []string) []string {
 	allowed := make(map[string]bool, len(planned))
 	for _, f := range planned {
 		allowed[f] = true
@@ -82,7 +82,10 @@ const workflowDir = ".github/workflows"
 // errWorkflowChange reports a plan or build touching a file under workflowDir.
 var errWorkflowChange = errors.New("touches files under " + workflowDir + "/, which the run cannot push")
 
-// workflowFiles returns the paths that are workflowDir or sit under it.
+// WorkflowFiles returns the paths that are workflowDir or sit under it.
+func WorkflowFiles(paths []string) []string {
+	return workflowFiles(paths)
+}
 func workflowFiles(paths []string) []string {
 	var hits []string
 	for _, p := range paths {

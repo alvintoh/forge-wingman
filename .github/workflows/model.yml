@@ -167,7 +167,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-      # wingman.bundle here and in run.yml's check and pr jobs is bundleName in internal/runner/build.go.
+      # wingman.bundle here and in run.yml's check, pr-meta and pr jobs is bundleName in internal/runner/build.go.
       - if: steps.build.outputs.changed == 'true'
         env:
           GIT_CONFIG_NOSYSTEM: "1"

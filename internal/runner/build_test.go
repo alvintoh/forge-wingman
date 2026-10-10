@@ -2112,10 +2112,9 @@ func TestBuildReportsAPanicThenRepanics(t *testing.T) {
 	_, _ = Build(context.Background(), deps, c)
 }
 
-// branchPattern is the branch check in run.yml's check and pr jobs, with
-// ${GITHUB_RUN_ID} standing for the run.
-const branchPattern = `^wingman/[a-z0-9]+(-[a-z0-9]+)*-${GITHUB_RUN_ID}-[0-9]+$`
-
+// TestRunWorkflowChecksTheBranchPattern holds the shell checks to the same
+// pattern the runner's own check (ValidBranch) applies before git is handed a
+// branch name from the model job.
 func TestRunWorkflowChecksTheBranchPattern(t *testing.T) {
 	yml, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "run.yml"))
 	if err != nil {
