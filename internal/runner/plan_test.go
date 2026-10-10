@@ -289,6 +289,28 @@ func TestDecisionMatch(t *testing.T) {
 	}
 }
 
+// TestDecisionMatchFoldsUnicode: an owner replying in another spelling still
+// names the option they meant — the fold covers case, width and diacritics —
+// while a reply naming no option still matches none.
+func TestDecisionMatchFoldsUnicode(t *testing.T) {
+	d := Decision{
+		Question: "Which spelling should the run use?",
+		Options: []DecisionOption{
+			{Label: "Reuse the existing flag", Value: "STRASSE", Cost: "no new config"},
+			{Label: "Add a new flag", Value: "new", Cost: "one more env var"},
+		},
+	}
+	for _, reply := range []string{"STRASSE", "strasse", "straße", "  strasse  "} {
+		opt, ok := d.Match(reply)
+		if !ok || opt.Value != "STRASSE" {
+			t.Fatalf("Match(%q) = %q, %v, want the STRASSE option", reply, opt.Value, ok)
+		}
+	}
+	if opt, ok := d.Match("strasseweg"); ok {
+		t.Fatalf("Match(%q) = %q, want no match", "strasseweg", opt.Value)
+	}
+}
+
 func TestParsePlanStageCarriesADecision(t *testing.T) {
 	sha := strings.Repeat("a", 40)
 	raw, err := EncodePlanStage(PlanStageResult{Decision: &testDecision, BaseSHA: sha})
