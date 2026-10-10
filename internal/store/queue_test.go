@@ -1428,6 +1428,12 @@ func TestSettlePlansARunForItsBuild(t *testing.T) {
 	if ok, _, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, openFacts, res); err != nil || !ok {
 		t.Fatalf("plan claim: ok %v, err %v", ok, err)
 	}
+	// The plan artifact reaches the row the way record-plan-stage writes it.
+	if err := NewRecords(client).WritePlan(ctx, run.RunID, runner.PlanRecord{
+		Files: []string{"a.go", "b.go"}, BaseSHA: "abcdef0123456789abcdef0123456789abcdef01",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := q.Settle(ctx, PlanKey(run.RunID)); err != nil {
 		t.Fatal(err)
 	}
@@ -1462,8 +1468,8 @@ func TestSettlePlansARunForItsBuild(t *testing.T) {
 			found = &cands[i]
 		}
 	}
-	if found == nil || found.Stage != dispatcher.StageBuild {
-		t.Fatalf("candidates = %+v, want the planned run waiting for its build", cands)
+	if found == nil || found.Stage != dispatcher.StageBuild || !slices.Equal(found.PlanFiles, []string{"a.go", "b.go"}) {
+		t.Fatalf("candidates = %+v, want the planned run waiting for its build with its write set", cands)
 	}
 }
 
@@ -1503,6 +1509,11 @@ func TestTryClaimAdmitsTwoRunsInOneRepositoryWithDisjointWriteSets(t *testing.T)
 			t.Fatal(err)
 		}
 	}
+	// The plan stage records each run's write set on its row before its build
+	// is claimed, the way record-plan-stage does.
+	if err := NewRecords(client).WritePlan(ctx, second.RunID, runner.PlanRecord{Files: []string{"b.go"}}); err != nil {
+		t.Fatal(err)
+	}
 	if ok, _, err := q.TryClaim(ctx, first.RunID, queueAt, generousBudget, openFacts,
 		dispatcher.Reservation{ProviderCost: money.Dollar, Stage: dispatcher.StageBuild, Files: []string{"a.go"}}); err != nil || !ok {
 		t.Fatalf("first claim: ok %v, err %v", ok, err)
@@ -1524,6 +1535,9 @@ func TestTryClaimHoldsTheLaterOfTwoRunsWhoseWriteSetsOverlap(t *testing.T) {
 		if err := q.Enqueue(ctx, run); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := NewRecords(client).WritePlan(ctx, second.RunID, runner.PlanRecord{Files: []string{"a.go"}}); err != nil {
+		t.Fatal(err)
 	}
 	if ok, _, err := q.TryClaim(ctx, first.RunID, queueAt, generousBudget, openFacts,
 		dispatcher.Reservation{ProviderCost: money.Dollar, Stage: dispatcher.StageBuild, Files: []string{"a.go"}}); err != nil || !ok {
