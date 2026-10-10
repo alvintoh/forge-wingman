@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -260,9 +261,108 @@ func pollDeps(source Source, q *fakeQueue, w *fakeWorkflow) Deps {
 		ModelPlans: &fakeModelPlans{},
 		Notices:    &fakeNotices{},
 		OpenPoster: func(context.Context) (Poster, error) { return &fakePoster{}, nil },
+		Elicit:     &fakeElicitor{},
+		Decisions:  &fakeDecisions{},
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Now:        func() time.Time { return pollAt },
 	}
+}
+
+// fakeElicitor records the decisions a poll asked and the session it asked in.
+type fakeElicitor struct {
+	mu    sync.Mutex
+	err   error
+	calls []elicitCall
+}
+
+type elicitCall struct {
+	sessionID string
+	decision  runner.Decision
+}
+
+func (e *fakeElicitor) Elicit(_ context.Context, sessionID string, d runner.Decision) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.calls = append(e.calls, elicitCall{sessionID: sessionID, decision: d})
+	return e.err
+}
+
+// fakeDecisions is the store's decision surface as a poll uses it.
+type fakeDecisions struct {
+	waiting    []WaitingRun
+	waitingErr error
+	answerErr  error
+	postedErr  error
+	stopErr    error
+	sessions   map[string]string
+	sessionErr error
+
+	answered []answerCall
+	posted   []postedCall
+	stopped  []stopCall
+}
+
+type answerCall struct {
+	runID, answer string
+	at            time.Time
+}
+type postedCall struct {
+	runID, sessionID string
+	at               time.Time
+}
+type stopCall struct {
+	runID    string
+	question string
+	at       time.Time
+}
+
+func (d *fakeDecisions) Waiting(context.Context) ([]WaitingRun, error) {
+	return d.waiting, d.waitingErr
+}
+
+func (d *fakeDecisions) Answer(_ context.Context, runID, answer string, at time.Time) error {
+	if d.answerErr != nil {
+		return d.answerErr
+	}
+	d.answered = append(d.answered, answerCall{runID: runID, answer: answer, at: at})
+	d.drop(runID)
+	return nil
+}
+
+func (d *fakeDecisions) Posted(_ context.Context, runID, sessionID string, at time.Time) error {
+	if d.postedErr != nil {
+		return d.postedErr
+	}
+	d.posted = append(d.posted, postedCall{runID: runID, sessionID: sessionID, at: at})
+	return nil
+}
+
+func (d *fakeDecisions) StopWaiting(_ context.Context, runID string, dec runner.Decision, at time.Time) error {
+	if d.stopErr != nil {
+		return d.stopErr
+	}
+	d.stopped = append(d.stopped, stopCall{runID: runID, question: dec.Question, at: at})
+	d.drop(runID)
+	return nil
+}
+
+// drop removes a run from the waiting set, modelling the store moving a run
+// out of the waiting state once it is answered or stopped.
+func (d *fakeDecisions) drop(runID string) {
+	var kept []WaitingRun
+	for _, w := range d.waiting {
+		if w.RunID != runID {
+			kept = append(kept, w)
+		}
+	}
+	d.waiting = kept
+}
+
+func (d *fakeDecisions) Session(_ context.Context, ticketID string) (string, error) {
+	if d.sessionErr != nil {
+		return "", d.sessionErr
+	}
+	return d.sessions[ticketID], nil
 }
 
 func TestPollNamesTheDependencyItWasNotGiven(t *testing.T) {
@@ -279,6 +379,8 @@ func TestPollNamesTheDependencyItWasNotGiven(t *testing.T) {
 		"Workflow":   func(d *Deps) { d.Workflow = nil },
 		"Overrides":  func(d *Deps) { d.Overrides = nil },
 		"ModelPlans": func(d *Deps) { d.ModelPlans = nil },
+		"Elicit":     func(d *Deps) { d.Elicit = nil },
+		"Decisions":  func(d *Deps) { d.Decisions = nil },
 		"Logger":     func(d *Deps) { d.Logger = nil },
 		"Now":        func(d *Deps) { d.Now = nil },
 	}

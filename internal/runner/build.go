@@ -99,6 +99,10 @@ type BuildConfig struct {
 	Secrets  []string
 	Identity Identity
 	Ticket   Ticket
+	// Guided lets the plan phase ask the owner a decision instead of naming
+	// files. Only the plan-stage job sets it: a single-stage build job cannot
+	// carry the owner's answer back, so it is never invited to ask.
+	Guided bool
 }
 
 // BuildResult is what the workflow needs from a build to open the PR.
@@ -295,7 +299,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		if len(planFiles) == 0 {
 			if err := timed(PhasePlan, d.PlanAgent, c.PlanModels[0], func() error {
 				var err error
-				planFiles, err = runPlanPhase(ctx, d, c, wt.Dir, &sum)
+				planFiles, _, err = runPlanPhase(ctx, d, c, wt.Dir, &sum)
 				return err
 			}); err != nil {
 				return BuildResult{}, err
@@ -419,41 +423,46 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 
 // runPlanPhase fetches the plan projection, runs the plan agent in dir
 // under the ticket's plan models, and returns the repository-relative files
-// the plan names. A plan naming a file under .github/workflows/ stops the
-// run before any build, since the run's App cannot push a workflow change.
+// the plan names, or — when the phase is guided and the plan asks instead — the
+// owner decision it raised. A plan naming a file under .github/workflows/ stops
+// the run before any build, since the run's App cannot push a workflow change.
 // Both Build and the plan stage's own dispatch share it, so a ticket is
 // planned the same way whichever stage runs it.
-func runPlanPhase(ctx context.Context, d BuildDeps, c BuildConfig, dir string, sum *Summary) ([]string, error) {
+func runPlanPhase(ctx context.Context, d BuildDeps, c BuildConfig, dir string, sum *Summary) ([]string, *Decision, error) {
 	p, err := FetchPlanProjection(ctx, d.Projections, c.Pointer)
 	var missing *MissingError
 	switch {
 	case errors.As(err, &missing):
-		return nil, stopWith(OutcomeStopped, StopProjectionMissing, err)
+		return nil, nil, stopWith(OutcomeStopped, StopProjectionMissing, err)
 	case errors.Is(err, ErrPointerInvalid):
-		return nil, stopWith(OutcomeStopped, StopProjectionInvalid, err)
+		return nil, nil, stopWith(OutcomeStopped, StopProjectionInvalid, err)
 	case err != nil:
-		return nil, stopWith(OutcomeInfraFailure, StopProjectionRead, err)
+		return nil, nil, stopWith(OutcomeInfraFailure, StopProjectionRead, err)
 	}
-	planRules, planPrompt, err := PlanPrompt(p.Text, c.Ticket)
+	planRules, planPrompt, err := PlanPrompt(p.Text, c.Ticket, c.Guided)
 	if err != nil {
-		return nil, stopWith(OutcomeStopped, StopProjectionInvalid, err)
+		return nil, nil, stopWith(OutcomeStopped, StopProjectionInvalid, err)
 	}
 	call := agentCall{Phase: PhasePlan, Round: 1, Model: c.PlanModels[0], Rules: planRules,
 		Timeout: roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now())}
 	text, _, _, err := runAgentInOrder(ctx, d, c, call, c.PlanModels, d.PlanAgent, dir, planPrompt, sum)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	files, err := parsePlanFiles(text)
+	files, decision, err := parsePlanArtifacts(text, c.Guided)
 	if err != nil {
-		return nil, stopWith(OutcomeStopped, StopPlanInvalid, err)
+		return nil, nil, stopWith(OutcomeStopped, StopPlanInvalid, err)
+	}
+	if decision != nil {
+		d.Logger.Info("planDecisionParsed", "options", len(decision.Options), "context", len(decision.Context))
+		return nil, decision, nil
 	}
 	d.Logger.Info("planFilesParsed", "files", len(files))
 	if wf := workflowFiles(files); len(wf) > 0 {
 		d.Logger.Info("workflowChange", "phase", string(PhasePlan), "files", wf)
-		return nil, stopWith(OutcomeStopped, StopWorkflowChange, workflowChange(wf))
+		return nil, nil, stopWith(OutcomeStopped, StopWorkflowChange, workflowChange(wf))
 	}
-	return files, nil
+	return files, nil, nil
 }
 
 // agentCall is one agent invocation's identity within a build: which

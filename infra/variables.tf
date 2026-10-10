@@ -70,6 +70,7 @@ variable "dispatcher_settings" {
       "WINGMAN_PLATFORM_CAP", "WINGMAN_LARGE_CAP", "WINGMAN_REVIEW_WIP",
       "WINGMAN_STABLE_RUNS", "WINGMAN_RISE_WITHIN", "WINGMAN_HALVE_BEYOND",
       "WINGMAN_TWO_STAGE",
+      "WINGMAN_DECISION_TIMEOUT",
     ], k)])
     error_message = "dispatcher_settings may only set the WINGMAN_ limits and tuning the dispatcher reads."
   }
