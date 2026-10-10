@@ -85,7 +85,7 @@ func TestOutOfPlanFiles(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := outOfPlanFiles(tt.edited, tt.planned); !slices.Equal(got, tt.want) {
+			if got := OutOfPlanFiles(tt.edited, tt.planned); !slices.Equal(got, tt.want) {
 				t.Fatalf("extra = %q, want %q", got, tt.want)
 			}
 		})

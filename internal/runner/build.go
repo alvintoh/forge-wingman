@@ -379,7 +379,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 			return nil
 		}
 		if c.Ticket.Size != "S" {
-			if extra := outOfPlanFiles(files, planFiles); len(extra) > 0 {
+			if extra := OutOfPlanFiles(files, planFiles); len(extra) > 0 {
 				sum.OutOfPlanFiles = extra
 				sum.Ready, res.Ready = false, false
 				d.Logger.Info("outOfPlanEdits", "files", len(extra))

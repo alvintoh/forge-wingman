@@ -28,9 +28,11 @@ var errTemplate = errors.New("pull request template lacks the ticket line, summa
 // check job's report in place of the example rows, and runURL and the ticket's
 // body, fenced, in the notes, dropping the screenshots section. failedGate is
 // empty when the check reported a pass. loopDetail is the pre-PR loop's report
-// of why the PR opened as a draft (FR-5), empty when it did not. outOfPlan are
-// the edited files the build's plan did not name, which also keep it a draft.
-func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail string, outOfPlan []string) (string, error) {
+// of why the PR opened as a draft (FR-5), empty when it did not, and overlap
+// names the in-flight run whose plan these files touch, empty when none does.
+// outOfPlan are the edited files the run's plan did not name, which also keep it
+// a draft.
+func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail, overlap string, outOfPlan []string) (string, error) {
 	summary := plainText(prSummary)
 	if summary == "" {
 		summary = "`" + t.ID + "`: " + t.Title
@@ -59,6 +61,10 @@ func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail
 			notes := []string{line, "Built unattended by forge-wingman. Run: " + runURL}
 			if loopDetail != "" {
 				notes = append(notes, "", "**Pre-PR loop:** kept this a draft — "+plainText(loopDetail))
+			}
+			if overlap != "" {
+				notes = append(notes, "", "**Concurrent run:** kept this a draft — "+
+					codeSpan(overlap)+" plans to write some of these files")
 			}
 			if len(outOfPlan) > 0 {
 				spans := make([]string, len(outOfPlan))
