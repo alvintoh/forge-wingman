@@ -109,6 +109,7 @@ type config struct {
 	repos    []string
 	limits   dispatcher.Limits
 	tuning   dispatcher.Tuning
+	twoStage bool
 }
 
 func loadConfig(getenv func(string) string) (config, error) {
@@ -136,6 +137,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if c.limits, c.tuning, err = concurrencySettings(getenv); err != nil {
 		return config{}, err
 	}
+	c.twoStage = strings.EqualFold(strings.TrimSpace(getenv("WINGMAN_TWO_STAGE")), "on")
 	return c, nil
 }
 
@@ -280,7 +282,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		OpenPRs:    gh,
 		Logger:     logger,
 		Now:        time.Now,
-	}, dispatcher.Config{Repos: c.repos, Budget: budgetConfig(runner.Provider(model)), Model: model, Limits: c.limits, Tuning: c.tuning, LastResort: providers.LastResortModels(runner.Provider(model))}); err != nil {
+	}, dispatcher.Config{Repos: c.repos, Budget: budgetConfig(runner.Provider(model)), Model: model, Limits: c.limits, Tuning: c.tuning, LastResort: providers.LastResortModels(runner.Provider(model)), TwoStage: c.twoStage}); err != nil {
 		return err
 	}
 	return nil

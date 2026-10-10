@@ -86,6 +86,13 @@ type BudgetConfig struct {
 type Reservation struct {
 	ProviderCost  money.Micros
 	RunnerMinutes int64
+	// Stage is the stage this reserve claims — plan or build; empty for a
+	// single-stage claim, which plans and builds in one job.
+	Stage string
+	// Files is the write set this claim may touch: the plan-stage file list
+	// of a build-stage claim, and empty for a plan-stage or single-stage
+	// one, which plans its own.
+	Files []string
 }
 
 // Totals sums a set of reservations, or of settled runs, for one comparison.
@@ -102,10 +109,20 @@ type Estimate struct {
 	Minutes      int64
 }
 
+// DefaultPlanEstimate is what a plan stage is assumed to cost and take before
+// any run has settled a plan phase to average: one round of a plan model over
+// a repository. The samples come from the inline plan phase of single-stage
+// runs, since the plan job reports no summary.
+var DefaultPlanEstimate = Estimate{ProviderCost: money.FromUSD(0.05), Minutes: 5}
+
 // Estimator reads past runs' settled cost and duration to estimate an
 // unclaimed run's own.
 type Estimator interface {
 	Estimate(ctx context.Context, size string) (Estimate, error)
+	// EstimatePlan estimates the run's plan stage the way Estimate does,
+	// averaged over the plan phases of past settled runs and falling back to
+	// DefaultPlanEstimate where none has settled yet.
+	EstimatePlan(ctx context.Context, size string) (Estimate, error)
 }
 
 // RepoVisibility reports whether a repository is private, since a private
@@ -126,6 +143,12 @@ type Candidate struct {
 	// Model is the build model the run's ticket named, empty when it named
 	// none and the run's own default applies.
 	Model string
+	// Stage is the stage this row is ready for: StageBuild for a run whose
+	// plan stage has recorded a plan, empty for one that has not.
+	Stage string
+	// PlanFiles is the run's planned write set, recorded by its plan stage
+	// and empty until one has settled.
+	PlanFiles []string
 }
 
 // Deferral is a queued run's claim withheld this poll by a budget ceiling or an

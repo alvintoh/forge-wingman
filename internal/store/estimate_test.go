@@ -7,6 +7,7 @@ import (
 
 	"cloud.google.com/go/firestore"
 
+	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 	"github.com/alvintoh/forge-wingman/internal/money"
 	"github.com/alvintoh/forge-wingman/internal/runner"
 )
@@ -109,5 +110,54 @@ func TestEstimateLeavesOutRunsOnAFreeTier(t *testing.T) {
 	}
 	if got, err := est.Estimate(ctx, "L-"+fresh("free-unseen")); err != nil || got.ProviderCost != 7*money.Dollar {
 		t.Fatalf("estimate = %+v, err %v, want the first paid run as the fallback", got, err)
+	}
+}
+
+// settledRecordWithSteps writes id as a settled run of size whose steps carry
+// the phases given, as a run that planned inline leaves it.
+func settledRecordWithSteps(t *testing.T, client *firestore.Client, id, size string, settledAt time.Time, steps ...runner.Step) {
+	t.Helper()
+	tk := runner.Ticket{ID: id, Title: "feat(x): add a file", Size: size, Body: "Add a file."}
+	rec := runner.NewRecord(id, tk, settledAt.Add(-time.Hour))
+	rec.SettledAt = settledAt
+	rec.Steps = steps
+	if _, err := client.Collection(runsCollection).Doc(id).Set(context.Background(), fields(rec)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEstimatePlanIsTheMeanOfThePlanPhaseOfSettledRuns(t *testing.T) {
+	_, client := queue(t)
+	size := "M-" + fresh("plan")
+	a, b := fresh("plan-a"), fresh("plan-b")
+	forget(t, client, a, b)
+	settledRecordWithSteps(t, client, a, size, queueAt,
+		runner.Step{Phase: runner.PhasePlan, Tokens: runner.Usage{Cost: 0.04}, DurationMS: 180_000},
+		runner.Step{Phase: runner.PhaseBuild, Tokens: runner.Usage{Cost: 2}, DurationMS: 3_600_000})
+	settledRecordWithSteps(t, client, b, size, queueAt.Add(time.Hour),
+		runner.Step{Phase: runner.PhasePlan, Tokens: runner.Usage{Cost: 0.06}, DurationMS: 300_000})
+
+	got, err := NewEstimates(client).EstimatePlan(context.Background(), size)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ProviderCost != money.FromUSD(0.05) || got.Minutes != 4 {
+		t.Fatalf("plan estimate = %+v, want the mean of the two plan phases (5 cents, 4 minutes), not the build's", got)
+	}
+}
+
+func TestEstimatePlanFallsBackToTheColdStartDefaultWhenNoPlanPhaseHasSettled(t *testing.T) {
+	_, client := queue(t)
+	size := "M-" + fresh("noplan")
+	id := fresh("plan-none")
+	forget(t, client, id)
+	settledRecord(t, client, id, size, 2*money.Dollar, 120_000, queueAt)
+
+	got, err := NewEstimates(client).EstimatePlan(context.Background(), size)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != dispatcher.DefaultPlanEstimate {
+		t.Fatalf("plan estimate = %+v, want the cold-start default %+v", got, dispatcher.DefaultPlanEstimate)
 	}
 }

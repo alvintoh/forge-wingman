@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"cloud.google.com/go/firestore"
@@ -47,6 +48,16 @@ const (
 	claimConcurrencyField = "claim_concurrency"
 	blockedByField        = "blocked_by"
 	blocksField           = "blocks"
+	// planFilesField is the write set the run's plan stage recorded, outside
+	// Record, read here to build a Candidate without a second query.
+	planFilesField = "plan_files"
+	// planSettledAtField, planSpendMicrosField and planSpendMinutesField are
+	// the plan stage's own settlement: when it settled and what its reserved
+	// estimate cost it, summed by the budget windows beside a run's own and
+	// kept outside the record Finalize rebuilds whole.
+	planSettledAtField    = "plan_settled_at"
+	planSpendMicrosField  = "plan_spend_micros"
+	planSpendMinutesField = "plan_spend_minutes"
 
 	// sizeField and privateField are Record's own fields (runner.Record),
 	// read here to build a Candidate without a second query. modelLabelsField is
@@ -74,12 +85,24 @@ const (
 	candidateScanLimit = 25
 )
 
-// The states a queued run holds. A run leaves queued once, and comes back to it
-// when the dispatch that claimed it never reached GitHub.
+// The states a run holds. A run leaves queued once, and comes back to it when
+// the dispatch that claimed it never reached GitHub. A run whose plan stage
+// has settled waits in planned for its build to claim; a build-stage claim
+// that never reached GitHub returns it there, its plan still standing.
 const (
 	stateQueued  = "queued"
+	statePlanned = "planned"
 	stateClaimed = "claimed"
 )
+
+// planKeySuffix keys a plan-stage reservation beside the run's own in the
+// ledger: the two stages book separate reservations, settled at separate
+// times, and the build-stage claim must find the run's own key free.
+const planKeySuffix = "#plan"
+
+// PlanKey is the ledger key a plan-stage claim of runID books. The plan job
+// settles it; the build stage books runID itself.
+func PlanKey(runID string) string { return runID + planKeySuffix }
 
 // Queue admits runs to the store's queue and claims them off it.
 type Queue struct {
@@ -146,12 +169,14 @@ func (q *Queue) Enqueue(ctx context.Context, run dispatcher.Queued) error {
 	return nil
 }
 
-// Candidates lists queued runs in Linear priority order, for admission to
-// walk (adr/0003). Bounded by candidateScanLimit, so a long backlog of
-// deferred tickets costs one scan rather than an unbounded one.
+// Candidates lists runs a poll may claim in Linear priority order, for
+// admission to walk (adr/0003): the queued, and with them the planned — a run
+// whose plan stage has settled, waiting for its build to be claimed. Bounded by
+// candidateScanLimit, so a long backlog of deferred tickets costs one scan
+// rather than an unbounded one.
 func (q *Queue) Candidates(ctx context.Context) ([]dispatcher.Candidate, error) {
 	iter := q.client.Collection(runsCollection).
-		Where(stateField, "==", stateQueued).
+		Where(stateField, "in", []string{stateQueued, statePlanned}).
 		OrderBy(priorityField, firestore.Asc).
 		Limit(candidateScanLimit).
 		Documents(ctx)
@@ -177,12 +202,30 @@ func (q *Queue) Candidates(ctx context.Context) ([]dispatcher.Candidate, error) 
 			private, _ = v.(bool)
 		}
 		priority, _ := data[priorityField].(int64)
+		var stage string
+		if state, _ := data[stateField].(string); state == statePlanned {
+			stage = dispatcher.StageBuild
+		}
 		out = append(out, dispatcher.Candidate{
 			RunID: snap.Ref.ID, Repo: repo, Size: size, Private: private, Priority: int(priority),
-			Model: buildModel(data),
+			Model:     buildModel(data),
+			Stage:     stage,
+			PlanFiles: stringList(data, planFilesField),
 		})
 	}
 	return out, nil
+}
+
+// stringList is row's field as a string list, empty when it holds none.
+func stringList(row map[string]any, field string) []string {
+	var out []string
+	list, _ := row[field].([]any)
+	for _, v := range list {
+		if s, ok := v.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // buildModel is the build model a queued run's ticket named, empty when it named
@@ -220,13 +263,23 @@ type reservationEntry struct {
 	Repo               string       `firestore:"repo"`
 	Size               string       `firestore:"size"`
 	ClaimedAt          time.Time    `firestore:"claimed_at"`
+	// Stage is the stage this reserve claimed — plan or build; empty for a
+	// single-stage claim, which plans and builds in one job.
+	Stage string `firestore:"stage"`
+	// Files is the write set this reserve may touch — a build-stage claim's
+	// plan — and empty for a plan-stage or single-stage one.
+	Files []string `firestore:"files"`
 }
 
-// inFlight lists the runs the ledger holds a reservation for.
+// inFlight lists the runs the ledger holds a reservation for, with the stage
+// and write set each reservation carries for the one-run-per-repository
+// condition's overlap check.
 func inFlight(doc ledgerDoc) []dispatcher.InFlight {
 	out := make([]dispatcher.InFlight, 0, len(doc.Reservations))
 	for _, r := range doc.Reservations {
-		out = append(out, dispatcher.InFlight{Ticket: r.TicketID, Repo: r.Repo, Size: r.Size})
+		out = append(out, dispatcher.InFlight{
+			Ticket: r.TicketID, Repo: r.Repo, Size: r.Size, Stage: r.Stage, Files: r.Files,
+		})
 	}
 	return out
 }
@@ -260,6 +313,7 @@ func subject(row map[string]any) dispatcher.Subject {
 	return dispatcher.Subject{
 		Ticket: str(ticketIDField), Repo: str(repoField), Size: str(sizeField),
 		BlockedBy: ids(blockedByField), Blocks: ids(blocksField),
+		Files: ids(planFilesField),
 	}
 }
 
@@ -278,12 +332,18 @@ func reservedTotals(doc ledgerDoc) dispatcher.Totals {
 }
 
 // TryClaim attempts to admit run runID: in one transaction, it re-reads the
-// row (must still be queued) and the ledger, sums the ledger's in-flight
-// reservations and the settled cost of runs that ended inside each of cfg's
-// windows, and commits — claiming the row and adding res to the ledger —
-// only if dispatcher.Admit lets it start (adr/0003). It reports (false, "",
-// nil) when another poll already claimed the row, and (false, <binding>, nil)
-// when a condition withholds it, which it also records on the row.
+// row (must still be queued, or planned — waiting for its build) and the
+// ledger, sums the ledger's in-flight reservations and the settled cost of
+// runs that ended inside each of cfg's windows, and commits — claiming the
+// row and adding res to the ledger — only if dispatcher.Admit lets it start
+// (adr/0003). It reports (false, "", nil) when another poll already claimed
+// the row, and (false, <binding>, nil) when a condition withholds it, which
+// it also records on the row.
+//
+// A plan-stage reservation is booked under PlanKey(runID), beside the run's
+// own key, so the build stage can claim the run while its plan is settled,
+// and the tier a plan-stage claim wrote onto the row stands for the whole
+// run: a build-stage claim leaves those fields as its plan stage left them.
 func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg dispatcher.BudgetConfig, facts dispatcher.Facts, res dispatcher.Reservation) (bool, string, error) {
 	rowRef := q.client.Collection(runsCollection).Doc(runID)
 	ledgerRef := q.ledgerRef()
@@ -299,7 +359,8 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 			return err
 		}
 		data := row.Data()
-		if state, _ := data[stateField].(string); state != stateQueued {
+		state, _ := data[stateField].(string)
+		if state != stateQueued && state != statePlanned {
 			return nil
 		}
 
@@ -336,13 +397,19 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 		if ledger.Reservations == nil {
 			ledger.Reservations = map[string]reservationEntry{}
 		}
-		ledger.Reservations[runID] = reservationEntry{
+		key := runID
+		if res.Stage == dispatcher.StagePlan {
+			key = PlanKey(runID)
+		}
+		ledger.Reservations[key] = reservationEntry{
 			ProviderCostMicros: res.ProviderCost,
 			RunnerMinutes:      res.RunnerMinutes,
 			TicketID:           cand.Ticket,
 			Repo:               cand.Repo,
 			Size:               cand.Size,
 			ClaimedAt:          at,
+			Stage:              res.Stage,
+			Files:              res.Files,
 		}
 		ledger.N = ledger.concurrency().N
 		ledger.PlatformCap = facts.Limits.PlatformCap
@@ -350,20 +417,25 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 		if err := tx.Set(ledgerRef, ledger); err != nil {
 			return err
 		}
-		var lastResortModels any = firestore.Delete
-		if facts.LastResort != nil {
-			lastResortModels = *facts.LastResort
-		}
-		if err := tx.Update(rowRef, []firestore.Update{
+		updates := []firestore.Update{
 			{Path: stateField, Value: stateClaimed},
 			{Path: claimedAtField, Value: at},
 			{Path: updatedAtField, Value: at},
 			{Path: claimConcurrencyField, Value: len(running) + 1},
 			{Path: waitingOnField, Value: firestore.Delete},
-			{Path: planField, Value: runner.Provider(facts.Model)},
-			{Path: lastResortField, Value: facts.LastResort != nil},
-			{Path: lastResortModelsField, Value: lastResortModels},
-		}); err != nil {
+		}
+		if res.Stage != dispatcher.StageBuild {
+			var lastResortModels any = firestore.Delete
+			if facts.LastResort != nil {
+				lastResortModels = *facts.LastResort
+			}
+			updates = append(updates,
+				firestore.Update{Path: planField, Value: runner.Provider(facts.Model)},
+				firestore.Update{Path: lastResortField, Value: facts.LastResort != nil},
+				firestore.Update{Path: lastResortModelsField, Value: lastResortModels},
+			)
+		}
+		if err := tx.Update(rowRef, updates); err != nil {
 			return err
 		}
 		claimed = true
@@ -396,7 +468,11 @@ func (q *Queue) Spend(ctx context.Context, cfg dispatcher.BudgetConfig, model st
 }
 
 // settled sums, within tx, the settled cost inside each of cfg's windows
-// ending at at, the run model's own cap among them.
+// ending at at, the run model's own cap among them. Each window holds both
+// halves of a two-stage run's spend: what its own settlement cost, from
+// settledSince, and what its plan stage's reserved estimate cost it, from
+// planSince — so a plan is never left outside the ceiling it was checked
+// against, and never counted twice either.
 func (q *Queue) settled(tx *firestore.Transaction, cfg dispatcher.BudgetConfig, model string, at time.Time) (dispatcher.Settled, error) {
 	settled := dispatcher.Settled{Windows: make([]money.Micros, len(cfg.ProviderWindows))}
 	for i, w := range cfg.ProviderWindows {
@@ -404,21 +480,60 @@ func (q *Queue) settled(tx *firestore.Transaction, cfg dispatcher.BudgetConfig, 
 		if err != nil {
 			return dispatcher.Settled{}, err
 		}
-		settled.Windows[i] = sum
+		planCost, _, err := q.planSince(tx, w.Since(at))
+		if err != nil {
+			return dispatcher.Settled{}, err
+		}
+		settled.Windows[i] = sum + planCost
 	}
 	if modelCap, ok := cfg.ModelCaps[model]; ok {
 		sum, _, err := q.settledSince(tx, modelCap.Since(at))
 		if err != nil {
 			return dispatcher.Settled{}, err
 		}
-		settled.ModelCap = sum
+		planCost, _, err := q.planSince(tx, modelCap.Since(at))
+		if err != nil {
+			return dispatcher.Settled{}, err
+		}
+		settled.ModelCap = sum + planCost
 	}
 	var err error
 	settled.CashCost, settled.CashMinutes, err = q.settledSince(tx, cfg.Cash.Since(at))
 	if err != nil {
 		return dispatcher.Settled{}, err
 	}
+	planCost, planMinutes, err := q.planSince(tx, cfg.Cash.Since(at))
+	if err != nil {
+		return dispatcher.Settled{}, err
+	}
+	settled.CashCost += planCost
+	settled.CashMinutes += planMinutes
 	return settled, nil
+}
+
+// planSince sums the plan stage's reserved estimate over every run whose plan
+// settled at or after since, within tx — the cost scan's plan-stage half, read
+// by the plan's own settlement stamp rather than the run's, so a run that
+// plans and never builds is still counted. It re-scans the window the way
+// settledSince does, for the reason recorded there.
+func (q *Queue) planSince(tx *firestore.Transaction, since time.Time) (cost money.Micros, minutes int64, err error) {
+	iter := tx.Documents(q.client.Collection(runsCollection).Where(planSettledAtField, ">=", since))
+	defer iter.Stop()
+	for {
+		snap, err := iter.Next()
+		if errors.Is(err, iterator.Done) {
+			break
+		}
+		if err != nil {
+			return 0, 0, fmt.Errorf("summing plan stages since %s: %w", since, err)
+		}
+		data := snap.Data()
+		c, _ := data[planSpendMicrosField].(int64)
+		m, _ := data[planSpendMinutesField].(int64)
+		cost += money.Micros(c)
+		minutes += m
+	}
+	return cost, minutes, nil
 }
 
 // readLedger reads the ledger document within tx, reporting an empty ledger
@@ -472,10 +587,27 @@ func (q *Queue) settledSince(tx *firestore.Transaction, since time.Time) (cost m
 	return money.Micros(costSum), minutesSum, nil
 }
 
+// reservation is the entry runID's stage holds and the ledger key holding it:
+// a plan-stage claim's key is PlanKey(runID), every other claim's is the run
+// id itself.
+func (d ledgerDoc) reservation(runID string) (key string, entry reservationEntry, ok bool) {
+	if e, has := d.Reservations[runID]; has {
+		return runID, e, true
+	}
+	if e, has := d.Reservations[PlanKey(runID)]; has {
+		return PlanKey(runID), e, true
+	}
+	return runID, reservationEntry{}, false
+}
+
 // Release returns a claimed run to the queue and drops its ledger
 // reservation, for the dispatch that never reached GitHub: the next poll then
 // considers it again, at the priority it was queued with, with no stale
 // reservation counted against it.
+//
+// A build-stage claim returns to planned rather than queued — the plan its
+// plan stage recorded still stands, so the next poll claims it for its build
+// without planning again.
 func (q *Queue) Release(ctx context.Context, runID string, at time.Time) error {
 	rowRef := q.client.Collection(runsCollection).Doc(runID)
 	ledgerRef := q.ledgerRef()
@@ -484,19 +616,24 @@ func (q *Queue) Release(ctx context.Context, runID string, at time.Time) error {
 		if err != nil {
 			return err
 		}
+		key, entry, has := ledger.reservation(runID)
+		state := stateQueued
+		if has && entry.Stage == dispatcher.StageBuild {
+			state = statePlanned
+		}
 		if err := tx.Update(rowRef, []firestore.Update{
-			{Path: stateField, Value: stateQueued},
+			{Path: stateField, Value: state},
 			{Path: updatedAtField, Value: at},
 			{Path: claimedAtField, Value: firestore.Delete},
 		}); err != nil {
 			return err
 		}
-		if _, has := ledger.Reservations[runID]; has {
-			return tx.Update(ledgerRef, []firestore.Update{
-				{FieldPath: firestore.FieldPath{"reservations", runID}, Value: firestore.Delete},
-			})
+		if !has {
+			return nil
 		}
-		return nil
+		return tx.Update(ledgerRef, []firestore.Update{
+			{FieldPath: firestore.FieldPath{"reservations", key}, Value: firestore.Delete},
+		})
 	})
 	if err != nil {
 		return fmt.Errorf("releasing run %s: %w", runID, err)
@@ -519,16 +656,36 @@ func (q *Queue) RecordVerdict(ctx context.Context, runID string, verdict prov.Ve
 // what the settled run showed. It is a no-op when the run holds no
 // reservation, so a run whose record job runs more than once settles exactly
 // once (adr/0003).
+//
+// A plan-stage reservation — keyed PlanKey(runID) — settles differently: the
+// plan stage ran no build, so it says nothing about running at N and is not
+// observed. Its reserved estimate is what its stage cost, since the plan job
+// reports no summary; that figure is written onto the run row outside the
+// record, where the budget windows sum it beside a run's own settlement, and
+// the row moves to planned for its build to claim.
 func (q *Queue) Settle(ctx context.Context, runID string) error {
 	ledgerRef := q.ledgerRef()
-	rowRef := q.client.Collection(runsCollection).Doc(runID)
+	rowRef := q.client.Collection(runsCollection).Doc(strings.TrimSuffix(runID, planKeySuffix))
 	err := q.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		ledger, err := q.readLedger(tx, ledgerRef)
 		if err != nil {
 			return err
 		}
-		if _, has := ledger.Reservations[runID]; !has {
+		entry, has := ledger.Reservations[runID]
+		if !has {
 			return nil
+		}
+		if entry.Stage == dispatcher.StagePlan {
+			if err := tx.Update(rowRef, []firestore.Update{
+				{Path: stateField, Value: statePlanned},
+				{Path: planSpendMicrosField, Value: int64(entry.ProviderCostMicros)},
+				{Path: planSpendMinutesField, Value: entry.RunnerMinutes},
+			}); err != nil {
+				return err
+			}
+			return tx.Update(ledgerRef, []firestore.Update{
+				{FieldPath: firestore.FieldPath{"reservations", runID}, Value: firestore.Delete},
+			})
 		}
 		cur := ledger.concurrency()
 		obs, err := q.observe(tx, rowRef, ledger)

@@ -27,6 +27,15 @@ const (
 // largeSize is the ticket size whose concurrent runs are capped separately.
 const largeSize = "L"
 
+// The stages of a run the two-stage dispatch splits it into: `plan` runs the
+// plan phase alone under the read-only profile, `build` builds from a plan
+// already recorded. A claim of neither — the shape a single-stage run takes —
+// plans and builds in one job.
+const (
+	StagePlan  = "plan"
+	StageBuild = "build"
+)
+
 // Limits are the concurrency ceilings admission holds beside N.
 type Limits struct {
 	// PlatformCap is the concurrent jobs the platform allows one account.
@@ -54,6 +63,13 @@ type InFlight struct {
 	Ticket string
 	Repo   string
 	Size   string
+	// Files is the write set the run's plan recorded, and empty until one
+	// exists: a run still in flight whose plan has not settled writes an
+	// unknown set, not an empty one.
+	Files []string
+	// Stage is the stage the reservation was claimed for; empty for a
+	// single-stage claim.
+	Stage string
 }
 
 // Subject is the candidate admission is deciding, as its run row records it.
@@ -63,6 +79,12 @@ type Subject struct {
 	Size      string
 	BlockedBy []string
 	Blocks    []string
+	// Files is the candidate's planned write set, from the plan its plan
+	// stage recorded; empty when nothing is planned yet, which is the write
+	// set that is unknown.
+	Files []string
+	// Stage is the stage this claim would dispatch.
+	Stage string
 }
 
 // Relations are a ticket's blocking relations as Linear reports them now;
@@ -121,6 +143,11 @@ type AdmitInput struct {
 // repository, a blocking relation with a run in flight, review WIP, then the
 // budget ceilings. It does no IO.
 //
+// The one-run-per-repository condition holds a candidate back only where an
+// in-flight run in its repository writes what the candidate may also write:
+// runs with known, disjoint write sets share the repository, and a run whose
+// write set is unknown holds it as the interim rule always did.
+//
 // When the open-PR count could not be read, a candidate is admitted only if
 // nothing is in flight.
 func Admit(in AdmitInput) (ok bool, binding string) {
@@ -137,7 +164,9 @@ func Admit(in AdmitInput) (ok bool, binding string) {
 		return false, ConditionConcurrency
 	case in.Candidate.Size == largeSize && countSize(in.InFlight, largeSize) >= in.Facts.Limits.LargeCap:
 		return false, ConditionLargeCap
-	case slices.ContainsFunc(in.InFlight, func(f InFlight) bool { return f.Repo == in.Candidate.Repo }):
+	case slices.ContainsFunc(in.InFlight, func(f InFlight) bool {
+		return f.Repo == in.Candidate.Repo && writeSetsCollide(f, in.Candidate)
+	}):
 		return false, ConditionRepoBusy
 	case blockedByInFlight(in.Candidate, in.InFlight):
 		return false, ConditionBlocked
@@ -160,6 +189,22 @@ func countSize(runs []InFlight, size string) int {
 		}
 	}
 	return n
+}
+
+// writeSetsCollide reports whether an in-flight run's write set and the
+// candidate's rule out sharing one repository. A plan-stage run collides with
+// nothing: its agent holds edit and shell denied. An unknown write set — no
+// plan recorded, which is every run before two-stage dispatch — collides with
+// any candidate, which is the interim one-run-per-repository rule; two known
+// sets collide where they intersect.
+func writeSetsCollide(f InFlight, c Subject) bool {
+	if f.Stage == StagePlan || c.Stage == StagePlan {
+		return false
+	}
+	if len(f.Files) == 0 || len(c.Files) == 0 {
+		return true
+	}
+	return slices.ContainsFunc(f.Files, func(name string) bool { return slices.Contains(c.Files, name) })
 }
 
 // blockedByInFlight reports a blocking relation, in either direction, between

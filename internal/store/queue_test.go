@@ -1391,3 +1391,178 @@ func TestTryClaimOnAFreeTierRecordsThePlanAndItsModels(t *testing.T) {
 		t.Fatalf("last resort %v, models %+v, want both cleared by a paid claim", rec.LastResort, rec.LastResortModels)
 	}
 }
+
+func TestTryClaimBooksTheStageAndWriteSetOnTheReservation(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	run := queuedRun(fresh("queue-stage"), 1)
+	forget(t, client, run.RunID)
+	resetLedger(t, client, 1)
+	if err := q.Enqueue(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	res := dispatcher.Reservation{
+		ProviderCost: money.Dollar, Stage: dispatcher.StageBuild, Files: []string{"a.go", "b.go"},
+	}
+	if ok, _, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, openFacts, res); err != nil || !ok {
+		t.Fatalf("claim: ok %v, err %v", ok, err)
+	}
+	entry, ok := readLedgerDoc(t, client).Reservations[run.RunID]
+	if !ok || entry.Stage != dispatcher.StageBuild || !slices.Equal(entry.Files, res.Files) {
+		t.Fatalf("reservation = %+v, want the stage and write set booked for the overlap check", entry)
+	}
+}
+
+func TestSettlePlansARunForItsBuild(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	run := queuedRun(fresh("queue-plan-settle"), 1)
+	forget(t, client, run.RunID)
+	resetLedger(t, client, 1)
+	if err := q.Enqueue(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	res := dispatcher.Reservation{
+		ProviderCost: money.FromUSD(0.25), RunnerMinutes: 4, Stage: dispatcher.StagePlan,
+	}
+	if ok, _, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, openFacts, res); err != nil || !ok {
+		t.Fatalf("plan claim: ok %v, err %v", ok, err)
+	}
+	if err := q.Settle(ctx, PlanKey(run.RunID)); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := client.Collection(runsCollection).Doc(run.RunID).Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Data()[stateField] != statePlanned {
+		t.Fatalf("state = %v after the plan settled, want %s", snap.Data()[stateField], statePlanned)
+	}
+	if snap.Data()[planSpendMicrosField] != int64(res.ProviderCost) || snap.Data()[planSpendMinutesField] != res.RunnerMinutes {
+		t.Fatalf("plan spend = %v/%v, want the reserved estimate booked", snap.Data()[planSpendMicrosField], snap.Data()[planSpendMinutesField])
+	}
+	if _, ok := readLedgerDoc(t, client).Reservations[PlanKey(run.RunID)]; ok {
+		t.Fatal("the plan reservation was not dropped")
+	}
+	if got := readLedgerDoc(t, client).N; got != 1 {
+		t.Fatalf("N = %d, want a plan settlement to leave it alone", got)
+	}
+	// A rerun record-plan-stage job settles again without error.
+	if err := q.Settle(ctx, PlanKey(run.RunID)); err != nil {
+		t.Fatalf("settling an already-settled plan: %v", err)
+	}
+	// The run is now a candidate for its build, carrying its write set.
+	cands, err := q.Candidates(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found *dispatcher.Candidate
+	for i := range cands {
+		if cands[i].RunID == run.RunID {
+			found = &cands[i]
+		}
+	}
+	if found == nil || found.Stage != dispatcher.StageBuild {
+		t.Fatalf("candidates = %+v, want the planned run waiting for its build", cands)
+	}
+}
+
+func TestReleaseReturnsABuildStageClaimToPlanned(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	run := queuedRun(fresh("queue-rel-build"), 1)
+	forget(t, client, run.RunID)
+	resetLedger(t, client, 1)
+	if err := q.Enqueue(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	res := dispatcher.Reservation{ProviderCost: money.Dollar, Stage: dispatcher.StageBuild, Files: []string{"a.go"}}
+	if ok, _, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, openFacts, res); err != nil || !ok {
+		t.Fatalf("claim: ok %v, err %v", ok, err)
+	}
+	if err := q.Release(ctx, run.RunID, queueAt.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := client.Collection(runsCollection).Doc(run.RunID).Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Data()[stateField] != statePlanned {
+		t.Fatalf("state = %v, want %s: the run's plan still stands", snap.Data()[stateField], statePlanned)
+	}
+}
+
+func TestTryClaimAdmitsTwoRunsInOneRepositoryWithDisjointWriteSets(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	first, second := queuedRun(fresh("queue-disjoint-a"), 1), queuedRun(fresh("queue-disjoint-b"), 2)
+	forget(t, client, first.RunID, second.RunID)
+	resetLedger(t, client, 2)
+	for _, run := range []dispatcher.Queued{first, second} {
+		if err := q.Enqueue(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if ok, _, err := q.TryClaim(ctx, first.RunID, queueAt, generousBudget, openFacts,
+		dispatcher.Reservation{ProviderCost: money.Dollar, Stage: dispatcher.StageBuild, Files: []string{"a.go"}}); err != nil || !ok {
+		t.Fatalf("first claim: ok %v, err %v", ok, err)
+	}
+	ok, binding, err := q.TryClaim(ctx, second.RunID, queueAt, generousBudget, openFacts,
+		dispatcher.Reservation{ProviderCost: money.Dollar, Stage: dispatcher.StageBuild, Files: []string{"b.go"}})
+	if err != nil || !ok {
+		t.Fatalf("second claim: ok %v, binding %q, err %v, want the disjoint write sets admitted together", ok, binding, err)
+	}
+}
+
+func TestTryClaimHoldsTheLaterOfTwoRunsWhoseWriteSetsOverlap(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	first, second := queuedRun(fresh("queue-overlap-a"), 1), queuedRun(fresh("queue-overlap-b"), 2)
+	forget(t, client, first.RunID, second.RunID)
+	resetLedger(t, client, 2)
+	for _, run := range []dispatcher.Queued{first, second} {
+		if err := q.Enqueue(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if ok, _, err := q.TryClaim(ctx, first.RunID, queueAt, generousBudget, openFacts,
+		dispatcher.Reservation{ProviderCost: money.Dollar, Stage: dispatcher.StageBuild, Files: []string{"a.go"}}); err != nil || !ok {
+		t.Fatalf("first claim: ok %v, err %v", ok, err)
+	}
+	ok, binding, err := q.TryClaim(ctx, second.RunID, queueAt, generousBudget, openFacts,
+		dispatcher.Reservation{ProviderCost: money.Dollar, Stage: dispatcher.StageBuild, Files: []string{"a.go"}})
+	if err != nil || ok || binding != dispatcher.ConditionRepoBusy {
+		t.Fatalf("second claim: ok %v, binding %q, err %v, want it held on repo-busy", ok, binding, err)
+	}
+}
+
+func TestReleaseReturnsAPlanStageClaimToTheQueue(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	run := queuedRun(fresh("queue-rel-plan"), 1)
+	forget(t, client, run.RunID)
+	resetLedger(t, client, 1)
+	if err := q.Enqueue(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	res := dispatcher.Reservation{ProviderCost: money.Dollar, RunnerMinutes: 3, Stage: dispatcher.StagePlan}
+	if ok, _, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, openFacts, res); err != nil || !ok {
+		t.Fatalf("plan claim: ok %v, err %v", ok, err)
+	}
+	if _, ok := readLedgerDoc(t, client).Reservations[PlanKey(run.RunID)]; !ok {
+		t.Fatal("the plan-stage reservation was not booked under the plan key")
+	}
+	if err := q.Release(ctx, run.RunID, queueAt.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := client.Collection(runsCollection).Doc(run.RunID).Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Data()[stateField] != stateQueued {
+		t.Fatalf("state = %v, want %s: a run whose plan never ran is unplanned again", snap.Data()[stateField], stateQueued)
+	}
+	if _, ok := readLedgerDoc(t, client).Reservations[PlanKey(run.RunID)]; ok {
+		t.Fatal("the plan-stage reservation was not dropped")
+	}
+}

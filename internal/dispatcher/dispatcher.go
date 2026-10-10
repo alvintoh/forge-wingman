@@ -79,6 +79,10 @@ type Claim struct {
 	Priority int
 	// Verdict is the provider plan's recorded verdict at claim time; empty when none is wired.
 	Verdict providers.Verdict
+	// Stage is the run's stage — plan or build; empty for a single-stage
+	// claim, which plans inside its own job. Dispatch sends it as the
+	// workflow's stage input only for the plan stage.
+	Stage string
 }
 
 // Config is the boundary a poll admits inside: the repositories it may
@@ -99,6 +103,10 @@ type Config struct {
 	// LastResort is the dispatched plan's free models in fall-through order,
 	// empty for a plan with none.
 	LastResort []string
+	// TwoStage is whether an M or L run is planned before it is admitted to
+	// build. Off by default; a run plans inside its own build job, and the
+	// stage input the workflows carry goes unsent.
+	TwoStage bool
 }
 
 // ProviderHalts reports whether repeated infra stops have halted dispatch to
@@ -399,6 +407,23 @@ func refuse(ctx context.Context, d Deps, r Rejection, res *Result) error {
 	return nil
 }
 
+// claimStage is the stage a claim for cand dispatches with. A run whose plan
+// stage has recorded a plan claims its build; an unplanned M or L claims its
+// plan stage when two-stage dispatch is on; and an S run — which is never
+// plan-staged — claims single-stage.
+func claimStage(cand Candidate, twoStage bool) string {
+	if !twoStage {
+		return ""
+	}
+	if cand.Stage == StageBuild {
+		return StageBuild
+	}
+	if cand.Size == "S" {
+		return ""
+	}
+	return StagePlan
+}
+
 // admitClaims walks the queue in priority order, claiming every candidate
 // Admit lets start and recording each one it withholds as a deferral naming
 // the condition that bound it.
@@ -438,6 +463,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 	var claims []Claim
 	noticed := map[string]bool{}
 	for _, cand := range candidates {
+		stage := claimStage(cand, c.TwoStage)
 		est, err := d.Estimator.Estimate(ctx, cand.Size)
 		if err != nil {
 			// A failed estimate withholds only this candidate, not the whole
@@ -449,7 +475,17 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 			res.Deferrals = append(res.Deferrals, Deferral{RunID: cand.RunID, Ceiling: ConditionEstimateFailed, At: d.Now()})
 			continue
 		}
-		reservation := Reservation{ProviderCost: est.ProviderCost}
+		if stage == StagePlan {
+			// A plan stage's reservation is estimated from settled plan
+			// phases rather than from whole runs.
+			est, err = d.Estimator.EstimatePlan(ctx, cand.Size)
+			if err != nil {
+				d.Logger.Info("planEstimateFailed", "run", cand.RunID, "size", cand.Size, "err", err.Error())
+				res.Deferrals = append(res.Deferrals, Deferral{RunID: cand.RunID, Ceiling: ConditionEstimateFailed, At: d.Now()})
+				continue
+			}
+		}
+		reservation := Reservation{ProviderCost: est.ProviderCost, Stage: stage, Files: cand.PlanFiles}
 		if cand.Private {
 			reservation.RunnerMinutes = est.Minutes
 		}
@@ -460,7 +496,10 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		if err != nil {
 			return claims, err
 		}
-		if !ok && budget.isProviderCeiling(binding) && len(c.LastResort) > 1 {
+		// A build-stage claim keeps the tier its plan stage claimed — one tier
+		// per run — so it never falls back to the free tier, which would mix
+		// tiers within the run; a ceiling that now binds defers it instead.
+		if !ok && stage != StageBuild && budget.isProviderCeiling(binding) && len(c.LastResort) > 1 {
 			if cand.Private && !privateOptIn {
 				d.Logger.Info("lastResortNeedsPrivateOptIn", "run", cand.RunID, "ceiling", binding)
 			} else {
@@ -476,7 +515,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 			}
 		}
 		if ok {
-			claims = append(claims, Claim{RunID: cand.RunID, Repo: cand.Repo, Priority: cand.Priority, Verdict: verdict})
+			claims = append(claims, Claim{RunID: cand.RunID, Repo: cand.Repo, Priority: cand.Priority, Verdict: verdict, Stage: stage})
 			continue
 		}
 		if binding == "" {

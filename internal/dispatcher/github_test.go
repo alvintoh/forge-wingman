@@ -283,3 +283,47 @@ func TestGitHubRefusesAPullRequestPageLargerThanItsBound(t *testing.T) {
 		t.Fatal("an oversized page was read whole")
 	}
 }
+
+func TestGitHubDispatchesTheStageAPlanStageClaimNames(t *testing.T) {
+	var inputs map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decoding the request: %v", err)
+		}
+		inputs, _ = body["inputs"].(map[string]any)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	claim := Claim{RunID: "FRG-18", Repo: "octo/scratch", Priority: 1, Stage: StagePlan}
+	if err := (GitHub{Endpoint: srv.URL, Token: "gh-token", Workflow: "run.yml",
+		Branch: "main", Client: srv.Client()}).Dispatch(context.Background(), claim); err != nil {
+		t.Fatal(err)
+	}
+	if len(inputs) != 2 || inputs["stage"] != StagePlan {
+		t.Fatalf("inputs = %v, want the run id and stage=%s", inputs, StagePlan)
+	}
+}
+
+func TestGitHubSendsNoStageForABuildStageClaim(t *testing.T) {
+	var inputs map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decoding the request: %v", err)
+		}
+		inputs, _ = body["inputs"].(map[string]any)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	claim := Claim{RunID: "FRG-18", Repo: "octo/scratch", Priority: 1, Stage: StageBuild}
+	if err := (GitHub{Endpoint: srv.URL, Token: "gh-token", Workflow: "run.yml",
+		Branch: "main", Client: srv.Client()}).Dispatch(context.Background(), claim); err != nil {
+		t.Fatal(err)
+	}
+	if len(inputs) != 1 || inputs["run_id"] != "FRG-18" {
+		t.Fatalf("inputs = %v, want the run id alone: run.yml's own default reads a missing stage as build", inputs)
+	}
+}

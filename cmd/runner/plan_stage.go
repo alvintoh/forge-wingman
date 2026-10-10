@@ -20,7 +20,7 @@ import (
 // cloudPlatform is the OAuth scope the runner's own Cloud Run calls need.
 const cloudPlatform = "https://www.googleapis.com/auth/cloud-platform"
 
-// planStage is the model job's half of the two-stage dispatch (FRG-33): it runs
+// planStage is the model job's half of the two-stage dispatch: it runs
 // the plan phase alone, under the plan profile's read-only harnesses, and writes
 // the plan artifact the trusted record-plan-stage job re-checks. It holds the
 // model job's identity, so it can neither read nor write a run record.
@@ -79,7 +79,7 @@ func planStage(ctx context.Context, logger *slog.Logger, e env, args []string) e
 	return nil
 }
 
-// recordPlanStage is the trusted half of the two-stage dispatch (FRG-33): it
+// recordPlanStage is the trusted half of the two-stage dispatch: it
 // re-checks the plan the model job produced, writes it and its base onto the run
 // record, settles the run's plan reservation, then wakes the dispatcher for the
 // build stage. It is the only writer of the plan stage's data, since the model
@@ -118,8 +118,8 @@ func recordPlanStage(ctx context.Context, logger *slog.Logger, e env, args []str
 	}); err != nil {
 		return err
 	}
-	if err := store.NewQueue(fsc).Settle(ctx, *runID+"#plan"); err != nil {
-		return err
+	if err := store.NewQueue(fsc).Settle(ctx, store.PlanKey(*runID)); err != nil {
+		return fmt.Errorf("settling %s's plan reservation: %w", *runID, err)
 	}
 	client, err := google.DefaultClient(ctx, cloudPlatform)
 	if err != nil {
