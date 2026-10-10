@@ -18,6 +18,7 @@ func validSummary() Summary {
 			Round:             1,
 			Model:             "command-code/x",
 			CompletionsObject: completionsObject("1-1", PhaseBuild, 1),
+			At:                finalizeNow.Add(-30 * time.Minute),
 		}},
 		EditedFiles:    []string{"version.go"},
 		OutOfPlanFiles: []string{"version.go"},
@@ -92,6 +93,9 @@ func TestParseSummaryRejects(t *testing.T) {
 		{"a PR summary over two lines", func(s *Summary) { s.PRSummary = "Adds it.\nmore" }},
 		{"no start time", func(s *Summary) { s.StartedAt = time.Time{} }},
 		{"a start time in the future", func(s *Summary) { s.StartedAt = finalizeNow.Add(time.Hour) }},
+		{"a step with no start time", func(s *Summary) { s.Steps[0].At = time.Time{} }},
+		{"a step starting before the run", func(s *Summary) { s.Steps[0].At = s.StartedAt.Add(-time.Hour) }},
+		{"a step starting in the future", func(s *Summary) { s.Steps[0].At = finalizeNow.Add(time.Hour) }},
 		{"a built run with no branch", func(s *Summary) { s.Branch = "" }},
 		{"a built run with no model", func(s *Summary) { s.Steps[0].Model = "" }},
 		{"a built run with no completions", func(s *Summary) { s.Steps[0].CompletionsObject = "" }},
@@ -243,6 +247,7 @@ func TestParseSummaryAcceptsEveryBuildEnding(t *testing.T) {
 			s.Steps = []Step{{
 				Phase: agentPhase, Round: 1, Model: "command-code/x",
 				CompletionsObject: completionsObject("1-1", agentPhase, 1),
+				At:                finalizeNow.Add(-time.Minute),
 			}}
 		}
 		raw, err := s.Encode()
@@ -290,6 +295,7 @@ func TestParseSummaryAcceptsSeveralStepsEachUnderItsOwnCompletionsName(t *testin
 	s.Steps = append(s.Steps, Step{
 		Phase: PhaseBuild, Round: 2, Model: "command-code/x",
 		CompletionsObject: completionsObject("1-1", PhaseBuild, 2),
+		At:                finalizeNow.Add(-29 * time.Minute),
 	})
 	raw, err := s.Encode()
 	if err != nil {

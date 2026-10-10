@@ -75,6 +75,10 @@ type Step struct {
 	Tokens            Usage  `firestore:"tokens" json:"tokens"`
 	DurationMS        int64  `firestore:"duration_ms" json:"duration_ms"`
 	CompletionsObject string `firestore:"completions_object" json:"completions_object"`
+	// At is when the step started. The step is priced per event time by
+	// Rates.At, but nothing of that time survives the events themselves, so
+	// the record job reads this back to tag the run's own time of use.
+	At time.Time `firestore:"at" json:"at"`
 }
 
 type ending struct {
@@ -250,9 +254,20 @@ func (s Summary) validate(attemptID string, t Ticket, now time.Time) error {
 			return errors.New("an ending past the worktree names no build step")
 		}
 	}
+	// The run's own window is checked first, so a step's time below is only
+	// ever measured against one that this build could have reported.
+	if s.StartedAt.IsZero() || s.StartedAt.After(now.Add(maxClockSkew)) || s.StartedAt.Before(now.Add(-maxSummaryAge)) {
+		return errors.New("start time is out of range")
+	}
 	for _, step := range s.Steps {
 		if err := step.validate(attemptID); err != nil {
 			return err
+		}
+		// A step starts inside the run that reported it, so its own time
+		// sits between the run's start and now; the clock skew covers the
+		// build's and the record job's own clocks.
+		if step.At.IsZero() || step.At.After(now.Add(maxClockSkew)) || step.At.Before(s.StartedAt.Add(-maxClockSkew)) {
+			return errors.New("a step's start time is outside the run")
 		}
 	}
 	for kind, files := range map[string][]string{"edited": s.EditedFiles, "out-of-plan": s.OutOfPlanFiles} {
@@ -286,9 +301,6 @@ func (s Summary) validate(attemptID string, t Ticket, now time.Time) error {
 	}
 	if s.Branch != "" && s.Branch != BranchName(t.BranchSegment(), attemptID) {
 		return errors.New("branch is not this run's")
-	}
-	if s.StartedAt.IsZero() || s.StartedAt.After(now.Add(maxClockSkew)) || s.StartedAt.Before(now.Add(-maxSummaryAge)) {
-		return errors.New("start time is out of range")
 	}
 	return nil
 }

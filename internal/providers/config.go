@@ -68,15 +68,15 @@ type HourRange struct {
 // so a window is over-metered rather than under.
 func (r Rates) At(t time.Time) Rates {
 	flat := Rates{Input: r.Input, Output: r.Output, CacheRead: r.CacheRead, CacheWrite: r.CacheWrite}
-	if r.Peak == nil || (!t.IsZero() && !r.Peak.covers(t)) {
+	if r.Peak == nil || (!t.IsZero() && !r.Peak.Covers(t)) {
 		return flat
 	}
 	m := r.Peak.Multiplier
 	return Rates{Input: flat.Input * m, Output: flat.Output * m, CacheRead: flat.CacheRead * m, CacheWrite: flat.CacheWrite * m}
 }
 
-// covers reports whether t falls inside one of the peak windows.
-func (p Peak) covers(t time.Time) bool {
+// Covers reports whether t falls inside one of the peak windows.
+func (p Peak) Covers(t time.Time) bool {
 	t = t.UTC()
 	if wd := t.Weekday(); wd == time.Saturday || wd == time.Sunday {
 		return false
