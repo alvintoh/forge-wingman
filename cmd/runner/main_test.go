@@ -756,9 +756,37 @@ func TestRecordPlanStageNeedsADispatcherURI(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	e := env{identity: runner.Identity{Account: "octo", Owner: "octo"}}
 	err := recordPlanStage(context.Background(), logger, e,
-		[]string{"-run-id", "run-1", "-plan-file", filepath.Join(t.TempDir(), "plan.json")})
+		[]string{"-run-id", "run-1", "-plan-file", filepath.Join(t.TempDir(), "plan.json"), "-plan-stage-result", jobSuccess})
 	if err == nil || !strings.Contains(err.Error(), "-dispatcher-uri") {
 		t.Fatalf("err = %v, want a missing dispatcher URI refused", err)
+	}
+}
+
+func TestRecordPlanStageNeedsTheStageResult(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	e := env{identity: runner.Identity{Account: "octo", Owner: "octo"}}
+	err := recordPlanStage(context.Background(), logger, e, []string{"-run-id", "run-1"})
+	if err == nil || !strings.Contains(err.Error(), "-plan-stage-result") {
+		t.Fatalf("err = %v, want a missing plan-stage result refused", err)
+	}
+}
+
+// TestRecordPlanStageStopsARunWhenTheStageFailed pins the branch a stopped plan
+// stage needs: the run is ended rather than left holding its plan reservation.
+// No run row exists here, so the stop's own error naming the run is what shows
+// the failed result reached it, rather than the path that reads a missing plan.
+func TestRecordPlanStageStopsARunWhenTheStageFailed(t *testing.T) {
+	if os.Getenv("FIRESTORE_EMULATOR_HOST") == "" {
+		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	e := env{identity: runner.Identity{Account: "octo", Owner: "octo"}, project: "forge-wingman-test"}
+	err := recordPlanStage(context.Background(), logger, e, []string{
+		"-run-id", "38105737126", "-plan-file", filepath.Join(t.TempDir(), "plan.json"),
+		"-dispatcher-uri", "https://example.test", "-plan-stage-result", "failure",
+	})
+	if err == nil || !strings.Contains(err.Error(), "stopping run 38105737126") {
+		t.Fatalf("err = %v, want the failed stage to reach the stop", err)
 	}
 }
 
@@ -790,8 +818,10 @@ func TestRunWorkflowGatesTheStageOnTheDispatcher(t *testing.T) {
 		"if: inputs.stage != 'plan' && needs.model.outputs.changed == 'true'\n",
 		"if: always() && inputs.stage != 'plan' && github.ref == 'refs/heads/main'\n",
 		"  record-plan-stage:\n",
-		"if: github.ref == 'refs/heads/main' && inputs.stage == 'plan'",
+		"if: always() && github.ref == 'refs/heads/main' && inputs.stage == 'plan'",
 		"record-plan-stage\n          -run-id \"$RUN_ID\" -plan-file \"$RUNNER_TEMP/plan.json\" -dispatcher-uri \"$DISPATCHER_RUN_URI\"",
+		"-run-url \"$RUN_URL\" -plan-stage-result \"${{ needs.model.result }}\"",
+		"if: needs.model.result == 'success'\n        with:\n          name: plan\n",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("run.yml lacks %q", want)

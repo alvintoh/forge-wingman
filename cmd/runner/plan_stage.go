@@ -22,6 +22,11 @@ import (
 // cloudPlatform is the OAuth scope the runner's own Cloud Run calls need.
 const cloudPlatform = "https://www.googleapis.com/auth/cloud-platform"
 
+// jobSuccess is the result GitHub reports for a job that completed. It is what
+// record-plan-stage requires before it will read a plan artifact: any other
+// result means the stage stopped, and there is no artifact to read.
+const jobSuccess = "success"
+
 // planStage is the model job's half of the two-stage dispatch: it runs
 // the plan phase alone, under the plan profile's read-only harnesses, and writes
 // the plan artifact the trusted record-plan-stage job re-checks. It holds the
@@ -91,20 +96,44 @@ func planStage(ctx context.Context, logger *slog.Logger, e env, args []string) e
 // A plan that asked the owner a decision takes the other branch: the run is
 // suspended onto that decision, holding no runner and no reservation, and the
 // dispatcher is woken to post the question in the run's agent session.
+//
+// A plan stage that ended any other way wrote no artifact to record, so the run
+// is stopped here: no other job would release the reservation it holds.
 func recordPlanStage(ctx context.Context, logger *slog.Logger, e env, args []string) error {
 	fs := flag.NewFlagSet("record-plan-stage", flag.ContinueOnError)
 	runID := fs.String("run-id", "", "run record to write the plan onto")
 	planFile := fs.String("plan-file", "", "path to the plan artifact the plan-stage job wrote")
 	dispatcherURI := fs.String("dispatcher-uri", "", "Cloud Run run endpoint of the dispatcher job to wake")
 	runURL := fs.String("run-url", "", "URL of this plan stage's workflow run")
+	planStageResult := fs.String("plan-stage-result", "", "how the plan-stage job ended, as GitHub reports it: success, failure or cancelled")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if err := e.identity.CheckAccount(); err != nil {
 		return err
 	}
-	if *dispatcherURI == "" {
+	if *planStageResult == "" {
+		return errors.New("no -plan-stage-result to say how the plan stage ended")
+	}
+	if *planStageResult == jobSuccess && *dispatcherURI == "" {
 		return errors.New("no -dispatcher-uri to wake the dispatcher")
+	}
+	fsc, err := recordsClient(ctx, e.project, *runID)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = fsc.Close() }()
+	queue := store.NewQueue(fsc)
+	if *planStageResult != jobSuccess {
+		// The plan stage stopped before writing its artifact — a workflow change
+		// in the plan, a projection miss, every model failing. No job records
+		// that run, so it ends here rather than holding its plan reservation for
+		// a run that will never proceed.
+		if err := queue.Stop(ctx, *runID, runner.StopPlanStageFailed, "the plan stage "+*planStageResult, time.Now()); err != nil {
+			return err
+		}
+		logger.Info("planStageStopped", "run", *runID, "result", *planStageResult)
+		return nil
 	}
 	raw, err := os.ReadFile(*planFile)
 	if err != nil {
@@ -114,12 +143,6 @@ func recordPlanStage(ctx context.Context, logger *slog.Logger, e env, args []str
 	if err != nil {
 		return err
 	}
-	fsc, err := recordsClient(ctx, e.project, *runID)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = fsc.Close() }()
-	queue := store.NewQueue(fsc)
 	switch {
 	case plan.Decision != nil:
 		// The plan asked the owner a decision: park the run so it holds no
