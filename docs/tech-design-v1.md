@@ -302,6 +302,9 @@ passes one conformance suite (FRG-62, FRG-57). Today omp is the default (FRG-63)
 opencode the fallback (FRG-65); the Command Code CLI is retired, its adapter
 removed after FRG-65. The plan is still GOAT, reached through Command
 Code's Provider API.
+*Updated (2026-10-12):* plans are now an ordered list in configuration — OpenCode Go
+first once its session header and terms clear, GOAT second; a ticket keeps one plan for
+its whole life and falls through at admission (PRD FR-14, FRG-54, `adr/0015`).
 
 ~~**Superseded (2026-10-05) by the record then numbered `adr/0015`:** the harness is the Command Code CLI and the
 provider its GOAT plan ($10/month; $14/5h, $35/7d, $70/month). The seam's shape below
