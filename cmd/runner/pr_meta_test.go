@@ -33,7 +33,7 @@ func encodedSummary(t *testing.T, attemptID string, now time.Time, edits ...func
 		Outcome: runner.OutcomeBuilt,
 		Phase:   runner.PhaseCommit,
 		Steps: []runner.Step{{Phase: runner.PhaseBuild, Round: 1, Model: "command-code/x",
-			CompletionsObject: "completions/" + attemptID + "-build-1.jsonl"}},
+			CompletionsObject: "completions/" + attemptID + "-build-1.jsonl", At: now.Add(-30 * time.Minute)}},
 		EditedFiles:    []string{"widget.go", "extra.go"},
 		OutOfPlanFiles: []string{"extra.go"},
 		Branch:         runner.BranchName(tk.BranchSegment(), attemptID),
