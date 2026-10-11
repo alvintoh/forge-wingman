@@ -107,11 +107,15 @@ func decide(ctx context.Context, d Deps, c Config, w WaitingRun, at time.Time) e
 }
 
 // deadline is when an unanswered run stops: the last thing said — the question
-// asked, or the owner's latest reply — plus the configured wait. Measuring from
-// the last word keeps an owner mid-conversation from being cut off by a window
-// that began before they spoke.
+// asked, the question posted, or the owner's latest reply — plus the configured
+// wait. Measuring from the last word keeps an owner mid-conversation, and one
+// whose question only reached them late, from being cut off by a window that
+// began before they or it spoke.
 func deadline(w WaitingRun, timeout time.Duration) time.Time {
 	from := w.AskedAt
+	if w.PostedAt.After(from) {
+		from = w.PostedAt
+	}
 	if w.RepliedAt.After(from) {
 		from = w.RepliedAt
 	}

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"time"
 
@@ -122,6 +123,12 @@ func recordPlanStage(ctx context.Context, logger *slog.Logger, e env, args []str
 	case plan.Decision != nil:
 		// The plan asked the owner a decision: park the run so it holds no
 		// runner and no reservation, and let the dispatcher post the question.
+		// The URL is what the waiting notice links to, and what the resumed run
+		// reads back, so a decision carrying none is refused rather than stored
+		// as a dead link.
+		if err := validRunURL(*runURL); err != nil {
+			return err
+		}
 		if err := queue.Suspend(ctx, *runID, *plan.Decision, *runURL, time.Now()); err != nil {
 			return err
 		}
@@ -149,5 +156,16 @@ func recordPlanStage(ctx context.Context, logger *slog.Logger, e env, args []str
 		return nil
 	}
 	logger.Info("planStageRecorded", "run", *runID, "files", len(plan.Files), "base", plan.BaseSHA)
+	return nil
+}
+
+// validRunURL reports whether s is the plan stage's own workflow-run URL. The
+// waiting notice links to it and the resumed run reads it back, so an empty or
+// non-https value is refused where it is used rather than stored as a dead link.
+func validRunURL(s string) error {
+	u, err := url.Parse(s)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return errors.New("-run-url must be this plan stage's https URL")
+	}
 	return nil
 }

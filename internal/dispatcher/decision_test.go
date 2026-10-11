@@ -193,3 +193,16 @@ func TestPollMeasuresTheDeadlineFromTheLastWordAfterAReask(t *testing.T) {
 		t.Fatalf("stopped a run whose question was re-asked two hours ago: %+v", dec.stopped)
 	}
 }
+
+// TestPollMeasuresTheDeadlineFromALatePost: a question that only reached the
+// owner long after it was raised keeps the full window to answer it, rather than
+// stopping the run on a clock that ran while the question sat unposted.
+func TestPollMeasuresTheDeadlineFromALatePost(t *testing.T) {
+	dec := &fakeDecisions{waiting: []WaitingRun{waitingRun(pollAt.Add(-30*time.Hour), pollAt.Add(-time.Hour), "", time.Time{})}}
+	if _, err := Poll(context.Background(), decisionDeps(dec, &fakeElicitor{}, &fakeNotices{}), decisionConfig); err != nil {
+		t.Fatal(err)
+	}
+	if len(dec.stopped) != 0 {
+		t.Fatalf("stopped a run whose question was posted an hour ago: %+v", dec.stopped)
+	}
+}
