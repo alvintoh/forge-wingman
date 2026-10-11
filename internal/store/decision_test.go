@@ -224,8 +224,8 @@ func TestStopWaitingRecordsTheStop(t *testing.T) {
 		data[stopDetailField] != storeDecision.Question {
 		t.Fatalf("row = %v", data)
 	}
-	if data[stateField] != stateWaiting {
-		t.Fatalf("state = %v, want the run to stay waiting", data[stateField])
+	if data[stateField] != stateStopped {
+		t.Fatalf("state = %v, want a stopped wait out of the waiting state", data[stateField])
 	}
 }
 
@@ -344,7 +344,18 @@ func TestAStoppedWaitTakesNoReplyAndNoAnswer(t *testing.T) {
 		t.Fatal(err)
 	}
 	row := readDecisions(t, client, id)
-	if row.State != stateWaiting || row.Decisions[0].Answer != "" || row.Decisions[0].Reply != "" {
+	if row.State != stateStopped || row.Decisions[0].Answer != "" || row.Decisions[0].Reply != "" {
 		t.Fatalf("row = %+v, want a stopped wait left alone", row)
+	}
+	// A stopped wait leaves the waiting state, so it cannot hold a slot in the
+	// scan that finds the runs still owed a question.
+	waiting, err := q.Waiting(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range waiting {
+		if w.RunID == id {
+			t.Fatalf("a stopped wait is still listed: %+v", w)
+		}
 	}
 }

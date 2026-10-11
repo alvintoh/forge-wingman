@@ -740,6 +740,7 @@ func TestValidRunURL(t *testing.T) {
 		{"not https", "http://github.com/octo/repo/actions/runs/7", true},
 		{"relative", "/octo/repo/actions/runs/7", true},
 		{"no host", "https:///actions/runs/7", true},
+		{"https but not an actions run", "https://example.test/x", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := validRunURL(tc.url); (err != nil) != tc.wantErr {

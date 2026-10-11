@@ -108,9 +108,12 @@ const (
 	statePlanned = "planned"
 	stateClaimed = "claimed"
 	// stateWaiting is a run parked on an owner decision: it holds no runner
-	// and no reservation, and Candidates never lists it. The recorded outcome
-	// is what keeps a stopped waiting run from being claimed again.
+	// and no reservation, and Candidates never lists it.
 	stateWaiting = "waiting"
+	// stateStopped is a wait that ended unanswered: the run is finished, and
+	// nothing lists it as waiting, so a stop cannot hold a slot in the scan
+	// that finds the runs still owed a question.
+	stateStopped = "stopped"
 )
 
 // planKeySuffix keys a plan-stage reservation beside the run's own in the

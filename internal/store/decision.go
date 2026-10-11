@@ -223,10 +223,12 @@ func (q *Queue) Posted(ctx context.Context, runID, sessionID string, at time.Tim
 }
 
 // StopWaiting ends runID's wait unanswered: the row records a waiting-on-owner
-// stop naming the question and stays waiting, so no poll claims it again. The
-// recorded outcome is what keeps it from being reconsidered.
+// stop naming the question and leaves the waiting state, so no poll claims it
+// again and it cannot hold a slot in the scan that finds the runs still owed a
+// question.
 func (q *Queue) StopWaiting(ctx context.Context, runID string, d runner.Decision, at time.Time) error {
 	_, err := q.client.Collection(runsCollection).Doc(runID).Update(ctx, []firestore.Update{
+		{Path: stateField, Value: stateStopped},
 		{Path: outcomeField, Value: runner.OutcomeStopped},
 		{Path: buildOutcomeField, Value: runner.OutcomeStopped},
 		{Path: stopReasonField, Value: runner.StopWaitingOnOwner},

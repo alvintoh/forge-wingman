@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"cloud.google.com/go/storage"
@@ -159,13 +160,14 @@ func recordPlanStage(ctx context.Context, logger *slog.Logger, e env, args []str
 	return nil
 }
 
-// validRunURL reports whether s is the plan stage's own workflow-run URL. The
-// waiting notice links to it and the resumed run reads it back, so an empty or
-// non-https value is refused where it is used rather than stored as a dead link.
+// validRunURL reports whether s is a plan stage's own workflow-run URL — the
+// shape run.yml passes, and what the waiting notice links to. An https URL that
+// is not an actions run is refused: it would be stored and carried into the
+// notice as a link that goes nowhere useful.
 func validRunURL(s string) error {
 	u, err := url.Parse(s)
-	if err != nil || u.Scheme != "https" || u.Host == "" {
-		return errors.New("-run-url must be this plan stage's https URL")
+	if err != nil || u.Scheme != "https" || u.Host == "" || !strings.Contains(u.Path, "/actions/runs/") {
+		return errors.New("-run-url must be this plan stage's https actions-run URL")
 	}
 	return nil
 }
