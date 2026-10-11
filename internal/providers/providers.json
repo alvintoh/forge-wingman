@@ -92,16 +92,16 @@
       "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
       "key_secret": "GEMINI_API_KEY",
       "harnesses": {
-        "default": "opencode"
+        "default": "omp"
       },
       "rates": {
-        "gemini/gemini-2.5-flash": {
+        "gemini/gemini-3.8-flash": {
           "input_usd_per_mtok": 0,
           "output_usd_per_mtok": 0,
           "cache_read_usd_per_mtok": 0,
           "cache_write_usd_per_mtok": 0
         },
-        "gemini/gemini-2.5-flash-lite": {
+        "gemini/gemini-3.5-flash-lite": {
           "input_usd_per_mtok": 0,
           "output_usd_per_mtok": 0,
           "cache_read_usd_per_mtok": 0,
@@ -110,10 +110,10 @@
       },
       "last_resort": {
         "models": [
-          "gemini/gemini-2.5-flash",
-          "gemini/gemini-2.5-flash-lite"
+          "gemini/gemini-3.8-flash",
+          "gemini/gemini-3.5-flash-lite"
         ],
-        "measured_on": "unmeasured"
+        "measured_on": "2026-10-11"
       }
     }
   }

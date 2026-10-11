@@ -12,4 +12,3 @@ readonly: agent wingman-readonly, mode primary, permission {edit, bash, task: de
 badkey: COMMAND_CODE_API_KEY unset; exit 1, an error event (APIError 401), empty stderr
 usage: step_finish part.tokens {input (excludes cache.read), output (excludes reasoning), reasoning, cache.read, cache.write}, cost 0; the step's time is the event's outer timestamp (epoch ms, step end); every event carries a top-level sessionID
 limit-declined case: not captured (cannot be forced)
-gemini (pending): the free-tier plan (gemini/gemini-2.5-flash through @ai-sdk/openai-compatible, baseURL https://generativelanguage.googleapis.com/v1beta/openai/, key GEMINI_API_KEY) is not yet recorded. Capture gemini-normal.ndjson, gemini-normal.exit and gemini-normal.stderr with the same isolation and flags as above, GEMINI_API_KEY in the environment, then TestOpencodeAgentReachesTheGeminiPlan replays it (AC2, FRG-87)

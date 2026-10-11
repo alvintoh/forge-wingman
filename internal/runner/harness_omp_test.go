@@ -287,10 +287,10 @@ func TestOmpAgentChoosesTheApprovalMode(t *testing.T) {
 }
 
 // TestOmpAgentRefusesAModelOfAnotherPlan asserts the adapter runs only a
-// named model of the plan whose provider it maps to, before starting omp — a
-// plan omp has no built-in provider for, such as the free tier's, included.
+// named model of a plan it has a provider for, before starting omp — a model
+// whose plan it maps no provider to, or whose id carries no model, included.
 func TestOmpAgentRefusesAModelOfAnotherPlan(t *testing.T) {
-	for _, model := range []string{"other/model", "command-code/", "gemini/gemini-2.5-flash"} {
+	for _, model := range []string{"other/model", "command-code/"} {
 		t.Run(model, func(t *testing.T) {
 			bin, attempts := scriptedOmp(t, "normal")
 			agent := OmpHarness{Bin: bin, Key: "k", Home: t.TempDir()}.Agent(ProfileBuild, model)
@@ -443,6 +443,55 @@ func TestOmpRunsAGoatFreeModelMeteredAtNothing(t *testing.T) {
 	}
 	if u.Input == 0 || u.Output == 0 || u.Cost != 0 {
 		t.Fatalf("usage = %+v, want tokens metered at $0", u)
+	}
+}
+
+// geminiTestModel is the free-tier model the second plan serves through omp.
+const geminiTestModel = "gemini/gemini-3.8-flash"
+
+// requireGeminiFixture skips the live-proof case until the fixture is recorded.
+// It is captured by hand — an owner step — because it spends free-tier calls and
+// needs the GEMINI_API_KEY repository secret.
+func requireGeminiFixture(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{"gemini-normal.ndjson", "gemini-normal.exit", "gemini-normal.stderr"} {
+		if _, err := os.Stat(filepath.Join("testdata", "omp", name)); err != nil {
+			t.Skipf("the live Gemini fixture is not recorded yet: capture %s by running the omp adapter once on %s with GEMINI_API_KEY set (testdata/omp/PACKAGE.txt)", name, geminiTestModel)
+		}
+	}
+}
+
+// TestOmpAgentReachesTheGeminiPlan replays the recorded live Gemini free-tier
+// run: the adapter reaches the plan through omp's own google provider with the
+// repository's key, and the free model answers. It skips until the fixture is
+// recorded, which needs the GEMINI_API_KEY secret.
+func TestOmpAgentReachesTheGeminiPlan(t *testing.T) {
+	requireGeminiFixture(t)
+	bin, attempts := scriptedOmp(t, "gemini-normal")
+	var out strings.Builder
+	h := OmpHarness{Bin: bin, Key: "gemini-key", Home: t.TempDir()}
+	if err := h.Agent(ProfileBuild, geminiTestModel).Run(context.Background(), t.TempDir(), "", "p", "", &out, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	got := attempts()
+	if len(got) != 1 {
+		t.Fatalf("omp ran %d times, want 1", len(got))
+	}
+	if !slices.Contains(got[0].env, "GEMINI_API_KEY=gemini-key") {
+		t.Fatal("env lacks GEMINI_API_KEY, so the free-tier key never reached the CLI")
+	}
+	if j := slices.Index(got[0].args, "--model"); j < 0 || got[0].args[j+1] != "google/"+strings.TrimPrefix(geminiTestModel, "gemini/") {
+		t.Fatalf("args %v do not name omp's google provider and the plan's model", got[0].args)
+	}
+	u, err := SumUsage(strings.NewReader(out.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Steps == 0 || u.Input == 0 {
+		t.Fatalf("usage %+v carries no model step: the free-tier model answered nothing", u)
+	}
+	if text, _ := FinalText(strings.NewReader(out.String())); text == "" {
+		t.Error("the free-tier run carries no final text")
 	}
 }
 

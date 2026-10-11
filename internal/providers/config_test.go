@@ -415,11 +415,11 @@ func TestEmbeddedGeminiIsAFreeTierPlan(t *testing.T) {
 	if got := KeySecret("gemini"); got != "GEMINI_API_KEY" {
 		t.Fatalf("KeySecret(gemini) = %q", got)
 	}
-	if got := Harnesses("gemini"); !slices.Equal(got, []string{"opencode"}) {
-		t.Fatalf("Harnesses(gemini) = %v, want opencode", got)
+	if got := Harnesses("gemini"); !slices.Equal(got, []string{"omp"}) {
+		t.Fatalf("Harnesses(gemini) = %v, want omp", got)
 	}
 	models := LastResortModels("gemini")
-	if len(models) != 2 || models[0] != "gemini/gemini-2.5-flash" || models[1] != "gemini/gemini-2.5-flash-lite" {
+	if len(models) != 2 || models[0] != "gemini/gemini-3.8-flash" || models[1] != "gemini/gemini-3.5-flash-lite" {
 		t.Fatalf("LastResortModels(gemini) = %v, want the two free models", models)
 	}
 	for _, model := range models {

@@ -26,12 +26,14 @@ const ompName = "omp"
 // starting omp.
 var ompProviderFor = map[string]string{
 	"command-code": "commandcode",
+	"gemini":       "google",
 }
 
 // ompKeyEnvFor maps a plan to the variable omp's provider reads its key from,
 // which is the CLI's own name rather than the repository secret's.
 var ompKeyEnvFor = map[string]string{
 	"command-code": "COMMAND_CODE_API_KEY",
+	"gemini":       "GEMINI_API_KEY",
 }
 
 // ompAgentDir and ompSessionDir sit under the harness's HOME; omp reads its
