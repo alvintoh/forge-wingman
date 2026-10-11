@@ -703,13 +703,15 @@ func TestFinalizeLeavesTheDriftFlagEmptyWithoutEnoughOfTheProvidersHistory(t *te
 
 func TestFinalizeLeavesTheDriftFlagEmptyWithoutAProviderToAsk(t *testing.T) {
 	for name, tt := range map[string]struct {
-		plan      string
-		trail     *fakeTrailing
-		wantAsked bool
+		plan       string
+		trail      *fakeTrailing
+		wantAsked  bool
+		wantUnread bool
 	}{
-		"no reader":                     {plan: "command-code"},
-		"a history that cannot be read": {plan: "command-code", trail: &fakeTrailing{err: errors.New("firestore unreachable")}, wantAsked: true},
-		"no provider on the record":     {trail: &fakeTrailing{mean: money.Dollar, sample: 10}},
+		"no reader":                          {plan: "command-code"},
+		"a history that cannot be read":      {plan: "command-code", trail: &fakeTrailing{err: errors.New("firestore unreachable")}, wantAsked: true, wantUnread: true},
+		"no provider on the record":          {trail: &fakeTrailing{mean: money.Dollar, sample: 10}},
+		"a provider history holding no cost": {plan: "command-code", trail: &fakeTrailing{sample: 10}, wantAsked: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			store := seededOn(t, tt.plan)
@@ -721,6 +723,9 @@ func TestFinalizeLeavesTheDriftFlagEmptyWithoutAProviderToAsk(t *testing.T) {
 			rec := finalizeRun(t, store, reader, encoded(t, settledOn("command-code/x", 10)), finalizeNow)
 			if rec.CostDrift != "" {
 				t.Fatalf("cost drift = %q, want none", rec.CostDrift)
+			}
+			if rec.CostDriftUnread != tt.wantUnread {
+				t.Fatalf("cost drift unread = %v, want %v", rec.CostDriftUnread, tt.wantUnread)
 			}
 			if !rec.SettledAt.Equal(finalizeNow) {
 				t.Fatalf("settled at %v, want the run still settled with the comparison withheld", rec.SettledAt)
@@ -789,12 +794,17 @@ func TestTimeOfUseIsTheBucketTheRunsOwnStepsFellIn(t *testing.T) {
 	peak := time.Date(2026, 9, 28, 2, 0, 0, 0, time.UTC)    // a Monday, inside the card's 01:00-04:00 window
 	offPeak := time.Date(2026, 9, 28, 5, 0, 0, 0, time.UTC) // the same Monday, outside every window
 	weekend := time.Date(2026, 9, 26, 2, 0, 0, 0, time.UTC) // a Saturday, inside the hours but never at peak
+	// Ten minutes before the same Monday's 01:00 window opens, so a step that
+	// starts here and runs on is charged at peak for the part inside it.
+	beforePeak := time.Date(2026, 9, 28, 0, 50, 0, 0, time.UTC)
 	for name, tt := range map[string]struct {
 		steps []Step
 		want  string
 	}{
 		"a step priced at peak":                       {[]Step{{Model: priced, At: peak}}, TimeOfUsePeak},
 		"a step priced off peak":                      {[]Step{{Model: priced, At: offPeak}}, TimeOfUseOffPeak},
+		"a step that runs into a peak window":         {[]Step{{Model: priced, At: beforePeak, DurationMS: 20 * 60 * 1000}}, TimeOfUsePeak},
+		"a step that ends before the window opens":    {[]Step{{Model: priced, At: beforePeak, DurationMS: 5 * 60 * 1000}}, TimeOfUseOffPeak},
 		"a weekend step inside the hours":             {[]Step{{Model: priced, At: weekend}}, TimeOfUseOffPeak},
 		"any peak step wins over the rest":            {[]Step{{Model: priced, At: offPeak}, {Model: priced, At: peak}}, TimeOfUsePeak},
 		"a plan that does not price by the hour":      {[]Step{{Model: "command-code/poolside/laguna-s-2.1-free", At: peak}}, ""},

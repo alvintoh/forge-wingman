@@ -150,6 +150,11 @@ type Record struct {
 	// threshold or there is too little history to compare. Self-describing,
 	// like UsageWarning, rather than a bare flag.
 	CostDrift string `firestore:"cost_drift"`
+	// CostDriftUnread reports that the provider's own history could not be
+	// read, so the drift flag was left empty rather than set from a comparison
+	// that never happened. Without it a broken read would disable every future
+	// flag with nothing in the record or the log to say so.
+	CostDriftUnread bool `firestore:"cost_drift_unread"`
 	// LastResort is set when the run was claimed on the plan's free tier,
 	// whose models LastResortModels names in place of ModelLabels.
 	LastResort       bool        `firestore:"last_resort"`
@@ -456,7 +461,7 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, reader Prov
 		rec.SettledAt = now
 		rec.SettledProviderCostMicros = money.FromUSD(rec.Tokens.Cost)
 		rec.TimeOfUse = timeOfUse(rec.Steps)
-		rec.CostDrift = costDrift(ctx, reader, rec, now)
+		rec.CostDrift, rec.CostDriftUnread = costDrift(ctx, reader, rec, now)
 	}
 	if rec.Private {
 		rec.SettledRunnerMinutes = BillableMinutes(rec.DurationsMS)
@@ -480,7 +485,10 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, reader Prov
 // timeOfUse is the run's own time-of-use bucket: "peak" when any of its steps
 // ran inside a window its own plan prices at peak, "off-peak" when none did, and
 // empty for a run no step of which its plan prices by the hour at all. A step
-// whose time is unknown counts as peak, the direction Rates.At prices it.
+// counts by its whole span rather than its start instant, because its cost is
+// metered per request at each event's own time — a step that begins before a
+// peak window and runs into it was charged at peak for that part. A step whose
+// time is unknown counts as peak, the direction Rates.At prices it.
 func timeOfUse(steps []Step) string {
 	hourly, peak := false, false
 	for _, st := range steps {
@@ -489,7 +497,7 @@ func timeOfUse(steps []Step) string {
 			continue
 		}
 		hourly = true
-		if st.At.IsZero() || rates.Peak.Covers(st.At) {
+		if spansPeak(*rates.Peak, st) {
 			peak = true
 		}
 	}
@@ -503,6 +511,22 @@ func timeOfUse(steps []Step) string {
 	}
 }
 
+// spansPeak reports whether any part of the step falls in one of the plan's
+// peak windows. The windows are whole hours, so walking the hours the step
+// touches is exact rather than an approximation of it.
+func spansPeak(peak providers.Peak, st Step) bool {
+	if st.At.IsZero() {
+		return true
+	}
+	end := st.At.Add(time.Duration(st.DurationMS) * time.Millisecond)
+	for at := st.At.Truncate(time.Hour); !at.After(end); at = at.Add(time.Hour) {
+		if peak.Covers(at) {
+			return true
+		}
+	}
+	return false
+}
+
 // costDrift names how far the run's settled cost sits above its provider's own
 // trailing average, empty when it is within the drift threshold, when too
 // little of that provider's history has settled to average it, or when there is
@@ -510,22 +534,25 @@ func timeOfUse(steps []Step) string {
 // Finalize: the flag annotates a run whose cost is already settled, and the
 // record is the only place its outcome survives — an advisory comparison must
 // not be able to cost it.
-func costDrift(ctx context.Context, reader ProviderCostReader, rec Record, now time.Time) string {
+func costDrift(ctx context.Context, reader ProviderCostReader, rec Record, now time.Time) (string, bool) {
 	if reader == nil || rec.Plan == "" {
-		return ""
+		return "", false
 	}
 	mean, sample, err := reader.ProviderTrailingCost(ctx, rec.Plan, now.Add(-TrailingWindow), rec.RunID)
-	if err != nil || sample < minDriftSample || mean <= 0 {
+	if err != nil {
+		return "", true
+	}
+	if sample < minDriftSample || mean <= 0 {
 		// A mean of zero has no percentage to be above: the provider's own
 		// history holds no cost to compare a run against.
-		return ""
+		return "", false
 	}
 	cost := rec.SettledProviderCostMicros
 	if cost*100 <= mean*(100+driftPercent) {
-		return ""
+		return "", false
 	}
 	return fmt.Sprintf("cost $%.4f is %d%% above the $%.4f average of %d of this provider's runs",
-		cost.USD(), (cost-mean)*100/mean, mean.USD(), sample)
+		cost.USD(), (cost-mean)*100/mean, mean.USD(), sample), false
 }
 
 // RunModels are the models the run's phases start on: the free tier's when it

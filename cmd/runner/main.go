@@ -476,7 +476,11 @@ func record(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		logger.Warn("summaryRejected", "run", *runID, "err", rec.StopDetail)
 	}
 	logger.Info("recordFinalized", "run", *runID, "attempt", *attemptID, "outcome", string(rec.Outcome),
-		"reason", string(rec.StopReason), "failedGate", rec.FailedGate)
+		"reason", string(rec.StopReason), "failedGate", rec.FailedGate,
+		"timeOfUse", rec.TimeOfUse, "costDrift", rec.CostDrift)
+	if rec.CostDriftUnread {
+		logger.Warn("costDriftUnread", "run", *runID, "provider", rec.Plan)
+	}
 	if rec.Outcome == runner.OutcomeInfraFailure && rec.StopReason == runner.StopModelUnavailable && len(rec.Steps) > 0 {
 		provider := runner.Provider(rec.Steps[len(rec.Steps)-1].Model)
 		if perr := store.NewProviders(fsc).RecordInfraStop(ctx, provider, time.Now()); perr != nil {
