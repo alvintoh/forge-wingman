@@ -699,6 +699,59 @@ func (q *Queue) Release(ctx context.Context, runID string, at time.Time) error {
 	return nil
 }
 
+// Stop ends a run that will never reach GitHub: its row leaves the queue with
+// the reason recorded, and its plan reservation is released, so nothing counts
+// a run that will not proceed. It is what a plan stage that stopped before
+// writing its artifact needs — otherwise the reservation is held for a run no
+// job will ever record. Unlike Release the run does not return to the
+// queue: the reason reports a condition no retry changes.
+//
+// The plan really did spend, so its reserved estimate books onto the row the way
+// a settled plan's does, and the settle stamp is written here because a stopped
+// plan never reaches WritePlan — the window the cost falls in is the one that
+// stamp lies in.
+func (q *Queue) Stop(ctx context.Context, runID string, reason runner.StopReason, detail string, at time.Time) error {
+	rowRef := q.client.Collection(runsCollection).Doc(runID)
+	ledgerRef := q.ledgerRef()
+	err := q.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		ledger, err := q.readLedger(tx, ledgerRef)
+		if err != nil {
+			return err
+		}
+		updates := []firestore.Update{
+			{Path: stateField, Value: stateStopped},
+			{Path: outcomeField, Value: runner.OutcomeStopped},
+			{Path: buildOutcomeField, Value: runner.OutcomeStopped},
+			{Path: stopReasonField, Value: reason},
+			{Path: stopDetailField, Value: detail},
+			{Path: updatedAtField, Value: at},
+		}
+		key, entry, has := ledger.reservation(runID)
+		if !has {
+			return tx.Update(rowRef, updates)
+		}
+		var row planRow
+		snap, err := tx.Get(rowRef)
+		if err != nil {
+			return err
+		}
+		if err := snap.DataTo(&row); err != nil {
+			return err
+		}
+		spend, ledgerUpdates := planSettle(key, entry, row)
+		updates = append(updates, spend...)
+		updates = append(updates, firestore.Update{Path: planSettledAtField, Value: at})
+		if err := tx.Update(rowRef, updates); err != nil {
+			return err
+		}
+		return tx.Update(ledgerRef, ledgerUpdates)
+	})
+	if err != nil {
+		return fmt.Errorf("stopping run %s: %w", runID, err)
+	}
+	return nil
+}
+
 // RecordVerdict writes the provider plan verdict onto run runID, touching no
 // other field of its record.
 func (q *Queue) RecordVerdict(ctx context.Context, runID string, verdict prov.Verdict) error {

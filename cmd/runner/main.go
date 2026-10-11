@@ -70,10 +70,12 @@ func main() {
 var errRunFailed = errors.New("run did not succeed")
 
 // exitCode is 0 for a build stop whose summary was reported, which the record
-// job then judges, and 1 for every other error.
+// job then judges, and 1 for every other error. A stage that reports no summary
+// wraps its stop in errRunFailed, and that wrapper decides the exit: there is
+// nothing for the record job to judge, so the run failed and the job must say so.
 func exitCode(err error) int {
 	var stopped *runner.StopError
-	if err == nil || (errors.As(err, &stopped) && !errors.Is(err, runner.ErrSummaryUnreported)) {
+	if err == nil || (errors.As(err, &stopped) && !errors.Is(err, runner.ErrSummaryUnreported) && !errors.Is(err, errRunFailed)) {
 		return 0
 	}
 	return 1

@@ -1413,6 +1413,64 @@ func TestTryClaimBooksTheStageAndWriteSetOnTheReservation(t *testing.T) {
 	}
 }
 
+func TestStopEndsARunAndReleasesItsPlanReservation(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	run := queuedRun(fresh("queue-stop-plan"), 1)
+	forget(t, client, run.RunID)
+	resetLedger(t, client, 1)
+	if err := q.Enqueue(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	res := dispatcher.Reservation{
+		ProviderCost: money.FromUSD(0.25), RunnerMinutes: 4, Stage: dispatcher.StagePlan,
+	}
+	if ok, _, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, openFacts, res); err != nil || !ok {
+		t.Fatalf("plan claim: ok %v, err %v", ok, err)
+	}
+	// The plan stage stopped before writing an artifact, so record-plan-stage
+	// ends its run rather than leaving the reservation held forever.
+	stoppedAt := queueAt.Add(time.Minute)
+	if err := q.Stop(ctx, run.RunID, runner.StopPlanStageFailed, "the plan stage failure", stoppedAt); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := client.Collection(runsCollection).Doc(run.RunID).Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := snap.Data()
+	if data[stateField] != stateStopped {
+		t.Fatalf("state = %v after the stop, want %s", data[stateField], stateStopped)
+	}
+	if data[stopReasonField] != string(runner.StopPlanStageFailed) || data[stopDetailField] != "the plan stage failure" {
+		t.Fatalf("stop = %v/%v, want the reason and its detail recorded", data[stopReasonField], data[stopDetailField])
+	}
+	if data[planSpendMicrosField] != int64(res.ProviderCost) || data[planSpendMinutesField] != res.RunnerMinutes {
+		t.Fatalf("plan spend = %v/%v, want the reserved estimate booked", data[planSpendMicrosField], data[planSpendMinutesField])
+	}
+	stamped, ok := data[planSettledAtField].(time.Time)
+	if !ok || !stamped.Equal(stoppedAt) {
+		t.Fatalf("plan settled at = %v, want the stop's own time: a stopped plan never reaches WritePlan", data[planSettledAtField])
+	}
+	if _, ok := readLedgerDoc(t, client).Reservations[PlanKey(run.RunID)]; ok {
+		t.Fatal("the plan reservation was not dropped")
+	}
+	// The stop is not a release: the run does not come back as a candidate.
+	cands, err := q.Candidates(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range cands {
+		if cands[i].RunID == run.RunID {
+			t.Fatalf("stopped run %s came back as a candidate", run.RunID)
+		}
+	}
+	// A second stop, with no reservation left, is a no-op rather than an error.
+	if err := q.Stop(ctx, run.RunID, runner.StopPlanStageFailed, "again", stoppedAt); err != nil {
+		t.Fatalf("stopping an already-stopped run: %v", err)
+	}
+}
+
 func TestSettlePlansARunForItsBuild(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()

@@ -131,9 +131,13 @@ jobs:
   # plan, writes it and its base onto the run record, settles the run's plan
   # reservation and wakes the dispatcher for the build stage. It holds the
   # runner identity, since the model job cannot reach a run record.
+  #
+  # It runs even when the model job failed: a plan stage that stopped wrote no
+  # artifact and nothing else would release the reservation it holds, so this job
+  # ends the run instead (FRG-88).
   record-plan-stage:
     needs: [ticket, model]
-    if: github.ref == 'refs/heads/main' && inputs.stage == 'plan'
+    if: always() && github.ref == 'refs/heads/main' && inputs.stage == 'plan'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -160,13 +164,16 @@ jobs:
 
       - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
 
-      # A missing plan artifact fails the re-check rather than writing a record.
+      # A plan stage that stopped wrote no artifact to download: the job below
+      # ends its run rather than recording a plan.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: needs.model.result == 'success'
         with:
           name: plan
           path: ${{ runner.temp }}
 
       - name: Record the plan stage
+        if: always()
         env:
           GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}
           DISPATCHER_RUN_URI: ${{ vars.WINGMAN_DISPATCHER_RUN_URI }}
@@ -174,7 +181,7 @@ jobs:
         run: >-
           "$RUNNER_TEMP/runner" record-plan-stage
           -run-id "$RUN_ID" -plan-file "$RUNNER_TEMP/plan.json" -dispatcher-uri "$DISPATCHER_RUN_URI"
-          -run-url "$RUN_URL"
+          -run-url "$RUN_URL" -plan-stage-result "${{ needs.model.result }}"
 
   # The branch's code runs here, so the job holds nothing it could misuse. Each gate is
   # a fixed step, so the branch cannot redefine one; a failing gate is named, not fatal.

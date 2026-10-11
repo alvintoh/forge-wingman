@@ -100,6 +100,10 @@ const (
 	// StopWorkflowChange reports a plan or build touching a file under
 	// .github/workflows/, which the run's GitHub App has no permission to push.
 	StopWorkflowChange StopReason = "workflow-change"
+	// StopPlanStageFailed reports a plan stage that stopped before writing its
+	// artifact, so the trusted record job found nothing to record and ended the
+	// run instead of leaving it holding its plan reservation.
+	StopPlanStageFailed StopReason = "plan-stage-failed"
 	// StopWaitingOnOwner reports a run parked on an owner decision the owner
 	// did not answer within the configured window, so the dispatcher stopped it
 	// rather than hold it forever.
