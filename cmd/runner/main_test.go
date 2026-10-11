@@ -782,11 +782,42 @@ func TestRecordPlanStageStopsARunWhenTheStageFailed(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	e := env{identity: runner.Identity{Account: "octo", Owner: "octo"}, project: "forge-wingman-test"}
 	err := recordPlanStage(context.Background(), logger, e, []string{
-		"-run-id", "38105737126", "-plan-file", filepath.Join(t.TempDir(), "plan.json"),
+		"-run-id", "10000000001", "-plan-file", filepath.Join(t.TempDir(), "plan.json"),
 		"-dispatcher-uri", "https://example.test", "-plan-stage-result", "failure",
 	})
-	if err == nil || !strings.Contains(err.Error(), "stopping run 38105737126") {
+	if err == nil || !strings.Contains(err.Error(), "stopping run 10000000001") {
 		t.Fatalf("err = %v, want the failed stage to reach the stop", err)
+	}
+}
+
+// TestRecordPlanStageStopsARunWithNoRecordablePlan pins the other half of the
+// wedge: the stage reported success, so this job is what records its artifact,
+// and one it cannot read or re-check must not leave the run queued either.
+func TestRecordPlanStageStopsARunWithNoRecordablePlan(t *testing.T) {
+	if os.Getenv("FIRESTORE_EMULATOR_HOST") == "" {
+		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	e := env{identity: runner.Identity{Account: "octo", Owner: "octo"}, project: "forge-wingman-test"}
+	for _, tc := range []struct{ name, runID, content string }{
+		{"an artifact that was never written", "10000000002", ""},
+		{"an artifact that does not re-check", "10000000003", "not a plan"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "plan.json")
+			if tc.content != "" {
+				if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := recordPlanStage(context.Background(), logger, e, []string{
+				"-run-id", tc.runID, "-plan-file", path,
+				"-dispatcher-uri", "https://example.test", "-plan-stage-result", jobSuccess,
+			})
+			if err == nil || !strings.Contains(err.Error(), "stopping run "+tc.runID) {
+				t.Fatalf("err = %v, want the run stopped rather than left queued", err)
+			}
+		})
 	}
 }
 
@@ -822,6 +853,7 @@ func TestRunWorkflowGatesTheStageOnTheDispatcher(t *testing.T) {
 		"record-plan-stage\n          -run-id \"$RUN_ID\" -plan-file \"$RUNNER_TEMP/plan.json\" -dispatcher-uri \"$DISPATCHER_RUN_URI\"",
 		"-run-url \"$RUN_URL\" -plan-stage-result \"${{ needs.model.result }}\"",
 		"if: needs.model.result == 'success'\n        with:\n          name: plan\n",
+		"      - name: Record the plan stage\n        if: always()\n",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("run.yml lacks %q", want)

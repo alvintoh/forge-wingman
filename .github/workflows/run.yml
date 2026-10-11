@@ -173,6 +173,7 @@ jobs:
           path: ${{ runner.temp }}
 
       - name: Record the plan stage
+        if: always()
         env:
           GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}
           DISPATCHER_RUN_URI: ${{ vars.WINGMAN_DISPATCHER_RUN_URI }}

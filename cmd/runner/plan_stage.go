@@ -125,23 +125,28 @@ func recordPlanStage(ctx context.Context, logger *slog.Logger, e env, args []str
 	defer func() { _ = fsc.Close() }()
 	queue := store.NewQueue(fsc)
 	if *planStageResult != jobSuccess {
-		// The plan stage stopped before writing its artifact — a workflow change
-		// in the plan, a projection miss, every model failing. No job records
-		// that run, so it ends here rather than holding its plan reservation for
-		// a run that will never proceed.
-		if err := queue.Stop(ctx, *runID, runner.StopPlanStageFailed, "the plan stage "+*planStageResult, time.Now()); err != nil {
-			return err
+		// GitHub reports a closed set of results here. An unrecognised one still
+		// ends the run — anything else would leave it holding its reservation —
+		// but it is named, since nothing else would show it.
+		if *planStageResult != "failure" && *planStageResult != "cancelled" && *planStageResult != "skipped" {
+			logger.Warn("planStageResultUnknown", "result", *planStageResult)
 		}
-		logger.Info("planStageStopped", "run", *runID, "result", *planStageResult)
-		return nil
+		return stopPlanStage(ctx, logger, queue, *runID, "the plan stage "+*planStageResult, *runURL)
 	}
 	raw, err := os.ReadFile(*planFile)
 	if err != nil {
-		return fmt.Errorf("reading the plan artifact: %w", err)
+		// The stage reported success, so its artifact is what this job records:
+		// one it cannot read — an upload that never landed, an artifact past its
+		// day — is a plan this run will never have. Stopping it keeps the
+		// reservation from being the only thing left holding the run.
+		return errors.Join(
+			stopPlanStage(ctx, logger, queue, *runID, "the plan artifact could not be read", *runURL),
+			fmt.Errorf("reading the plan artifact: %w", err),
+		)
 	}
 	plan, err := runner.ParsePlanStage(raw)
 	if err != nil {
-		return err
+		return errors.Join(stopPlanStage(ctx, logger, queue, *runID, "the plan artifact did not re-check", *runURL), err)
 	}
 	switch {
 	case plan.Decision != nil:
@@ -181,6 +186,24 @@ func recordPlanStage(ctx context.Context, logger *slog.Logger, e env, args []str
 	}
 	logger.Info("planStageRecorded", "run", *runID, "files", len(plan.Files), "base", plan.BaseSHA)
 	return nil
+}
+
+// stopPlanStage ends a run whose plan stage left nothing the trusted half can
+// record: the row leaves the queue with the detail named, and the plan
+// reservation is released. It returns an error so the step that stopped the run
+// is red as well, which is the only way the reason reaches a reader of the job.
+//
+// The stage's own reason — a workflow change, a projection miss — stays in the
+// plan job's log, so the detail carries that job's URL when the caller has one.
+func stopPlanStage(ctx context.Context, logger *slog.Logger, queue *store.Queue, runID, detail, runURL string) error {
+	if validRunURL(runURL) == nil {
+		detail += " (" + runURL + ")"
+	}
+	if err := queue.Stop(ctx, runID, runner.StopPlanStageFailed, detail, time.Now()); err != nil {
+		return err
+	}
+	logger.Info("planStageStopped", "run", runID, "detail", detail)
+	return fmt.Errorf("%w: %s", errRunFailed, detail)
 }
 
 // validRunURL reports whether s is a plan stage's own workflow-run URL — the
