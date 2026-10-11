@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -143,6 +144,7 @@ func TestExitCode(t *testing.T) {
 		{"success", nil, 0},
 		{"a reported stop", stopped, 0},
 		{"a stop whose summary was not reported", errors.Join(stopped, runner.ErrSummaryUnreported), 1},
+		{"a stop a stage reports as a failed run", fmt.Errorf("%w: %w", errRunFailed, stopped), 1},
 		{"an error that is not a stop", errors.New("boom"), 1},
 		{"a recorded run that failed", errRunFailed, 1},
 	} {
