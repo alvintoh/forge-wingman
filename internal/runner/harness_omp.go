@@ -20,15 +20,19 @@ import (
 // binary oh-my-pi installs (testdata/omp/PACKAGE.txt).
 const ompName = "omp"
 
-// ompPlan is the plan whose model ids the harness runs, ompProvider omp's own
-// built-in provider for that plan.
-const (
-	ompPlan     = "command-code"
-	ompProvider = "commandcode"
-)
+// ompProviderFor maps a plan to omp's own built-in provider name for it, so the
+// adapter reaches the plan's endpoint with the model id omp recognises. A plan
+// absent here is one omp cannot reach, and the adapter refuses its models before
+// starting omp.
+var ompProviderFor = map[string]string{
+	"command-code": "commandcode",
+}
 
-// ompKeyEnv is the variable omp's provider reads the plan's key from.
-const ompKeyEnv = "COMMAND_CODE_API_KEY"
+// ompKeyEnvFor maps a plan to the variable omp's provider reads its key from,
+// which is the CLI's own name rather than the repository secret's.
+var ompKeyEnvFor = map[string]string{
+	"command-code": "COMMAND_CODE_API_KEY",
+}
 
 // ompAgentDir and ompSessionDir sit under the harness's HOME; omp reads its
 // user rules and settings, ompRulesFile and ompConfigFile, from the agent
@@ -55,13 +59,14 @@ telemetry:
   otlpExportEnabled: false
 `
 
-// ompModels renders the plan's output caps as omp's modelOverrides, keyed by the
-// id omp itself knows the model by. Empty when the plan caps no model, so a plan
+// ompModels renders plan's output caps as omp's modelOverrides, keyed by the id
+// omp itself knows the model by. Empty when the plan caps no model, so a plan
 // without caps writes no file and keeps the harness's own default.
-func ompModels(caps map[string]int) string {
+func ompModels(plan string, caps map[string]int) string {
+	provider := ompProviderFor[plan]
 	var overrides []string
 	for model, maxTokens := range caps {
-		id, ok := strings.CutPrefix(model, ompPlan+"/")
+		id, ok := strings.CutPrefix(model, plan+"/")
 		if !ok || id == "" {
 			continue
 		}
@@ -71,41 +76,54 @@ func ompModels(caps map[string]int) string {
 		return ""
 	}
 	slices.Sort(overrides)
-	return "providers:\n  " + ompProvider + ":\n    modelOverrides:\n" + strings.Join(overrides, "")
+	return "providers:\n  " + provider + ":\n    modelOverrides:\n" + strings.Join(overrides, "")
 }
 
 func init() {
-	keyEnv := providers.KeySecret(ompPlan)
 	registerHarness(ompName, func(getenv func(string) string) Harness {
 		var home string
 		if tmp := getenv("RUNNER_TEMP"); tmp != "" {
 			home = filepath.Join(tmp, "omp-home")
 		}
-		return OmpHarness{Bin: ompName, Key: getenv(keyEnv), Home: home}
-	}, keyEnv)
+		return OmpHarness{Bin: ompName, Getenv: getenv, Home: home}
+	})
 }
 
-// OmpHarness runs the oh-my-pi agent CLI on the plan's key.
+// OmpHarness runs the oh-my-pi agent CLI on each plan's own key.
 type OmpHarness struct {
 	Bin string
+	// Key is the key the harness runs on when it is built directly, without an
+	// environment to resolve a plan's own secret from.
 	Key string
+	// Getenv resolves a plan's key secret when the harness is built from the
+	// environment, so one harness serves every plan omp is configured for.
+	Getenv func(string) string
 	// Home is the CLI's HOME for the whole run: it holds the agent directory and
 	// the sessions a later round resumes.
 	Home string
 }
 
+// keyFor is the key the harness runs plan on: its own resolved key when built
+// directly, else the plan's secret read from the environment.
+func (h OmpHarness) keyFor(plan string) string {
+	if h.Getenv == nil {
+		return h.Key
+	}
+	return h.Getenv(providers.KeySecret(plan))
+}
+
 // Name is the harness's own name, the key a plan's configuration selects it by.
 func (h OmpHarness) Name() string { return ompName }
 
-// Agent returns the omp agent for profile p.
+// Agent returns the omp agent for profile p, keyed for the model's plan.
 func (h OmpHarness) Agent(p Profile, model string) Agent {
-	return OmpAgent{Bin: h.Bin, Key: h.Key, Home: h.Home, Model: model, Profile: p}
+	return OmpAgent{Bin: h.Bin, Key: h.keyFor(Provider(model)), Home: h.Home, Model: model, Profile: p}
 }
 
-// Ready reports the harness usable only when its key is present (AC7).
-func (h OmpHarness) Ready() error {
-	if h.Key == "" {
-		return fmt.Errorf("the omp harness needs the %s secret", providers.KeySecret(ompPlan))
+// Ready reports the harness usable only when plan's key is present (AC7).
+func (h OmpHarness) Ready(plan string) error {
+	if h.keyFor(plan) == "" {
+		return fmt.Errorf("the omp harness needs the %s secret", providers.KeySecret(plan))
 	}
 	return nil
 }
@@ -137,9 +155,12 @@ func (a OmpAgent) Run(ctx context.Context, dir, session, prompt, rules string, s
 	if a.Home == "" {
 		return errors.New("the omp harness has no home directory")
 	}
-	rest, ok := strings.CutPrefix(a.Model, ompPlan+"/")
-	if !ok || rest == "" {
-		return fmt.Errorf("the omp harness runs only %s models, not %q", ompPlan, a.Model)
+	plan := Provider(a.Model)
+	rest, ok := strings.CutPrefix(a.Model, plan+"/")
+	provider, reachable := ompProviderFor[plan]
+	keyEnv, keyed := ompKeyEnvFor[plan]
+	if !ok || rest == "" || !reachable || !keyed {
+		return fmt.Errorf("the omp harness has no provider for plan %q", plan)
 	}
 	agentDir := filepath.Join(a.Home, ompAgentDir)
 	if err := writeAgentFile(filepath.Join(agentDir, ompRulesFile), rules); err != nil {
@@ -148,7 +169,7 @@ func (a OmpAgent) Run(ctx context.Context, dir, session, prompt, rules string, s
 	if err := writeAgentFile(filepath.Join(agentDir, ompConfigFile), ompConfig); err != nil {
 		return fmt.Errorf("omp config: %w", err)
 	}
-	if body := ompModels(providers.OutputCaps(ompPlan)); body != "" {
+	if body := ompModels(plan, providers.OutputCaps(plan)); body != "" {
 		if err := writeAgentFile(filepath.Join(agentDir, ompModelsFile), body); err != nil {
 			return fmt.Errorf("omp models: %w", err)
 		}
@@ -157,7 +178,7 @@ func (a OmpAgent) Run(ctx context.Context, dir, session, prompt, rules string, s
 	if a.Profile == ProfileBuild {
 		approval = "yolo"
 	}
-	args := []string{"-p", "--mode", "json", "--model", ompProvider + "/" + rest, "--no-extensions", "--no-skills",
+	args := []string{"-p", "--mode", "json", "--model", provider + "/" + rest, "--no-extensions", "--no-skills",
 		"--session-dir", filepath.Join(a.Home, ompSessionDir), "--approval-mode", approval}
 	if session != "" {
 		args = append(args, "--resume", session)
@@ -165,7 +186,7 @@ func (a OmpAgent) Run(ctx context.Context, dir, session, prompt, rules string, s
 	cmd := exec.CommandContext(ctx, a.Bin, args...)
 	cmd.Dir = dir
 	cmd.Env = append(filterEnv(os.Environ(), agentBaseEnvNames),
-		"HOME="+a.Home, "PI_CODING_AGENT_DIR="+agentDir, ompKeyEnv+"="+a.Key)
+		"HOME="+a.Home, "PI_CODING_AGENT_DIR="+agentDir, keyEnv+"="+a.Key)
 	cmd.Stdin = strings.NewReader(prompt)
 	return runAgentCLI(cmd, a.Home, stderr, func(events io.Reader, _ error) error {
 		return translateOmpEvents(events, stdout, stderr)

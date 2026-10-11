@@ -350,3 +350,82 @@ func TestParseConfigAcceptsARateCardsBoundaries(t *testing.T) {
 		})
 	}
 }
+
+// twoPlanDoc wraps a paid plan and a free-only one in one document, with the
+// given last_resort_plans body, so the order's validation is exercised against a
+// configuration that has both kinds of plan.
+func twoPlanDoc(order string) string {
+	return `{"cash_limit_usd":30,"runner_free_minutes":2000,` + order + `"providers":{
+		"paid":{` + providerFacts + `,"windows":[{"name":"paid-5h","hours":5,"limit_usd":14}]},
+		"gratis":{` + providerFacts + `,"rates":` + freeRates("gratis/a") + `,"last_resort":{"models":["gratis/a"],"measured_on":"2026-10-08"}}}}`
+}
+
+// TestParseConfigRejectsAnInvalidLastResortOrder asserts the ordered free-tier
+// plans must be configured providers that actually hold a free tier, each named
+// once.
+func TestParseConfigRejectsAnInvalidLastResortOrder(t *testing.T) {
+	for name, tc := range map[string]struct{ order, want string }{
+		"an unconfigured plan":     {`"last_resort_plans":["nobody"],`, "not configured"},
+		"a plan with no free tier": {`"last_resort_plans":["paid"],`, "no free tier"},
+		"a plan named twice":       {`"last_resort_plans":["gratis","gratis"],`, "twice"},
+		"an empty plan":            {`"last_resort_plans":[""],`, "empty plan"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := parseConfig([]byte(twoPlanDoc(tc.order)))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want one containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseConfigReadsTheLastResortOrder asserts the ordered free-tier plans are
+// read back in the order the document names them, so the dispatcher walks the
+// configuration rather than a hardcoded sequence.
+func TestParseConfigReadsTheLastResortOrder(t *testing.T) {
+	cfg, err := parseConfig([]byte(twoPlanDoc(`"last_resort_plans":["gratis"],`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.LastResortPlans; !slices.Equal(got, []string{"gratis"}) {
+		t.Fatalf("LastResortPlans = %v, want the configured order", got)
+	}
+}
+
+// TestEmbeddedConfigNamesTheFreeTierOrder asserts the embedded configuration
+// walks the plans' free tiers in the configured order, so a paid plan whose
+// allowance is spent falls through to the next plan's free models.
+func TestEmbeddedConfigNamesTheFreeTierOrder(t *testing.T) {
+	if got := LastResortPlans(); !slices.Equal(got, []string{"command-code", "gemini"}) {
+		t.Fatalf("LastResortPlans() = %v, want command-code then gemini", got)
+	}
+	if got := Plans(); !slices.Equal(got, []string{"command-code", "gemini"}) {
+		t.Fatalf("Plans() = %v, want both configured plans, sorted", got)
+	}
+}
+
+// TestEmbeddedGeminiIsAFreeTierPlan asserts the second plan is configuration
+// alone: its OpenAI-compatible base URL, its own key secret, its opencode
+// harness and its free models priced $0, all read through the accessors the
+// runner and dispatcher use.
+func TestEmbeddedGeminiIsAFreeTierPlan(t *testing.T) {
+	if got := BaseURL("gemini"); got != "https://generativelanguage.googleapis.com/v1beta/openai/" {
+		t.Fatalf("BaseURL(gemini) = %q, want the OpenAI-compatible endpoint", got)
+	}
+	if got := KeySecret("gemini"); got != "GEMINI_API_KEY" {
+		t.Fatalf("KeySecret(gemini) = %q", got)
+	}
+	if got := Harnesses("gemini"); !slices.Equal(got, []string{"opencode"}) {
+		t.Fatalf("Harnesses(gemini) = %v, want opencode", got)
+	}
+	models := LastResortModels("gemini")
+	if len(models) != 2 || models[0] != "gemini/gemini-2.5-flash" || models[1] != "gemini/gemini-2.5-flash-lite" {
+		t.Fatalf("LastResortModels(gemini) = %v, want the two free models", models)
+	}
+	for _, model := range models {
+		rates, ok := RatesFor(model)
+		if !ok || rates.Input != 0 || rates.Output != 0 || rates.CacheRead != 0 || rates.CacheWrite != 0 {
+			t.Fatalf("RatesFor(%s) = %+v (ok %v), want every rate $0", model, rates, ok)
+		}
+	}
+}

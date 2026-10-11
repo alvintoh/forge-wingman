@@ -276,6 +276,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 	queue := store.NewQueue(fsc)
 	plans := store.NewPlans(fsc)
 	model := runner.DefaultModel()
+	provider := runner.Provider(model)
 	if _, err := dispatcher.Poll(ctx, dispatcher.Deps{
 		Source:     dispatcher.Linear{Tokens: tokens, Delegate: c.delegate, Client: client},
 		Queue:      queue,
@@ -295,8 +296,27 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		Elicit:     webhook.Linear{Tokens: tokens},
 		Logger:     logger,
 		Now:        time.Now,
-	}, dispatcher.Config{Repos: c.repos, Budget: budgetConfig(runner.Provider(model)), Model: model, Limits: c.limits, Tuning: c.tuning, LastResort: providers.LastResortModels(runner.Provider(model)), TwoStage: c.twoStage, DecisionTimeout: c.decisionTimeout}); err != nil {
+	}, dispatcher.Config{Repos: c.repos, Budget: budgetConfig(provider), Model: model, Limits: c.limits, Tuning: c.tuning, LastResortPlans: lastResortPlans(provider), TwoStage: c.twoStage, DecisionTimeout: c.decisionTimeout}); err != nil {
 		return err
 	}
 	return nil
+}
+
+// lastResortPlans is the ordered free-tier plans the fallback walks: each
+// configured plan's own free models, in the order the configuration names them.
+// A configuration that names no order falls back to the dispatched plan's own
+// free tier alone, as a single-plan configuration always did.
+func lastResortPlans(provider string) [][]string {
+	var rungs [][]string
+	for _, plan := range providers.LastResortPlans() {
+		if models := providers.LastResortModels(plan); len(models) > 0 {
+			rungs = append(rungs, models)
+		}
+	}
+	if len(rungs) == 0 {
+		if models := providers.LastResortModels(provider); len(models) > 0 {
+			rungs = append(rungs, models)
+		}
+	}
+	return rungs
 }

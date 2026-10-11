@@ -126,6 +126,9 @@ jobs:
       stage: ${{ inputs.stage }}
     secrets:
       COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
+      # The free-tier plan's key, read only when a run falls through to it. Left
+      # unset until the owner adds it (infra/README.md).
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
   # The trusted half of the plan stage (FRG-33): it re-checks the model job's
   # plan, writes it and its base onto the run record, settles the run's plan

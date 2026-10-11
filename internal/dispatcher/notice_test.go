@@ -371,7 +371,7 @@ func TestPollNoticesAFreeTierDeferralAgainstTheFreeTiersOwnBudget(t *testing.T) 
 	q.freeBindings = map[string]string{"ABC-18": CeilingRunnerMinutes}
 	d.Estimator = fakeEstimator{bySize: map[string]Estimate{"M": {ProviderCost: money.FromUSD(1), Minutes: 30}}}
 	d.ModelPlans = &fakeModelPlans{plans: map[string]providers.Plan{"p": {PrivateOptIn: true}}}
-	cfg.LastResort = []string{"p/free-a", "p/free-b"}
+	cfg.LastResortPlans = [][]string{{"p/free-a", "p/free-b"}}
 	if _, err := Poll(context.Background(), d, cfg); err != nil {
 		t.Fatal(err)
 	}

@@ -250,7 +250,7 @@ func TestOmpModelsCapsOnlyThePlansOwnModels(t *testing.T) {
 		"a bare model id":   {"ling-3.1-flash:free": 10},
 		"an empty model id": {"command-code/": 10},
 	} {
-		if got := ompModels(caps); got != "" {
+		if got := ompModels("command-code", caps); got != "" {
 			t.Errorf("%s: ompModels = %q, want no file", name, got)
 		}
 	}
@@ -287,9 +287,10 @@ func TestOmpAgentChoosesTheApprovalMode(t *testing.T) {
 }
 
 // TestOmpAgentRefusesAModelOfAnotherPlan asserts the adapter runs only a
-// named model of the plan whose provider it maps to, before starting omp.
+// named model of the plan whose provider it maps to, before starting omp — a
+// plan omp has no built-in provider for, such as the free tier's, included.
 func TestOmpAgentRefusesAModelOfAnotherPlan(t *testing.T) {
-	for _, model := range []string{"other/model", "command-code/"} {
+	for _, model := range []string{"other/model", "command-code/", "gemini/gemini-2.5-flash"} {
 		t.Run(model, func(t *testing.T) {
 			bin, attempts := scriptedOmp(t, "normal")
 			agent := OmpHarness{Bin: bin, Key: "k", Home: t.TempDir()}.Agent(ProfileBuild, model)
@@ -312,7 +313,7 @@ func TestOmpAgentNeedsAHomeAndAKey(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "home") {
 		t.Fatalf("err = %v, want the missing home refused", err)
 	}
-	if err := (OmpHarness{}).Ready(); err == nil || !strings.Contains(err.Error(), "COMMANDCODE_API_KEY") {
+	if err := (OmpHarness{}).Ready("command-code"); err == nil || !strings.Contains(err.Error(), "COMMANDCODE_API_KEY") {
 		t.Fatalf("Ready = %v, want the missing key named", err)
 	}
 }

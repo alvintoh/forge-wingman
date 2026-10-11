@@ -52,6 +52,13 @@ the record job records identity-mismatch.
 
 The `COMMANDCODE_API_KEY` repository secret is the Command Code key every model slot runs on.
 
+The `GEMINI_API_KEY` repository secret is the Google Gemini API key the free-tier plan
+runs on. It is set by hand, like the other secrets, and a run reaches it only when its
+own plan's allowance is spent and the dispatcher moves it to the free tier
+(`last_resort_plans` in `internal/providers/providers.json`). It needs no paid Gemini
+plan: the free tier is reached with the key alone. Until it is set, a run that falls
+through to the free tier stops as credential-absent rather than starting.
+
 `WINGMAN_DISPATCHER_RUN_URI` is the dispatcher job's Cloud Run run endpoint, which
 run.yml's `record-plan-stage` job calls to wake the dispatcher for the build stage
 (`https://<region>-run.googleapis.com/v2/projects/<project>/locations/<region>/jobs/forge-wingman-dispatcher:run`,

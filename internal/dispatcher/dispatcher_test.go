@@ -63,8 +63,12 @@ type fakeQueue struct {
 	bindings map[string]string
 	// freeBindings is what TryClaim reports for a run asked on a free tier, in place of bindings.
 	freeBindings map[string]string
-	unavailable  map[string]bool
-	tryClaimErr  error
+	// freeModelBindings is what TryClaim reports for a free-tier run of the
+	// named build model, so a case can fail one plan's free rung and admit the
+	// next.
+	freeModelBindings map[string]string
+	unavailable       map[string]bool
+	tryClaimErr       error
 	// tryClaimErrFor fails TryClaim for one run id only.
 	tryClaimErrFor map[string]error
 
@@ -121,6 +125,9 @@ func (q *fakeQueue) TryClaim(_ context.Context, runID string, _ time.Time, cfg B
 	q.tryClaims = append(q.tryClaims, tryClaimCall{runID: runID, cfg: cfg, facts: facts, res: res})
 	bindings := q.bindings
 	if cfg.ProviderFree {
+		if binding, ok := q.freeModelBindings[facts.Model]; ok {
+			return false, binding, nil
+		}
 		bindings = q.freeBindings
 	}
 	if binding, ok := bindings[runID]; ok {
@@ -1014,7 +1021,7 @@ var paidPlan = Config{
 		Cash:            Window{Name: CeilingCash, Calendar: true, Limit: 30 * money.Dollar},
 		Runner:          RunnerMinutes{FreeMinutes: 2000},
 	},
-	LastResort: []string{"p/free-a", "p/free-b"},
+	LastResortPlans: [][]string{{"p/free-a", "p/free-b"}},
 }
 
 func TestPollRunsACandidateOnTheFreeTierOnceAPaidCeilingBinds(t *testing.T) {
@@ -1049,6 +1056,61 @@ func TestPollRunsACandidateOnTheFreeTierOnceAPaidCeilingBinds(t *testing.T) {
 	}
 }
 
+// TestPollWalksTheFreeTierPlansInOrder asserts a candidate whose own plan's
+// ceiling binds, and whose own free tier cannot staff a run, is admitted on the
+// next plan's free models — the move recorded on the claim's facts, so the run
+// record names the plan it moved to (AC4).
+func TestPollWalksTheFreeTierPlansInOrder(t *testing.T) {
+	q := &fakeQueue{
+		candidates: []Candidate{{RunID: "run-a", Repo: "octo/scratch"}},
+		bindings:   map[string]string{"run-a": "p-5h"},
+		// The first plan's free rung is over its cash ceiling; the second
+		// plan's admits.
+		freeModelBindings: map[string]string{"p/free-a": CeilingCash},
+	}
+	plan := paidPlan
+	plan.LastResortPlans = [][]string{{"p/free-a", "p/free-b"}, {"q/free-a", "q/free-b"}}
+	res, err := Poll(context.Background(), pollDeps(fakeSource{}, q, &fakeWorkflow{}), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(res.Dispatched, []string{"run-a"}) || len(res.Deferrals) != 0 {
+		t.Fatalf("dispatched %q, deferred %+v, want the run dispatched on the second plan's free tier", res.Dispatched, res.Deferrals)
+	}
+	// The paid claim, then the first rung's failed free claim, then the second
+	// rung's.
+	if len(q.tryClaims) != 3 {
+		t.Fatalf("TryClaim ran %d times, want 3 (the walk continues past a rung whose own ceiling binds)", len(q.tryClaims))
+	}
+	last := q.tryClaims[2]
+	if !last.cfg.ProviderFree {
+		t.Fatalf("the admitting claim = %+v, want the free tier", last.cfg)
+	}
+	if runner.Provider(last.facts.Model) != "q" {
+		t.Fatalf("facts.Model = %q, want the second plan's free model: the move must be recorded on the claim", last.facts.Model)
+	}
+	want := runner.ModelLabels{Build: "q/free-a", Review: "q/free-b", Plan: []string{"q/free-a", "q/free-b"}}
+	if last.facts.LastResort == nil || !reflect.DeepEqual(*last.facts.LastResort, want) {
+		t.Fatalf("facts.LastResort = %+v, want the second plan's free models", last.facts.LastResort)
+	}
+}
+
+// TestPollReadsTheCandidatesOwnPlansHalt asserts the provider halt is keyed off
+// each candidate's own plan, not the default model's, so a run that names
+// another plan is judged against that plan's state.
+func TestPollReadsTheCandidatesOwnPlansHalt(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{{RunID: "run-a", Repo: "octo/scratch", Model: "q/x"}}}
+	deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	deps.Providers = fakeProviders{halted: map[string]bool{"q": true}}
+	cfg := Config{Repos: buildConfig.Repos, Budget: buildConfig.Budget, Model: "p/paid"}
+	if _, err := Poll(context.Background(), deps, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.tryClaims) != 1 || !q.tryClaims[0].facts.ProviderHalted {
+		t.Fatalf("tryClaims = %+v, want the candidate's own plan read as halted", q.tryClaims)
+	}
+}
+
 func TestPollLeavesACandidateACeilingOtherThanThePlansOwnWithholds(t *testing.T) {
 	for name, ceiling := range map[string]string{"cash": CeilingCash, "the breaker": ConditionCircuitBreaker, "the provider halt": CeilingProviderHalted} {
 		t.Run(name, func(t *testing.T) {
@@ -1067,7 +1129,7 @@ func TestPollLeavesACandidateACeilingOtherThanThePlansOwnWithholds(t *testing.T)
 func TestPollKeepsAPaidCeilingWhenTheFreeTierCannotStaffAReview(t *testing.T) {
 	q := &fakeQueue{candidates: []Candidate{{RunID: "run-a"}}, bindings: map[string]string{"run-a": "p-5h"}}
 	plan := paidPlan
-	plan.LastResort = []string{"p/free-a"}
+	plan.LastResortPlans = [][]string{{"p/free-a"}}
 	res, err := Poll(context.Background(), pollDeps(fakeSource{}, q, &fakeWorkflow{}), plan)
 	if err != nil {
 		t.Fatal(err)
@@ -1202,7 +1264,7 @@ func TestPollDefersAPlannedRunRatherThanMixTiersWithinIt(t *testing.T) {
 	}
 	plan := paidPlan
 	plan.TwoStage = true
-	plan.LastResort = []string{"p/free-a"}
+	plan.LastResortPlans = [][]string{{"p/free-a"}}
 	res, err := Poll(context.Background(), pollDeps(fakeSource{}, q, &fakeWorkflow{}), plan)
 	if err != nil {
 		t.Fatal(err)

@@ -480,10 +480,10 @@ func TestOpencodeAgentNeedsAHomeAndAKey(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "home") {
 		t.Fatalf("err = %v, want the missing home refused", err)
 	}
-	if err := (OpencodeHarness{}).Ready(); err == nil || !strings.Contains(err.Error(), "COMMANDCODE_API_KEY") {
+	if err := (OpencodeHarness{}).Ready("command-code"); err == nil || !strings.Contains(err.Error(), "COMMANDCODE_API_KEY") {
 		t.Fatalf("Ready = %v, want the missing key named", err)
 	}
-	if err := (OpencodeHarness{Key: "k"}).Ready(); err != nil {
+	if err := (OpencodeHarness{Key: "k"}).Ready("command-code"); err != nil {
 		t.Fatalf("Ready = %v with a key", err)
 	}
 }
@@ -629,5 +629,102 @@ func TestWorkflowsInstallThePinnedOpencode(t *testing.T) {
 				t.Errorf("%s has no %q", name, want)
 			}
 		}
+	}
+}
+
+// geminiTestModel is the free-tier model the second plan serves through opencode.
+const geminiTestModel = "gemini/gemini-2.5-flash"
+
+// requireGeminiFixture skips the live-proof case until the fixture is recorded.
+// It is captured by hand — an owner step — because it spends free-tier calls and
+// needs the GEMINI_API_KEY repository secret.
+func requireGeminiFixture(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{"gemini-normal.ndjson", "gemini-normal.exit", "gemini-normal.stderr"} {
+		if _, err := os.Stat(filepath.Join("testdata", "opencode", name)); err != nil {
+			t.Skipf("the live Gemini fixture is not recorded yet: capture %s by running the opencode adapter once on %s with GEMINI_API_KEY set (testdata/opencode/PACKAGE.txt)", name, geminiTestModel)
+		}
+	}
+}
+
+// TestOpencodeConfigNamesEachPlansEndpoint asserts the adapter reaches every plan
+// it serves through that plan's own wire API: its OpenAI-compatible base URL, the
+// variable its config names for the key, and the plan's own model id (AC3).
+func TestOpencodeConfigNamesEachPlansEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		plan, model, wantURL, wantKeyEnv string
+	}{
+		{"command-code", "deepseek/deepseek-v4.1-flash", "https://api.commandcode.ai/provider/v1", "COMMAND_CODE_API_KEY"},
+		{"gemini", "gemini-2.5-flash", "https://generativelanguage.googleapis.com/v1beta/openai/", "GEMINI_API_KEY"},
+	} {
+		t.Run(tc.plan, func(t *testing.T) {
+			if got := opencodeKeyEnv(tc.plan); got != tc.wantKeyEnv {
+				t.Fatalf("opencodeKeyEnv(%s) = %q, want %q", tc.plan, got, tc.wantKeyEnv)
+			}
+			raw, err := opencodeConfig(tc.plan, tc.model, "", filepath.Join("/repo", "CLAUDE.md"), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var doc opencodeConfigDoc
+			if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+				t.Fatal(err)
+			}
+			p, ok := doc.Provider[tc.plan]
+			if !ok {
+				t.Fatalf("config providers %v lack %s", doc.Provider, tc.plan)
+			}
+			if p.Options.BaseURL != tc.wantURL || p.Options.APIKey != "{env:"+tc.wantKeyEnv+"}" {
+				t.Fatalf("provider = %+v, want %s and the key named, not held", p, tc.wantURL)
+			}
+			if _, ok := p.Models[tc.model]; !ok {
+				t.Fatalf("provider models %v lack %s", p.Models, tc.model)
+			}
+		})
+	}
+}
+
+// TestOpencodeAgentReachesTheGeminiPlan replays the recorded live Gemini
+// free-tier run: the adapter points opencode at the plan's OpenAI-compatible
+// endpoint with the repository's key, and the free model answers (AC2). It skips
+// until the fixture is recorded, which needs the GEMINI_API_KEY secret.
+func TestOpencodeAgentReachesTheGeminiPlan(t *testing.T) {
+	requireGeminiFixture(t)
+	bin, attempts := scriptedOpencode(t, "gemini-normal")
+	home := t.TempDir()
+	agent := OpencodeHarness{Bin: bin, Key: "gemini-key", Home: home}.Agent(ProfileBuild, geminiTestModel)
+	var out, errBuf strings.Builder
+	if err := agent.Run(context.Background(), t.TempDir(), "", "p", "", &out, &errBuf); err != nil {
+		t.Fatal(err)
+	}
+	got := attempts()
+	if len(got) != 1 {
+		t.Fatalf("opencode ran %d times, want 1", len(got))
+	}
+	var config opencodeConfigDoc
+	if err := json.Unmarshal([]byte(got[0].config), &config); err != nil {
+		t.Fatal(err)
+	}
+	provider := config.Provider["gemini"]
+	if provider.Options.BaseURL != "https://generativelanguage.googleapis.com/v1beta/openai/" || provider.Options.APIKey != "{env:GEMINI_API_KEY}" {
+		t.Fatalf("provider = %+v, want the plan's endpoint and the key named, not held", provider)
+	}
+	if _, ok := provider.Models["gemini-2.5-flash"]; !ok {
+		t.Fatalf("provider models %v lack the run's model", provider.Models)
+	}
+	if !slices.Contains(got[0].env, "GEMINI_API_KEY=gemini-key") {
+		t.Fatal("env lacks GEMINI_API_KEY, so the free-tier key never reached the CLI")
+	}
+	if j := slices.Index(got[0].args, "-m"); j < 0 || got[0].args[j+1] != geminiTestModel {
+		t.Fatalf("args %v do not name the free-tier model", got[0].args)
+	}
+	u, err := SumUsage(strings.NewReader(out.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Steps == 0 || u.Input == 0 {
+		t.Fatalf("usage %+v carries no model step: the free-tier model answered nothing", u)
+	}
+	if text, _ := FinalText(strings.NewReader(out.String())); text == "" {
+		t.Error("the free-tier run carries no final text")
 	}
 }

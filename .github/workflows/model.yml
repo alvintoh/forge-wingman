@@ -37,6 +37,10 @@ on:
       # The plan's key: omp, and its opencode fallback, run on it.
       COMMANDCODE_API_KEY:
         required: true
+      # The free-tier plan's key, read only when a run falls through to it; not
+      # required until the owner sets it (infra/README.md).
+      GEMINI_API_KEY:
+        required: false
     outputs:
       attempt_id:
         value: ${{ jobs.build.outputs.attempt_id }}
@@ -145,6 +149,7 @@ jobs:
           PLAN_MODELS: ${{ inputs.plan_models }}
           WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
           COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: '"$RUNNER_TEMP/runner" build -model "$MODEL" -review-models "$REVIEW_MODELS" -plan-models "$PLAN_MODELS" -ticket-file "$RUNNER_TEMP/ticket.json" -checks-image "$CHECKS_IMAGE"'
 
       # The plan stage (FRG-33) runs the plan phase alone, under the plan profile's read-only
@@ -157,6 +162,7 @@ jobs:
           PLAN_MODELS: ${{ inputs.plan_models }}
           WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
           COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: '"$RUNNER_TEMP/runner" plan-stage -plan-models "$PLAN_MODELS" -ticket-file "$RUNNER_TEMP/ticket.json" -out "$RUNNER_TEMP/plan.json"'
 
       - if: inputs.stage == 'plan'
