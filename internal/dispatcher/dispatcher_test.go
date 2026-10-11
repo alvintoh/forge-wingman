@@ -1139,6 +1139,26 @@ func TestPollKeepsAPaidCeilingWhenTheFreeTierCannotStaffAReview(t *testing.T) {
 	}
 }
 
+// TestPollSkipsAFreeTierPlanThatCannotStaffAReview: the order is walked rung by
+// rung, and one whose plan has a single free model cannot staff both the build
+// and its review — so it is skipped rather than claimed.
+func TestPollSkipsAFreeTierPlanThatCannotStaffAReview(t *testing.T) {
+	q := &fakeQueue{
+		candidates: []Candidate{{RunID: "run-a"}},
+		bindings:   map[string]string{"run-a": "p-5h"},
+	}
+	plan := paidPlan
+	plan.LastResortPlans = [][]string{{"p/free-alone"}, {"p/free-a", "p/free-b"}}
+	res, err := Poll(context.Background(), pollDeps(fakeSource{}, q, &fakeWorkflow{}), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(q.tryClaims) != 2 || len(res.Dispatched) != 1 {
+		t.Fatalf("claims %d, dispatched %q, want the one-model rung skipped and the next one claimed",
+			len(q.tryClaims), res.Dispatched)
+	}
+}
+
 func TestPollDefersAFreeTierClaimOnTheCeilingThatStillBindsIt(t *testing.T) {
 	q := &fakeQueue{
 		candidates:   []Candidate{{RunID: "run-a"}},
