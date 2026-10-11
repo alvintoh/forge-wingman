@@ -140,6 +140,21 @@ type Record struct {
 	ModelLabels ModelLabels `firestore:"model_labels"`
 	// Plan is the provider plan the run was claimed on.
 	Plan string `firestore:"plan"`
+	// TimeOfUse is the run's own time-of-use bucket — "peak" or "off-peak"
+	// for a run its provider prices by the hour, empty otherwise — written
+	// once, by Finalize, from its steps' own times, so a provider's
+	// time-of-use spend can be summed.
+	TimeOfUse string `firestore:"time_of_use"`
+	// CostDrift names how far the run's settled cost sits above its
+	// provider's own trailing average, empty when it is within the drift
+	// threshold or there is too little history to compare. Self-describing,
+	// like UsageWarning, rather than a bare flag.
+	CostDrift string `firestore:"cost_drift"`
+	// CostDriftUnread reports that the provider's own history could not be
+	// read, so the drift flag was left empty rather than set from a comparison
+	// that never happened. Without it a broken read would disable every future
+	// flag with nothing in the record or the log to say so.
+	CostDriftUnread bool `firestore:"cost_drift_unread"`
 	// LastResort is set when the run was claimed on the plan's free tier,
 	// whose models LastResortModels names in place of ModelLabels.
 	LastResort       bool        `firestore:"last_resort"`
@@ -265,6 +280,40 @@ type Ledger interface {
 	Settle(ctx context.Context, runID string) error
 }
 
+// ProviderCostReader reads a provider's own settled cost history, which
+// Finalize compares a run's cost against. The build shares a machine with the
+// model and cannot read the run store at all, so the comparison is the record
+// job's to make.
+type ProviderCostReader interface {
+	// ProviderTrailingCost is the mean settled provider cost of plan's own
+	// runs settled since since, and how many runs that mean covers.
+	// excludeRunID is left out of both, so a run is never compared against
+	// itself when its record job is rerun.
+	ProviderTrailingCost(ctx context.Context, plan string, since time.Time, excludeRunID string) (money.Micros, int, error)
+}
+
+// TrailingWindow is how far back a provider's own history is measured: the
+// drift baseline a run is flagged against, and the window the surface's own
+// comparison reads over the same records.
+const TrailingWindow = 30 * 24 * time.Hour
+
+// TimeOfUsePeak and TimeOfUseOffPeak are the buckets a run its plan prices by
+// the hour is tagged with, so its time-of-use spend can be summed.
+const (
+	TimeOfUsePeak    = "peak"
+	TimeOfUseOffPeak = "off-peak"
+)
+
+const (
+	// driftPercent is how far above its provider's trailing mean a run's own
+	// settled cost must sit before it is flagged.
+	driftPercent = 25
+	// minDriftSample is how many of a provider's own settled runs the trailing
+	// mean must cover before it can flag anything: a mean over one or two runs
+	// says more about those runs than about the provider.
+	minDriftSample = 5
+)
+
 // msPerMinute is how many milliseconds GitHub Actions bills as one minute.
 const msPerMinute = 60_000
 
@@ -336,10 +385,15 @@ type FinalizeInput struct {
 // record or ticket; a missing, invalid or unreadable summary as an infra failure.
 // Running it again with a later result replaces the earlier derivation.
 //
+// A run that reached an agent is also tagged with the time of use its own steps
+// fell in, and flagged when its settled cost sits well above what reader reports
+// its provider's runs usually cost — the provider's average lives in the store,
+// which this record job holds and the build does not.
+//
 // Every path through Finalize writes a terminal outcome, so every call
 // settles the run's ledger reservation to its actual cost (adr/0003) — even a
 // repeated call for the same run, since Settle is idempotent.
-func Finalize(ctx context.Context, store RecordStore, ledger Ledger, in FinalizeInput, now time.Time) (Record, error) {
+func Finalize(ctx context.Context, store RecordStore, ledger Ledger, reader ProviderCostReader, in FinalizeInput, now time.Time) (Record, error) {
 	existing, err := ReadRun(ctx, store, in.RunID)
 	var stopped *StopError
 	if err != nil && !errors.As(err, &stopped) {
@@ -406,6 +460,8 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, in Finalize
 	if len(rec.Steps) > 0 {
 		rec.SettledAt = now
 		rec.SettledProviderCostMicros = money.FromUSD(rec.Tokens.Cost)
+		rec.TimeOfUse = timeOfUse(rec.Steps)
+		rec.CostDrift, rec.CostDriftUnread = costDrift(ctx, reader, rec, now)
 	}
 	if rec.Private {
 		rec.SettledRunnerMinutes = BillableMinutes(rec.DurationsMS)
@@ -424,6 +480,79 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, in Finalize
 		return rec, fmt.Errorf("settling run %s (rerun this job to retry — PutRecord and Settle are both idempotent): %w", in.RunID, err)
 	}
 	return rec, nil
+}
+
+// timeOfUse is the run's own time-of-use bucket: "peak" when any of its steps
+// ran inside a window its own plan prices at peak, "off-peak" when none did, and
+// empty for a run no step of which its plan prices by the hour at all. A step
+// counts by its whole span rather than its start instant, because its cost is
+// metered per request at each event's own time — a step that begins before a
+// peak window and runs into it was charged at peak for that part. A step whose
+// time is unknown counts as peak, the direction Rates.At prices it.
+func timeOfUse(steps []Step) string {
+	hourly, peak := false, false
+	for _, st := range steps {
+		rates, ok := providers.RatesFor(st.Model)
+		if !ok || rates.Peak == nil {
+			continue
+		}
+		hourly = true
+		if spansPeak(*rates.Peak, st) {
+			peak = true
+		}
+	}
+	switch {
+	case !hourly:
+		return ""
+	case peak:
+		return TimeOfUsePeak
+	default:
+		return TimeOfUseOffPeak
+	}
+}
+
+// spansPeak reports whether any part of the step falls in one of the plan's
+// peak windows. The windows are whole hours, so walking the hours the step
+// touches is exact rather than an approximation of it.
+func spansPeak(peak providers.Peak, st Step) bool {
+	if st.At.IsZero() {
+		return true
+	}
+	end := st.At.Add(time.Duration(st.DurationMS) * time.Millisecond)
+	for at := st.At.Truncate(time.Hour); !at.After(end); at = at.Add(time.Hour) {
+		if peak.Covers(at) {
+			return true
+		}
+	}
+	return false
+}
+
+// costDrift names how far the run's settled cost sits above its provider's own
+// trailing average, empty when it is within the drift threshold, when too
+// little of that provider's history has settled to average it, or when there is
+// no reader to ask. A read that fails leaves the flag empty rather than failing
+// Finalize: the flag annotates a run whose cost is already settled, and the
+// record is the only place its outcome survives — an advisory comparison must
+// not be able to cost it.
+func costDrift(ctx context.Context, reader ProviderCostReader, rec Record, now time.Time) (string, bool) {
+	if reader == nil || rec.Plan == "" {
+		return "", false
+	}
+	mean, sample, err := reader.ProviderTrailingCost(ctx, rec.Plan, now.Add(-TrailingWindow), rec.RunID)
+	if err != nil {
+		return "", true
+	}
+	if sample < minDriftSample || mean <= 0 {
+		// A mean of zero has no percentage to be above: the provider's own
+		// history holds no cost to compare a run against.
+		return "", false
+	}
+	cost := rec.SettledProviderCostMicros
+	if cost*100 <= mean*(100+driftPercent) {
+		return "", false
+	}
+	return fmt.Sprintf("cost $%.4f is %d%% above the $%.4f average of %d of this provider's runs",
+		cost.USD(), (cost-mean)*100/mean, mean.USD(), sample), false
 }
 
 // RunModels are the models the run's phases start on: the free tier's when it
