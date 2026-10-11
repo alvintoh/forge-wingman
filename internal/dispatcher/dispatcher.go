@@ -464,9 +464,8 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 	if len(candidates) > 0 {
 		prs = countOpenPRs(ctx, d, c.Repos)
 	}
-	// The halt, the verdict and the private opt-in are read per plan, keyed off
-	// each candidate's own plan rather than the default model's: a run that moves
-	// to another plan's free tier is admitted against that plan's own state.
+	// The halt, the verdict and the private opt-in are read lazily and once per
+	// plan, since a run that moves to another free tier is judged by that plan.
 	halts := map[string]bool{}
 	halted := func(plan string) bool {
 		if v, ok := halts[plan]; ok {
@@ -544,8 +543,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		if !ok && stage != StageBuild && budget.isProviderCeiling(binding) && hasFreeTier {
 			paid := binding
 			for _, rung := range c.LastResortPlans {
-				// A free-tier run needs a build and a different review model, so a
-				// plan with fewer than two free models cannot staff it.
+				// One free model cannot staff both the build and its review.
 				if len(rung) < 2 {
 					continue
 				}
