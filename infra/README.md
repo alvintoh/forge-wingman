@@ -179,7 +179,7 @@ Four variables name what OpenTofu cannot guess, and a fifth is optional:
 | `webhook_image` | the webhook service's image, built with `CMD=webhook`; pushed and named by digest the same way |
 | `linear_delegate` | the Linear id of the agent the job acts for; a poll whose token is another agent's admits nothing |
 | `linear_repositories` | the allowlist. Empty admits nothing, so a forgotten one refuses every ticket rather than dispatching |
-| `dispatcher_settings` | optional. A map of `WINGMAN_PLATFORM_CAP`, `WINGMAN_LARGE_CAP`, `WINGMAN_REVIEW_WIP`, `WINGMAN_STABLE_RUNS`, `WINGMAN_RISE_WITHIN` and `WINGMAN_HALVE_BEYOND` to a value; a key left out keeps its default |
+| `dispatcher_settings` | optional. A map of `WINGMAN_PLATFORM_CAP`, `WINGMAN_LARGE_CAP`, `WINGMAN_REVIEW_WIP`, `WINGMAN_STABLE_RUNS`, `WINGMAN_RISE_WITHIN`, `WINGMAN_HALVE_BEYOND` and `WINGMAN_TWO_STAGE` to a value; a key left out keeps its default |
 
 ### Secrets
 
