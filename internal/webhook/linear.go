@@ -57,13 +57,16 @@ func (l Linear) Elicit(ctx context.Context, sessionID string, d runner.Decision)
 	for _, o := range d.Options {
 		options = append(options, map[string]string{"label": o.Label + " — " + o.Cost, "value": o.Value})
 	}
+	// Signal and signalMetadata are siblings of content in AgentActivityCreateInput,
+	// not fields of it (Linear's own schema): nested inside content they never
+	// reach the activity, and the question posts with no options to tap.
 	input := map[string]any{
 		"agentSessionId": sessionID,
+		"signal":         "select",
+		"signalMetadata": map[string]any{"options": options},
 		"content": map[string]any{
-			"type":           "elicitation",
-			"body":           elicitationBody(d),
-			"signal":         "select",
-			"signalMetadata": map[string]any{"options": options},
+			"type": "elicitation",
+			"body": elicitationBody(d),
 		},
 	}
 	err := linear.DoRefreshing(ctx, l.Tokens, func(token string) error {

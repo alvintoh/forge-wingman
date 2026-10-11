@@ -157,14 +157,23 @@ func TestElicitAsksASelectionActivity(t *testing.T) {
 	if input["agentSessionId"] != "session-1" {
 		t.Errorf("agentSessionId = %v", input["agentSessionId"])
 	}
+	// The signal rides beside content, not inside it: AgentActivityCreateInput
+	// declares signal and signalMetadata as its own fields, and options nested
+	// in content never reach the activity.
 	content := input["content"].(map[string]any)
-	if content["type"] != "elicitation" || content["signal"] != "select" {
+	if content["type"] != "elicitation" {
 		t.Errorf("content = %v", content)
+	}
+	if _, nested := content["signal"]; nested {
+		t.Errorf("signal nested inside content: %v", content)
 	}
 	if content["body"] != "Which flag should the run use?\n\nline one\nline two" {
 		t.Errorf("body = %q", content["body"])
 	}
-	options := content["signalMetadata"].(map[string]any)["options"].([]any)
+	if input["signal"] != "select" {
+		t.Errorf("signal = %v", input["signal"])
+	}
+	options := input["signalMetadata"].(map[string]any)["options"].([]any)
 	if len(options) != 2 {
 		t.Fatalf("options = %v", options)
 	}

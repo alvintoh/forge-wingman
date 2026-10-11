@@ -346,6 +346,27 @@ func TestPromptedRecordsTheReplyAndWakes(t *testing.T) {
 	}
 }
 
+// TestPromptedReadsTheReplyFromContentBody: the vendor describes the replied
+// text differently on its two surfaces — the Agent Interaction docs put it at
+// `agentActivity.body`, the GraphQL AgentActivity type carries it at
+// `content.body` — so a payload shaped the second way still records its reply
+// rather than an empty one that matches no option.
+func TestPromptedReadsTheReplyFromContentBody(t *testing.T) {
+	replier := &fakeReplier{recorded: true}
+	h := handler(&fakeMarkers{}, &fakeAcker{}, &fakeWaker{})
+	h.Replier = replier
+	body := []byte(`{"type":"AgentSessionEvent","action":"prompted","webhookTimestamp":` +
+		strconv.FormatInt(receivedAt.UnixMilli(), 10) + `,"agentSession":{"id":"session-1",` +
+		`"issue":{"id":"issue-uuid-1","identifier":"ABC-22"}},` +
+		`"agentActivity":{"id":"act-1","content":{"type":"prompt","body":"use the new flag"}}}`)
+	if got := deliver(h, body, testSecret); got != 200 {
+		t.Fatalf("status = %d, want 200", got)
+	}
+	if len(replier.calls) != 1 || replier.calls[0].text != "use the new flag" {
+		t.Fatalf("reply calls = %+v", replier.calls)
+	}
+}
+
 // TestPromptedRecordsNothingWhenTheRunWaitsOnNoDecision covers AC4: a reply the
 // store records nothing for (no pending decision, or a mismatched session) is
 // still answered, and still wakes the dispatcher.

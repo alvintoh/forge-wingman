@@ -80,7 +80,16 @@ type event struct {
 	} `json:"agentSession"`
 	// AgentActivity carries the owner's reply text on a prompted event.
 	AgentActivity struct {
+		// Body is where Linear's Agent Interaction docs place a prompted reply
+		// ("the agentActivity.body field of the webhook payload").
 		Body string `json:"body"`
+		// Content.Body is the same text where the GraphQL AgentActivity type
+		// carries it. Read as a fallback because the vendor's two surfaces
+		// describe this differently, and an empty reply would be recorded as an
+		// answer that matches nothing.
+		Content struct {
+			Body string `json:"body"`
+		} `json:"content"`
 	} `json:"agentActivity"`
 }
 
@@ -166,7 +175,11 @@ func (h Handler) answerPrompted(w http.ResponseWriter, r *http.Request, ev event
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), requestBudget)
 	defer cancel()
-	recorded, err := h.Replier.Reply(ctx, runID, session, ev.AgentActivity.Body, now)
+	reply := ev.AgentActivity.Body
+	if reply == "" {
+		reply = ev.AgentActivity.Content.Body
+	}
+	recorded, err := h.Replier.Reply(ctx, runID, session, reply, now)
 	if err != nil {
 		h.Logger.Error("webhookFailed", "reason", "reply", "run", runID, "session", session, "err", err)
 		w.WriteHeader(http.StatusInternalServerError)

@@ -58,8 +58,7 @@ type Answer struct {
 // Check reports whether d is a usable decision: one non-empty question, at most
 // decisionContextLines lines of context, and decisionOptionMin to
 // decisionOptionMax options, each with a label, a value and a cost, none of
-// them longer than its limit or more than one line. The model job is untrusted,
-// so the trusted record job re-checks a decision here before it is posted.
+// them longer than its limit or more than one line.
 func (d Decision) Check() error {
 	if err := checkDecisionText("question", d.Question, decisionQuestionLimit); err != nil {
 		return err
