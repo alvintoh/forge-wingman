@@ -234,6 +234,11 @@ func ticket(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		return err
 	}
 	t.PlanFiles = plan.Files
+	answered, err := store.NewQueue(fsc).Decisions(ctx, *runID)
+	if err != nil {
+		return err
+	}
+	t.Decisions = answered
 	return writeTicket(*out, e.output, t, rec.RunModels())
 }
 

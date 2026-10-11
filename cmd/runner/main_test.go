@@ -730,6 +730,26 @@ func TestPlanStageNeedsAnOutPath(t *testing.T) {
 	}
 }
 
+func TestValidRunURL(t *testing.T) {
+	for _, tc := range []struct {
+		name, url string
+		wantErr   bool
+	}{
+		{"the run's own URL", "https://github.com/octo/repo/actions/runs/7", false},
+		{"empty", "", true},
+		{"not https", "http://github.com/octo/repo/actions/runs/7", true},
+		{"relative", "/octo/repo/actions/runs/7", true},
+		{"no host", "https:///actions/runs/7", true},
+		{"https but not an actions run", "https://example.test/x", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validRunURL(tc.url); (err != nil) != tc.wantErr {
+				t.Fatalf("validRunURL(%q) = %v, want an error = %v", tc.url, err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestRecordPlanStageNeedsADispatcherURI(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	e := env{identity: runner.Identity{Account: "octo", Owner: "octo"}}

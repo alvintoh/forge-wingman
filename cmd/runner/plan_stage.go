@@ -6,7 +6,9 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"cloud.google.com/go/storage"
@@ -62,6 +64,7 @@ func planStage(ctx context.Context, logger *slog.Logger, e env, args []string) e
 		Secrets:    e.secrets,
 		Identity:   e.identity,
 		Ticket:     t,
+		Guided:     true,
 	})
 	if err != nil {
 		// The plan stage reports no summary, so every failure is a failed run
@@ -84,11 +87,16 @@ func planStage(ctx context.Context, logger *slog.Logger, e env, args []string) e
 // record, settles the run's plan reservation, then wakes the dispatcher for the
 // build stage. It is the only writer of the plan stage's data, since the model
 // job cannot reach a run record.
+//
+// A plan that asked the owner a decision takes the other branch: the run is
+// suspended onto that decision, holding no runner and no reservation, and the
+// dispatcher is woken to post the question in the run's agent session.
 func recordPlanStage(ctx context.Context, logger *slog.Logger, e env, args []string) error {
 	fs := flag.NewFlagSet("record-plan-stage", flag.ContinueOnError)
 	runID := fs.String("run-id", "", "run record to write the plan onto")
 	planFile := fs.String("plan-file", "", "path to the plan artifact the plan-stage job wrote")
 	dispatcherURI := fs.String("dispatcher-uri", "", "Cloud Run run endpoint of the dispatcher job to wake")
+	runURL := fs.String("run-url", "", "URL of this plan stage's workflow run")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -111,15 +119,31 @@ func recordPlanStage(ctx context.Context, logger *slog.Logger, e env, args []str
 		return err
 	}
 	defer func() { _ = fsc.Close() }()
-	if err := store.NewRecords(fsc).WritePlan(ctx, *runID, runner.PlanRecord{
-		Files:     plan.Files,
-		BaseSHA:   plan.BaseSHA,
-		SettledAt: time.Now(),
-	}); err != nil {
-		return err
-	}
-	if err := store.NewQueue(fsc).Settle(ctx, store.PlanKey(*runID)); err != nil {
-		return fmt.Errorf("settling %s's plan reservation: %w", *runID, err)
+	queue := store.NewQueue(fsc)
+	switch {
+	case plan.Decision != nil:
+		// The plan asked the owner a decision: park the run so it holds no
+		// runner and no reservation, and let the dispatcher post the question.
+		// The URL is what the waiting notice links to, and what the resumed run
+		// reads back, so a decision carrying none is refused rather than stored
+		// as a dead link.
+		if err := validRunURL(*runURL); err != nil {
+			return err
+		}
+		if err := queue.Suspend(ctx, *runID, *plan.Decision, *runURL, time.Now()); err != nil {
+			return err
+		}
+	default:
+		if err := store.NewRecords(fsc).WritePlan(ctx, *runID, runner.PlanRecord{
+			Files:     plan.Files,
+			BaseSHA:   plan.BaseSHA,
+			SettledAt: time.Now(),
+		}); err != nil {
+			return err
+		}
+		if err := queue.Settle(ctx, store.PlanKey(*runID)); err != nil {
+			return fmt.Errorf("settling %s's plan reservation: %w", *runID, err)
+		}
 	}
 	client, err := google.DefaultClient(ctx, cloudPlatform)
 	if err != nil {
@@ -128,6 +152,22 @@ func recordPlanStage(ctx context.Context, logger *slog.Logger, e env, args []str
 	if err := (webhook.Job{RunURI: *dispatcherURI, Client: client}).Wake(ctx); err != nil {
 		return err
 	}
+	if plan.Decision != nil {
+		logger.Info("planStageSuspended", "run", *runID, "options", len(plan.Decision.Options))
+		return nil
+	}
 	logger.Info("planStageRecorded", "run", *runID, "files", len(plan.Files), "base", plan.BaseSHA)
+	return nil
+}
+
+// validRunURL reports whether s is a plan stage's own workflow-run URL — the
+// shape run.yml passes, and what the waiting notice links to. An https URL that
+// is not an actions run is refused: it would be stored and carried into the
+// notice as a link that goes nowhere useful.
+func validRunURL(s string) error {
+	u, err := url.Parse(s)
+	if err != nil || u.Scheme != "https" || u.Host == "" || !strings.Contains(u.Path, "/actions/runs/") {
+		return errors.New("-run-url must be this plan stage's https actions-run URL")
+	}
 	return nil
 }
