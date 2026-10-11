@@ -881,3 +881,23 @@ func TestModelWorkflowRunsThePlanStageForThePlanStream(t *testing.T) {
 		}
 	}
 }
+
+func TestRequeueRefusesAMalformedRunIDBeforeOpeningFirestore(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	env := map[string]string{"GOOGLE_CLOUD_PROJECT": "p", "WINGMAN_ACCOUNT": "octo", "GITHUB_REPOSITORY_OWNER": "octo"}
+	for _, id := range []string{"", "runs/x", "../x"} {
+		err := run(context.Background(), logger, []string{"requeue", "-run-id", id}, func(k string) string { return env[k] })
+		if err == nil || !strings.Contains(err.Error(), "cannot name a record") {
+			t.Errorf("id %q: err = %v, want refused before opening Firestore", id, err)
+		}
+	}
+}
+
+func TestRequeueRefusesAMismatchedIdentity(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	env := map[string]string{"GOOGLE_CLOUD_PROJECT": "p", "WINGMAN_ACCOUNT": "work-account", "GITHUB_REPOSITORY_OWNER": "octo"}
+	err := run(context.Background(), logger, []string{"requeue", "-run-id", "run-1"}, func(k string) string { return env[k] })
+	if !errors.Is(err, runner.ErrIdentityMismatch) {
+		t.Fatalf("err = %v, want ErrIdentityMismatch", err)
+	}
+}

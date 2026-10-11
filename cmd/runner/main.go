@@ -8,6 +8,7 @@
 //	runner record          -run-id <id> -summary ... validate the build's summary and merge it into the run record
 //	runner enable-provider -provider <name>          admit a halted provider back to dispatch (AC5)
 //	runner reset-breaker                             clear the breaker a systemic stop tripped, admitting dispatch again
+//	runner requeue         -run-id <id>              return a stopped run to the queue for another attempt
 //	runner plan-define     -provider <name> ...      record a provider plan's price, billing, limit behaviour, pages and harnesses
 //	runner plan-optin      -provider <name>          record the owner's consent to a per-token provider's spend, or with -private to private repos on its free tier
 //	runner plan-verdict    -provider <name> ...      record the verdict on a plan's terms with its wording and source
@@ -100,7 +101,7 @@ type env struct {
 // Actions environment.
 func requiredEnv(command string) ([]string, bool) {
 	switch command {
-	case "ticket", "pr-meta", "enable-provider", "reset-breaker",
+	case "ticket", "pr-meta", "enable-provider", "reset-breaker", "requeue",
 		"plan-define", "plan-optin", "plan-verdict", "plan-reply", "plan-list":
 		return []string{"GOOGLE_CLOUD_PROJECT"}, true
 	case "record", "record-plan-stage":
@@ -144,7 +145,7 @@ func loadEnv(getenv func(string) string, required ...string) (env, error) {
 
 func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(string) string) error {
 	if len(args) == 0 {
-		return errors.New("usage: runner ticket|build|plan-stage|record-plan-stage|pr-meta|record|enable-provider|reset-breaker|plan-define|plan-verdict|plan-reply|plan-list|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post [flags]")
+		return errors.New("usage: runner ticket|build|plan-stage|record-plan-stage|pr-meta|record|enable-provider|reset-breaker|requeue|plan-define|plan-verdict|plan-reply|plan-list|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post [flags]")
 	}
 	if args[0] == "plan-smoke" {
 		return planSmoke(ctx, logger, getenv, args[1:])
@@ -187,6 +188,8 @@ func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(st
 		return enableProvider(ctx, logger, e, args[1:])
 	case "reset-breaker":
 		return resetBreaker(ctx, logger, e, args[1:])
+	case "requeue":
+		return requeue(ctx, logger, e, args[1:])
 	case "plan-define":
 		return planDefine(ctx, logger, e, args[1:])
 	case "plan-optin":
@@ -611,6 +614,32 @@ func resetBreaker(ctx context.Context, logger *slog.Logger, e env, args []string
 		return err
 	}
 	logger.Info("breakerReset")
+	return nil
+}
+
+// requeue returns a run that has ended to the queue, so its ticket is attempted
+// again — a manual operator action, never automatic. Its account check only
+// guards against a run on the wrong account by mistake: Firestore IAM decides
+// who may requeue.
+func requeue(ctx context.Context, logger *slog.Logger, e env, args []string) error {
+	fs := flag.NewFlagSet("requeue", flag.ContinueOnError)
+	runID := fs.String("run-id", "", "run to return to the queue")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := e.identity.CheckAccount(); err != nil {
+		return err
+	}
+	fsc, err := recordsClient(ctx, e.project, *runID)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = fsc.Close() }()
+	res, err := store.NewQueue(fsc).Requeue(ctx, *runID, time.Now())
+	if err != nil {
+		return err
+	}
+	logger.Info("runRequeued", "run", *runID, "attempt", res.Attempt, "state", res.State)
 	return nil
 }
 

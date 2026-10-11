@@ -1723,3 +1723,266 @@ func TestReleaseReturnsAPlanStageClaimToTheQueue(t *testing.T) {
 		t.Fatal("the plan-stage reservation was not dropped")
 	}
 }
+
+// seedRow writes a run row directly, for the terminal shapes Requeue reads that
+// no single store call produces on its own.
+func seedRow(t *testing.T, client *firestore.Client, id string, fields map[string]any) {
+	t.Helper()
+	forget(t, client, id)
+	if _, err := client.Collection(runsCollection).Doc(id).Set(context.Background(), fields); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// readRow reads a run row as a test sees it.
+func readRow(t *testing.T, client *firestore.Client, id string) map[string]any {
+	t.Helper()
+	snap, err := client.Collection(runsCollection).Doc(id).Get(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snap.Data()
+}
+
+func TestRequeueStateDecidesFromTheRowAlone(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		row  map[string]any
+		want string
+		err  error
+	}{
+		{"queued is dispatchable", map[string]any{stateField: stateQueued}, "", ErrRunDispatchable},
+		{"planned is dispatchable", map[string]any{stateField: statePlanned}, "", ErrRunDispatchable},
+		{"waiting is parked", map[string]any{stateField: stateWaiting}, "", ErrRunWaiting},
+		{"claimed with no outcome is in flight",
+			map[string]any{stateField: stateClaimed, claimedAtField: queueAt}, "", ErrRunInFlight},
+		{"stopped returns to queued", map[string]any{stateField: stateStopped}, stateQueued, nil},
+		{"stopped with a settled plan returns to planned",
+			map[string]any{stateField: stateStopped, planFilesField: []any{"a.go"}, planSettledAtField: queueAt},
+			statePlanned, nil},
+		{"plan files with no stamp stays queued",
+			map[string]any{stateField: stateStopped, planFilesField: []any{"a.go"}}, stateQueued, nil},
+		{"a zero stamp is not a settled plan",
+			map[string]any{stateField: stateStopped, planFilesField: []any{"a.go"}, planSettledAtField: time.Time{}},
+			stateQueued, nil},
+		{"claimed with a recorded outcome returns to queued",
+			map[string]any{stateField: stateClaimed, outcomeField: string(runner.OutcomeStopped)}, stateQueued, nil},
+		{"claimed with a stop reason returns to queued",
+			map[string]any{stateField: stateClaimed, stopReasonField: string(runner.StopRebaseConflict)}, stateQueued, nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := requeueState(tt.row)
+			if !errors.Is(err, tt.err) {
+				t.Fatalf("err = %v, want %v", err, tt.err)
+			}
+			if got != tt.want {
+				t.Fatalf("state = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// A state outside the switch is a bug in whatever wrote the row, and never a
+// reason to hand the run back to a poll — nor one of the reasons an operator
+// reads, which each name a different action.
+func TestRequeueRefusesAStateItDoesNotKnow(t *testing.T) {
+	got, err := requeueState(map[string]any{stateField: "exploded"})
+	if err == nil {
+		t.Fatalf("state = %q from an unknown state, want a refusal", got)
+	}
+	for _, sentinel := range []error{ErrRunDispatchable, ErrRunWaiting, ErrRunInFlight} {
+		if errors.Is(err, sentinel) {
+			t.Fatalf("err = %v, want a refusal that is not an operator-facing reason", err)
+		}
+	}
+}
+
+func TestRequeueReturnsAStoppedRunToTheQueue(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	run := queuedRun(fresh("queue-requeue-stop"), 1)
+	forget(t, client, run.RunID)
+	resetLedger(t, client, 1)
+	if err := q.Enqueue(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	res := dispatcher.Reservation{ProviderCost: money.FromUSD(0.25), RunnerMinutes: 4, Stage: dispatcher.StagePlan}
+	if ok, _, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, openFacts, res); err != nil || !ok {
+		t.Fatalf("plan claim: ok %v, err %v", ok, err)
+	}
+	stoppedAt := queueAt.Add(time.Minute)
+	if err := q.Stop(ctx, run.RunID, runner.StopPlanStageFailed, "the plan stage failure", stoppedAt); err != nil {
+		t.Fatal(err)
+	}
+	// A stopped row a poll has not requeued stays invisible to Candidates.
+	if listed(t, q, ctx, run.RunID) {
+		t.Fatalf("stopped run %s came back as a candidate", run.RunID)
+	}
+	retriedAt := stoppedAt.Add(time.Minute)
+	got, err := q.Requeue(ctx, run.RunID, retriedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != stateQueued || got.Attempt != 1 {
+		t.Fatalf("result = %+v, want the run back in %s as attempt 1", got, stateQueued)
+	}
+	data := readRow(t, client, run.RunID)
+	if data[stateField] != stateQueued {
+		t.Fatalf("state = %v, want %s", data[stateField], stateQueued)
+	}
+	for _, field := range []string{outcomeField, buildOutcomeField, stopReasonField, stopDetailField, claimedAtField, waitingOnField} {
+		if _, ok := data[field]; ok {
+			t.Errorf("field %s survived the requeue: %v", field, data[field])
+		}
+	}
+	if stamped, ok := data[retriedAtField].(time.Time); !ok || !stamped.Equal(retriedAt) {
+		t.Fatalf("retried_at = %v, want the call's own time", data[retriedAtField])
+	}
+	if data[attemptField] != int64(1) {
+		t.Fatalf("attempt = %v, want 1", data[attemptField])
+	}
+	if !listed(t, q, ctx, run.RunID) {
+		t.Fatalf("requeued run %s is not a candidate", run.RunID)
+	}
+	if ok, why, err := q.TryClaim(ctx, run.RunID, retriedAt.Add(time.Minute), generousBudget, openFacts, res); err != nil || !ok {
+		t.Fatalf("claim after the requeue: ok %v, why %q, err %v", ok, why, err)
+	}
+}
+
+func TestRequeueReturnsAStoppedRunWithASettledPlanToPlanned(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	id := fresh("queue-requeue-plan")
+	seedRow(t, client, id, map[string]any{
+		stateField:         stateStopped,
+		outcomeField:       string(runner.OutcomeStopped),
+		stopReasonField:    string(runner.StopPlanStageFailed),
+		planFilesField:     []string{"a.go"},
+		planSettledAtField: queueAt,
+	})
+	got, err := q.Requeue(ctx, id, queueAt.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != statePlanned {
+		t.Fatalf("state = %q, want %s: the run's plan still stands", got.State, statePlanned)
+	}
+	data := readRow(t, client, id)
+	if st := data[stateField]; st != statePlanned {
+		t.Fatalf("stored state = %v, want the returned %s", st, statePlanned)
+	}
+	if !slices.Equal(stringList(data, planFilesField), []string{"a.go"}) {
+		t.Fatalf("plan_files = %v, want the settled write set kept", data[planFilesField])
+	}
+	if _, ok := data[stopReasonField]; ok {
+		t.Fatal("the stop reason survived the requeue")
+	}
+}
+
+func TestRequeueCountsTheAttempt(t *testing.T) {
+	q, client := queue(t)
+	id := fresh("queue-requeue-attempt")
+	seedRow(t, client, id, map[string]any{stateField: stateStopped, attemptField: int64(1)})
+	got, err := q.Requeue(context.Background(), id, queueAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Attempt != 2 || readRow(t, client, id)[attemptField] != int64(2) {
+		t.Fatalf("attempt = %d/%v, want 2", got.Attempt, readRow(t, client, id)[attemptField])
+	}
+}
+
+func TestRequeueReturnsAClaimedRunWithARecordedOutcome(t *testing.T) {
+	q, client := queue(t)
+	id := fresh("queue-requeue-claimed")
+	seedRow(t, client, id, map[string]any{
+		stateField:     stateClaimed,
+		claimedAtField: queueAt,
+		outcomeField:   string(runner.OutcomeAgentFailed),
+	})
+	got, err := q.Requeue(context.Background(), id, queueAt.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != stateQueued || got.Attempt != 1 {
+		t.Fatalf("result = %+v, want %s as attempt 1", got, stateQueued)
+	}
+	data := readRow(t, client, id)
+	if _, ok := data[outcomeField]; ok {
+		t.Fatal("the recorded outcome survived the requeue")
+	}
+	if st := data[stateField]; st != stateQueued {
+		t.Fatalf("stored state = %v, want the returned %s", st, stateQueued)
+	}
+}
+
+func TestRequeueRefusesARunWithItsOwnReasonAndLeavesItUnchanged(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	for _, tt := range []struct {
+		name   string
+		fields map[string]any
+		want   error
+	}{
+		{"queued", map[string]any{stateField: stateQueued}, ErrRunDispatchable},
+		{"planned", map[string]any{stateField: statePlanned, planFilesField: []string{"a.go"}, planSettledAtField: queueAt}, ErrRunDispatchable},
+		{"waiting", map[string]any{stateField: stateWaiting}, ErrRunWaiting},
+		{"claimed with no outcome", map[string]any{stateField: stateClaimed, claimedAtField: queueAt}, ErrRunInFlight},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			id := fresh("queue-requeue-refuse")
+			seedRow(t, client, id, tt.fields)
+			before := readRow(t, client, id)
+			if _, err := q.Requeue(ctx, id, queueAt.Add(time.Minute)); !errors.Is(err, tt.want) {
+				t.Fatalf("err = %v, want %v", err, tt.want)
+			}
+			if after := readRow(t, client, id); !reflect.DeepEqual(before, after) {
+				t.Fatalf("row changed by a refused requeue: %v, want %v", after, before)
+			}
+		})
+	}
+}
+
+func TestRequeueRefusesARunWithNoRow(t *testing.T) {
+	q, _ := queue(t)
+	if _, err := q.Requeue(context.Background(), fresh("queue-requeue-absent"), queueAt); !errors.Is(err, runner.ErrRecordNotFound) {
+		t.Fatalf("err = %v, want the store's own not-found", err)
+	}
+}
+
+func TestRequeueDropsBothOfTheRunsLedgerReservations(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	id := fresh("queue-requeue-res")
+	forget(t, client, id)
+	ledgerRef := client.Collection(dispatchCollection).Doc(ledgerDocID)
+	if _, err := ledgerRef.Set(ctx, ledgerDoc{Reservations: map[string]reservationEntry{
+		id:          {TicketID: id, Stage: dispatcher.StageBuild},
+		PlanKey(id): {TicketID: id, Stage: dispatcher.StagePlan},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = ledgerRef.Delete(ctx) })
+	seedRow(t, client, id, map[string]any{stateField: stateStopped})
+	if _, err := q.Requeue(ctx, id, queueAt); err != nil {
+		t.Fatal(err)
+	}
+	if res := readLedgerDoc(t, client).Reservations; len(res) != 0 {
+		t.Fatalf("reservations = %v, want both of the run's dropped", res)
+	}
+}
+
+// listed reports whether Candidates holds runID.
+func listed(t *testing.T, q *Queue, ctx context.Context, runID string) bool {
+	t.Helper()
+	cands, err := q.Candidates(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range cands {
+		if cands[i].RunID == runID {
+			return true
+		}
+	}
+	return false
+}

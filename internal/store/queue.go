@@ -40,6 +40,11 @@ const (
 	repoField      = "repo"
 	claimedAtField = "claimed_at"
 	updatedAtField = "updated_at"
+	// retriedAtField is when an operator returned a terminal run to the queue,
+	// and attemptField how many times the ticket has been queued: the run's retry
+	// history, kept beside the record a runner job rebuilds.
+	retriedAtField = "retried_at"
+	attemptField   = "attempt"
 	// waitingOnField names the condition that withheld a queued run at its
 	// last claim attempt; a claim clears it.
 	waitingOnField = "waiting_on"
@@ -750,6 +755,130 @@ func (q *Queue) Stop(ctx context.Context, runID string, reason runner.StopReason
 		return fmt.Errorf("stopping run %s: %w", runID, err)
 	}
 	return nil
+}
+
+// RequeueResult is what a requeue did: the state the run returned to and the
+// attempt it was put back as.
+type RequeueResult struct {
+	State   string
+	Attempt int
+}
+
+// The reasons Requeue refuses a run, each reporting a different operator action:
+// one already dispatchable needs no help, one waiting on a decision is resumed
+// by answering it, and one in flight would run its ticket twice.
+var (
+	ErrRunDispatchable = errors.New("run is already dispatchable")
+	ErrRunWaiting      = errors.New("run is waiting on a decision")
+	ErrRunInFlight     = errors.New("run is still in flight")
+)
+
+// Requeue returns a run that has ended — stopped, or a claim with a recorded
+// outcome — to the queue, for an operator asking that its ticket be attempted
+// again: the row returns to planned when its plan still stands and queued
+// otherwise, with its claim, wait and outcome fields cleared and its ledger
+// reservations dropped, and records the attempt it was put back as.
+//
+// It refuses a run that is already dispatchable, parked on a decision, or still
+// running, so a retry is never anything but the operator's own action.
+func (q *Queue) Requeue(ctx context.Context, runID string, at time.Time) (RequeueResult, error) {
+	rowRef := q.client.Collection(runsCollection).Doc(runID)
+	ledgerRef := q.ledgerRef()
+	var result RequeueResult
+	err := q.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		snap, err := tx.Get(rowRef)
+		if status.Code(err) == codes.NotFound {
+			return runner.ErrRecordNotFound
+		}
+		if err != nil {
+			return err
+		}
+		row := snap.Data()
+		state, err := requeueState(row)
+		if err != nil {
+			return err
+		}
+		ledger, err := q.readLedger(tx, ledgerRef)
+		if err != nil {
+			return err
+		}
+		attempt := 1
+		if n, ok := row[attemptField].(int64); ok {
+			attempt = int(n) + 1
+		}
+		if err := tx.Update(rowRef, []firestore.Update{
+			{Path: stateField, Value: state},
+			{Path: updatedAtField, Value: at},
+			{Path: claimedAtField, Value: firestore.Delete},
+			{Path: waitingOnField, Value: firestore.Delete},
+			{Path: outcomeField, Value: firestore.Delete},
+			{Path: buildOutcomeField, Value: firestore.Delete},
+			{Path: stopReasonField, Value: firestore.Delete},
+			{Path: stopDetailField, Value: firestore.Delete},
+			{Path: retriedAtField, Value: at},
+			{Path: attemptField, Value: attempt},
+		}); err != nil {
+			return err
+		}
+		result = RequeueResult{State: state, Attempt: attempt}
+		return dropReservations(tx, ledgerRef, ledger.Reservations, runID)
+	})
+	if err != nil {
+		return RequeueResult{}, fmt.Errorf("requeueing run %s: %w", runID, err)
+	}
+	return result, nil
+}
+
+// requeueState is the state a requeue of row returns the run to, or the refusal
+// that reports why it will not: a settled plan (a recorded write set and the
+// plan stage's own stamp) sends the run to planned, the way a released
+// build-stage claim returns there, and every other run returns to queued.
+func requeueState(row map[string]any) (string, error) {
+	state := str(row, stateField)
+	switch state {
+	case stateQueued, statePlanned:
+		return "", ErrRunDispatchable
+	case stateWaiting:
+		return "", ErrRunWaiting
+	case stateClaimed:
+		if str(row, outcomeField) == "" && str(row, stopReasonField) == "" {
+			return "", ErrRunInFlight
+		}
+	default:
+		if state != stateStopped {
+			return "", fmt.Errorf("run is in state %q, which cannot be requeued", state)
+		}
+	}
+	if len(stringList(row, planFilesField)) > 0 && planStamped(row) {
+		return statePlanned, nil
+	}
+	return stateQueued, nil
+}
+
+// planStamped reports whether row's plan stage settled: the stamp is written
+// when the plan settles, so a zero time is a plan still to come.
+func planStamped(row map[string]any) bool {
+	at, ok := row[planSettledAtField].(time.Time)
+	return ok && !at.IsZero()
+}
+
+// dropReservations removes runID's own and plan-stage ledger reservations when
+// they exist, in one write; a run that holds neither is left alone.
+func dropReservations(tx *firestore.Transaction, ledgerRef *firestore.DocumentRef, reservations map[string]reservationEntry, runID string) error {
+	var updates []firestore.Update
+	for _, key := range []string{runID, PlanKey(runID)} {
+		if _, has := reservations[key]; !has {
+			continue
+		}
+		updates = append(updates, firestore.Update{
+			FieldPath: firestore.FieldPath{"reservations", key},
+			Value:     firestore.Delete,
+		})
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	return tx.Update(ledgerRef, updates)
 }
 
 // RecordVerdict writes the provider plan verdict onto run runID, touching no
