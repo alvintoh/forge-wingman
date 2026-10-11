@@ -320,6 +320,28 @@ func TestDecisionsReadsTheAnswersInOrder(t *testing.T) {
 	}
 }
 
+// TestReplyIgnoresAnEmptyMessage: an empty message carries no answer, so it is
+// not recorded as a reply the dispatcher would then try to match.
+func TestReplyIgnoresAnEmptyMessage(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	id := parkedRun(t, q, client)
+	if err := q.Posted(ctx, id, "session-1", queueAt); err != nil {
+		t.Fatal(err)
+	}
+	recorded, err := q.Reply(ctx, id, "session-1", "   ", queueAt.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recorded {
+		t.Fatal("recorded an empty message as a reply")
+	}
+	row := readDecisions(t, client, id)
+	if row.Decisions[0].Reply != "" || !row.Decisions[0].RepliedAt.IsZero() {
+		t.Fatalf("decision = %+v, want no reply recorded", row.Decisions[0])
+	}
+}
+
 // TestAStoppedWaitTakesNoReplyAndNoAnswer: once the wait ended as
 // waiting-on-owner the run is done, so neither a late reply nor an answer puts
 // it back in the queue.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"cloud.google.com/go/firestore"
@@ -121,6 +122,11 @@ func (q *Queue) Suspend(ctx context.Context, runID string, d runner.Decision, ru
 // reply arrived on — the staleness correlator, so a redelivery and a message on
 // an unrelated session are both no-ops.
 func (q *Queue) Reply(ctx context.Context, runID, sessionID, text string, at time.Time) (bool, error) {
+	// An empty message carries no answer. Recorded, it would read as a reply
+	// matching no option, and the run would ask the owner again for nothing.
+	if strings.TrimSpace(text) == "" {
+		return false, nil
+	}
 	rowRef := q.client.Collection(runsCollection).Doc(runID)
 	var recorded bool
 	err := q.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
