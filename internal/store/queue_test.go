@@ -1818,6 +1818,11 @@ func TestRequeueReturnsAStoppedRunToTheQueue(t *testing.T) {
 	if listed(t, q, ctx, run.RunID) {
 		t.Fatalf("stopped run %s came back as a candidate", run.RunID)
 	}
+	if _, err := client.Collection(runsCollection).Doc(run.RunID).Update(ctx, []firestore.Update{
+		{Path: waitingOnField, Value: dispatcher.ConditionRepoBusy},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	retriedAt := stoppedAt.Add(time.Minute)
 	got, err := q.Requeue(ctx, run.RunID, retriedAt)
 	if err != nil {
