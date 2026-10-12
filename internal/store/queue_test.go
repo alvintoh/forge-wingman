@@ -1977,6 +1977,147 @@ func TestRequeueDropsBothOfTheRunsLedgerReservations(t *testing.T) {
 	}
 }
 
+func TestRequeueAfterConflictReturnsTheRunToQueuedWhateverItsPlan(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	id := fresh("queue-conflict-requeue")
+	seedRow(t, client, id, map[string]any{
+		stateField:                stateClaimed,
+		claimedAtField:            queueAt,
+		priorityField:             int64(1),
+		outcomeField:              string(runner.OutcomeInfraFailure),
+		buildOutcomeField:         string(runner.OutcomeBuilt),
+		stopReasonField:           string(runner.StopRebaseConflict),
+		planFilesField:            []string{"a.go"},
+		planSettledAtField:        queueAt,
+		settledProviderCostField:  int64(250_000),
+		settledRunnerMinutesField: int64(4),
+	})
+	retriedAt := queueAt.Add(time.Minute)
+	got, err := q.RequeueAfterConflict(ctx, id, retriedAt, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != stateQueued || got.Attempt != 1 {
+		t.Fatalf("result = %+v, want the run back in %s as attempt 1", got, stateQueued)
+	}
+	data := readRow(t, client, id)
+	if data[stateField] != stateQueued || data[attemptField] != int64(1) {
+		t.Fatalf("stored state/attempt = %v/%v, want %s/1", data[stateField], data[attemptField], stateQueued)
+	}
+	for _, field := range []string{outcomeField, buildOutcomeField, stopReasonField, claimedAtField} {
+		if _, ok := data[field]; ok {
+			t.Errorf("field %s survived the requeue: %v", field, data[field])
+		}
+	}
+	if data[priorSettledCostField] != int64(250_000) || data[priorSettledMinutesField] != int64(4) {
+		t.Fatalf("prior settled = %v micros, %v minutes, want 250000 and 4", data[priorSettledCostField], data[priorSettledMinutesField])
+	}
+	if !listed(t, q, ctx, id) {
+		t.Fatalf("requeued run %s is not a candidate", id)
+	}
+}
+
+func TestRequeueAfterConflictCarriesTheRowsWholeSettledTotal(t *testing.T) {
+	q, client := queue(t)
+	id := fresh("queue-conflict-total")
+	seedRow(t, client, id, map[string]any{
+		stateField:                stateClaimed,
+		outcomeField:              string(runner.OutcomeInfraFailure),
+		attemptField:              int64(1),
+		priorSettledCostField:     int64(100_000),
+		priorSettledMinutesField:  int64(1),
+		settledProviderCostField:  int64(300_000),
+		settledRunnerMinutesField: int64(3),
+	})
+	got, err := q.RequeueAfterConflict(context.Background(), id, queueAt, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Attempt != 2 {
+		t.Fatalf("attempt = %d, want 2", got.Attempt)
+	}
+	data := readRow(t, client, id)
+	if data[priorSettledCostField] != int64(300_000) || data[priorSettledMinutesField] != int64(3) {
+		t.Fatalf("prior settled = %v micros, %v minutes, want the row's settled 300000 and 3 not added to the old prior",
+			data[priorSettledCostField], data[priorSettledMinutesField])
+	}
+}
+
+func TestRequeueAfterConflictRefusesAtTheCapAndLeavesTheRowUnchanged(t *testing.T) {
+	q, client := queue(t)
+	id := fresh("queue-conflict-cap")
+	seedRow(t, client, id, map[string]any{
+		stateField:               stateClaimed,
+		outcomeField:             string(runner.OutcomeInfraFailure),
+		stopReasonField:          string(runner.StopRebaseConflict),
+		attemptField:             int64(1),
+		settledProviderCostField: int64(250_000),
+	})
+	before := readRow(t, client, id)
+	if _, err := q.RequeueAfterConflict(context.Background(), id, queueAt, 1); !errors.Is(err, ErrRetriesExhausted) {
+		t.Fatalf("err = %v, want ErrRetriesExhausted", err)
+	}
+	if after := readRow(t, client, id); !reflect.DeepEqual(before, after) {
+		t.Fatalf("row changed by a refused requeue: %v, want %v", after, before)
+	}
+}
+
+func TestRequeueAfterConflictRefusesWhatRequeueRefuses(t *testing.T) {
+	q, client := queue(t)
+	for _, tt := range []struct {
+		name   string
+		fields map[string]any
+		want   error
+	}{
+		{"queued", map[string]any{stateField: stateQueued}, ErrRunDispatchable},
+		{"planned", map[string]any{stateField: statePlanned}, ErrRunDispatchable},
+		{"waiting", map[string]any{stateField: stateWaiting}, ErrRunWaiting},
+		{"claimed with no outcome", map[string]any{stateField: stateClaimed, claimedAtField: queueAt}, ErrRunInFlight},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			id := fresh("queue-conflict-refuse")
+			seedRow(t, client, id, tt.fields)
+			before := readRow(t, client, id)
+			if _, err := q.RequeueAfterConflict(context.Background(), id, queueAt, 1); !errors.Is(err, tt.want) {
+				t.Fatalf("err = %v, want %v", err, tt.want)
+			}
+			if after := readRow(t, client, id); !reflect.DeepEqual(before, after) {
+				t.Fatalf("row changed by a refused requeue: %v, want %v", after, before)
+			}
+		})
+	}
+}
+
+func TestRequeueAfterConflictRefusesARunWithNoRow(t *testing.T) {
+	q, _ := queue(t)
+	if _, err := q.RequeueAfterConflict(context.Background(), fresh("queue-conflict-absent"), queueAt, 1); !errors.Is(err, runner.ErrRecordNotFound) {
+		t.Fatalf("err = %v, want the store's own not-found", err)
+	}
+}
+
+func TestRequeueAfterConflictDropsBothOfTheRunsLedgerReservations(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	id := fresh("queue-conflict-res")
+	forget(t, client, id)
+	ledgerRef := client.Collection(dispatchCollection).Doc(ledgerDocID)
+	if _, err := ledgerRef.Set(ctx, ledgerDoc{Reservations: map[string]reservationEntry{
+		id:          {TicketID: id, Stage: dispatcher.StageBuild},
+		PlanKey(id): {TicketID: id, Stage: dispatcher.StagePlan},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = ledgerRef.Delete(ctx) })
+	seedRow(t, client, id, map[string]any{stateField: stateClaimed, outcomeField: string(runner.OutcomeInfraFailure)})
+	if _, err := q.RequeueAfterConflict(ctx, id, queueAt, 1); err != nil {
+		t.Fatal(err)
+	}
+	if res := readLedgerDoc(t, client).Reservations; len(res) != 0 {
+		t.Fatalf("reservations = %v, want both of the run's dropped", res)
+	}
+}
+
 // listed reports whether Candidates holds runID.
 func listed(t *testing.T, q *Queue, ctx context.Context, runID string) bool {
 	t.Helper()

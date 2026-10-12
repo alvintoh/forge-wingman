@@ -184,6 +184,10 @@ type Record struct {
 	StopReason                StopReason       `firestore:"stop_reason"`
 	StopDetail                string           `firestore:"stop_detail"`
 	FailedGate                string           `firestore:"failed_gate"`
+	// PriorSettledProviderCostMicros and PriorSettledRunnerMinutes are what the
+	// run's earlier attempts settled, already counted in the settled totals above.
+	PriorSettledProviderCostMicros money.Micros `firestore:"prior_settled_provider_cost_micros"`
+	PriorSettledRunnerMinutes      int64        `firestore:"prior_settled_runner_minutes"`
 	// Ready is FR-5's draft-vs-ready decision: true only when the pre-PR
 	// loop's checks passed and the review found nothing left open.
 	Ready      bool   `firestore:"ready"`
@@ -417,6 +421,7 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, reader Prov
 	rec.ProviderVerdict = existing.ProviderVerdict
 	rec.ModelLabels = existing.ModelLabels
 	rec.Plan, rec.LastResort, rec.LastResortModels = existing.Plan, existing.LastResort, existing.LastResortModels
+	rec.PriorSettledProviderCostMicros, rec.PriorSettledRunnerMinutes = existing.PriorSettledProviderCostMicros, existing.PriorSettledRunnerMinutes
 	identityErr := in.Identity.CheckAccount()
 	sum, err := ParseSummary(in.Summary, in.AttemptID, t, now)
 	switch {
@@ -473,6 +478,13 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, reader Prov
 	}
 	if rec.Private {
 		rec.SettledRunnerMinutes = BillableMinutes(rec.DurationsMS)
+	}
+	rec.SettledProviderCostMicros += rec.PriorSettledProviderCostMicros
+	rec.SettledRunnerMinutes += rec.PriorSettledRunnerMinutes
+	if rec.SettledAt.IsZero() && (rec.PriorSettledProviderCostMicros > 0 || rec.PriorSettledRunnerMinutes > 0) {
+		// A retry that never reached an agent still holds what the run's earlier
+		// attempts settled, which the windows sum by this stamp.
+		rec.SettledAt = now
 	}
 	if err := store.PutRecord(ctx, in.RunID, rec); err != nil {
 		return rec, fmt.Errorf("writing record %s: %w", in.RunID, err)

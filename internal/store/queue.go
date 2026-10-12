@@ -98,6 +98,10 @@ const (
 	settledAtField            = "settled_at"
 	settledProviderCostField  = "settled_provider_cost_micros"
 	settledRunnerMinutesField = "settled_runner_minutes"
+	// priorSettledCostField and priorSettledMinutesField are what the run's
+	// earlier attempts settled, which the next record adds to its own.
+	priorSettledCostField    = "prior_settled_provider_cost_micros"
+	priorSettledMinutesField = "prior_settled_runner_minutes"
 	// candidateScanLimit bounds how many queued runs one Candidates call
 	// considers, so a long backlog of deferred tickets costs one bounded scan
 	// rather than an unbounded one.
@@ -782,6 +786,43 @@ var (
 // It refuses a run that is already dispatchable, parked on a decision, or still
 // running, so a retry is never anything but the operator's own action.
 func (q *Queue) Requeue(ctx context.Context, runID string, at time.Time) (RequeueResult, error) {
+	return q.requeue(ctx, runID, at, func(row map[string]any, _ int) (string, []firestore.Update, error) {
+		state, err := requeueState(row)
+		return state, nil, err
+	})
+}
+
+// ErrRetriesExhausted reports that a run has already been put back as many
+// times as the automatic retry allows.
+var ErrRetriesExhausted = errors.New("run has no automatic retries left")
+
+// RequeueAfterConflict returns a run whose PR rebase conflicted to the queue —
+// never to planned, so its plan stage runs again against the new base — as the
+// next attempt, and carries what the failed attempt settled into the row's
+// prior-settled fields for the next record to add to its own. It refuses the
+// runs Requeue refuses, and a run whose next attempt would pass maxAttempts.
+func (q *Queue) RequeueAfterConflict(ctx context.Context, runID string, at time.Time, maxAttempts int) (RequeueResult, error) {
+	return q.requeue(ctx, runID, at, func(row map[string]any, attempt int) (string, []firestore.Update, error) {
+		if _, err := requeueState(row); err != nil {
+			return "", nil, err
+		}
+		if attempt > maxAttempts {
+			return "", nil, ErrRetriesExhausted
+		}
+		cost, _ := row[settledProviderCostField].(int64)
+		minutes, _ := row[settledRunnerMinutesField].(int64)
+		return stateQueued, []firestore.Update{
+			{Path: priorSettledCostField, Value: cost},
+			{Path: priorSettledMinutesField, Value: minutes},
+		}, nil
+	})
+}
+
+// requeue is the transaction Requeue and RequeueAfterConflict share: decide
+// names the state the run returns to, given the row and the attempt it would be
+// put back as, with any fields to write beside the common ones, or the refusal.
+func (q *Queue) requeue(ctx context.Context, runID string, at time.Time,
+	decide func(row map[string]any, attempt int) (string, []firestore.Update, error)) (RequeueResult, error) {
 	rowRef := q.client.Collection(runsCollection).Doc(runID)
 	ledgerRef := q.ledgerRef()
 	var result RequeueResult
@@ -794,7 +835,11 @@ func (q *Queue) Requeue(ctx context.Context, runID string, at time.Time) (Requeu
 			return err
 		}
 		row := snap.Data()
-		state, err := requeueState(row)
+		attempt := 1
+		if n, ok := row[attemptField].(int64); ok {
+			attempt = int(n) + 1
+		}
+		state, extra, err := decide(row, attempt)
 		if err != nil {
 			return err
 		}
@@ -802,11 +847,7 @@ func (q *Queue) Requeue(ctx context.Context, runID string, at time.Time) (Requeu
 		if err != nil {
 			return err
 		}
-		attempt := 1
-		if n, ok := row[attemptField].(int64); ok {
-			attempt = int(n) + 1
-		}
-		if err := tx.Update(rowRef, []firestore.Update{
+		if err := tx.Update(rowRef, append([]firestore.Update{
 			{Path: stateField, Value: state},
 			{Path: updatedAtField, Value: at},
 			{Path: claimedAtField, Value: firestore.Delete},
@@ -817,7 +858,7 @@ func (q *Queue) Requeue(ctx context.Context, runID string, at time.Time) (Requeu
 			{Path: stopDetailField, Value: firestore.Delete},
 			{Path: retriedAtField, Value: at},
 			{Path: attemptField, Value: attempt},
-		}); err != nil {
+		}, extra...)); err != nil {
 			return err
 		}
 		result = RequeueResult{State: state, Attempt: attempt}

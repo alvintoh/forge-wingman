@@ -6,15 +6,20 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"cloud.google.com/go/firestore"
+
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 	"github.com/alvintoh/forge-wingman/internal/runner"
+	"github.com/alvintoh/forge-wingman/internal/store"
 )
 
 func TestLoadEnv(t *testing.T) {
@@ -899,5 +904,90 @@ func TestRequeueRefusesAMismatchedIdentity(t *testing.T) {
 	err := run(context.Background(), logger, []string{"requeue", "-run-id", "run-1"}, func(k string) string { return env[k] })
 	if !errors.Is(err, runner.ErrIdentityMismatch) {
 		t.Fatalf("err = %v, want ErrIdentityMismatch", err)
+	}
+}
+
+// recordPRFailure seeds a claimed run whose build finished and whose PR job
+// stopped for prStopReason, runs record against it, and returns the record
+// job's error beside the run's stored row.
+func recordPRFailure(t *testing.T, prior map[string]any, prStopReason string) (map[string]any, error) {
+	t.Helper()
+	if os.Getenv("FIRESTORE_EMULATOR_HOST") == "" {
+		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
+	}
+	ctx := context.Background()
+	client, err := firestore.NewClient(ctx, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := "record-conflict-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	t.Cleanup(func() {
+		_, _ = client.Collection("runs").Doc(runID).Delete(context.Background())
+		_ = client.Close()
+	})
+	ticket := runner.Ticket{ID: "ABC-1", Title: "t", Size: "S", Body: "b"}
+	if err := store.NewRecords(client).PutRecord(ctx, runID, runner.NewRecord(runID, ticket, time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	row := map[string]any{"state": "claimed", "claimed_at": time.Now()}
+	maps.Copy(row, prior)
+	if _, err := client.Collection("runs").Doc(runID).Set(ctx, row, firestore.MergeAll); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := runner.Summary{
+		Outcome: runner.OutcomeBuilt, Phase: runner.PhaseCommit, StartedAt: time.Now().Add(-time.Hour),
+		Branch: runner.BranchName(ticket.BranchSegment(), "42-1"),
+		Steps: []runner.Step{{Phase: runner.PhaseBuild, Round: 1, Model: "p/m", Tokens: runner.Usage{Cost: 0.5, Steps: 1},
+			CompletionsObject: "completions/42-1-build-1.jsonl", At: time.Now().Add(-30 * time.Minute)}},
+	}.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	getenv := map[string]string{"GOOGLE_CLOUD_PROJECT": "p", "GITHUB_RUN_ID": "42", "GITHUB_RUN_ATTEMPT": "1",
+		"WINGMAN_ACCOUNT": "octo", "GITHUB_REPOSITORY_OWNER": "octo"}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	recordErr := run(ctx, logger, []string{"record", "-run-id", runID, "-summary", summary,
+		"-run-result", jobSuccess, "-pr-result", "failure", "-pr-stop-reason", prStopReason},
+		func(k string) string { return getenv[k] })
+	snap, err := client.Collection("runs").Doc(runID).Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snap.Data(), recordErr
+}
+
+func TestRecordRequeuesARunWhoseRebaseConflicted(t *testing.T) {
+	row, err := recordPRFailure(t, nil, string(runner.StopRebaseConflict))
+	if err != nil {
+		t.Fatalf("err = %v, want a requeued run not reported as a failed one", err)
+	}
+	if row["state"] != "queued" || row["attempt"] != int64(1) {
+		t.Fatalf("state/attempt = %v/%v, want queued/1", row["state"], row["attempt"])
+	}
+	if row["prior_settled_provider_cost_micros"] != int64(500_000) {
+		t.Fatalf("prior settled cost = %v, want the failed attempt's 500000 carried", row["prior_settled_provider_cost_micros"])
+	}
+	if _, ok := row["outcome"]; ok {
+		t.Fatalf("outcome = %v survived the requeue", row["outcome"])
+	}
+}
+
+func TestRecordFailsARunWhoseRebaseConflictedAfterItsRetry(t *testing.T) {
+	row, err := recordPRFailure(t, map[string]any{"attempt": int64(1)}, string(runner.StopRebaseConflict))
+	if !errors.Is(err, errRunFailed) {
+		t.Fatalf("err = %v, want errRunFailed", err)
+	}
+	if row["state"] != "claimed" || row["outcome"] != string(runner.OutcomeInfraFailure) || row["stop_reason"] != string(runner.StopRebaseConflict) {
+		t.Fatalf("state/outcome/stop_reason = %v/%v/%v, want claimed/infra-failure/rebase-conflict", row["state"], row["outcome"], row["stop_reason"])
+	}
+}
+
+func TestRecordLeavesAFailedPRJobThatIsNotAConflictToFail(t *testing.T) {
+	row, err := recordPRFailure(t, nil, "")
+	if !errors.Is(err, errRunFailed) {
+		t.Fatalf("err = %v, want errRunFailed", err)
+	}
+	if row["state"] != "claimed" || row["stop_reason"] != string(runner.StopPRJob) {
+		t.Fatalf("state/stop_reason = %v/%v, want claimed/%s", row["state"], row["stop_reason"], runner.StopPRJob)
 	}
 }
