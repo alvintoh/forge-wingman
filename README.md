@@ -62,6 +62,29 @@ start the job's container, and the poll itself takes a few seconds. Cloud Schedu
 the job **every 15 minutes**, so a delivery that never arrives costs one interval, not
 the ticket. One execution is one poll.
 
+A run is not started while its model's peak-price window is open or would be
+reached before the run finishes, so a run delegated in those hours waits out the
+window: the dispatcher holds it, the run's row shows `waiting_on: peak-hours`,
+and the next poll starts it once the window has passed, unattended. The windows
+are the model's `peak` in `internal/providers/providers.json`, so a model whose
+rate carries none is never held.
+
+Two modes decide it: `off-peak-only`, the default above, and `always`, which
+starts a run at any hour. `runner peak-mode` prints the mode and
+`runner peak-mode -mode always` sets it; `-mode off-peak-only` restores the
+default. The next poll reads it, so a switch needs no redeploy. The command
+reads the store and refuses any account but the repository's owner, so it needs
+three variables: the store's project, and the owner's account as both the
+identity and the repository's owner.
+
+```sh
+export GOOGLE_CLOUD_PROJECT=forge-wingman  # the store's project
+export WINGMAN_ACCOUNT=<owner>             # the repository's owner
+export GITHUB_REPOSITORY_OWNER=<owner>     # the same account
+runner peak-mode                           # prints off-peak-only or always
+runner peak-mode -mode always              # starts runs at any hour
+```
+
 ## Shape
 
 One repository, one product, two projects — the Go module and `web/` — and four
