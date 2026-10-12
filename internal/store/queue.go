@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -45,6 +46,9 @@ const (
 	// history, kept beside the record a runner job rebuilds.
 	retriedAtField = "retried_at"
 	attemptField   = "attempt"
+	// queuedAtField is when the run last entered the queue, the tie-break among
+	// runs of one priority.
+	queuedAtField = "queued_at"
 	// waitingOnField names the condition that withheld a queued run at its
 	// last claim attempt; a claim clears it.
 	waitingOnField = "waiting_on"
@@ -170,6 +174,7 @@ func (q *Queue) Enqueue(ctx context.Context, run dispatcher.Queued) error {
 	data := fields(rec)
 	data[stateField] = stateQueued
 	data[priorityField] = run.Priority
+	data[queuedAtField] = run.At
 	data[repoField] = run.Repo
 	if len(run.BlockedBy) > 0 {
 		data[blockedByField] = run.BlockedBy
@@ -201,19 +206,173 @@ func (q *Queue) Enqueue(ctx context.Context, run dispatcher.Queued) error {
 	return nil
 }
 
-// Candidates lists runs a poll may claim in Linear priority order, for
-// admission to walk (adr/0003): the queued, and with them the planned — a run
-// whose plan stage has settled, waiting for its build to be claimed. Bounded by
-// candidateScanLimit, so a long backlog of deferred tickets costs one scan
-// rather than an unbounded one.
-func (q *Queue) Candidates(ctx context.Context) ([]dispatcher.Candidate, error) {
+// UpdateQueuedPriority sets the queued run's priority rank, reporting whether
+// the run is queued at that rank afterwards. A run in any other state keeps the
+// rank it was claimed under, and a missing run reports false.
+func (q *Queue) UpdateQueuedPriority(ctx context.Context, runID string, rank int) (bool, error) {
+	rowRef := q.client.Collection(runsCollection).Doc(runID)
+	var applied bool
+	err := q.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		applied = false
+		snap, err := tx.Get(rowRef)
+		if status.Code(err) == codes.NotFound {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if str(snap.Data(), stateField) != stateQueued {
+			return nil
+		}
+		applied = true
+		return tx.Update(rowRef, []firestore.Update{{Path: priorityField, Value: rank}})
+	})
+	if err != nil {
+		return false, fmt.Errorf("updating the priority of run %s: %w", runID, err)
+	}
+	return applied, nil
+}
+
+// BackfillResult is what BackfillQueuedAt did: the rows it stamped, or with
+// dryRun would stamp, and the rows it left alone because they changed under it
+// or carry no time to stamp from.
+type BackfillResult struct {
+	Stamped int
+	Skipped int
+}
+
+// BackfillQueuedAt stamps queued_at on every queued or planned row that lacks
+// it, from the row's started_at and else its updated_at, so rows written before
+// the field existed keep their relative order. Each row is re-read in its own
+// transaction and written only while it is still queued or planned and still
+// unstamped, so it cannot overwrite a concurrent Enqueue or requeue. A second
+// run stamps nothing; with dryRun it writes nothing.
+func (q *Queue) BackfillQueuedAt(ctx context.Context, dryRun bool) (BackfillResult, error) {
+	var res BackfillResult
+	refs, err := q.unstampedRefs(ctx)
+	if err != nil {
+		return res, err
+	}
+	for _, ref := range refs {
+		stamped, err := q.stampQueuedAt(ctx, ref, dryRun)
+		if err != nil {
+			return res, err
+		}
+		if stamped {
+			res.Stamped++
+		} else {
+			res.Skipped++
+		}
+	}
+	return res, nil
+}
+
+// stampQueuedAt stamps one row, reporting whether it did: the row is re-read, so
+// a row that was stamped, claimed or settled since it was listed is left alone.
+func (q *Queue) stampQueuedAt(ctx context.Context, ref *firestore.DocumentRef, dryRun bool) (bool, error) {
+	stamped := false
+	err := q.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		stamped = false
+		snap, err := tx.Get(ref)
+		if status.Code(err) == codes.NotFound {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		row := snap.Data()
+		at, ok := queuedAtSource(row)
+		if _, has := row[queuedAtField]; has || !ok || !slices.Contains([]string{stateQueued, statePlanned}, str(row, stateField)) {
+			return nil
+		}
+		stamped = true
+		if dryRun {
+			return nil
+		}
+		return tx.Update(ref, []firestore.Update{{Path: queuedAtField, Value: at}})
+	})
+	if err != nil {
+		return false, fmt.Errorf("stamping queued_at on run %s: %w", ref.ID, err)
+	}
+	return stamped, nil
+}
+
+// unstampedRefs lists the queued and planned rows with no queued_at.
+func (q *Queue) unstampedRefs(ctx context.Context) ([]*firestore.DocumentRef, error) {
 	iter := q.client.Collection(runsCollection).
-		Where(stateField, "in", []string{stateQueued, statePlanned}).
-		OrderBy(priorityField, firestore.Asc).
-		Limit(candidateScanLimit).
-		Documents(ctx)
+		Where(stateField, "in", []string{stateQueued, statePlanned}).Documents(ctx)
 	defer iter.Stop()
-	var out []dispatcher.Candidate
+	var refs []*firestore.DocumentRef
+	for {
+		snap, err := iter.Next()
+		if errors.Is(err, iterator.Done) {
+			return refs, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("listing queued runs: %w", err)
+		}
+		if _, has := snap.Data()[queuedAtField]; !has {
+			refs = append(refs, snap.Ref)
+		}
+	}
+}
+
+// queuedAtSource is the time a row without queued_at is stamped with: when its
+// run started, else when its row last changed.
+func queuedAtSource(row map[string]any) (time.Time, bool) {
+	for _, field := range []string{"started_at", updatedAtField} {
+		if at, ok := row[field].(time.Time); ok && !at.IsZero() {
+			return at, true
+		}
+	}
+	return time.Time{}, false
+}
+
+// Candidates lists runs a poll may claim in Linear priority order, oldest
+// queued first within a priority, for admission to walk (adr/0003): the queued,
+// and with them the planned — a run whose plan stage has settled, waiting for
+// its build to be claimed. Bounded by candidateScanLimit, so a long backlog of
+// deferred tickets costs one scan rather than an unbounded one.
+//
+// The ordered query skips a row with no queued_at, so a second scan adds those
+// rows, ordered as if queued before every other row of their priority.
+func (q *Queue) Candidates(ctx context.Context) ([]dispatcher.Candidate, error) {
+	states := []string{stateQueued, statePlanned}
+	ordered, err := q.scanCandidates(ctx, q.client.Collection(runsCollection).
+		Where(stateField, "in", states).
+		OrderBy(priorityField, firestore.Asc).
+		OrderBy(queuedAtField, firestore.Asc).
+		Limit(candidateScanLimit))
+	if err != nil {
+		return nil, err
+	}
+	unstamped, err := q.scanCandidates(ctx, q.client.Collection(runsCollection).Where(stateField, "in", states))
+	if err != nil {
+		return nil, err
+	}
+	all := slices.Concat(ordered, slices.DeleteFunc(unstamped, func(c queuedCandidate) bool { return c.stamped }))
+	slices.SortStableFunc(all, func(a, b queuedCandidate) int {
+		return cmp.Or(cmp.Compare(a.Priority, b.Priority), a.queuedAt.Compare(b.queuedAt))
+	})
+	out := make([]dispatcher.Candidate, 0, min(len(all), candidateScanLimit))
+	for _, c := range all[:min(len(all), candidateScanLimit)] {
+		out = append(out, c.Candidate)
+	}
+	return out, nil
+}
+
+// queuedCandidate is a Candidate with the queue position the store orders it by.
+type queuedCandidate struct {
+	dispatcher.Candidate
+	queuedAt time.Time
+	stamped  bool
+}
+
+// scanCandidates reads the rows query returns as candidates.
+func (q *Queue) scanCandidates(ctx context.Context, query firestore.Query) ([]queuedCandidate, error) {
+	iter := query.Documents(ctx)
+	defer iter.Stop()
+	var out []queuedCandidate
 	for {
 		snap, err := iter.Next()
 		if errors.Is(err, iterator.Done) {
@@ -251,7 +410,8 @@ func (q *Queue) Candidates(ctx context.Context) ([]dispatcher.Candidate, error) 
 			labels := labelsOf(data, lastResortModelsField)
 			cand.LastResort = &labels
 		}
-		out = append(out, cand)
+		queuedAt, stamped := data[queuedAtField].(time.Time)
+		out = append(out, queuedCandidate{Candidate: cand, queuedAt: queuedAt, stamped: stamped})
 	}
 	return out, nil
 }
@@ -902,6 +1062,7 @@ func (q *Queue) requeue(ctx context.Context, runID string, at time.Time,
 			{Path: stopReasonField, Value: firestore.Delete},
 			{Path: stopDetailField, Value: firestore.Delete},
 			{Path: retriedAtField, Value: at},
+			{Path: queuedAtField, Value: at},
 			{Path: attemptField, Value: attempt},
 		}, extra...)); err != nil {
 			return err

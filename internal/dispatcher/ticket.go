@@ -46,7 +46,7 @@ func build(issue Issue, c Config, at time.Time) (Queued, Rejection) {
 	if reason != "" {
 		return Queued{}, rejection(issue, reason, detail, at)
 	}
-	rank, err := priorityRank(issue.Priority)
+	rank, err := PriorityRank(issue.Priority)
 	if err != nil {
 		return Queued{}, rejection(issue, RefusalTicketInvalid, err.Error(), at)
 	}
@@ -125,9 +125,9 @@ func labelValue(labels []string, prefix string) (string, bool) {
 // it does hold, which ORDER BY cannot do for a 0 in first position.
 const noPriorityRank = 5
 
-// priorityRank is the issue's Linear priority as the queue orders it: 1 is
+// PriorityRank is the issue's Linear priority as the queue orders it: 1 is
 // urgent and 4 low, and 0, meaning no priority, sorts last.
-func priorityRank(priority int) (int, error) {
+func PriorityRank(priority int) (int, error) {
 	switch priority {
 	case 0:
 		return noPriorityRank, nil

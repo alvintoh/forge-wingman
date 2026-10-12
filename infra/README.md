@@ -206,6 +206,26 @@ Four variables name what OpenTofu cannot guess, and a fifth is optional:
 | `linear_repositories` | the allowlist. Empty admits nothing, so a forgotten one refuses every ticket rather than dispatching |
 | `dispatcher_settings` | optional. A map of `WINGMAN_PLATFORM_CAP`, `WINGMAN_LARGE_CAP`, `WINGMAN_REVIEW_WIP`, `WINGMAN_STABLE_RUNS`, `WINGMAN_RISE_WITHIN`, `WINGMAN_HALVE_BEYOND`, `WINGMAN_TWO_STAGE` and `WINGMAN_DECISION_TIMEOUT` to a value; a key left out keeps its default. `WINGMAN_DECISION_TIMEOUT` is how long a run waits on an owner decision (e.g. `24h`) before it is stopped as waiting-on-owner |
 
+### Rolling out the queue tie-break
+
+Runs of one priority are claimed oldest-queued first, by a `queued_at` field that
+needs its own index. Rows queued before the field existed have none, so
+`Candidates` reads them in a second scan and lists them ahead of their priority's
+other rows. Do the steps in this order:
+
+1. `tofu apply` adds `queue_claim_by_queued_at`; leave `queue_claim` in place.
+2. Wait until the new index is READY in the Firestore console.
+3. Run `runner backfill-queued-at -dry-run` from a checkout with `GOOGLE_CLOUD_PROJECT`,
+   `WINGMAN_ACCOUNT` and `GITHUB_REPOSITORY_OWNER` set, to see how many queued and
+   planned runs it would stamp. Then run it without `-dry-run`. It stamps each row from
+   its `started_at`, else its `updated_at`, so legacy rows keep their relative order,
+   and it skips a row that changed since it was listed. Running it again stamps nothing.
+4. Only after that, a later apply removes `queue_claim`, which `Candidates` no longer uses.
+
+Follow-up: delete the second scan in `Candidates` once the backfill has run, since
+no row lacks `queued_at` after it. Until then the scan costs one extra read of every
+queued and planned run per poll.
+
 ### Secrets
 
 The apply creates `github-token` with no value in it; the job reads the

@@ -54,3 +54,13 @@ func TestLoadConfigNamesWhatIsMissing(t *testing.T) {
 		t.Fatalf("config = %+v, %v", c, err)
 	}
 }
+
+func TestNewLinearHandlerBindsTheQueueToRepliesAndPriorityEdits(t *testing.T) {
+	h := newLinearHandler(nil, nil, nil, nil, slog.New(slog.DiscardHandler))
+	if h.Priority == nil || h.Replier == nil || h.Markers == nil {
+		t.Fatalf("handler has an unwired store dependency: %+v", h)
+	}
+	if any(h.Priority) != any(h.Replier) {
+		t.Fatal("priority edits and replies are bound to different queues")
+	}
+}

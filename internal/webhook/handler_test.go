@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -98,6 +99,36 @@ func (f *fakeReplier) Reply(_ context.Context, runID, sessionID, text string, at
 	return f.recorded, f.err
 }
 
+// fakePriority records the priority writes the handler hands it, and the
+// order of its calls against the waker's through log.
+type fakePriority struct {
+	err     error
+	applied bool
+	calls   []priorityCall
+	log     *[]string
+}
+
+type priorityCall struct {
+	runID string
+	rank  int
+}
+
+func (f *fakePriority) UpdateQueuedPriority(_ context.Context, runID string, rank int) (bool, error) {
+	f.calls = append(f.calls, priorityCall{runID: runID, rank: rank})
+	if f.log != nil {
+		*f.log = append(*f.log, "write")
+	}
+	return f.applied, f.err
+}
+
+// loggingWaker notes each wake in log.
+type loggingWaker struct{ log *[]string }
+
+func (w loggingWaker) Wake(context.Context) error {
+	*w.log = append(*w.log, "wake")
+	return nil
+}
+
 // fixedSecret holds a value that never needs re-reading.
 func fixedSecret(value string) *Secret {
 	return NewSecret("test", value, func(context.Context) (string, error) { return "", nil },
@@ -129,8 +160,8 @@ func deliver(h Handler, body []byte, secret string) int {
 func handler(markers Markers, acker Acknowledger, waker Waker) Handler {
 	return Handler{
 		Key: fixedSecret(testSecret), Markers: markers, Sessions: acker, Poll: waker,
-		Replier: &fakeReplier{recorded: true},
-		Logger:  slog.New(slog.DiscardHandler), Now: func() time.Time { return receivedAt },
+		Replier: &fakeReplier{recorded: true}, Priority: &fakePriority{applied: true},
+		Logger: slog.New(slog.DiscardHandler), Now: func() time.Time { return receivedAt },
 	}
 }
 
@@ -406,5 +437,87 @@ func TestPromptedFailsWhenTheWakeFails(t *testing.T) {
 	h := handler(&fakeMarkers{}, &fakeAcker{}, &fakeWaker{err: errors.New("unavailable")})
 	if got := deliver(h, replyDelivery("session-1", "ABC-22", "x", receivedAt), testSecret); got != 500 {
 		t.Fatalf("status = %d, want 500", got)
+	}
+}
+
+// issueUpdate is an Issue update payload; data and updatedFrom are the raw JSON
+// of each, as Linear's data change events carry them.
+func issueUpdate(action, data, updatedFrom string) []byte {
+	body := `{"type":"Issue","action":"` + action + `","webhookTimestamp":` +
+		strconv.FormatInt(receivedAt.UnixMilli(), 10) + `,"data":` + data
+	if updatedFrom != "" {
+		body += `,"updatedFrom":` + updatedFrom
+	}
+	return []byte(body + `}`)
+}
+
+func TestIssueUpdates(t *testing.T) {
+	const issue = `{"id":"issue-uuid-1","identifier":"ABC-22","priority":1}`
+	for _, tc := range []struct {
+		name    string
+		body    []byte
+		applied bool
+		err     error
+		wakeErr error
+		want    int
+		calls   []priorityCall
+		woken   int
+	}{
+		{name: "priority edit on a queued run wakes", body: issueUpdate("update", issue, `{"priority":3}`), applied: true, want: 200, calls: []priorityCall{{"ABC-22", 1}}, woken: 1},
+		{name: "no priority becomes urgent", body: issueUpdate("update", issue, `{"priority":0}`), applied: true, want: 200, calls: []priorityCall{{"ABC-22", 1}}, woken: 1},
+		{name: "urgent becomes no priority", body: issueUpdate("update", `{"identifier":"ABC-22","priority":0}`, `{"priority":1}`), applied: true, want: 200, calls: []priorityCall{{"ABC-22", 5}}, woken: 1},
+		{name: "run not queued", body: issueUpdate("update", issue, `{"priority":3}`), want: 200, calls: []priorityCall{{"ABC-22", 1}}},
+		{name: "another field changed", body: issueUpdate("update", issue, `{"title":"old"}`), applied: true, want: 200},
+		{name: "no updatedFrom", body: issueUpdate("update", issue, ""), applied: true, want: 200},
+		{name: "updatedFrom not an object", body: issueUpdate("update", issue, `"x"`), applied: true, want: 200},
+		{name: "data not an object", body: issueUpdate("update", `"x"`, `{"priority":3}`), applied: true, want: 200},
+		{name: "fractional priority", body: issueUpdate("update", issue, `{"priority":2.5}`), applied: true, want: 200},
+		{name: "priority out of range", body: issueUpdate("update", `{"identifier":"ABC-22","priority":9}`, `{"priority":3}`), applied: true, want: 200},
+		{name: "same rank", body: issueUpdate("update", issue, `{"priority":1}`), applied: true, want: 200},
+		{name: "unusable identifier", body: issueUpdate("update", `{"identifier":"a/b","priority":1}`, `{"priority":3}`), applied: true, want: 200},
+		{name: "not an update", body: issueUpdate("create", issue, `{"priority":3}`), applied: true, want: 200},
+		{name: "write fails", body: issueUpdate("update", issue, `{"priority":3}`), err: errors.New("unavailable"), want: 500, calls: []priorityCall{{"ABC-22", 1}}},
+		{name: "wake fails", body: issueUpdate("update", issue, `{"priority":3}`), applied: true, wakeErr: errors.New("403"), want: 500, calls: []priorityCall{{"ABC-22", 1}}, woken: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			priority, waker := &fakePriority{applied: tc.applied, err: tc.err}, &fakeWaker{err: tc.wakeErr}
+			h := handler(&fakeMarkers{}, &fakeAcker{}, waker)
+			h.Priority = priority
+			if got := deliver(h, tc.body, testSecret); got != tc.want {
+				t.Fatalf("status = %d, want %d", got, tc.want)
+			}
+			if !slices.Equal(priority.calls, tc.calls) {
+				t.Fatalf("priority writes = %v, want %v", priority.calls, tc.calls)
+			}
+			if waker.woken != tc.woken {
+				t.Fatalf("woken = %d, want %d", waker.woken, tc.woken)
+			}
+		})
+	}
+}
+
+func TestIssueUpdateRejectsABadSignature(t *testing.T) {
+	priority := &fakePriority{applied: true}
+	h := handler(&fakeMarkers{}, &fakeAcker{}, &fakeWaker{})
+	h.Priority = priority
+	body := issueUpdate("update", `{"identifier":"ABC-22","priority":1}`, `{"priority":3}`)
+	if got := deliver(h, body, "other"); got != 401 {
+		t.Fatalf("status = %d, want 401", got)
+	}
+	if len(priority.calls) != 0 {
+		t.Fatalf("wrote %v for an unsigned delivery", priority.calls)
+	}
+}
+
+func TestIssueUpdateWritesThePriorityBeforeTheWake(t *testing.T) {
+	var log []string
+	h := handler(&fakeMarkers{}, &fakeAcker{}, loggingWaker{&log})
+	h.Priority = &fakePriority{applied: true, log: &log}
+	body := issueUpdate("update", `{"identifier":"ABC-22","priority":1}`, `{"priority":3}`)
+	if got := deliver(h, body, testSecret); got != 200 {
+		t.Fatalf("status = %d, want 200", got)
+	}
+	if !slices.Equal(log, []string{"write", "wake"}) {
+		t.Fatalf("order = %v, want the write before the wake", log)
 	}
 }

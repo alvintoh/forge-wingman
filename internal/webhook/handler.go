@@ -5,17 +5,21 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"regexp"
 	"slices"
 	"sync"
 	"time"
 
+	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
 const (
 	agentSessionEvent = "AgentSessionEvent"
+	issueEvent        = "Issue"
+	actionUpdate      = "update"
 	actionCreated     = "created"
 	actionPrompted    = "prompted"
 	maxBodyBytes      = 1 << 20
@@ -50,6 +54,12 @@ type Replier interface {
 	Reply(ctx context.Context, runID, sessionID, text string, at time.Time) (bool, error)
 }
 
+// Reprioritizer applies an edited Linear priority to a queued run, reporting
+// whether the run is queued at that rank afterwards.
+type Reprioritizer interface {
+	UpdateQueuedPriority(ctx context.Context, runID string, rank int) (bool, error)
+}
+
 // Handler answers Linear's webhook deliveries.
 //
 // Only a verified, fresh AgentSessionEvent acts. A created one marks the
@@ -57,12 +67,16 @@ type Replier interface {
 // session answers 200 and does neither again. A prompted one — the owner
 // answering a run's decision — records the reply and wakes the dispatcher,
 // which does the matching and the resume itself; the handler decides nothing.
+// An Issue update that changes the priority is written to the issue's queued
+// run and wakes the dispatcher; every other Issue update answers 200 and does
+// nothing.
 type Handler struct {
 	Key      *Secret
 	Markers  Markers
 	Sessions Acknowledger
 	Poll     Waker
 	Replier  Replier
+	Priority Reprioritizer
 	Logger   *slog.Logger
 	Now      func() time.Time
 }
@@ -91,6 +105,18 @@ type event struct {
 			Body string `json:"body"`
 		} `json:"content"`
 	} `json:"agentActivity"`
+	// Data and UpdatedFrom stay raw: their shape is the entity's, and a
+	// payload this handler cannot read must not fail the delivery.
+	Data        json.RawMessage `json:"data"`
+	UpdatedFrom json.RawMessage `json:"updatedFrom"`
+}
+
+// issueChange is the part of an Issue update the handler reads: the issue's
+// identifier and current priority, and its previous priority.
+type issueChange struct {
+	Identifier   string
+	Priority     *float64
+	PrevPriority *float64
 }
 
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -115,6 +141,10 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !fresh(ev.WebhookTimestamp, now) {
 		h.Logger.Warn("webhookRejected", "reason", "stale", "webhookTimestamp", ev.WebhookTimestamp)
 		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if ev.Type == issueEvent && ev.Action == actionUpdate {
+		h.reprioritize(w, r, ev)
 		return
 	}
 	if ev.Type != agentSessionEvent {
@@ -194,6 +224,69 @@ func (h Handler) answerPrompted(w http.ResponseWriter, r *http.Request, ev event
 	}
 	h.Logger.Info("webhookReplied", "run", runID, "session", session, "recorded", recorded)
 	w.WriteHeader(http.StatusOK)
+}
+
+// reprioritize writes an edited priority to the issue's queued run and wakes
+// the dispatcher so the next poll orders by it. An update that does not carry a
+// priority change, or a payload that does not read as one, is ignored. A failed
+// write or wake answers 500 so Linear retries; both are idempotent.
+func (h Handler) reprioritize(w http.ResponseWriter, r *http.Request, ev event) {
+	change := readIssueChange(ev)
+	runID := change.Identifier
+	rank, rankOK := priorityRank(change.Priority)
+	prevRank, prevOK := priorityRank(change.PrevPriority)
+	if !runner.ValidRunID(runID) || !rankOK || !prevOK || rank == prevRank {
+		h.Logger.Info("webhookIgnored", "type", ev.Type, "action", ev.Action)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), requestBudget)
+	defer cancel()
+	applied, err := h.Priority.UpdateQueuedPriority(ctx, runID, rank)
+	if err != nil {
+		h.Logger.Error("webhookFailed", "reason", "priority", "run", runID, "err", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	if !applied {
+		h.Logger.Info("webhookIgnored", "type", ev.Type, "action", ev.Action, "run", runID)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	callCtx, cancelCall := context.WithTimeout(ctx, callTimeout)
+	defer cancelCall()
+	if err := h.Poll.Wake(callCtx); err != nil {
+		h.Logger.Error("webhookWakeFailed", "run", runID, "err", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	h.Logger.Info("webhookReprioritized", "run", runID, "rank", rank)
+	w.WriteHeader(http.StatusOK)
+}
+
+// readIssueChange reads an Issue update's identifier and priorities, leaving
+// any it cannot read nil or empty.
+func readIssueChange(ev event) issueChange {
+	var data struct {
+		Identifier string   `json:"identifier"`
+		Priority   *float64 `json:"priority"`
+	}
+	var from struct {
+		Priority *float64 `json:"priority"`
+	}
+	_ = json.Unmarshal(ev.Data, &data)
+	_ = json.Unmarshal(ev.UpdatedFrom, &from)
+	return issueChange{Identifier: data.Identifier, Priority: data.Priority, PrevPriority: from.Priority}
+}
+
+// priorityRank is the queue rank of a Linear priority, or false when it is
+// absent, fractional or outside Linear's range.
+func priorityRank(p *float64) (int, bool) {
+	if p == nil || *p != math.Trunc(*p) {
+		return 0, false
+	}
+	rank, err := dispatcher.PriorityRank(int(*p))
+	return rank, err == nil
 }
 
 // signingKey is the signing secret, re-read while it has no value. Once it

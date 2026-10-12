@@ -264,6 +264,234 @@ func TestCandidatesListsQueuedRunsInPriorityOrder(t *testing.T) {
 	}
 }
 
+// ownOrder is the order Candidates lists the given runs in, leaving out the
+// rows other tests wrote to the shared collection.
+func ownOrder(t *testing.T, q *Queue, ids ...string) []string {
+	t.Helper()
+	cands, err := q.Candidates(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var order []string
+	for _, c := range cands {
+		if slices.Contains(ids, c.RunID) {
+			order = append(order, c.RunID)
+		}
+	}
+	return order
+}
+
+func TestCandidatesBreaksAPriorityTieByQueuedAt(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	late, early, middle := fresh("tie-late"), fresh("tie-early"), fresh("tie-middle")
+	forget(t, client, late, early, middle)
+	for id, at := range map[string]time.Time{late: queueAt.Add(2 * time.Minute), early: queueAt, middle: queueAt.Add(time.Minute)} {
+		run := queuedRun(id, 3)
+		run.At = at
+		if err := q.Enqueue(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, want := ownOrder(t, q, late, early, middle), []string{early, middle, late}; !slices.Equal(got, want) {
+		t.Fatalf("candidate order = %v, want %v", got, want)
+	}
+}
+
+func TestCandidatesPutsARequeuedRunBehindANewerOne(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	requeued, newer := fresh("tie-requeued"), fresh("tie-newer")
+	seedRow(t, client, requeued, map[string]any{stateField: stateStopped, priorityField: int64(3), queuedAtField: queueAt})
+	forget(t, client, newer)
+	run := queuedRun(newer, 3)
+	run.At = queueAt.Add(time.Minute)
+	if err := q.Enqueue(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.Requeue(ctx, requeued, queueAt.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := ownOrder(t, q, requeued, newer), []string{newer, requeued}; !slices.Equal(got, want) {
+		t.Fatalf("candidate order = %v, want %v", got, want)
+	}
+}
+
+func TestCandidatesListsARowWithNoQueuedAtAheadOfItsPriority(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	stamped, legacy := fresh("tie-stamped"), fresh("tie-legacy")
+	forget(t, client, stamped)
+	run := queuedRun(stamped, 3)
+	run.At = queueAt.Add(-time.Hour)
+	if err := q.Enqueue(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	seedRow(t, client, legacy, map[string]any{stateField: stateQueued, priorityField: int64(3)})
+	if got, want := ownOrder(t, q, stamped, legacy), []string{legacy, stamped}; !slices.Equal(got, want) {
+		t.Fatalf("candidate order = %v, want %v", got, want)
+	}
+}
+
+func TestCandidatesKeepsARowWithNoQueuedAtBehindAHigherPriority(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	urgent, legacy := fresh("tie-urgent"), fresh("tie-legacy-low")
+	forget(t, client, urgent)
+	run := queuedRun(urgent, 2)
+	run.At = queueAt
+	if err := q.Enqueue(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	seedRow(t, client, legacy, map[string]any{stateField: stateQueued, priorityField: int64(3)})
+	if got, want := ownOrder(t, q, urgent, legacy), []string{urgent, legacy}; !slices.Equal(got, want) {
+		t.Fatalf("candidate order = %v, want %v", got, want)
+	}
+}
+
+func TestCandidatesStaysWithinTheScanLimit(t *testing.T) {
+	q, client := queue(t)
+	for range candidateScanLimit + 1 {
+		seedRow(t, client, fresh("scan-limit"), map[string]any{stateField: stateQueued, priorityField: int64(1)})
+	}
+	cands, err := q.Candidates(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cands) != candidateScanLimit {
+		t.Fatalf("candidates = %d, want %d", len(cands), candidateScanLimit)
+	}
+}
+
+func TestUpdateQueuedPriorityRewritesOnlyAQueuedRun(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	for _, tt := range []struct {
+		name    string
+		state   string
+		rank    int
+		applied bool
+		want    int64
+	}{
+		{"queued at another rank", stateQueued, 1, true, 1},
+		{"queued at the same rank", stateQueued, 3, true, 3},
+		{"planned", statePlanned, 1, false, 3},
+		{"claimed", stateClaimed, 1, false, 3},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			id := fresh("queue-reprioritize")
+			seedRow(t, client, id, map[string]any{stateField: tt.state, priorityField: int64(3)})
+			applied, err := q.UpdateQueuedPriority(ctx, id, tt.rank)
+			if err != nil || applied != tt.applied {
+				t.Fatalf("applied = %v, err %v, want %v", applied, err, tt.applied)
+			}
+			if got := readRow(t, client, id)[priorityField]; got != tt.want {
+				t.Fatalf("priority = %v, want %d", got, tt.want)
+			}
+		})
+	}
+	if applied, err := q.UpdateQueuedPriority(ctx, fresh("queue-reprioritize-missing"), 1); err != nil || applied {
+		t.Fatalf("missing run: applied = %v, err %v, want a no-op", applied, err)
+	}
+}
+
+// updateTime is when a row was last written, which a no-op leaves unchanged.
+func updateTime(t *testing.T, client *firestore.Client, id string) time.Time {
+	t.Helper()
+	snap, err := client.Collection(runsCollection).Doc(id).Get(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snap.UpdateTime
+}
+
+func TestBackfillQueuedAtStampsOnlyQueuedAndPlannedRowsWithoutIt(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	started, changed := queueAt, queueAt.Add(time.Hour)
+	stamp := queueAt.Add(-time.Hour)
+	queuedRow, plannedRow, hasStamp := fresh("backfill-queued"), fresh("backfill-planned"), fresh("backfill-stamped")
+	claimed, settled, noTime := fresh("backfill-claimed"), fresh("backfill-settled"), fresh("backfill-no-time")
+	seedRow(t, client, queuedRow, map[string]any{stateField: stateQueued, "started_at": started, updatedAtField: changed})
+	seedRow(t, client, plannedRow, map[string]any{stateField: statePlanned, updatedAtField: changed})
+	seedRow(t, client, hasStamp, map[string]any{stateField: stateQueued, "started_at": started, queuedAtField: stamp})
+	seedRow(t, client, claimed, map[string]any{stateField: stateClaimed, "started_at": started})
+	seedRow(t, client, settled, map[string]any{stateField: stateStopped, "started_at": started})
+	seedRow(t, client, noTime, map[string]any{stateField: stateQueued})
+	untouched := map[string]time.Time{}
+	for _, id := range []string{hasStamp, claimed, settled, noTime} {
+		untouched[id] = updateTime(t, client, id)
+	}
+
+	res, err := q.BackfillQueuedAt(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Stamped < 2 || res.Skipped < 1 {
+		t.Fatalf("result = %+v, want at least 2 stamped and the row with no time skipped", res)
+	}
+	if got := readRow(t, client, queuedRow)[queuedAtField]; got != started {
+		t.Fatalf("queued row queued_at = %v, want its started_at %v", got, started)
+	}
+	if got := readRow(t, client, plannedRow)[queuedAtField]; got != changed {
+		t.Fatalf("planned row queued_at = %v, want its updated_at %v", got, changed)
+	}
+	for id, before := range untouched {
+		if got := updateTime(t, client, id); !got.Equal(before) {
+			t.Fatalf("row %s was written by the backfill", id)
+		}
+	}
+
+	again := updateTime(t, client, queuedRow)
+	if _, err := q.BackfillQueuedAt(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := updateTime(t, client, queuedRow); !got.Equal(again) {
+		t.Fatal("a second run wrote an already stamped row")
+	}
+}
+
+func TestBackfillQueuedAtDryRunWritesNothing(t *testing.T) {
+	q, client := queue(t)
+	id := fresh("backfill-dry")
+	seedRow(t, client, id, map[string]any{stateField: stateQueued, "started_at": queueAt})
+	before := updateTime(t, client, id)
+	res, err := q.BackfillQueuedAt(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Stamped < 1 {
+		t.Fatalf("result = %+v, want the unstamped row counted", res)
+	}
+	if _, has := readRow(t, client, id)[queuedAtField]; has || !updateTime(t, client, id).Equal(before) {
+		t.Fatal("a dry run wrote the row")
+	}
+}
+
+func TestStampQueuedAtLeavesAMissingRow(t *testing.T) {
+	q, client := queue(t)
+	stamped, err := q.stampQueuedAt(context.Background(), client.Collection(runsCollection).Doc(fresh("backfill-missing")), false)
+	if err != nil || stamped {
+		t.Fatalf("stamped = %v, err %v, want a clean no-op", stamped, err)
+	}
+}
+
+func TestStampQueuedAtLeavesARowThatChangedSinceItWasListed(t *testing.T) {
+	q, client := queue(t)
+	for name, row := range map[string]map[string]any{
+		"stamped": {stateField: stateQueued, "started_at": queueAt, queuedAtField: queueAt.Add(-time.Hour)},
+		"claimed": {stateField: stateClaimed, "started_at": queueAt},
+	} {
+		id := fresh("backfill-" + name)
+		seedRow(t, client, id, row)
+		before := updateTime(t, client, id)
+		stamped, err := q.stampQueuedAt(context.Background(), client.Collection(runsCollection).Doc(id), false)
+		if err != nil || stamped || !updateTime(t, client, id).Equal(before) {
+			t.Fatalf("%s: stamped = %v, err %v, want the row left alone", name, stamped, err)
+		}
+	}
+}
+
 // TestCandidatesDefaultsAMissingPrivateFieldToTrue is the regression test for
 // a rolling-deploy hazard: a run record written before this field existed has
 // no privateField at all. Defaulting that to false would silently zero a
@@ -1845,6 +2073,9 @@ func TestRequeueReturnsAStoppedRunToTheQueue(t *testing.T) {
 	}
 	if data[attemptField] != int64(1) {
 		t.Fatalf("attempt = %v, want 1", data[attemptField])
+	}
+	if stamped, ok := data[queuedAtField].(time.Time); !ok || !stamped.Equal(retriedAt) {
+		t.Fatalf("queued_at = %v, want the call's own time", data[queuedAtField])
 	}
 	if !listed(t, q, ctx, run.RunID) {
 		t.Fatalf("requeued run %s is not a candidate", run.RunID)

@@ -10,6 +10,7 @@
 //	runner reset-breaker                             clear the breaker a systemic stop tripped, admitting dispatch again
 //	runner peak-mode       [-mode off-peak-only|always] print the peak mode, or set whether a run waits out its model's peak-price hours
 //	runner requeue         -run-id <id>              return a stopped run to the queue for another attempt
+//	runner backfill-queued-at [-dry-run]             stamp queued_at on the queued and planned runs that lack it
 //	runner plan-define     -provider <name> ...      record a provider plan's price, billing, limit behaviour, pages and harnesses
 //	runner plan-optin      -provider <name>          record the owner's consent to a per-token provider's spend, or with -private to private repos on its free tier
 //	runner plan-verdict    -provider <name> ...      record the verdict on a plan's terms with its wording and source
@@ -105,7 +106,7 @@ type env struct {
 // Actions environment.
 func requiredEnv(command string) ([]string, bool) {
 	switch command {
-	case "ticket", "pr-meta", "enable-provider", "reset-breaker", "peak-mode", "requeue",
+	case "ticket", "pr-meta", "enable-provider", "reset-breaker", "peak-mode", "requeue", "backfill-queued-at",
 		"plan-define", "plan-optin", "plan-verdict", "plan-reply", "plan-list":
 		return []string{"GOOGLE_CLOUD_PROJECT"}, true
 	case "record", "record-plan-stage":
@@ -149,7 +150,7 @@ func loadEnv(getenv func(string) string, required ...string) (env, error) {
 
 func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(string) string) error {
 	if len(args) == 0 {
-		return errors.New("usage: runner ticket|build|plan-stage|record-plan-stage|pr-meta|record|enable-provider|reset-breaker|peak-mode|requeue|plan-define|plan-verdict|plan-reply|plan-list|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post|agent-probe [flags]")
+		return errors.New("usage: runner ticket|build|plan-stage|record-plan-stage|pr-meta|record|enable-provider|reset-breaker|peak-mode|requeue|backfill-queued-at|plan-define|plan-verdict|plan-reply|plan-list|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post|agent-probe [flags]")
 	}
 	if args[0] == "plan-smoke" {
 		return planSmoke(ctx, logger, getenv, args[1:])
@@ -198,6 +199,8 @@ func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(st
 		return peakMode(ctx, logger, e, args[1:])
 	case "requeue":
 		return requeue(ctx, logger, e, args[1:])
+	case "backfill-queued-at":
+		return backfillQueuedAt(ctx, logger, e, args[1:])
 	case "plan-define":
 		return planDefine(ctx, logger, e, args[1:])
 	case "plan-optin":
@@ -690,6 +693,35 @@ func requeue(ctx context.Context, logger *slog.Logger, e env, args []string) err
 		return err
 	}
 	logger.Info("runRequeued", "run", *runID, "attempt", res.Attempt, "state", res.State)
+	return nil
+}
+
+// backfillQueuedAt stamps queued_at on the queued and planned runs written
+// before the field existed — a manual operator action, safe to repeat. Its
+// account check only guards against a run on the wrong account by mistake:
+// Firestore IAM decides who may write.
+func backfillQueuedAt(ctx context.Context, logger *slog.Logger, e env, args []string) error {
+	fs := flag.NewFlagSet("backfill-queued-at", flag.ContinueOnError)
+	dryRun := fs.Bool("dry-run", false, "count the runs it would stamp and write nothing")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := e.identity.CheckAccount(); err != nil {
+		return err
+	}
+	if e.project == "" {
+		return errors.New("GOOGLE_CLOUD_PROJECT is not set")
+	}
+	fsc, err := firestore.NewClient(ctx, e.project)
+	if err != nil {
+		return fmt.Errorf("firestore client: %w", err)
+	}
+	defer func() { _ = fsc.Close() }()
+	res, err := store.NewQueue(fsc).BackfillQueuedAt(ctx, *dryRun)
+	if err != nil {
+		return err
+	}
+	logger.Info("queuedAtBackfilled", "stamped", res.Stamped, "skipped", res.Skipped, "dryRun", *dryRun)
 	return nil
 }
 
