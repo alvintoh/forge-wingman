@@ -309,9 +309,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 func lastResortPlans(provider string) [][]string {
 	var rungs [][]string
 	for _, plan := range providers.LastResortPlans() {
-		if models := providers.LastResortModels(plan); len(models) > 0 {
-			rungs = append(rungs, models)
-		}
+		rungs = append(rungs, providers.LastResortModels(plan))
 	}
 	if len(rungs) == 0 {
 		if models := providers.LastResortModels(provider); len(models) > 0 {

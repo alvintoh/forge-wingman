@@ -20,20 +20,20 @@ import (
 // binary oh-my-pi installs (testdata/omp/PACKAGE.txt).
 const ompName = "omp"
 
-// ompProviderFor maps a plan to omp's own built-in provider name for it, so the
-// adapter reaches the plan's endpoint with the model id omp recognises. A plan
-// absent here is one omp cannot reach, and the adapter refuses its models before
-// starting omp.
-var ompProviderFor = map[string]string{
-	"command-code": "commandcode",
-	"gemini":       "google",
+// ompPlan is how omp reaches one plan: its own built-in provider name, so the
+// adapter reaches the plan's endpoint with the model id omp recognises, and the
+// variable that provider reads its key from, which is the CLI's own name rather
+// than the repository secret's.
+type ompPlan struct {
+	provider string
+	keyEnv   string
 }
 
-// ompKeyEnvFor maps a plan to the variable omp's provider reads its key from,
-// which is the CLI's own name rather than the repository secret's.
-var ompKeyEnvFor = map[string]string{
-	"command-code": "COMMAND_CODE_API_KEY",
-	"gemini":       "GEMINI_API_KEY",
+// ompPlans are the plans omp can reach. A plan absent here is one omp cannot
+// reach, and the adapter refuses its models before starting omp.
+var ompPlans = map[string]ompPlan{
+	"command-code": {provider: "commandcode", keyEnv: "COMMAND_CODE_API_KEY"},
+	"gemini":       {provider: "google", keyEnv: "GEMINI_API_KEY"},
 }
 
 // ompAgentDir and ompSessionDir sit under the harness's HOME; omp reads its
@@ -65,7 +65,7 @@ telemetry:
 // omp itself knows the model by. Empty when the plan caps no model, so a plan
 // without caps writes no file and keeps the harness's own default.
 func ompModels(plan string, caps map[string]int) string {
-	provider := ompProviderFor[plan]
+	provider := ompPlans[plan].provider
 	var overrides []string
 	for model, maxTokens := range caps {
 		id, ok := strings.CutPrefix(model, plan+"/")
@@ -159,9 +159,8 @@ func (a OmpAgent) Run(ctx context.Context, dir, session, prompt, rules string, s
 	}
 	plan := Provider(a.Model)
 	rest, ok := strings.CutPrefix(a.Model, plan+"/")
-	provider, reachable := ompProviderFor[plan]
-	keyEnv, keyed := ompKeyEnvFor[plan]
-	if !ok || rest == "" || !reachable || !keyed {
+	reach, reachable := ompPlans[plan]
+	if !ok || rest == "" || !reachable {
 		return fmt.Errorf("the omp harness has no provider for plan %q", plan)
 	}
 	agentDir := filepath.Join(a.Home, ompAgentDir)
@@ -180,7 +179,7 @@ func (a OmpAgent) Run(ctx context.Context, dir, session, prompt, rules string, s
 	if a.Profile == ProfileBuild {
 		approval = "yolo"
 	}
-	args := []string{"-p", "--mode", "json", "--model", provider + "/" + rest, "--no-extensions", "--no-skills",
+	args := []string{"-p", "--mode", "json", "--model", reach.provider + "/" + rest, "--no-extensions", "--no-skills",
 		"--session-dir", filepath.Join(a.Home, ompSessionDir), "--approval-mode", approval}
 	if session != "" {
 		args = append(args, "--resume", session)
@@ -188,7 +187,7 @@ func (a OmpAgent) Run(ctx context.Context, dir, session, prompt, rules string, s
 	cmd := exec.CommandContext(ctx, a.Bin, args...)
 	cmd.Dir = dir
 	cmd.Env = append(filterEnv(os.Environ(), agentBaseEnvNames),
-		"HOME="+a.Home, "PI_CODING_AGENT_DIR="+agentDir, keyEnv+"="+a.Key)
+		"HOME="+a.Home, "PI_CODING_AGENT_DIR="+agentDir, reach.keyEnv+"="+a.Key)
 	cmd.Stdin = strings.NewReader(prompt)
 	return runAgentCLI(cmd, a.Home, stderr, func(events io.Reader, _ error) error {
 		return translateOmpEvents(events, stdout, stderr)

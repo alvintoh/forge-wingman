@@ -429,3 +429,12 @@ func TestEmbeddedGeminiIsAFreeTierPlan(t *testing.T) {
 		}
 	}
 }
+
+func TestPlansListsEveryConfiguredPlanSorted(t *testing.T) {
+	// Map order is random, so one call can come out sorted by chance.
+	for range 32 {
+		if got, want := Plans(), []string{"command-code", "gemini"}; !slices.Equal(got, want) {
+			t.Fatalf("Plans() = %q, want %q", got, want)
+		}
+	}
+}

@@ -90,7 +90,7 @@ commands instead.
 A plan's harness is **omp** unless omp cannot reach the model. Establish that by
 reading omp's own provider registry (the provider id, and the `envVars` it reads)
 and then running the model *through omp* — never from our adapter's map, which
-lists only what a plan has been given: `ompProviderFor` had one entry, so the
+lists only what a plan has been given: it had one entry, so the
 Gemini plan defaulted to opencode, although omp's built-in `google` provider
 drives that model natively (`google-generative-ai`) on the same `GEMINI_API_KEY`
 the repository secret already uses.

@@ -497,7 +497,6 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		optIns[plan] = v
 		return v
 	}
-	hasFreeTier := slices.ContainsFunc(c.LastResortPlans, func(rung []string) bool { return len(rung) > 1 })
 	var claims []Claim
 	noticed := map[string]bool{}
 	for _, cand := range candidates {
@@ -540,7 +539,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		// A build-stage claim keeps the tier its plan stage claimed — one tier
 		// per run — so it never falls back to the free tier, which would mix
 		// tiers within the run; a ceiling that now binds defers it instead.
-		if !ok && stage != StageBuild && budget.isProviderCeiling(binding) && hasFreeTier {
+		if !ok && stage != StageBuild && budget.isProviderCeiling(binding) {
 			paid := binding
 			for _, rung := range c.LastResortPlans {
 				// One free model cannot staff both the build and its review.
@@ -563,10 +562,10 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 				if ok {
 					claimVerdict = verdictOf(rungPlan)
 					d.Logger.Info("runOnLastResort", "run", cand.RunID, "model", facts.Model, "plan", rungPlan, "paidCeiling", paid)
-					break
 				}
 				if binding == "" {
-					// Another poll already claimed this row: not an admission matter.
+					// Admitted, or another poll already claimed this row: no ceiling
+					// binds, so the walk is over.
 					break
 				}
 			}
@@ -604,9 +603,6 @@ func onLastResort(facts Facts, models []string) Facts {
 // to plan's free tier. A failed read is logged and reads as no opt-in, so a
 // private candidate defers rather than runs unconsented.
 func lookupPrivateOptIn(ctx context.Context, d Deps, plan string) bool {
-	if plan == "" {
-		return false
-	}
 	p, _, err := d.ModelPlans.Plan(ctx, plan)
 	if err != nil {
 		d.Logger.Info("privateOptInLookupFailed", "provider", plan, "err", err.Error())

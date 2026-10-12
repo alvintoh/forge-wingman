@@ -519,3 +519,23 @@ func TestOmpRunsTheFreeListsTailModelMeteredAtNothing(t *testing.T) {
 		t.Fatalf("usage = %+v, want the recorded 59312 in / 31 out at $0", u)
 	}
 }
+
+// TestOmpHarnessKeysEachPlanOnItsOwnSecret asserts a harness built from the
+// environment hands a model the key of that model's own plan, and reports a plan
+// ready only when that plan's key is present.
+func TestOmpHarnessKeysEachPlanOnItsOwnSecret(t *testing.T) {
+	env := map[string]string{"COMMANDCODE_API_KEY": "cc-key", "GEMINI_API_KEY": "g-key"}
+	h := OmpHarness{Getenv: func(k string) string { return env[k] }}
+	for model, want := range map[string]string{"command-code/m": "cc-key", "gemini/m": "g-key"} {
+		if got := h.Agent(ProfileBuild, model).(OmpAgent).Key; got != want {
+			t.Errorf("Agent(%s).Key = %q, want %q", model, got, want)
+		}
+	}
+	onlyCommandCode := OmpHarness{Getenv: func(k string) string { return map[string]string{"COMMANDCODE_API_KEY": "cc-key"}[k] }}
+	if err := onlyCommandCode.Ready("command-code"); err != nil {
+		t.Errorf("Ready(command-code) = %v with its key set", err)
+	}
+	if err := onlyCommandCode.Ready("gemini"); err == nil || !strings.Contains(err.Error(), "GEMINI_API_KEY") {
+		t.Errorf("Ready(gemini) = %v, want the missing GEMINI_API_KEY named", err)
+	}
+}

@@ -74,7 +74,7 @@ func TestRecordNeedsTheRunsIdentity(t *testing.T) {
 
 // TestHarnessesWireTheKeyAndHome asserts each harness resolves the plan's key
 // from the environment and keeps its HOME under the job's temp directory, so a
-// later round finds the earlier session, and that each plan's key is listed once.
+// later round finds the earlier session, and that each plan's key is listed.
 func TestHarnessesWireTheKeyAndHome(t *testing.T) {
 	env := map[string]string{"COMMANDCODE_API_KEY": "k", "GEMINI_API_KEY": "g", "RUNNER_TEMP": "/tmp/r"}
 	var oc runner.OpencodeHarness
@@ -94,7 +94,7 @@ func TestHarnessesWireTheKeyAndHome(t *testing.T) {
 		t.Errorf("homes = %q and %q, want each under RUNNER_TEMP", oc.Home, omp.Home)
 	}
 	if got := runner.HarnessSecrets(func(k string) string { return env[k] }); !slices.Equal(got, []string{"k", "g"}) {
-		t.Errorf("secrets = %q, want each configured plan's key once", got)
+		t.Errorf("secrets = %q, want each configured plan's key", got)
 	}
 }
 

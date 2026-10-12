@@ -663,3 +663,28 @@ func TestOpencodeConfigNamesThePlansEndpoint(t *testing.T) {
 		t.Fatalf("provider models %v lack %s", p.Models, model)
 	}
 }
+
+// TestOpencodeConfigReachesAnotherPlanOnItsOwnEndpoint asserts the config is
+// built from the plan it is given: its own provider id, base URL, and the
+// variable named for the plan's key, which is its secret's name when the CLI had
+// no earlier name for it.
+func TestOpencodeConfigReachesAnotherPlanOnItsOwnEndpoint(t *testing.T) {
+	raw, err := opencodeConfig("gemini", "gemini-3.8-flash", "", filepath.Join("/repo", "CLAUDE.md"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc opencodeConfigDoc
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Provider) != 1 {
+		t.Fatalf("config providers %v, want only the plan's own", doc.Provider)
+	}
+	p, ok := doc.Provider["gemini"]
+	if !ok {
+		t.Fatalf("config providers %v lack gemini", doc.Provider)
+	}
+	if p.Options.BaseURL != "https://generativelanguage.googleapis.com/v1beta/openai/" || p.Options.APIKey != "{env:GEMINI_API_KEY}" {
+		t.Fatalf("provider = %+v, want the Gemini endpoint and its secret's name", p)
+	}
+}

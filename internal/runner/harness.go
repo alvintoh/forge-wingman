@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
@@ -74,33 +73,14 @@ func Harnesses(getenv func(string) string) []Harness {
 }
 
 // HarnessSecrets are the credentials the harnesses hold, which a run checks
-// against a branch before it is pushed. It is each configured plan's key secret
-// that a registered harness serves, a key two plans share listed once.
+// against a branch before it is pushed: each configured plan's key secret.
 func HarnessSecrets(getenv func(string) string) []string {
-	var names, secrets []string
-	for _, plan := range providers.Plans() {
-		if !servedByARegisteredHarness(plan) {
-			continue
-		}
-		secret := providers.KeySecret(plan)
-		if secret == "" || slices.Contains(names, secret) {
-			continue
-		}
-		names = append(names, secret)
-		secrets = append(secrets, getenv(secret))
+	plans := providers.Plans()
+	secrets := make([]string, len(plans))
+	for i, plan := range plans {
+		secrets[i] = getenv(providers.KeySecret(plan))
 	}
 	return secrets
-}
-
-// servedByARegisteredHarness reports whether any harness the plan's order names
-// is registered, so a plan whose harnesses are unknown adds no secret.
-func servedByARegisteredHarness(plan string) bool {
-	for _, name := range providers.Harnesses(plan) {
-		if knownHarness(name) {
-			return true
-		}
-	}
-	return false
 }
 
 // knownHarness reports whether name is a registered harness, so a summary's

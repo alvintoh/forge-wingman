@@ -1314,3 +1314,75 @@ func TestPollDefersAPlanStageWhosePlanEstimateCannotBeRead(t *testing.T) {
 		t.Fatalf("claims %d, deferrals %+v, want the plan claim deferred on the estimate", len(q.tryClaims), res.Deferrals)
 	}
 }
+
+// TestPollJudgesAFreeTierRungByItsOwnPlan: the halt and the verdict are read for
+// the plan the run would land on, not for the plan that withheld it.
+func TestPollJudgesAFreeTierRungByItsOwnPlan(t *testing.T) {
+	q := &fakeQueue{
+		candidates: []Candidate{{RunID: "run-a", Repo: "octo/scratch"}},
+		bindings:   map[string]string{"run-a": "p-5h"},
+	}
+	w := &fakeWorkflow{}
+	deps := pollDeps(fakeSource{}, q, w)
+	deps.Providers = fakeProviders{halted: map[string]bool{"q": true}}
+	deps.Plans = fakeVerdicts{verdicts: map[string]providers.Verdict{"p": providers.VerdictAllowed, "q": providers.VerdictRestricted}}
+	plan := paidPlan
+	plan.LastResortPlans = [][]string{{"q/free-a", "q/free-b"}}
+	if _, err := Poll(context.Background(), deps, plan); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.tryClaims) != 2 || q.tryClaims[0].facts.ProviderHalted || !q.tryClaims[1].facts.ProviderHalted {
+		t.Fatalf("tryClaims = %+v, want the halt read for the paid plan, then for the free plan", q.tryClaims)
+	}
+	if len(w.claims) != 1 || w.claims[0].Verdict != providers.VerdictRestricted {
+		t.Fatalf("claims = %+v, want the free plan's verdict on the claim", w.claims)
+	}
+}
+
+func TestPollStopsWalkingTheFreeTierOnceARungAdmits(t *testing.T) {
+	q := &fakeQueue{
+		candidates: []Candidate{{RunID: "run-a", Repo: "octo/scratch"}},
+		bindings:   map[string]string{"run-a": "p-5h"},
+	}
+	plan := paidPlan
+	plan.LastResortPlans = [][]string{{"p/free-a", "p/free-b"}, {"q/free-a", "q/free-b"}}
+	if _, err := Poll(context.Background(), pollDeps(fakeSource{}, q, &fakeWorkflow{}), plan); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.tryClaims) != 2 || q.tryClaims[1].facts.Model != "p/free-a" {
+		t.Fatalf("tryClaims = %+v, want the first rung claimed and the walk ended", q.tryClaims)
+	}
+}
+
+func TestPollStopsWalkingTheFreeTierWhenAnotherPollClaimedTheRun(t *testing.T) {
+	q := &fakeQueue{
+		candidates:  []Candidate{{RunID: "run-a", Repo: "octo/scratch"}},
+		bindings:    map[string]string{"run-a": "p-5h"},
+		unavailable: map[string]bool{"run-a": true},
+	}
+	plan := paidPlan
+	plan.LastResortPlans = [][]string{{"p/free-a", "p/free-b"}, {"q/free-a", "q/free-b"}}
+	res, err := Poll(context.Background(), pollDeps(fakeSource{}, q, &fakeWorkflow{}), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(q.tryClaims) != 2 || len(res.Dispatched) != 0 || len(res.Deferrals) != 0 {
+		t.Fatalf("claims %d, dispatched %q, deferrals %+v, want one free claim and no admission matter", len(q.tryClaims), res.Dispatched, res.Deferrals)
+	}
+}
+
+func TestPollDefersABuildStageRatherThanMovingItToTheFreeTier(t *testing.T) {
+	q := &fakeQueue{
+		candidates: []Candidate{{RunID: "run-a", Repo: "octo/scratch", Size: "M", Stage: StageBuild}},
+		bindings:   map[string]string{"run-a": "p-5h"},
+	}
+	plan := paidPlan
+	plan.TwoStage = true
+	res, err := Poll(context.Background(), pollDeps(fakeSource{}, q, &fakeWorkflow{}), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(q.tryClaims) != 1 || len(res.Deferrals) != 1 || res.Deferrals[0].Ceiling != "p-5h" {
+		t.Fatalf("claims %d, deferrals %+v, want one claim deferred on the plan window", len(q.tryClaims), res.Deferrals)
+	}
+}
