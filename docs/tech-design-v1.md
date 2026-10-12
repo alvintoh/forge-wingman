@@ -268,6 +268,54 @@ artifact; only the diff, which becomes a public PR anyway, may cross jobs as one
 per FR-13** — the run terminates and never escalates a model tier, because no
 model can fix a full disk.
 
+### PR review — a workflow from main, and what it does when the reviewer is out
+
+`pr-review.yml` runs as `pull_request_target` from main's copy and never runs the PR's
+code. Three jobs each hold one credential: `context` a read token, `review` the model
+key alone, `post` the comment and status writes plus the App token for the merge
+request. It posts one marked comment and the `wingman-review` status, and requests
+auto-merge only for a clean review of an eligible PR, pinned to the reviewed head
+(`FR-16`). Branch protection requires the `go` and `web` checks and no approval.
+
+**When the reviewer is unavailable — decided 2026-10-12 by the owner; not yet built.**
+A review whose models all fail returns **no verdict**, which today requests nothing
+and leaves the PR to the owner (seen on two PRs on 2026-10-11 and 2026-10-12, when the
+GOAT allowance was spent). The decision splits the two causes a no-verdict hides:
+
+| Review ended | Today | Decided |
+|---|---|---|
+| clean | auto-merge requested | unchanged |
+| findings | waits for the owner | unchanged |
+| no verdict — **allowance exhausted** | waits for the owner | requests auto-merge if the PR is eligible and `go` and `web` pass at the reviewed head |
+| no verdict — **failed or timed out** | waits for the owner | unchanged, still waits |
+
+An allowance runs out on a schedule and refills, so it is not a fault of the
+reviewer, and holding every eligible PR behind it stalls the unattended loop for
+hours. **What it accepts:** an S/M PR with zero open boxes merges having had no
+review beyond its own checks and the build's pre-PR review (`FR-28`), so a defect
+those cannot see ships. The comment states it plainly (*merged without review:
+reviewer allowance exhausted*), and the eligibility rules and the `FR-17` sample bound
+how often it applies. *(Judgment call, the owner's; no authority prescribes it.
+Revisit when review models fall through the ordered plan list, `FR-14`, which would
+make the case rarer.)*
+
+**An allowance here means any reviewer's, and each has its own marker.** The product's
+own review runs its models on a coding plan, whose exhaustion the plan's allowance
+markers name (`FR-26`). GitHub Copilot's review is auto-requested on every PR and draws
+a per-user quota; when that is spent its review reads *unable to review this pull
+request because the user who requested the review has reached their quota limit*
+(seen on three PRs, 2026-10-11 and 2026-10-12). Copilot gates nothing (the branch rule
+requires no approvals), so its quota being out holds no PR and needs no handling beyond
+being recognised as that state, not as a finding. The builder's own plan allowance is a
+different matter: admission already defers or falls through it (`FR-22`, `FR-26`) and
+it never reaches the merge.
+
+**It needs a classifier the review does not have.** "No verdict" is not evidence of an
+exhausted allowance: the two failures above read *agent failed* and *timed out*, which
+fits a spent allowance without proving one. The cause must come from the reviewer's own
+marker, carried through the verdict step as a closed state, never inferred from the
+absence of a verdict. Until that exists the rule is inert and every no-verdict PR waits.
+
 ### Surface — Cloud Run service behind IAP
 
 One Go binary entrypoint (`cmd/surface`) serving the embedded SPA plus three JSON
