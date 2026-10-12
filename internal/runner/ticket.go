@@ -21,6 +21,9 @@ const (
 	maxEncodedTicketBytes = 96 << 10
 )
 
+// FrontEndLabel is the Linear label that marks a ticket as front-end work.
+const FrontEndLabel = "area:fe"
+
 // ErrTicketInvalid reports a ticket the runner cannot build.
 var ErrTicketInvalid = errors.New("ticket is invalid")
 
@@ -51,6 +54,8 @@ type Ticket struct {
 	// its ticket file carries into the resumed plan's prompt so the plan need
 	// not ask them again. Empty until the owner has answered one.
 	Decisions []Answer `json:"decisions,omitempty"`
+	// FrontEnd is whether the owner labelled the ticket as front-end work.
+	FrontEnd bool `json:"front_end,omitempty"`
 }
 
 // Validate reports whether the ticket has an id, a one-line title, a size of S, M

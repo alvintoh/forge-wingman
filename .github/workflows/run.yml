@@ -315,13 +315,14 @@ jobs:
           ATTEMPT_ID: ${{ needs.model.outputs.attempt_id }}
           SUMMARY: ${{ needs.model.outputs.summary }}
           AUTO_MERGE_SWITCH: ${{ vars.WINGMAN_AUTO_MERGE }}
+          FRONT_END_PATHS: ${{ vars.WINGMAN_FRONT_END_PATHS }}
           BRANCH: ${{ needs.model.outputs.branch }}
           REPOSITORY: ${{ github.repository }}
           WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
         run: >-
           "$RUNNER_TEMP/runner" pr-meta -run-id "$RUN_ID" -failed-gate "$FAILED_GATE" -run-url "$RUN_URL"
           -loop-detail "$LOOP_DETAIL" -attempt-id "$ATTEMPT_ID" -summary "$SUMMARY"
-          -auto-merge-switch "$AUTO_MERGE_SWITCH"
+          -auto-merge-switch "$AUTO_MERGE_SWITCH" -front-end-paths "$FRONT_END_PATHS"
           -bundle "$RUNNER_TEMP/wingman.bundle" -branch "$BRANCH" -repository "$REPOSITORY"
 
   pr:

@@ -104,13 +104,19 @@ Auto-merge is off until both are set:
 | `WINGMAN_AUTO_MERGE` variable | `on`; any other value or none leaves it off |
 
 With both set, a run's S or M PR that is not in the review sample, edits nothing
-outside its plan and fails no check gate gets the `wingman:auto-merge-eligible`
-label, which must exist in the repository. `pr-review.yml` reviews every ready PR
-against its Linear ticket and, only when the review is clean, the PR carries that
+outside its plan, fails no check gate and is not a front-end change gets the
+`wingman:auto-merge-eligible` label, which must exist in the repository.
+`pr-review.yml` reviews every ready PR against its Linear ticket and, only when the review is clean, the PR carries that
 label and its head is still the commit it reviewed, requests a squash auto-merge
 pinned to that commit, and only on a run's `wingman/` branch. A push to that branch
 removes the label and withdraws any request (`automerge-withdraw.yml`). The request is made only while `main` requires `go`
 and `web`.
+
+A front-end change is held for the owner, still as a ready PR: a ticket labelled
+`area:fe` in Linear, or a PR that changes a file under a path prefix the
+`WINGMAN_FRONT_END_PATHS` variable declares for its repository, a JSON object such as
+`{"alvintoh/forge-wingman":["web/"]}`. Either one holds it, and a value that is not
+valid JSON holds every PR. The PR body names what matched.
 
 Do not set `WINGMAN_AUTO_MERGE` to `on` yet. The review's verdict comes from its
 own job, and the out-of-plan list no longer comes from the model job: pr-meta derives

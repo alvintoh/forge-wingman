@@ -136,6 +136,7 @@ type Record struct {
 	TicketBody  string `firestore:"ticket_body"`
 	Size        string `firestore:"size"`
 	SizedBy     string `firestore:"sized_by"`
+	FrontEnd    bool   `firestore:"front_end"`
 	// Private is whether the run's target repository is private, resolved
 	// once at admission and never re-queried (FR-22, NFR-1): its runner
 	// minutes count toward the cash ceiling; a public repository's count as
@@ -248,7 +249,8 @@ func ValidRunID(id string) bool {
 // the run was claimed on the free tier, which its ticket file hands the build
 // (AC1, AC2).
 func (r Record) Ticket() Ticket {
-	t := Ticket{ID: r.TicketID, Title: r.TicketTitle, Size: r.Size, SizedBy: r.SizedBy, Body: r.TicketBody}
+	t := Ticket{ID: r.TicketID, Title: r.TicketTitle, Size: r.Size, SizedBy: r.SizedBy, Body: r.TicketBody,
+		FrontEnd: r.FrontEnd}
 	if r.LastResort {
 		t.FreeModels = slices.Clone(r.LastResortModels.Plan)
 	}
@@ -364,6 +366,7 @@ func NewRecord(id string, t Ticket, now time.Time) Record {
 		TicketBody:  t.Body,
 		Size:        t.Size,
 		SizedBy:     t.SizedBy,
+		FrontEnd:    t.FrontEnd,
 		DurationsMS: map[string]int64{},
 		JobResults:  map[string]string{},
 		StartedAt:   now,

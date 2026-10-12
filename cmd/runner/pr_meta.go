@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
+	"path"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
@@ -43,6 +46,7 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	loopDetail := fs.String("loop-detail", "", "the pre-PR loop's report of why the PR is a draft (FR-5)")
 	template := fs.String("template", runner.DefaultPRTemplate, "pull request template to render")
 	autoMergeSwitch := fs.String("auto-merge-switch", "", "the WINGMAN_AUTO_MERGE variable; auto-merge is off unless it is \"on\"")
+	frontEndPaths := fs.String("front-end-paths", "", "the WINGMAN_FRONT_END_PATHS variable: a JSON object of repository to the path prefixes its front-end code lives under")
 	bundle := fs.String("bundle", "", "path to the bundle the model job uploaded")
 	branch := fs.String("branch", "", "the branch the model job bundled")
 	repository := fs.String("repository", "", "the repository the run builds in, as owner/name")
@@ -92,6 +96,7 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		Unread:    err != nil || unreadPlanned,
 		OutOfPlan: outOfPlan(plan, changed),
 		Overlap:   planOverlap(rec.Ticket().Size, *repository, changed, planned),
+		FrontEnd:  frontEnd(logger, rec.Ticket().FrontEnd, *repository, *frontEndPaths, changed),
 	}
 	// A workflow file in the write set is refused from the write set the
 	// branch carries — the run's own App cannot push one — and falls back to
@@ -111,7 +116,7 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	draft := draftPR(sum, check)
 	merge := autoMerge(*autoMergeSwitch, *runID, rec.Ticket(), sum, runner.FailedGate(*checkReport), check)
 	logger.Info("autoMergeDecided", "run", *runID, "autoMerge", merge, "sampled", runner.Sampled(*runID),
-		"draft", draft, "changed", len(check.Changed), "outOfPlan", len(check.OutOfPlan), "overlap", check.Overlap)
+		"draft", draft, "frontEnd", len(check.FrontEnd), "changed", len(check.Changed), "outOfPlan", len(check.OutOfPlan), "overlap", check.Overlap)
 	if err := writeOutputs(e.output, map[string]string{
 		"title":          title,
 		"branch_segment": rec.Ticket().BranchSegment(),
@@ -131,6 +136,9 @@ type prCheck struct {
 	// OutOfPlan is what Changed holds that the run's recorded plan does not
 	// name, empty for a run no plan stage recorded.
 	OutOfPlan []string
+	// FrontEnd names what marks the change as front-end work: the ticket's label
+	// and each declared path prefix the write set falls under.
+	FrontEnd []string
 	// Overlap names the in-flight run whose planned write set Changed touches,
 	// or "" when none does.
 	Overlap string
@@ -142,6 +150,46 @@ type prCheck struct {
 // clear reports whether nothing about the run's write set holds the PR back.
 func (c prCheck) clear() bool {
 	return !c.Unread && len(c.OutOfPlan) == 0 && c.Overlap == ""
+}
+
+// frontEnd names what marks a run as a front-end change: the ticket's label,
+// then each of repository's declared prefixes that changed has a file under. A
+// setting that cannot be read marks every change, so a typo holds a PR rather
+// than releasing it.
+func frontEnd(logger *slog.Logger, labelled bool, repository, setting string, changed []string) []string {
+	var marks []string
+	if labelled {
+		marks = append(marks, runner.FrontEndLabel)
+	}
+	var byRepo map[string][]string
+	if setting != "" {
+		if err := json.Unmarshal([]byte(setting), &byRepo); err != nil {
+			logger.Warn("frontEndPathsUnreadable", "err", err.Error())
+			return append(marks, "WINGMAN_FRONT_END_PATHS")
+		}
+	}
+	for repo, prefixes := range byRepo {
+		if !strings.EqualFold(repo, repository) {
+			continue
+		}
+		for _, prefix := range prefixes {
+			if underPrefix(changed, prefix) {
+				marks = append(marks, prefix)
+			}
+		}
+	}
+	return marks
+}
+
+// underPrefix reports whether a file in files is prefix or sits under it. A
+// prefix that names the whole repository (empty, "." or "/") matches every file,
+// and "./web" is "web", so a loosely written prefix holds rather than releases.
+func underPrefix(files []string, prefix string) bool {
+	dir := strings.Trim(path.Clean("/"+prefix), "/")
+	return slices.ContainsFunc(files, func(file string) bool {
+		c := strings.TrimPrefix(path.Clean("/"+file), "/")
+		return dir == "" || c == dir || strings.HasPrefix(c, dir+"/")
+	})
 }
 
 // outOfPlan is what the branch's changed files hold that the plan the run
@@ -199,10 +247,11 @@ func draftPR(sum runner.Summary, check prCheck) bool {
 
 // ownerAttention reports whether the run's PR must wait for the owner rather
 // than merge itself (FR-5, FR-17): a draft, sized L, in the review sample,
-// touching a workflow, or failing a check gate.
+// touching a workflow, failing a check gate, or changing front-end code, which
+// holds the PR without making it a draft.
 func ownerAttention(runID string, t runner.Ticket, sum runner.Summary, failedGate string, check prCheck) bool {
 	return draftPR(sum, check) || (t.Size != "S" && t.Size != "M") || runner.Sampled(runID) ||
-		sum.StopReason == runner.StopWorkflowChange || failedGate != ""
+		sum.StopReason == runner.StopWorkflowChange || failedGate != "" || len(check.FrontEnd) > 0
 }
 
 // autoMergeOn is the only WINGMAN_AUTO_MERGE value that lets a run request auto-merge.
@@ -250,7 +299,7 @@ func buildSummary(logger *slog.Logger, raw, attemptID string, t runner.Ticket, n
 // a draft.
 func renderPR(tmpl string, rec runner.Record, sum runner.Summary, failedGate, runURL, loopDetail string, check prCheck) (title, body string, err error) {
 	t := rec.Ticket()
-	body, err = runner.PRBody(tmpl, t, sum.PRSummary, failedGate, runURL, loopDetail, check.Overlap, check.OutOfPlan, check.Unread)
+	body, err = runner.PRBody(tmpl, t, sum.PRSummary, failedGate, runURL, loopDetail, check.Overlap, check.OutOfPlan, check.Unread, check.FrontEnd)
 	if err != nil {
 		return "", "", err
 	}

@@ -67,6 +67,8 @@ func TestAutoMerge(t *testing.T) {
 		"an out-of-plan edit does not":     {"on", unsampled, "M", "", nil, prCheck{OutOfPlan: []string{"x.go"}}, false},
 		"a concurrent run's plan does not": {"on", unsampled, "S", "", nil, prCheck{Overlap: "M-2"}, false},
 		"an unread bundle does not":        {"on", unsampled, "M", "", nil, prCheck{Unread: true}, false},
+		"front-end paths do not":           {"on", unsampled, "M", "", nil, prCheck{FrontEnd: []string{"web/"}}, false},
+		"the front-end label does not":     {"on", unsampled, "S", "", nil, prCheck{FrontEnd: []string{"area:fe"}}, false},
 		"a workflow change does not":       {"on", unsampled, "M", "", func(s *runner.Summary) { s.StopReason = runner.StopWorkflowChange }, prCheck{}, false},
 		"a failed check gate does not":     {"on", unsampled, "M", "test", nil, prCheck{}, false},
 		"the switch unset does not":        {"", unsampled, "M", "", nil, prCheck{}, false},
@@ -240,6 +242,7 @@ func TestDraftPR(t *testing.T) {
 		"an out-of-plan edit":     {runner.Summary{Ready: true}, prCheck{OutOfPlan: []string{"b.go"}}, true},
 		"a concurrent run's plan": {runner.Summary{Ready: true}, prCheck{Overlap: "M-1"}, true},
 		"an unread write set":     {runner.Summary{Ready: true}, prCheck{Unread: true}, true},
+		"a front-end change":      {runner.Summary{Ready: true}, prCheck{FrontEnd: []string{"web/"}}, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := draftPR(tt.sum, tt.check); got != tt.want {
@@ -332,5 +335,57 @@ func TestDraftPRNamesEveryReasonTheWriteSetHoldsItBack(t *testing.T) {
 				t.Fatalf("draftPR = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFrontEnd(t *testing.T) {
+	const setting = `{"octo/repo":["web/","ui"],"octo/other":["docs/"]}`
+	changed := []string{"internal/a.go", "web/src/app.ts", "uikit/x.ts"}
+	for name, tt := range map[string]struct {
+		labelled           bool
+		repository, config string
+		changed            []string
+		want               []string
+	}{
+		"a file under a declared prefix":      {false, "octo/repo", setting, changed, []string{"web/"}},
+		"a prefix without a trailing slash":   {false, "octo/repo", setting, []string{"ui/x.ts", "ui"}, []string{"ui"}},
+		"a file named as the prefix":          {false, "octo/repo", setting, []string{"web"}, []string{"web/"}},
+		"a sibling sharing the prefix's name": {false, "octo/repo", setting, []string{"uikit/x.ts"}, nil},
+		"webhook is not under web":            {false, "octo/repo", setting, []string{"webhook/x.go"}, nil},
+		"a prefix written ./web":              {false, "octo/repo", `{"octo/repo":["./web"]}`, []string{"web/a.ts"}, []string{"./web"}},
+		"a rooted changed path":               {false, "octo/repo", setting, []string{"/web/a.ts"}, []string{"web/"}},
+		"an empty prefix holds every change":  {false, "octo/repo", `{"octo/repo":[""]}`, []string{"a.go"}, []string{""}},
+		"an empty prefix and no change":       {false, "octo/repo", `{"octo/repo":[""]}`, nil, nil},
+		"the prefix's case is exact":          {false, "octo/repo", setting, []string{"Web/a.ts"}, nil},
+		"an unset setting is not malformed":   {false, "octo/repo", "", []string{"web/a.ts"}, nil},
+		"the repository's casing":             {false, "Octo/Repo", setting, changed, []string{"web/"}},
+		"a prefix declared for another repo":  {false, "octo/other", setting, changed, nil},
+		"no setting and no label":             {false, "octo/repo", "", changed, nil},
+		"an empty prefix list":                {false, "octo/repo", `{"octo/repo":[]}`, changed, nil},
+		"the label alone":                     {true, "octo/repo", "", []string{"a.go"}, []string{"area:fe"}},
+		"the label and a prefix":              {true, "octo/repo", setting, changed, []string{"area:fe", "web/"}},
+		"a setting that is not JSON holds":    {false, "octo/repo", "web/", []string{"a.go"}, []string{"WINGMAN_FRONT_END_PATHS"}},
+		"no changed files and no label":       {false, "octo/repo", setting, nil, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+			if got := frontEnd(logger, tt.labelled, tt.repository, tt.config, tt.changed); !slices.Equal(got, tt.want) {
+				t.Fatalf("frontEnd = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPRBodyNamesWhatHeldAFrontEndChange(t *testing.T) {
+	now := time.Now()
+	sum := buildSummary(slog.New(slog.NewTextHandler(io.Discard, nil)),
+		encodedSummary(t, "42-1", now), "42-1", prRecord.Ticket(), now)
+	_, body, err := renderPR(prTemplate(t), prRecord, sum, "", "https://example.test/run", "",
+		prCheck{FrontEnd: []string{"area:fe", "web/"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "**Front-end change:** waits for the owner — matched `area:fe`, `web/`; run /fe-sweep before reading the diff") {
+		t.Fatalf("body = %q, want the front-end marks named", body)
 	}
 }

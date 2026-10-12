@@ -578,6 +578,8 @@ func TestRunWorkflowMarksAutoMergeEligibilityOnlyOnPRMetasDecision(t *testing.T)
 	for _, want := range []string{
 		"AUTO_MERGE_SWITCH: ${{ vars.WINGMAN_AUTO_MERGE }}",
 		`-auto-merge-switch "$AUTO_MERGE_SWITCH"`,
+		"FRONT_END_PATHS: ${{ vars.WINGMAN_FRONT_END_PATHS }}",
+		`-front-end-paths "$FRONT_END_PATHS"`,
 		"if: needs.pr-meta.outputs.auto_merge == 'true'\n",
 		`gh pr edit "$URL" --add-label ` + autoMergeEligibleLabel,
 		"auto_merge: ${{ steps.eligible.outputs.labelled }}",

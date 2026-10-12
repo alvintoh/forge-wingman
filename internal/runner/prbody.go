@@ -31,8 +31,9 @@ var errTemplate = errors.New("pull request template lacks the ticket line, summa
 // of why the PR opened as a draft (FR-5), empty when it did not, and overlap
 // names the in-flight run whose plan these files touch, empty when none does.
 // outOfPlan are the edited files the run's plan did not name, which also keep it
-// a draft.
-func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail, overlap string, outOfPlan []string, writeSetUnread bool) (string, error) {
+// a draft. frontEnd names what held a front-end change for the owner, empty when
+// nothing did.
+func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail, overlap string, outOfPlan []string, writeSetUnread bool, frontEnd []string) (string, error) {
 	summary := plainText(prSummary)
 	if summary == "" {
 		summary = "`" + t.ID + "`: " + t.Title
@@ -75,6 +76,13 @@ func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail
 					spans[i] = codeSpan(f)
 				}
 				notes = append(notes, "", "**Edited outside the plan:** "+strings.Join(spans, ", "))
+			}
+			if len(frontEnd) > 0 {
+				spans := make([]string, len(frontEnd))
+				for i, m := range frontEnd {
+					spans[i] = codeSpan(m)
+				}
+				notes = append(notes, "", "**Front-end change:** waits for the owner — matched "+strings.Join(spans, ", ")+"; run /fe-sweep before reading the diff")
 			}
 			notes = append(notes, "", "The ticket as built:", "", fence(t.Body), t.Body, fence(t.Body), "")
 			out = append(out, notes...)

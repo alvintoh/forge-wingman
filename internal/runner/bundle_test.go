@@ -63,6 +63,36 @@ func TestBundleChangedFilesReadsTheRunsOwnChangesPastAMovedMain(t *testing.T) {
 	}
 }
 
+// TestBundleChangedFilesNamesBothPathsOfARename: git's rename detection would
+// report only the new path, so moving a file out of a directory would not read
+// as touching that directory.
+func TestBundleChangedFilesNamesBothPathsOfARename(t *testing.T) {
+	repo := initRepo(t)
+	writeRepoFile(t, repo, "web/app.ts", "export const a = 1\n")
+	mustGit(t, repo, "add", "--all")
+	mustGit(t, repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "web")
+	base := strings.TrimSpace(mustGit(t, repo, "rev-parse", "HEAD"))
+	branch := BranchName("abc-12", "42-1")
+	mustGit(t, repo, "checkout", "-q", "-b", branch, base)
+	writeRepoFile(t, repo, "lib/app.ts", "export const a = 1\n")
+	mustGit(t, repo, "rm", "-q", "web/app.ts")
+	mustGit(t, repo, "add", "--all")
+	mustGit(t, repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "move")
+	mustGit(t, repo, "checkout", "-q", "main")
+	bundle := filepath.Join(t.TempDir(), bundleName)
+	mustGit(t, repo, "bundle", "create", bundle, base+".."+branch)
+	work := filepath.Join(t.TempDir(), "work")
+	mustGit(t, filepath.Dir(work), "clone", "-q", repo, filepath.Base(work))
+	got, err := Bundle{Path: bundle, Repo: work, Branch: branch, Base: "origin/main", RunID: "42"}.
+		ChangedFiles(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got, []string{"lib/app.ts", "web/app.ts"}) {
+		t.Fatalf("changed files = %q, want the old and the new path", got)
+	}
+}
+
 func TestValidBranch(t *testing.T) {
 	for _, tt := range []struct {
 		runID, branch string
