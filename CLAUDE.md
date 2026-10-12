@@ -67,6 +67,16 @@ stays one tap away.
 
 *(Owner's instruction, 2026-10-04.)*
 
+## Agent-built front-end PRs: look before you read
+
+A PR held for the owner as a front-end change gets `/fe-sweep` first and
+`/pr-review` second, so a wrong design is caught before the diff is read. A code
+fix that changes what renders needs a re-sweep, because an edit invalidates the
+screenshots taken before it.
+
+*(Judgment call, owner's instruction 2026-10-13; no authority prescribes the
+order.)*
+
 ## Merging PRs for the owner
 
 When the owner asks me to merge a PR in this repo, I run `gh pr ready` and
