@@ -568,9 +568,8 @@ func TestBuildRunsThePlanPhaseForAnMOrLTicket(t *testing.T) {
 	if rec.Outcome != OutcomeBuilt {
 		t.Fatalf("outcome = %s/%s", rec.Outcome, rec.StopReason)
 	}
-	if len(rec.OutOfPlanFiles) != 0 || !res.Ready || !rec.Ready {
-		t.Fatalf("out of plan %q, ready %v/%v, want none and ready for a build inside its plan",
-			rec.OutOfPlanFiles, res.Ready, rec.Ready)
+	if !rec.Ready {
+		t.Fatal("ready = false, want ready for a build inside its plan")
 	}
 	var phases []Phase
 	for _, st := range rec.Steps {
@@ -602,12 +601,9 @@ func TestBuildSkipsThePlanPhaseWhenTheTicketCarriesThePlanFiles(t *testing.T) {
 	if planAgent.calls != 0 {
 		t.Fatalf("plan agent ran %d times with the plan handed in, want 0", planAgent.calls)
 	}
-	if !res.Changed || !res.Ready {
-		t.Fatalf("changed %v, ready %v; want a ready build inside the handed plan", res.Changed, res.Ready)
-	}
 	rec := reported.last(t)
-	if len(rec.OutOfPlanFiles) != 0 {
-		t.Fatalf("out of plan = %q, want none", rec.OutOfPlanFiles)
+	if !res.Changed || !rec.Ready {
+		t.Fatalf("changed %v, ready %v; want a ready build inside the handed plan", res.Changed, rec.Ready)
 	}
 	if _, ok := rec.DurationsMS[string(PhasePlan)]; ok {
 		t.Fatal("a build handed its plan recorded a plan phase duration")
@@ -630,11 +626,33 @@ func TestBuildChecksAnEditedFileOutsideAHandedPlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.Changed || res.Ready {
-		t.Fatalf("changed %v, ready %v; want a committed draft", res.Changed, res.Ready)
+	if rec := reported.last(t); !res.Changed || rec.Ready {
+		t.Fatalf("changed %v, ready %v; want a committed draft", res.Changed, rec.Ready)
 	}
-	if got := reported.last(t).OutOfPlanFiles; !slices.Equal(got, []string{"extra.go"}) {
-		t.Fatalf("out of plan = %q, want [extra.go]", got)
+}
+
+func TestBuildLeavesTheSummaryNotReadyForAnOutOfPlanEditAboveSizeS(t *testing.T) {
+	for _, tt := range []struct {
+		size      string
+		wantReady bool
+	}{{"S", true}, {"M", false}, {"L", false}} {
+		t.Run(tt.size, func(t *testing.T) {
+			buildAgent := &fakeAgent{edit: func(dir string) error {
+				return os.WriteFile(filepath.Join(dir, "extra.go"), []byte("package x\n"), 0o600)
+			}}
+			deps, _, reported := testDeps(validObjects(), buildAgent)
+			deps.PlanAgent = &fakeAgent{}
+			c := testConfig(t, initRepo(t))
+			c.Ticket.Size = tt.size
+			c.Ticket.PlanFiles = []string{"version.go"}
+
+			if _, err := Build(context.Background(), deps, c); err != nil {
+				t.Fatal(err)
+			}
+			if got := reported.last(t).Ready; got != tt.wantReady {
+				t.Fatalf("ready = %v for an out-of-plan edit on a size %s ticket, want %v", got, tt.size, tt.wantReady)
+			}
+		})
 	}
 }
 
@@ -654,15 +672,12 @@ func TestBuildCommitsADraftWhenTheBuildEditsOutsideThePlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.Changed || res.Ready {
-		t.Fatalf("changed %v, ready %v, want a committed draft", res.Changed, res.Ready)
-	}
 	rec := reported.last(t)
+	if !res.Changed || rec.Ready {
+		t.Fatalf("changed %v, ready %v, want a committed draft", res.Changed, rec.Ready)
+	}
 	if rec.Outcome != OutcomeBuilt || rec.Phase != PhaseCommit || rec.Ready {
 		t.Fatalf("record = %s at %s, ready %v, want built at commit and not ready", rec.Outcome, rec.Phase, rec.Ready)
-	}
-	if !slices.Equal(rec.OutOfPlanFiles, []string{"extra.go"}) {
-		t.Fatalf("out of plan = %q, want [extra.go]", rec.OutOfPlanFiles)
 	}
 }
 
@@ -764,8 +779,8 @@ func TestBuildStopsBeforeThePushWhenTheBuildTouchesAWorkflowFile(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !res.Changed || res.Ready {
-				t.Fatalf("changed %v, ready %v, want a bundled commit that is not ready", res.Changed, res.Ready)
+			if !res.Changed || reported.last(t).Ready {
+				t.Fatalf("changed %v, ready %v, want a bundled commit that is not ready", res.Changed, reported.last(t).Ready)
 			}
 			if _, err := os.Stat(res.BundlePath); err != nil {
 				t.Fatalf("bundle: %v", err)
@@ -1298,15 +1313,12 @@ func TestPrePRLoopCleanReReviewWithPassingChecksOpensReady(t *testing.T) {
 	deps.ReviewAgent = review
 	c := testConfig(t, initRepo(t))
 
-	res, err := Build(context.Background(), deps, c)
+	_, err := Build(context.Background(), deps, c)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if review.calls != 2 {
 		t.Fatalf("review agent ran %d times, want the review pass then the re-review", review.calls)
-	}
-	if !res.Ready {
-		t.Fatalf("ready = false, want true: the re-review was clean and the checks passed (detail %q)", res.LoopDetail)
 	}
 	rec := reported.last(t)
 	if !rec.Ready || rec.LoopDetail != "" {
@@ -1348,9 +1360,6 @@ func TestPrePRLoopCleanReReviewWithAFailingCheckStaysADraft(t *testing.T) {
 	}
 	if review.calls != 2 {
 		t.Fatalf("review agent ran %d times, want 2: the re-review runs even when the checks fail", review.calls)
-	}
-	if res.Ready {
-		t.Fatal("ready = true, want false: the fix round broke a gate")
 	}
 	if !strings.Contains(res.LoopDetail, checkVet) {
 		t.Fatalf("loop detail = %q, want it to name the failing gate", res.LoopDetail)
@@ -1911,7 +1920,7 @@ func TestPrePRLoopStillCommitsAsADraftWhenTheReviewPassFails(t *testing.T) {
 	if !res.Changed {
 		t.Fatal("Build discarded the build's edits when the review pass failed")
 	}
-	if res.Ready {
+	if reported.last(t).Ready {
 		t.Fatal("ready = true, want false: the review pass never produced a verdict")
 	}
 	if !strings.Contains(res.LoopDetail, "review") {
