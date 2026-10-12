@@ -30,13 +30,14 @@ func pinnedChecksImage(t *testing.T) string {
 // arguments, one invocation per line, to the returned file. DOCKER_FAKE_FAIL
 // names an argument whose run prints "boom" and exits DOCKER_FAKE_CODE (1 by
 // default); DOCKER_FAKE_LIST makes gofmt list a file; DOCKER_FAKE_HANG makes
-// every run hang.
+// every run hang. Each invocation's environment is appended to logFile+".env".
 func fakeDocker(t *testing.T) (logFile string) {
 	t.Helper()
 	bin := t.TempDir()
 	logFile = filepath.Join(t.TempDir(), "docker.log")
 	script := `#!/bin/sh
 { printf '%s\037' "$@"; printf '\n'; } >> "` + logFile + `"
+env >> "` + logFile + `.env"
 [ "$1" = kill ] && exit 0
 for a in "$@"; do
 	if [ -n "$DOCKER_FAKE_FAIL" ] && [ "$a" = "$DOCKER_FAKE_FAIL" ]; then echo boom; exit "${DOCKER_FAKE_CODE:-1}"; fi

@@ -1,0 +1,67 @@
+# Manual proof that the agent container holds: a command run the way an agent is run,
+# as the build job's own user in the same job, cannot read the credentials file the auth
+# step wrote or append to any of the step's file-command files. Needs an agent image that
+# provides sh, pinned by digest, and the GCP_WIF_PROVIDER and GCP_MODEL_SERVICE_ACCOUNT
+# variables.
+name: agent-probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      agent_image:
+        description: Agent image pinned by digest; empty uses the WINGMAN_AGENT_IMAGE variable
+        type: string
+        default: ""
+
+permissions: {}
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AGENT_IMAGE: ${{ inputs.agent_image || vars.WINGMAN_AGENT_IMAGE }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
+
+      - id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_MODEL_SERVICE_ACCOUNT }}
+
+      - name: Pull the agent image
+        run: |
+          test -n "$AGENT_IMAGE"
+          docker pull "$AGENT_IMAGE"
+
+      - name: Try to read the credentials and write the step's files from the agent container
+        run: |
+          set -eu
+          test -s "$GOOGLE_APPLICATION_CREDENTIALS"
+          creds_before=$(sha256sum "$GOOGLE_APPLICATION_CREDENTIALS")
+          sizes_before=$(wc -c "$GITHUB_OUTPUT" "$GITHUB_ENV" "$GITHUB_PATH" "$GITHUB_STEP_SUMMARY")
+          "$RUNNER_TEMP/runner" agent-probe -agent-image "$AGENT_IMAGE" -- sh -c '
+            status=0
+            if cat "$1" > /dev/null 2>&1; then echo "LEAK: read the credentials file"; status=1; fi
+            shift
+            for f in "$@"; do
+              if echo "probe=1" >> "$f" 2>/dev/null; then echo "LEAK: appended to $f"; status=1; fi
+            done
+            exit $status
+          ' probe "$GOOGLE_APPLICATION_CREDENTIALS" "$GITHUB_OUTPUT" "$GITHUB_ENV" "$GITHUB_PATH" "$GITHUB_STEP_SUMMARY"
+          test "$creds_before" = "$(sha256sum "$GOOGLE_APPLICATION_CREDENTIALS")"
+          test "$sizes_before" = "$(wc -c "$GITHUB_OUTPUT" "$GITHUB_ENV" "$GITHUB_PATH" "$GITHUB_STEP_SUMMARY")"
+          echo "the agent container could not read the credentials file or write the step's files"

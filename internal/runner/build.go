@@ -68,9 +68,12 @@ type BuildDeps struct {
 	ReviewAgent Agent
 	// Checks runs the repository's own quality gates for the pre-PR loop.
 	Checks CheckRunner
-	Report func(Summary) error
-	Logger *slog.Logger
-	Now    func() time.Time
+	// AgentProbe, when set, proves the agent container starts over dir before
+	// any agent runs; nil runs agents on the host.
+	AgentProbe func(ctx context.Context, dir string) error
+	Report     func(Summary) error
+	Logger     *slog.Logger
+	Now        func() time.Time
 }
 
 // BuildConfig identifies one build.
@@ -287,6 +290,17 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		return nil
 	}); err != nil {
 		return BuildResult{}, err
+	}
+
+	if d.AgentProbe != nil {
+		if err := timed(PhaseAgentStart, nil, "", func() error {
+			if err := d.AgentProbe(ctx, wt.Dir); err != nil {
+				return stopWith(OutcomeInfraFailure, StopAgentContainer, err)
+			}
+			return nil
+		}); err != nil {
+			return BuildResult{}, err
+		}
 	}
 
 	// A ticket the plan stage already fronted carries its plan, so the build

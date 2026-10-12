@@ -37,6 +37,7 @@ func planStage(ctx context.Context, logger *slog.Logger, e env, args []string) e
 	pointer := fs.String("pointer", runner.DefaultPointer, "object naming the current rule-stack sha")
 	ticketFile := fs.String("ticket-file", "", "path to the run's ticket, as the ticket subcommand wrote it")
 	out := fs.String("out", "", "path to write the plan artifact to")
+	agentImage := fs.String("agent-image", "", "agent image, pinned by digest, to run the agent CLIs in; empty runs them on the host")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -47,6 +48,11 @@ func planStage(ctx context.Context, logger *slog.Logger, e env, args []string) e
 	if err != nil {
 		return err
 	}
+	contained, probe, err := agentRunner(ctx, *agentImage, ".", e.harnesses)
+	if err != nil {
+		return err
+	}
+	e.harnesses = contained
 	gcs, err := storage.NewClient(ctx)
 	if err != nil {
 		return fmt.Errorf("storage client: %w", err)
@@ -58,6 +64,7 @@ func planStage(ctx context.Context, logger *slog.Logger, e env, args []string) e
 		Projections: store.NewBucket(gcs, e.project+"-projections"),
 		Completions: store.NewBucket(gcs, e.project+"-completions"),
 		PlanAgent:   runner.NewRouter(runner.ProfilePlan, e.harnesses...),
+		AgentProbe:  probe,
 		Logger:      logger,
 		Now:         time.Now,
 	}, runner.BuildConfig{

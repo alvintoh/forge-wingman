@@ -273,9 +273,9 @@ func filterEnv(environ []string, allowed []string) []string {
 // agentKillGrace is an agent CLI's WaitDelay: how long Wait lets it linger once its context ends.
 const agentKillGrace = 30 * time.Second
 
-// runAgentCLI runs an agent CLI's prepared cmd, then hands its stdout to
-// translate with the process's own exit error, even on a failure, so a failed
-// run's usage and final text are still recorded.
+// runAgentCLI runs an agent CLI's cmd, as agentCommand prepared it, then hands
+// its stdout to translate with the process's own exit error, even on a failure,
+// so a failed run's usage and final text are still recorded.
 //
 // Output goes to files under scratch, not buffers: os/exec pipes any other
 // writer, and a background child holding that pipe would stall Wait for the
@@ -296,7 +296,6 @@ func runAgentCLI(cmd *exec.Cmd, scratch string, stderr io.Writer, translate func
 	}
 	cmd.Stderr = errFile
 	cmd.WaitDelay = agentKillGrace
-	ownProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("agent run: %w", err)
 	}

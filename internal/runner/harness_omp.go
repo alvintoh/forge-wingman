@@ -7,8 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -103,6 +101,8 @@ type OmpHarness struct {
 	// Home is the CLI's HOME for the whole run: it holds the agent directory and
 	// the sessions a later round resumes.
 	Home string
+	// Container, when it names an image, runs omp in a container.
+	Container AgentContainer
 }
 
 // keyFor is the key the harness runs plan on: its own resolved key when built
@@ -119,8 +119,10 @@ func (h OmpHarness) Name() string { return ompName }
 
 // Agent returns the omp agent for profile p, keyed for the model's plan.
 func (h OmpHarness) Agent(p Profile, model string) Agent {
-	return OmpAgent{Bin: h.Bin, Key: h.keyFor(Provider(model)), Home: h.Home, Model: model, Profile: p}
+	return OmpAgent{Bin: h.Bin, Key: h.keyFor(Provider(model)), Home: h.Home, Model: model, Profile: p, Container: h.Container}
 }
+
+func (h OmpHarness) withContainer(c AgentContainer) Harness { h.Container = c; return h }
 
 // Ready reports the harness usable only when plan's key is present (AC7).
 func (h OmpHarness) Ready(plan string) error {
@@ -131,8 +133,12 @@ func (h OmpHarness) Ready(plan string) error {
 }
 
 // Classify classifies a failed run by the assumed provider markers: omp exits 1
-// for every turn-fatal error, so its exit code carries no class of its own.
-func (h OmpHarness) Classify(stderrTail string, _ error) (Outcome, StopReason) {
+// for every turn-fatal error, so its exit code carries no class of its own, bar
+// docker failing to run it in a container.
+func (h OmpHarness) Classify(stderrTail string, exitErr error) (Outcome, StopReason) {
+	if h.Container.failedToRun(exitErr) {
+		return OutcomeInfraFailure, StopAgentContainer
+	}
 	return classifyMarkers(stderrTail)
 }
 
@@ -143,6 +149,8 @@ type OmpAgent struct {
 	Home    string
 	Model   string
 	Profile Profile
+	// Container, when it names an image, runs omp in a container.
+	Container AgentContainer
 }
 
 // WithModel returns a copy of a that runs model, keeping its profile.
@@ -184,10 +192,12 @@ func (a OmpAgent) Run(ctx context.Context, dir, session, prompt, rules string, s
 	if session != "" {
 		args = append(args, "--resume", session)
 	}
-	cmd := exec.CommandContext(ctx, a.Bin, args...)
-	cmd.Dir = dir
-	cmd.Env = append(filterEnv(os.Environ(), agentBaseEnvNames),
-		"HOME="+a.Home, "PI_CODING_AGENT_DIR="+agentDir, reach.keyEnv+"="+a.Key)
+	cmd, err := agentCommand(ctx, a.Container, agentSpec{Bin: a.Bin, Args: args, Dir: dir, Home: a.Home,
+		Env:    []string{"HOME=" + a.Home, "PI_CODING_AGENT_DIR=" + agentDir},
+		Secret: reach.keyEnv + "=" + a.Key})
+	if err != nil {
+		return fmt.Errorf("omp command: %w", err)
+	}
 	cmd.Stdin = strings.NewReader(prompt)
 	return runAgentCLI(cmd, a.Home, stderr, func(events io.Reader, _ error) error {
 		return translateOmpEvents(events, stdout, stderr)

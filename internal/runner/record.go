@@ -19,6 +19,7 @@ type Phase string
 const (
 	PhaseProjection Phase = "projection"
 	PhaseWorktree   Phase = "worktree"
+	PhaseAgentStart Phase = "agent-start"
 	PhasePlan       Phase = "plan"
 	PhaseBuild      Phase = "build"
 	// PhaseReview is FR-28's review pass, once the build's own checks pass:
@@ -54,6 +55,7 @@ const (
 	StopProjectionInvalid StopReason = "projection-invalid"
 	StopProjectionRead    StopReason = "projection-read"
 	StopWorktree          StopReason = "worktree"
+	StopAgentContainer    StopReason = "agent-container"
 	StopAgentExit         StopReason = "agent-exit"
 	StopCompletions       StopReason = "completions-upload"
 	StopCommit            StopReason = "commit"
@@ -333,9 +335,9 @@ const (
 const msPerMinute = 60_000
 
 // BillableMinutes approximates a run's own GitHub Actions minutes from its
-// timed phases (projection, worktree, build, commit, pr) — not the checks,
-// whose time those phases already hold — rounding up since GitHub bills whole
-// minutes. The true billed figure also includes checkout and job setup this
+// timed phases (projection, worktree, agent-start, build, commit, pr) — not the
+// checks, whose time those phases already hold — rounding up since GitHub bills
+// whole minutes. The true billed figure also includes checkout and job setup this
 // run does not time, and is only knowable from GitHub's own API once the whole
 // workflow has finished — which is after the record job itself runs — so this
 // is a deliberate estimate of it (FR-22), not the billed truth.
