@@ -84,3 +84,22 @@ allow `Bash(gh pr merge:*)` for this repo only. Without the rule I print the
 commands instead.
 
 *(Judgment call, owner-confirmed 2026-10-01: "why keep asking me to do it".)*
+
+## omp is the default harness, and a fallback needs evidence
+
+A plan's harness is **omp** unless omp cannot reach the model. Establish that by
+reading omp's own provider registry (the provider id, and the `envVars` it reads)
+and then running the model *through omp* — never from our adapter's map, which
+lists only what a plan has been given: it had one entry, so the
+Gemini plan defaulted to opencode, although omp's built-in `google` provider
+drives that model natively (`google-generative-ai`) on the same `GEMINI_API_KEY`
+the repository secret already uses.
+
+A fallback that cannot serve the model is worse than none — it reads as coverage
+while covering nothing, and has to be maintained as if it worked. opencode's
+OpenAI-compatible path cannot complete a tool call against Gemini at all: a
+thinking model returns a `thought_signature` with every call, which that layer
+never echoes, so each second turn fails.
+
+*(Owner's instruction, 2026-10-11; verified live on gemini-3.8-flash through omp
+and through opencode the same day.)*

@@ -45,7 +45,7 @@ func (h fakeHarness) Classify(stderrTail string, err error) (Outcome, StopReason
 	}
 	return classifyMarkers(stderrTail)
 }
-func (h fakeHarness) Ready() error { return h.ready }
+func (h fakeHarness) Ready(string) error { return h.ready }
 
 // planIdentity is the test plan-to-harness resolver: a plan runs the harness
 // named after it, so a fake harness named "p" serves a "p/model" without a
@@ -471,7 +471,7 @@ func TestNoRetiredModelSetIsNamed(t *testing.T) {
 func TestRegistrationRefusesADuplicateName(t *testing.T) {
 	for name, register := range map[string]func(){
 		"harness": func() {
-			registerHarness(harnessRegistry[0].name, harnessRegistry[0].build, harnessRegistry[0].secretEnv)
+			registerHarness(harnessRegistry[0].name, harnessRegistry[0].build)
 		},
 		"conformance case": func() {
 			for _, hc := range conformanceCases {

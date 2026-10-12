@@ -184,6 +184,22 @@ func TestBudgetConfigCarriesTheProvidersModelCaps(t *testing.T) {
 	}
 }
 
+// TestLastResortPlansFollowTheConfiguredOrder asserts the dispatcher is handed
+// each configured plan's free models in the configured order, so an exhausted
+// run walks on to the next plan.
+func TestLastResortPlansFollowTheConfiguredOrder(t *testing.T) {
+	order := providers.LastResortPlans()
+	rungs := lastResortPlans()
+	if len(order) == 0 || len(rungs) != len(order) {
+		t.Fatalf("rungs = %v, want one per configured plan %v", rungs, order)
+	}
+	for i, plan := range order {
+		if want := providers.LastResortModels(plan); !slices.Equal(rungs[i], want) {
+			t.Errorf("rung %d = %v, want %s's %v", i, rungs[i], plan, want)
+		}
+	}
+}
+
 func TestLoadConfigReadsTheTwoStageSwitch(t *testing.T) {
 	for name, tt := range map[string]struct {
 		value string

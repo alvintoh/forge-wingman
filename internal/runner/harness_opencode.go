@@ -20,16 +20,26 @@ import (
 // the binary opencode-ai installs (testdata/opencode/PACKAGE.txt).
 const opencodeName = "opencode"
 
-// opencodePlan is the plan whose model ids the harness runs, and the id of the
-// provider its config defines for them, so a model id passes through unchanged.
-const opencodePlan = "command-code"
-
-// opencodeKeyEnv is the variable the config's provider reads the plan's key from.
-const opencodeKeyEnv = "COMMAND_CODE_API_KEY"
-
 // opencodeReadOnlyAgent is the agent the plan and review profiles select: a
 // primary agent whose edit, bash and task permissions are denied.
 const opencodeReadOnlyAgent = "wingman-readonly"
+
+// opencodeKeyEnvFor maps a plan to the variable opencode's config names its key
+// by. It is the CLI's own name for the plans that ran before the plan became a
+// configuration entry; a plan absent here reads its key under the plan's own
+// secret name, which the config names without opencode knowing the plan.
+var opencodeKeyEnvFor = map[string]string{
+	"command-code": "COMMAND_CODE_API_KEY",
+}
+
+// opencodeKeyEnv is the variable opencode's config names plan's key by, and the
+// one the run sets in its environment.
+func opencodeKeyEnv(plan string) string {
+	if name, ok := opencodeKeyEnvFor[plan]; ok {
+		return name
+	}
+	return providers.KeySecret(plan)
+}
 
 const (
 	opencodeConfigFile = "opencode.json"
@@ -37,37 +47,50 @@ const (
 )
 
 func init() {
-	keyEnv := providers.KeySecret(opencodePlan)
 	registerHarness(opencodeName, func(getenv func(string) string) Harness {
 		var home string
 		if tmp := getenv("RUNNER_TEMP"); tmp != "" {
 			home = filepath.Join(tmp, "opencode-home")
 		}
-		return OpencodeHarness{Bin: opencodeName, Key: getenv(keyEnv), Home: home}
-	}, keyEnv)
+		return OpencodeHarness{Bin: opencodeName, Getenv: getenv, Home: home}
+	})
 }
 
-// OpencodeHarness runs the opencode agent CLI on the plan's key.
+// OpencodeHarness runs the opencode agent CLI on each plan's own key.
 type OpencodeHarness struct {
 	Bin string
+	// Key is the key the harness runs on when it is built directly, without an
+	// environment to resolve a plan's own secret from.
 	Key string
+	// Getenv resolves a plan's key secret when the harness is built from the
+	// environment, so one harness serves every plan opencode is configured for.
+	Getenv func(string) string
 	// Home is the CLI's HOME and every XDG directory for the whole run: it holds
 	// the config and the sessions a later round resumes.
 	Home string
 }
 
+// keyFor is the key the harness runs plan on: its own resolved key when built
+// directly, else the plan's secret read from the environment.
+func (h OpencodeHarness) keyFor(plan string) string {
+	if h.Getenv == nil {
+		return h.Key
+	}
+	return h.Getenv(providers.KeySecret(plan))
+}
+
 // Name is the harness's own name, the key a plan's configuration selects it by.
 func (h OpencodeHarness) Name() string { return opencodeName }
 
-// Agent returns the opencode agent for profile p.
+// Agent returns the opencode agent for profile p, keyed for the model's plan.
 func (h OpencodeHarness) Agent(p Profile, model string) Agent {
-	return OpencodeAgent{Bin: h.Bin, Key: h.Key, Home: h.Home, Model: model, Profile: p}
+	return OpencodeAgent{Bin: h.Bin, Key: h.keyFor(Provider(model)), Home: h.Home, Model: model, Profile: p}
 }
 
-// Ready reports the harness usable only when its key is present (AC7).
-func (h OpencodeHarness) Ready() error {
-	if h.Key == "" {
-		return fmt.Errorf("the opencode harness needs the %s secret", providers.KeySecret(opencodePlan))
+// Ready reports the harness usable only when plan's key is present (AC7).
+func (h OpencodeHarness) Ready(plan string) error {
+	if h.keyFor(plan) == "" {
+		return fmt.Errorf("the opencode harness needs the %s secret", providers.KeySecret(plan))
 	}
 	return nil
 }
@@ -100,9 +123,10 @@ func (a OpencodeAgent) Run(ctx context.Context, dir, session, prompt, rules stri
 	if a.Home == "" {
 		return errors.New("the opencode harness has no home directory")
 	}
-	rest, ok := strings.CutPrefix(a.Model, opencodePlan+"/")
-	if !ok || rest == "" {
-		return fmt.Errorf("the opencode harness runs only %s models, not %q", opencodePlan, a.Model)
+	plan := Provider(a.Model)
+	rest, ok := strings.CutPrefix(a.Model, plan+"/")
+	if !ok || rest == "" || providers.KeySecret(plan) == "" {
+		return fmt.Errorf("the opencode harness has no configuration for plan %q", plan)
 	}
 	// opencode reads config, agents and plugins from several places under HOME,
 	// any of which an earlier build round could have written; only the
@@ -117,7 +141,7 @@ func (a OpencodeAgent) Run(ctx context.Context, dir, session, prompt, rules stri
 	if rules == "" {
 		rulesPath = ""
 	}
-	config, err := opencodeConfig(rest, rulesPath, filepath.Join(dir, "CLAUDE.md"), a.Profile != ProfileBuild)
+	config, err := opencodeConfig(plan, rest, rulesPath, filepath.Join(dir, "CLAUDE.md"), a.Profile != ProfileBuild)
 	if err != nil {
 		return fmt.Errorf("opencode config: %w", err)
 	}
@@ -148,7 +172,7 @@ func (a OpencodeAgent) Run(ctx context.Context, dir, session, prompt, rules stri
 		"OPENCODE_DISABLE_PROJECT_CONFIG=1",
 		"OPENCODE_DISABLE_AUTOUPDATE=1",
 		"OPENCODE_DISABLE_MODELS_FETCH=1",
-		opencodeKeyEnv+"="+a.Key)
+		opencodeKeyEnv(plan)+"="+a.Key)
 	cmd.Stdin = strings.NewReader(prompt)
 	watched := &markerWriter{w: stderr, marker: []byte(opencodeFallbackMarker)}
 	return runAgentCLI(cmd, a.Home, watched, func(events io.Reader, _ error) error {
@@ -252,13 +276,13 @@ type opencodeAgentDoc struct {
 // opencode no longer finds a relative instruction file in the repository. A
 // readOnly config denies at the top level too, so the default agent opencode
 // falls back to cannot edit either.
-func opencodeConfig(model, rulesPath, claudeMD string, readOnly bool) (string, error) {
+func opencodeConfig(plan, model, rulesPath, claudeMD string, readOnly bool) (string, error) {
 	provider := opencodeProviderDoc{NPM: "@ai-sdk/openai-compatible", Models: map[string]struct{}{model: {}}}
-	provider.Options.BaseURL = providers.BaseURL(opencodePlan)
-	provider.Options.APIKey = "{env:" + opencodeKeyEnv + "}"
+	provider.Options.BaseURL = providers.BaseURL(plan)
+	provider.Options.APIKey = "{env:" + opencodeKeyEnv(plan) + "}"
 	doc := opencodeConfigDoc{
 		Share:        "disabled",
-		Provider:     map[string]opencodeProviderDoc{opencodePlan: provider},
+		Provider:     map[string]opencodeProviderDoc{plan: provider},
 		Instructions: []string{claudeMD},
 		Agent: map[string]opencodeAgentDoc{opencodeReadOnlyAgent: {
 			Mode:       "primary",

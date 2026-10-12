@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
@@ -34,18 +33,19 @@ type Harness interface {
 	Agent(p Profile, model string) Agent
 	// Classify maps a failed run's stderr tail and exit error to an outcome.
 	Classify(stderrTail string, exitErr error) (Outcome, StopReason)
-	// Ready reports whether the run is configured to use the harness, nil
-	// when it is (AC7). A refusal is recorded as a missing credential, which
+	// Ready reports whether the run is configured to use the harness for plan,
+	// nil when it is (AC7). A refusal is recorded as a missing credential, which
 	// trips the dispatch breaker, so refuse only for want of a key.
-	Ready() error
+	Ready(plan string) error
 }
 
-// harnessRegistration is one adapter's entry in the registry: its name, how to
-// build it from the environment, and the variable holding the key it runs on.
+// harnessRegistration is one adapter's entry in the registry: its name, and how
+// to build it from the environment. One registration serves every plan the
+// configuration names the harness for, so the adapter resolves the plan, its
+// key and its endpoint at run time rather than at registration.
 type harnessRegistration struct {
-	name      string
-	build     func(getenv func(string) string) Harness
-	secretEnv string
+	name  string
+	build func(getenv func(string) string) Harness
 }
 
 var harnessRegistry []harnessRegistration
@@ -53,13 +53,13 @@ var harnessRegistry []harnessRegistration
 // registerHarness adds an adapter to the registry; each adapter calls it from
 // its own init, so a vendor is named only in its adapter's file. A name
 // registered twice panics.
-func registerHarness(name string, build func(getenv func(string) string) Harness, secretEnv string) {
+func registerHarness(name string, build func(getenv func(string) string) Harness) {
 	for _, r := range harnessRegistry {
 		if r.name == name {
 			panic(fmt.Sprintf("harness %q is registered twice", name))
 		}
 	}
-	harnessRegistry = append(harnessRegistry, harnessRegistration{name: name, build: build, secretEnv: secretEnv})
+	harnessRegistry = append(harnessRegistry, harnessRegistration{name: name, build: build})
 }
 
 // Harnesses returns the agent harnesses a run may route to, built from the
@@ -73,15 +73,12 @@ func Harnesses(getenv func(string) string) []Harness {
 }
 
 // HarnessSecrets are the credentials the harnesses hold, which a run checks
-// against a branch before it is pushed; a key two harnesses share is listed once.
+// against a branch before it is pushed: each configured plan's key secret.
 func HarnessSecrets(getenv func(string) string) []string {
-	var names, secrets []string
-	for _, r := range harnessRegistry {
-		if slices.Contains(names, r.secretEnv) {
-			continue
-		}
-		names = append(names, r.secretEnv)
-		secrets = append(secrets, getenv(r.secretEnv))
+	plans := providers.Plans()
+	secrets := make([]string, len(plans))
+	for i, plan := range plans {
+		secrets[i] = getenv(providers.KeySecret(plan))
 	}
 	return secrets
 }
@@ -186,7 +183,7 @@ func pickHarness(harnesses []Harness, order harnessOrder, plan string) (Harness,
 		if h == nil {
 			continue
 		}
-		if err := h.Ready(); err != nil {
+		if err := h.Ready(plan); err != nil {
 			if unready == nil {
 				unready = err
 			}

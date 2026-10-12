@@ -168,12 +168,17 @@ type Config struct {
 	AvailabilityMarkers []string
 	// Providers maps each configured provider name to its plan facts.
 	Providers map[string]Provider
+	// LastResortPlans are the plans' free tiers, named in the order the
+	// dispatcher's free-tier fallback walks them. Empty for a configuration
+	// that names none, which has no free tier to fall to.
+	LastResortPlans []string
 }
 
 // configDoc is configJSON's own shape; the parsed Config is the converted one.
 type configDoc struct {
 	CashLimitUSD        float64                `json:"cash_limit_usd"`
 	RunnerFreeMinutes   int64                  `json:"runner_free_minutes"`
+	LastResortPlans     []string               `json:"last_resort_plans"`
 	AllowanceMarkers    []string               `json:"allowance_markers"`
 	AvailabilityMarkers []string               `json:"availability_markers"`
 	Providers           map[string]providerDoc `json:"providers"`
@@ -258,6 +263,7 @@ func parseConfig(b []byte) (Config, error) {
 	cfg := Config{
 		CashLimit:           money.FromUSD(doc.CashLimitUSD),
 		RunnerFreeMinutes:   doc.RunnerFreeMinutes,
+		LastResortPlans:     doc.LastResortPlans,
 		AllowanceMarkers:    doc.AllowanceMarkers,
 		AvailabilityMarkers: doc.AvailabilityMarkers,
 		Providers:           make(map[string]Provider, len(doc.Providers)),
@@ -380,6 +386,23 @@ func (c Config) validate() error {
 	}
 	if !paid {
 		return errors.New("every provider is free-only")
+	}
+	seen := map[string]bool{}
+	for _, plan := range c.LastResortPlans {
+		switch {
+		case plan == "":
+			return errors.New("the last-resort order names an empty plan")
+		case seen[plan]:
+			return fmt.Errorf("the last-resort order names %s twice", plan)
+		}
+		seen[plan] = true
+		p, ok := c.Providers[plan]
+		if !ok {
+			return fmt.Errorf("the last-resort order names %s, which is not configured", plan)
+		}
+		if len(p.LastResort.Models) == 0 {
+			return fmt.Errorf("the last-resort order names %s, which has no free tier", plan)
+		}
 	}
 	return nil
 }
@@ -535,6 +558,23 @@ func OutputCaps(provider string) map[string]int {
 // plan with no free tier.
 func LastResortModels(plan string) []string {
 	return slices.Clone(embeddedConfig.Providers[plan].LastResort.Models)
+}
+
+// LastResortPlans are the plans' free tiers named in the order the free-tier
+// fallback walks them, empty for a configuration that names none.
+func LastResortPlans() []string {
+	return slices.Clone(embeddedConfig.LastResortPlans)
+}
+
+// Plans are every configured plan's name, sorted, so a caller can iterate the
+// configuration rather than picking one by name.
+func Plans() []string {
+	plans := make([]string, 0, len(embeddedConfig.Providers))
+	for name := range embeddedConfig.Providers {
+		plans = append(plans, name)
+	}
+	slices.Sort(plans)
+	return plans
 }
 
 // CashLimit is NFR-1's cash ceiling on provider cost.

@@ -100,9 +100,10 @@ type Config struct {
 	Limits Limits
 	// Tuning is the concurrency rule's numbers; a zero field takes its default.
 	Tuning Tuning
-	// LastResort is the dispatched plan's free models in fall-through order,
-	// empty for a plan with none.
-	LastResort []string
+	// LastResortPlans are the plans' free models, each entry one plan's list, in
+	// the order the free-tier fallback walks them; empty for a configuration
+	// with no free tier to fall to.
+	LastResortPlans [][]string
 	// TwoStage is whether an M or L run is planned before it is admitted to
 	// build. Off by default; a run plans inside its own build job, and the
 	// stage input the workflows carry goes unsent.
@@ -441,13 +442,13 @@ func claimStage(cand Candidate, twoStage bool) string {
 // the condition that bound it.
 //
 // On an error it returns the claims already booked beside it, so the caller can
-// dispatch or release them. The breaker and the provider halt are read once
-// ahead of the walk, since every candidate starts on the same model, and the
+// dispatch or release them. The breaker is read once ahead of the walk; the
+// provider halt and the verdict are keyed off each candidate's own plan, and the
 // open-PR count across the allowlist once, when anything is queued. A breaker
 // that cannot be read holds the walk as a tripped one would, and a budget
 // ceiling raises at most one notice. A candidate the plan's own window or cap
-// withholds is retried on the plan's free tier, a private one only with the
-// owner's private opt-in.
+// withholds is retried on the configured free-tier plans in order, a private one
+// only with the owner's private opt-in.
 func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Relations, links map[string]string, res *Result) ([]Claim, error) {
 	candidates, err := d.Queue.Candidates(ctx)
 	if err != nil {
@@ -458,19 +459,43 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		d.Logger.Warn("breakerCheckFailed", "err", err.Error())
 		tripped = true
 	}
-	provider := runner.Provider(c.Model)
-	halted, err := d.Providers.Halted(ctx, provider)
-	if err != nil {
-		d.Logger.Info("providerHaltCheckFailed", "provider", provider, "err", err.Error())
-		halted = false
-	}
-	verdict := lookupVerdict(ctx, d, provider)
 	limits := c.Limits.orDefault()
 	var prs openPRCount
-	var privateOptIn bool
 	if len(candidates) > 0 {
 		prs = countOpenPRs(ctx, d, c.Repos)
-		privateOptIn = lookupPrivateOptIn(ctx, d, c.LastResort)
+	}
+	// The halt, the verdict and the private opt-in are read lazily and once per
+	// plan, since a run that moves to another free tier is judged by that plan.
+	halts := map[string]bool{}
+	halted := func(plan string) bool {
+		if v, ok := halts[plan]; ok {
+			return v
+		}
+		v, err := d.Providers.Halted(ctx, plan)
+		if err != nil {
+			d.Logger.Info("providerHaltCheckFailed", "provider", plan, "err", err.Error())
+			v = false
+		}
+		halts[plan] = v
+		return v
+	}
+	verdicts := map[string]providers.Verdict{}
+	verdictOf := func(plan string) providers.Verdict {
+		if v, ok := verdicts[plan]; ok {
+			return v
+		}
+		v := lookupVerdict(ctx, d, plan)
+		verdicts[plan] = v
+		return v
+	}
+	optIns := map[string]bool{}
+	privateOptIn := func(plan string) bool {
+		if v, ok := optIns[plan]; ok {
+			return v
+		}
+		v := lookupPrivateOptIn(ctx, d, plan)
+		optIns[plan] = v
+		return v
 	}
 	var claims []Claim
 	noticed := map[string]bool{}
@@ -501,9 +526,12 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		if cand.Private {
 			reservation.RunnerMinutes = est.Minutes
 		}
-		facts := Facts{Limits: limits, Tuning: c.Tuning.OrDefault(), ProviderHalted: halted, BreakerTripped: tripped,
-			OpenPRs: prs.count, OpenPRsKnown: prs.known, Relations: relations[cand.RunID], Model: cmp.Or(cand.Model, c.Model)}
+		candModel := cmp.Or(cand.Model, c.Model)
+		candPlan := runner.Provider(candModel)
+		facts := Facts{Limits: limits, Tuning: c.Tuning.OrDefault(), ProviderHalted: halted(candPlan), BreakerTripped: tripped,
+			OpenPRs: prs.count, OpenPRsKnown: prs.known, Relations: relations[cand.RunID], Model: candModel}
 		budget := c.Budget
+		claimVerdict := verdictOf(candPlan)
 		ok, binding, err := d.Queue.TryClaim(ctx, cand.RunID, d.Now(), budget, facts, reservation)
 		if err != nil {
 			return claims, err
@@ -511,23 +539,39 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		// A build-stage claim keeps the tier its plan stage claimed — one tier
 		// per run — so it never falls back to the free tier, which would mix
 		// tiers within the run; a ceiling that now binds defers it instead.
-		if !ok && stage != StageBuild && budget.isProviderCeiling(binding) && len(c.LastResort) > 1 {
-			if cand.Private && !privateOptIn {
-				d.Logger.Info("lastResortNeedsPrivateOptIn", "run", cand.RunID, "ceiling", binding)
-			} else {
-				paid := binding
-				budget, facts, reservation = budget.lastResort(), onLastResort(facts, c.LastResort), Reservation{RunnerMinutes: reservation.RunnerMinutes}
-				ok, binding, err = d.Queue.TryClaim(ctx, cand.RunID, d.Now(), budget, facts, reservation)
+		if !ok && stage != StageBuild && budget.isProviderCeiling(binding) {
+			paid := binding
+			for _, rung := range c.LastResortPlans {
+				// One free model cannot staff both the build and its review.
+				if len(rung) < 2 {
+					continue
+				}
+				rungPlan := runner.Provider(rung[0])
+				if cand.Private && !privateOptIn(rungPlan) {
+					d.Logger.Info("lastResortNeedsPrivateOptIn", "run", cand.RunID, "plan", rungPlan, "ceiling", paid)
+					continue
+				}
+				freeFacts := onLastResort(facts, rung)
+				freeFacts.ProviderHalted = halted(rungPlan)
+				freeRes := Reservation{RunnerMinutes: reservation.RunnerMinutes}
+				ok, binding, err = d.Queue.TryClaim(ctx, cand.RunID, d.Now(), c.Budget.lastResort(), freeFacts, freeRes)
 				if err != nil {
 					return claims, err
 				}
+				budget, facts, reservation = c.Budget.lastResort(), freeFacts, freeRes
 				if ok {
-					d.Logger.Info("runOnLastResort", "run", cand.RunID, "model", facts.Model, "paidCeiling", paid)
+					claimVerdict = verdictOf(rungPlan)
+					d.Logger.Info("runOnLastResort", "run", cand.RunID, "model", facts.Model, "plan", rungPlan, "paidCeiling", paid)
+				}
+				if binding == "" {
+					// Admitted, or another poll already claimed this row: no ceiling
+					// binds, so the walk is over.
+					break
 				}
 			}
 		}
 		if ok {
-			claims = append(claims, Claim{RunID: cand.RunID, Repo: cand.Repo, Priority: cand.Priority, Verdict: verdict, Stage: stage})
+			claims = append(claims, Claim{RunID: cand.RunID, Repo: cand.Repo, Priority: cand.Priority, Verdict: claimVerdict, Stage: stage})
 			continue
 		}
 		if binding == "" {
@@ -556,13 +600,9 @@ func onLastResort(facts Facts, models []string) Facts {
 }
 
 // lookupPrivateOptIn reads whether the owner has opted private repositories in
-// to the free tier models belong to. A failed read is logged and reads as no
-// opt-in, so a private candidate defers rather than runs unconsented.
-func lookupPrivateOptIn(ctx context.Context, d Deps, models []string) bool {
-	if len(models) == 0 {
-		return false
-	}
-	plan := runner.Provider(models[0])
+// to plan's free tier. A failed read is logged and reads as no opt-in, so a
+// private candidate defers rather than runs unconsented.
+func lookupPrivateOptIn(ctx context.Context, d Deps, plan string) bool {
 	p, _, err := d.ModelPlans.Plan(ctx, plan)
 	if err != nil {
 		d.Logger.Info("privateOptInLookupFailed", "provider", plan, "err", err.Error())

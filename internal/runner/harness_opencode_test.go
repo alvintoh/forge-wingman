@@ -480,10 +480,10 @@ func TestOpencodeAgentNeedsAHomeAndAKey(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "home") {
 		t.Fatalf("err = %v, want the missing home refused", err)
 	}
-	if err := (OpencodeHarness{}).Ready(); err == nil || !strings.Contains(err.Error(), "COMMANDCODE_API_KEY") {
+	if err := (OpencodeHarness{}).Ready("command-code"); err == nil || !strings.Contains(err.Error(), "COMMANDCODE_API_KEY") {
 		t.Fatalf("Ready = %v, want the missing key named", err)
 	}
-	if err := (OpencodeHarness{Key: "k"}).Ready(); err != nil {
+	if err := (OpencodeHarness{Key: "k"}).Ready("command-code"); err != nil {
 		t.Fatalf("Ready = %v with a key", err)
 	}
 }
@@ -629,5 +629,62 @@ func TestWorkflowsInstallThePinnedOpencode(t *testing.T) {
 				t.Errorf("%s has no %q", name, want)
 			}
 		}
+	}
+}
+
+// TestOpencodeConfigNamesThePlansEndpoint asserts the adapter reaches a plan
+// through that plan's own wire API: its OpenAI-compatible base URL, the
+// variable its config names for the key, and the plan's own model id.
+func TestOpencodeConfigNamesThePlansEndpoint(t *testing.T) {
+	const (
+		plan, model = "command-code", "deepseek/deepseek-v4.1-flash"
+		wantURL     = "https://api.commandcode.ai/provider/v1"
+		wantKeyEnv  = "COMMAND_CODE_API_KEY"
+	)
+	if got := opencodeKeyEnv(plan); got != wantKeyEnv {
+		t.Fatalf("opencodeKeyEnv(%s) = %q, want %q", plan, got, wantKeyEnv)
+	}
+	raw, err := opencodeConfig(plan, model, "", filepath.Join("/repo", "CLAUDE.md"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc opencodeConfigDoc
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		t.Fatal(err)
+	}
+	p, ok := doc.Provider[plan]
+	if !ok {
+		t.Fatalf("config providers %v lack %s", doc.Provider, plan)
+	}
+	if p.Options.BaseURL != wantURL || p.Options.APIKey != "{env:"+wantKeyEnv+"}" {
+		t.Fatalf("provider = %+v, want %s and the key named, not held", p, wantURL)
+	}
+	if _, ok := p.Models[model]; !ok {
+		t.Fatalf("provider models %v lack %s", p.Models, model)
+	}
+}
+
+// TestOpencodeConfigReachesAnotherPlanOnItsOwnEndpoint asserts the config is
+// built from the plan it is given: its own provider id, base URL, and the
+// variable named for the plan's key, which is its secret's name when the CLI had
+// no earlier name for it.
+func TestOpencodeConfigReachesAnotherPlanOnItsOwnEndpoint(t *testing.T) {
+	raw, err := opencodeConfig("gemini", "gemini-3.8-flash", "", filepath.Join("/repo", "CLAUDE.md"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc opencodeConfigDoc
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Provider) != 1 {
+		t.Fatalf("config providers %v, want only the plan's own", doc.Provider)
+	}
+	p, ok := doc.Provider["gemini"]
+	if !ok {
+		t.Fatalf("config providers %v lack gemini", doc.Provider)
+	}
+	if p.Options.BaseURL != "https://generativelanguage.googleapis.com/v1beta/openai/" || p.Options.APIKey != "{env:GEMINI_API_KEY}" {
+		t.Fatalf("provider = %+v, want the Gemini endpoint and its secret's name", p)
 	}
 }

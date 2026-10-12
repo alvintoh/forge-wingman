@@ -250,7 +250,7 @@ func TestOmpModelsCapsOnlyThePlansOwnModels(t *testing.T) {
 		"a bare model id":   {"ling-3.1-flash:free": 10},
 		"an empty model id": {"command-code/": 10},
 	} {
-		if got := ompModels(caps); got != "" {
+		if got := ompModels("command-code", caps); got != "" {
 			t.Errorf("%s: ompModels = %q, want no file", name, got)
 		}
 	}
@@ -287,7 +287,8 @@ func TestOmpAgentChoosesTheApprovalMode(t *testing.T) {
 }
 
 // TestOmpAgentRefusesAModelOfAnotherPlan asserts the adapter runs only a
-// named model of the plan whose provider it maps to, before starting omp.
+// named model of a plan it has a provider for, before starting omp — a model
+// whose plan it maps no provider to, or whose id carries no model, included.
 func TestOmpAgentRefusesAModelOfAnotherPlan(t *testing.T) {
 	for _, model := range []string{"other/model", "command-code/"} {
 		t.Run(model, func(t *testing.T) {
@@ -312,7 +313,7 @@ func TestOmpAgentNeedsAHomeAndAKey(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "home") {
 		t.Fatalf("err = %v, want the missing home refused", err)
 	}
-	if err := (OmpHarness{}).Ready(); err == nil || !strings.Contains(err.Error(), "COMMANDCODE_API_KEY") {
+	if err := (OmpHarness{}).Ready("command-code"); err == nil || !strings.Contains(err.Error(), "COMMANDCODE_API_KEY") {
 		t.Fatalf("Ready = %v, want the missing key named", err)
 	}
 }
@@ -445,6 +446,55 @@ func TestOmpRunsAGoatFreeModelMeteredAtNothing(t *testing.T) {
 	}
 }
 
+// geminiTestModel is the free-tier model the second plan serves through omp.
+const geminiTestModel = "gemini/gemini-3.8-flash"
+
+// requireGeminiFixture skips the live-proof case until the fixture is recorded.
+// It is captured by hand — an owner step — because it spends free-tier calls and
+// needs the GEMINI_API_KEY repository secret.
+func requireGeminiFixture(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{"gemini-normal.ndjson", "gemini-normal.exit", "gemini-normal.stderr"} {
+		if _, err := os.Stat(filepath.Join("testdata", "omp", name)); err != nil {
+			t.Skipf("the live Gemini fixture is not recorded yet: capture %s by running the omp adapter once on %s with GEMINI_API_KEY set (testdata/omp/PACKAGE.txt)", name, geminiTestModel)
+		}
+	}
+}
+
+// TestOmpAgentReachesTheGeminiPlan replays the recorded live Gemini free-tier
+// run: the adapter reaches the plan through omp's own google provider with the
+// repository's key, and the free model answers. It skips until the fixture is
+// recorded, which needs the GEMINI_API_KEY secret.
+func TestOmpAgentReachesTheGeminiPlan(t *testing.T) {
+	requireGeminiFixture(t)
+	bin, attempts := scriptedOmp(t, "gemini-normal")
+	var out strings.Builder
+	h := OmpHarness{Bin: bin, Key: "gemini-key", Home: t.TempDir()}
+	if err := h.Agent(ProfileBuild, geminiTestModel).Run(context.Background(), t.TempDir(), "", "p", "", &out, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	got := attempts()
+	if len(got) != 1 {
+		t.Fatalf("omp ran %d times, want 1", len(got))
+	}
+	if !slices.Contains(got[0].env, "GEMINI_API_KEY=gemini-key") {
+		t.Fatal("env lacks GEMINI_API_KEY, so the free-tier key never reached the CLI")
+	}
+	if j := slices.Index(got[0].args, "--model"); j < 0 || got[0].args[j+1] != "google/"+strings.TrimPrefix(geminiTestModel, "gemini/") {
+		t.Fatalf("args %v do not name omp's google provider and the plan's model", got[0].args)
+	}
+	u, err := SumUsage(strings.NewReader(out.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Steps == 0 || u.Input == 0 {
+		t.Fatalf("usage %+v carries no model step: the free-tier model answered nothing", u)
+	}
+	if text, _ := FinalText(strings.NewReader(out.String())); text == "" {
+		t.Error("the free-tier run carries no final text")
+	}
+}
+
 // TestOmpRunsTheFreeListsTailModelMeteredAtNothing covers ling 3.1 Flash, the
 // tail of GOAT's free list. It answers only when the request's output ceiling is
 // the 32768 its API caps at, which the plan's output_caps now supply; before
@@ -467,5 +517,25 @@ func TestOmpRunsTheFreeListsTailModelMeteredAtNothing(t *testing.T) {
 	}
 	if u.Input != 59312 || u.Output != 31 || u.Cost != 0 {
 		t.Fatalf("usage = %+v, want the recorded 59312 in / 31 out at $0", u)
+	}
+}
+
+// TestOmpHarnessKeysEachPlanOnItsOwnSecret asserts a harness built from the
+// environment hands a model the key of that model's own plan, and reports a plan
+// ready only when that plan's key is present.
+func TestOmpHarnessKeysEachPlanOnItsOwnSecret(t *testing.T) {
+	env := map[string]string{"COMMANDCODE_API_KEY": "cc-key", "GEMINI_API_KEY": "g-key"}
+	h := OmpHarness{Getenv: func(k string) string { return env[k] }}
+	for model, want := range map[string]string{"command-code/m": "cc-key", "gemini/m": "g-key"} {
+		if got := h.Agent(ProfileBuild, model).(OmpAgent).Key; got != want {
+			t.Errorf("Agent(%s).Key = %q, want %q", model, got, want)
+		}
+	}
+	onlyCommandCode := OmpHarness{Getenv: func(k string) string { return map[string]string{"COMMANDCODE_API_KEY": "cc-key"}[k] }}
+	if err := onlyCommandCode.Ready("command-code"); err != nil {
+		t.Errorf("Ready(command-code) = %v with its key set", err)
+	}
+	if err := onlyCommandCode.Ready("gemini"); err == nil || !strings.Contains(err.Error(), "GEMINI_API_KEY") {
+		t.Errorf("Ready(gemini) = %v, want the missing GEMINI_API_KEY named", err)
 	}
 }
