@@ -52,7 +52,7 @@ jobs:
           set -eu
           test -s "$GOOGLE_APPLICATION_CREDENTIALS"
           creds_before=$(sha256sum "$GOOGLE_APPLICATION_CREDENTIALS")
-          sizes_before=$(wc -c "$GITHUB_OUTPUT" "$GITHUB_ENV" "$GITHUB_PATH" "$GITHUB_STEP_SUMMARY")
+          files_before=$(sha256sum "$GITHUB_OUTPUT" "$GITHUB_ENV" "$GITHUB_PATH" "$GITHUB_STEP_SUMMARY")
           "$RUNNER_TEMP/runner" agent-probe -agent-image "$AGENT_IMAGE" -- sh -c '
             status=0
             if cat "$1" > /dev/null 2>&1; then echo "LEAK: read the credentials file"; status=1; fi
@@ -63,5 +63,5 @@ jobs:
             exit $status
           ' probe "$GOOGLE_APPLICATION_CREDENTIALS" "$GITHUB_OUTPUT" "$GITHUB_ENV" "$GITHUB_PATH" "$GITHUB_STEP_SUMMARY"
           test "$creds_before" = "$(sha256sum "$GOOGLE_APPLICATION_CREDENTIALS")"
-          test "$sizes_before" = "$(wc -c "$GITHUB_OUTPUT" "$GITHUB_ENV" "$GITHUB_PATH" "$GITHUB_STEP_SUMMARY")"
+          test "$files_before" = "$(sha256sum "$GITHUB_OUTPUT" "$GITHUB_ENV" "$GITHUB_PATH" "$GITHUB_STEP_SUMMARY")"
           echo "the agent container could not read the credentials file or write the step's files"
