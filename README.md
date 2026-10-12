@@ -93,8 +93,23 @@ then http://localhost:8080. `make ui` needs `brew install f1bonacc1/tap/process-
 
 ## Checks
 
+The store tests and the runner's record tests run against a Firestore emulator and
+skip unless `FIRESTORE_EMULATOR_HOST` is set, so a green `make check` on a fresh
+clone runs the gate but not those tests. Start the emulator the way CI does, then
+run the gate against it:
+
 ```sh
-make check
+docker run -d --rm -p 8080:8080 \
+  gcr.io/google.com/cloudsdktool/google-cloud-cli:586.0.0-emulators@sha256:7617d937e9360d769de4ef66266a8caae503c1dbbd050c93404d3f30045c5125 \
+  gcloud emulators firestore start --host-port=0.0.0.0:8080
+FIRESTORE_EMULATOR_HOST=localhost:8080 make check
+```
+
+The emulator takes a few seconds to start; CI waits for it before running the
+tests, and `make check`'s own lint step covers that wait locally. The frontend has
+its own check:
+
+```sh
 cd web && bun run lint && bun run fmt:check && bun run build
 ```
 
