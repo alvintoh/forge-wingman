@@ -132,6 +132,9 @@ const (
 	// nothing lists it as waiting, so a stop cannot hold a slot in the scan
 	// that finds the runs still owed a question.
 	stateStopped = "stopped"
+	// stateAbandoned is a claim whose run never reported back within its
+	// window: it holds no reservation, and only an operator's requeue returns it.
+	stateAbandoned = "abandoned"
 )
 
 // candidateStates are the states a poll may claim from.
@@ -990,9 +993,9 @@ var (
 	ErrRunInFlight     = errors.New("run is still in flight")
 )
 
-// Requeue returns a run that has ended — stopped, or a claim with a recorded
-// outcome — to the queue, for an operator asking that its ticket be attempted
-// again: the row returns to planned when its plan still stands and queued
+// Requeue returns a run that has ended — stopped, abandoned, or a claim with a
+// recorded outcome — to the queue, for an operator asking that its ticket be
+// attempted again: the row returns to planned when its plan still stands and queued
 // otherwise, with its claim, wait and outcome fields cleared and its ledger
 // reservations dropped, and records the attempt it was put back as.
 //
@@ -1099,10 +1102,9 @@ func requeueState(row map[string]any) (string, error) {
 		if str(row, outcomeField) == "" && str(row, stopReasonField) == "" {
 			return "", ErrRunInFlight
 		}
+	case stateStopped, stateAbandoned:
 	default:
-		if state != stateStopped {
-			return "", fmt.Errorf("run is in state %q, which cannot be requeued", state)
-		}
+		return "", fmt.Errorf("run is in state %q, which cannot be requeued", state)
 	}
 	if len(stringList(row, planFilesField)) > 0 && planStamped(row) {
 		return statePlanned, nil
