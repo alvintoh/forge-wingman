@@ -97,10 +97,16 @@ jobs:
       - name: Reach the model API and nothing else through the egress proxy
         run: |
           set -eu
-          probe() { "$RUNNER_TEMP/runner" agent-probe -egress -agent-image "$AGENT_IMAGE" -- bun -e "$1"; }
-          probe 'const r = await fetch("https://api.commandcode.ai/"); console.log(r.status)'
-          if probe 'await fetch("https://example.com/")'; then echo "LEAK: reached another host"; exit 1; fi
-          if probe 'await fetch("https://169.254.169.254/")'; then echo "LEAK: reached the metadata address"; exit 1; fi
+          try() {
+            "$RUNNER_TEMP/runner" agent-probe -egress -agent-image "$AGENT_IMAGE" -- bun -e \
+              "await fetch(\"$1\").then(r => console.log(\"reached \" + r.status), () => console.log(\"blocked\"))"
+          }
+          out=$(try https://api.commandcode.ai/); echo "model API: $out"
+          echo "$out" | grep -q '^reached' || { echo "FAIL: the model API host was not reachable"; exit 1; }
+          for url in https://example.com/ https://169.254.169.254/; do
+            out=$(try "$url"); echo "$url: $out"
+            echo "$out" | grep -q '^blocked' || { echo "LEAK: reached $url"; exit 1; }
+          done
           echo "the agent container reached only its model API host"
 
       - if: always()
