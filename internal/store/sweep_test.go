@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"cloud.google.com/go/firestore"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 	"github.com/alvintoh/forge-wingman/internal/money"
@@ -58,8 +60,18 @@ func TestSweepAbandonsAClaimOlderThanItsWindowAndDropsItsReservation(t *testing.
 		got[i].Repo != "octo/scratch" || got[i].Ticket != id || got[i].Stage != dispatcher.StageBuild || got[i].Attempt != 0 {
 		t.Fatalf("abandoned = %+v, want run %s with its repo, stage and attempt", got, id)
 	}
-	if st := readRow(t, client, id)[stateField]; st != stateAbandoned {
+	row := readRow(t, client, id)
+	if st := row[stateField]; st != stateAbandoned {
 		t.Fatalf("state = %v, want %s", st, stateAbandoned)
+	}
+	if row[abandonedReasonField] != "no-outcome-past-window" {
+		t.Fatalf("abandoned_reason = %v, want no-outcome-past-window", row[abandonedReasonField])
+	}
+	if at, _ := row[abandonedAtField].(time.Time); !at.Equal(sweepClaimedAt.Add(3 * time.Hour)) {
+		t.Fatalf("abandoned_at = %v, want the sweep's moment", row[abandonedAtField])
+	}
+	if str(row, outcomeField) != "" || str(row, stopReasonField) != "" {
+		t.Fatalf("outcome/stop_reason = %v/%v, want the sweep to leave both empty", row[outcomeField], row[stopReasonField])
 	}
 	ledger := readLedgerDoc(t, client)
 	if _, ok := ledger.Reservations[id]; ok {
@@ -244,5 +256,107 @@ func TestRequeueReturnsAnAbandonedRunToTheBackOfTheQueue(t *testing.T) {
 	}
 	if order, want := ownOrder(t, q, abandoned, newer), []string{newer, abandoned}; !slices.Equal(order, want) {
 		t.Fatalf("candidate order = %v, want %v", order, want)
+	}
+}
+
+func TestRequeueClearsTheAbandonedMarkersButRequeueAfterConflictRefusesTheRun(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	id := fresh("sweep-conflict")
+	seedRow(t, client, id, map[string]any{stateField: stateAbandoned, abandonedReasonField: "x", abandonedAtField: queueAt})
+	if _, err := q.RequeueAfterConflict(ctx, id, queueAt, 3); !errors.Is(err, ErrRunAbandoned) {
+		t.Fatalf("err = %v, want ErrRunAbandoned", err)
+	}
+	if st := readRow(t, client, id)[stateField]; st != stateAbandoned {
+		t.Fatalf("state = %v, want %s left alone", st, stateAbandoned)
+	}
+	if _, err := q.Requeue(ctx, id, queueAt); err != nil {
+		t.Fatal(err)
+	}
+	row := readRow(t, client, id)
+	if row[stateField] != stateQueued {
+		t.Fatalf("state = %v, want %s", row[stateField], stateQueued)
+	}
+	for _, f := range []string{abandonedReasonField, abandonedAtField} {
+		if _, has := row[f]; has {
+			t.Fatalf("%s survived the requeue", f)
+		}
+	}
+}
+
+// noticeOf is the notice doc of run runID's first abandonment, removed when the
+// test ends.
+func noticeOf(t *testing.T, client *firestore.Client, runID string) (*firestore.DocumentRef, string) {
+	t.Helper()
+	nid := dispatcher.Abandoned{RunID: runID}.Notice().ID
+	ref := client.Collection(dispatchCollection).Doc(noticePrefix + nid)
+	t.Cleanup(func() { _, _ = ref.Delete(context.Background()) })
+	return ref, nid
+}
+
+func TestSweepRaisesTheNoticeWithTheFlipAndOnlyOnce(t *testing.T) {
+	q, client := queue(t)
+	id := fresh("sweep-notice")
+	resetLedger(t, client, 1)
+	_, nid := noticeOf(t, client, id)
+	claimAt(t, q, client, id, dispatcher.StageBuild)
+	now := sweepClaimedAt.Add(3 * time.Hour)
+	if !swept(t, q, id, now) {
+		t.Fatal("the run was not abandoned")
+	}
+	n := NewNotices(client)
+	got, err := n.Claim(context.Background(), now, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := dispatcher.Notice{ID: nid, Class: "abandoned:" + id, Link: "https://github.com/octo/scratch/actions"}
+	if i := slices.IndexFunc(got, func(c dispatcher.Notice) bool { return c.ID == nid }); i < 0 || got[i] != want {
+		t.Fatalf("claimed %+v, want %+v", got, want)
+	}
+	if swept(t, q, id, now.Add(time.Hour)) {
+		t.Fatal("a second sweep reported the run again")
+	}
+	if again := claimedIDs(t, n, now.Add(time.Minute), now.Add(-time.Hour), nid); len(again) != 0 {
+		t.Fatalf("a second sweep left %v to claim", again)
+	}
+}
+
+func TestSweepKeepsAnExistingNoticeAndStillFlipsTheRun(t *testing.T) {
+	q, client := queue(t)
+	id := fresh("sweep-noticed")
+	resetLedger(t, client, 1)
+	ref, nid := noticeOf(t, client, id)
+	if _, err := ref.Create(context.Background(), noticeData(dispatcher.Notice{ID: nid, Class: "earlier"}, noticeAt)); err != nil {
+		t.Fatal(err)
+	}
+	claimAt(t, q, client, id, dispatcher.StageBuild)
+	if !swept(t, q, id, sweepClaimedAt.Add(3*time.Hour)) {
+		t.Fatal("an existing notice stopped the run being abandoned")
+	}
+	snap, err := ref.Get(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Data()[classField] != "earlier" {
+		t.Fatalf("class = %v, want the existing notice left alone", snap.Data()[classField])
+	}
+}
+
+func TestAFailedAbandonWritesNeitherTheFlipNorTheNotice(t *testing.T) {
+	q, client := queue(t)
+	id := fresh("sweep-failed")
+	resetLedger(t, client, 1)
+	ref, _ := noticeOf(t, client, id)
+	claimAt(t, q, client, id, dispatcher.StageBuild)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := q.abandon(ctx, id, sweepClaimedAt.Add(3*time.Hour), sweepWindows); err == nil {
+		t.Fatal("abandon succeeded on a cancelled context")
+	}
+	if st := readRow(t, client, id)[stateField]; st != stateClaimed {
+		t.Fatalf("state = %v, want %s", st, stateClaimed)
+	}
+	if _, err := ref.Get(context.Background()); status.Code(err) != codes.NotFound {
+		t.Fatalf("notice read = %v, want not found", err)
 	}
 }

@@ -2,7 +2,6 @@ package dispatcher
 
 import (
 	"context"
-	"errors"
 	"strconv"
 	"time"
 )
@@ -49,21 +48,21 @@ type Sweeper interface {
 	SweepAbandoned(ctx context.Context, now time.Time, w AbandonWindows) ([]Abandoned, error)
 }
 
-// sweepAbandoned abandons every claim past its window and raises one notice for
-// each. The notice is not counted toward the circuit breaker: a dead runner is
-// not a credential or allowance fault.
+// sweepAbandoned abandons every claim past its window, which also raises the
+// run's notice in the same transaction. The notice is not counted toward the
+// circuit breaker: a dead runner is not a credential or allowance fault.
 func sweepAbandoned(ctx context.Context, d Deps) error {
 	abandoned, err := d.Queue.SweepAbandoned(ctx, d.Now(), AbandonWindows{Plan: planAbandonWindow, Build: buildAbandonWindow})
-	errs := []error{err}
 	for _, a := range abandoned {
 		d.Logger.Warn("runAbandoned", "run", a.RunID, "stage", a.Stage, "attempt", a.Attempt)
-		n := Notice{ID: abandonedNoticeKey + a.RunID + "-" + strconv.Itoa(a.Attempt), Class: abandonedClass + a.Ticket, Link: a.link()}
-		if err := d.Notices.Raise(ctx, n, d.Now()); err != nil {
-			d.Logger.Error("abandonedNoticeNotRaised", "run", a.RunID, "err", err.Error())
-			errs = append(errs, err)
-		}
 	}
-	return errors.Join(errs...)
+	return err
+}
+
+// Notice is the notice the sweep raises for the run, keyed by run and attempt so
+// a run is announced once.
+func (a Abandoned) Notice() Notice {
+	return Notice{ID: abandonedNoticeKey + a.RunID + "-" + strconv.Itoa(a.Attempt), Class: abandonedClass + a.Ticket, Link: a.link()}
 }
 
 // link is the repository's Actions page: a claimed row holds no URL of its own
