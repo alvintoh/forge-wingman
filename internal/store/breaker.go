@@ -104,16 +104,21 @@ func (n *Notices) doc(id string) *firestore.DocumentRef {
 
 // Raise creates the notice, pending, unless one with its ID already exists.
 func (n *Notices) Raise(ctx context.Context, notice dispatcher.Notice, at time.Time) error {
-	_, err := n.doc(notice.ID).Create(ctx, map[string]any{
-		classField:       notice.Class,
-		linkField:        notice.Link,
-		noticeStateField: noticePending,
-		raisedAtField:    at,
-	})
+	_, err := n.doc(notice.ID).Create(ctx, noticeData(notice, at))
 	if err != nil && status.Code(err) != codes.AlreadyExists {
 		return fmt.Errorf("raising notice %s: %w", notice.ID, err)
 	}
 	return nil
+}
+
+// noticeData is the document a pending notice is created as.
+func noticeData(notice dispatcher.Notice, at time.Time) map[string]any {
+	return map[string]any{
+		classField:       notice.Class,
+		linkField:        notice.Link,
+		noticeStateField: noticePending,
+		raisedAtField:    at,
+	}
 }
 
 // Claim takes every pending notice, and any claimed before staleBefore, by

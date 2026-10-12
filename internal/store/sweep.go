@@ -14,6 +14,10 @@ import (
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 )
 
+// abandonedNoOutcome is the reason a claim is abandoned: its run reported no
+// outcome within its window.
+const abandonedNoOutcome = "no-outcome-past-window"
+
 // SweepAbandoned flips every claimed run that has recorded nothing since before
 // its stage's window to abandoned and drops its ledger reservation in the same
 // transaction, returning the runs it flipped. It leaves the concurrency limit
@@ -83,18 +87,32 @@ func (q *Queue) abandon(ctx context.Context, runID string, now time.Time, w disp
 		if !claimedAt.Before(now.Add(-window)) {
 			return nil
 		}
-		if err := tx.Update(rowRef, []firestore.Update{
-			{Path: stateField, Value: stateAbandoned},
-			{Path: updatedAtField, Value: now},
-		}); err != nil {
-			return err
-		}
 		attempt, _ := row[attemptField].(int64)
-		out = dispatcher.Abandoned{
+		found := dispatcher.Abandoned{
 			RunID: runID, Ticket: str(row, ticketIDField), Repo: str(row, repoField),
 			Stage: entry.Stage, Attempt: int(attempt),
 		}
-		swept = true
+		notice := found.Notice()
+		noticeRef := NewNotices(q.client).doc(notice.ID)
+		_, err = tx.Get(noticeRef)
+		noticed := err == nil
+		if err != nil && status.Code(err) != codes.NotFound {
+			return err
+		}
+		if err := tx.Update(rowRef, []firestore.Update{
+			{Path: stateField, Value: stateAbandoned},
+			{Path: updatedAtField, Value: now},
+			{Path: abandonedReasonField, Value: abandonedNoOutcome},
+			{Path: abandonedAtField, Value: now},
+		}); err != nil {
+			return err
+		}
+		if !noticed {
+			if err := tx.Create(noticeRef, noticeData(notice, now)); err != nil {
+				return err
+			}
+		}
+		out, swept = found, true
 		return dropReservations(tx, ledgerRef, ledger.Reservations, runID)
 	})
 	if err != nil {
