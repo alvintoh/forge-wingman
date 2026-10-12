@@ -99,10 +99,12 @@ var buildEndings = func() map[ending]bool {
 		{OutcomeStopped, StopProjectionInvalid, PhaseProjection}:   true,
 		{OutcomeInfraFailure, StopProjectionRead, PhaseProjection}: true,
 		{OutcomeInfraFailure, StopWorktree, PhaseWorktree}:         true,
+		{OutcomeInfraFailure, StopAgentContainer, PhaseAgentStart}: true,
 		{OutcomeStopped, StopProjectionMissing, PhasePlan}:         true,
 		{OutcomeStopped, StopProjectionInvalid, PhasePlan}:         true,
 		{OutcomeInfraFailure, StopProjectionRead, PhasePlan}:       true,
 		{OutcomeInfraFailure, StopCompletions, PhasePlan}:          true,
+		{OutcomeInfraFailure, StopAgentContainer, PhasePlan}:       true,
 		{OutcomeAgentFailed, StopAgentTimeout, PhasePlan}:          true,
 		{OutcomeAgentFailed, StopAgentExit, PhasePlan}:             true,
 		{OutcomeStopped, StopPlanInvalid, PhasePlan}:               true,
@@ -110,6 +112,7 @@ var buildEndings = func() map[ending]bool {
 		{OutcomeBudgetStop, StopAllowanceExhausted, PhasePlan}:     true,
 		{OutcomeInfraFailure, StopModelUnavailable, PhasePlan}:     true,
 		{OutcomeInfraFailure, StopCompletions, PhaseBuild}:         true,
+		{OutcomeInfraFailure, StopAgentContainer, PhaseBuild}:      true,
 		{OutcomeAgentFailed, StopAgentTimeout, PhaseBuild}:         true,
 		{OutcomeAgentFailed, StopAgentExit, PhaseBuild}:            true,
 		{OutcomeBudgetStop, StopAllowanceExhausted, PhaseBuild}:    true,
@@ -126,7 +129,7 @@ var buildEndings = func() map[ending]bool {
 		{OutcomeNoChanges, "", PhaseCommit}:               true,
 		{OutcomeBuilt, "", PhaseCommit}:                   true,
 	}
-	for _, p := range []Phase{PhaseProjection, PhaseWorktree, PhasePlan, PhaseBuild, PhaseReview, PhaseCommit} {
+	for _, p := range []Phase{PhaseProjection, PhaseWorktree, PhaseAgentStart, PhasePlan, PhaseBuild, PhaseReview, PhaseCommit} {
 		m[ending{OutcomeInfraFailure, StopPanic, p}] = true
 	}
 	return m
@@ -138,7 +141,7 @@ var buildEndings = func() map[ending]bool {
 const checksDuration = "checks"
 
 var buildPhases = map[Phase]bool{
-	PhaseProjection: true, PhaseWorktree: true, PhasePlan: true, PhaseBuild: true, PhaseReview: true, PhaseCommit: true,
+	PhaseProjection: true, PhaseWorktree: true, PhaseAgentStart: true, PhasePlan: true, PhaseBuild: true, PhaseReview: true, PhaseCommit: true,
 }
 
 // SetupSummary is the summary of a build that failed before it could start.

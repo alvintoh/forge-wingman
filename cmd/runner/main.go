@@ -20,6 +20,7 @@
 //	runner pr-review-context -pr <n> -out <path>     write a pull request's diff and the ticket it names, read from Linear
 //	runner pr-review       -context <path> ...       review the context on each model in turn and write the verdict
 //	runner pr-review-post  -pr <n> -verdict <path>   post the review comment and status, and decide the auto-merge request
+//	runner agent-probe     -agent-image <ref> -- <command...>  run a command in the agent container, to prove what it cannot reach
 //
 // build exits 0 when it stops short of a branch but reported why; ticket, pr-meta
 // and record exit 1 for any run that cannot or did not succeed, so the workflow
@@ -148,7 +149,7 @@ func loadEnv(getenv func(string) string, required ...string) (env, error) {
 
 func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(string) string) error {
 	if len(args) == 0 {
-		return errors.New("usage: runner ticket|build|plan-stage|record-plan-stage|pr-meta|record|enable-provider|reset-breaker|peak-mode|requeue|plan-define|plan-verdict|plan-reply|plan-list|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post [flags]")
+		return errors.New("usage: runner ticket|build|plan-stage|record-plan-stage|pr-meta|record|enable-provider|reset-breaker|peak-mode|requeue|plan-define|plan-verdict|plan-reply|plan-list|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post|agent-probe [flags]")
 	}
 	if args[0] == "plan-smoke" {
 		return planSmoke(ctx, logger, getenv, args[1:])
@@ -162,6 +163,8 @@ func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(st
 		return prReview(ctx, logger, getenv, args[1:])
 	case "pr-review-post":
 		return prReviewPost(ctx, logger, getenv, args[1:])
+	case "agent-probe":
+		return agentProbe(ctx, os.Stdout, os.Stderr, args[1:])
 	}
 	required, known := requiredEnv(args[0])
 	if !known {
@@ -306,6 +309,7 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 	pointer := fs.String("pointer", runner.DefaultPointer, "object naming the current rule-stack sha")
 	ticketFile := fs.String("ticket-file", "", "path to the run's ticket, as the ticket subcommand wrote it")
 	checksImage := fs.String("checks-image", "", "Go image, pinned by digest, to run the pre-PR checks in; empty runs them on the host")
+	agentImage := fs.String("agent-image", "", "agent image, pinned by digest, to run the agent CLIs in; empty runs them on the host")
 	if err := fs.Parse(args); err != nil {
 		return setupFailed(logger, e.output, err)
 	}
@@ -314,6 +318,11 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 	if err != nil {
 		return setupFailed(logger, e.output, err)
 	}
+	contained, probe, err := agentRunner(ctx, *agentImage, repo, e.harnesses)
+	if err != nil {
+		return setupFailed(logger, e.output, err)
+	}
+	e.harnesses = contained
 	if err := writeOutputs(e.output, map[string]string{"attempt_id": e.attemptID}); err != nil {
 		return setupFailed(logger, e.output, err)
 	}
@@ -341,6 +350,7 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 		PlanAgent:   runner.NewRouter(runner.ProfilePlan, e.harnesses...),
 		ReviewAgent: runner.NewRouter(runner.ProfileReview, e.harnesses...),
 		Checks:      checks,
+		AgentProbe:  probe,
 		Report:      func(s runner.Summary) error { return writeSummary(e.output, s) },
 		Logger:      logger,
 		Now:         time.Now,
@@ -392,6 +402,29 @@ func checkRunner(ctx context.Context, image, tempDir, repo string) (runner.Check
 		return nil, err
 	}
 	return c.Run, nil
+}
+
+// agentRunner is the harnesses a stage runs agents through, in a container of
+// image when one is given, with repo's git common directory resolved now,
+// before any agent runs, and the probe that proves the container starts; else
+// the host harnesses unchanged and no probe.
+func agentRunner(ctx context.Context, image, repo string, harnesses []runner.Harness) ([]runner.Harness, func(context.Context, string) error, error) {
+	if image == "" {
+		return harnesses, nil, nil
+	}
+	gitDir, err := runner.GitCommonDir(ctx, repo)
+	if err != nil {
+		return nil, nil, fmt.Errorf("agent git common dir: %w", err)
+	}
+	c := runner.AgentContainer{Image: image, GitCommonDir: gitDir}
+	if err := c.Validate(); err != nil {
+		return nil, nil, err
+	}
+	contained, err := runner.WithAgentContainer(harnesses, c)
+	if err != nil {
+		return nil, nil, err
+	}
+	return contained, c.Probe, nil
 }
 
 // splitModels reads a comma-separated model list, using a copy of fallback when

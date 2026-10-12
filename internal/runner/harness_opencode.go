@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -68,6 +67,8 @@ type OpencodeHarness struct {
 	// Home is the CLI's HOME and every XDG directory for the whole run: it holds
 	// the config and the sessions a later round resumes.
 	Home string
+	// Container, when it names an image, runs opencode in a container.
+	Container AgentContainer
 }
 
 // keyFor is the key the harness runs plan on: its own resolved key when built
@@ -84,8 +85,10 @@ func (h OpencodeHarness) Name() string { return opencodeName }
 
 // Agent returns the opencode agent for profile p, keyed for the model's plan.
 func (h OpencodeHarness) Agent(p Profile, model string) Agent {
-	return OpencodeAgent{Bin: h.Bin, Key: h.keyFor(Provider(model)), Home: h.Home, Model: model, Profile: p}
+	return OpencodeAgent{Bin: h.Bin, Key: h.keyFor(Provider(model)), Home: h.Home, Model: model, Profile: p, Container: h.Container}
 }
+
+func (h OpencodeHarness) withContainer(c AgentContainer) Harness { h.Container = c; return h }
 
 // Ready reports the harness usable only when plan's key is present (AC7).
 func (h OpencodeHarness) Ready(plan string) error {
@@ -96,8 +99,12 @@ func (h OpencodeHarness) Ready(plan string) error {
 }
 
 // Classify classifies a failed run by the assumed provider markers: opencode
-// exits 1 for every failure, so its exit code carries no class of its own.
-func (h OpencodeHarness) Classify(stderrTail string, _ error) (Outcome, StopReason) {
+// exits 1 for every failure, so its exit code carries no class of its own, bar
+// docker failing to run it in a container.
+func (h OpencodeHarness) Classify(stderrTail string, exitErr error) (Outcome, StopReason) {
+	if h.Container.failedToRun(exitErr) {
+		return OutcomeInfraFailure, StopAgentContainer
+	}
 	return classifyMarkers(stderrTail)
 }
 
@@ -108,6 +115,8 @@ type OpencodeAgent struct {
 	Home    string
 	Model   string
 	Profile Profile
+	// Container, when it names an image, runs opencode in a container.
+	Container AgentContainer
 }
 
 // WithModel returns a copy of a that runs model, keeping its profile.
@@ -157,22 +166,25 @@ func (a OpencodeAgent) Run(ctx context.Context, dir, session, prompt, rules stri
 	if session != "" {
 		args = append(args, "-s", session)
 	}
-	cmd := exec.CommandContext(ctx, a.Bin, args...)
-	cmd.Dir = dir
-	cmd.Env = append(filterEnv(os.Environ(), agentBaseEnvNames),
-		"HOME="+a.Home,
-		"XDG_CONFIG_HOME="+filepath.Join(a.Home, ".config"),
-		"XDG_DATA_HOME="+filepath.Join(a.Home, ".local", "share"),
-		"XDG_CACHE_HOME="+filepath.Join(a.Home, ".cache"),
-		"XDG_STATE_HOME="+filepath.Join(a.Home, ".local", "state"),
-		"OPENCODE_CONFIG="+configPath,
+	env := []string{
+		"HOME=" + a.Home,
+		"XDG_CONFIG_HOME=" + filepath.Join(a.Home, ".config"),
+		"XDG_DATA_HOME=" + filepath.Join(a.Home, ".local", "share"),
+		"XDG_CACHE_HOME=" + filepath.Join(a.Home, ".cache"),
+		"XDG_STATE_HOME=" + filepath.Join(a.Home, ".local", "state"),
+		"OPENCODE_CONFIG=" + configPath,
 		"OPENCODE_DISABLE_CLAUDE_CODE=1",
 		// A repository's own opencode.json or .opencode directory would
 		// otherwise override this config, the read-only agent's denies included.
 		"OPENCODE_DISABLE_PROJECT_CONFIG=1",
 		"OPENCODE_DISABLE_AUTOUPDATE=1",
 		"OPENCODE_DISABLE_MODELS_FETCH=1",
-		opencodeKeyEnv(plan)+"="+a.Key)
+	}
+	cmd, err := agentCommand(ctx, a.Container, agentSpec{Bin: a.Bin, Args: args, Dir: dir, Home: a.Home,
+		Env: env, Secret: opencodeKeyEnv(plan) + "=" + a.Key})
+	if err != nil {
+		return fmt.Errorf("opencode command: %w", err)
+	}
 	cmd.Stdin = strings.NewReader(prompt)
 	watched := &markerWriter{w: stderr, marker: []byte(opencodeFallbackMarker)}
 	return runAgentCLI(cmd, a.Home, watched, func(events io.Reader, _ error) error {

@@ -65,8 +65,8 @@ func (c ContainerChecks) Validate() error {
 		return fmt.Errorf("checks image %q is not pinned by a sha256 digest", c.Image)
 	}
 	for name, p := range map[string]string{"module cache": c.ModCache, "linter": c.Linter, "git common dir": c.GitCommonDir} {
-		if !filepath.IsAbs(p) || strings.ContainsRune(p, ',') {
-			return fmt.Errorf("checks %s %q is not an absolute path without a comma", name, p)
+		if err := checkMountPath("checks "+name, p); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -142,7 +142,7 @@ func (c ContainerChecks) runGate(ctx context.Context, dir, cache, gate string, a
 	gctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	name, err := containerName()
+	name, err := containerName("wingman-checks-")
 	if err != nil {
 		return "", "", false, err
 	}
@@ -163,7 +163,7 @@ func (c ContainerChecks) runGate(ctx context.Context, dir, cache, gate string, a
 		return stdout, stderr + fmt.Sprintf("\n%s stopped after %s: %v\n", gate, timeout, gctx.Err()), true, nil
 	case runErr == nil:
 		return stdout, stderr, false, nil
-	case errors.As(runErr, &exitErr) && exitErr.ExitCode() >= 125 && exitErr.ExitCode() <= 127:
+	case errors.As(runErr, &exitErr) && dockerCannotRun(exitErr.ExitCode()):
 		return "", "", false, fmt.Errorf("docker run %s: exit %d: %s", gate, exitErr.ExitCode(), truncate(stderr, logErrorLimit))
 	case errors.As(runErr, &exitErr):
 		return stdout, stderr, true, nil
@@ -212,14 +212,14 @@ func bindMount(src, dst string, readOnly bool) string {
 	return m
 }
 
-// containerName is a name unique to one gate's container, so a timeout can
-// kill it by name.
-func containerName() (string, error) {
+// containerName is a name unique to one container, beginning prefix, so a
+// timeout can kill it by name.
+func containerName(prefix string) (string, error) {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
-	return "wingman-checks-" + hex.EncodeToString(b), nil
+	return prefix + hex.EncodeToString(b), nil
 }
 
 // killContainer stops a gate's container, on a context of its own since the

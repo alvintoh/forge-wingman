@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"path/filepath"
 )
 
 // PlanStage runs the plan phase alone, for the plan-stage dispatch: it
@@ -12,6 +13,10 @@ import (
 // no summary: the model job's identity cannot reach a run record, so the
 // trusted record-plan-stage job re-checks this result before any record
 // write.
+//
+// When d.AgentProbe is set the agent runs in a worktree of its own, probed
+// first, so a container never mounts the checkout, which holds the auth step's
+// credentials file.
 //
 // A plan naming a file under .github/workflows/ stops here, before any build
 // could try to push it.
@@ -48,8 +53,21 @@ func PlanStage(ctx context.Context, d BuildDeps, c BuildConfig) (PlanStageResult
 	if err != nil {
 		return PlanStageResult{}, stopWith(OutcomeInfraFailure, StopWorktree, err)
 	}
+	dir := c.Repo
+	if d.AgentProbe != nil {
+		wt, err := AddWorktree(ctx, c.Repo, filepath.Join(c.TempDir, "wt"), localBranch)
+		if err != nil {
+			return PlanStageResult{}, stopWith(OutcomeInfraFailure, StopWorktree, err)
+		}
+		dir = wt.Dir
+		start := d.Now()
+		if err := d.AgentProbe(ctx, dir); err != nil {
+			return PlanStageResult{}, stopWith(OutcomeInfraFailure, StopAgentContainer, err)
+		}
+		d.Logger.Info("agentStartProbed", "ms", d.Now().Sub(start).Milliseconds())
+	}
 	sum := Summary{DurationsMS: map[string]int64{}, StartedAt: d.Now()}
-	files, decision, err := runPlanPhase(ctx, d, c, c.Repo, &sum)
+	files, decision, err := runPlanPhase(ctx, d, c, dir, &sum)
 	if err != nil {
 		return PlanStageResult{}, err
 	}

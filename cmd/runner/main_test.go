@@ -991,3 +991,33 @@ func TestRecordLeavesAFailedPRJobThatIsNotAConflictToFail(t *testing.T) {
 		t.Fatalf("state/stop_reason = %v/%v, want claimed/%s", row["state"], row["stop_reason"], runner.StopPRJob)
 	}
 }
+
+func TestAgentRunnerRefusesAnImageNotPinnedByDigest(t *testing.T) {
+	if _, _, err := agentRunner(context.Background(), "golang:1.27.1", ".", nil); err == nil {
+		t.Fatal("agentRunner accepted an image pinned by tag alone")
+	}
+}
+
+func TestAgentRunnerRunsAgentsOnTheHostWithNoImage(t *testing.T) {
+	harnesses := []runner.Harness{runner.OmpHarness{Bin: "omp"}}
+	got, probe, err := agentRunner(context.Background(), "", t.TempDir(), harnesses)
+	if err != nil || probe != nil || len(got) != 1 || got[0].(runner.OmpHarness).Container.Image != "" {
+		t.Fatalf("agentRunner with no image = %v, probe %v, %v; want the harnesses unchanged and no probe", got, probe != nil, err)
+	}
+}
+
+func TestAgentRunnerContainsHarnessesAndHandsBackTheProbe(t *testing.T) {
+	image := "golang:1.27.1@sha256:" + strings.Repeat("a", 64)
+	got, probe, err := agentRunner(context.Background(), image, ".", []runner.Harness{runner.OmpHarness{Bin: "omp"}})
+	if err != nil || probe == nil || got[0].(runner.OmpHarness).Container.Image != image {
+		t.Fatalf("agentRunner = %v, probe %v, %v; want the harness in the image's container and a probe", got, probe != nil, err)
+	}
+}
+
+func TestAgentProbeNeedsAnImageAndACommand(t *testing.T) {
+	for _, args := range [][]string{{"--", "sh"}, {"-agent-image", "x@sha256:" + strings.Repeat("a", 64)}} {
+		if err := agentProbe(context.Background(), io.Discard, io.Discard, args); err == nil {
+			t.Errorf("agentProbe %v succeeded, want a usage error", args)
+		}
+	}
+}
