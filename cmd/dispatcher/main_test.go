@@ -222,3 +222,38 @@ func TestLoadConfigReadsTheTwoStageSwitch(t *testing.T) {
 		})
 	}
 }
+
+func TestNextPlansIsEmptyForAnOrderOfOnePlanOrNone(t *testing.T) {
+	for name, order := range map[string][]string{"none": nil, "one plan": {"command-code"}} {
+		t.Run(name, func(t *testing.T) {
+			next, err := nextPlans(order, runner.DefaultModel())
+			if err != nil || len(next) != 0 {
+				t.Fatalf("nextPlans = %v, %v, want none", next, err)
+			}
+		})
+	}
+}
+
+func TestNextPlansListsEveryPlanAfterTheDefaultsWithItsOwnBudget(t *testing.T) {
+	next, err := nextPlans([]string{"command-code", "gemini"}, runner.DefaultModel())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(next) != 1 || next[0].Plan != "gemini" || next[0].Budget.Cash.Name != dispatcher.CeilingCash || len(next[0].Budget.ProviderWindows) != 0 {
+		t.Fatalf("nextPlans = %+v, want gemini with its own budget, not command-code's windows", next)
+	}
+}
+
+func TestNextPlansRefusesAnOrderNotStartingOnTheDefaultModelsPlan(t *testing.T) {
+	_, err := nextPlans([]string{"gemini", "command-code"}, runner.DefaultModel())
+	if err == nil || !strings.Contains(err.Error(), "the first paid plan is gemini, not command-code") {
+		t.Fatalf("err = %v, want the first paid plan to be refused", err)
+	}
+}
+
+func TestTheFirstPaidPlansModelsAreTheDefaultModels(t *testing.T) {
+	m := providers.PlanModels(providers.PaidPlans()[0])
+	if m.Build != runner.DefaultModel() || !slices.Equal(m.Plan, []string{runner.DefaultPlanModel()}) || m.Review != runner.DefaultReviewModels()[0] {
+		t.Fatalf("plan models %+v differ from models.json's defaults", m)
+	}
+}

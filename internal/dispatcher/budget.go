@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/money"
+	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
 // Ceiling names the binding limit a deferral records (FR-22). Reused for
@@ -143,6 +144,12 @@ type Candidate struct {
 	// Model is the build model the run's ticket named, empty when it named
 	// none and the run's own default applies.
 	Model string
+	// ModelsNamed is whether the ticket named any model at all.
+	ModelsNamed bool
+	// Plan is the plan a plan-stage claim put the run on, empty before one has.
+	Plan string
+	// LastResort is the free-tier models that claim chose, nil for a paid claim.
+	LastResort *runner.ModelLabels
 	// Stage is the stage this row is ready for: StageBuild for a run whose
 	// plan stage has recorded a plan, empty for one that has not.
 	Stage string

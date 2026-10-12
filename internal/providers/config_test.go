@@ -438,3 +438,68 @@ func TestPlansListsEveryConfiguredPlanSorted(t *testing.T) {
 		}
 	}
 }
+
+// paidPlanDoc is a document with two paid plans, each carrying its models, and a
+// free-only third, with order as the paid-plan order.
+func paidPlanDoc(order, firstModels string) string {
+	return `{"cash_limit_usd":30,"runner_free_minutes":2000,` + order + `"providers":{
+		"alpha":{` + providerFacts + `,"windows":[{"name":"alpha-5h","hours":5,"limit_usd":14}],` + firstModels + `},
+		"beta":{` + providerFacts + `,"windows":[{"name":"beta-5h","hours":5,"limit_usd":9}],` +
+		`"models":{"build":"beta/big","review":"beta/small","plan":["beta/big","beta/mid"]}},
+		"gratis":{` + providerFacts + `,"rates":` + freeRates("gratis/a") + `,"last_resort":{"models":["gratis/a"],"measured_on":"2026-10-08"}}}}`
+}
+
+const alphaModels = `"models":{"build":"alpha/big","review":"alpha/small","plan":["alpha/big"]}`
+
+func TestParseConfigRejectsAnInvalidPaidPlanOrder(t *testing.T) {
+	for name, tc := range map[string]struct{ order, models, want string }{
+		"an unconfigured plan": {`"paid_plans":["nobody"],`, alphaModels, "not configured"},
+		"a plan named twice":   {`"paid_plans":["alpha","alpha"],`, alphaModels, "twice"},
+		"an empty plan":        {`"paid_plans":[""],`, alphaModels, "empty plan"},
+		"a free-only plan":     {`"paid_plans":["gratis"],`, alphaModels, "free-only"},
+		"a plan with no models": {`"paid_plans":["alpha"],`, `"windows":[{"name":"alpha-1h","hours":1,"limit_usd":1}]`,
+			"needs a build model"},
+		"a plan with no review model": {`"paid_plans":["alpha"],`,
+			`"models":{"build":"alpha/big","plan":["alpha/big"]}`, "needs a build model"},
+		"a plan with no plan models": {`"paid_plans":["alpha"],`,
+			`"models":{"build":"alpha/big","review":"alpha/small"}`, "needs a build model"},
+		"a review model that is the build model": {`"paid_plans":["alpha"],`,
+			`"models":{"build":"alpha/big","review":"alpha/big","plan":["alpha/big"]}`, "reviews with its build model"},
+		"a model of another plan": {`"paid_plans":["alpha"],`,
+			`"models":{"build":"alpha/big","review":"beta/small","plan":["alpha/big"]}`, "not a alpha model"},
+		"a plan model listed twice": {`"paid_plans":["alpha"],`,
+			`"models":{"build":"alpha/big","review":"alpha/small","plan":["alpha/big","alpha/big"]}`, "plan model alpha/big twice"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := parseConfig([]byte(paidPlanDoc(tc.order, tc.models)))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want one containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseConfigReadsThePaidPlanOrderAndModels(t *testing.T) {
+	cfg, err := parseConfig([]byte(paidPlanDoc(`"paid_plans":["alpha","beta"],`, alphaModels)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(cfg.PaidPlans, []string{"alpha", "beta"}) {
+		t.Fatalf("PaidPlans = %v, want alpha then beta", cfg.PaidPlans)
+	}
+	want := Models{Build: "beta/big", Review: "beta/small", Plan: []string{"beta/big", "beta/mid"}}
+	if got := cfg.Providers["beta"].Models; got.Build != want.Build || got.Review != want.Review || !slices.Equal(got.Plan, want.Plan) {
+		t.Fatalf("beta Models = %+v, want %+v", got, want)
+	}
+}
+
+func TestEmbeddedGoatIsTheOnlyPaidPlan(t *testing.T) {
+	if got := PaidPlans(); !slices.Equal(got, []string{"command-code"}) {
+		t.Fatalf("PaidPlans() = %v, want command-code alone", got)
+	}
+	m := PlanModels("command-code")
+	if m.Build != "command-code/deepseek/deepseek-v4.1-flash" || m.Review != "command-code/meta/muse-spark-1.3-contributor" ||
+		!slices.Equal(m.Plan, []string{"command-code/deepseek/deepseek-v4.1-flash"}) {
+		t.Fatalf("PlanModels(command-code) = %+v", m)
+	}
+}

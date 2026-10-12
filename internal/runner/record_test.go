@@ -562,6 +562,21 @@ func TestFinalizeCarriesTheModelLabelsFromTheExistingRecord(t *testing.T) {
 	}
 }
 
+func TestFinalizeCarriesTheMoveToAnotherPaidPlan(t *testing.T) {
+	store := seeded(t)
+	rec := store[testRunID]
+	rec.Plan, rec.MovedFrom, rec.PlanModels = "q", "p", ModelLabels{Build: "q/a", Review: "q/b", Plan: []string{"q/a"}}
+	store[testRunID] = rec
+	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: "",
+		RunResult: "failure", PRResult: "skipped"}
+	if _, err := Finalize(context.Background(), store, &fakeLedger{}, nil, in, finalizeNow); err != nil {
+		t.Fatal(err)
+	}
+	if got := store[testRunID]; got.MovedFrom != "p" || got.PlanModels.Build != "q/a" || got.PlanModels.Review != "q/b" {
+		t.Fatalf("moved from %q, plan models %+v, want the move carried through finalize", got.MovedFrom, got.PlanModels)
+	}
+}
+
 func TestFinalizeRecordsTheSampleAndTheAutoMergeRequest(t *testing.T) {
 	for _, tt := range []struct {
 		runID              string
@@ -589,6 +604,16 @@ func TestRunModelsAreTheFreeTiersOnlyOnAFreeTierClaim(t *testing.T) {
 	}
 	if got := (Record{ModelLabels: named, LastResort: true, LastResortModels: free}).RunModels(); got.Build != "p/free" {
 		t.Fatalf("RunModels = %+v, want the free tier's in place of the ticket's", got)
+	}
+}
+
+func TestRunModelsAreTheNewPlansOnlyOnAMovedRun(t *testing.T) {
+	named, moved := ModelLabels{Build: "p/paid"}, ModelLabels{Build: "q/paid"}
+	if got := (Record{ModelLabels: named, PlanModels: moved}).RunModels(); got.Build != "p/paid" {
+		t.Fatalf("RunModels = %+v, want the ticket's on a run that did not move", got)
+	}
+	if got := (Record{ModelLabels: named, MovedFrom: "p", PlanModels: moved}).RunModels(); got.Build != "q/paid" {
+		t.Fatalf("RunModels = %+v, want the plan moved to in place of the ticket's", got)
 	}
 }
 

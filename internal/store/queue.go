@@ -87,11 +87,13 @@ const (
 	verdictField     = "provider_verdict"
 	ticketIDField    = "ticket_id"
 	outcomeField     = "outcome"
-	// planField, lastResortField and lastResortModelsField are Record's own,
-	// written with the claim.
+	// planField, lastResortField, lastResortModelsField, movedFromField and
+	// planModelsField are Record's own, written with the claim.
 	planField             = "plan"
 	lastResortField       = "last_resort"
 	lastResortModelsField = "last_resort_models"
+	movedFromField        = "moved_from"
+	planModelsField       = "plan_models"
 	// settledAtField, settledProviderCostField and settledRunnerMinutesField
 	// are Record's own settlement fields, written once by runner.Finalize and
 	// summed here for FR-22's window checks.
@@ -236,12 +238,20 @@ func (q *Queue) Candidates(ctx context.Context) ([]dispatcher.Candidate, error) 
 		if state, _ := data[stateField].(string); state == statePlanned {
 			stage = dispatcher.StageBuild
 		}
-		out = append(out, dispatcher.Candidate{
+		named := labelsOf(data, modelLabelsField)
+		cand := dispatcher.Candidate{
 			RunID: snap.Ref.ID, Repo: repo, Size: size, Private: private, Priority: int(priority),
-			Model:     buildModel(data),
-			Stage:     stage,
-			PlanFiles: stringList(data, planFilesField),
-		})
+			Model:       buildModel(data),
+			ModelsNamed: named.Build != "" || named.Review != "" || len(named.Plan) > 0,
+			Stage:       stage,
+			PlanFiles:   stringList(data, planFilesField),
+			Plan:        str(data, planField),
+		}
+		if last, _ := data[lastResortField].(bool); last {
+			labels := labelsOf(data, lastResortModelsField)
+			cand.LastResort = &labels
+		}
+		out = append(out, cand)
 	}
 	return out, nil
 }
@@ -315,6 +325,12 @@ func buildModel(row map[string]any) string {
 	labels, _ := row[modelLabelsField].(map[string]any)
 	model, _ := labels["build"].(string)
 	return model
+}
+
+// labelsOf is the model labels row holds in field, zero when it holds none.
+func labelsOf(row map[string]any, field string) runner.ModelLabels {
+	labels, _ := row[field].(map[string]any)
+	return runner.ModelLabels{Build: str(labels, "build"), Review: str(labels, "review"), Plan: stringList(labels, "plan")}
 }
 
 // ledgerDoc is the dispatch/ledger document's own shape (adr/0003): the
@@ -492,14 +508,19 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 			{Path: waitingOnField, Value: firestore.Delete},
 		}
 		if res.Stage != dispatcher.StageBuild {
-			var lastResortModels any = firestore.Delete
+			var lastResortModels, movedFrom, planModels any = firestore.Delete, firestore.Delete, firestore.Delete
 			if facts.LastResort != nil {
 				lastResortModels = *facts.LastResort
+			}
+			if facts.Moved != nil {
+				movedFrom, planModels = facts.Moved.From, facts.Moved.Models
 			}
 			updates = append(updates,
 				firestore.Update{Path: planField, Value: runner.Provider(facts.Model)},
 				firestore.Update{Path: lastResortField, Value: facts.LastResort != nil},
 				firestore.Update{Path: lastResortModelsField, Value: lastResortModels},
+				firestore.Update{Path: movedFromField, Value: movedFrom},
+				firestore.Update{Path: planModelsField, Value: planModels},
 			)
 		}
 		if err := tx.Update(rowRef, updates); err != nil {
@@ -535,41 +556,43 @@ func (q *Queue) Spend(ctx context.Context, cfg dispatcher.BudgetConfig, model st
 }
 
 // settled sums, within tx, the settled cost inside each of cfg's windows
-// ending at at, the run model's own cap among them. Each window holds both
-// halves of a two-stage run's spend: what its own settlement cost, from
-// settledSince, and what its plan stage's reserved estimate cost it, from
-// planSince — so a plan is never left outside the ceiling it was checked
-// against, and never counted twice either.
+// ending at at, the run model's own cap among them. A window and a model cap
+// count only the runs of the model's own plan; the cash ceiling counts every
+// plan's. Each window holds both halves of a two-stage run's spend: what its own
+// settlement cost, from settledSince, and what its plan stage's reserved estimate
+// cost it, from planSince — so a plan is never left outside the ceiling it was
+// checked against, and never counted twice either.
 func (q *Queue) settled(tx *firestore.Transaction, cfg dispatcher.BudgetConfig, model string, at time.Time) (dispatcher.Settled, error) {
 	settled := dispatcher.Settled{Windows: make([]money.Micros, len(cfg.ProviderWindows))}
+	plan := runner.Provider(model)
 	for i, w := range cfg.ProviderWindows {
-		sum, _, err := q.settledSince(tx, w.Since(at))
+		sum, _, err := q.settledSince(tx, w.Since(at), plan)
 		if err != nil {
 			return dispatcher.Settled{}, err
 		}
-		planCost, _, err := q.planSince(tx, w.Since(at))
+		planCost, _, err := q.planSince(tx, w.Since(at), plan)
 		if err != nil {
 			return dispatcher.Settled{}, err
 		}
 		settled.Windows[i] = sum + planCost
 	}
 	if modelCap, ok := cfg.ModelCaps[model]; ok {
-		sum, _, err := q.settledSince(tx, modelCap.Since(at))
+		sum, _, err := q.settledSince(tx, modelCap.Since(at), plan)
 		if err != nil {
 			return dispatcher.Settled{}, err
 		}
-		planCost, _, err := q.planSince(tx, modelCap.Since(at))
+		planCost, _, err := q.planSince(tx, modelCap.Since(at), plan)
 		if err != nil {
 			return dispatcher.Settled{}, err
 		}
 		settled.ModelCap = sum + planCost
 	}
 	var err error
-	settled.CashCost, settled.CashMinutes, err = q.settledSince(tx, cfg.Cash.Since(at))
+	settled.CashCost, settled.CashMinutes, err = q.settledSince(tx, cfg.Cash.Since(at), "")
 	if err != nil {
 		return dispatcher.Settled{}, err
 	}
-	planCost, planMinutes, err := q.planSince(tx, cfg.Cash.Since(at))
+	planCost, planMinutes, err := q.planSince(tx, cfg.Cash.Since(at), "")
 	if err != nil {
 		return dispatcher.Settled{}, err
 	}
@@ -582,8 +605,9 @@ func (q *Queue) settled(tx *firestore.Transaction, cfg dispatcher.BudgetConfig, 
 // settled at or after since, within tx — the cost scan's plan-stage half, read
 // by the plan's own settlement stamp rather than the run's, so a run that
 // plans and never builds is still counted. It re-scans the window the way
-// settledSince does, for the reason recorded there.
-func (q *Queue) planSince(tx *firestore.Transaction, since time.Time) (cost money.Micros, minutes int64, err error) {
+// settledSince does, for the reason recorded there. A plan other than "" limits
+// the sum to that plan's runs.
+func (q *Queue) planSince(tx *firestore.Transaction, since time.Time, plan string) (cost money.Micros, minutes int64, err error) {
 	iter := tx.Documents(q.client.Collection(runsCollection).Where(planSettledAtField, ">=", since))
 	defer iter.Stop()
 	for {
@@ -595,6 +619,9 @@ func (q *Queue) planSince(tx *firestore.Transaction, since time.Time) (cost mone
 			return 0, 0, fmt.Errorf("summing plan stages since %s: %w", since, err)
 		}
 		data := snap.Data()
+		if !onPlan(data, plan) {
+			continue
+		}
 		c, _ := data[planSpendMicrosField].(int64)
 		m, _ := data[planSpendMinutesField].(int64)
 		cost += money.Micros(c)
@@ -633,7 +660,10 @@ func (q *Queue) readLedger(tx *firestore.Transaction, ledgerRef *firestore.Docum
 // project's personal-scale volume, same as Estimates' query (internal/store/
 // estimate.go) — revisit both together if either the run history or the
 // candidate backlog grows enough to matter.
-func (q *Queue) settledSince(tx *firestore.Transaction, since time.Time) (cost money.Micros, minutes int64, err error) {
+//
+// A plan other than "" limits the sum to that plan's runs, filtered here rather
+// than in the query so a run settled before its plan was written still counts.
+func (q *Queue) settledSince(tx *firestore.Transaction, since time.Time, plan string) (cost money.Micros, minutes int64, err error) {
 	iter := tx.Documents(q.client.Collection(runsCollection).Where(settledAtField, ">=", since))
 	defer iter.Stop()
 	var costSum, minutesSum int64
@@ -646,12 +676,27 @@ func (q *Queue) settledSince(tx *firestore.Transaction, since time.Time) (cost m
 			return 0, 0, fmt.Errorf("summing settled totals since %s: %w", since, err)
 		}
 		data := snap.Data()
+		if !onPlan(data, plan) {
+			continue
+		}
 		c, _ := data[settledProviderCostField].(int64)
 		m, _ := data[settledRunnerMinutesField].(int64)
 		costSum += c
 		minutesSum += m
 	}
 	return money.Micros(costSum), minutesSum, nil
+}
+
+// onPlan reports whether row's run is on plan, every run being on plan "". A run
+// settled before plans were recorded is on the default model's plan.
+func onPlan(row map[string]any, plan string) bool {
+	if plan == "" {
+		return true
+	}
+	if rowPlan := str(row, planField); rowPlan != "" {
+		return rowPlan == plan
+	}
+	return plan == runner.Provider(runner.DefaultModel())
 }
 
 // reservation is the entry runID's stage holds and the ledger key holding it:
