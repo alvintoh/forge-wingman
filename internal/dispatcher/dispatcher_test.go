@@ -86,6 +86,24 @@ type fakeQueue struct {
 	settled  Settled
 	spendErr error
 	spends   []time.Time
+
+	// abandoned is what the next SweepAbandoned reports, once: a flipped run is
+	// not flipped again. sweeps records the moment and windows each call used.
+	abandoned []Abandoned
+	sweepErr  error
+	sweeps    []sweepCall
+}
+
+type sweepCall struct {
+	at      time.Time
+	windows AbandonWindows
+}
+
+func (q *fakeQueue) SweepAbandoned(_ context.Context, now time.Time, w AbandonWindows) ([]Abandoned, error) {
+	q.sweeps = append(q.sweeps, sweepCall{at: now, windows: w})
+	out := q.abandoned
+	q.abandoned = nil
+	return out, q.sweepErr
 }
 
 func (q *fakeQueue) Spend(_ context.Context, _ BudgetConfig, _ string, at time.Time) (Totals, Settled, error) {
