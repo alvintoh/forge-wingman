@@ -97,15 +97,18 @@ jobs:
       - name: Reach the model API and nothing else through the egress proxy
         run: |
           set -eu
+          # bun reports the proxy's own 403 as a response, so a refusal is read from the
+          # proxy's log line, which the runner relays to stderr at teardown.
           try() {
             "$RUNNER_TEMP/runner" agent-probe -egress -agent-image "$AGENT_IMAGE" -- bun -e \
-              "await fetch(\"$1\").then(r => console.log(\"reached \" + r.status), () => console.log(\"blocked\"))"
+              "await fetch(\"$1\").then(r => console.log(\"reached \" + r.status), () => console.log(\"failed\"))" \
+              2> "$RUNNER_TEMP/proxy.log"
           }
           out=$(try https://api.commandcode.ai/); echo "model API: $out"
-          echo "$out" | grep -q '^reached' || { echo "FAIL: the model API host was not reachable"; exit 1; }
-          for url in https://example.com/ https://169.254.169.254/; do
-            out=$(try "$url"); echo "$url: $out"
-            echo "$out" | grep -q '^blocked' || { echo "LEAK: reached $url"; exit 1; }
+          echo "$out" | grep -q '^reached 2' || { echo "FAIL: the model API host was not reachable"; exit 1; }
+          for host in example.com 169.254.169.254; do
+            out=$(try "https://$host/"); echo "$host: $out"
+            grep -q "\"msg\":\"egressRefused\".*\"host\":\"$host\"" "$RUNNER_TEMP/proxy.log" || { echo "LEAK: the proxy did not refuse $host"; exit 1; }
           done
           echo "the agent container reached only its model API host"
 
