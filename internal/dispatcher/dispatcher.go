@@ -163,6 +163,7 @@ type Deps struct {
 	Visibility RepoVisibility
 	Providers  ProviderHalts
 	Breaker    Breaker
+	PeakModes  PeakModes
 	OpenPRs    OpenPRCounter
 	Workflow   Workflow
 	Logger     *slog.Logger
@@ -196,6 +197,7 @@ func (d Deps) missing() string {
 		{"Visibility", d.Visibility != nil},
 		{"Providers", d.Providers != nil},
 		{"Breaker", d.Breaker != nil},
+		{"PeakModes", d.PeakModes != nil},
 		{"OpenPRs", d.OpenPRs != nil},
 		{"Workflow", d.Workflow != nil},
 		{"Logger", d.Logger != nil},
@@ -460,7 +462,8 @@ func claimStage(cand Candidate, twoStage bool) string {
 // ceiling raises at most one notice. A candidate the plan's own window or cap
 // withholds is retried on the next paid plans in order, and once every one binds
 // on the configured free-tier plans, a private one only with the owner's private
-// opt-in.
+// opt-in. A candidate held for peak hours is no ceiling's, so it is neither
+// moved nor noticed.
 func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Relations, links map[string]string, res *Result) ([]Claim, error) {
 	candidates, err := d.Queue.Candidates(ctx)
 	if err != nil {
@@ -473,8 +476,10 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 	}
 	limits := c.Limits.orDefault()
 	var prs openPRCount
+	var mode PeakMode
 	if len(candidates) > 0 {
 		prs = countOpenPRs(ctx, d, c.Repos)
+		mode = readPeakMode(ctx, d)
 	}
 	// The halt, the verdict and the private opt-in are read lazily and once per
 	// plan, since a run that moves to another free tier is judged by that plan.
@@ -564,7 +569,8 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		}
 		candPlan := runner.Provider(candModel)
 		facts := Facts{Limits: limits, Tuning: c.Tuning.OrDefault(), ProviderHalted: halted(candPlan), BreakerTripped: tripped,
-			OpenPRs: prs.count, OpenPRsKnown: prs.known, Relations: relations[cand.RunID], Model: candModel, LastResort: lastResort}
+			OpenPRs: prs.count, OpenPRsKnown: prs.known, Relations: relations[cand.RunID], Model: candModel, LastResort: lastResort,
+			PeakHeld: peakHeld(mode, candModel, d.Now(), est.Minutes)}
 		claimVerdict := verdictOf(candPlan)
 		ok, binding, err := d.Queue.TryClaim(ctx, cand.RunID, d.Now(), budget, facts, reservation)
 		if err != nil {
@@ -584,6 +590,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 					continue
 				}
 				moved := onPlan(facts, next, from)
+				moved.PeakHeld = peakHeld(mode, moved.Model, d.Now(), est.Minutes)
 				ok, binding, err = d.Queue.TryClaim(ctx, cand.RunID, d.Now(), next.Budget, moved, reservation)
 				if err != nil {
 					return claims, err

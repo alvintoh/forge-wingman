@@ -90,6 +90,23 @@ func (p Peak) Covers(t time.Time) bool {
 	return false
 }
 
+// Spans reports whether any part of the span of length d from from falls in one
+// of the peak windows; a zero from, an unknown time, spans peak. The windows are
+// whole hours, so walking the hours the span touches is exact, and a span ending
+// on the first instant of a window touches it.
+func (p Peak) Spans(from time.Time, d time.Duration) bool {
+	if from.IsZero() {
+		return true
+	}
+	end := from.Add(d)
+	for at := from.Truncate(time.Hour); !at.After(end); at = at.Add(time.Hour) {
+		if p.Covers(at) {
+			return true
+		}
+	}
+	return false
+}
+
 // CostUSD is the USD cost of a usage of tokens at these rates.
 func (r Rates) CostUSD(input, output, cacheRead, cacheWrite int64) float64 {
 	return (float64(input)*r.Input + float64(output)*r.Output +

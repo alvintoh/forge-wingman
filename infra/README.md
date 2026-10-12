@@ -178,6 +178,11 @@ trips the breaker, and every poll admits nothing until `runner reset-breaker`
 clears it. Each poll also posts the waiting systemic-failure notices to Slack
 (`notice.tf` grants the read), class and link only.
 
+A run whose model prices peak-hour rates waits for the window to pass, unless the
+owner switches it off: `runner peak-mode` prints the mode and `runner peak-mode -mode always`
+lets runs start at any hour (`-mode off-peak-only` restores the default), read by the
+next poll with no redeploy.
+
 Two identities, and no grant in common: the job reads the store, and the
 schedule can only start the job.
 
