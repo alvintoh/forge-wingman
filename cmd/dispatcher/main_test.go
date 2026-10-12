@@ -189,7 +189,7 @@ func TestBudgetConfigCarriesTheProvidersModelCaps(t *testing.T) {
 // run walks on to the next plan.
 func TestLastResortPlansFollowTheConfiguredOrder(t *testing.T) {
 	order := providers.LastResortPlans()
-	rungs := lastResortPlans(runner.Provider(runner.DefaultModel()))
+	rungs := lastResortPlans()
 	if len(order) == 0 || len(rungs) != len(order) {
 		t.Fatalf("rungs = %v, want one per configured plan %v", rungs, order)
 	}

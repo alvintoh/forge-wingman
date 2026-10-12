@@ -170,8 +170,7 @@ type Config struct {
 	Providers map[string]Provider
 	// LastResortPlans are the plans' free tiers, named in the order the
 	// dispatcher's free-tier fallback walks them. Empty for a configuration
-	// that names no order, whose fallback stays on the dispatched plan's own
-	// free models.
+	// that names none, which has no free tier to fall to.
 	LastResortPlans []string
 }
 
@@ -562,7 +561,7 @@ func LastResortModels(plan string) []string {
 }
 
 // LastResortPlans are the plans' free tiers named in the order the free-tier
-// fallback walks them, empty for a configuration that names no order.
+// fallback walks them, empty for a configuration that names none.
 func LastResortPlans() []string {
 	return slices.Clone(embeddedConfig.LastResortPlans)
 }

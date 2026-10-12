@@ -296,7 +296,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		Elicit:     webhook.Linear{Tokens: tokens},
 		Logger:     logger,
 		Now:        time.Now,
-	}, dispatcher.Config{Repos: c.repos, Budget: budgetConfig(provider), Model: model, Limits: c.limits, Tuning: c.tuning, LastResortPlans: lastResortPlans(provider), TwoStage: c.twoStage, DecisionTimeout: c.decisionTimeout}); err != nil {
+	}, dispatcher.Config{Repos: c.repos, Budget: budgetConfig(provider), Model: model, Limits: c.limits, Tuning: c.tuning, LastResortPlans: lastResortPlans(), TwoStage: c.twoStage, DecisionTimeout: c.decisionTimeout}); err != nil {
 		return err
 	}
 	return nil
@@ -304,17 +304,10 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 
 // lastResortPlans is the ordered free-tier plans the fallback walks: each
 // configured plan's own free models, in the order the configuration names them.
-// A configuration that names no order falls back to the dispatched plan's own
-// free tier alone, as a single-plan configuration always did.
-func lastResortPlans(provider string) [][]string {
+func lastResortPlans() [][]string {
 	var rungs [][]string
 	for _, plan := range providers.LastResortPlans() {
 		rungs = append(rungs, providers.LastResortModels(plan))
-	}
-	if len(rungs) == 0 {
-		if models := providers.LastResortModels(provider); len(models) > 0 {
-			rungs = append(rungs, models)
-		}
 	}
 	return rungs
 }
