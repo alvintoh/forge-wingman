@@ -46,9 +46,12 @@ const (
 	// history, kept beside the record a runner job rebuilds.
 	retriedAtField = "retried_at"
 	attemptField   = "attempt"
-	// queuedAtField is when the run last entered the queue, the tie-break among
-	// runs of one priority.
+	// queuedAtField is stamped at enqueue and requeue, the tie-break among runs
+	// of one priority; an answered or released run keeps its position.
 	queuedAtField = "queued_at"
+	// startedAtField is Record's own start time, the oldest a legacy row's
+	// queue position can be read from.
+	startedAtField = "started_at"
 	// waitingOnField names the condition that withheld a queued run at its
 	// last claim attempt; a claim clears it.
 	waitingOnField = "waiting_on"
@@ -131,6 +134,9 @@ const (
 	stateStopped = "stopped"
 )
 
+// candidateStates are the states a poll may claim from.
+var candidateStates = []string{stateQueued, statePlanned}
+
 // planKeySuffix keys a plan-stage reservation beside the run's own in the
 // ledger: the two stages book separate reservations, settled at separate
 // times, and the build-stage claim must find the run's own key free.
@@ -206,9 +212,10 @@ func (q *Queue) Enqueue(ctx context.Context, run dispatcher.Queued) error {
 	return nil
 }
 
-// UpdateQueuedPriority sets the queued run's priority rank, reporting whether
-// the run is queued at that rank afterwards. A run in any other state keeps the
-// rank it was claimed under, and a missing run reports false.
+// UpdateQueuedPriority sets the priority rank of a queued or planned run — the
+// states Candidates orders by it — reporting whether the run holds that rank
+// afterwards. A run in any other state keeps the rank it was claimed under, and
+// a missing run reports false.
 func (q *Queue) UpdateQueuedPriority(ctx context.Context, runID string, rank int) (bool, error) {
 	rowRef := q.client.Collection(runsCollection).Doc(runID)
 	var applied bool
@@ -221,7 +228,7 @@ func (q *Queue) UpdateQueuedPriority(ctx context.Context, runID string, rank int
 		if err != nil {
 			return err
 		}
-		if str(snap.Data(), stateField) != stateQueued {
+		if !slices.Contains(candidateStates, str(snap.Data(), stateField)) {
 			return nil
 		}
 		applied = true
@@ -282,7 +289,7 @@ func (q *Queue) stampQueuedAt(ctx context.Context, ref *firestore.DocumentRef, d
 		}
 		row := snap.Data()
 		at, ok := queuedAtSource(row)
-		if _, has := row[queuedAtField]; has || !ok || !slices.Contains([]string{stateQueued, statePlanned}, str(row, stateField)) {
+		if _, has := row[queuedAtField]; has || !ok || !slices.Contains(candidateStates, str(row, stateField)) {
 			return nil
 		}
 		stamped = true
@@ -300,7 +307,7 @@ func (q *Queue) stampQueuedAt(ctx context.Context, ref *firestore.DocumentRef, d
 // unstampedRefs lists the queued and planned rows with no queued_at.
 func (q *Queue) unstampedRefs(ctx context.Context) ([]*firestore.DocumentRef, error) {
 	iter := q.client.Collection(runsCollection).
-		Where(stateField, "in", []string{stateQueued, statePlanned}).Documents(ctx)
+		Where(stateField, "in", candidateStates).Documents(ctx)
 	defer iter.Stop()
 	var refs []*firestore.DocumentRef
 	for {
@@ -320,7 +327,7 @@ func (q *Queue) unstampedRefs(ctx context.Context) ([]*firestore.DocumentRef, er
 // queuedAtSource is the time a row without queued_at is stamped with: when its
 // run started, else when its row last changed.
 func queuedAtSource(row map[string]any) (time.Time, bool) {
-	for _, field := range []string{"started_at", updatedAtField} {
+	for _, field := range []string{startedAtField, updatedAtField} {
 		if at, ok := row[field].(time.Time); ok && !at.IsZero() {
 			return at, true
 		}
@@ -335,22 +342,22 @@ func queuedAtSource(row map[string]any) (time.Time, bool) {
 // deferred tickets costs one scan rather than an unbounded one.
 //
 // The ordered query skips a row with no queued_at, so a second scan adds those
-// rows, ordered as if queued before every other row of their priority.
+// rows, ordered as if queued before every other row of their priority. Like the
+// ordered query, it leaves out a row with no priority.
 func (q *Queue) Candidates(ctx context.Context) ([]dispatcher.Candidate, error) {
-	states := []string{stateQueued, statePlanned}
 	ordered, err := q.scanCandidates(ctx, q.client.Collection(runsCollection).
-		Where(stateField, "in", states).
+		Where(stateField, "in", candidateStates).
 		OrderBy(priorityField, firestore.Asc).
 		OrderBy(queuedAtField, firestore.Asc).
 		Limit(candidateScanLimit))
 	if err != nil {
 		return nil, err
 	}
-	unstamped, err := q.scanCandidates(ctx, q.client.Collection(runsCollection).Where(stateField, "in", states))
+	unstamped, err := q.scanCandidates(ctx, q.client.Collection(runsCollection).Where(stateField, "in", candidateStates))
 	if err != nil {
 		return nil, err
 	}
-	all := slices.Concat(ordered, slices.DeleteFunc(unstamped, func(c queuedCandidate) bool { return c.stamped }))
+	all := slices.Concat(ordered, slices.DeleteFunc(unstamped, func(c queuedCandidate) bool { return c.stamped || !c.hasPriority }))
 	slices.SortStableFunc(all, func(a, b queuedCandidate) int {
 		return cmp.Or(cmp.Compare(a.Priority, b.Priority), a.queuedAt.Compare(b.queuedAt))
 	})
@@ -364,8 +371,9 @@ func (q *Queue) Candidates(ctx context.Context) ([]dispatcher.Candidate, error) 
 // queuedCandidate is a Candidate with the queue position the store orders it by.
 type queuedCandidate struct {
 	dispatcher.Candidate
-	queuedAt time.Time
-	stamped  bool
+	queuedAt    time.Time
+	stamped     bool
+	hasPriority bool
 }
 
 // scanCandidates reads the rows query returns as candidates.
@@ -392,7 +400,7 @@ func (q *Queue) scanCandidates(ctx context.Context, query firestore.Query) ([]qu
 		if v, ok := data[privateField]; ok {
 			private, _ = v.(bool)
 		}
-		priority, _ := data[priorityField].(int64)
+		priority, hasPriority := data[priorityField].(int64)
 		var stage string
 		if state, _ := data[stateField].(string); state == statePlanned {
 			stage = dispatcher.StageBuild
@@ -411,7 +419,7 @@ func (q *Queue) scanCandidates(ctx context.Context, query firestore.Query) ([]qu
 			cand.LastResort = &labels
 		}
 		queuedAt, stamped := data[queuedAtField].(time.Time)
-		out = append(out, queuedCandidate{Candidate: cand, queuedAt: queuedAt, stamped: stamped})
+		out = append(out, queuedCandidate{Candidate: cand, queuedAt: queuedAt, stamped: stamped, hasPriority: hasPriority})
 	}
 	return out, nil
 }

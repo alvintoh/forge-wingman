@@ -476,6 +476,7 @@ func TestIssueUpdates(t *testing.T) {
 		{name: "same rank", body: issueUpdate("update", issue, `{"priority":1}`), applied: true, want: 200},
 		{name: "unusable identifier", body: issueUpdate("update", `{"identifier":"a/b","priority":1}`, `{"priority":3}`), applied: true, want: 200},
 		{name: "not an update", body: issueUpdate("create", issue, `{"priority":3}`), applied: true, want: 200},
+		{name: "not an Issue", body: []byte(strings.Replace(string(issueUpdate("update", issue, `{"priority":3}`)), `"Issue"`, `"Comment"`, 1)), applied: true, want: 200},
 		{name: "write fails", body: issueUpdate("update", issue, `{"priority":3}`), err: errors.New("unavailable"), want: 500, calls: []priorityCall{{"ABC-22", 1}}},
 		{name: "wake fails", body: issueUpdate("update", issue, `{"priority":3}`), applied: true, wakeErr: errors.New("403"), want: 500, calls: []priorityCall{{"ABC-22", 1}}, woken: 1},
 	} {
@@ -506,6 +507,20 @@ func TestIssueUpdateRejectsABadSignature(t *testing.T) {
 	}
 	if len(priority.calls) != 0 {
 		t.Fatalf("wrote %v for an unsigned delivery", priority.calls)
+	}
+}
+
+func TestIssueUpdateRejectsAStaleDelivery(t *testing.T) {
+	priority := &fakePriority{applied: true}
+	h := handler(&fakeMarkers{}, &fakeAcker{}, &fakeWaker{})
+	h.Priority = priority
+	h.Now = func() time.Time { return receivedAt.Add(time.Hour) }
+	body := issueUpdate("update", `{"identifier":"ABC-22","priority":1}`, `{"priority":3}`)
+	if got := deliver(h, body, testSecret); got != 401 {
+		t.Fatalf("status = %d, want 401", got)
+	}
+	if len(priority.calls) != 0 {
+		t.Fatalf("wrote %v for a stale delivery", priority.calls)
 	}
 }
 

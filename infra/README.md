@@ -211,20 +211,30 @@ Four variables name what OpenTofu cannot guess, and a fifth is optional:
 Runs of one priority are claimed oldest-queued first, by a `queued_at` field that
 needs its own index. Rows queued before the field existed have none, so
 `Candidates` reads them in a second scan and lists them ahead of their priority's
-other rows. Do the steps in this order:
+other rows. A new `Candidates` fails every poll until the index is READY, so do the
+steps in this order:
 
-1. `tofu apply` adds `queue_claim_by_queued_at`; leave `queue_claim` in place.
+1. `tofu apply` adds `queue_claim_by_queued_at`, passing the `dispatcher_image` and
+   `webhook_image` already deployed so no image changes yet; leave `queue_claim` in place.
 2. Wait until the new index is READY in the Firestore console.
-3. Run `runner backfill-queued-at -dry-run` from a checkout with `GOOGLE_CLOUD_PROJECT`,
-   `WINGMAN_ACCOUNT` and `GITHUB_REPOSITORY_OWNER` set, to see how many queued and
-   planned runs it would stamp. Then run it without `-dry-run`. It stamps each row from
-   its `started_at`, else its `updated_at`, so legacy rows keep their relative order,
-   and it skips a row that changed since it was listed. Running it again stamps nothing.
-4. Only after that, a later apply removes `queue_claim`, which `Candidates` no longer uses.
+3. Push the new images and `tofu apply` them. The dispatcher now stamps `queued_at` on
+   every run it queues or requeues. A run queued between step 1 and here has none until
+   step 4, and the second scan still lists it, so nothing is lost meanwhile.
+4. Run `runner backfill-queued-at -dry-run`, then `runner backfill-queued-at`, from a
+   checkout with `GOOGLE_CLOUD_PROJECT`, `WINGMAN_ACCOUNT` and `GITHUB_REPOSITORY_OWNER`
+   set (the last two must name the same owner) and credentials that can write the
+   queue. It stamps each queued and planned run lacking the field from its `started_at`,
+   else its `updated_at`, so legacy rows keep their relative order, and it skips a row
+   that changed since it was listed. The log line `queuedAtBackfilled` reports `stamped`
+   and `skipped`; running it again stamps nothing.
+5. Only after that, a later apply removes `queue_claim`, which `Candidates` no longer uses.
 
-Follow-up: delete the second scan in `Candidates` once the backfill has run, since
-no row lacks `queued_at` after it. Until then the scan costs one extra read of every
-queued and planned run per poll.
+A priority edit in Linear reaches the queue only when the app's webhook also delivers
+Issue updates, which step 3's webhook image handles.
+
+Follow-up: delete the second scan in `Candidates` once the backfill has run and
+`skipped` was 0, since no row then lacks `queued_at`. Until then the scan costs one
+extra read of every queued and planned run per poll.
 
 ### Secrets
 

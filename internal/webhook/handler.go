@@ -54,8 +54,8 @@ type Replier interface {
 	Reply(ctx context.Context, runID, sessionID, text string, at time.Time) (bool, error)
 }
 
-// Reprioritizer applies an edited Linear priority to a queued run, reporting
-// whether the run is queued at that rank afterwards.
+// Reprioritizer applies an edited Linear priority to a run waiting for a claim,
+// reporting whether the run holds that rank afterwards.
 type Reprioritizer interface {
 	UpdateQueuedPriority(ctx context.Context, runID string, rank int) (bool, error)
 }
@@ -67,7 +67,7 @@ type Reprioritizer interface {
 // session answers 200 and does neither again. A prompted one — the owner
 // answering a run's decision — records the reply and wakes the dispatcher,
 // which does the matching and the resume itself; the handler decides nothing.
-// An Issue update that changes the priority is written to the issue's queued
+// An Issue update that changes the priority is written to the issue's waiting
 // run and wakes the dispatcher; every other Issue update answers 200 and does
 // nothing.
 type Handler struct {
@@ -226,7 +226,7 @@ func (h Handler) answerPrompted(w http.ResponseWriter, r *http.Request, ev event
 	w.WriteHeader(http.StatusOK)
 }
 
-// reprioritize writes an edited priority to the issue's queued run and wakes
+// reprioritize writes an edited priority to the issue's waiting run and wakes
 // the dispatcher so the next poll orders by it. An update that does not carry a
 // priority change, or a payload that does not read as one, is ignored. A failed
 // write or wake answers 500 so Linear retries; both are idempotent.

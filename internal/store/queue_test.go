@@ -349,6 +349,15 @@ func TestCandidatesKeepsARowWithNoQueuedAtBehindAHigherPriority(t *testing.T) {
 	}
 }
 
+func TestCandidatesLeavesOutARowWithNoPriority(t *testing.T) {
+	q, client := queue(t)
+	noPriority := fresh("tie-no-priority")
+	seedRow(t, client, noPriority, map[string]any{stateField: stateQueued})
+	if got := ownOrder(t, q, noPriority); len(got) != 0 {
+		t.Fatalf("listed a row with no priority: %v", got)
+	}
+}
+
 func TestCandidatesStaysWithinTheScanLimit(t *testing.T) {
 	q, client := queue(t)
 	for range candidateScanLimit + 1 {
@@ -375,7 +384,7 @@ func TestUpdateQueuedPriorityRewritesOnlyAQueuedRun(t *testing.T) {
 	}{
 		{"queued at another rank", stateQueued, 1, true, 1},
 		{"queued at the same rank", stateQueued, 3, true, 3},
-		{"planned", statePlanned, 1, false, 3},
+		{"planned", statePlanned, 1, true, 1},
 		{"claimed", stateClaimed, 1, false, 3},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -409,14 +418,16 @@ func TestBackfillQueuedAtStampsOnlyQueuedAndPlannedRowsWithoutIt(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
 	started, changed := queueAt, queueAt.Add(time.Hour)
+	zeroStart := fresh("backfill-zero-start")
+	seedRow(t, client, zeroStart, map[string]any{stateField: stateQueued, startedAtField: time.Time{}, updatedAtField: changed})
 	stamp := queueAt.Add(-time.Hour)
 	queuedRow, plannedRow, hasStamp := fresh("backfill-queued"), fresh("backfill-planned"), fresh("backfill-stamped")
 	claimed, settled, noTime := fresh("backfill-claimed"), fresh("backfill-settled"), fresh("backfill-no-time")
-	seedRow(t, client, queuedRow, map[string]any{stateField: stateQueued, "started_at": started, updatedAtField: changed})
+	seedRow(t, client, queuedRow, map[string]any{stateField: stateQueued, startedAtField: started, updatedAtField: changed})
 	seedRow(t, client, plannedRow, map[string]any{stateField: statePlanned, updatedAtField: changed})
-	seedRow(t, client, hasStamp, map[string]any{stateField: stateQueued, "started_at": started, queuedAtField: stamp})
-	seedRow(t, client, claimed, map[string]any{stateField: stateClaimed, "started_at": started})
-	seedRow(t, client, settled, map[string]any{stateField: stateStopped, "started_at": started})
+	seedRow(t, client, hasStamp, map[string]any{stateField: stateQueued, startedAtField: started, queuedAtField: stamp})
+	seedRow(t, client, claimed, map[string]any{stateField: stateClaimed, startedAtField: started})
+	seedRow(t, client, settled, map[string]any{stateField: stateStopped, startedAtField: started})
 	seedRow(t, client, noTime, map[string]any{stateField: stateQueued})
 	untouched := map[string]time.Time{}
 	for _, id := range []string{hasStamp, claimed, settled, noTime} {
@@ -432,6 +443,9 @@ func TestBackfillQueuedAtStampsOnlyQueuedAndPlannedRowsWithoutIt(t *testing.T) {
 	}
 	if got := readRow(t, client, queuedRow)[queuedAtField]; got != started {
 		t.Fatalf("queued row queued_at = %v, want its started_at %v", got, started)
+	}
+	if got := readRow(t, client, zeroStart)[queuedAtField]; got != changed {
+		t.Fatalf("zero started_at row queued_at = %v, want its updated_at %v", got, changed)
 	}
 	if got := readRow(t, client, plannedRow)[queuedAtField]; got != changed {
 		t.Fatalf("planned row queued_at = %v, want its updated_at %v", got, changed)
@@ -454,7 +468,7 @@ func TestBackfillQueuedAtStampsOnlyQueuedAndPlannedRowsWithoutIt(t *testing.T) {
 func TestBackfillQueuedAtDryRunWritesNothing(t *testing.T) {
 	q, client := queue(t)
 	id := fresh("backfill-dry")
-	seedRow(t, client, id, map[string]any{stateField: stateQueued, "started_at": queueAt})
+	seedRow(t, client, id, map[string]any{stateField: stateQueued, startedAtField: queueAt})
 	before := updateTime(t, client, id)
 	res, err := q.BackfillQueuedAt(context.Background(), true)
 	if err != nil {
@@ -479,8 +493,8 @@ func TestStampQueuedAtLeavesAMissingRow(t *testing.T) {
 func TestStampQueuedAtLeavesARowThatChangedSinceItWasListed(t *testing.T) {
 	q, client := queue(t)
 	for name, row := range map[string]map[string]any{
-		"stamped": {stateField: stateQueued, "started_at": queueAt, queuedAtField: queueAt.Add(-time.Hour)},
-		"claimed": {stateField: stateClaimed, "started_at": queueAt},
+		"stamped": {stateField: stateQueued, startedAtField: queueAt, queuedAtField: queueAt.Add(-time.Hour)},
+		"claimed": {stateField: stateClaimed, startedAtField: queueAt},
 	} {
 		id := fresh("backfill-" + name)
 		seedRow(t, client, id, row)
