@@ -113,9 +113,14 @@ removes the label and withdraws any request (`automerge-withdraw.yml`). The requ
 and `web`.
 
 Do not set `WINGMAN_AUTO_MERGE` to `on` yet. The review's verdict comes from its
-own job, but the out-of-plan list still comes from the model job's outputs, and the
-build agent has a shell on that runner, so it could forge it. The switch is safe once
-the plan's file list comes from a trusted record.
+own job, and the out-of-plan list no longer comes from the model job: pr-meta derives
+the write set from the branch's bundle and measures it against the plan in the run
+record. Two inputs still come from a runner where the build agent has a shell. The
+summary's `ready` flag decides whether a PR is a draft when the pre-PR loop left
+something open, so it could be forged. And a run with no recorded plan (an S run, or
+any run while the plan stage is off) has no trusted list to be outside of, so nothing
+counts as out of plan. The switch is safe once those are trusted, or accepted as the
+risk.
 
 The review itself is not proof against the build agent either: the agent writes the
 diff the reviewer reads, so it can plant instructions that steer one model to a clean
