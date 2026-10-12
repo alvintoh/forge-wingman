@@ -38,6 +38,7 @@ func planStage(ctx context.Context, logger *slog.Logger, e env, args []string) e
 	ticketFile := fs.String("ticket-file", "", "path to the run's ticket, as the ticket subcommand wrote it")
 	out := fs.String("out", "", "path to write the plan artifact to")
 	agentImage := fs.String("agent-image", "", "agent image, pinned by digest, to run the agent CLIs in; empty runs them on the host")
+	agentEgress := fs.String("agent-egress", "", agentEgressUsage)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -48,50 +49,51 @@ func planStage(ctx context.Context, logger *slog.Logger, e env, args []string) e
 	if err != nil {
 		return err
 	}
-	contained, probe, err := agentRunner(ctx, *agentImage, ".", e.harnesses)
-	if err != nil {
-		return err
-	}
-	e.harnesses = contained
-	gcs, err := storage.NewClient(ctx)
-	if err != nil {
-		return fmt.Errorf("storage client: %w", err)
-	}
-	defer func() { _ = gcs.Close() }()
+	plan := splitModels(*planModels, []string{runner.DefaultPlanModel()})
+	_, err = withAgents(ctx, logger, agentSettings{Image: *agentImage, Egress: *agentEgress, Plan: plan}, ".", e.harnesses,
+		func(contained []runner.Harness, probe func(context.Context, string) error) error {
+			e.harnesses = contained
+			gcs, err := storage.NewClient(ctx)
+			if err != nil {
+				return fmt.Errorf("storage client: %w", err)
+			}
+			defer func() { _ = gcs.Close() }()
 
-	logger = logger.With("attempt", e.attemptID, "ticket", t.ID)
-	res, err := runner.PlanStage(ctx, runner.BuildDeps{
-		Projections: store.NewBucket(gcs, e.project+"-projections"),
-		Completions: store.NewBucket(gcs, e.project+"-completions"),
-		PlanAgent:   runner.NewRouter(runner.ProfilePlan, e.harnesses...),
-		AgentProbe:  probe,
-		Logger:      logger,
-		Now:         time.Now,
-	}, runner.BuildConfig{
-		AttemptID:  e.attemptID,
-		Repo:       ".",
-		TempDir:    e.tempDir,
-		Pointer:    *pointer,
-		PlanModels: splitModels(*planModels, []string{runner.DefaultPlanModel()}),
-		Secrets:    e.secrets,
-		Identity:   e.identity,
-		Ticket:     t,
-		Guided:     true,
-	})
-	if err != nil {
-		// The plan stage reports no summary, so every failure is a failed run
-		// rather than a stop the record job would judge.
-		return fmt.Errorf("%w: %w", errRunFailed, err)
-	}
-	raw, err := runner.EncodePlanStage(res)
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(*out, raw, 0o600); err != nil {
-		return fmt.Errorf("writing the plan: %w", err)
-	}
-	logger.Info("planStageDone", "files", len(res.Files), "base", res.BaseSHA)
-	return nil
+			logger = logger.With("attempt", e.attemptID, "ticket", t.ID)
+			res, err := runner.PlanStage(ctx, runner.BuildDeps{
+				Projections: store.NewBucket(gcs, e.project+"-projections"),
+				Completions: store.NewBucket(gcs, e.project+"-completions"),
+				PlanAgent:   runner.NewRouter(runner.ProfilePlan, e.harnesses...),
+				AgentProbe:  probe,
+				Logger:      logger,
+				Now:         time.Now,
+			}, runner.BuildConfig{
+				AttemptID:  e.attemptID,
+				Repo:       ".",
+				TempDir:    e.tempDir,
+				Pointer:    *pointer,
+				PlanModels: plan,
+				Secrets:    e.secrets,
+				Identity:   e.identity,
+				Ticket:     t,
+				Guided:     true,
+			})
+			if err != nil {
+				// The plan stage reports no summary, so every failure is a failed run
+				// rather than a stop the record job would judge.
+				return fmt.Errorf("%w: %w", errRunFailed, err)
+			}
+			raw, err := runner.EncodePlanStage(res)
+			if err != nil {
+				return err
+			}
+			if err := os.WriteFile(*out, raw, 0o600); err != nil {
+				return fmt.Errorf("writing the plan: %w", err)
+			}
+			logger.Info("planStageDone", "files", len(res.Files), "base", res.BaseSHA)
+			return nil
+		})
+	return err
 }
 
 // recordPlanStage is the trusted half of the two-stage dispatch: it

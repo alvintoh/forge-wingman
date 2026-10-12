@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1041,14 +1042,14 @@ func TestRecordLeavesAFailedPRJobThatIsNotAConflictToFail(t *testing.T) {
 }
 
 func TestAgentRunnerRefusesAnImageNotPinnedByDigest(t *testing.T) {
-	if _, _, err := agentRunner(context.Background(), "golang:1.27.1", ".", nil); err == nil {
+	if _, _, _, err := agentRunner(context.Background(), agentSettings{Image: "golang:1.27.1"}, ".", nil); err == nil {
 		t.Fatal("agentRunner accepted an image pinned by tag alone")
 	}
 }
 
 func TestAgentRunnerRunsAgentsOnTheHostWithNoImage(t *testing.T) {
 	harnesses := []runner.Harness{runner.OmpHarness{Bin: "omp"}}
-	got, probe, err := agentRunner(context.Background(), "", t.TempDir(), harnesses)
+	got, probe, _, err := agentRunner(context.Background(), agentSettings{}, t.TempDir(), harnesses)
 	if err != nil || probe != nil || len(got) != 1 || got[0].(runner.OmpHarness).Container.Image != "" {
 		t.Fatalf("agentRunner with no image = %v, probe %v, %v; want the harnesses unchanged and no probe", got, probe != nil, err)
 	}
@@ -1056,9 +1057,164 @@ func TestAgentRunnerRunsAgentsOnTheHostWithNoImage(t *testing.T) {
 
 func TestAgentRunnerContainsHarnessesAndHandsBackTheProbe(t *testing.T) {
 	image := "golang:1.27.1@sha256:" + strings.Repeat("a", 64)
-	got, probe, err := agentRunner(context.Background(), image, ".", []runner.Harness{runner.OmpHarness{Bin: "omp"}})
+	got, probe, _, err := agentRunner(context.Background(), agentSettings{Image: image}, ".", []runner.Harness{runner.OmpHarness{Bin: "omp"}})
 	if err != nil || probe == nil || got[0].(runner.OmpHarness).Container.Image != image {
 		t.Fatalf("agentRunner = %v, probe %v, %v; want the harness in the image's container and a probe", got, probe != nil, err)
+	}
+}
+
+func TestAgentRunnerRefusesAnEgressSettingItCannotHonour(t *testing.T) {
+	image := "golang:1.27.1@sha256:" + strings.Repeat("a", 64)
+	for name, s := range map[string]agentSettings{
+		"on with no image":  {Egress: "on"},
+		"unknown value":     {Image: image, Egress: "yes"},
+		"model with no api": {Image: image, Egress: "on", Plan: []string{"nowhere/model"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, _, _, err := agentRunner(context.Background(), s, ".", nil); err == nil {
+				t.Fatal("agentRunner accepted the setting")
+			}
+		})
+	}
+}
+
+// fakeDockerLog puts a docker on PATH that succeeds and logs each call's arguments on one line.
+func fakeDockerLog(t *testing.T) string {
+	t.Helper()
+	bin, logFile := t.TempDir(), filepath.Join(t.TempDir(), "docker.log")
+	script := "#!/bin/sh\necho \"$*\" >> \"" + logFile + "\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return logFile
+}
+
+// dockerLines is the calls fakeDockerLog has logged so far.
+func dockerLines(t *testing.T, logFile string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Split(strings.TrimSpace(string(raw)), "\n")
+}
+
+// hostOnlyHarness cannot run in a container.
+type hostOnlyHarness struct{ runner.Harness }
+
+func (hostOnlyHarness) Name() string { return "host-only" }
+
+func TestAgentRunnerWithEgressOnJoinsTheInternalNetworkAndStopRemovesIt(t *testing.T) {
+	logFile := fakeDockerLog(t)
+	s := agentSettings{Image: "golang:1.27.1@sha256:" + strings.Repeat("a", 64), Egress: "on", Plan: []string{"command-code/deepseek/deepseek-v4.1-flash"}}
+	got, _, stop, err := agentRunner(context.Background(), s, ".", []runner.Harness{runner.OmpHarness{Bin: "omp"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if net := got[0].(runner.OmpHarness).Container.Network; !strings.HasPrefix(net, "wingman-egress-net-") {
+		t.Fatalf("container network %q, want the run's internal network", net)
+	}
+	if err := stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	lines := dockerLines(t, logFile)
+	if n := len(lines); !strings.HasPrefix(lines[n-2], "rm --force ") || !strings.HasPrefix(lines[n-1], "network rm ") {
+		t.Fatalf("docker calls %q, want the proxy then the network removed", lines)
+	}
+}
+
+func TestAgentRunnerRemovesTheEgressWhenAHarnessCannotBeContained(t *testing.T) {
+	logFile := fakeDockerLog(t)
+	s := agentSettings{Image: "golang:1.27.1@sha256:" + strings.Repeat("a", 64), Egress: "on", Plan: []string{"command-code/deepseek/deepseek-v4.1-flash"}}
+	if _, _, _, err := agentRunner(context.Background(), s, ".", []runner.Harness{hostOnlyHarness{}}); err == nil {
+		t.Fatal("agentRunner contained a host-only harness")
+	}
+	if lines := dockerLines(t, logFile); !strings.HasPrefix(lines[len(lines)-1], "network rm ") {
+		t.Fatalf("docker calls %q, want the egress removed after the failure", lines)
+	}
+}
+
+func TestWithAgentsRemovesTheEgressAfterTheStageHoweverItEnds(t *testing.T) {
+	image := "golang:1.27.1@sha256:" + strings.Repeat("a", 64)
+	for name, stageErr := range map[string]error{"stage succeeds": nil, "stage fails": errors.New("stage failed")} {
+		t.Run(name, func(t *testing.T) {
+			logFile := fakeDockerLog(t)
+			s := agentSettings{Image: image, Egress: "on", Plan: []string{"command-code/deepseek/deepseek-v4.1-flash"}}
+			started, err := withAgents(context.Background(), slog.New(slog.DiscardHandler), s, ".", []runner.Harness{runner.OmpHarness{Bin: "omp"}},
+				func([]runner.Harness, func(context.Context, string) error) error {
+					for _, l := range dockerLines(t, logFile) {
+						if strings.HasPrefix(l, "network rm ") {
+							t.Error("the egress was removed before the stage ran")
+						}
+					}
+					return stageErr
+				})
+			if !started || !errors.Is(err, stageErr) {
+				t.Fatalf("withAgents = %v, %v; want started and the stage's error", started, err)
+			}
+			if lines := dockerLines(t, logFile); !strings.HasPrefix(lines[len(lines)-1], "network rm ") {
+				t.Fatalf("docker calls %q, want the egress removed after the stage", lines)
+			}
+		})
+	}
+}
+
+func TestWithAgentsDoesNotRunTheStageWhenTheAgentsCannotBeSetUp(t *testing.T) {
+	ran := false
+	started, err := withAgents(context.Background(), slog.New(slog.DiscardHandler), agentSettings{Image: "golang:1.27.1"}, ".", nil,
+		func([]runner.Harness, func(context.Context, string) error) error { ran = true; return nil })
+	if started || err == nil || ran {
+		t.Fatalf("withAgents = %v, %v, ran %v; want a setup error and no stage", started, err, ran)
+	}
+}
+
+func TestWithAgentsAllowsTheApiHostOfEveryModelTheStageNames(t *testing.T) {
+	const flash, gemini = "command-code/deepseek/deepseek-v4.1-flash", "gemini/gemini-3.8-flash"
+	for name, s := range map[string]agentSettings{
+		"build model":  {Model: gemini, Plan: []string{flash}, Review: []string{flash}},
+		"plan models":  {Model: flash, Plan: []string{flash, gemini}, Review: []string{flash}},
+		"review model": {Model: flash, Plan: []string{flash}, Review: []string{flash, gemini}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			logFile := fakeDockerLog(t)
+			s.Image, s.Egress = "golang:1.27.1@sha256:"+strings.Repeat("a", 64), "on"
+			_, err := withAgents(context.Background(), slog.New(slog.DiscardHandler), s, ".", []runner.Harness{runner.OmpHarness{Bin: "omp"}},
+				func([]runner.Harness, func(context.Context, string) error) error { return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			var sidecar string
+			for _, l := range dockerLines(t, logFile) {
+				if strings.HasPrefix(l, "run --detach") {
+					sidecar = l
+				}
+			}
+			if !strings.Contains(sidecar, "-allow api.commandcode.ai,generativelanguage.googleapis.com") {
+				t.Fatalf("sidecar %q, want both plans' hosts allowed", sidecar)
+			}
+		})
+	}
+}
+
+func TestEgressProxyReadyReportsWhetherTheProxyAcceptsConnections(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	if err := egressProxy(context.Background(), slog.New(slog.DiscardHandler), []string{"-ready", addr}); err != nil {
+		t.Fatalf("-ready against a listener: %v", err)
+	}
+	_ = ln.Close()
+	if err := egressProxy(context.Background(), slog.New(slog.DiscardHandler), []string{"-ready", addr}); err == nil {
+		t.Fatal("-ready succeeded with nothing listening")
+	}
+}
+
+func TestEgressProxyNeedsAHostToAllow(t *testing.T) {
+	if err := egressProxy(context.Background(), slog.New(slog.DiscardHandler), nil); err == nil {
+		t.Fatal("egressProxy served with nothing allowed")
 	}
 }
 

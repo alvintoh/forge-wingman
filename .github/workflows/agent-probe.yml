@@ -35,6 +35,8 @@ jobs:
           cache: false
 
       - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
+        env:
+          CGO_ENABLED: "0"
 
       - id: auth
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
@@ -65,3 +67,17 @@ jobs:
           test "$creds_before" = "$(sha256sum "$GOOGLE_APPLICATION_CREDENTIALS")"
           test "$files_before" = "$(sha256sum "$GITHUB_OUTPUT" "$GITHUB_ENV" "$GITHUB_PATH" "$GITHUB_STEP_SUMMARY")"
           echo "the agent container could not read the credentials file or write the step's files"
+
+      - name: Reach the model API and nothing else through the egress proxy
+        run: |
+          set -eu
+          probe() { "$RUNNER_TEMP/runner" agent-probe -egress -agent-image "$AGENT_IMAGE" -- bun -e "$1"; }
+          probe 'const r = await fetch("https://api.commandcode.ai/"); console.log(r.status)'
+          if probe 'await fetch("https://example.com/")'; then echo "LEAK: reached another host"; exit 1; fi
+          if probe 'await fetch("https://169.254.169.254/")'; then echo "LEAK: reached the metadata address"; exit 1; fi
+          echo "the agent container reached only its model API host"
+
+      - if: always()
+        run: |
+          docker ps --all --quiet --filter name=wingman-egress-proxy- | xargs -r docker rm --force
+          docker network ls --quiet --filter name=wingman-egress-net- | xargs -r docker network rm
