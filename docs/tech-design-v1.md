@@ -299,12 +299,22 @@ how often it applies. *(Judgment call, the owner's; no authority prescribes it.
 Revisit when review models fall through the ordered plan list, `FR-14`, which would
 make the case rarer.)*
 
+**An allowance here means any reviewer's, and each has its own marker.** The product's
+own review runs its models on a coding plan, whose exhaustion the plan's allowance
+markers name (`FR-26`). GitHub Copilot's review is auto-requested on every PR and draws
+a per-user quota; when that is spent its review reads *unable to review this pull
+request because the user who requested the review has reached their quota limit*
+(seen on three PRs, 2026-10-11 and 2026-10-12). Copilot gates nothing (the branch rule
+requires no approvals), so its quota being out holds no PR and needs no handling beyond
+being recognised as that state, not as a finding. The builder's own plan allowance is a
+different matter: admission already defers or falls through it (`FR-22`, `FR-26`) and
+it never reaches the merge.
+
 **It needs a classifier the review does not have.** "No verdict" is not evidence of an
 exhausted allowance: the two failures above read *agent failed* and *timed out*, which
-fits a spent allowance without proving one. The cause must come from the reviewer
-harness's own allowance markers (`FR-26`), carried through the verdict step as a
-closed state, never inferred from the absence of a verdict. Until that exists the
-rule is inert and every no-verdict PR waits.
+fits a spent allowance without proving one. The cause must come from the reviewer's own
+marker, carried through the verdict step as a closed state, never inferred from the
+absence of a verdict. Until that exists the rule is inert and every no-verdict PR waits.
 
 ### Surface — Cloud Run service behind IAP
 
