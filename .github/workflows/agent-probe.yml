@@ -35,8 +35,6 @@ jobs:
           cache: false
 
       - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
-        env:
-          CGO_ENABLED: "0"
 
       - id: auth
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
@@ -67,6 +65,34 @@ jobs:
           test "$creds_before" = "$(sha256sum "$GOOGLE_APPLICATION_CREDENTIALS")"
           test "$files_before" = "$(sha256sum "$GITHUB_OUTPUT" "$GITHUB_ENV" "$GITHUB_PATH" "$GITHUB_STEP_SUMMARY")"
           echo "the agent container could not read the credentials file or write the step's files"
+
+  # Needs no cloud credentials, so it also runs from a branch.
+  egress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      AGENT_IMAGE: ${{ inputs.agent_image || vars.WINGMAN_AGENT_IMAGE }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # Static, so the egress proxy container can run the binary it mounts.
+      - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
+        env:
+          CGO_ENABLED: "0"
+
+      - name: Pull the agent image
+        run: |
+          test -n "$AGENT_IMAGE"
+          docker pull "$AGENT_IMAGE"
 
       - name: Reach the model API and nothing else through the egress proxy
         run: |
