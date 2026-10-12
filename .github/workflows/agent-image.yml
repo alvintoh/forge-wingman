@@ -1,12 +1,23 @@
 name: agent-image
 
-# Builds the agent's container image and publishes it to GHCR. The digest is
-# the identity; the tag is for humans.
+# Builds the agent's container image and publishes it to GHCR from main. The
+# digest is the identity; the tag is for humans. A pull request builds and
+# checks the image without publishing it.
 on:
   push:
     branches: [main]
     paths:
       - tools/agent/Dockerfile
+      - tools/agent/check-image.sh
+      - tools/omp/package.json
+      - tools/omp/bun.lock
+      - tools/opencode/package.json
+      - tools/opencode/package-lock.json
+      - .github/workflows/agent-image.yml
+  pull_request:
+    paths:
+      - tools/agent/Dockerfile
+      - tools/agent/check-image.sh
       - tools/omp/package.json
       - tools/omp/bun.lock
       - tools/opencode/package.json
@@ -24,6 +35,28 @@ env:
   IMAGE: ghcr.io/alvintoh/forge-wingman-agent
 
 jobs:
+  build:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: tools/agent/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: agent-image-test
+
+      - name: Check the image
+        run: bash tools/agent/check-image.sh agent-image-test
+
   publish:
     # A dispatch can name any branch; only main publishes.
     if: github.ref == 'refs/heads/main'
@@ -68,10 +101,7 @@ jobs:
           REF: ${{ steps.ref.outputs.image }}
         run: |
           docker pull "$REF"
-          # The caller picks the uid and mounts the home, so check that shape too.
-          docker run --rm --user 12345:12345 --read-only "$REF" omp --version
-          test "$(docker run --rm "$REF" omp --version)" = "omp/$(jq -r '.dependencies["@oh-my-pi/pi-coding-agent"]' tools/omp/package.json)"
-          test "$(docker run --rm "$REF" opencode --version)" = "$(jq -r '.dependencies["opencode-ai"]' tools/opencode/package.json)"
+          bash tools/agent/check-image.sh "$REF"
 
       - name: Report the digest
         env:
