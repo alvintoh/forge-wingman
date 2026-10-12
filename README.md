@@ -102,11 +102,11 @@ run the gate against it:
 docker run -d --rm -p 8080:8080 \
   gcr.io/google.com/cloudsdktool/google-cloud-cli:586.0.0-emulators@sha256:7617d937e9360d769de4ef66266a8caae503c1dbbd050c93404d3f30045c5125 \
   gcloud emulators firestore start --host-port=0.0.0.0:8080
+until curl -fs http://localhost:8080 >/dev/null; do sleep 2; done
 FIRESTORE_EMULATOR_HOST=localhost:8080 make check
 ```
 
-The emulator takes a few seconds to start; CI waits for it before running the
-tests, and `make check`'s own lint step covers that wait locally. The frontend has
+The loop waits for the emulator to answer, as CI does before its tests. The frontend has
 its own check:
 
 ```sh
