@@ -288,6 +288,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		Visibility: gh,
 		Providers:  store.NewProviders(fsc),
 		Breaker:    store.NewBreaker(fsc),
+		PeakModes:  store.NewPeakModes(fsc),
 		Notices:    store.NewNotices(fsc),
 		OpenPoster: slackPoster(secrets.Token, client),
 		Plans:      plans,

@@ -522,7 +522,7 @@ func timeOfUse(steps []Step) string {
 			continue
 		}
 		hourly = true
-		if spansPeak(*rates.Peak, st) {
+		if rates.Peak.Spans(st.At, time.Duration(st.DurationMS)*time.Millisecond) {
 			peak = true
 		}
 	}
@@ -534,22 +534,6 @@ func timeOfUse(steps []Step) string {
 	default:
 		return TimeOfUseOffPeak
 	}
-}
-
-// spansPeak reports whether any part of the step falls in one of the plan's
-// peak windows. The windows are whole hours, so walking the hours the step
-// touches is exact rather than an approximation of it.
-func spansPeak(peak providers.Peak, st Step) bool {
-	if st.At.IsZero() {
-		return true
-	}
-	end := st.At.Add(time.Duration(st.DurationMS) * time.Millisecond)
-	for at := st.At.Truncate(time.Hour); !at.After(end); at = at.Add(time.Hour) {
-		if peak.Covers(at) {
-			return true
-		}
-	}
-	return false
 }
 
 // costDrift names how far the run's settled cost sits above its provider's own

@@ -318,6 +318,41 @@ func TestRatesAtPricesByTimeOfUse(t *testing.T) {
 	}
 }
 
+// TestPeakSpans asserts a span touches a window when any hour it covers is in
+// one, including a span that ends on a window's first instant, and never on a
+// weekend.
+func TestPeakSpans(t *testing.T) {
+	peak := Peak{Multiplier: 2, Hours: []HourRange{{From: 1, To: 4}, {From: 6, To: 10}}}
+	// 2026-10-07 is a Wednesday.
+	at := func(day, hour, minute int) time.Time { return time.Date(2026, 10, day, hour, minute, 0, 0, time.UTC) }
+	for name, tt := range map[string]struct {
+		from time.Time
+		d    time.Duration
+		want bool
+	}{
+		"inside a window with no duration":    {at(7, 2, 0), 0, true},
+		"off-peak with no duration":           {at(7, 5, 0), 0, false},
+		"a span opening inside a window":      {at(7, 0, 45), 30 * time.Minute, true},
+		"a span ending before the window":     {at(7, 0, 45), 10 * time.Minute, false},
+		"a span ending on a window's start":   {at(7, 0, 45), 15 * time.Minute, true},
+		"a span ending a minute before it":    {at(7, 0, 45), 14 * time.Minute, false},
+		"a span across the gap into a window": {at(7, 4, 0), 2 * time.Hour, true},
+		"a span inside the gap":               {at(7, 4, 0), 90 * time.Minute, false},
+		"a span out of a window":              {at(7, 3, 30), time.Hour, true},
+		"a weekend span over the hours":       {at(10, 0, 0), 12 * time.Hour, false},
+		"a Friday span running into Saturday": {at(9, 22, 0), 6 * time.Hour, false},
+		"a Sunday span running into a Monday": {at(11, 23, 30), 90 * time.Minute, true},
+		"an unknown start":                    {time.Time{}, 0, true},
+		"another zone, the same peak instant": {at(7, 7, 0).In(time.FixedZone("AEDT", 11*3600)), 0, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := peak.Spans(tt.from, tt.d); got != tt.want {
+				t.Fatalf("Spans(%v, %v) = %v, want %v", tt.from, tt.d, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestRatesReadThePeak asserts a card's surcharge reads back from its document.
 func TestRatesReadThePeak(t *testing.T) {
 	cfg, err := parseConfig([]byte(configWith(providerFacts + `,"rates":{"p/model":{"input_usd_per_mtok":1,` +

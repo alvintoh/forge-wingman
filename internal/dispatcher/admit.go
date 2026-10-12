@@ -22,6 +22,8 @@ const (
 	ConditionEstimateFailed = "estimate-failed"
 	// ConditionCircuitBreaker withholds every candidate while a systemic stop holds dispatch.
 	ConditionCircuitBreaker = "circuit-breaker"
+	// ConditionPeakHours withholds a candidate that would run in its model's peak-price hours.
+	ConditionPeakHours = "peak-hours"
 )
 
 // largeSize is the ticket size whose concurrent runs are capped separately.
@@ -105,6 +107,8 @@ type Facts struct {
 	ProviderHalted bool
 	// BreakerTripped is set while a systemic stop holds every dispatch.
 	BreakerTripped bool
+	// PeakHeld is set when the run would run in its model's peak-price hours.
+	PeakHeld bool
 	// Model is the run's build model — the model its ticket named, or the run's
 	// own default — which selects any per-model cap that bounds it.
 	Model string
@@ -151,7 +155,7 @@ type AdmitInput struct {
 
 // Admit reports whether the candidate may start now, and otherwise the first
 // condition that withholds it, checked in this order: the circuit breaker,
-// provider halt, platform cap, N, the concurrent-L cap, one run per
+// provider halt, peak hours, platform cap, N, the concurrent-L cap, one run per
 // repository, a blocking relation with a run in flight, review WIP, then the
 // budget ceilings. It does no IO.
 //
@@ -170,6 +174,8 @@ func Admit(in AdmitInput) (ok bool, binding string) {
 		return false, ConditionCircuitBreaker
 	case in.Facts.ProviderHalted:
 		return false, CeilingProviderHalted
+	case in.Facts.PeakHeld:
+		return false, ConditionPeakHours
 	case running >= in.Facts.Limits.PlatformCap:
 		return false, ConditionPlatformCap
 	case running >= in.N:

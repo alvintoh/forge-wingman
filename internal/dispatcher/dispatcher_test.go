@@ -126,6 +126,9 @@ func (q *fakeQueue) TryClaim(_ context.Context, runID string, _ time.Time, cfg B
 		return false, "", err
 	}
 	q.tryClaims = append(q.tryClaims, tryClaimCall{runID: runID, cfg: cfg, facts: facts, res: res})
+	if facts.PeakHeld {
+		return false, ConditionPeakHours, nil
+	}
 	bindings := q.bindings
 	if cfg.ProviderFree {
 		if binding, ok := q.freeModelBindings[facts.Model]; ok {
@@ -268,6 +271,7 @@ func pollDeps(source Source, q *fakeQueue, w *fakeWorkflow) Deps {
 		Visibility: fakeVisibility{},
 		Providers:  fakeProviders{},
 		Breaker:    fakeBreaker{},
+		PeakModes:  fakePeakModes{mode: PeakOffPeakOnly},
 		OpenPRs:    fakeOpenPRs{},
 		Overrides:  LabelOverrides{},
 		ModelPlans: &fakeModelPlans{},
@@ -385,6 +389,7 @@ func TestPollNamesTheDependencyItWasNotGiven(t *testing.T) {
 		"Visibility": func(d *Deps) { d.Visibility = nil },
 		"Providers":  func(d *Deps) { d.Providers = nil },
 		"Breaker":    func(d *Deps) { d.Breaker = nil },
+		"PeakModes":  func(d *Deps) { d.PeakModes = nil },
 		"Notices":    func(d *Deps) { d.Notices = nil },
 		"OpenPoster": func(d *Deps) { d.OpenPoster = nil },
 		"OpenPRs":    func(d *Deps) { d.OpenPRs = nil },
