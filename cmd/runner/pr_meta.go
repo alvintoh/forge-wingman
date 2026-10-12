@@ -32,8 +32,7 @@ const mainRef = "origin/main"
 //
 // The write set is this job's own: the files the branch changes, read out of the
 // bundle the model job uploaded, measured against the plan the run record
-// carries. The model job's own out-of-plan list decides nothing here, since it
-// is the claim under test.
+// carries.
 func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) error {
 	fs := flag.NewFlagSet("pr-meta", flag.ContinueOnError)
 	runID := fs.String("run-id", "", "run record to read the ticket from")
@@ -125,8 +124,7 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 }
 
 // prCheck is what pr-meta establishes about a run's write set beyond what its
-// summary claims. The model job's own out-of-plan list is not one of its
-// inputs, since that is the claim under test.
+// summary claims.
 type prCheck struct {
 	// Changed is the write set the branch carries, read out of its bundle.
 	Changed []string

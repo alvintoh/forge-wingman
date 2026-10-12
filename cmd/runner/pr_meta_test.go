@@ -34,12 +34,11 @@ func encodedSummary(t *testing.T, attemptID string, now time.Time, edits ...func
 		Phase:   runner.PhaseCommit,
 		Steps: []runner.Step{{Phase: runner.PhaseBuild, Round: 1, Model: "command-code/x",
 			CompletionsObject: "completions/" + attemptID + "-build-1.jsonl", At: now.Add(-30 * time.Minute)}},
-		EditedFiles:    []string{"widget.go", "extra.go"},
-		OutOfPlanFiles: []string{"extra.go"},
-		Branch:         runner.BranchName(tk.BranchSegment(), attemptID),
-		CommitSubject:  "feat(runner): ABC-1 add the widget",
-		PRSummary:      "Adds the widget the runner needs.",
-		StartedAt:      now.Add(-time.Hour),
+		EditedFiles:   []string{"widget.go", "extra.go"},
+		Branch:        runner.BranchName(tk.BranchSegment(), attemptID),
+		CommitSubject: "feat(runner): ABC-1 add the widget",
+		PRSummary:     "Adds the widget the runner needs.",
+		StartedAt:     now.Add(-time.Hour),
 	}
 	for _, edit := range edits {
 		edit(&sum)
@@ -168,9 +167,6 @@ func TestRenderPRNamesWhatPRMetaComputedNotWhatTheModelClaimed(t *testing.T) {
 	}
 	if !strings.Contains(body, "\nAdds the widget the runner needs\\.\n") {
 		t.Fatalf("body lacks the build's summary:\n%s", body)
-	}
-	if strings.Contains(body, "outside the plan") {
-		t.Errorf("body repeats the model job's out-of-plan claim:\n%s", body)
 	}
 	if !strings.Contains(body, "**Concurrent run:** kept this a draft — `M-2`") {
 		t.Fatalf("body does not name the run whose plan these files touch:\n%s", body)

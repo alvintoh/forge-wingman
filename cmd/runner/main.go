@@ -362,7 +362,6 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 	if err := writeOutputs(e.output, map[string]string{
 		"branch":  res.Branch,
 		"changed": strconv.FormatBool(res.Changed),
-		"ready":   strconv.FormatBool(res.Ready),
 	}); err != nil {
 		return err
 	}

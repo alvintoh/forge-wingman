@@ -50,11 +50,7 @@ on:
         value: ${{ jobs.build.outputs.changed }}
       summary:
         value: ${{ jobs.build.outputs.summary }}
-      # ready and loop_detail are the pre-PR loop's draft-vs-ready decision
-      # (FR-5): ready is true only once the checks passed and the review
-      # found nothing open; loop_detail names why not.
-      ready:
-        value: ${{ jobs.build.outputs.ready }}
+      # loop_detail names why the pre-PR loop left the PR a draft.
       loop_detail:
         value: ${{ jobs.build.outputs.loop_detail }}
 
@@ -75,7 +71,6 @@ jobs:
       branch: ${{ steps.build.outputs.branch }}
       changed: ${{ steps.build.outputs.changed }}
       summary: ${{ steps.build.outputs.summary }}
-      ready: ${{ steps.build.outputs.ready }}
       loop_detail: ${{ steps.build.outputs.loop_detail }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

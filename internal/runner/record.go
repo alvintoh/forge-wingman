@@ -180,7 +180,6 @@ type Record struct {
 	SettledRunnerMinutes      int64            `firestore:"settled_runner_minutes"`
 	DurationsMS               map[string]int64 `firestore:"durations_ms"`
 	EditedFiles               []string         `firestore:"edited_files"`
-	OutOfPlanFiles            []string         `firestore:"out_of_plan_files"`
 	DiffLines                 DiffLines        `firestore:"diff_lines"`
 	Branch                    string           `firestore:"branch"`
 	BuildOutcome              Outcome          `firestore:"build_outcome"`
@@ -602,7 +601,6 @@ func (s Summary) apply(rec *Record) {
 	rec.Steps = s.Steps
 	rec.Tokens = sumSteps(s.Steps)
 	rec.EditedFiles = s.EditedFiles
-	rec.OutOfPlanFiles = s.OutOfPlanFiles
 	rec.DiffLines = s.DiffLines
 	for p, ms := range s.DurationsMS {
 		rec.DurationsMS[p] = ms

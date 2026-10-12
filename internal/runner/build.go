@@ -110,10 +110,8 @@ type BuildResult struct {
 	Branch     string
 	BundlePath string
 	Changed    bool
-	// Ready is FR-5's draft-vs-ready decision: true only when the pre-PR
-	// loop's checks passed and no review finding is still open. LoopDetail
-	// names why not, so the PR can say so.
-	Ready      bool
+	// LoopDetail names why the pre-PR loop left the PR a draft, so the PR
+	// can say so.
 	LoopDetail string
 }
 
@@ -347,7 +345,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 
 	sum.Ready = ready
 	sum.LoopDetail = truncate(loopDetail, stopDetailLimit)
-	res = BuildResult{Branch: pushBranch, Ready: ready, LoopDetail: loopDetail}
+	res = BuildResult{Branch: pushBranch, LoopDetail: loopDetail}
 	if err := timed(PhaseCommit, nil, "", func() error {
 		if err := wt.Verify(ctx); err != nil {
 			switch {
@@ -384,8 +382,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		}
 		if c.Ticket.Size != "S" {
 			if extra := OutOfPlanFiles(files, planFiles); len(extra) > 0 {
-				sum.OutOfPlanFiles = extra
-				sum.Ready, res.Ready = false, false
+				sum.Ready = false
 				d.Logger.Info("outOfPlanEdits", "files", len(extra))
 			}
 		}
@@ -411,7 +408,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		if wf := workflowFiles(touched); len(wf) > 0 {
 			sum.Outcome, sum.StopReason = OutcomeStopped, StopWorkflowChange
 			sum.StopDetail = truncate(workflowChange(wf).Error(), stopDetailLimit)
-			sum.Ready, res.Ready = false, false
+			sum.Ready = false
 			d.Logger.Info("workflowChange", "phase", string(PhaseCommit), "files", wf)
 		}
 		return nil

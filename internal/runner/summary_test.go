@@ -2,7 +2,6 @@ package runner
 
 import (
 	"encoding/json"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -20,12 +19,11 @@ func validSummary() Summary {
 			CompletionsObject: completionsObject("1-1", PhaseBuild, 1),
 			At:                finalizeNow.Add(-30 * time.Minute),
 		}},
-		EditedFiles:    []string{"version.go"},
-		OutOfPlanFiles: []string{"version.go"},
-		DurationsMS:    map[string]int64{"build": 10},
-		RuleStackSHA:   testSHA,
-		Branch:         BranchName(testTicket.BranchSegment(), "1-1"),
-		StartedAt:      finalizeNow.Add(-time.Hour),
+		EditedFiles:  []string{"version.go"},
+		DurationsMS:  map[string]int64{"build": 10},
+		RuleStackSHA: testSHA,
+		Branch:       BranchName(testTicket.BranchSegment(), "1-1"),
+		StartedAt:    finalizeNow.Add(-time.Hour),
 	}
 }
 
@@ -78,7 +76,6 @@ func TestParseSummaryRejects(t *testing.T) {
 		{"an edited file above the repository", func(s *Summary) { s.EditedFiles = []string{"../x"} }},
 		{"an edited file through a parent segment", func(s *Summary) { s.EditedFiles = []string{"a/../b"} }},
 		{"an edited file ending in a parent segment", func(s *Summary) { s.EditedFiles = []string{"a/.."} }},
-		{"an out-of-plan file above the repository", func(s *Summary) { s.OutOfPlanFiles = []string{"../x"} }},
 		{"a start time over a week old", func(s *Summary) { s.StartedAt = finalizeNow.Add(-8 * 24 * time.Hour) }},
 		{"another run's completions", func(s *Summary) { s.Steps[0].CompletionsObject = "completions/1-2-build-1.jsonl" }},
 		{"a completions path escape", func(s *Summary) { s.Steps[0].CompletionsObject = "completions/../x.jsonl" }},
@@ -189,7 +186,7 @@ func TestParseSummaryCapsTheCommitFields(t *testing.T) {
 func TestParseSummaryCapsEveryFilePath(t *testing.T) {
 	s := validSummary()
 	long := strings.Repeat("a", 3*maxPathBytes)
-	s.EditedFiles, s.OutOfPlanFiles = []string{long}, []string{long}
+	s.EditedFiles = []string{long}
 	b, err := json.Marshal(s)
 	if err != nil {
 		t.Fatal(err)
@@ -198,7 +195,7 @@ func TestParseSummaryCapsEveryFilePath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range append(got.EditedFiles, got.OutOfPlanFiles...) {
+	for _, f := range got.EditedFiles {
 		if len(f) > maxPathBytes+len("…") {
 			t.Fatalf("file path of %d bytes survived the cap", len(f))
 		}
@@ -211,7 +208,6 @@ func TestEncodeFitsTheLimitAndStaysOnOneLine(t *testing.T) {
 	for i := range s.EditedFiles {
 		s.EditedFiles[i] = strings.Repeat("\n", 2*maxPathBytes)
 	}
-	s.OutOfPlanFiles = slices.Clone(s.EditedFiles)
 	raw, err := s.Encode()
 	if err != nil {
 		t.Fatal(err)
@@ -223,7 +219,7 @@ func TestEncodeFitsTheLimitAndStaysOnOneLine(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &encoded); err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range append(encoded.EditedFiles, encoded.OutOfPlanFiles...) {
+	for _, f := range encoded.EditedFiles {
 		if len(f) > maxPathBytes+len("…") {
 			t.Fatalf("encoded a file path of %d bytes", len(f))
 		}
