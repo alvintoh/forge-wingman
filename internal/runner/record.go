@@ -167,6 +167,10 @@ type Record struct {
 	// whose models LastResortModels names in place of ModelLabels.
 	LastResort       bool        `firestore:"last_resort"`
 	LastResortModels ModelLabels `firestore:"last_resort_models"`
+	// MovedFrom names the paid plan whose ceiling bound when the claim moved the
+	// run to Plan; PlanModels are then the models the run starts on.
+	MovedFrom  string      `firestore:"moved_from"`
+	PlanModels ModelLabels `firestore:"plan_models"`
 	// SettledAt, SettledProviderCostMicros and SettledRunnerMinutes are
 	// written once, by Finalize: the run's actual cost, settled against the
 	// dispatch/ledger reservation the claim booked (adr/0003). Zero until
@@ -422,6 +426,7 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, reader Prov
 	rec.ModelLabels = existing.ModelLabels
 	rec.Plan, rec.LastResort, rec.LastResortModels = existing.Plan, existing.LastResort, existing.LastResortModels
 	rec.PriorSettledProviderCostMicros, rec.PriorSettledRunnerMinutes = existing.PriorSettledProviderCostMicros, existing.PriorSettledRunnerMinutes
+	rec.MovedFrom, rec.PlanModels = existing.MovedFrom, existing.PlanModels
 	identityErr := in.Identity.CheckAccount()
 	sum, err := ParseSummary(in.Summary, in.AttemptID, t, now)
 	switch {
@@ -576,10 +581,14 @@ func costDrift(ctx context.Context, reader ProviderCostReader, rec Record, now t
 }
 
 // RunModels are the models the run's phases start on: the free tier's when it
-// was claimed on one, else what the ticket named.
+// was claimed on one, the plan's it moved to when it moved, else what the
+// ticket named.
 func (r Record) RunModels() ModelLabels {
 	if r.LastResort {
 		return r.LastResortModels
+	}
+	if r.MovedFrom != "" {
+		return r.PlanModels
 	}
 	return r.ModelLabels
 }

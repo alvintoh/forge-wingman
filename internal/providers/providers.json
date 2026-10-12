@@ -1,6 +1,9 @@
 {
   "cash_limit_usd": 30,
   "runner_free_minutes": 2000,
+  "paid_plans": [
+    "command-code"
+  ],
   "last_resort_plans": [
     "command-code",
     "gemini"
@@ -79,6 +82,13 @@
           "cache_read_usd_per_mtok": 0,
           "cache_write_usd_per_mtok": 0
         }
+      },
+      "models": {
+        "build": "command-code/deepseek/deepseek-v4.1-flash",
+        "review": "command-code/meta/muse-spark-1.3-contributor",
+        "plan": [
+          "command-code/deepseek/deepseek-v4.1-flash"
+        ]
       },
       "last_resort": {
         "models": [

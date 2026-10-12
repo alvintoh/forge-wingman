@@ -111,10 +111,20 @@ type Facts struct {
 	// LastResort names the models of a claim on Model's plan's free tier,
 	// written onto the run record with the claim; nil otherwise.
 	LastResort *runner.ModelLabels
+	// Moved names the paid plan whose ceiling bound and the models of the plan
+	// the claim moved to, written onto the run record with the claim; nil
+	// otherwise.
+	Moved *Move
 	// OpenPRs is the count of open agent PRs across the allowlisted
 	// repositories, meaningful only when OpenPRsKnown is set.
 	OpenPRs      int
 	OpenPRsKnown bool
+}
+
+// Move is a run's move from a paid plan whose ceiling bound to the next.
+type Move struct {
+	From   string
+	Models runner.ModelLabels
 }
 
 // Settled is the settled cost of runs inside each window Decide checks.

@@ -124,6 +124,16 @@ type Provider struct {
 	Rates map[string]Rates
 	// LastResort is the plan's own free tier, empty for a plan without one.
 	LastResort LastResort
+	// Models are the models a run moved onto this plan starts on, empty for a
+	// plan no run is moved onto.
+	Models Models
+}
+
+// Models are the models a run on a plan starts on, every one of the plan's own.
+type Models struct {
+	Build  string
+	Review string
+	Plan   []string
 }
 
 // LastResort is a plan's free models, in the order a run falls through them
@@ -172,6 +182,10 @@ type Config struct {
 	// dispatcher's free-tier fallback walks them. Empty for a configuration
 	// that names none, which has no free tier to fall to.
 	LastResortPlans []string
+	// PaidPlans are the plans a ticket may start on, in the order the
+	// dispatcher walks them as each one's own ceilings bind. Empty for a
+	// configuration whose one paid plan is the default model's.
+	PaidPlans []string
 }
 
 // configDoc is configJSON's own shape; the parsed Config is the converted one.
@@ -179,6 +193,7 @@ type configDoc struct {
 	CashLimitUSD        float64                `json:"cash_limit_usd"`
 	RunnerFreeMinutes   int64                  `json:"runner_free_minutes"`
 	LastResortPlans     []string               `json:"last_resort_plans"`
+	PaidPlans           []string               `json:"paid_plans"`
 	AllowanceMarkers    []string               `json:"allowance_markers"`
 	AvailabilityMarkers []string               `json:"availability_markers"`
 	Providers           map[string]providerDoc `json:"providers"`
@@ -193,6 +208,13 @@ type providerDoc struct {
 	Harnesses  harnessDoc          `json:"harnesses"`
 	Rates      map[string]ratesDoc `json:"rates"`
 	LastResort *lastResortDoc      `json:"last_resort"`
+	Models     *modelsDoc          `json:"models"`
+}
+
+type modelsDoc struct {
+	Build  string   `json:"build"`
+	Review string   `json:"review"`
+	Plan   []string `json:"plan"`
 }
 
 type lastResortDoc struct {
@@ -264,6 +286,7 @@ func parseConfig(b []byte) (Config, error) {
 		CashLimit:           money.FromUSD(doc.CashLimitUSD),
 		RunnerFreeMinutes:   doc.RunnerFreeMinutes,
 		LastResortPlans:     doc.LastResortPlans,
+		PaidPlans:           doc.PaidPlans,
 		AllowanceMarkers:    doc.AllowanceMarkers,
 		AvailabilityMarkers: doc.AvailabilityMarkers,
 		Providers:           make(map[string]Provider, len(doc.Providers)),
@@ -304,6 +327,9 @@ func parseConfig(b []byte) (Config, error) {
 			if provider.LastResort.Models == nil {
 				provider.LastResort.Models = []string{}
 			}
+		}
+		if p.Models != nil {
+			provider.Models = Models{Build: p.Models.Build, Review: p.Models.Review, Plan: p.Models.Plan}
 		}
 		cfg.Providers[name] = provider
 	}
@@ -403,6 +429,56 @@ func (c Config) validate() error {
 		if len(p.LastResort.Models) == 0 {
 			return fmt.Errorf("the last-resort order names %s, which has no free tier", plan)
 		}
+	}
+	return c.checkPaidPlans()
+}
+
+// checkPaidPlans reports whether the paid-plan order is usable: each plan named
+// once, configured, paid, and carrying the models a run moved onto it starts on.
+func (c Config) checkPaidPlans() error {
+	seen := map[string]bool{}
+	for _, plan := range c.PaidPlans {
+		switch {
+		case plan == "":
+			return errors.New("the paid-plan order names an empty plan")
+		case seen[plan]:
+			return fmt.Errorf("the paid-plan order names %s twice", plan)
+		}
+		seen[plan] = true
+		p, ok := c.Providers[plan]
+		switch {
+		case !ok:
+			return fmt.Errorf("the paid-plan order names %s, which is not configured", plan)
+		case p.freeOnly():
+			return fmt.Errorf("the paid-plan order names %s, which is free-only", plan)
+		}
+		if err := checkPaidModels(plan, p.Models); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkPaidModels reports whether a paid plan's models are usable: a build model, a
+// different review model and one or more distinct plan models, all the plan's own.
+func checkPaidModels(provider string, m Models) error {
+	if m.Build == "" || m.Review == "" || len(m.Plan) == 0 {
+		return fmt.Errorf("paid plan %s needs a build model, a review model and a plan model", provider)
+	}
+	if m.Build == m.Review {
+		return fmt.Errorf("paid plan %s reviews with its build model %s", provider, m.Build)
+	}
+	seen := map[string]bool{}
+	for _, model := range append([]string{m.Build, m.Review}, m.Plan...) {
+		if !isPlanModel(provider, model) {
+			return fmt.Errorf("paid plan %s has a model %q, not a %s model", provider, model, provider)
+		}
+	}
+	for _, model := range m.Plan {
+		if seen[model] {
+			return fmt.Errorf("paid plan %s lists plan model %s twice", provider, model)
+		}
+		seen[model] = true
 	}
 	return nil
 }
@@ -564,6 +640,20 @@ func LastResortModels(plan string) []string {
 // fallback walks them, empty for a configuration that names none.
 func LastResortPlans() []string {
 	return slices.Clone(embeddedConfig.LastResortPlans)
+}
+
+// PaidPlans are the plans a ticket may start on, in the order the dispatcher
+// walks them, empty for a configuration that names none.
+func PaidPlans() []string {
+	return slices.Clone(embeddedConfig.PaidPlans)
+}
+
+// PlanModels are the models a run moved onto plan starts on, empty for a plan
+// that is not configured.
+func PlanModels(plan string) Models {
+	m := embeddedConfig.Providers[plan].Models
+	m.Plan = slices.Clone(m.Plan)
+	return m
 }
 
 // Plans are every configured plan's name, sorted, so a caller can iterate the

@@ -67,8 +67,11 @@ type fakeQueue struct {
 	// named build model, so a case can fail one plan's free rung and admit the
 	// next.
 	freeModelBindings map[string]string
-	unavailable       map[string]bool
-	tryClaimErr       error
+	// planBindings is what TryClaim reports for a paid claim whose build model is
+	// on the named plan, in place of bindings.
+	planBindings map[string]string
+	unavailable  map[string]bool
+	tryClaimErr  error
 	// tryClaimErrFor fails TryClaim for one run id only.
 	tryClaimErrFor map[string]error
 
@@ -129,6 +132,8 @@ func (q *fakeQueue) TryClaim(_ context.Context, runID string, _ time.Time, cfg B
 			return false, binding, nil
 		}
 		bindings = q.freeBindings
+	} else if binding, ok := q.planBindings[runner.Provider(facts.Model)]; ok {
+		return false, binding, nil
 	}
 	if binding, ok := bindings[runID]; ok {
 		return false, binding, nil

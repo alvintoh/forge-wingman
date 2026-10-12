@@ -59,6 +59,14 @@ own plan's allowance is spent and the dispatcher moves it to the free tier
 plan: the free tier is reached with the key alone. Until it is set, a run that falls
 through to the free tier stops as credential-absent rather than starting.
 
+A second paid plan is added by hand: its entry in `internal/providers/providers.json`
+(base URL, key secret name, windows, rates, harnesses and the `models` a run moved onto it
+starts on), its name after the first in `paid_plans`, its key as a repository secret
+that `run.yml` passes to the runner (a workflow edit the agent cannot push), and an owner
+`runner plan-define` record for it, with `runner plan-optin` as well where it bills per token.
+Until the secret is passed a run moved onto the plan stops as credential-absent. Do not enable
+a plan before its unattended-use terms are ruled on.
+
 `WINGMAN_DISPATCHER_RUN_URI` is the dispatcher job's Cloud Run run endpoint, which
 run.yml's `record-plan-stage` job calls to wake the dispatcher for the build stage
 (`https://<region>-run.googleapis.com/v2/projects/<project>/locations/<region>/jobs/forge-wingman-dispatcher:run`,

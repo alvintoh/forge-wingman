@@ -33,16 +33,26 @@ func checkModels(ctx context.Context, plans ModelPlans, m runner.ModelLabels, de
 			continue
 		}
 		seen[provider] = true
-		plan, ok, err := plans.Plan(ctx, provider)
-		if err != nil {
-			return "", "", fmt.Errorf("reading the plan of provider %s: %w", provider, err)
+		if reason, detail, err := planRefusal(ctx, plans, provider); reason != "" || err != nil {
+			return reason, detail, err
 		}
-		switch {
-		case !ok || !plan.Configured():
-			return RefusalModelUnconfigured, "provider " + provider + " has no plan record with its billing recorded", nil
-		case plan.NeedsOptIn() && !plan.OptedIn:
-			return RefusalModelNotOptedIn, "provider " + provider + " bills per token and is not opted in (runner plan-optin)", nil
-		}
+	}
+	return "", "", nil
+}
+
+// planRefusal is the refusal provider's plan record draws, empty when a run may
+// use it: its billing is recorded, and the owner has opted in where it bills per
+// token. The error is a failed plan read, which is not a refusal.
+func planRefusal(ctx context.Context, plans ModelPlans, provider string) (Refusal, string, error) {
+	plan, ok, err := plans.Plan(ctx, provider)
+	if err != nil {
+		return "", "", fmt.Errorf("reading the plan of provider %s: %w", provider, err)
+	}
+	switch {
+	case !ok || !plan.Configured():
+		return RefusalModelUnconfigured, "provider " + provider + " has no plan record with its billing recorded", nil
+	case plan.NeedsOptIn() && !plan.OptedIn:
+		return RefusalModelNotOptedIn, "provider " + provider + " bills per token and is not opted in (runner plan-optin)", nil
 	}
 	return "", "", nil
 }
