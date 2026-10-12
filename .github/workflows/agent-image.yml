@@ -1,0 +1,79 @@
+name: agent-image
+
+# Builds the agent's container image and publishes it to GHCR. The digest is
+# the identity; the tag is for humans.
+on:
+  push:
+    branches: [main]
+    paths:
+      - tools/agent/Dockerfile
+      - tools/omp/package.json
+      - tools/omp/bun.lock
+      - tools/opencode/package.json
+      - tools/opencode/package-lock.json
+      - .github/workflows/agent-image.yml
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: agent-image
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/alvintoh/forge-wingman-agent
+
+jobs:
+  publish:
+    # A dispatch can name any branch; only main publishes.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.ref.outputs.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: tools/agent/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE }}:sha-${{ github.sha }}
+
+      - id: ref
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          test -n "$DIGEST"
+          echo "image=$IMAGE@$DIGEST" >> "$GITHUB_OUTPUT"
+
+      # Pulled by digest, so this checks the bytes a run will get, against the
+      # same lockfile versions model.yml checks on the runner.
+      - name: Check the published image
+        env:
+          REF: ${{ steps.ref.outputs.image }}
+        run: |
+          docker pull "$REF"
+          # The caller picks the uid and mounts the home, so check that shape too.
+          docker run --rm --user 12345:12345 --read-only "$REF" omp --version
+          test "$(docker run --rm "$REF" omp --version)" = "omp/$(jq -r '.dependencies["@oh-my-pi/pi-coding-agent"]' tools/omp/package.json)"
+          test "$(docker run --rm "$REF" opencode --version)" = "$(jq -r '.dependencies["opencode-ai"]' tools/opencode/package.json)"
+
+      - name: Report the digest
+        env:
+          REF: ${{ steps.ref.outputs.image }}
+        run: echo "$REF" >> "$GITHUB_STEP_SUMMARY"
