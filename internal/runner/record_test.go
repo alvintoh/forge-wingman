@@ -428,6 +428,60 @@ func TestFinalizeSettlesTheLedgerWithTheRunsActualCost(t *testing.T) {
 	}
 }
 
+func TestFinalizeAddsWhatEarlierAttemptsSettledToTheSettledTotals(t *testing.T) {
+	store := seeded(t)
+	rec := store[testRunID]
+	rec.Private = true
+	rec.PriorSettledProviderCostMicros, rec.PriorSettledRunnerMinutes = 1_000_000, 3
+	store[testRunID] = rec
+	sum := settledOn("command-code/x", 0.5)
+	sum.DurationsMS = map[string]int64{"build": 90_000}
+	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: encoded(t, sum),
+		RunResult: "success", PRResult: "success", PRURL: "https://github.com/o/r/pull/1"}
+	for range 2 {
+		if _, err := Finalize(context.Background(), store, &fakeLedger{}, nil, in, finalizeNow); err != nil {
+			t.Fatal(err)
+		}
+		got := store[testRunID]
+		if got.SettledProviderCostMicros != 1_500_000 || got.SettledRunnerMinutes != 5 {
+			t.Fatalf("settled = %d micros, %d minutes, want 1500000 and 5 on every finalize", got.SettledProviderCostMicros, got.SettledRunnerMinutes)
+		}
+		if got.PriorSettledProviderCostMicros != 1_000_000 || got.PriorSettledRunnerMinutes != 3 {
+			t.Fatalf("prior = %d micros, %d minutes, want 1000000 and 3 kept", got.PriorSettledProviderCostMicros, got.PriorSettledRunnerMinutes)
+		}
+	}
+}
+
+func TestFinalizeKeepsEarlierAttemptsSpendInTheWindowsWhenTheRetryNeverReachedAnAgent(t *testing.T) {
+	for name, tt := range map[string]struct {
+		cost    money.Micros
+		minutes int64
+		stamped bool
+	}{
+		"with earlier cost":    {cost: 1_000_000, stamped: true},
+		"with earlier minutes": {minutes: 3, stamped: true},
+		"with none":            {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := seeded(t)
+			rec := store[testRunID]
+			rec.PriorSettledProviderCostMicros, rec.PriorSettledRunnerMinutes = tt.cost, tt.minutes
+			store[testRunID] = rec
+			in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", SummaryUnreadable: true, RunResult: "failure"}
+			if _, err := Finalize(context.Background(), store, &fakeLedger{}, nil, in, finalizeNow); err != nil {
+				t.Fatal(err)
+			}
+			got := store[testRunID]
+			if got.SettledAt.IsZero() == tt.stamped {
+				t.Fatalf("SettledAt = %v, want it stamped only when earlier spend is carried (%v)", got.SettledAt, tt.stamped)
+			}
+			if got.SettledProviderCostMicros != tt.cost || got.SettledRunnerMinutes != tt.minutes {
+				t.Fatalf("settled = %d micros, %d minutes, want the carried %d and %d", got.SettledProviderCostMicros, got.SettledRunnerMinutes, tt.cost, tt.minutes)
+			}
+		})
+	}
+}
+
 func TestBillableMinutesLeavesOutTheChecksThePhasesAlreadyHold(t *testing.T) {
 	if got := BillableMinutes(map[string]int64{"build": 90_000, "checks": 60_000}); got != 2 {
 		t.Fatalf("billable minutes = %d, want 2 from the build's 90s alone", got)

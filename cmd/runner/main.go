@@ -70,6 +70,8 @@ func main() {
 // record for a run that cannot or did not succeed.
 var errRunFailed = errors.New("run did not succeed")
 
+const maxRebaseConflictRetries = 1
+
 // exitCode is 0 for a build stop whose summary was reported, which the record
 // job then judges, and 1 for every other error. A stage that reports no summary
 // wraps its stop in errRunFailed, and that wrapper decides the exit: there is
@@ -464,7 +466,8 @@ func record(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	defer func() { _ = fsc.Close() }()
 
 	records := store.NewRecords(fsc)
-	rec, err := finalize(ctx, logger, records, store.NewQueue(fsc), records, store.NewNotices(fsc), store.NewBreaker(fsc), runner.FinalizeInput{
+	queue := store.NewQueue(fsc)
+	rec, err := finalize(ctx, logger, records, queue, records, store.NewNotices(fsc), store.NewBreaker(fsc), runner.FinalizeInput{
 		RunID:             *runID,
 		Identity:          e.identity,
 		AttemptID:         *attemptID,
@@ -501,6 +504,18 @@ func record(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		provider := runner.Provider(rec.Steps[len(rec.Steps)-1].Model)
 		if perr := store.NewProviders(fsc).RecordSuccess(ctx, provider); perr != nil {
 			logger.Error("providerSuccessNotRecorded", "run", *runID, "provider", provider, "err", perr.Error())
+		}
+	}
+	if rec.StopReason == runner.StopRebaseConflict {
+		res, err := queue.RequeueAfterConflict(ctx, *runID, time.Now(), maxRebaseConflictRetries)
+		switch {
+		case err == nil:
+			logger.Info("rebaseConflictRequeued", "run", *runID, "attempt", res.Attempt)
+			return nil
+		case errors.Is(err, store.ErrRetriesExhausted):
+			logger.Warn("rebaseConflictRetriesExhausted", "run", *runID, "retries", maxRebaseConflictRetries)
+		default:
+			return err
 		}
 	}
 	if !rec.Succeeded() {
