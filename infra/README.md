@@ -78,6 +78,23 @@ able to invoke the job.
 comma-separated provider/model. Unset, it reviews with
 `command-code/poolside/laguna-s-2.1-free`; a paid model is an edit of the variable.
 
+`WINGMAN_AGENT_IMAGE` is optional: an agent image pinned by digest that provides omp,
+opencode, git and sh. Set it to run the build and plan stages' agent CLIs in a container
+of that image, which mounts only the worktree, the harness home and the git common
+directory; unset, they run on the runner. Unset it to undo.
+
+`WINGMAN_AGENT_EGRESS` is `on` or `off`, where empty is off, and it needs
+`WINGMAN_AGENT_IMAGE` set — a stage refuses `on` without an image. `on` confines that
+container to the API hosts of the plans its models name, through a proxy: it reaches
+those hosts, reaches nothing else without the proxy, and resolves no public name. `off`
+leaves it on the default network. Set it to `off`, or unset it, to undo.
+
+Dispatch the `agent-probe` workflow to prove both. Its `probe` job runs a command the way
+an agent is run, from the same job, and it must read no credentials file and write none of
+the step's file-command files; its `egress` job proves the container reaches its model
+API host through the proxy, and nothing else without it. Both take the image from
+`WINGMAN_AGENT_IMAGE` unless the dispatch input names one.
+
 The rule stack's publish workflow needs two variables on that repository:
 
 | Variable | Output |
