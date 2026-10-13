@@ -16,6 +16,12 @@ import (
 
 const egressShutdownTimeout = 5 * time.Second
 
+// egressServer serves h on addr, dropping a connection that stays silent before
+// its headers or between requests, as after a refusal.
+func egressServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: time.Minute}
+}
+
 // egressProxy serves the CONNECT proxy that confines the agent container to its
 // models' API hosts until ctx ends. With -ready it instead exits 0 when the
 // proxy at that address accepts a connection.
@@ -43,7 +49,7 @@ func egressProxy(ctx context.Context, logger *slog.Logger, args []string) error 
 	if len(hosts) == 0 {
 		return errors.New("usage: runner egress-proxy -allow <host,...> [-listen <addr>]")
 	}
-	srv := &http.Server{Addr: *listen, Handler: runner.NewEgressProxy(hosts, logger), ReadHeaderTimeout: 10 * time.Second}
+	srv := egressServer(*listen, runner.NewEgressProxy(hosts, logger))
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
 	logger.Info("egressProxyListening", "addr", *listen, "hosts", len(hosts))

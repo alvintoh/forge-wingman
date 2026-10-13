@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"maps"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1209,6 +1210,13 @@ func TestEgressProxyReadyReportsWhetherTheProxyAcceptsConnections(t *testing.T) 
 	_ = ln.Close()
 	if err := egressProxy(context.Background(), slog.New(slog.DiscardHandler), []string{"-ready", addr}); err == nil {
 		t.Fatal("-ready succeeded with nothing listening")
+	}
+}
+
+func TestEgressServerDropsSilentConnections(t *testing.T) {
+	srv := egressServer(":0", http.NotFoundHandler())
+	if srv.ReadHeaderTimeout <= 0 || srv.IdleTimeout <= 0 {
+		t.Fatalf("server timeouts header %v idle %v, want both set", srv.ReadHeaderTimeout, srv.IdleTimeout)
 	}
 }
 

@@ -86,6 +86,9 @@ func TestStartEgressBuildsTheNetworkAndProxyAndTearsThemDownAfterCancel(t *testi
 			t.Errorf("proxy run %v lacks %s", run, f)
 		}
 	}
+	if got := flagValues(run, "--log-opt"); !slices.Equal(got, []string{"max-size=1m", "max-file=1"}) {
+		t.Errorf("proxy log options %v, want a 1m single-file cap", got)
+	}
 	if slices.Contains(run, "--env") {
 		t.Errorf("proxy run %v passes the container an environment", run)
 	}
@@ -105,6 +108,9 @@ func TestStartEgressBuildsTheNetworkAndProxyAndTearsThemDownAfterCancel(t *testi
 		t.Fatalf("teardown after cancel: %v", err)
 	}
 	calls = dockerCalls(t, logFile)
+	if got := calls[len(calls)-3]; !slices.Equal(got[:3], []string{"logs", "--tail", "200"}) {
+		t.Errorf("log read %v, want a bounded tail", got)
+	}
 	last := calls[len(calls)-2:]
 	if last[0][0] != "rm" || last[0][1] != "--force" || last[1][0] != "network" || last[1][1] != "rm" || last[1][2] != joined.Network {
 		t.Errorf("teardown ran %v, want proxy removal then network removal", last)
@@ -177,5 +183,31 @@ exit 0
 		`{"msg":"egressFailed","reason":"dial-failed","host":"api.commandcode.ai"}` + "\n"
 	if logs.String() != want {
 		t.Fatalf("relayed %q, want only the refusal and the failure %q", logs.String(), want)
+	}
+}
+
+func TestStartEgressTeardownCapsWhatItRelays(t *testing.T) {
+	bin := t.TempDir()
+	script := `#!/bin/sh
+if [ "$1" = logs ]; then
+	i=0
+	while [ $i -lt 200 ]; do printf '{"msg":"egressRefused","pad":"%01000d"}\n' 0; i=$((i+1)); done
+fi
+exit 0
+`
+	if err := os.WriteFile(bin+"/docker", []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	var logs strings.Builder
+	_, teardown, err := StartEgress(context.Background(), testAgentContainer(t), t.TempDir()+"/runner", []string{"api.commandcode.ai"}, &logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := teardown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := logs.Len(); n == 0 || n > egressRelayBytes {
+		t.Fatalf("relayed %d bytes, want some but at most %d", n, egressRelayBytes)
 	}
 }

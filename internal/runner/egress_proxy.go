@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,7 +23,12 @@ const (
 	// egressIdleTimeout closes a tunnel that has moved no bytes for this long; a
 	// model call that streams nothing for longer is treated as hung.
 	egressIdleTimeout = 5 * time.Minute
-	egressMaxTunnels  = 64
+	// egressFirstByteTimeout closes a tunnel that has moved no byte at all, so
+	// silent tunnels cannot hold every slot.
+	egressFirstByteTimeout = 30 * time.Second
+	egressMaxTunnels       = 64
+	// egressLoggedHostBytes bounds the host a log line carries; a hostname is at most 253.
+	egressLoggedHostBytes = 253
 
 	// The proxy's log events; StartEgress's teardown relays lines naming them.
 	egressRefusedEvent = "egressRefused"
@@ -38,7 +44,9 @@ type EgressProxy struct {
 	dial    func(ctx context.Context, addr string) (net.Conn, error)
 	logger  *slog.Logger
 	idle    time.Duration
-	slots   chan struct{}
+	// firstByte is the idle limit until a tunnel's first byte moves.
+	firstByte time.Duration
+	slots     chan struct{}
 }
 
 // NewEgressProxy returns a proxy allowing hosts, resolving through the system
@@ -54,10 +62,11 @@ func NewEgressProxy(hosts []string, logger *slog.Logger) *EgressProxy {
 		resolve: func(ctx context.Context, host string) ([]netip.Addr, error) {
 			return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 		},
-		dial:   func(ctx context.Context, addr string) (net.Conn, error) { return d.DialContext(ctx, "tcp", addr) },
-		logger: logger,
-		idle:   egressIdleTimeout,
-		slots:  make(chan struct{}, egressMaxTunnels),
+		dial:      func(ctx context.Context, addr string) (net.Conn, error) { return d.DialContext(ctx, "tcp", addr) },
+		logger:    logger,
+		idle:      egressIdleTimeout,
+		firstByte: egressFirstByteTimeout,
+		slots:     make(chan struct{}, egressMaxTunnels),
 	}
 }
 
@@ -65,7 +74,7 @@ func normalizeHost(h string) string { return strings.TrimSuffix(strings.ToLower(
 
 // reject logs a refusal or failure and answers it; extra is more attrs for the log line.
 func (p *EgressProxy) reject(w http.ResponseWriter, status int, event, reason, host, msg string, extra ...any) {
-	p.logger.Warn(event, append([]any{"reason", reason, "host", host}, extra...)...)
+	p.logger.Warn(event, append([]any{"reason", reason, "host", truncate(host, egressLoggedHostBytes)}, extra...)...)
 	http.Error(w, msg, status)
 }
 
@@ -134,14 +143,22 @@ func (e *deniedAddrError) Error() string {
 
 // internalPrefixes are ranges that pass IsGlobalUnicast and IsPrivate yet reach
 // no public API host: carrier-grade NAT, reserved blocks, and the IPv6 forms
-// that embed an IPv4 address.
+// that embed an IPv4 address, plus the documentation and test blocks.
 var internalPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
 	netip.MustParsePrefix("100.64.0.0/10"),
 	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
 	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
 	netip.MustParsePrefix("240.0.0.0/4"),
 	netip.MustParsePrefix("::/96"),
+	netip.MustParsePrefix("::ffff:0:0:0/96"),
 	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("2001::/32"),
+	netip.MustParsePrefix("2001:db8::/32"),
 	netip.MustParsePrefix("2002::/16"),
 	netip.MustParsePrefix("fec0::/10"),
 }
@@ -189,21 +206,52 @@ func (p *EgressProxy) dialAny(ctx context.Context, addrs []netip.Addr) (net.Conn
 	return nil, errors.Join(errs...)
 }
 
+// tunnelClock gives a tunnel's idle limit: first until a byte has moved in
+// either direction, idle after.
+type tunnelClock struct {
+	first, idle time.Duration
+	moved       atomic.Bool
+	// onFirst runs once, when the first byte moves.
+	onFirst func()
+}
+
+func (c *tunnelClock) timeout() time.Duration {
+	if c.moved.Load() {
+		return c.idle
+	}
+	return c.first
+}
+
+func (c *tunnelClock) mark() {
+	if c.moved.CompareAndSwap(false, true) {
+		c.onFirst()
+	}
+}
+
 // pipe copies both ways until either side closes or goes idle; buffered holds
 // bytes the client sent before the hijack completed. An error in either
 // direction closes both, and the first idle timeout is logged once.
 func (p *EgressProxy) pipe(client net.Conn, buffered io.Reader, upstream net.Conn, host string) {
+	clock := &tunnelClock{first: p.firstByte, idle: p.idle}
+	// Reads already waiting under the first-byte limit take the idle one.
+	clock.onFirst = func() {
+		d := time.Now().Add(p.idle)
+		_ = client.SetReadDeadline(d)
+		_ = upstream.SetReadDeadline(d)
+	}
 	var wg sync.WaitGroup
 	var idleOnce sync.Once
 	half := func(dst, src net.Conn, from io.Reader) {
 		defer wg.Done()
-		_, err := io.Copy(idleWriter{dst, p.idle}, idleReader{from, src, p.idle})
+		_, err := io.Copy(idleWriter{dst, clock}, idleReader{from, src, clock})
 		if err == nil {
 			closeWrite(dst)
 			return
 		}
 		if errors.Is(err, os.ErrDeadlineExceeded) {
-			idleOnce.Do(func() { p.logger.Warn(egressFailedEvent, "reason", "tunnel-idle", "host", host) })
+			idleOnce.Do(func() {
+				p.logger.Warn(egressFailedEvent, "reason", "tunnel-idle", "host", host)
+			})
 		}
 		_ = client.Close()
 		_ = upstream.Close()
@@ -216,25 +264,33 @@ func (p *EgressProxy) pipe(client net.Conn, buffered io.Reader, upstream net.Con
 
 // idleReader reads from r under a deadline on c that each read renews.
 type idleReader struct {
-	r io.Reader
-	c net.Conn
-	d time.Duration
+	r     io.Reader
+	c     net.Conn
+	clock *tunnelClock
 }
 
 func (i idleReader) Read(b []byte) (int, error) {
-	_ = i.c.SetReadDeadline(time.Now().Add(i.d))
-	return i.r.Read(b)
+	_ = i.c.SetReadDeadline(time.Now().Add(i.clock.timeout()))
+	n, err := i.r.Read(b)
+	if n > 0 {
+		i.clock.mark()
+	}
+	return n, err
 }
 
 // idleWriter writes to c under a deadline that each write renews.
 type idleWriter struct {
-	c net.Conn
-	d time.Duration
+	c     net.Conn
+	clock *tunnelClock
 }
 
 func (i idleWriter) Write(b []byte) (int, error) {
-	_ = i.c.SetWriteDeadline(time.Now().Add(i.d))
-	return i.c.Write(b)
+	_ = i.c.SetWriteDeadline(time.Now().Add(i.clock.timeout()))
+	n, err := i.c.Write(b)
+	if n > 0 {
+		i.clock.mark()
+	}
+	return n, err
 }
 
 func closeWrite(c net.Conn) {

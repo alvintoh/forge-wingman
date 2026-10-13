@@ -121,6 +121,12 @@ jobs:
             out=$(direct "$url"); echo "direct $url: $out"
             [ "$out" = failed ] || { echo "LEAK: reached $url without the proxy"; exit 1; }
           done
+          # DNS is not covered by the proxy's allowlist, so the internal network must refuse the
+          # lookup itself; getent exits 2 for a name it cannot resolve and 127 if it is missing.
+          dns=$("$RUNNER_TEMP/runner" agent-probe -egress -agent-image "$AGENT_IMAGE" -- \
+            sh -c 'getent hosts example.com > /dev/null 2>&1; echo $?' 2> "$RUNNER_TEMP/proxy.log")
+          echo "lookup of example.com: exit $dns"
+          [ "$dns" = 2 ] || { echo "LEAK: the container resolved a public name, or could not look one up"; exit 1; }
           echo "the agent container reached only its model API host, and nothing without the proxy"
 
       - if: always()

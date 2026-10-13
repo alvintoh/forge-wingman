@@ -3,6 +3,7 @@ package runner
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 var quietLogger = slog.New(slog.DiscardHandler)
@@ -61,6 +63,15 @@ func TestEgressProxyRefusesWhatIsNotAnAllowedHostOnPort443(t *testing.T) {
 		{"reserved class E", "CONNECT", "api.example.com:443", resolveTo("240.0.0.1"), http.StatusForbidden},
 		{"6to4 metadata", "CONNECT", "api.example.com:443", resolveTo("2002:a9fe:a9fe::1"), http.StatusForbidden},
 		{"site-local", "CONNECT", "api.example.com:443", resolveTo("fec0::1"), http.StatusForbidden},
+		{"zero net", "CONNECT", "api.example.com:443", resolveTo("0.1.2.3"), http.StatusForbidden},
+		{"zero net top", "CONNECT", "api.example.com:443", resolveTo("0.255.255.255"), http.StatusForbidden},
+		{"documentation 1", "CONNECT", "api.example.com:443", resolveTo("192.0.2.1"), http.StatusForbidden},
+		{"documentation 2", "CONNECT", "api.example.com:443", resolveTo("198.51.100.1"), http.StatusForbidden},
+		{"documentation 3", "CONNECT", "api.example.com:443", resolveTo("203.0.113.1"), http.StatusForbidden},
+		{"IPv6 documentation", "CONNECT", "api.example.com:443", resolveTo("2001:db8::1"), http.StatusForbidden},
+		{"Teredo", "CONNECT", "api.example.com:443", resolveTo("2001::1"), http.StatusForbidden},
+		{"IPv4-translated metadata", "CONNECT", "api.example.com:443", resolveTo("::ffff:0:a9fe:a9fe"), http.StatusForbidden},
+		{"local-use NAT64", "CONNECT", "api.example.com:443", resolveTo("64:ff9b:1::1"), http.StatusForbidden},
 		{"no addresses", "CONNECT", "api.example.com:443", resolveTo(), http.StatusBadGateway},
 		{"unresolvable", "CONNECT", "api.example.com:443", func(context.Context, string) ([]netip.Addr, error) { return nil, errors.New("no such host") }, http.StatusBadGateway},
 	}
@@ -302,7 +313,7 @@ func TestEgressProxyClosesATunnelThatMovesNoBytes(t *testing.T) {
 	p, logs := loggedProxy("api.example.com")
 	p.resolve = resolveTo("93.184.216.34")
 	p.dial = silentUpstream(t)
-	p.idle = 150 * time.Millisecond
+	p.idle, p.firstByte = 150*time.Millisecond, 150*time.Millisecond
 	srv := httptest.NewServer(p)
 	defer srv.Close()
 
@@ -367,7 +378,7 @@ func TestEgressProxyRefusesATunnelBeyondTheCapAndFreesTheSlotOnClose(t *testing.
 	p.resolve = resolveTo("93.184.216.34")
 	p.dial = silentUpstream(t)
 	p.slots = make(chan struct{}, 1)
-	p.idle = time.Second
+	p.idle, p.firstByte = time.Second, time.Second
 	srv := httptest.NewServer(p)
 	defer srv.Close()
 
@@ -473,5 +484,73 @@ func TestEgressProxyDoesNotCallAnAbandonedTunnelIdle(t *testing.T) {
 	srv.Close()
 	if strings.Contains(logs.String(), "tunnel-idle") {
 		t.Fatalf("log %q calls a client that went away idle", logs.String())
+	}
+}
+
+func TestEgressProxyGivesASilentTunnelTheShortFirstByteLimitOnly(t *testing.T) {
+	p, logs := loggedProxy("api.example.com")
+	p.resolve = resolveTo("93.184.216.34")
+	p.dial = silentUpstream(t)
+	p.idle, p.firstByte = time.Minute, 150*time.Millisecond
+	srv := httptest.NewServer(p)
+	defer srv.Close()
+
+	conn, r, _ := connectThrough(t, srv)
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := r.ReadByte(); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("read on a tunnel that never moved a byte = %v, want the proxy to have closed it", err)
+	}
+	if !strings.Contains(logs.String(), `"reason":"tunnel-idle"`) {
+		t.Fatalf("log %q, want a tunnel-idle line", logs.String())
+	}
+}
+
+func TestEgressProxyLetsATunnelWaitLongerOnceBytesHaveMoved(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = c.Close() }()
+		line, _ := bufio.NewReader(c).ReadString('\n')
+		time.Sleep(600 * time.Millisecond)
+		_, _ = c.Write([]byte("late:" + line))
+	}()
+	p, _ := loggedProxy("api.example.com")
+	p.resolve = resolveTo("93.184.216.34")
+	p.dial = func(ctx context.Context, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", ln.Addr().String())
+	}
+	p.idle, p.firstByte = 5*time.Second, 200*time.Millisecond
+	srv := httptest.NewServer(p)
+	defer srv.Close()
+
+	conn, r, _ := connectThrough(t, srv)
+	if _, err := conn.Write([]byte("one\n")); err != nil {
+		t.Fatal(err)
+	}
+	if line, err := r.ReadString('\n'); err != nil || line != "late:one\n" {
+		t.Fatalf("reply %q, %v; the tunnel kept the first-byte limit after bytes moved", line, err)
+	}
+}
+
+func TestEgressProxyLogsALongMultiByteHostCutOnACharacterBoundary(t *testing.T) {
+	p, logs := loggedProxy("api.example.com")
+	host := strings.Repeat("é", 400)
+	req := httptest.NewRequest("CONNECT", "http://api.example.com:443", nil)
+	req.Host = host + ":443"
+	p.ServeHTTP(httptest.NewRecorder(), req)
+
+	var line struct{ Host string }
+	if err := json.Unmarshal([]byte(logs.String()), &line); err != nil {
+		t.Fatalf("log %q is not JSON: %v", logs.String(), err)
+	}
+	if !utf8.ValidString(line.Host) || len(line.Host) > egressLoggedHostBytes+len("…") || !strings.HasPrefix(line.Host, "éé") {
+		t.Fatalf("logged host is %d bytes (valid %v), want a valid cut of at most %d", len(line.Host), utf8.ValidString(line.Host), egressLoggedHostBytes+len("…"))
 	}
 }

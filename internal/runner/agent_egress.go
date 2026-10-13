@@ -23,7 +23,11 @@ const (
 	egressProxyPrefix   = "wingman-egress-proxy-"
 
 	egressProxyPort = "3128"
-	egressProxyBin  = "/usr/local/bin/wingman-runner"
+	// egressRelayLines and egressRelayBytes bound what a teardown reads from the
+	// proxy's log and writes on.
+	egressRelayLines = "200"
+	egressRelayBytes = 64 << 10
+	egressProxyBin   = "/usr/local/bin/wingman-runner"
 )
 
 // egressReadyTimeout bounds the wait for the proxy to accept connections.
@@ -90,6 +94,7 @@ func startProxy(ctx context.Context, c AgentContainer, network, proxy, proxyBin 
 	args := []string{
 		"run", "--detach", "--rm", "--name", proxy, "--init",
 		"--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+		"--log-opt", "max-size=1m", "--log-opt", "max-file=1",
 		"--mount", bindMount(proxyBin, egressProxyBin, true),
 	}
 	if uid, gid := os.Getuid(), os.Getgid(); uid >= 0 {
@@ -126,11 +131,16 @@ func waitProxyReady(ctx context.Context, proxy string) error {
 // blocked shows in the runner's own log; a run the proxy let through writes
 // nothing. It is best effort: the teardown must go on without the log.
 func relayProxyLog(ctx context.Context, proxy string, w io.Writer) {
-	out, _ := dockerOutput(ctx, "logs", proxy)
+	out, _ := dockerOutput(ctx, "logs", "--tail", egressRelayLines, proxy)
+	written := 0
 	for line := range strings.Lines(out) {
-		if strings.Contains(line, `"msg":"`+egressRefusedEvent+`"`) || strings.Contains(line, `"msg":"`+egressFailedEvent+`"`) {
-			_, _ = io.WriteString(w, line)
+		if !strings.Contains(line, `"msg":"`+egressRefusedEvent+`"`) && !strings.Contains(line, `"msg":"`+egressFailedEvent+`"`) {
+			continue
 		}
+		if written += len(line); written > egressRelayBytes {
+			return
+		}
+		_, _ = io.WriteString(w, line)
 	}
 }
 
