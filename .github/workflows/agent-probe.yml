@@ -65,3 +65,71 @@ jobs:
           test "$creds_before" = "$(sha256sum "$GOOGLE_APPLICATION_CREDENTIALS")"
           test "$files_before" = "$(sha256sum "$GITHUB_OUTPUT" "$GITHUB_ENV" "$GITHUB_PATH" "$GITHUB_STEP_SUMMARY")"
           echo "the agent container could not read the credentials file or write the step's files"
+
+  # Needs no cloud credentials, so it also runs from a branch.
+  egress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      AGENT_IMAGE: ${{ inputs.agent_image || vars.WINGMAN_AGENT_IMAGE }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # Static, so the egress proxy container can run the binary it mounts.
+      - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
+        env:
+          CGO_ENABLED: "0"
+
+      - name: Pull the agent image
+        run: |
+          test -n "$AGENT_IMAGE"
+          docker pull "$AGENT_IMAGE"
+
+      - name: Reach the model API and nothing else through the egress proxy
+        run: |
+          set -eu
+          # bun reports the proxy's own 403 as a response, so a refusal is read from the
+          # proxy's log line, which the runner relays to stderr at teardown.
+          js() { echo "await fetch(\"$1\", {signal: AbortSignal.timeout(10000)}).then(r => console.log(\"reached \" + r.status), () => console.log(\"failed\"))"; }
+          try() {
+            "$RUNNER_TEMP/runner" agent-probe -egress -agent-image "$AGENT_IMAGE" -- bun -e "$(js "$1")" \
+              2> "$RUNNER_TEMP/proxy.log"
+          }
+          # The proxy variables are unset in the container, so only the network is left to stop it.
+          direct() {
+            "$RUNNER_TEMP/runner" agent-probe -egress -agent-image "$AGENT_IMAGE" -- \
+              sh -c 'unset HTTPS_PROXY HTTP_PROXY https_proxy http_proxy; exec bun -e "$1"' sh "$(js "$1")" \
+              2> "$RUNNER_TEMP/proxy.log"
+          }
+          out=$(try https://api.commandcode.ai/); echo "model API: $out"
+          echo "$out" | grep -q '^reached [0-9]' || { echo "FAIL: the model API host got no tunnelled response"; exit 1; }
+          if grep -q '"msg":"egressRefused".*"host":"api.commandcode.ai"' "$RUNNER_TEMP/proxy.log"; then echo "FAIL: the proxy refused the model API host"; exit 1; fi
+          for host in example.com 169.254.169.254; do
+            out=$(try "https://$host/"); echo "$host: $out"
+            grep -q "\"msg\":\"egressRefused\".*\"host\":\"$host\"" "$RUNNER_TEMP/proxy.log" || { echo "LEAK: the proxy did not refuse $host"; exit 1; }
+          done
+          for url in https://example.com/ http://169.254.169.254/latest/meta-data/; do
+            out=$(direct "$url"); echo "direct $url: $out"
+            [ "$out" = failed ] || { echo "LEAK: reached $url without the proxy"; exit 1; }
+          done
+          # DNS is not covered by the proxy's allowlist, so the internal network must refuse the
+          # lookup itself; getent exits 2 for a name it cannot resolve and 127 if it is missing.
+          dns=$("$RUNNER_TEMP/runner" agent-probe -egress -agent-image "$AGENT_IMAGE" -- \
+            sh -c 'getent hosts example.com > /dev/null 2>&1; echo $?' 2> "$RUNNER_TEMP/proxy.log")
+          echo "lookup of example.com: exit $dns"
+          [ "$dns" = 2 ] || { echo "LEAK: the container resolved a public name, or could not look one up"; exit 1; }
+          echo "the agent container reached only its model API host, and nothing without the proxy"
+
+      - if: always()
+        run: |
+          docker ps --all --quiet --filter name=wingman-egress-proxy- | xargs -r docker rm --force
+          docker network ls --quiet --filter name=wingman-egress-net- | xargs -r docker network rm

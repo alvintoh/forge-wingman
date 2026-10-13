@@ -21,7 +21,8 @@
 //	runner pr-review-context -pr <n> -out <path>     write a pull request's diff and the ticket it names, read from Linear
 //	runner pr-review       -context <path> ...       review the context on each model in turn and write the verdict
 //	runner pr-review-post  -pr <n> -verdict <path>   post the review comment and status, and decide the auto-merge request
-//	runner agent-probe     -agent-image <ref> -- <command...>  run a command in the agent container, to prove what it cannot reach
+//	runner agent-probe     -agent-image <ref> [-egress] -- <command...>  run a command in the agent container, to prove what it cannot reach
+//	runner egress-proxy    -allow <host,...>         serve the proxy that lets the agent container reach only those hosts
 //
 // build exits 0 when it stops short of a branch but reported why; ticket, pr-meta
 // and record exit 1 for any run that cannot or did not succeed, so the workflow
@@ -36,6 +37,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -150,7 +152,7 @@ func loadEnv(getenv func(string) string, required ...string) (env, error) {
 
 func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(string) string) error {
 	if len(args) == 0 {
-		return errors.New("usage: runner ticket|build|plan-stage|record-plan-stage|pr-meta|record|enable-provider|reset-breaker|peak-mode|requeue|backfill-queued-at|plan-define|plan-verdict|plan-reply|plan-list|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post|agent-probe [flags]")
+		return errors.New("usage: runner ticket|build|plan-stage|record-plan-stage|pr-meta|record|enable-provider|reset-breaker|peak-mode|requeue|backfill-queued-at|plan-define|plan-verdict|plan-reply|plan-list|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post|agent-probe|egress-proxy [flags]")
 	}
 	if args[0] == "plan-smoke" {
 		return planSmoke(ctx, logger, getenv, args[1:])
@@ -166,6 +168,8 @@ func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(st
 		return prReviewPost(ctx, logger, getenv, args[1:])
 	case "agent-probe":
 		return agentProbe(ctx, os.Stdout, os.Stderr, args[1:])
+	case "egress-proxy":
+		return egressProxy(ctx, logger, args[1:])
 	}
 	required, known := requiredEnv(args[0])
 	if !known {
@@ -313,6 +317,7 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 	ticketFile := fs.String("ticket-file", "", "path to the run's ticket, as the ticket subcommand wrote it")
 	checksImage := fs.String("checks-image", "", "Go image, pinned by digest, to run the pre-PR checks in; empty runs them on the host")
 	agentImage := fs.String("agent-image", "", "agent image, pinned by digest, to run the agent CLIs in; empty runs them on the host")
+	agentEgress := fs.String("agent-egress", "", agentEgressUsage)
 	if err := fs.Parse(args); err != nil {
 		return setupFailed(logger, e.output, err)
 	}
@@ -321,64 +326,67 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 	if err != nil {
 		return setupFailed(logger, e.output, err)
 	}
-	contained, probe, err := agentRunner(ctx, *agentImage, repo, e.harnesses)
-	if err != nil {
-		return setupFailed(logger, e.output, err)
-	}
-	e.harnesses = contained
-	if err := writeOutputs(e.output, map[string]string{"attempt_id": e.attemptID}); err != nil {
-		return setupFailed(logger, e.output, err)
-	}
-	t, err := readTicket(*ticketFile)
-	switch {
-	case errors.Is(err, errTicketNotDelivered):
-		return ticketNotDelivered(logger, e.output, err)
-	case err != nil:
-		logger.Warn("ticketRejected", "err", err.Error())
-	}
-
-	gcs, err := storage.NewClient(ctx)
-	if err != nil {
-		return setupFailed(logger, e.output, fmt.Errorf("storage client: %w", err))
-	}
-	defer func() { _ = gcs.Close() }()
-
-	logger = logger.With("attempt", e.attemptID, "ticket", t.ID)
 	plan := splitModels(*planModels, []string{runner.DefaultPlanModel()})
 	review := splitModels(*reviewModels, runner.DefaultReviewModels())
-	res, err := runner.Build(ctx, runner.BuildDeps{
-		Projections: store.NewBucket(gcs, e.project+"-projections"),
-		Completions: store.NewBucket(gcs, e.project+"-completions"),
-		Agent:       runner.NewRouter(runner.ProfileBuild, e.harnesses...),
-		PlanAgent:   runner.NewRouter(runner.ProfilePlan, e.harnesses...),
-		ReviewAgent: runner.NewRouter(runner.ProfileReview, e.harnesses...),
-		Checks:      checks,
-		AgentProbe:  probe,
-		Report:      func(s runner.Summary) error { return writeSummary(e.output, s) },
-		Logger:      logger,
-		Now:         time.Now,
-	}, runner.BuildConfig{
-		AttemptID:    e.attemptID,
-		Repo:         repo,
-		TempDir:      e.tempDir,
-		Pointer:      *pointer,
-		Model:        *model,
-		PlanModels:   plan,
-		ReviewModels: review,
-		Secrets:      e.secrets,
-		Identity:     e.identity,
-		Ticket:       t,
-	})
-	if err != nil {
-		return err
+	started, err := withAgents(ctx, logger, agentSettings{Image: *agentImage, Egress: *agentEgress, Model: *model, Plan: plan, Review: review},
+		repo, e.harnesses, func(contained []runner.Harness, probe func(context.Context, string) error) error {
+			e.harnesses = contained
+			if err := writeOutputs(e.output, map[string]string{"attempt_id": e.attemptID}); err != nil {
+				return setupFailed(logger, e.output, err)
+			}
+			t, err := readTicket(*ticketFile)
+			switch {
+			case errors.Is(err, errTicketNotDelivered):
+				return ticketNotDelivered(logger, e.output, err)
+			case err != nil:
+				logger.Warn("ticketRejected", "err", err.Error())
+			}
+
+			gcs, err := storage.NewClient(ctx)
+			if err != nil {
+				return setupFailed(logger, e.output, fmt.Errorf("storage client: %w", err))
+			}
+			defer func() { _ = gcs.Close() }()
+
+			logger = logger.With("attempt", e.attemptID, "ticket", t.ID)
+			res, err := runner.Build(ctx, runner.BuildDeps{
+				Projections: store.NewBucket(gcs, e.project+"-projections"),
+				Completions: store.NewBucket(gcs, e.project+"-completions"),
+				Agent:       runner.NewRouter(runner.ProfileBuild, e.harnesses...),
+				PlanAgent:   runner.NewRouter(runner.ProfilePlan, e.harnesses...),
+				ReviewAgent: runner.NewRouter(runner.ProfileReview, e.harnesses...),
+				Checks:      checks,
+				AgentProbe:  probe,
+				Report:      func(s runner.Summary) error { return writeSummary(e.output, s) },
+				Logger:      logger,
+				Now:         time.Now,
+			}, runner.BuildConfig{
+				AttemptID:    e.attemptID,
+				Repo:         repo,
+				TempDir:      e.tempDir,
+				Pointer:      *pointer,
+				Model:        *model,
+				PlanModels:   plan,
+				ReviewModels: review,
+				Secrets:      e.secrets,
+				Identity:     e.identity,
+				Ticket:       t,
+			})
+			if err != nil {
+				return err
+			}
+			if err := writeOutputs(e.output, map[string]string{
+				"branch":  res.Branch,
+				"changed": strconv.FormatBool(res.Changed),
+			}); err != nil {
+				return err
+			}
+			return writeMultilineOutput(e.output, "loop_detail", res.LoopDetail)
+		})
+	if !started {
+		return setupFailed(logger, e.output, err)
 	}
-	if err := writeOutputs(e.output, map[string]string{
-		"branch":  res.Branch,
-		"changed": strconv.FormatBool(res.Changed),
-	}); err != nil {
-		return err
-	}
-	return writeMultilineOutput(e.output, "loop_detail", res.LoopDetail)
+	return err
 }
 
 // checkRunner is the pre-PR loop's checks: in a container of image when one is
@@ -407,27 +415,97 @@ func checkRunner(ctx context.Context, image, tempDir, repo string) (runner.Check
 	return c.Run, nil
 }
 
+// agentEgressUsage describes the -agent-egress flag of build and plan-stage.
+const agentEgressUsage = "on confines the agent container to its models' API hosts through a proxy; empty or off leaves it on the default network"
+
+// agentSettings is how a stage runs its agents: in a container of Image when it
+// is not empty, and with Egress "on" reachable only to the API hosts of the
+// plans Models name.
+type agentSettings struct {
+	Image  string
+	Egress string
+	// Model is the build model, empty for a stage that has none; Plan and Review
+	// are the plan and review phases' model lists.
+	Model  string
+	Plan   []string
+	Review []string
+}
+
+// models is every model the stage's agents may call.
+func (s agentSettings) models() []string {
+	var m []string
+	if s.Model != "" {
+		m = append(m, s.Model)
+	}
+	return slices.Concat(m, s.Plan, s.Review)
+}
+
 // agentRunner is the harnesses a stage runs agents through, in a container of
-// image when one is given, with repo's git common directory resolved now,
+// s.Image when one is given, with repo's git common directory resolved now,
 // before any agent runs, and the probe that proves the container starts; else
-// the host harnesses unchanged and no probe.
-func agentRunner(ctx context.Context, image, repo string, harnesses []runner.Harness) ([]runner.Harness, func(context.Context, string) error, error) {
-	if image == "" {
-		return harnesses, nil, nil
+// the host harnesses unchanged and no probe. The returned stop removes the
+// egress network and proxy, and is never nil.
+func agentRunner(ctx context.Context, s agentSettings, repo string, harnesses []runner.Harness) ([]runner.Harness, func(context.Context, string) error, func(context.Context) error, error) {
+	noStop := func(context.Context) error { return nil }
+	if s.Egress != "" && s.Egress != "on" && s.Egress != "off" {
+		return nil, nil, nil, fmt.Errorf("-agent-egress %q is not on or off", s.Egress)
+	}
+	if s.Image == "" {
+		if s.Egress == "on" {
+			return nil, nil, nil, errors.New("-agent-egress on needs -agent-image")
+		}
+		return harnesses, nil, noStop, nil
 	}
 	gitDir, err := runner.GitCommonDir(ctx, repo)
 	if err != nil {
-		return nil, nil, fmt.Errorf("agent git common dir: %w", err)
+		return nil, nil, nil, fmt.Errorf("agent git common dir: %w", err)
 	}
-	c := runner.AgentContainer{Image: image, GitCommonDir: gitDir}
+	c := runner.AgentContainer{Image: s.Image, GitCommonDir: gitDir}
 	if err := c.Validate(); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
+	}
+	stop := noStop
+	if s.Egress == "on" {
+		if c, stop, err = startEgress(ctx, c, s.models(), os.Stderr); err != nil {
+			return nil, nil, nil, err
+		}
 	}
 	contained, err := runner.WithAgentContainer(harnesses, c)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, errors.Join(err, stop(ctx))
 	}
-	return contained, c.Probe, nil
+	return contained, c.Probe, stop, nil
+}
+
+// startEgress confines c to the API hosts of the plans models name, through
+// this binary run as the proxy.
+func startEgress(ctx context.Context, c runner.AgentContainer, models []string, logs io.Writer) (runner.AgentContainer, func(context.Context) error, error) {
+	hosts, err := runner.EgressHosts(models)
+	if err != nil {
+		return runner.AgentContainer{}, nil, err
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return runner.AgentContainer{}, nil, fmt.Errorf("egress proxy binary: %w", err)
+	}
+	return runner.StartEgress(ctx, c, self, hosts, logs)
+}
+
+// withAgents runs stage with the harnesses contained as s says, and removes the
+// egress network and proxy after it returns, however it ends. started is false
+// when the agents could not be set up, so stage never ran.
+func withAgents(ctx context.Context, logger *slog.Logger, s agentSettings, repo string, harnesses []runner.Harness,
+	stage func(contained []runner.Harness, probe func(context.Context, string) error) error) (started bool, err error) {
+	contained, probe, stop, err := agentRunner(ctx, s, repo, harnesses)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		if err := stop(ctx); err != nil {
+			logger.Warn("agentEgressStopFailed", "err", err.Error())
+		}
+	}()
+	return true, stage(contained, probe)
 }
 
 // splitModels reads a comma-separated model list, using a copy of fallback when

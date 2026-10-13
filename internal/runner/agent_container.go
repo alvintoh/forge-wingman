@@ -27,6 +27,10 @@ type AgentContainer struct {
 	// GitCommonDir is the worktree's git common directory, mounted at its own
 	// path so the worktree's .git file resolves; resolve it before an agent runs.
 	GitCommonDir string
+	// Network is the internal network the container joins; empty uses the default network.
+	Network string
+	// ProxyURL is the egress proxy on Network, set in the container's environment.
+	ProxyURL string
 }
 
 // Validate reports a configuration agents cannot use safely: an image not
@@ -136,11 +140,20 @@ func (c AgentContainer) runArgs(name, secretName string, s agentSpec) []string {
 	if s.Home != "" {
 		args = append(args, "--mount", bindMount(s.Home, s.Home, false))
 	}
+	if c.Network != "" {
+		args = append(args, "--network", c.Network)
+	}
 	args = append(args, "--mount", bindMount(c.GitCommonDir, c.GitCommonDir, true), "--workdir", s.Dir)
 	if uid, gid := os.Getuid(), os.Getgid(); uid >= 0 {
 		args = append(args, "--user", strconv.Itoa(uid)+":"+strconv.Itoa(gid))
 	}
-	for _, kv := range append([]string{"TMPDIR=/tmp"}, s.Env...) {
+	env := append([]string{"TMPDIR=/tmp"}, s.Env...)
+	if c.ProxyURL != "" {
+		const noProxy = "127.0.0.1,localhost"
+		env = append(env, "HTTPS_PROXY="+c.ProxyURL, "HTTP_PROXY="+c.ProxyURL, "NO_PROXY="+noProxy,
+			"https_proxy="+c.ProxyURL, "http_proxy="+c.ProxyURL, "no_proxy="+noProxy)
+	}
+	for _, kv := range env {
 		args = append(args, "--env", kv)
 	}
 	if secretName != "" {

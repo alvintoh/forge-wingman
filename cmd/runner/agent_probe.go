@@ -18,6 +18,7 @@ import (
 func agentProbe(ctx context.Context, stdout, stderr io.Writer, args []string) error {
 	fs := flag.NewFlagSet("agent-probe", flag.ContinueOnError)
 	image := fs.String("agent-image", "", "agent image, pinned by digest, to run the command in")
+	egress := fs.Bool("egress", false, "confine the container to its default plan model's API host, as -agent-egress on does")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -31,6 +32,17 @@ func agentProbe(ctx context.Context, stdout, stderr io.Writer, args []string) er
 	c := runner.AgentContainer{Image: *image, GitCommonDir: gitDir}
 	if err := c.Validate(); err != nil {
 		return err
+	}
+	if *egress {
+		var stop func(context.Context) error
+		if c, stop, err = startEgress(ctx, c, []string{runner.DefaultPlanModel()}, stderr); err != nil {
+			return err
+		}
+		defer func() {
+			if err := stop(ctx); err != nil {
+				_, _ = fmt.Fprintln(stderr, "egress teardown:", err)
+			}
+		}()
 	}
 	scratch, err := os.MkdirTemp("", "wingman-agent-probe-")
 	if err != nil {

@@ -85,7 +85,10 @@ jobs:
           go-version-file: go.mod
           cache: false
 
+      # Static, so the egress proxy container can run the binary it mounts.
       - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
+        env:
+          CGO_ENABLED: "0"
 
       # The version is ci.yml's golangci-lint-action version, and run.yml's check
       # job's — the pre-PR loop (FR-28) runs the same four gates in-job, first.
@@ -154,10 +157,11 @@ jobs:
           REVIEW_MODELS: ${{ inputs.review_models }}
           PLAN_MODELS: ${{ inputs.plan_models }}
           AGENT_IMAGE: ${{ vars.WINGMAN_AGENT_IMAGE }}
+          AGENT_EGRESS: ${{ vars.WINGMAN_AGENT_EGRESS }}
           WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
           COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: '"$RUNNER_TEMP/runner" build -model "$MODEL" -review-models "$REVIEW_MODELS" -plan-models "$PLAN_MODELS" -ticket-file "$RUNNER_TEMP/ticket.json" -checks-image "$CHECKS_IMAGE" -agent-image "$AGENT_IMAGE"'
+        run: '"$RUNNER_TEMP/runner" build -model "$MODEL" -review-models "$REVIEW_MODELS" -plan-models "$PLAN_MODELS" -ticket-file "$RUNNER_TEMP/ticket.json" -checks-image "$CHECKS_IMAGE" -agent-image "$AGENT_IMAGE" -agent-egress "$AGENT_EGRESS"'
 
       # The plan stage (FRG-33) runs the plan phase alone, under the plan profile's read-only
       # harnesses; the plan artifact travels to the trusted record-plan-stage job, which re-checks it.
@@ -168,10 +172,11 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}
           PLAN_MODELS: ${{ inputs.plan_models }}
           AGENT_IMAGE: ${{ vars.WINGMAN_AGENT_IMAGE }}
+          AGENT_EGRESS: ${{ vars.WINGMAN_AGENT_EGRESS }}
           WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
           COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: '"$RUNNER_TEMP/runner" plan-stage -plan-models "$PLAN_MODELS" -ticket-file "$RUNNER_TEMP/ticket.json" -out "$RUNNER_TEMP/plan.json" -agent-image "$AGENT_IMAGE"'
+        run: '"$RUNNER_TEMP/runner" plan-stage -plan-models "$PLAN_MODELS" -ticket-file "$RUNNER_TEMP/ticket.json" -out "$RUNNER_TEMP/plan.json" -agent-image "$AGENT_IMAGE" -agent-egress "$AGENT_EGRESS"'
 
       - if: inputs.stage == 'plan'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -195,3 +200,9 @@ jobs:
           path: ${{ runner.temp }}/wingman.bundle
           if-no-files-found: error
           retention-days: 1
+
+      # Removes any egress network or proxy a killed job left behind.
+      - if: always()
+        run: |
+          docker ps --all --quiet --filter name=wingman-egress-proxy- | xargs -r docker rm --force
+          docker network ls --quiet --filter name=wingman-egress-net- | xargs -r docker network rm
