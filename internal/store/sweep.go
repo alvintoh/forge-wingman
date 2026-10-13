@@ -26,18 +26,9 @@ const abandonedNoOutcome = "no-outcome-past-window"
 // The dropped reservation has no settled cost, so the budget can under-count
 // what an abandoned run spent. A failure on one run does not stop the rest.
 func (q *Queue) SweepAbandoned(ctx context.Context, now time.Time, w dispatcher.AbandonWindows) ([]dispatcher.Abandoned, error) {
-	iter := q.client.Collection(runsCollection).Where(stateField, "==", stateClaimed).Select().Documents(ctx)
-	defer iter.Stop()
-	var ids []string
-	for {
-		snap, err := iter.Next()
-		if errors.Is(err, iterator.Done) {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("listing claimed runs: %w", err)
-		}
-		ids = append(ids, snap.Ref.ID)
+	ids, err := q.staleClaims(ctx, now, w)
+	if err != nil {
+		return nil, err
 	}
 	var out []dispatcher.Abandoned
 	var errs []error
@@ -52,6 +43,35 @@ func (q *Queue) SweepAbandoned(ctx context.Context, now time.Time, w dispatcher.
 		}
 	}
 	return out, errors.Join(errs...)
+}
+
+// staleClaims lists the claimed runs that may have outlived a window, so a run
+// that recorded an outcome never opens a transaction. A claimed row keeps its
+// state after its record is written, so these accumulate with every run, and an
+// equality filter on the outcome would miss a requeued row, whose outcome is
+// deleted rather than empty. The listing therefore reads three fields and
+// filters here; abandon stays the authority.
+func (q *Queue) staleClaims(ctx context.Context, now time.Time, w dispatcher.AbandonWindows) ([]string, error) {
+	cutoff := now.Add(-min(w.Plan, w.Build))
+	iter := q.client.Collection(runsCollection).Where(stateField, "==", stateClaimed).
+		Select(outcomeField, stopReasonField, claimedAtField).Documents(ctx)
+	defer iter.Stop()
+	var ids []string
+	for {
+		snap, err := iter.Next()
+		if errors.Is(err, iterator.Done) {
+			return ids, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("listing claimed runs: %w", err)
+		}
+		row := snap.Data()
+		claimedAt, _ := row[claimedAtField].(time.Time)
+		if str(row, outcomeField) != "" || str(row, stopReasonField) != "" || claimedAt.IsZero() || !claimedAt.Before(cutoff) {
+			continue
+		}
+		ids = append(ids, snap.Ref.ID)
+	}
 }
 
 // abandon flips run runID when, in one transaction, its row is still claimed

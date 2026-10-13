@@ -1066,6 +1066,19 @@ func TestRecordFailsARunWhoseRebaseConflictedAfterItsRetry(t *testing.T) {
 	}
 }
 
+func TestRecordFailsAnAbandonedRunWhoseRebaseConflictedWithoutRequeueingIt(t *testing.T) {
+	row, err := recordPRFailure(t, map[string]any{"state": "abandoned"}, string(runner.StopRebaseConflict))
+	if !errors.Is(err, errRunFailed) {
+		t.Fatalf("err = %v, want errRunFailed", err)
+	}
+	if row["state"] != "abandoned" || row["stop_reason"] != string(runner.StopRebaseConflict) {
+		t.Fatalf("state/stop_reason = %v/%v, want abandoned/rebase-conflict", row["state"], row["stop_reason"])
+	}
+	if _, ok := row["attempt"]; ok {
+		t.Fatalf("attempt = %v, want the run left for an operator's requeue", row["attempt"])
+	}
+}
+
 func TestRecordLeavesAFailedPRJobThatIsNotAConflictToFail(t *testing.T) {
 	row, err := recordPRFailure(t, nil, "")
 	if !errors.Is(err, errRunFailed) {

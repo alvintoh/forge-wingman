@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"maps"
 	"slices"
 	"sync"
 	"testing"
@@ -64,6 +65,9 @@ func TestSweepAbandonsAClaimOlderThanItsWindowAndDropsItsReservation(t *testing.
 	if st := row[stateField]; st != stateAbandoned {
 		t.Fatalf("state = %v, want %s", st, stateAbandoned)
 	}
+	if at, _ := row[updatedAtField].(time.Time); !at.Equal(sweepClaimedAt.Add(3 * time.Hour)) {
+		t.Fatalf("updated_at = %v, want the sweep's moment", row[updatedAtField])
+	}
 	if row[abandonedReasonField] != "no-outcome-past-window" {
 		t.Fatalf("abandoned_reason = %v, want no-outcome-past-window", row[abandonedReasonField])
 	}
@@ -121,6 +125,65 @@ func TestSweepUsesTheShorterWindowForAPlanStageClaimAndDropsItsPlanKey(t *testin
 	}
 	if _, ok := res[build]; !ok {
 		t.Fatal("the build-stage reservation was dropped")
+	}
+}
+
+func TestAbandonLeavesAClaimThatRecordedOrCarriesNoTime(t *testing.T) {
+	q, client := queue(t)
+	for name, row := range map[string]map[string]any{
+		"an outcome":    {outcomeField: "x"},
+		"a stop reason": {stopReasonField: "x"},
+		"no claim time": {claimedAtField: nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			id := fresh("abandon-guard")
+			data := map[string]any{stateField: stateClaimed, claimedAtField: sweepClaimedAt}
+			maps.Copy(data, row)
+			seedRow(t, client, id, data)
+			_, ok, err := q.abandon(context.Background(), id, sweepClaimedAt.Add(24*time.Hour), sweepWindows)
+			if err != nil || ok {
+				t.Fatalf("abandon = %v, %v, want the claim left alone", ok, err)
+			}
+		})
+	}
+}
+
+func TestAbandonLeavesAMissingRun(t *testing.T) {
+	q, _ := queue(t)
+	_, ok, err := q.abandon(context.Background(), fresh("abandon-missing"), sweepClaimedAt.Add(24*time.Hour), sweepWindows)
+	if err != nil || ok {
+		t.Fatalf("abandon = %v, %v, want a missing run left alone without error", ok, err)
+	}
+}
+
+// A settled run keeps state claimed, so those rows grow with every run made; the
+// listing must keep them out of the per-row transaction. A requeued claim has
+// its outcome deleted, not empty, and must still be listed.
+func TestStaleClaimsListsOnlyClaimsThatCouldBeAbandoned(t *testing.T) {
+	q, client := queue(t)
+	ids := map[string]string{}
+	rows := map[string]map[string]any{
+		"stale-empty":   {outcomeField: ""},
+		"stale-absent":  {},
+		"settled":       {outcomeField: "pr-opened"},
+		"stopped":       {outcomeField: "", stopReasonField: "x"},
+		"inside-window": {claimedAtField: sweepClaimedAt.Add(90 * time.Minute)},
+	}
+	for name, extra := range rows {
+		ids[name] = fresh("stale-" + name)
+		data := map[string]any{stateField: stateClaimed, claimedAtField: sweepClaimedAt}
+		maps.Copy(data, extra)
+		seedRow(t, client, ids[name], data)
+	}
+	got, err := q.staleClaims(context.Background(), sweepClaimedAt.Add(2*time.Hour), sweepWindows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, id := range ids {
+		want := name == "stale-empty" || name == "stale-absent"
+		if slices.Contains(got, id) != want {
+			t.Errorf("%s listed = %v, want %v", name, !want, want)
+		}
 	}
 }
 
@@ -309,7 +372,7 @@ func TestSweepRaisesTheNoticeWithTheFlipAndOnlyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := dispatcher.Notice{ID: nid, Class: "abandoned:" + id, Link: "https://github.com/octo/scratch/actions"}
+	want := dispatcher.Notice{ID: nid, Class: "abandoned:" + id + " requeue with: runner requeue -run-id " + id, Link: "https://github.com/octo/scratch/actions"}
 	if i := slices.IndexFunc(got, func(c dispatcher.Notice) bool { return c.ID == nid }); i < 0 || got[i] != want {
 		t.Fatalf("claimed %+v, want %+v", got, want)
 	}
@@ -358,5 +421,39 @@ func TestAFailedAbandonWritesNeitherTheFlipNorTheNotice(t *testing.T) {
 	}
 	if _, err := ref.Get(context.Background()); status.Code(err) != codes.NotFound {
 		t.Fatalf("notice read = %v, want not found", err)
+	}
+}
+
+func TestAnAbandonedRunRequeuedAndAbandonedAgainRaisesANewNotice(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	id := fresh("sweep-twice")
+	resetLedger(t, client, 2)
+	claimAt(t, q, client, id, dispatcher.StageBuild)
+	if !swept(t, q, id, sweepClaimedAt.Add(3*time.Hour)) {
+		t.Fatal("the first claim was not abandoned")
+	}
+	if len(ownOrder(t, q, id)) > 0 {
+		t.Fatal("an abandoned run is a candidate")
+	}
+	if got, err := q.Requeue(ctx, id, queueAt); err != nil || got.State != stateQueued || got.Attempt != 1 {
+		t.Fatalf("requeue = %+v, %v, want queued as attempt 1", got, err)
+	}
+	row := readRow(t, client, id)
+	if _, has := row[claimedAtField]; has {
+		t.Fatal("claimed_at survived the requeue")
+	}
+	res := dispatcher.Reservation{ProviderCost: money.Dollar, RunnerMinutes: 3, Stage: dispatcher.StageBuild}
+	if ok, _, err := q.TryClaim(ctx, id, sweepClaimedAt.Add(4*time.Hour), generousBudget, openFacts, res); err != nil || !ok {
+		t.Fatalf("re-claim: ok %v, err %v", ok, err)
+	}
+	if !swept(t, q, id, sweepClaimedAt.Add(8*time.Hour)) {
+		t.Fatal("the second claim was not abandoned")
+	}
+	first, second := dispatcher.Abandoned{RunID: id, Attempt: 0}.Notice().ID, dispatcher.Abandoned{RunID: id, Attempt: 1}.Notice().ID
+	for _, nid := range []string{first, second} {
+		if _, err := NewNotices(client).doc(nid).Get(ctx); err != nil {
+			t.Fatalf("notice %s: %v, want one raised per abandonment", nid, err)
+		}
 	}
 }
