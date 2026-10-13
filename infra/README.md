@@ -120,11 +120,11 @@ Auto-merge is off until both are set:
 | Repository "Allow auto-merge" (`allow_auto_merge`) | on |
 | `WINGMAN_AUTO_MERGE` variable | `on`; any other value or none leaves it off |
 
-With both set, a run's M PR that has a recorded plan, is not in the review sample,
+With both set, a run's S or M PR that has a recorded plan, is not in the review sample,
 edits nothing outside that plan, fails no check gate and is not a front-end change
 gets the `wingman:auto-merge-eligible` label, which must exist in the repository. A
 run with no recorded plan is never labelled, and its PR body says so; an S run is
-never planned, so none is labelled yet.
+never planned today, so only an M run can be labelled yet.
 `pr-review.yml` reviews every ready PR against its Linear ticket and, only when the review is clean, the PR carries that
 label and its head is still the commit it reviewed, requests a squash auto-merge
 pinned to that commit, and only on a run's `wingman/` branch. A push to that branch
