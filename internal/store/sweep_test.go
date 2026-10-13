@@ -372,7 +372,7 @@ func TestSweepRaisesTheNoticeWithTheFlipAndOnlyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := dispatcher.Notice{ID: nid, Class: "abandoned:" + id, Link: "https://github.com/octo/scratch/actions"}
+	want := dispatcher.Notice{ID: nid, Class: "abandoned:" + id + " requeue with: runner requeue -run-id " + id, Link: "https://github.com/octo/scratch/actions"}
 	if i := slices.IndexFunc(got, func(c dispatcher.Notice) bool { return c.ID == nid }); i < 0 || got[i] != want {
 		t.Fatalf("claimed %+v, want %+v", got, want)
 	}
