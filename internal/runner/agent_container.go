@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -36,8 +35,8 @@ type AgentContainer struct {
 // Validate reports a configuration agents cannot use safely: an image not
 // pinned by digest, or a git common directory a --mount value cannot carry.
 func (c AgentContainer) Validate() error {
-	if !pinnedImage.MatchString(c.Image) {
-		return fmt.Errorf("agent image %q is not pinned by a sha256 digest", c.Image)
+	if err := checkPinnedImage("agent", c.Image); err != nil {
+		return err
 	}
 	return checkMountPath("agent git common dir", c.GitCommonDir)
 }
@@ -117,49 +116,39 @@ func (c AgentContainer) command(ctx context.Context, s agentSpec) (*exec.Cmd, er
 	}
 	s.Dir = dir
 	secretName, _, _ := strings.Cut(s.Secret, "=")
-	cmd := exec.CommandContext(ctx, "docker", c.runArgs(name, secretName, s)...)
-	cmd.Env = filterEnv(os.Environ(), dockerEnvNames)
+	cmd := hardenedRunCommand(ctx, c.containerRun(name, secretName, s))
 	if s.Secret != "" {
 		cmd.Env = append(cmd.Env, s.Secret)
 	}
-	ownProcessGroup(cmd)
-	stopGroup := cmd.Cancel
-	cmd.Cancel = func() error { return errors.Join(killContainer(ctx, name), stopGroup()) }
-	cmd.WaitDelay = containerKillTimeout
 	return cmd, nil
 }
 
-// runArgs is the docker run command line for s, whose binary runs by its base
-// name: the image's own PATH finds it.
+// runArgs is the docker run command line for s.
 func (c AgentContainer) runArgs(name, secretName string, s agentSpec) []string {
-	args := []string{
-		"run", "--rm", "--name", name, "--init", "--interactive",
-		"--read-only", "--tmpfs", "/tmp:exec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-		"--mount", bindMount(s.Dir, s.Dir, false),
-	}
+	return c.containerRun(name, secretName, s).args()
+}
+
+// containerRun is the hardened container for s, whose binary runs by its base
+// name: the image's own PATH finds it.
+func (c AgentContainer) containerRun(name, secretName string, s agentSpec) hardenedRun {
+	mounts := []string{bindMount(s.Dir, s.Dir, false)}
 	if s.Home != "" {
-		args = append(args, "--mount", bindMount(s.Home, s.Home, false))
+		mounts = append(mounts, bindMount(s.Home, s.Home, false))
 	}
-	if c.Network != "" {
-		args = append(args, "--network", c.Network)
-	}
-	args = append(args, "--mount", bindMount(c.GitCommonDir, c.GitCommonDir, true), "--workdir", s.Dir)
-	if uid, gid := os.Getuid(), os.Getgid(); uid >= 0 {
-		args = append(args, "--user", strconv.Itoa(uid)+":"+strconv.Itoa(gid))
-	}
+	mounts = append(mounts, bindMount(c.GitCommonDir, c.GitCommonDir, true))
 	env := append([]string{"TMPDIR=/tmp"}, s.Env...)
 	if c.ProxyURL != "" {
 		const noProxy = "127.0.0.1,localhost"
 		env = append(env, "HTTPS_PROXY="+c.ProxyURL, "HTTP_PROXY="+c.ProxyURL, "NO_PROXY="+noProxy,
 			"https_proxy="+c.ProxyURL, "http_proxy="+c.ProxyURL, "no_proxy="+noProxy)
 	}
-	for _, kv := range env {
-		args = append(args, "--env", kv)
-	}
 	if secretName != "" {
-		args = append(args, "--env", secretName)
+		env = append(env, secretName)
 	}
-	return append(append(args, c.Image, filepath.Base(s.Bin)), s.Args...)
+	return hardenedRun{
+		Name: name, Interactive: true, Network: c.Network, Mounts: mounts, Workdir: s.Dir,
+		Env: env, Image: c.Image, Argv: append([]string{filepath.Base(s.Bin)}, s.Args...),
+	}
 }
 
 // dockerCannotRun reports whether a docker run exit code is docker or the

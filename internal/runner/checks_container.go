@@ -10,9 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -32,11 +30,8 @@ const (
 	containerLinter   = "/usr/local/bin/golangci-lint"
 )
 
-// pinnedImage matches an image reference pinned by its sha256 digest.
-var pinnedImage = regexp.MustCompile(`^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$`)
-
 // dockerEnvNames are the variables the docker CLI itself runs under; none
-// reaches a container, which is given only the --env values gateArgs names.
+// reaches a container, which is given only the --env values its run names.
 var dockerEnvNames = slices.Concat(checkEnvNames, []string{"DOCKER_"})
 
 // ContainerChecks runs RunChecks's gates, in its order and with its commands,
@@ -61,8 +56,8 @@ type ContainerChecks struct {
 // Validate reports a configuration Run cannot use safely: an image not pinned
 // by digest, or a path that is not absolute or that a --mount value cannot carry.
 func (c ContainerChecks) Validate() error {
-	if !pinnedImage.MatchString(c.Image) {
-		return fmt.Errorf("checks image %q is not pinned by a sha256 digest", c.Image)
+	if err := checkPinnedImage("checks", c.Image); err != nil {
+		return err
 	}
 	for name, p := range map[string]string{"module cache": c.ModCache, "linter": c.Linter, "git common dir": c.GitCommonDir} {
 		if err := checkMountPath("checks "+name, p); err != nil {
@@ -147,13 +142,8 @@ func (c ContainerChecks) runGate(ctx context.Context, dir, cache, gate string, a
 		return "", "", false, err
 	}
 	var outBuf, errBuf bytes.Buffer
-	cmd := exec.CommandContext(gctx, "docker", c.gateArgs(name, dir, cache, argv)...)
-	cmd.Env = filterEnv(os.Environ(), dockerEnvNames)
+	cmd := hardenedRunCommand(gctx, c.gateRun(name, dir, cache, argv))
 	cmd.Stdout, cmd.Stderr = &outBuf, &errBuf
-	ownProcessGroup(cmd)
-	stopGroup := cmd.Cancel
-	cmd.Cancel = func() error { return errors.Join(killContainer(ctx, name), stopGroup()) }
-	cmd.WaitDelay = containerKillTimeout
 	runErr := cmd.Run()
 
 	stdout, stderr = outBuf.String(), errBuf.String()
@@ -172,35 +162,32 @@ func (c ContainerChecks) runGate(ctx context.Context, dir, cache, gate string, a
 	}
 }
 
-// gateArgs is the docker run command line for one gate.
-func (c ContainerChecks) gateArgs(name, dir, cache string, argv []string) []string {
-	args := []string{
-		"run", "--rm", "--name", name, "--init",
-		"--network", "none",
-		"--read-only", "--tmpfs", "/tmp:exec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-		"--mount", bindMount(dir, containerWorkDir, false),
-		"--mount", bindMount(c.ModCache, containerModCache, true),
-		"--mount", bindMount(cache, containerCache, false),
-		"--mount", bindMount(c.Linter, containerLinter, true),
-		"--mount", bindMount(c.GitCommonDir, c.GitCommonDir, true),
-		"--workdir", containerWorkDir,
+// gateRun is the hardened container for one gate.
+func (c ContainerChecks) gateRun(name, dir, cache string, argv []string) hardenedRun {
+	return hardenedRun{
+		Name:    name,
+		Network: "none",
+		Mounts: []string{
+			bindMount(dir, containerWorkDir, false),
+			bindMount(c.ModCache, containerModCache, true),
+			bindMount(cache, containerCache, false),
+			bindMount(c.Linter, containerLinter, true),
+			bindMount(c.GitCommonDir, c.GitCommonDir, true),
+		},
+		Workdir: containerWorkDir,
+		Env: []string{
+			"GOMODCACHE=" + containerModCache,
+			"GOCACHE=" + containerCache + "/go-build",
+			"GOLANGCI_LINT_CACHE=" + containerCache + "/lint",
+			"TMPDIR=/tmp",
+			"HOME=" + containerCache + "/home",
+			"GOPROXY=off",
+			"GOFLAGS=-mod=readonly -buildvcs=false",
+			"GOTOOLCHAIN=local",
+		},
+		Image: c.Image,
+		Argv:  argv,
 	}
-	if uid, gid := os.Getuid(), os.Getgid(); uid >= 0 {
-		args = append(args, "--user", strconv.Itoa(uid)+":"+strconv.Itoa(gid))
-	}
-	for _, kv := range []string{
-		"GOMODCACHE=" + containerModCache,
-		"GOCACHE=" + containerCache + "/go-build",
-		"GOLANGCI_LINT_CACHE=" + containerCache + "/lint",
-		"TMPDIR=/tmp",
-		"HOME=" + containerCache + "/home",
-		"GOPROXY=off",
-		"GOFLAGS=-mod=readonly -buildvcs=false",
-		"GOTOOLCHAIN=local",
-	} {
-		args = append(args, "--env", kv)
-	}
-	return append(append(args, c.Image), argv...)
 }
 
 // bindMount is a --mount value binding host src at dst.
