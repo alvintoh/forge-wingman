@@ -14,26 +14,8 @@ resource "google_firestore_database" "default" {
   }
 }
 
-# The queue's claim reads one queued run, ordered by the Linear priority the
-# dispatcher wrote, which a single-field index cannot serve.
-resource "google_firestore_index" "queue_claim" {
-  project    = var.project_id
-  database   = google_firestore_database.default.name
-  collection = "runs"
-
-  fields {
-    field_path = "state"
-    order      = "ASCENDING"
-  }
-
-  fields {
-    field_path = "linear_priority"
-    order      = "ASCENDING"
-  }
-}
-
-# The queue's claim read ordered by priority and then by when the run was
-# queued, which the index above cannot serve.
+# The queue's claim read, ordered by the Linear priority the dispatcher wrote and
+# then by when the run was queued, which a single-field index cannot serve.
 resource "google_firestore_index" "queue_claim_by_queued_at" {
   project    = var.project_id
   database   = google_firestore_database.default.name

@@ -273,7 +273,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 	}()
 	dispatcher.LogPhase(logger, "setup", started, time.Now())
 	gh := dispatcher.GitHub{Token: githubToken, Workflow: runWorkflow, Branch: runBranch, Client: client}
-	queue := store.NewQueue(fsc)
+	queue := store.NewQueue(fsc).WithLogger(logger)
 	plans := store.NewPlans(fsc)
 	model := runner.DefaultModel()
 	next, err := nextPlans(providers.PaidPlans(), model)
