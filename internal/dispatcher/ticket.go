@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -50,7 +51,8 @@ func build(issue Issue, c Config, at time.Time) (Queued, Rejection) {
 	if err != nil {
 		return Queued{}, rejection(issue, RefusalTicketInvalid, err.Error(), at)
 	}
-	t := runner.Ticket{ID: issue.ID, Title: issue.Title, Body: issue.Body, Size: size, SizedBy: sizedByLabel}
+	t := runner.Ticket{ID: issue.ID, Title: issue.Title, Body: issue.Body, Size: size, SizedBy: sizedByLabel,
+		FrontEnd: slices.ContainsFunc(issue.Labels, func(l string) bool { return strings.EqualFold(l, runner.FrontEndLabel) })}
 	if err := t.Validate(); err != nil {
 		return Queued{}, rejection(issue, RefusalTicketInvalid, err.Error(), at)
 	}

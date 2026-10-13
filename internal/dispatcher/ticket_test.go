@@ -53,6 +53,28 @@ func TestBuildAdmitsASizedTicketForAnAllowlistedRepository(t *testing.T) {
 	}
 }
 
+func TestBuildCarriesTheFrontEndLabel(t *testing.T) {
+	for name, tt := range map[string]struct {
+		labels []string
+		want   bool
+	}{
+		"the label":                {[]string{"size:M", "repo:octo/scratch", "area:fe"}, true},
+		"the label in other case":  {[]string{"size:M", "repo:octo/scratch", "Area:FE"}, true},
+		"no label":                 {[]string{"size:M", "repo:octo/scratch"}, false},
+		"a label only prefixed by": {[]string{"size:M", "repo:octo/scratch", "area:fe-tools"}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			q, rejection := build(admitted(tt.labels...), buildConfig, buildAt)
+			if rejection.Reason != "" {
+				t.Fatalf("refused %s: %s", rejection.Reason, rejection.Detail)
+			}
+			if q.Ticket.FrontEnd != tt.want {
+				t.Fatalf("FrontEnd = %v, want %v", q.Ticket.FrontEnd, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildRefuses(t *testing.T) {
 	unsized := admitted("size:XL", "repo:octo/scratch")
 	noBody := admitted("size:S", "repo:octo/scratch")

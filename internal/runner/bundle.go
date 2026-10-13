@@ -70,7 +70,7 @@ func (b Bundle) ChangedFiles(ctx context.Context) ([]string, error) {
 	if _, err := runGit(ctx, bin, b.Repo, nil, fetch...); err != nil {
 		return nil, fmt.Errorf("fetching the branch from the bundle: %s", detail(err))
 	}
-	out, err := runGit(ctx, bin, b.Repo, nil, "diff", "--name-only", "-z", b.Base+"..."+b.Branch)
+	out, err := runGit(ctx, bin, b.Repo, nil, "diff", "--no-renames", "--name-only", "-z", b.Base+"..."+b.Branch)
 	if err != nil {
 		return nil, fmt.Errorf("diffing the branch against %s: %s", b.Base, detail(err))
 	}

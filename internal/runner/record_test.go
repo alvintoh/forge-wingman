@@ -926,3 +926,21 @@ func TestSystemicClassifiesEveryStopReason(t *testing.T) {
 		t.Fatal("a run with no stop notified")
 	}
 }
+
+func TestTheFrontEndLabelSurvivesTheRecordAndItsFinalization(t *testing.T) {
+	tk := testTicket
+	tk.FrontEnd = true
+	rec := NewRecord(testRunID, tk, seededAt)
+	if !rec.Ticket().FrontEnd {
+		t.Fatal("a new record dropped the ticket's front-end label")
+	}
+	store := fakeRecords{testRunID: rec}
+	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: encoded(t, Summary{Outcome: OutcomeBuilt}),
+		RunResult: "success", PRResult: "success", PRURL: "https://github.com/o/r/pull/1"}
+	if _, err := Finalize(context.Background(), store, &fakeLedger{}, nil, in, finalizeNow); err != nil {
+		t.Fatal(err)
+	}
+	if !store[testRunID].Ticket().FrontEnd {
+		t.Fatal("finalizing the record dropped the ticket's front-end label")
+	}
+}
