@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/firestore"
+	"cloud.google.com/go/firestore/apiv1/firestorepb"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -390,13 +391,20 @@ func TestCandidatesLogsARowTheOrderedQueryCannotList(t *testing.T) {
 }
 
 // countingQueue returns a Queue whose gRPC calls are counted by method, and
-// whose aggregation queries fail when failCounts is set.
-func countingQueue(t *testing.T, failCounts bool) (q *Queue, queries, counts *atomic.Int64) {
+// whose aggregation queries fail when failCounts is set. commits counts the
+// document writes the queue commits.
+func countingQueue(t *testing.T, failCounts bool) (q *Queue, queries, counts, commits *atomic.Int64) {
 	t.Helper()
 	if os.Getenv("FIRESTORE_EMULATOR_HOST") == "" {
 		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
 	}
-	queries, counts = new(atomic.Int64), new(atomic.Int64)
+	queries, counts, commits = new(atomic.Int64), new(atomic.Int64), new(atomic.Int64)
+	countCommits := func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		if commit, ok := req.(*firestorepb.CommitRequest); ok {
+			commits.Add(int64(len(commit.Writes)))
+		}
+		return invoker(metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer owner"), method, req, reply, cc, opts...)
+	}
 	intercept := func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
 		switch {
 		case strings.HasSuffix(method, "/RunQuery"):
@@ -410,7 +418,7 @@ func countingQueue(t *testing.T, failCounts bool) (q *Queue, queries, counts *at
 		return streamer(metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer owner"), desc, cc, method, opts...)
 	}
 	conn, err := grpc.NewClient(os.Getenv("FIRESTORE_EMULATOR_HOST"),
-		grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithChainStreamInterceptor(intercept))
+		grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithChainStreamInterceptor(intercept), grpc.WithChainUnaryInterceptor(countCommits))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,11 +428,11 @@ func countingQueue(t *testing.T, failCounts bool) (q *Queue, queries, counts *at
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = client.Close() })
-	return NewQueue(client), queries, counts
+	return NewQueue(client), queries, counts, commits
 }
 
 func TestCandidatesReadsOneOrderedQuery(t *testing.T) {
-	q, queries, counts := countingQueue(t, false)
+	q, queries, counts, _ := countingQueue(t, false)
 	if _, err := q.Candidates(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -434,7 +442,7 @@ func TestCandidatesReadsOneOrderedQuery(t *testing.T) {
 }
 
 func TestCandidatesStillListsWhenTheCountsFail(t *testing.T) {
-	q, queries, _ := countingQueue(t, true)
+	q, queries, _, _ := countingQueue(t, true)
 	var logged bytes.Buffer
 	q = q.WithLogger(slog.New(slog.NewJSONHandler(&logged, nil)))
 	if _, err := q.Candidates(context.Background()); err != nil {
@@ -459,6 +467,9 @@ func TestUpdateQueuedPriorityRewritesOnlyAQueuedRun(t *testing.T) {
 		{"queued at the same rank", stateQueued, 3, true, 3},
 		{"planned", statePlanned, 1, true, 1},
 		{"claimed", stateClaimed, 1, false, 3},
+		{"waiting", stateWaiting, 1, false, 3},
+		{"stopped", stateStopped, 1, false, 3},
+		{"abandoned", stateAbandoned, 1, false, 3},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			id := fresh("queue-reprioritize")
@@ -474,6 +485,39 @@ func TestUpdateQueuedPriorityRewritesOnlyAQueuedRun(t *testing.T) {
 	}
 	if applied, err := q.UpdateQueuedPriority(ctx, fresh("queue-reprioritize-missing"), 1); err != nil || applied {
 		t.Fatalf("missing run: applied = %v, err %v, want a no-op", applied, err)
+	}
+}
+
+func TestUpdateQueuedPriorityWritesNothingForAnUnchangedRank(t *testing.T) {
+	q, _, _, commits := countingQueue(t, false)
+	id := fresh("queue-reprioritize-same")
+	seedRow(t, q.client, id, map[string]any{stateField: stateQueued, priorityField: int64(3)})
+	seeded := commits.Load()
+	applied, err := q.UpdateQueuedPriority(context.Background(), id, 3)
+	if err != nil || !applied {
+		t.Fatalf("applied = %v, err %v, want a queued run reported", applied, err)
+	}
+	if got := commits.Load() - seeded; got != 0 {
+		t.Fatalf("committed %d writes for an unchanged rank, want none", got)
+	}
+}
+
+func TestUpdateQueuedPriorityLogsOnlyAChangedRank(t *testing.T) {
+	q, client := queue(t)
+	var logged bytes.Buffer
+	q = q.WithLogger(slog.New(slog.NewJSONHandler(&logged, nil)))
+	id := fresh("queue-reprioritize-log")
+	seedRow(t, client, id, map[string]any{stateField: stateQueued, priorityField: int64(3)})
+	for _, rank := range []int{3, 1} {
+		if _, err := q.UpdateQueuedPriority(context.Background(), id, rank); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := strings.Count(logged.String(), `"msg":"queuedPriorityChanged"`); got != 1 {
+		t.Fatalf("logged %d changes, want one for the 3 to 1 edit only: %s", got, logged.String())
+	}
+	if !strings.Contains(logged.String(), `"from":3,"to":1`) {
+		t.Fatalf("log = %s, want from 3 to 1", logged.String())
 	}
 }
 

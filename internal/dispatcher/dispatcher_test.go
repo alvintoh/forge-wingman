@@ -80,6 +80,10 @@ type fakeQueue struct {
 
 	existsErr error
 
+	// reprioritized records each rank the poll refreshed, by run id.
+	reprioritized map[string]int
+	priorityErr   error
+
 	// reserved and settled are the spend Spend reports at every moment; spends
 	// records each moment it was asked about.
 	reserved Totals
@@ -116,6 +120,17 @@ func (q *fakeQueue) Exists(_ context.Context, runID string) (bool, error) {
 		return false, q.existsErr
 	}
 	return q.holds[runID], nil
+}
+
+func (q *fakeQueue) UpdateQueuedPriority(_ context.Context, runID string, rank int) (bool, error) {
+	if q.priorityErr != nil {
+		return false, q.priorityErr
+	}
+	if q.reprioritized == nil {
+		q.reprioritized = map[string]int{}
+	}
+	q.reprioritized[runID] = rank
+	return true, nil
 }
 
 func (q *fakeQueue) Enqueue(_ context.Context, run Queued) error {
@@ -475,6 +490,51 @@ func TestPollLeavesATicketTheQueueAlreadyHolds(t *testing.T) {
 	// are two different fixes and this one isolates the first.
 	if calls != 0 {
 		t.Fatalf("visibility checked %d times, want the already-queued ticket to skip it entirely", calls)
+	}
+}
+
+func TestPollRefreshesTheRankOfATicketTheQueueAlreadyHolds(t *testing.T) {
+	q := &fakeQueue{holds: map[string]bool{"FRG-18": true}}
+	issue := admitted("size:M", "repo:octo/scratch")
+	issue.Priority = 1
+	if _, err := Poll(context.Background(), pollDeps(fakeSource{issues: []Issue{issue}}, q, &fakeWorkflow{}), buildConfig); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(q.reprioritized, map[string]int{"FRG-18": 1}) {
+		t.Fatalf("reprioritized = %v, want FRG-18 at rank 1", q.reprioritized)
+	}
+}
+
+func TestPollDoesNotRefreshATicketItEnqueues(t *testing.T) {
+	q := &fakeQueue{}
+	deps := pollDeps(fakeSource{issues: []Issue{admitted("size:M", "repo:octo/scratch")}}, q, &fakeWorkflow{})
+	if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.reprioritized) != 0 {
+		t.Fatalf("reprioritized = %v, want none for a new ticket", q.reprioritized)
+	}
+}
+
+func TestPollAdmitsPastAFailedRankRefresh(t *testing.T) {
+	q := &fakeQueue{
+		holds:       map[string]bool{"FRG-18": true},
+		priorityErr: errFirestore,
+		candidates:  []Candidate{{RunID: "FRG-18", Repo: "octo/scratch", Priority: 2}},
+	}
+	w := &fakeWorkflow{}
+	var logs strings.Builder
+	deps := pollDeps(fakeSource{issues: []Issue{admitted("size:M", "repo:octo/scratch")}}, q, w)
+	deps.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	res, err := Poll(context.Background(), deps, buildConfig)
+	if err != nil {
+		t.Fatalf("err = %v, want the poll to continue past the failed refresh", err)
+	}
+	if !slices.Equal(res.Dispatched, []string{"FRG-18"}) {
+		t.Fatalf("dispatched = %q, want the candidate admitted", res.Dispatched)
+	}
+	if !strings.Contains(logs.String(), "msg=priorityRefreshFailed") {
+		t.Fatalf("log = %q, want priorityRefreshFailed", logs.String())
 	}
 }
 

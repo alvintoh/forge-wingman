@@ -230,13 +230,14 @@ func (q *Queue) Enqueue(ctx context.Context, run dispatcher.Queued) error {
 
 // UpdateQueuedPriority sets the priority rank of a queued or planned run — the
 // states Candidates orders by it — reporting whether the run holds that rank
-// afterwards. A run in any other state keeps the rank it was claimed under, and
-// a missing run reports false.
+// afterwards. A run already at that rank is not written. A run in any other
+// state keeps the rank it was claimed under, and a missing run reports false.
 func (q *Queue) UpdateQueuedPriority(ctx context.Context, runID string, rank int) (bool, error) {
 	rowRef := q.client.Collection(runsCollection).Doc(runID)
-	var applied bool
+	var applied, changed bool
+	var from int64
 	err := q.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
-		applied = false
+		applied, changed = false, false
 		snap, err := tx.Get(rowRef)
 		if status.Code(err) == codes.NotFound {
 			return nil
@@ -248,10 +249,18 @@ func (q *Queue) UpdateQueuedPriority(ctx context.Context, runID string, rank int
 			return nil
 		}
 		applied = true
+		stored, ok := snap.Data()[priorityField].(int64)
+		if ok && stored == int64(rank) {
+			return nil
+		}
+		changed, from = true, stored
 		return tx.Update(rowRef, []firestore.Update{{Path: priorityField, Value: rank}})
 	})
 	if err != nil {
 		return false, fmt.Errorf("updating the priority of run %s: %w", runID, err)
+	}
+	if changed {
+		q.logger.InfoContext(ctx, "queuedPriorityChanged", "run", runID, "from", from, "to", rank)
 	}
 	return applied, nil
 }

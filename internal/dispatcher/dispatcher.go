@@ -243,6 +243,13 @@ type Candidater interface {
 	Candidates(ctx context.Context) ([]Candidate, error)
 }
 
+// Reprioritizer sets the priority rank of a queued or planned run, reporting
+// whether the run is in such a state; a run in any other state keeps its rank.
+// A rank the run already holds is not written.
+type Reprioritizer interface {
+	UpdateQueuedPriority(ctx context.Context, runID string, rank int) (bool, error)
+}
+
 // Claimer attempts to admit a candidate and claim it, atomically with every
 // other poll that might race it (adr/0003); Release returns a claimed run
 // whose dispatch never reached GitHub.
@@ -265,6 +272,7 @@ type Rejector interface {
 type Queue interface {
 	Enqueuer
 	Candidater
+	Reprioritizer
 	Claimer
 	Rejector
 	Spender
@@ -376,7 +384,9 @@ func poll(ctx context.Context, d Deps, c Config) (Result, error) {
 // different failure. The repository's visibility is resolved once, at
 // creation, and carried on the run record from then on (FR-22) — Exists skips
 // that resolution for a ticket already queued, rather than re-checking it on
-// every poll the ticket remains undispatched. The models a ticket names are
+// every poll the ticket remains undispatched. A ticket already queued has its
+// rank refreshed from the issue instead, and a failed refresh is logged and
+// leaves the poll running. The models a ticket names are
 // checked at the same point, for the same reason.
 //
 // A visibility-check or model-lookup failure aborts only this ticket's
@@ -395,6 +405,9 @@ func admit(ctx context.Context, d Deps, c Config, issue Issue, res *Result) erro
 	}
 	if exists {
 		d.Logger.Info("ticketAlreadyQueued", "run", q.RunID, "repo", q.Repo, "priority", q.Priority)
+		if _, err := d.Queue.UpdateQueuedPriority(ctx, q.RunID, q.Priority); err != nil {
+			d.Logger.Warn("priorityRefreshFailed", "run", q.RunID, "priority", q.Priority, "err", err.Error())
+		}
 		return nil
 	}
 	q.Models = d.Overrides.Overrides(issue)
