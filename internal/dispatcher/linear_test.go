@@ -37,7 +37,7 @@ func linearServer(t *testing.T, pages []map[string]any) (*httptest.Server, *[]ma
 		if !strings.Contains(req.Query, "$delegate: ID!") {
 			t.Errorf("the query declares $delegate as something other than ID!, which Linear rejects for an id filter: %s", req.Query)
 		}
-		for _, field := range []string{" relations {", " inverseRelations {", " url\n"} {
+		for _, field := range []string{" relations {", " inverseRelations {", " url\n", " state {"} {
 			if !strings.Contains(req.Query, field) {
 				t.Errorf("the query does not ask for%s: %s", field, req.Query)
 			}
@@ -168,6 +168,33 @@ func TestLinearReadsBlockingRelationsInBothDirections(t *testing.T) {
 	}
 	if len(issues[1].Blocks) != 0 || len(issues[1].BlockedBy) != 0 {
 		t.Fatalf("issue = %+v, want no relations for an issue with none", issues[1])
+	}
+}
+
+// TestLinearReadsWhetherABlockerIsDone is AC1, AC2 and AC4: a blocked-by issue
+// in any state but completed or canceled still holds the ticket, one in those
+// two does not, and one whose state the reply did not carry counts as open.
+func TestLinearReadsWhetherABlockerIsDone(t *testing.T) {
+	node := linearNode("run-a", 2, "size:M")
+	node["inverseRelations"] = map[string]any{"nodes": []map[string]any{
+		{"type": "blocks", "issue": map[string]any{"identifier": "run-started", "state": map[string]any{"type": "started"}}},
+		{"type": "blocks", "issue": map[string]any{"identifier": "run-completed", "state": map[string]any{"type": "completed"}}},
+		{"type": "blocks", "issue": map[string]any{"identifier": "run-canceled", "state": map[string]any{"type": "canceled"}}},
+		{"type": "blocks", "issue": map[string]any{"identifier": "run-unread"}},
+	}}
+	srv, _ := linearServer(t, []map[string]any{linearReply("agent-1", false, "", node)})
+	issues, err := Linear{Endpoint: linearURL(srv), Tokens: fixedToken("linear-token"), Delegate: "agent-1",
+		Client: srv.Client()}.Delegated(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"run-started", "run-completed", "run-canceled", "run-unread"}
+	if !slices.Equal(issues[0].BlockedBy, want) {
+		t.Fatalf("BlockedBy = %v, want every blocking relation kept in %v", issues[0].BlockedBy, want)
+	}
+	wantOpen := []string{"run-started", "run-unread"}
+	if !slices.Equal(issues[0].BlockedByOpen, wantOpen) {
+		t.Fatalf("BlockedByOpen = %v, want %v", issues[0].BlockedByOpen, wantOpen)
 	}
 }
 

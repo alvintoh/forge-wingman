@@ -1400,6 +1400,48 @@ func TestTryClaimUsesTheRelationsThePollReadNow(t *testing.T) {
 	}
 }
 
+// TestTryClaimHoldsARunWhoseBlockerIsStillOpen is AC1 end to end: the relations
+// this poll read name a blocker Linear has not completed or canceled, so the run
+// waits with nothing in flight and no run bearing the blocker's id.
+func TestTryClaimHoldsARunWhoseBlockerIsStillOpen(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	run := queuedRun(fresh("queue-open-blocker"), 1)
+	forget(t, client, run.RunID)
+	resetLedger(t, client, 5)
+	if err := q.Enqueue(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	facts := openFacts
+	facts.Relations = dispatcher.Relations{Known: true, BlockedBy: []string{"FRG-9"}, BlockedByOpen: []string{"FRG-9"}}
+	ok, binding, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, facts, dispatcher.Reservation{ProviderCost: money.Dollar})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok || binding != dispatcher.ConditionBlocked {
+		t.Fatalf("ok = %v, binding = %q, want an open blocker to hold the run", ok, binding)
+	}
+}
+
+// TestTryClaimAdmitsARunWhoseBlockersAreDone is AC2: the same run is claimed
+// once the poll reads every blocker as completed or canceled.
+func TestTryClaimAdmitsARunWhoseBlockersAreDone(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	run := queuedRun(fresh("queue-done-blocker"), 1)
+	forget(t, client, run.RunID)
+	resetLedger(t, client, 5)
+	if err := q.Enqueue(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	facts := openFacts
+	facts.Relations = dispatcher.Relations{Known: true, BlockedBy: []string{"FRG-9"}}
+	ok, binding, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, facts, dispatcher.Reservation{ProviderCost: money.Dollar})
+	if err != nil || !ok {
+		t.Fatalf("ok = %v, binding = %q, err = %v, want a finished blocker not to hold the run", ok, binding, err)
+	}
+}
+
 func TestTryClaimStoresNAndThePlatformCapOnTheLedger(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()

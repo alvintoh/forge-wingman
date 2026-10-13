@@ -1015,11 +1015,13 @@ func TestPollAdmitsWithTheRelationsLinearReportsNow(t *testing.T) {
 	q := &fakeQueue{candidates: []Candidate{{RunID: "run-a", Repo: "octo/a", Priority: 1}}}
 	issue := admitted("size:M", "repo:octo/scratch")
 	issue.ID, issue.BlockedBy, issue.Blocks = "run-a", []string{"run-p"}, []string{"run-x"}
+	issue.BlockedByOpen = []string{"run-p"}
 	if _, err := Poll(context.Background(), pollDeps(fakeSource{issues: []Issue{issue}}, q, &fakeWorkflow{}), buildConfig); err != nil {
 		t.Fatal(err)
 	}
-	want := Relations{Known: true, BlockedBy: []string{"run-p"}, Blocks: []string{"run-x"}}
-	if got := q.tryClaims[0].facts.Relations; !got.Known || !slices.Equal(got.BlockedBy, want.BlockedBy) || !slices.Equal(got.Blocks, want.Blocks) {
+	want := Relations{Known: true, BlockedBy: []string{"run-p"}, Blocks: []string{"run-x"}, BlockedByOpen: []string{"run-p"}}
+	if got := q.tryClaims[0].facts.Relations; !got.Known || !slices.Equal(got.BlockedBy, want.BlockedBy) ||
+		!slices.Equal(got.Blocks, want.Blocks) || !slices.Equal(got.BlockedByOpen, want.BlockedByOpen) {
 		t.Fatalf("relations = %+v, want %+v", got, want)
 	}
 }

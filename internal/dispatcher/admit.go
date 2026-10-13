@@ -83,6 +83,9 @@ type Subject struct {
 	Size      string
 	BlockedBy []string
 	Blocks    []string
+	// BlockedByOpen names the blocked-by issues Linear still holds open, which
+	// withhold the candidate whether or not a run is in flight.
+	BlockedByOpen []string
 	// Files is the candidate's planned write set, from the plan its plan
 	// stage recorded; empty when nothing is planned yet, which is the write
 	// set that is unknown.
@@ -97,6 +100,10 @@ type Relations struct {
 	Known     bool
 	BlockedBy []string
 	Blocks    []string
+	// BlockedByOpen names the blocked-by issues Linear reads as still open,
+	// which withhold the candidate; empty when this poll did not read the
+	// ticket.
+	BlockedByOpen []string
 }
 
 // Facts are what admission learns outside the ledger.
@@ -156,8 +163,11 @@ type AdmitInput struct {
 // Admit reports whether the candidate may start now, and otherwise the first
 // condition that withholds it, checked in this order: the circuit breaker,
 // provider halt, peak hours, platform cap, N, the concurrent-L cap, one run per
-// repository, a blocking relation with a run in flight, review WIP, then the
-// budget ceilings. It does no IO.
+// repository, a blocker, review WIP, then the budget ceilings. It does no IO.
+//
+// The blocker condition holds a candidate back while a blocked-by issue Linear
+// has not completed or canceled still holds it, or while a run in flight bears
+// a blocking relation to it in either direction.
 //
 // The one-run-per-repository condition holds a candidate back only where an
 // in-flight run in its repository writes what the candidate may also write:
@@ -186,7 +196,7 @@ func Admit(in AdmitInput) (ok bool, binding string) {
 		return f.Repo == in.Candidate.Repo && writeSetsCollide(f, in.Candidate)
 	}):
 		return false, ConditionRepoBusy
-	case blockedByInFlight(in.Candidate, in.InFlight):
+	case blocked(in.Candidate, in.InFlight):
 		return false, ConditionBlocked
 	case in.Facts.OpenPRsKnown && in.Facts.OpenPRs >= in.Facts.Limits.ReviewWIP,
 		!in.Facts.OpenPRsKnown && running > 0:
@@ -225,9 +235,13 @@ func writeSetsCollide(f InFlight, c Subject) bool {
 	return slices.ContainsFunc(f.Files, func(name string) bool { return slices.Contains(c.Files, name) })
 }
 
-// blockedByInFlight reports a blocking relation, in either direction, between
-// the candidate and a run in flight.
-func blockedByInFlight(c Subject, runs []InFlight) bool {
+// blocked reports a blocker of the candidate: a blocked-by issue Linear still
+// holds open, or a blocking relation, in either direction, with a run in
+// flight.
+func blocked(c Subject, runs []InFlight) bool {
+	if len(c.BlockedByOpen) > 0 {
+		return true
+	}
 	return slices.ContainsFunc(runs, func(r InFlight) bool {
 		return slices.Contains(c.BlockedBy, r.Ticket) || slices.Contains(c.Blocks, r.Ticket)
 	})

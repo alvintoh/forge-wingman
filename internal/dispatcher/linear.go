@@ -12,21 +12,33 @@ import (
 // related issue.
 const blocksRelation = "blocks"
 
+// The Linear state types that mean an issue is finished: the poll does not act
+// on one, and a blocker in one no longer holds what it blocks. Types rather
+// than names are read, since the completed and canceled names differ per team.
+const (
+	stateTypeCompleted = "completed"
+	stateTypeCanceled  = "canceled"
+)
+
+// doneStateTypes is stateTypeCompleted and stateTypeCanceled as the GraphQL
+// list the delegated filter excludes.
+const doneStateTypes = `"` + stateTypeCompleted + `", "` + stateTypeCanceled + `"`
+
 // linearPage is how many issues one page asks for. A workspace holds far more
 // issues than one workspace's delegated to a single agent, so the pages are
 // walked rather than the first one taken as all of them.
 const linearPage = 50
 
 // delegatedQuery reads the token's own identity beside the issues delegated to
-// it, so a poll cannot act for an agent other than the configured one. State
-// types rather than names are filtered: the completed and canceled names differ
-// per team, the types do not.
+// it, so a poll cannot act for an agent other than the configured one. An issue
+// blocking this one carries its own state type, so a blocker still open can be
+// told from a finished one.
 const delegatedQuery = `query DelegatedIssues($delegate: ID!, $first: Int, $after: String) {
   viewer {
     id
   }
   issues(
-    filter: { delegate: { id: { eq: $delegate } }, state: { type: { nin: ["completed", "canceled"] } } }
+    filter: { delegate: { id: { eq: $delegate } }, state: { type: { nin: [` + doneStateTypes + `] } } }
     first: $first
     after: $after
   ) {
@@ -54,6 +66,9 @@ const delegatedQuery = `query DelegatedIssues($delegate: ID!, $first: Int, $afte
           type
           issue {
             identifier
+            state {
+              type
+            }
           }
         }
       }
@@ -74,6 +89,12 @@ type Linear struct {
 	Delegate string
 	Client   *http.Client
 	Page     int
+}
+
+// linearState is the part of a related issue's state a blocking relation reads:
+// its type tells a blocker still open from a finished one.
+type linearState struct {
+	Type string `json:"type"`
 }
 
 // linearResponse is one GraphQL reply's data.
@@ -106,7 +127,8 @@ type linearResponse struct {
 					Nodes []struct {
 						Type  string `json:"type"`
 						Issue struct {
-							Identifier string `json:"identifier"`
+							Identifier string      `json:"identifier"`
+							State      linearState `json:"state"`
 						} `json:"issue"`
 					} `json:"nodes"`
 				} `json:"inverseRelations"`
@@ -160,6 +182,9 @@ func (l Linear) Delegated(ctx context.Context) ([]Issue, error) {
 			for _, rel := range node.InverseRelations.Nodes {
 				if rel.Type == blocksRelation {
 					issue.BlockedBy = append(issue.BlockedBy, rel.Issue.Identifier)
+					if blockerOpen(rel.Issue.State.Type) {
+						issue.BlockedByOpen = append(issue.BlockedByOpen, rel.Issue.Identifier)
+					}
 				}
 			}
 			issues = append(issues, issue)
@@ -169,6 +194,13 @@ func (l Linear) Delegated(ctx context.Context) ([]Issue, error) {
 		}
 		cursor = resp.Data.Issues.PageInfo.EndCursor
 	}
+}
+
+// blockerOpen reports whether a blocked-by issue Linear relates to a ticket
+// still holds it: every state type but the two that mean finished, and a state
+// the reply did not carry, which counts as open.
+func blockerOpen(stateType string) bool {
+	return stateType != stateTypeCompleted && stateType != stateTypeCanceled
 }
 
 // page asks Linear for one page of the delegated issues. The cursor is omitted
