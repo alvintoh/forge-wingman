@@ -40,7 +40,8 @@ func TestAgentContainerRunArgsJoinOnlyTheInternalNetworkThroughTheProxy(t *testi
 		t.Errorf("--network %v, want the internal network alone", got)
 	}
 	env := flagValues(args, "--env")
-	for _, kv := range []string{"HTTPS_PROXY=http://wingman-egress-proxy-1:3128", "HTTP_PROXY=http://wingman-egress-proxy-1:3128", "NO_PROXY=127.0.0.1,localhost"} {
+	for _, kv := range []string{"HTTPS_PROXY=http://wingman-egress-proxy-1:3128", "HTTP_PROXY=http://wingman-egress-proxy-1:3128", "NO_PROXY=127.0.0.1,localhost",
+		"https_proxy=http://wingman-egress-proxy-1:3128", "http_proxy=http://wingman-egress-proxy-1:3128", "no_proxy=127.0.0.1,localhost"} {
 		if !slices.Contains(env, kv) {
 			t.Errorf("env %v lacks %s", env, kv)
 		}

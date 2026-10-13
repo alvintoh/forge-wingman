@@ -149,7 +149,9 @@ func (c AgentContainer) runArgs(name, secretName string, s agentSpec) []string {
 	}
 	env := append([]string{"TMPDIR=/tmp"}, s.Env...)
 	if c.ProxyURL != "" {
-		env = append(env, "HTTPS_PROXY="+c.ProxyURL, "HTTP_PROXY="+c.ProxyURL, "NO_PROXY=127.0.0.1,localhost")
+		const noProxy = "127.0.0.1,localhost"
+		env = append(env, "HTTPS_PROXY="+c.ProxyURL, "HTTP_PROXY="+c.ProxyURL, "NO_PROXY="+noProxy,
+			"https_proxy="+c.ProxyURL, "http_proxy="+c.ProxyURL, "no_proxy="+noProxy)
 	}
 	for _, kv := range env {
 		args = append(args, "--env", kv)

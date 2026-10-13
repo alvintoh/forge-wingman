@@ -99,18 +99,29 @@ jobs:
           set -eu
           # bun reports the proxy's own 403 as a response, so a refusal is read from the
           # proxy's log line, which the runner relays to stderr at teardown.
+          js() { echo "await fetch(\"$1\", {signal: AbortSignal.timeout(10000)}).then(r => console.log(\"reached \" + r.status), () => console.log(\"failed\"))"; }
           try() {
-            "$RUNNER_TEMP/runner" agent-probe -egress -agent-image "$AGENT_IMAGE" -- bun -e \
-              "await fetch(\"$1\").then(r => console.log(\"reached \" + r.status), () => console.log(\"failed\"))" \
+            "$RUNNER_TEMP/runner" agent-probe -egress -agent-image "$AGENT_IMAGE" -- bun -e "$(js "$1")" \
+              2> "$RUNNER_TEMP/proxy.log"
+          }
+          # The proxy variables are unset in the container, so only the network is left to stop it.
+          direct() {
+            "$RUNNER_TEMP/runner" agent-probe -egress -agent-image "$AGENT_IMAGE" -- \
+              sh -c 'unset HTTPS_PROXY HTTP_PROXY https_proxy http_proxy; exec bun -e "$1"' sh "$(js "$1")" \
               2> "$RUNNER_TEMP/proxy.log"
           }
           out=$(try https://api.commandcode.ai/); echo "model API: $out"
-          echo "$out" | grep -q '^reached 2' || { echo "FAIL: the model API host was not reachable"; exit 1; }
+          echo "$out" | grep -q '^reached [0-9]' || { echo "FAIL: the model API host got no tunnelled response"; exit 1; }
+          if grep -q '"msg":"egressRefused".*"host":"api.commandcode.ai"' "$RUNNER_TEMP/proxy.log"; then echo "FAIL: the proxy refused the model API host"; exit 1; fi
           for host in example.com 169.254.169.254; do
             out=$(try "https://$host/"); echo "$host: $out"
             grep -q "\"msg\":\"egressRefused\".*\"host\":\"$host\"" "$RUNNER_TEMP/proxy.log" || { echo "LEAK: the proxy did not refuse $host"; exit 1; }
           done
-          echo "the agent container reached only its model API host"
+          for url in https://example.com/ http://169.254.169.254/latest/meta-data/; do
+            out=$(direct "$url"); echo "direct $url: $out"
+            [ "$out" = failed ] || { echo "LEAK: reached $url without the proxy"; exit 1; }
+          done
+          echo "the agent container reached only its model API host, and nothing without the proxy"
 
       - if: always()
         run: |
