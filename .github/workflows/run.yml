@@ -47,6 +47,10 @@ on:
         type: string
         default: build
         required: true
+      attempt:
+        description: the attempt the dispatcher claimed the run at, empty for a run dispatched without one
+        type: string
+        default: ''
 
 permissions: {}
 
@@ -148,6 +152,7 @@ jobs:
       id-token: write
     env:
       RUN_ID: ${{ inputs.run_id }}
+      ATTEMPT: ${{ inputs.attempt }}
       WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -184,7 +189,7 @@ jobs:
         run: >-
           "$RUNNER_TEMP/runner" record-plan-stage
           -run-id "$RUN_ID" -plan-file "$RUNNER_TEMP/plan.json" -dispatcher-uri "$DISPATCHER_RUN_URI"
-          -run-url "$RUN_URL" -plan-stage-result "${{ needs.model.result }}"
+          -run-url "$RUN_URL" -plan-stage-result "${{ needs.model.result }}" -attempt "$ATTEMPT"
 
   # The branch's code runs here, so the job holds nothing it could misuse. Each gate is
   # a fixed step, so the branch cannot redefine one; a failing gate is named, not fatal.
@@ -462,6 +467,7 @@ jobs:
       id-token: write
     env:
       RUN_ID: ${{ inputs.run_id }}
+      ATTEMPT: ${{ inputs.attempt }}
       ATTEMPT_ID: ${{ needs.model.outputs.attempt_id }}
       PR_URL: ${{ needs.pr.outputs.url }}
       RUN_RESULT: ${{ needs.model.result }}
@@ -501,7 +507,7 @@ jobs:
           -run-id "$RUN_ID" -attempt-id "$ATTEMPT_ID" -summary "$SUMMARY" -pr-url "$PR_URL"
           -run-result "$RUN_RESULT" -pr-result "$PR_RESULT" -pr-duration-s "$PR_DURATION"
           -failed-gate "$FAILED_GATE" -pr-stop-reason "$PR_STOP_REASON" -run-url "$RUN_URL"
-          -auto-merge="$AUTO_MERGE"
+          -auto-merge="$AUTO_MERGE" -attempt "$ATTEMPT"
 
       # A summary too large to pass as an argument fails the step before record runs,
       # so record never reports started; any later failure leaves the record as it is.
@@ -513,4 +519,4 @@ jobs:
           "$RUNNER_TEMP/runner" record -summary-unreadable
           -run-id "$RUN_ID" -attempt-id "$ATTEMPT_ID" -pr-url "$PR_URL"
           -run-result "$RUN_RESULT" -pr-result "$PR_RESULT" -pr-duration-s "$PR_DURATION"
-          -failed-gate "$FAILED_GATE" -run-url "$RUN_URL"
+          -failed-gate "$FAILED_GATE" -run-url "$RUN_URL" -attempt "$ATTEMPT"
