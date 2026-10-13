@@ -49,7 +49,9 @@ func egressProxy(ctx context.Context, logger *slog.Logger, args []string) error 
 	if len(hosts) == 0 {
 		return errors.New("usage: runner egress-proxy -allow <host,...> [-listen <addr>]")
 	}
-	srv := egressServer(*listen, runner.NewEgressProxy(hosts, logger))
+	proxy := runner.NewEgressProxy(hosts, logger)
+	defer proxy.LogSummary()
+	srv := egressServer(*listen, proxy)
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
 	logger.Info("egressProxyListening", "addr", *listen, "hosts", len(hosts))

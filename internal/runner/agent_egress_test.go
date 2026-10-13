@@ -86,8 +86,8 @@ func TestStartEgressBuildsTheNetworkAndProxyAndTearsThemDownAfterCancel(t *testi
 			t.Errorf("proxy run %v lacks %s", run, f)
 		}
 	}
-	if got := flagValues(run, "--log-opt"); !slices.Equal(got, []string{"max-size=1m", "max-file=1"}) {
-		t.Errorf("proxy log options %v, want a 1m single-file cap", got)
+	if got := flagValues(run, "--log-opt"); !slices.Equal(got, []string{"max-size=1m", "max-file=1", "compress=false"}) {
+		t.Errorf("proxy log options %v, want a 1m single-file cap, uncompressed because docker refuses compression with one file", got)
 	}
 	if slices.Contains(run, "--env") {
 		t.Errorf("proxy run %v passes the container an environment", run)
@@ -108,8 +108,18 @@ func TestStartEgressBuildsTheNetworkAndProxyAndTearsThemDownAfterCancel(t *testi
 		t.Fatalf("teardown after cancel: %v", err)
 	}
 	calls = dockerCalls(t, logFile)
-	if got := calls[len(calls)-3]; !slices.Equal(got[:3], []string{"logs", "--tail", "200"}) {
-		t.Errorf("log read %v, want a bounded tail", got)
+	var order []string
+	for _, c := range calls[4:] {
+		order = append(order, c[0])
+	}
+	if want := []string{"stop", "logs", "logs", "rm", "network"}; !slices.Equal(order, want) {
+		t.Errorf("teardown ran %v, want the proxy stopped, its log read tail then head, then both removed", order)
+	}
+	if i := slices.IndexFunc(calls, func(c []string) bool { return c[0] == "logs" }); !slices.Equal(calls[i][:3], []string{"logs", "--tail", "200"}) {
+		t.Errorf("first log read %v, want a bounded tail", calls[i])
+	}
+	if slices.Contains(calls[1], "--rm") {
+		t.Errorf("proxy run %v removes itself, so its log is gone before the teardown reads it", calls[1])
 	}
 	last := calls[len(calls)-2:]
 	if last[0][0] != "rm" || last[0][1] != "--force" || last[1][0] != "network" || last[1][1] != "rm" || last[1][2] != joined.Network {
@@ -209,5 +219,76 @@ exit 0
 	}
 	if n := logs.Len(); n == 0 || n > egressRelayBytes {
 		t.Fatalf("relayed %d bytes, want some but at most %d", n, egressRelayBytes)
+	}
+}
+
+func fakeLoggingDocker(t *testing.T, logLines []string) {
+	t.Helper()
+	dir := t.TempDir()
+	logFile := dir + "/proxy.log"
+	if err := os.WriteFile(logFile, []byte(strings.Join(logLines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+if [ "$1" = logs ]; then
+	if [ "$2" = --tail ]; then tail -n "$3" "$DOCKER_FAKE_LOG"; else cat "$DOCKER_FAKE_LOG"; fi
+fi
+exit 0
+`
+	if err := os.WriteFile(dir+"/docker", []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DOCKER_FAKE_LOG", logFile)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func relayThrough(t *testing.T) string {
+	t.Helper()
+	var logs strings.Builder
+	_, teardown, err := StartEgress(context.Background(), testAgentContainer(t), t.TempDir()+"/runner", []string{"api.commandcode.ai"}, &logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := teardown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return logs.String()
+}
+
+func TestStartEgressTeardownRelaysTheSummaryAndTheFirstRefusalsAfterAFloodRolledThemOut(t *testing.T) {
+	var lines []string
+	for i := range 5000 {
+		lines = append(lines, `{"msg":"egressRefused","reason":"host-not-allowed","host":"flood-`+strconv.Itoa(i)+`.example"}`)
+	}
+	lines = append(lines, `{"msg":"egressSummary","refused":5300,"failed":0,"reasons":{"host-not-allowed":5300},"firstRefusedHosts":["first.example.com"]}`)
+	fakeLoggingDocker(t, lines)
+
+	got := relayThrough(t)
+	if !strings.Contains(got, `"firstRefusedHosts":["first.example.com"]`) || !strings.Contains(got, `"refused":5300`) {
+		t.Errorf("relay lacks the summary with the first host and the totals:\n%s", got)
+	}
+	if !strings.Contains(got, `flood-0.example`) || !strings.Contains(got, `flood-4999.example`) {
+		t.Errorf("relay lacks the head or the tail of the log")
+	}
+	if strings.Contains(got, `flood-2000.example`) {
+		t.Errorf("relay carries the middle of the flood, so it is not bounded")
+	}
+	if !strings.HasSuffix(strings.TrimSpace(got), `"firstRefusedHosts":["first.example.com"]}`) {
+		t.Errorf("relay does not end with the summary")
+	}
+	if n := len(got); n > egressRelayBytes+2048 {
+		t.Errorf("relayed %d bytes, want the cap plus the summary", n)
+	}
+}
+
+func TestStartEgressTeardownRelaysEachLineOnceWhenTheLogIsShort(t *testing.T) {
+	fakeLoggingDocker(t, []string{
+		`{"msg":"egressRefused","reason":"host-not-allowed","host":"a.example"}`,
+		`{"msg":"egressProxyListening"}`,
+		`{"msg":"egressFailed","reason":"dial-failed","host":"b.example"}`,
+	})
+	got := relayThrough(t)
+	if strings.Count(got, "a.example") != 1 || strings.Count(got, "b.example") != 1 || strings.Contains(got, "Listening") {
+		t.Fatalf("relay %q, want each refusal and failure once and nothing else", got)
 	}
 }

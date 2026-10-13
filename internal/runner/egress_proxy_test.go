@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -249,6 +250,10 @@ func TestEgressProxyLogsEachRefusalAndFailureWithTheHostAsItsOwnAttr(t *testing.
 				w = tt.writer()
 			}
 			p.ServeHTTP(w, req)
+			wantCounts := `"refused":1,"failed":0`
+			if strings.Contains(tt.want[0], "egressFailed") {
+				wantCounts = `"refused":0,"failed":1`
+			}
 			if got := strings.Count(logs.String(), "\n"); got != 1 {
 				t.Fatalf("%d log lines %q, want one", got, logs.String())
 			}
@@ -256,6 +261,10 @@ func TestEgressProxyLogsEachRefusalAndFailureWithTheHostAsItsOwnAttr(t *testing.
 				if !strings.Contains(logs.String(), frag) {
 					t.Errorf("log %q lacks %s", logs.String(), frag)
 				}
+			}
+			p.LogSummary()
+			if !strings.Contains(logs.String(), wantCounts) {
+				t.Errorf("summary %q lacks %s", logs.String(), wantCounts)
 			}
 		})
 	}
@@ -327,6 +336,10 @@ func TestEgressProxyClosesATunnelThatMovesNoBytes(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), `"reason":"tunnel-idle"`) || strings.Count(logs.String(), "tunnel-idle") != 1 {
 		t.Fatalf("log %q, want one tunnel-idle line", logs.String())
+	}
+	p.LogSummary()
+	if !strings.Contains(logs.String(), `"reasons":{"tunnel-idle":1}`) {
+		t.Fatalf("summary %q does not count the idle tunnel", logs.String())
 	}
 }
 
@@ -552,5 +565,45 @@ func TestEgressProxyLogsALongMultiByteHostCutOnACharacterBoundary(t *testing.T) 
 	}
 	if !utf8.ValidString(line.Host) || len(line.Host) > egressLoggedHostBytes+len("…") || !strings.HasPrefix(line.Host, "éé") {
 		t.Fatalf("logged host is %d bytes (valid %v), want a valid cut of at most %d", len(line.Host), utf8.ValidString(line.Host), egressLoggedHostBytes+len("…"))
+	}
+}
+
+func TestEgressProxySummaryCountsByReasonAndNamesTheFirstDistinctRefusedHosts(t *testing.T) {
+	p, logs := loggedProxy("api.example.com")
+	p.resolve = resolveTo("93.184.216.34")
+	p.dial = func(context.Context, string) (net.Conn, error) { return nil, errors.New("refused") }
+	serve := func(target string) {
+		req := httptest.NewRequest("CONNECT", "http://api.example.com:443", nil)
+		req.Host = target
+		p.ServeHTTP(httptest.NewRecorder(), req)
+	}
+	for i := range egressSummaryHosts + 5 {
+		serve("h" + strconv.Itoa(i) + ".example:443")
+		if i == 1 {
+			serve("h0.example:443")
+		}
+	}
+	serve("api.example.com:80")
+	serve("api.example.com:443")
+
+	p.LogSummary()
+	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
+	var sum struct {
+		Msg               string
+		Refused, Failed   int
+		Reasons           map[string]int
+		FirstRefusedHosts []string
+	}
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &sum); err != nil {
+		t.Fatal(err)
+	}
+	if sum.Msg != egressSummaryEvent || sum.Refused != egressSummaryHosts+5+1+1 || sum.Failed != 1 {
+		t.Fatalf("summary %+v, want %d refused and 1 failed", sum, egressSummaryHosts+7)
+	}
+	if sum.Reasons["host-not-allowed"] != egressSummaryHosts+6 || sum.Reasons["port-not-allowed"] != 1 || sum.Reasons["dial-failed"] != 1 {
+		t.Errorf("reasons %v", sum.Reasons)
+	}
+	if len(sum.FirstRefusedHosts) != egressSummaryHosts || sum.FirstRefusedHosts[0] != "h0.example" || sum.FirstRefusedHosts[1] != "h1.example" || sum.FirstRefusedHosts[2] != "h2.example" {
+		t.Errorf("first hosts %v, want the first %d distinct in order", sum.FirstRefusedHosts, egressSummaryHosts)
 	}
 }

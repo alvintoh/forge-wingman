@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1212,6 +1214,36 @@ func TestEgressProxyReadyReportsWhetherTheProxyAcceptsConnections(t *testing.T) 
 		t.Fatal("-ready succeeded with nothing listening")
 	}
 }
+
+func TestEgressProxyLogsItsSummaryWhenItStops(t *testing.T) {
+	var buf bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- egressProxy(ctx, slog.New(slog.NewJSONHandler(&lockedWriter{w: &buf}, nil)), []string{"-allow", "api.example.com", "-listen", "127.0.0.1:0"})
+	}()
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if got := (&lockedWriter{w: &buf}).String(); !strings.Contains(got, `"msg":"egressSummary"`) {
+		t.Fatalf("log %q, want a summary on an orderly stop", got)
+	}
+}
+
+// lockedWriter is a log sink safe to read after the writer has stopped.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  *bytes.Buffer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
+}
+
+func (l *lockedWriter) String() string { return l.w.String() }
 
 func TestEgressServerDropsSilentConnections(t *testing.T) {
 	srv := egressServer(":0", http.NotFoundHandler())

@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -26,6 +27,7 @@ const (
 	// egressRelayLines and egressRelayBytes bound what a teardown reads from the
 	// proxy's log and writes on.
 	egressRelayLines = "200"
+	egressRelayHead  = 20
 	egressRelayBytes = 64 << 10
 	egressProxyBin   = "/usr/local/bin/wingman-runner"
 )
@@ -92,9 +94,9 @@ func startProxy(ctx context.Context, c AgentContainer, network, proxy, proxyBin 
 		return err
 	}
 	args := []string{
-		"run", "--detach", "--rm", "--name", proxy, "--init",
+		"run", "--detach", "--name", proxy, "--init",
 		"--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-		"--log-opt", "max-size=1m", "--log-opt", "max-file=1",
+		"--log-opt", "max-size=1m", "--log-opt", "max-file=1", "--log-opt", "compress=false",
 		"--mount", bindMount(proxyBin, egressProxyBin, true),
 	}
 	if uid, gid := os.Getuid(), os.Getgid(); uid >= 0 {
@@ -127,21 +129,74 @@ func waitProxyReady(ctx context.Context, proxy string) error {
 	}
 }
 
-// relayProxyLog writes the proxy's refusal and failure lines to w, so a call it
-// blocked shows in the runner's own log; a run the proxy let through writes
-// nothing. It is best effort: the teardown must go on without the log.
+// isProxyEvent reports whether a log line is a refusal or a failure.
+func isProxyEvent(line string) bool {
+	return strings.Contains(line, `"msg":"`+egressRefusedEvent+`"`) || strings.Contains(line, `"msg":"`+egressFailedEvent+`"`)
+}
+
+// relayProxyLog stops the proxy, so it logs its summary, then writes to w the
+// first and the last of its refusal and failure lines and then the summary, so a
+// call it blocked shows in the runner's own log even after a flood has rolled
+// the early lines out. A run the proxy let through writes nothing but the
+// summary. It is best effort: the teardown must go on without the log, and the
+// container is left for the teardown to remove, so its log stays readable.
 func relayProxyLog(ctx context.Context, proxy string, w io.Writer) {
+	_ = docker(ctx, "stop", "--time", "5", proxy)
 	out, _ := dockerOutput(ctx, "logs", "--tail", egressRelayLines, proxy)
-	written := 0
+	var tail []string
+	var summary string
+	inTail := map[string]bool{}
 	for line := range strings.Lines(out) {
-		if !strings.Contains(line, `"msg":"`+egressRefusedEvent+`"`) && !strings.Contains(line, `"msg":"`+egressFailedEvent+`"`) {
-			continue
+		switch {
+		case strings.Contains(line, `"msg":"`+egressSummaryEvent+`"`):
+			summary = line
+		case isProxyEvent(line):
+			tail = append(tail, line)
+			inTail[line] = true
 		}
+	}
+	written := 0
+	emit := func(line string) bool {
 		if written += len(line); written > egressRelayBytes {
-			return
+			return false
 		}
 		_, _ = io.WriteString(w, line)
+		return true
 	}
+	for _, line := range firstProxyEvents(ctx, proxy, egressRelayHead) {
+		if !inTail[line] && !emit(line) {
+			break
+		}
+	}
+	for _, line := range tail {
+		if !emit(line) {
+			break
+		}
+	}
+	_, _ = io.WriteString(w, summary)
+}
+
+// firstProxyEvents is the first n refusal and failure lines of the proxy's log,
+// read as a stream that is dropped once it has them.
+func firstProxyEvents(ctx context.Context, proxy string, n int) []string {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "logs", proxy)
+	cmd.Env = filterEnv(os.Environ(), dockerEnvNames)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil || cmd.Start() != nil {
+		return nil
+	}
+	defer func() { cancel(); _ = cmd.Wait() }()
+	var lines []string
+	sc := bufio.NewScanner(stdout)
+	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	for len(lines) < n && sc.Scan() {
+		if isProxyEvent(sc.Text()) {
+			lines = append(lines, sc.Text()+"\n")
+		}
+	}
+	return lines
 }
 
 // docker runs one docker CLI command to completion.

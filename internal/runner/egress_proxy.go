@@ -33,6 +33,9 @@ const (
 	// The proxy's log events; StartEgress's teardown relays lines naming them.
 	egressRefusedEvent = "egressRefused"
 	egressFailedEvent  = "egressFailed"
+	egressSummaryEvent = "egressSummary"
+	// egressSummaryHosts is how many distinct refused hosts the summary names.
+	egressSummaryHosts = 20
 )
 
 // EgressProxy is an HTTP CONNECT proxy that tunnels to port 443 of an exact
@@ -47,6 +50,12 @@ type EgressProxy struct {
 	// firstByte is the idle limit until a tunnel's first byte moves.
 	firstByte time.Duration
 	slots     chan struct{}
+
+	mu      sync.Mutex
+	refused int
+	failed  int
+	reasons map[string]int
+	hosts   []string
 }
 
 // NewEgressProxy returns a proxy allowing hosts, resolving through the system
@@ -67,14 +76,44 @@ func NewEgressProxy(hosts []string, logger *slog.Logger) *EgressProxy {
 		idle:      egressIdleTimeout,
 		firstByte: egressFirstByteTimeout,
 		slots:     make(chan struct{}, egressMaxTunnels),
+		reasons:   map[string]int{},
+		hosts:     []string{},
 	}
 }
 
 func normalizeHost(h string) string { return strings.TrimSuffix(strings.ToLower(h), ".") }
 
-// reject logs a refusal or failure and answers it; extra is more attrs for the log line.
+// warn logs a refusal or failure, with the host cut to a hostname's length, and
+// counts it for the summary; extra is more attrs for the log line.
+func (p *EgressProxy) warn(event, reason, host string, extra ...any) {
+	host = truncate(host, egressLoggedHostBytes)
+	p.logger.Warn(event, append([]any{"reason", reason, "host", host}, extra...)...)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.reasons[reason]++
+	if event == egressFailedEvent {
+		p.failed++
+		return
+	}
+	p.refused++
+	if len(p.hosts) < egressSummaryHosts && !slices.Contains(p.hosts, host) {
+		p.hosts = append(p.hosts, host)
+	}
+}
+
+// LogSummary logs the totals of every refusal and failure so far, by reason,
+// and the first distinct refused hosts. The log line is bounded, so it survives
+// a flood that rolls the individual lines out of the log; call it when the
+// proxy stops.
+func (p *EgressProxy) LogSummary() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.logger.Info(egressSummaryEvent, "refused", p.refused, "failed", p.failed, "reasons", p.reasons, "firstRefusedHosts", p.hosts)
+}
+
+// reject warns of a refusal or failure and answers it.
 func (p *EgressProxy) reject(w http.ResponseWriter, status int, event, reason, host, msg string, extra ...any) {
-	p.logger.Warn(event, append([]any{"reason", reason, "host", truncate(host, egressLoggedHostBytes)}, extra...)...)
+	p.warn(event, reason, host, extra...)
 	http.Error(w, msg, status)
 }
 
@@ -124,7 +163,7 @@ func (p *EgressProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	client, buf, err := hj.Hijack()
 	if err != nil {
-		p.logger.Warn(egressFailedEvent, "reason", "hijack-failed", "host", host, "err", err.Error())
+		p.warn(egressFailedEvent, "hijack-failed", host, "err", err.Error())
 		return
 	}
 	defer func() { _ = client.Close() }()
@@ -250,7 +289,7 @@ func (p *EgressProxy) pipe(client net.Conn, buffered io.Reader, upstream net.Con
 		}
 		if errors.Is(err, os.ErrDeadlineExceeded) {
 			idleOnce.Do(func() {
-				p.logger.Warn(egressFailedEvent, "reason", "tunnel-idle", "host", host)
+				p.warn(egressFailedEvent, "tunnel-idle", host)
 			})
 		}
 		_ = client.Close()
