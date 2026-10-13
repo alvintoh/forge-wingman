@@ -120,9 +120,11 @@ Auto-merge is off until both are set:
 | Repository "Allow auto-merge" (`allow_auto_merge`) | on |
 | `WINGMAN_AUTO_MERGE` variable | `on`; any other value or none leaves it off |
 
-With both set, a run's S or M PR that is not in the review sample, edits nothing
-outside its plan, fails no check gate and is not a front-end change gets the
-`wingman:auto-merge-eligible` label, which must exist in the repository.
+With both set, a run's M PR that has a recorded plan, is not in the review sample,
+edits nothing outside that plan, fails no check gate and is not a front-end change
+gets the `wingman:auto-merge-eligible` label, which must exist in the repository. A
+run with no recorded plan is never labelled, and its PR body says so; an S run is
+never planned, so none is labelled yet.
 `pr-review.yml` reviews every ready PR against its Linear ticket and, only when the review is clean, the PR carries that
 label and its head is still the commit it reviewed, requests a squash auto-merge
 pinned to that commit, and only on a run's `wingman/` branch. A push to that branch
@@ -138,12 +140,10 @@ valid JSON holds every PR. The PR body names what matched.
 Do not set `WINGMAN_AUTO_MERGE` to `on` yet. The review's verdict comes from its
 own job, and the out-of-plan list no longer comes from the model job: pr-meta derives
 the write set from the branch's bundle and measures it against the plan in the run
-record. Two inputs still come from a runner where the build agent has a shell. The
+record. One input still comes from a runner where the build agent has a shell: the
 summary's `ready` flag decides whether a PR is a draft when the pre-PR loop left
-something open, so it could be forged. And a run with no recorded plan (an S run, or
-any run while the plan stage is off) has no trusted list to be outside of, so nothing
-counts as out of plan. The switch is safe once those are trusted, or accepted as the
-risk.
+something open, so it could be forged. The switch is safe once that is trusted, or
+accepted as the risk.
 
 The review itself is not proof against the build agent either: the agent writes the
 diff the reviewer reads, so it can plant instructions that steer one model to a clean

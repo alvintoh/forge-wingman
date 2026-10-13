@@ -59,21 +59,22 @@ func TestAutoMerge(t *testing.T) {
 		check                                prCheck
 		want                                 bool
 	}{
-		"a ready M run requests it":        {"on", unsampled, "M", "", nil, prCheck{}, true},
-		"a ready S run requests it":        {"on", unsampled, "S", "", nil, prCheck{}, true},
-		"an L run does not":                {"on", unsampled, "L", "", nil, prCheck{}, false},
-		"a sampled run does not":           {"on", sampled, "M", "", nil, prCheck{}, false},
-		"a draft does not":                 {"on", unsampled, "M", "", func(s *runner.Summary) { s.Ready = false }, prCheck{}, false},
-		"an out-of-plan edit does not":     {"on", unsampled, "M", "", nil, prCheck{OutOfPlan: []string{"x.go"}}, false},
-		"a concurrent run's plan does not": {"on", unsampled, "S", "", nil, prCheck{Overlap: "M-2"}, false},
-		"an unread bundle does not":        {"on", unsampled, "M", "", nil, prCheck{Unread: true}, false},
-		"front-end paths do not":           {"on", unsampled, "M", "", nil, prCheck{FrontEnd: []string{"web/"}}, false},
-		"the front-end label does not":     {"on", unsampled, "S", "", nil, prCheck{FrontEnd: []string{"area:fe"}}, false},
-		"a workflow change does not":       {"on", unsampled, "M", "", func(s *runner.Summary) { s.StopReason = runner.StopWorkflowChange }, prCheck{}, false},
-		"a failed check gate does not":     {"on", unsampled, "M", "test", nil, prCheck{}, false},
-		"the switch unset does not":        {"", unsampled, "M", "", nil, prCheck{}, false},
-		"any value but on does not":        {"true", unsampled, "M", "", nil, prCheck{}, false},
-		"the switch in capitals does not":  {"ON", unsampled, "M", "", nil, prCheck{}, false},
+		"a ready M run requests it":            {"on", unsampled, "M", "", nil, prCheck{Planned: true}, true},
+		"an unplanned S run does not":          {"on", unsampled, "S", "", nil, prCheck{}, false},
+		"a run with no recorded plan does not": {"on", unsampled, "M", "", nil, prCheck{}, false},
+		"an L run does not":                    {"on", unsampled, "L", "", nil, prCheck{Planned: true}, false},
+		"a sampled run does not":               {"on", sampled, "M", "", nil, prCheck{Planned: true}, false},
+		"a draft does not":                     {"on", unsampled, "M", "", func(s *runner.Summary) { s.Ready = false }, prCheck{Planned: true}, false},
+		"an out-of-plan edit does not":         {"on", unsampled, "M", "", nil, prCheck{Planned: true, OutOfPlan: []string{"x.go"}}, false},
+		"a concurrent run's plan does not":     {"on", unsampled, "S", "", nil, prCheck{Planned: true, Overlap: "M-2"}, false},
+		"an unread bundle does not":            {"on", unsampled, "M", "", nil, prCheck{Planned: true, Unread: true}, false},
+		"front-end paths do not":               {"on", unsampled, "M", "", nil, prCheck{Planned: true, FrontEnd: []string{"web/"}}, false},
+		"the front-end label does not":         {"on", unsampled, "S", "", nil, prCheck{Planned: true, FrontEnd: []string{"area:fe"}}, false},
+		"a workflow change does not":           {"on", unsampled, "M", "", func(s *runner.Summary) { s.StopReason = runner.StopWorkflowChange }, prCheck{Planned: true}, false},
+		"a failed check gate does not":         {"on", unsampled, "M", "test", nil, prCheck{Planned: true}, false},
+		"the switch unset does not":            {"", unsampled, "M", "", nil, prCheck{Planned: true}, false},
+		"any value but on does not":            {"true", unsampled, "M", "", nil, prCheck{Planned: true}, false},
+		"the switch in capitals does not":      {"ON", unsampled, "M", "", nil, prCheck{Planned: true}, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			sum := runner.Summary{Outcome: runner.OutcomeBuilt, Ready: true}
@@ -84,6 +85,23 @@ func TestAutoMerge(t *testing.T) {
 			tk.Size = tt.size
 			if got := autoMerge(tt.switchValue, tt.runID, tk, sum, tt.failedGate, tt.check); got != tt.want {
 				t.Fatalf("autoMerge = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPlanRecorded(t *testing.T) {
+	for name, tt := range map[string]struct {
+		plan runner.PlanRecord
+		want bool
+	}{
+		"no plan":           {runner.PlanRecord{}, false},
+		"an empty plan":     {runner.PlanRecord{Files: []string{}}, false},
+		"a plan with files": {runner.PlanRecord{Files: []string{"a.go"}}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := planRecorded(tt.plan); got != tt.want {
+				t.Fatalf("planRecorded = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -218,9 +236,8 @@ func TestPlanOverlapNamesTheRunWhosePlanTheseFilesTouch(t *testing.T) {
 	}
 }
 
-// TestOutOfPlanNeedsARecordedPlan is what keeps this dormant until the plan
-// stage is switched on: a run no plan stage recorded — an S ticket, and every
-// run until then — has no trusted list to be outside of.
+// TestOutOfPlanNeedsARecordedPlan holds that a run no plan stage recorded has no
+// trusted list to be outside of; autoMerge refuses such a run on its own.
 func TestOutOfPlanNeedsARecordedPlan(t *testing.T) {
 	changed := []string{"a.go", "b.go"}
 	if got := outOfPlan(runner.PlanRecord{}, changed); got != nil {
@@ -238,6 +255,7 @@ func TestDraftPR(t *testing.T) {
 		want  bool
 	}{
 		"a ready run in plan":     {runner.Summary{Ready: true}, prCheck{Changed: []string{"a.go"}}, false},
+		"no recorded plan":        {runner.Summary{Ready: true}, prCheck{}, false},
 		"an unready run":          {runner.Summary{}, prCheck{}, true},
 		"an out-of-plan edit":     {runner.Summary{Ready: true}, prCheck{OutOfPlan: []string{"b.go"}}, true},
 		"a concurrent run's plan": {runner.Summary{Ready: true}, prCheck{Overlap: "M-1"}, true},
@@ -315,6 +333,26 @@ func TestPRBodyNamesAnUnreadWriteSetAsWhyThePRIsADraft(t *testing.T) {
 	}
 }
 
+func TestRenderPRNamesAMissingPlan(t *testing.T) {
+	now := time.Now()
+	sum := buildSummary(slog.New(slog.NewTextHandler(io.Discard, nil)),
+		encodedSummary(t, "42-1", now), "42-1", prRecord.Ticket(), now)
+	_, body, err := renderPR(prTemplate(t), prRecord, sum, "", "https://example.test/run", "", prCheck{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "**No recorded plan:**") {
+		t.Fatalf("body = %q, want the missing plan named", body)
+	}
+	_, body, err = renderPR(prTemplate(t), prRecord, sum, "", "https://example.test/run", "", prCheck{Planned: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(body, "No recorded plan") {
+		t.Fatalf("body names a missing plan the run has:\n%s", body)
+	}
+}
+
 func TestDraftPRNamesEveryReasonTheWriteSetHoldsItBack(t *testing.T) {
 	now := time.Now()
 	ready := buildSummary(slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -325,6 +363,7 @@ func TestDraftPRNamesEveryReasonTheWriteSetHoldsItBack(t *testing.T) {
 		want  bool
 	}{
 		"a clear write set":          {prCheck{}, false},
+		"no recorded plan":           {prCheck{Planned: false}, false},
 		"an unread write set":        {prCheck{Unread: true}, true},
 		"an edit outside the plan":   {prCheck{OutOfPlan: []string{"a.go"}}, true},
 		"a concurrent run's plan":    {prCheck{Overlap: "FRG-79"}, true},
