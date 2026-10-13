@@ -5,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
 
 	"cloud.google.com/go/firestore"
+	"cloud.google.com/go/firestore/apiv1/firestorepb"
 	"google.golang.org/api/iterator"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -157,11 +159,17 @@ func PlanKey(runID string) string { return runID + planKeySuffix }
 // Queue admits runs to the store's queue and claims them off it.
 type Queue struct {
 	client *firestore.Client
+	logger *slog.Logger
 }
 
-// NewQueue returns a Queue backed by client.
+// NewQueue returns a Queue backed by client, logging to the default logger.
 func NewQueue(client *firestore.Client) *Queue {
-	return &Queue{client: client}
+	return &Queue{client: client, logger: slog.Default()}
+}
+
+// WithLogger returns a Queue over the same client that logs to logger.
+func (q *Queue) WithLogger(logger *slog.Logger) *Queue {
+	return &Queue{client: q.client, logger: logger}
 }
 
 // Exists reports whether a run record already exists for runID.
@@ -349,46 +357,17 @@ func queuedAtSource(row map[string]any) (time.Time, bool) {
 // its build to be claimed. Bounded by candidateScanLimit, so a long backlog of
 // deferred tickets costs one scan rather than an unbounded one.
 //
-// The ordered query skips a row with no queued_at, so a second scan adds those
-// rows, ordered as if queued before every other row of their priority. Like the
-// ordered query, it leaves out a row with no priority.
+// Firestore drops a document missing an ordered field from the query, so a row
+// with no priority or no queued_at is never listed; warnUnlisted logs them.
 func (q *Queue) Candidates(ctx context.Context) ([]dispatcher.Candidate, error) {
-	ordered, err := q.scanCandidates(ctx, q.client.Collection(runsCollection).
+	q.warnUnlisted(ctx)
+	iter := q.client.Collection(runsCollection).
 		Where(stateField, "in", candidateStates).
 		OrderBy(priorityField, firestore.Asc).
 		OrderBy(queuedAtField, firestore.Asc).
-		Limit(candidateScanLimit))
-	if err != nil {
-		return nil, err
-	}
-	unstamped, err := q.scanCandidates(ctx, q.client.Collection(runsCollection).Where(stateField, "in", candidateStates))
-	if err != nil {
-		return nil, err
-	}
-	all := slices.Concat(ordered, slices.DeleteFunc(unstamped, func(c queuedCandidate) bool { return c.stamped || !c.hasPriority }))
-	slices.SortStableFunc(all, func(a, b queuedCandidate) int {
-		return cmp.Or(cmp.Compare(a.Priority, b.Priority), a.queuedAt.Compare(b.queuedAt))
-	})
-	out := make([]dispatcher.Candidate, 0, min(len(all), candidateScanLimit))
-	for _, c := range all[:min(len(all), candidateScanLimit)] {
-		out = append(out, c.Candidate)
-	}
-	return out, nil
-}
-
-// queuedCandidate is a Candidate with the queue position the store orders it by.
-type queuedCandidate struct {
-	dispatcher.Candidate
-	queuedAt    time.Time
-	stamped     bool
-	hasPriority bool
-}
-
-// scanCandidates reads the rows query returns as candidates.
-func (q *Queue) scanCandidates(ctx context.Context, query firestore.Query) ([]queuedCandidate, error) {
-	iter := query.Documents(ctx)
+		Limit(candidateScanLimit).Documents(ctx)
 	defer iter.Stop()
-	var out []queuedCandidate
+	var out []dispatcher.Candidate
 	for {
 		snap, err := iter.Next()
 		if errors.Is(err, iterator.Done) {
@@ -408,7 +387,7 @@ func (q *Queue) scanCandidates(ctx context.Context, query firestore.Query) ([]qu
 		if v, ok := data[privateField]; ok {
 			private, _ = v.(bool)
 		}
-		priority, hasPriority := data[priorityField].(int64)
+		priority, _ := data[priorityField].(int64)
 		var stage string
 		if state, _ := data[stateField].(string); state == statePlanned {
 			stage = dispatcher.StageBuild
@@ -426,10 +405,47 @@ func (q *Queue) scanCandidates(ctx context.Context, query firestore.Query) ([]qu
 			labels := labelsOf(data, lastResortModelsField)
 			cand.LastResort = &labels
 		}
-		queuedAt, stamped := data[queuedAtField].(time.Time)
-		out = append(out, queuedCandidate{Candidate: cand, queuedAt: queuedAt, stamped: stamped, hasPriority: hasPriority})
+		out = append(out, cand)
 	}
 	return out, nil
+}
+
+// warnUnlisted logs once when more queued or planned rows exist than the
+// ordered query can list. A failed count is logged and left at that: a
+// diagnostic must not stop the poll.
+func (q *Queue) warnUnlisted(ctx context.Context) {
+	queued, listed, err := q.countUnlisted(ctx)
+	if err != nil {
+		q.logger.WarnContext(ctx, "queuedRowCountFailed", "err", err)
+		return
+	}
+	if queued != listed {
+		q.logger.WarnContext(ctx, "queuedRowsNotListed", "queued", queued, "listed", listed)
+	}
+}
+
+// countUnlisted counts the queued and planned rows, and those among them the
+// ordered query lists.
+func (q *Queue) countUnlisted(ctx context.Context) (queued, listed int64, err error) {
+	rows := q.client.Collection(runsCollection).Where(stateField, "in", candidateStates)
+	if queued, err = countRows(ctx, rows); err != nil {
+		return 0, 0, err
+	}
+	listed, err = countRows(ctx, rows.OrderBy(priorityField, firestore.Asc).OrderBy(queuedAtField, firestore.Asc))
+	return queued, listed, err
+}
+
+// countRows counts the rows query matches without reading them.
+func countRows(ctx context.Context, query firestore.Query) (int64, error) {
+	res, err := query.NewAggregationQuery().WithCount("n").Get(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n, ok := res["n"].(*firestorepb.Value)
+	if !ok {
+		return 0, fmt.Errorf("count result is %T, not a value", res["n"])
+	}
+	return n.GetIntegerValue(), nil
 }
 
 // Planned lists every run whose plan stage has recorded a write set and whose

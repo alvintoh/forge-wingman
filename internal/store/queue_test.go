@@ -1,20 +1,28 @@
 package store
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"maps"
 	"os"
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"cloud.google.com/go/firestore"
+	"google.golang.org/api/option"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
@@ -317,38 +325,6 @@ func TestCandidatesPutsARequeuedRunBehindANewerOne(t *testing.T) {
 	}
 }
 
-func TestCandidatesListsARowWithNoQueuedAtAheadOfItsPriority(t *testing.T) {
-	q, client := queue(t)
-	ctx := context.Background()
-	stamped, legacy := fresh("tie-stamped"), fresh("tie-legacy")
-	forget(t, client, stamped)
-	run := queuedRun(stamped, 3)
-	run.At = queueAt.Add(-time.Hour)
-	if err := q.Enqueue(ctx, run); err != nil {
-		t.Fatal(err)
-	}
-	seedRow(t, client, legacy, map[string]any{stateField: stateQueued, priorityField: int64(3)})
-	if got, want := ownOrder(t, q, stamped, legacy), []string{legacy, stamped}; !slices.Equal(got, want) {
-		t.Fatalf("candidate order = %v, want %v", got, want)
-	}
-}
-
-func TestCandidatesKeepsARowWithNoQueuedAtBehindAHigherPriority(t *testing.T) {
-	q, client := queue(t)
-	ctx := context.Background()
-	urgent, legacy := fresh("tie-urgent"), fresh("tie-legacy-low")
-	forget(t, client, urgent)
-	run := queuedRun(urgent, 2)
-	run.At = queueAt
-	if err := q.Enqueue(ctx, run); err != nil {
-		t.Fatal(err)
-	}
-	seedRow(t, client, legacy, map[string]any{stateField: stateQueued, priorityField: int64(3)})
-	if got, want := ownOrder(t, q, urgent, legacy), []string{urgent, legacy}; !slices.Equal(got, want) {
-		t.Fatalf("candidate order = %v, want %v", got, want)
-	}
-}
-
 func TestCandidatesLeavesOutARowWithNoPriority(t *testing.T) {
 	q, client := queue(t)
 	noPriority := fresh("tie-no-priority")
@@ -361,7 +337,7 @@ func TestCandidatesLeavesOutARowWithNoPriority(t *testing.T) {
 func TestCandidatesStaysWithinTheScanLimit(t *testing.T) {
 	q, client := queue(t)
 	for range candidateScanLimit + 1 {
-		seedRow(t, client, fresh("scan-limit"), map[string]any{stateField: stateQueued, priorityField: int64(1)})
+		seedRow(t, client, fresh("scan-limit"), map[string]any{stateField: stateQueued, priorityField: int64(1), queuedAtField: queueAt})
 	}
 	cands, err := q.Candidates(context.Background())
 	if err != nil {
@@ -369,6 +345,103 @@ func TestCandidatesStaysWithinTheScanLimit(t *testing.T) {
 	}
 	if len(cands) != candidateScanLimit {
 		t.Fatalf("candidates = %d, want %d", len(cands), candidateScanLimit)
+	}
+}
+
+func TestCandidatesLogsARowTheOrderedQueryCannotList(t *testing.T) {
+	for name, fields := range map[string]map[string]any{
+		"no queued_at": {stateField: stateQueued, priorityField: int64(3)},
+		"no priority":  {stateField: stateQueued, queuedAtField: queueAt},
+	} {
+		t.Run(name, func(t *testing.T) {
+			q, client := queue(t)
+			var logged bytes.Buffer
+			q = q.WithLogger(slog.New(slog.NewJSONHandler(&logged, nil)))
+			ctx := context.Background()
+			queuedBefore, listedBefore, err := q.countUnlisted(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := fresh("tie-unlisted")
+			seedRow(t, client, id, fields)
+			if got := ownOrder(t, q, id); len(got) != 0 {
+				t.Fatalf("listed the row: %v", got)
+			}
+			queued, listed, err := q.countUnlisted(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if queued-queuedBefore != 1 || listed != listedBefore {
+				t.Fatalf("counts moved by %d queued and %d listed, want 1 and 0", queued-queuedBefore, listed-listedBefore)
+			}
+			var rec struct {
+				Msg    string `json:"msg"`
+				Queued int64  `json:"queued"`
+				Listed int64  `json:"listed"`
+			}
+			if err := json.NewDecoder(&logged).Decode(&rec); err != nil {
+				t.Fatalf("no log record: %v", err)
+			}
+			if rec.Msg != "queuedRowsNotListed" || rec.Queued <= rec.Listed {
+				t.Fatalf("log = %+v, want queuedRowsNotListed with more queued than listed", rec)
+			}
+		})
+	}
+}
+
+// countingQueue returns a Queue whose gRPC calls are counted by method, and
+// whose aggregation queries fail when failCounts is set.
+func countingQueue(t *testing.T, failCounts bool) (q *Queue, queries, counts *atomic.Int64) {
+	t.Helper()
+	if os.Getenv("FIRESTORE_EMULATOR_HOST") == "" {
+		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
+	}
+	queries, counts = new(atomic.Int64), new(atomic.Int64)
+	intercept := func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+		switch {
+		case strings.HasSuffix(method, "/RunQuery"):
+			queries.Add(1)
+		case strings.HasSuffix(method, "/RunAggregationQuery"):
+			counts.Add(1)
+			if failCounts {
+				return nil, status.Error(codes.PermissionDenied, "count refused")
+			}
+		}
+		return streamer(metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer owner"), desc, cc, method, opts...)
+	}
+	conn, err := grpc.NewClient(os.Getenv("FIRESTORE_EMULATOR_HOST"),
+		grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithChainStreamInterceptor(intercept))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	client, err := firestore.NewClient(context.Background(), "forge-wingman-test", option.WithGRPCConn(conn))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	return NewQueue(client), queries, counts
+}
+
+func TestCandidatesReadsOneOrderedQuery(t *testing.T) {
+	q, queries, counts := countingQueue(t, false)
+	if _, err := q.Candidates(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if queries.Load() != 1 || counts.Load() != 2 {
+		t.Fatalf("Candidates ran %d row queries and %d counts, want 1 and 2", queries.Load(), counts.Load())
+	}
+}
+
+func TestCandidatesStillListsWhenTheCountsFail(t *testing.T) {
+	q, queries, _ := countingQueue(t, true)
+	var logged bytes.Buffer
+	q = q.WithLogger(slog.New(slog.NewJSONHandler(&logged, nil)))
+	if _, err := q.Candidates(context.Background()); err != nil {
+		t.Fatalf("a failed count stopped the poll: %v", err)
+	}
+	if queries.Load() != 1 || !strings.Contains(logged.String(), `"msg":"queuedRowCountFailed"`) {
+		t.Fatalf("row queries = %d, log = %q, want 1 and queuedRowCountFailed", queries.Load(), logged.String())
 	}
 }
 
@@ -519,6 +592,7 @@ func TestCandidatesDefaultsAMissingPrivateFieldToTrue(t *testing.T) {
 	if _, err := client.Collection(runsCollection).Doc(id).Set(ctx, map[string]any{
 		stateField:    stateQueued,
 		priorityField: int64(1),
+		queuedAtField: queueAt,
 		repoField:     "octo/scratch",
 		sizeField:     "S",
 		// privateField deliberately omitted.
