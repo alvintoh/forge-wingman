@@ -72,18 +72,39 @@ rate carries none is never held.
 Two modes decide it: `off-peak-only`, the default above, and `always`, which
 starts a run at any hour. `runner peak-mode` prints the mode and
 `runner peak-mode -mode always` sets it; `-mode off-peak-only` restores the
-default. The next poll reads it, so a switch needs no redeploy. The command
-reads the store and refuses any account but the repository's owner, so it needs
-three variables: the store's project, and the owner's account as both the
-identity and the repository's owner.
+default. The next poll reads it, so a switch needs no redeploy — see
+[Operate](#operate) for the command and the environment it needs.
+
+## Operate
+
+These subcommands run from a local checkout against the store itself, for the
+actions a run's workflow must not take on its own. Each needs the same three
+variables:
 
 ```sh
-export GOOGLE_CLOUD_PROJECT=forge-wingman  # the store's project
-export WINGMAN_ACCOUNT=<owner>             # the repository's owner
-export GITHUB_REPOSITORY_OWNER=<owner>     # the same account
-runner peak-mode                           # prints off-peak-only or always
-runner peak-mode -mode always              # starts runs at any hour
+export GOOGLE_CLOUD_PROJECT=<project>   # the store's project
+export WINGMAN_ACCOUNT=<owner>          # the account every run acts for
+export GITHUB_REPOSITORY_OWNER=<owner>  # the account the repository belongs to
 ```
+
+| Command | What it does |
+|---|---|
+| `runner enable-provider -provider <name>` | admits a halted provider back to dispatch |
+| `runner reset-breaker` | clears the breaker a systemic stop tripped, admitting dispatch again |
+| `runner peak-mode [-mode off-peak-only\|always]` | prints the peak mode, or sets whether a run waits out its model's peak-price hours |
+| `runner requeue -run-id <id>` | returns a stopped or abandoned run to the queue for another attempt |
+| `runner backfill-queued-at [-dry-run]` | stamps `queued_at` on the queued and planned runs written before the field existed |
+| `runner plan-define -provider <name> …` | records a provider plan's price, billing, limit behaviour, pages and harnesses |
+| `runner plan-optin -provider <name> [-private]` | records the owner's consent to a per-token provider's spend, or with `-private` to private repositories' runs on its free tier |
+| `runner plan-verdict -provider <name> …` | records the verdict on a plan's terms with its wording and source |
+| `runner plan-reply -provider <name> …` | records a vendor reply and the verdict it leads to |
+| `runner plan-list` | prints every plan side by side, flagging the ones to look at |
+
+Read-only: `plan-list` only reads, and `peak-mode` without `-mode` and
+`backfill-queued-at -dry-run` write nothing, so they are safe to run against the
+store to look. Every other command above writes to it. All refuse an account that
+is not the repository's owner, which guards against the wrong account by mistake
+only: Firestore IAM decides who may write.
 
 ## Shape
 
