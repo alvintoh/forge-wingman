@@ -294,9 +294,10 @@ type ObjectCreator interface {
 // known, dropping its entry from the in-flight total FR-22 admission reads
 // (adr/0003). Settle is idempotent: a run holding no reservation settles as a
 // no-op, so a record job that runs more than once for the same run settles it
-// exactly once.
+// exactly once. A nil attempt is a run dispatched before the workflow carried
+// one.
 type Ledger interface {
-	Settle(ctx context.Context, runID string) error
+	Settle(ctx context.Context, runID string, attempt *int) error
 }
 
 // ProviderCostReader reads a provider's own settled cost history, which
@@ -397,6 +398,8 @@ type FinalizeInput struct {
 	// CheckReport is the check job's failed_gate output, or empty when it did not run.
 	CheckReport string
 	RunURL      string
+	// Attempt is the attempt the dispatcher claimed this run at, nil when the dispatch carried none.
+	Attempt *int
 }
 
 // Finalize writes the run's outcome into its record from the record's ticket, the
@@ -505,7 +508,7 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, reader Prov
 	// are idempotent, so rerunning this job retries the settle safely —
 	// state that explicitly, since this failure otherwise reads as an
 	// ordinary infra error with no obvious fix.
-	if err := ledger.Settle(ctx, in.RunID); err != nil {
+	if err := ledger.Settle(ctx, in.RunID, in.Attempt); err != nil {
 		return rec, fmt.Errorf("settling run %s (rerun this job to retry — PutRecord and Settle are both idempotent): %w", in.RunID, err)
 	}
 	return rec, nil

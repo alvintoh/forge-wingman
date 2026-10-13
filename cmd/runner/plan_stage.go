@@ -115,7 +115,12 @@ func recordPlanStage(ctx context.Context, logger *slog.Logger, e env, args []str
 	dispatcherURI := fs.String("dispatcher-uri", "", "Cloud Run run endpoint of the dispatcher job to wake")
 	runURL := fs.String("run-url", "", "URL of this plan stage's workflow run")
 	planStageResult := fs.String("plan-stage-result", "", "how the plan-stage job ended, as GitHub reports it: success, failure or cancelled")
+	claimAttempt := fs.String("attempt", "", "attempt the dispatcher claimed the run at, empty for a run dispatched without one")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	attempt, err := parseClaimAttempt(*claimAttempt)
+	if err != nil {
 		return err
 	}
 	if err := e.identity.CheckAccount(); err != nil {
@@ -178,7 +183,7 @@ func recordPlanStage(ctx context.Context, logger *slog.Logger, e env, args []str
 		}); err != nil {
 			return err
 		}
-		if err := queue.Settle(ctx, store.PlanKey(*runID)); err != nil {
+		if err := queue.SettlePlan(ctx, *runID, attempt); err != nil {
 			return fmt.Errorf("settling %s's plan reservation: %w", *runID, err)
 		}
 	}

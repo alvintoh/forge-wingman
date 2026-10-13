@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"strings"
+	"strconv"
 	"time"
 
 	"cloud.google.com/go/firestore"
@@ -152,9 +152,32 @@ var candidateStates = []string{stateQueued, statePlanned}
 // times, and the build-stage claim must find the run's own key free.
 const planKeySuffix = "#plan"
 
-// PlanKey is the ledger key a plan-stage claim of runID books. The plan job
-// settles it; the build stage books runID itself.
-func PlanKey(runID string) string { return runID + planKeySuffix }
+// reservationKey is the ledger key of runID's claim at attempt: every claim
+// books under it, so one attempt's settle never reaches another's entry.
+func reservationKey(runID string, attempt int, stage string) string {
+	return stageKey(runID+"#a"+strconv.Itoa(attempt), stage)
+}
+
+// legacyReservationKey is the key a claim booked under before attempts were
+// part of it. It is read only to settle those claims and can go once the runs
+// in flight at that deploy have drained.
+func legacyReservationKey(runID, stage string) string {
+	return stageKey(runID, stage)
+}
+
+// stageKey places a plan-stage claim's key beside the build's.
+func stageKey(base, stage string) string {
+	if stage == dispatcher.StagePlan {
+		return base + planKeySuffix
+	}
+	return base
+}
+
+// rowAttempt is the attempt a run row is on: how many times it has been requeued.
+func rowAttempt(row map[string]any) int {
+	n, _ := row[attemptField].(int64)
+	return int(n)
+}
 
 // Queue admits runs to the store's queue and claims them off it.
 type Queue struct {
@@ -409,6 +432,7 @@ func (q *Queue) Candidates(ctx context.Context) ([]dispatcher.Candidate, error) 
 			Stage:       stage,
 			PlanFiles:   stringList(data, planFilesField),
 			Plan:        str(data, planField),
+			Attempt:     rowAttempt(data),
 		}
 		if last, _ := data[lastResortField].(bool); last {
 			labels := labelsOf(data, lastResortModelsField)
@@ -535,9 +559,9 @@ func labelsOf(row map[string]any, field string) runner.ModelLabels {
 }
 
 // ledgerDoc is the dispatch/ledger document's own shape (adr/0003): the
-// reservation every claimed-but-not-yet-settled run holds, keyed by run id,
-// and the discovered concurrency limit N beside them. A ledger written before
-// N existed reads as 1.
+// reservation every claimed-but-not-yet-settled run holds, keyed by run id and
+// attempt, and the discovered concurrency limit N beside them. A ledger written
+// before N existed reads as 1.
 type ledgerDoc struct {
 	Reservations map[string]reservationEntry `firestore:"reservations"`
 	N            int                         `firestore:"n"`
@@ -561,6 +585,7 @@ type reservationEntry struct {
 	Repo               string       `firestore:"repo"`
 	Size               string       `firestore:"size"`
 	ClaimedAt          time.Time    `firestore:"claimed_at"`
+	Attempt            int          `firestore:"attempt"`
 	// Stage is the stage this reserve claimed — plan or build; empty for a
 	// single-stage claim, which plans and builds in one job.
 	Stage string `firestore:"stage"`
@@ -624,10 +649,10 @@ func reservedTotals(doc ledgerDoc) dispatcher.Totals {
 // the row, and (false, <binding>, nil) when a condition withholds it, which
 // it also records on the row.
 //
-// A plan-stage reservation is booked under PlanKey(runID), beside the run's
-// own key, so the build stage can claim the run while its plan is settled,
-// and the tier a plan-stage claim wrote onto the row stands for the whole
-// run: a build-stage claim leaves those fields as its plan stage left them.
+// The reservation is booked under the key of the row's attempt, a plan-stage
+// one beside the build's, so the build stage can claim the run while its plan
+// is settled, and the tier a plan-stage claim wrote onto the row stands for the
+// whole run: a build-stage claim leaves those fields as its plan stage left them.
 func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg dispatcher.BudgetConfig, facts dispatcher.Facts, res dispatcher.Reservation) (bool, string, error) {
 	rowRef := q.client.Collection(runsCollection).Doc(runID)
 	ledgerRef := q.ledgerRef()
@@ -681,17 +706,15 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 		if ledger.Reservations == nil {
 			ledger.Reservations = map[string]reservationEntry{}
 		}
-		key := runID
-		if res.Stage == dispatcher.StagePlan {
-			key = PlanKey(runID)
-		}
-		ledger.Reservations[key] = reservationEntry{
+		attempt := rowAttempt(data)
+		ledger.Reservations[reservationKey(runID, attempt, res.Stage)] = reservationEntry{
 			ProviderCostMicros: res.ProviderCost,
 			RunnerMinutes:      res.RunnerMinutes,
 			TicketID:           cand.Ticket,
 			Repo:               cand.Repo,
 			Size:               cand.Size,
 			ClaimedAt:          at,
+			Attempt:            attempt,
 			Stage:              res.Stage,
 			Files:              res.Files,
 		}
@@ -900,17 +923,26 @@ func onPlan(row map[string]any, plan string) bool {
 	return plan == runner.Provider(runner.DefaultModel())
 }
 
-// reservation is the entry runID's stage holds and the ledger key holding it:
-// a plan-stage claim's key is PlanKey(runID), every other claim's is the run
-// id itself.
-func (d ledgerDoc) reservation(runID string) (key string, entry reservationEntry, ok bool) {
-	if e, has := d.Reservations[runID]; has {
-		return runID, e, true
+// reservedKeys lists the ledger keys holding runID's reservation at attempt,
+// build before plan. The pre-attempt keys count only when none of the attempt's
+// own is held, so a legacy entry is never matched once the attempt has one.
+func (d ledgerDoc) reservedKeys(runID string, attempt int) []string {
+	held := func(keys ...string) []string {
+		return slices.DeleteFunc(keys, func(k string) bool { _, has := d.Reservations[k]; return !has })
 	}
-	if e, has := d.Reservations[PlanKey(runID)]; has {
-		return PlanKey(runID), e, true
+	if keys := held(reservationKey(runID, attempt, dispatcher.StageBuild), reservationKey(runID, attempt, dispatcher.StagePlan)); len(keys) > 0 {
+		return keys
 	}
-	return runID, reservationEntry{}, false
+	return held(legacyReservationKey(runID, dispatcher.StageBuild), legacyReservationKey(runID, dispatcher.StagePlan))
+}
+
+// reservation is the entry runID holds at attempt and the ledger key holding it.
+func (d ledgerDoc) reservation(runID string, attempt int) (key string, entry reservationEntry, ok bool) {
+	keys := d.reservedKeys(runID, attempt)
+	if len(keys) == 0 {
+		return "", reservationEntry{}, false
+	}
+	return keys[0], d.Reservations[keys[0]], true
 }
 
 // Release returns a claimed run to the queue and drops its ledger
@@ -929,7 +961,11 @@ func (q *Queue) Release(ctx context.Context, runID string, at time.Time) error {
 		if err != nil {
 			return err
 		}
-		key, entry, has := ledger.reservation(runID)
+		snap, err := tx.Get(rowRef)
+		if err != nil {
+			return err
+		}
+		key, entry, has := ledger.reservation(runID, rowAttempt(snap.Data()))
 		state := stateQueued
 		if has && entry.Stage == dispatcher.StageBuild {
 			state = statePlanned
@@ -981,15 +1017,15 @@ func (q *Queue) Stop(ctx context.Context, runID string, reason runner.StopReason
 			{Path: stopDetailField, Value: detail},
 			{Path: updatedAtField, Value: at},
 		}
-		key, entry, has := ledger.reservation(runID)
-		if !has {
-			return tx.Update(rowRef, updates)
-		}
-		var row planRow
 		snap, err := tx.Get(rowRef)
 		if err != nil {
 			return err
 		}
+		key, entry, has := ledger.reservation(runID, rowAttempt(snap.Data()))
+		if !has {
+			return tx.Update(rowRef, updates)
+		}
+		var row planRow
 		if err := snap.DataTo(&row); err != nil {
 			return err
 		}
@@ -1086,10 +1122,7 @@ func (q *Queue) requeue(ctx context.Context, runID string, at time.Time,
 			return err
 		}
 		row := snap.Data()
-		attempt := 1
-		if n, ok := row[attemptField].(int64); ok {
-			attempt = int(n) + 1
-		}
+		attempt := rowAttempt(row) + 1
 		state, extra, err := decide(row, attempt)
 		if err != nil {
 			return err
@@ -1116,7 +1149,7 @@ func (q *Queue) requeue(ctx context.Context, runID string, at time.Time,
 			return err
 		}
 		result = RequeueResult{State: state, Attempt: attempt}
-		return dropReservations(tx, ledgerRef, ledger.Reservations, runID)
+		return dropReservations(tx, ledgerRef, ledger, runID, attempt-1)
 	})
 	if err != nil {
 		return RequeueResult{}, fmt.Errorf("requeueing run %s: %w", runID, err)
@@ -1156,14 +1189,11 @@ func planStamped(row map[string]any) bool {
 	return ok && !at.IsZero()
 }
 
-// dropReservations removes runID's own and plan-stage ledger reservations when
-// they exist, in one write; a run that holds neither is left alone.
-func dropReservations(tx *firestore.Transaction, ledgerRef *firestore.DocumentRef, reservations map[string]reservationEntry, runID string) error {
+// dropReservations removes the ledger reservations runID holds at attempt, in
+// one write; a run that holds none is left alone.
+func dropReservations(tx *firestore.Transaction, ledgerRef *firestore.DocumentRef, ledger ledgerDoc, runID string, attempt int) error {
 	var updates []firestore.Update
-	for _, key := range []string{runID, PlanKey(runID)} {
-		if _, has := reservations[key]; !has {
-			continue
-		}
+	for _, key := range ledger.reservedKeys(runID, attempt) {
 		updates = append(updates, firestore.Update{
 			FieldPath: firestore.FieldPath{"reservations", key},
 			Value:     firestore.Delete,
@@ -1185,28 +1215,45 @@ func (q *Queue) RecordVerdict(ctx context.Context, runID string, verdict prov.Ve
 	return nil
 }
 
-// Settle removes runID's reservation from the ledger, once its record carries
-// its actual cost (runner.Finalize), and in the same transaction moves N by
-// what the settled run showed. It is a no-op when the run holds no
-// reservation, so a run whose record job runs more than once settles exactly
-// once (adr/0003).
+// Settle removes the reservation runID holds at attempt from the
+// ledger, once its record carries its actual cost (runner.Finalize), and in
+// the same transaction moves N by what the settled run showed. It is a no-op
+// when that attempt holds no reservation, so a record job that runs more than
+// once settles exactly once, and a late job never reaches a later attempt's
+// entry (adr/0003).
 //
-// A plan-stage reservation — keyed PlanKey(runID) — settles differently: the
-// plan stage ran no build, so it says nothing about running at N and is not
-// observed. Its reserved estimate accumulates onto the plan spend already on
-// the run row — a run that plans again after being suspended counts every plan
-// — since the plan job reports no summary; that figure is summed by the budget
-// windows beside a run's own settlement, and the row moves to planned for its
-// build to claim.
-func (q *Queue) Settle(ctx context.Context, runID string) error {
+// A nil attempt is a run claimed before attempts were stamped: it settles the
+// pre-attempt key.
+//
+// A plan-stage reservation, settled by SettlePlan, differs: the plan stage
+// ran no build, so it says nothing about running at N and is not observed. Its
+// reserved estimate accumulates onto the plan spend already on the run row — a
+// run that plans again after being suspended counts every plan — since the plan
+// job reports no summary; that figure is summed by the budget windows beside a
+// run's own settlement, and the row moves to planned for its build to claim.
+func (q *Queue) Settle(ctx context.Context, runID string, attempt *int) error {
+	return q.settle(ctx, runID, attempt, dispatcher.StageBuild)
+}
+
+// SettlePlan settles the plan-stage reservation runID holds at attempt, the way
+// Settle does a build's.
+func (q *Queue) SettlePlan(ctx context.Context, runID string, attempt *int) error {
+	return q.settle(ctx, runID, attempt, dispatcher.StagePlan)
+}
+
+func (q *Queue) settle(ctx context.Context, runID string, attempt *int, stage string) error {
 	ledgerRef := q.ledgerRef()
-	rowRef := q.client.Collection(runsCollection).Doc(strings.TrimSuffix(runID, planKeySuffix))
+	rowRef := q.client.Collection(runsCollection).Doc(runID)
+	key := legacyReservationKey(runID, stage)
+	if attempt != nil {
+		key = reservationKey(runID, *attempt, stage)
+	}
 	err := q.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		ledger, err := q.readLedger(tx, ledgerRef)
 		if err != nil {
 			return err
 		}
-		entry, has := ledger.Reservations[runID]
+		entry, has := ledger.Reservations[key]
 		if !has {
 			return nil
 		}
@@ -1219,7 +1266,7 @@ func (q *Queue) Settle(ctx context.Context, runID string) error {
 			if err := snap.DataTo(&row); err != nil {
 				return err
 			}
-			updates, ledgerUpdates := planSettle(runID, entry, row)
+			updates, ledgerUpdates := planSettle(key, entry, row)
 			updates = append(updates, firestore.Update{Path: stateField, Value: statePlanned})
 			if err := tx.Update(rowRef, updates); err != nil {
 				return err
@@ -1242,7 +1289,7 @@ func (q *Queue) Settle(ctx context.Context, runID string) error {
 			}
 		}
 		return tx.Update(ledgerRef, []firestore.Update{
-			{FieldPath: firestore.FieldPath{"reservations", runID}, Value: firestore.Delete},
+			{FieldPath: firestore.FieldPath{"reservations", key}, Value: firestore.Delete},
 			{Path: "n", Value: next.N},
 			{Path: "stable_runs", Value: next.Stable},
 			{Path: "changed_after", Value: changedAfter},

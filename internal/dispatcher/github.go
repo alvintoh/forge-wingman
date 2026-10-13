@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/alvintoh/forge-wingman/internal/runner"
@@ -56,11 +57,15 @@ type GitHub struct {
 // documented 204 for this endpoint when it was added and answers 200 with the
 // run's URLs now, and both mean the run was started.
 //
+// The attempt input carries the attempt the claim booked under, so the run
+// settles that reservation and no later one; the workflow must declare the
+// input before this sends it, or GitHub answers 422.
+//
 // A claim of the plan stage dispatches with stage=plan, which gates the
 // workflows' jobs onto the plan; every other claim dispatches no stage, which
 // the workflows' own default reads as build.
 func (g GitHub) Dispatch(ctx context.Context, c Claim) error {
-	inputs := map[string]string{"run_id": c.RunID}
+	inputs := map[string]string{"run_id": c.RunID, "attempt": strconv.Itoa(c.Attempt)}
 	if c.Stage == StagePlan {
 		inputs["stage"] = StagePlan
 	}

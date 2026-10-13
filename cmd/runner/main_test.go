@@ -719,7 +719,7 @@ func (failingRecords) PutRecord(context.Context, string, runner.Record) error {
 
 type noLedger struct{}
 
-func (noLedger) Settle(context.Context, string) error { return nil }
+func (noLedger) Settle(context.Context, string, *int) error { return nil }
 
 func TestFinalizeRaisesASystemicStopWhoseRecordCannotBeWritten(t *testing.T) {
 	notices, breaker := &fakeNotices{}, &fakeBreaker{}
@@ -1308,5 +1308,39 @@ func TestAgentProbeNeedsAnImageAndACommand(t *testing.T) {
 		if err := agentProbe(context.Background(), io.Discard, io.Discard, args); err == nil {
 			t.Errorf("agentProbe %v succeeded, want a usage error", args)
 		}
+	}
+}
+
+func TestParseClaimAttempt(t *testing.T) {
+	if got, err := parseClaimAttempt(""); got != nil || err != nil {
+		t.Fatalf("empty = %v, %v, want nil: a run dispatched without an attempt", got, err)
+	}
+	if got, err := parseClaimAttempt("0"); err != nil || got == nil || *got != 0 {
+		t.Fatalf("0 = %v, %v, want attempt 0, which is a real attempt", got, err)
+	}
+	if got, err := parseClaimAttempt("2"); err != nil || got == nil || *got != 2 {
+		t.Fatalf("2 = %v, %v, want attempt 2", got, err)
+	}
+	for _, bad := range []string{"-1", "x", "1.5", " 1", "2147483648"} {
+		if _, err := parseClaimAttempt(bad); err == nil {
+			t.Fatalf("%q parsed, want an error", bad)
+		}
+	}
+}
+
+func TestRunWorkflowStampsTheClaimAttemptOnEverySettlingStep(t *testing.T) {
+	yml, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "run.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(yml)
+	if want := "      attempt:\n        description: "; !strings.Contains(s, want) {
+		t.Errorf("run.yml lacks the attempt input")
+	}
+	if got := strings.Count(s, `-attempt "$ATTEMPT"`); got != 3 {
+		t.Errorf("run.yml passes the claim attempt %d times, want 3: record-plan-stage, record and its unreadable-summary fallback", got)
+	}
+	if got := strings.Count(s, "ATTEMPT: ${{ inputs.attempt }}"); got != 2 {
+		t.Errorf("run.yml reads the attempt input into %d jobs, want 2: record-plan-stage and record", got)
 	}
 }

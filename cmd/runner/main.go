@@ -565,7 +565,12 @@ func record(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	checkReport := fs.String("failed-gate", "", "the check job's failed_gate output, empty when it did not run")
 	runURL := fs.String("run-url", "", "URL of the workflow run")
 	autoMerge := fs.Bool("auto-merge", false, "the pr job marked the PR eligible for auto-merge")
+	claimAttempt := fs.String("attempt", "", "attempt the dispatcher claimed the run at, empty for a run dispatched without one")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	attempt, err := parseClaimAttempt(*claimAttempt)
+	if err != nil {
 		return err
 	}
 	// started tells run.yml's fallback that the summary arrived, so a later failure
@@ -597,6 +602,7 @@ func record(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		CheckReport:       *checkReport,
 		RunURL:            *runURL,
 		AutoMerge:         *autoMerge,
+		Attempt:           attempt,
 	}, time.Now())
 	if err != nil {
 		return err
@@ -866,6 +872,20 @@ func parseAttempt(s string) (uint64, error) {
 		return 0, fmt.Errorf("attempt %q is not a positive number", s)
 	}
 	return strconv.ParseUint(s, 10, 32)
+}
+
+// parseClaimAttempt reads the attempt a run was claimed at, which the workflow
+// passes through empty for a run dispatched before it carried one: nil.
+func parseClaimAttempt(s string) (*int, error) {
+	if s == "" {
+		return nil, nil
+	}
+	n, err := strconv.ParseUint(s, 10, 31)
+	if err != nil {
+		return nil, fmt.Errorf("-attempt %q is not a claim attempt: %w", s, err)
+	}
+	attempt := int(n)
+	return &attempt, nil
 }
 
 // errNoOutput is a summary with nowhere to go: outside Actions nothing reports it.

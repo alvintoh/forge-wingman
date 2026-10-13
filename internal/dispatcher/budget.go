@@ -156,6 +156,8 @@ type Candidate struct {
 	// PlanFiles is the run's planned write set, recorded by its plan stage
 	// and empty until one has settled.
 	PlanFiles []string
+	// Attempt is how many times the run has been requeued, which its claim books under.
+	Attempt int
 }
 
 // Deferral is a queued run's claim withheld this poll by a budget ceiling or an

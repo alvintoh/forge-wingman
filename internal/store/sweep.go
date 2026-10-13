@@ -99,7 +99,8 @@ func (q *Queue) abandon(ctx context.Context, runID string, now time.Time, w disp
 		if err != nil {
 			return err
 		}
-		_, entry, _ := ledger.reservation(runID)
+		attempt := rowAttempt(row)
+		_, entry, _ := ledger.reservation(runID, attempt)
 		window := w.Build
 		if entry.Stage == dispatcher.StagePlan {
 			window = w.Plan
@@ -107,10 +108,9 @@ func (q *Queue) abandon(ctx context.Context, runID string, now time.Time, w disp
 		if !claimedAt.Before(now.Add(-window)) {
 			return nil
 		}
-		attempt, _ := row[attemptField].(int64)
 		found := dispatcher.Abandoned{
 			RunID: runID, Ticket: str(row, ticketIDField), Repo: str(row, repoField),
-			Stage: entry.Stage, Attempt: int(attempt),
+			Stage: entry.Stage, Attempt: attempt,
 		}
 		notice := found.Notice()
 		noticeRef := NewNotices(q.client).doc(notice.ID)
@@ -133,7 +133,7 @@ func (q *Queue) abandon(ctx context.Context, runID string, now time.Time, w disp
 			}
 		}
 		out, swept = found, true
-		return dropReservations(tx, ledgerRef, ledger.Reservations, runID)
+		return dropReservations(tx, ledgerRef, ledger, runID, attempt)
 	})
 	if err != nil {
 		return dispatcher.Abandoned{}, false, fmt.Errorf("abandoning run %s: %w", runID, err)

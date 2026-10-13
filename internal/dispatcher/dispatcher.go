@@ -83,6 +83,8 @@ type Claim struct {
 	// claim, which plans inside its own job. Dispatch sends it as the
 	// workflow's stage input only for the plan stage.
 	Stage string
+	// Attempt is the run's attempt the claim booked its reservation under, which the run settles it by.
+	Attempt int
 }
 
 // Config is the boundary a poll admits inside: the repositories it may
@@ -652,7 +654,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 			}
 		}
 		if ok {
-			claims = append(claims, Claim{RunID: cand.RunID, Repo: cand.Repo, Priority: cand.Priority, Verdict: claimVerdict, Stage: stage})
+			claims = append(claims, Claim{RunID: cand.RunID, Repo: cand.Repo, Priority: cand.Priority, Verdict: claimVerdict, Stage: stage, Attempt: cand.Attempt})
 			continue
 		}
 		if binding == "" {
