@@ -1,8 +1,10 @@
 # Manual proof that the agent container holds: a command run the way an agent is run,
-# as the build job's own user in the same job, cannot read the credentials file the auth
-# step wrote or append to any of the step's file-command files. Needs an agent image that
-# provides sh, pinned by digest, and the GCP_WIF_PROVIDER and GCP_MODEL_SERVICE_ACCOUNT
-# variables.
+# as the build job's own user in the same job, cannot read a credentials file or append
+# to any of the step's file-command files, and never prints the file's contents. The
+# credentials file is a canary, written where and how the cloud auth step writes its own
+# (the workspace, gha-creds-<16 hex>.json, mode 0640), because that step cannot succeed
+# from a branch or for this workflow; no real credential is used. Needs an agent image
+# that provides sh, pinned by digest.
 name: agent-probe
 
 on:
@@ -21,7 +23,6 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-      id-token: write
     env:
       AGENT_IMAGE: ${{ inputs.agent_image || vars.WINGMAN_AGENT_IMAGE }}
     steps:
@@ -36,11 +37,23 @@ jobs:
 
       - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
 
-      - id: auth
-        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
-        with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_MODEL_SERVICE_ACCOUNT }}
+      # What google-github-actions/auth v3.0.0 does with create_credentials_file: a
+      # gha-creds-<16 hex>.json in $GITHUB_WORKSPACE, mode 0640, exported as
+      # GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_GHA_CREDS_PATH and
+      # CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE. The token is random, never printed.
+      - name: Write a canary credentials file
+        run: |
+          set -eu
+          token=$(openssl rand -hex 24)
+          echo "::add-mask::$token"
+          creds="$GITHUB_WORKSPACE/gha-creds-$(openssl rand -hex 8).json"
+          install -m 0640 /dev/null "$creds"
+          printf '{"type":"canary","token":"%s"}\n' "$token" > "$creds"
+          {
+            echo "GOOGLE_APPLICATION_CREDENTIALS=$creds"
+            echo "GOOGLE_GHA_CREDS_PATH=$creds"
+            echo "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE=$creds"
+          } >> "$GITHUB_ENV"
 
       - name: Pull the agent image
         run: |
@@ -53,6 +66,9 @@ jobs:
           test -s "$GOOGLE_APPLICATION_CREDENTIALS"
           creds_before=$(sha256sum "$GOOGLE_APPLICATION_CREDENTIALS")
           files_before=$(sha256sum "$GITHUB_OUTPUT" "$GITHUB_ENV" "$GITHUB_PATH" "$GITHUB_STEP_SUMMARY")
+          token=$(sed -n 's/.*"token":"\([0-9a-f]*\)".*/\1/p' "$GOOGLE_APPLICATION_CREDENTIALS")
+          test -n "$token"
+          status=0
           "$RUNNER_TEMP/runner" agent-probe -agent-image "$AGENT_IMAGE" -- sh -c '
             status=0
             if cat "$1" > /dev/null 2>&1; then echo "LEAK: read the credentials file"; status=1; fi
@@ -61,7 +77,10 @@ jobs:
               if echo "probe=1" >> "$f" 2>/dev/null; then echo "LEAK: appended to $f"; status=1; fi
             done
             exit $status
-          ' probe "$GOOGLE_APPLICATION_CREDENTIALS" "$GITHUB_OUTPUT" "$GITHUB_ENV" "$GITHUB_PATH" "$GITHUB_STEP_SUMMARY"
+          ' probe "$GOOGLE_APPLICATION_CREDENTIALS" "$GITHUB_OUTPUT" "$GITHUB_ENV" "$GITHUB_PATH" "$GITHUB_STEP_SUMMARY" > "$RUNNER_TEMP/probe.out" 2>&1 || status=$?
+          cat "$RUNNER_TEMP/probe.out"
+          if grep -qF -- "$token" "$RUNNER_TEMP/probe.out"; then echo "LEAK: the credentials file's contents reached the container's output"; exit 1; fi
+          test "$status" = 0
           test "$creds_before" = "$(sha256sum "$GOOGLE_APPLICATION_CREDENTIALS")"
           test "$files_before" = "$(sha256sum "$GITHUB_OUTPUT" "$GITHUB_ENV" "$GITHUB_PATH" "$GITHUB_STEP_SUMMARY")"
           echo "the agent container could not read the credentials file or write the step's files"
