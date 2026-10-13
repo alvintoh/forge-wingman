@@ -687,6 +687,7 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 		cand := subject(data)
 		if facts.Relations.Known {
 			cand.BlockedBy, cand.Blocks = facts.Relations.BlockedBy, facts.Relations.Blocks
+			cand.BlockedByOpen = facts.Relations.BlockedByOpen
 		}
 		ok, why := dispatcher.Admit(dispatcher.AdmitInput{
 			Facts:       facts,

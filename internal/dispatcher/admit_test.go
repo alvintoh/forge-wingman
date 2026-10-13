@@ -58,6 +58,7 @@ func TestAdmitNamesTheConditionThatWithholdsACandidate(t *testing.T) {
 		"the budget would be breached": {func(in *AdmitInput) {
 			in.Reservation.ProviderCost = 11 * money.Dollar
 		}, CeilingCash},
+		"its blocker is still open": {func(in *AdmitInput) { in.Candidate.BlockedByOpen = []string{"run-p"} }, ConditionBlocked},
 	} {
 		t.Run(name, func(t *testing.T) {
 			in := admittable()
@@ -75,6 +76,20 @@ func TestAdmitIgnoresRelationsToRunsNotInFlight(t *testing.T) {
 	in.Candidate.Blocks = []string{"run-n"}
 	if ok, binding := Admit(in); !ok {
 		t.Fatalf("withheld by %q", binding)
+	}
+}
+
+// TestAdmitWithholdsACandidateWhoseBlockerIsStillOpen is AC1 at the last step
+// before dispatch: a blocked-by issue Linear has not completed or canceled
+// holds the candidate even with nothing in flight and no run for it.
+func TestAdmitWithholdsACandidateWhoseBlockerIsStillOpen(t *testing.T) {
+	in := admittable()
+	in.InFlight = nil
+	in.Facts.OpenPRsKnown = false
+	in.Candidate.BlockedBy = []string{"run-p"}
+	in.Candidate.BlockedByOpen = []string{"run-p"}
+	if ok, binding := Admit(in); ok || binding != ConditionBlocked {
+		t.Fatalf("ok = %v, binding = %q, want an open blocker to withhold it", ok, binding)
 	}
 }
 

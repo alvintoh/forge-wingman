@@ -27,6 +27,10 @@ type Issue struct {
 	// one as blocking it and as blocked by it.
 	BlockedBy []string
 	Blocks    []string
+	// BlockedByOpen names the blocked-by issues Linear still holds open — any
+	// state type but completed or canceled, or one the reply did not carry,
+	// which counts as open.
+	BlockedByOpen []string
 }
 
 // Refusal is why a delegated ticket was not admitted to the queue.
@@ -356,7 +360,9 @@ func poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	relations := make(map[string]Relations, len(issues))
 	links := make(map[string]string, len(issues))
 	for _, issue := range issues {
-		relations[issue.ID] = Relations{Known: true, BlockedBy: issue.BlockedBy, Blocks: issue.Blocks}
+		relations[issue.ID] = Relations{
+			Known: true, BlockedBy: issue.BlockedBy, Blocks: issue.Blocks, BlockedByOpen: issue.BlockedByOpen,
+		}
 		links[issue.ID] = issue.URL
 	}
 	start = d.Now()
