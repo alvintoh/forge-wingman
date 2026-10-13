@@ -92,7 +92,7 @@ export GITHUB_REPOSITORY_OWNER=<owner>  # the account the repository belongs to
 | `runner enable-provider -provider <name>` | admits a halted provider back to dispatch |
 | `runner reset-breaker` | clears the breaker a systemic stop tripped, admitting dispatch again |
 | `runner peak-mode [-mode off-peak-only\|always]` | prints the peak mode, or sets whether a run waits out its model's peak-price hours |
-| `runner requeue -run-id <id>` | returns a stopped run to the queue for another attempt |
+| `runner requeue -run-id <id>` | returns a stopped or abandoned run to the queue for another attempt |
 | `runner backfill-queued-at [-dry-run]` | stamps `queued_at` on the queued and planned runs written before the field existed |
 | `runner plan-define -provider <name> …` | records a provider plan's price, billing, limit behaviour, pages and harnesses |
 | `runner plan-optin -provider <name> [-private]` | records the owner's consent to a per-token provider's spend, or with `-private` to private repositories' runs on its free tier |
