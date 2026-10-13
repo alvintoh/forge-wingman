@@ -60,9 +60,14 @@ func sweepAbandoned(ctx context.Context, d Deps) error {
 }
 
 // Notice is the notice the sweep raises for the run, keyed by run and attempt so
-// a run is announced once.
+// a run is announced once. Its class names the run and, when it is a different
+// string, the ticket; both are ids, never text a ticket wrote.
 func (a Abandoned) Notice() Notice {
-	return Notice{ID: abandonedNoticeKey + a.RunID + "-" + strconv.Itoa(a.Attempt), Class: abandonedClass + a.Ticket, Link: a.link()}
+	class := abandonedClass + a.RunID
+	if a.Ticket != a.RunID {
+		class += " ticket " + a.Ticket
+	}
+	return Notice{ID: abandonedNoticeKey + a.RunID + "-" + strconv.Itoa(a.Attempt), Class: class, Link: a.link()}
 }
 
 // link is the repository's Actions page: a claimed row holds no URL of its own

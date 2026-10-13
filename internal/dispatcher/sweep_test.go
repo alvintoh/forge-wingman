@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -24,7 +25,7 @@ func TestAbandonWindowsOutlastTheWholeWorkflowChain(t *testing.T) {
 
 func TestPollSweepsWithTheStageWindowsAndPostsTheNoticeTheSweepRaised(t *testing.T) {
 	run := Abandoned{RunID: "run-18", Ticket: "FRG-18", Repo: "octo/scratch", Stage: StagePlan, Attempt: 2}
-	want := Notice{ID: "abandoned-run-18-2", Class: "abandoned:FRG-18", Link: "https://github.com/octo/scratch/actions"}
+	want := Notice{ID: "abandoned-run-18-2", Class: "abandoned:run-18 ticket FRG-18", Link: "https://github.com/octo/scratch/actions"}
 	if got := run.Notice(); got != want {
 		t.Fatalf("notice = %+v, want %+v", got, want)
 	}
@@ -39,7 +40,7 @@ func TestPollSweepsWithTheStageWindowsAndPostsTheNoticeTheSweepRaised(t *testing
 		q.sweeps[0].windows != (AbandonWindows{Plan: planAbandonWindow, Build: buildAbandonWindow}) {
 		t.Fatalf("sweeps = %+v", q.sweeps)
 	}
-	if len(poster.posts) != 1 || poster.posts[0].Text() != "abandoned:FRG-18 https://github.com/octo/scratch/actions" {
+	if len(poster.posts) != 1 || poster.posts[0].Text() != "abandoned:run-18 ticket FRG-18 https://github.com/octo/scratch/actions" {
 		t.Fatalf("posts = %+v, want the sweep's notice delivered", poster.posts)
 	}
 	if len(notices.raised) != 0 {
@@ -79,5 +80,15 @@ func TestAbandonedLinkIsTheRepositoryActionsPage(t *testing.T) {
 				t.Fatalf("link = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestAbandonedNoticeNamesTheRunOnceWhenTheTicketIsTheSameString(t *testing.T) {
+	same := Abandoned{RunID: "FRG-18", Ticket: "FRG-18", Repo: "o/r"}.Notice()
+	if same.Class != "abandoned:FRG-18" {
+		t.Fatalf("class = %q, want the shared id written once", same.Class)
+	}
+	if text := (Abandoned{RunID: "run-18", Ticket: "FRG-18"}).Notice().Text(); !strings.Contains(text, "run-18") || !strings.Contains(text, "FRG-18") {
+		t.Fatalf("text = %q, want the run id and the ticket", text)
 	}
 }
