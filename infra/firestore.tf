@@ -32,6 +32,29 @@ resource "google_firestore_index" "queue_claim" {
   }
 }
 
+# The queue's claim read ordered by priority and then by when the run was
+# queued, which the index above cannot serve.
+resource "google_firestore_index" "queue_claim_by_queued_at" {
+  project    = var.project_id
+  database   = google_firestore_database.default.name
+  collection = "runs"
+
+  fields {
+    field_path = "state"
+    order      = "ASCENDING"
+  }
+
+  fields {
+    field_path = "linear_priority"
+    order      = "ASCENDING"
+  }
+
+  fields {
+    field_path = "queued_at"
+    order      = "ASCENDING"
+  }
+}
+
 # Serves the latest-settled-runs query behind concurrency tuning.
 resource "google_firestore_index" "settled_by_size_and_concurrency" {
   project    = var.project_id

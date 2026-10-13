@@ -98,6 +98,22 @@ func optionalSecret(ctx context.Context, secrets tokenReader, name string, logge
 	return "", err
 }
 
+// newLinearHandler wires the Linear webhook handler to the store, so a missing
+// wiring shows in a test rather than as a nil call on a delivery.
+func newLinearHandler(fsc *firestore.Client, key *webhook.Secret, sessions webhook.Acknowledger, poll webhook.Waker, logger *slog.Logger) webhook.Handler {
+	queue := store.NewQueue(fsc)
+	return webhook.Handler{
+		Key:      key,
+		Markers:  store.NewMarkers(fsc),
+		Sessions: sessions,
+		Poll:     poll,
+		Replier:  queue,
+		Priority: queue,
+		Logger:   logger,
+		Now:      time.Now,
+	}
+}
+
 // run serves until the process is signalled.
 func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) error {
 	c, err := loadConfig(getenv)
@@ -142,17 +158,9 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	mux.Handle("POST /linear", webhook.Handler{
-		Key: webhook.NewSecret(webhookSecret, signing, func(ctx context.Context) (string, error) {
-			return secrets.Token(ctx, webhookSecret)
-		}, time.Now, logger),
-		Markers:  store.NewMarkers(fsc),
-		Sessions: sessions,
-		Poll:     webhook.Job{RunURI: c.runURI, Client: gcp},
-		Replier:  store.NewQueue(fsc),
-		Logger:   logger,
-		Now:      time.Now,
-	})
+	mux.Handle("POST /linear", newLinearHandler(fsc, webhook.NewSecret(webhookSecret, signing, func(ctx context.Context) (string, error) {
+		return secrets.Token(ctx, webhookSecret)
+	}, time.Now, logger), sessions, webhook.Job{RunURI: c.runURI, Client: gcp}, logger))
 	srv := &http.Server{
 		Addr:              ":" + c.port,
 		Handler:           mux,

@@ -129,9 +129,9 @@ func TestPriorityRankSortsNoPriorityLast(t *testing.T) {
 		priority int
 		want     int
 	}{{0, noPriorityRank}, {1, 1}, {4, 4}} {
-		got, err := priorityRank(tt.priority)
+		got, err := PriorityRank(tt.priority)
 		if err != nil || got != tt.want {
-			t.Errorf("priorityRank(%d) = %d, %v, want %d", tt.priority, got, err, tt.want)
+			t.Errorf("PriorityRank(%d) = %d, %v, want %d", tt.priority, got, err, tt.want)
 		}
 	}
 }
