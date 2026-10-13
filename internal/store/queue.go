@@ -45,7 +45,12 @@ const (
 	// and attemptField how many times the ticket has been queued: the run's retry
 	// history, kept beside the record a runner job rebuilds.
 	retriedAtField = "retried_at"
-	attemptField   = "attempt"
+	// abandonedReasonField and abandonedAtField record why and when the sweep
+	// abandoned a claim; a requeue clears them. They sit apart from stop_reason
+	// and outcome, which mark a run that reported back.
+	abandonedReasonField = "abandoned_reason"
+	abandonedAtField     = "abandoned_at"
+	attemptField         = "attempt"
 	// queuedAtField is stamped at enqueue and requeue, the tie-break among runs
 	// of one priority; an answered or released run keeps its position.
 	queuedAtField = "queued_at"
@@ -132,6 +137,9 @@ const (
 	// nothing lists it as waiting, so a stop cannot hold a slot in the scan
 	// that finds the runs still owed a question.
 	stateStopped = "stopped"
+	// stateAbandoned is a claim whose run never reported back within its
+	// window: it holds no reservation, and only an operator's requeue returns it.
+	stateAbandoned = "abandoned"
 )
 
 // candidateStates are the states a poll may claim from.
@@ -988,11 +996,12 @@ var (
 	ErrRunDispatchable = errors.New("run is already dispatchable")
 	ErrRunWaiting      = errors.New("run is waiting on a decision")
 	ErrRunInFlight     = errors.New("run is still in flight")
+	ErrRunAbandoned    = errors.New("run was abandoned and needs an operator's requeue")
 )
 
-// Requeue returns a run that has ended — stopped, or a claim with a recorded
-// outcome — to the queue, for an operator asking that its ticket be attempted
-// again: the row returns to planned when its plan still stands and queued
+// Requeue returns a run that has ended — stopped, abandoned, or a claim with a
+// recorded outcome — to the queue, for an operator asking that its ticket be
+// attempted again: the row returns to planned when its plan still stands and queued
 // otherwise, with its claim, wait and outcome fields cleared and its ledger
 // reservations dropped, and records the attempt it was put back as.
 //
@@ -1013,9 +1022,13 @@ var ErrRetriesExhausted = errors.New("run has no automatic retries left")
 // never to planned, so its plan stage runs again against the new base — as the
 // next attempt, and carries what the failed attempt settled into the row's
 // prior-settled fields for the next record to add to its own. It refuses the
-// runs Requeue refuses, and a run whose next attempt would pass maxAttempts.
+// runs Requeue refuses, an abandoned run, which only an operator's Requeue
+// returns, and a run whose next attempt would pass maxAttempts.
 func (q *Queue) RequeueAfterConflict(ctx context.Context, runID string, at time.Time, maxAttempts int) (RequeueResult, error) {
 	return q.requeue(ctx, runID, at, func(row map[string]any, attempt int) (string, []firestore.Update, error) {
+		if str(row, stateField) == stateAbandoned {
+			return "", nil, ErrRunAbandoned
+		}
 		if _, err := requeueState(row); err != nil {
 			return "", nil, err
 		}
@@ -1070,6 +1083,8 @@ func (q *Queue) requeue(ctx context.Context, runID string, at time.Time,
 			{Path: stopReasonField, Value: firestore.Delete},
 			{Path: stopDetailField, Value: firestore.Delete},
 			{Path: retriedAtField, Value: at},
+			{Path: abandonedReasonField, Value: firestore.Delete},
+			{Path: abandonedAtField, Value: firestore.Delete},
 			{Path: queuedAtField, Value: at},
 			{Path: attemptField, Value: attempt},
 		}, extra...)); err != nil {
@@ -1099,10 +1114,9 @@ func requeueState(row map[string]any) (string, error) {
 		if str(row, outcomeField) == "" && str(row, stopReasonField) == "" {
 			return "", ErrRunInFlight
 		}
+	case stateStopped, stateAbandoned:
 	default:
-		if state != stateStopped {
-			return "", fmt.Errorf("run is in state %q, which cannot be requeued", state)
-		}
+		return "", fmt.Errorf("run is in state %q, which cannot be requeued", state)
 	}
 	if len(stringList(row, planFilesField)) > 0 && planStamped(row) {
 		return statePlanned, nil

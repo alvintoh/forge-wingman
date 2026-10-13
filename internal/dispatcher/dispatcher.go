@@ -268,6 +268,7 @@ type Queue interface {
 	Claimer
 	Rejector
 	Spender
+	Sweeper
 }
 
 // Workflow starts one run in its target repository.
@@ -297,8 +298,8 @@ type Result struct {
 }
 
 // Poll admits every issue still delegated, then walks the queue in priority
-// order claiming every run Admit lets start, and posts the notices waiting,
-// whatever the rest of the poll did.
+// order claiming every run Admit lets start, abandons the claims that outlived
+// their window, and posts the notices waiting, whatever the rest of the poll did.
 // A ticket the queue already holds is left alone; a candidate a condition
 // withholds is deferred, not rejected, and reconsidered next poll; and a run
 // whose dispatch fails is released rather than left claimed, so the next
@@ -309,12 +310,15 @@ func Poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	}
 	res, err := poll(ctx, d, c)
 	start := d.Now()
+	sweepErr := sweepAbandoned(ctx, d)
+	LogPhase(d.Logger, "sweep", start, d.Now())
+	start = d.Now()
 	decideErr := postDecisions(ctx, d, c)
 	LogPhase(d.Logger, "decisions", start, d.Now())
 	start = d.Now()
 	noticeErr := postNotices(ctx, d)
 	LogPhase(d.Logger, "notices", start, d.Now())
-	return res, errors.Join(err, decideErr, noticeErr)
+	return res, errors.Join(err, sweepErr, decideErr, noticeErr)
 }
 
 // LogPhase logs how long one phase of a poll took, so a slow poll can be traced

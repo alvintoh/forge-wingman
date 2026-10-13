@@ -552,6 +552,8 @@ func record(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 			return nil
 		case errors.Is(err, store.ErrRetriesExhausted):
 			logger.Warn("rebaseConflictRetriesExhausted", "run", *runID, "retries", maxRebaseConflictRetries)
+		case errors.Is(err, store.ErrRunAbandoned):
+			logger.Warn("rebaseConflictOnAbandonedRun", "run", *runID)
 		default:
 			return err
 		}
