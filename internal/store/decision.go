@@ -90,7 +90,7 @@ func (q *Queue) Suspend(ctx context.Context, runID string, d runner.Decision, ru
 			{Path: waitingOnField, Value: firestore.Delete},
 		}
 		var ledgerUpdates []firestore.Update
-		if key, entry, has := ledger.reservation(runID); has {
+		if key, entry, has := ledger.reservation(runID, rowAttempt(snap.Data())); has {
 			spend, ledgerU := planSettle(key, entry, planRow{
 				PlanSpendMicros:  row.PlanSpendMicros,
 				PlanSpendMinutes: row.PlanSpendMinutes,

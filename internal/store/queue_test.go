@@ -66,8 +66,10 @@ func forget(t *testing.T, client *firestore.Client, ids ...string) {
 		for _, id := range ids {
 			_, _ = client.Collection(runsCollection).Doc(id).Delete(ctx)
 			_, _ = client.Collection(dispatchCollection).Doc(rejectedPrefix + id).Delete(ctx)
-			_, _ = client.Collection(dispatchCollection).Doc(ledgerDocID).Update(ctx,
-				[]firestore.Update{{FieldPath: firestore.FieldPath{"reservations", id}, Value: firestore.Delete}})
+			for _, key := range []string{reservationKey(id, 0, dispatcher.StageBuild), reservationKey(id, 0, dispatcher.StagePlan), legacyReservationKey(id, dispatcher.StageBuild)} {
+				_, _ = client.Collection(dispatchCollection).Doc(ledgerDocID).Update(ctx,
+					[]firestore.Update{{FieldPath: firestore.FieldPath{"reservations", key}, Value: firestore.Delete}})
+			}
 		}
 	})
 }
@@ -105,6 +107,9 @@ func resetLedger(t *testing.T, client *firestore.Client, n int) {
 	}
 	t.Cleanup(func() { _, _ = ref.Delete(context.Background()) })
 }
+
+// attemptOf is the settling run's attempt as Settle takes it.
+func attemptOf(n int) *int { return &n }
 
 // readLedgerDoc reads the shared ledger as the store keeps it.
 func readLedgerDoc(t *testing.T, client *firestore.Client) ledgerDoc {
@@ -721,7 +726,7 @@ func TestTryClaimAdmitsARunThatFitsAndBooksItsReservation(t *testing.T) {
 	if err := ledgerSnap.DataTo(&ledger); err != nil {
 		t.Fatal(err)
 	}
-	entry, ok := ledger.Reservations[run.RunID]
+	entry, ok := ledger.Reservations[reservationKey(run.RunID, 0, dispatcher.StageBuild)]
 	if !ok || entry.ProviderCostMicros != res.ProviderCost || entry.RunnerMinutes != res.RunnerMinutes {
 		t.Fatalf("reservation = %+v, ok %v", entry, ok)
 	}
@@ -904,8 +909,8 @@ func TestReleaseReturnsAClaimedRunToTheQueueAndDropsItsReservation(t *testing.T)
 	if err := ledgerSnap.DataTo(&ledger); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := ledger.Reservations[run.RunID]; ok {
-		t.Fatalf("a released run's reservation was not dropped: %+v", ledger.Reservations[run.RunID])
+	if _, ok := ledger.Reservations[reservationKey(run.RunID, 0, dispatcher.StageBuild)]; ok {
+		t.Fatalf("a released run's reservation was not dropped: %+v", ledger.Reservations[reservationKey(run.RunID, 0, dispatcher.StageBuild)])
 	}
 	// The released run is claimable again, with the ledger no longer double-
 	// counting its reservation.
@@ -927,7 +932,7 @@ func TestSettleDropsTheReservationAndIsIdempotent(t *testing.T) {
 	if ok, _, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, openFacts, dispatcher.Reservation{ProviderCost: 2 * money.Dollar}); err != nil || !ok {
 		t.Fatalf("claim: ok %v, err %v", ok, err)
 	}
-	if err := q.Settle(ctx, run.RunID); err != nil {
+	if err := q.Settle(ctx, run.RunID, attemptOf(0)); err != nil {
 		t.Fatal(err)
 	}
 	ledgerSnap, err := client.Collection(dispatchCollection).Doc(ledgerDocID).Get(ctx)
@@ -938,11 +943,11 @@ func TestSettleDropsTheReservationAndIsIdempotent(t *testing.T) {
 	if err := ledgerSnap.DataTo(&ledger); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := ledger.Reservations[run.RunID]; ok {
-		t.Fatalf("a settled run's reservation was not dropped: %+v", ledger.Reservations[run.RunID])
+	if _, ok := ledger.Reservations[reservationKey(run.RunID, 0, dispatcher.StageBuild)]; ok {
+		t.Fatalf("a settled run's reservation was not dropped: %+v", ledger.Reservations[reservationKey(run.RunID, 0, dispatcher.StageBuild)])
 	}
 	// Settling a second time (a rerun record job) must not error.
-	if err := q.Settle(ctx, run.RunID); err != nil {
+	if err := q.Settle(ctx, run.RunID, attemptOf(0)); err != nil {
 		t.Fatalf("settling an already-settled run: %v", err)
 	}
 	if got := readLedgerDoc(t, client).N; got != 1 {
@@ -1022,7 +1027,7 @@ func TestTryClaimAdmitsOneRunPerRepositoryAndRecordsWhyTheOtherWaits(t *testing.
 	if snap.Data()[waitingOnField] != dispatcher.ConditionRepoBusy {
 		t.Fatalf("waiting on %v, want the binding condition on the row", snap.Data()[waitingOnField])
 	}
-	if err := q.Settle(ctx, first.RunID); err != nil {
+	if err := q.Settle(ctx, first.RunID, attemptOf(0)); err != nil {
 		t.Fatal(err)
 	}
 	if ok, _, err := q.TryClaim(ctx, second.RunID, queueAt, generousBudget, openFacts, res); err != nil || !ok {
@@ -1200,7 +1205,7 @@ func holdReservation(t *testing.T, client *firestore.Client, ledger ledgerDoc, c
 	t.Helper()
 	ledger.Reservations = map[string]reservationEntry{}
 	for id, at := range claimedAt {
-		ledger.Reservations[id] = reservationEntry{ClaimedAt: at}
+		ledger.Reservations[reservationKey(id, 0, dispatcher.StageBuild)] = reservationEntry{ClaimedAt: at}
 	}
 	if _, err := client.Collection(dispatchCollection).Doc(ledgerDocID).Set(context.Background(), ledger); err != nil {
 		t.Fatal(err)
@@ -1284,14 +1289,14 @@ func TestSettleMovesNByWhatTheSettledRunShowed(t *testing.T) {
 			resetLedger(t, client, tt.before.N)
 			seedSettled(t, client, id, size, tt.outcome, tt.claimed, tt.took, queueAt)
 			holdReservation(t, client, tt.before, map[string]time.Time{id: queueAt})
-			if err := q.Settle(context.Background(), id); err != nil {
+			if err := q.Settle(context.Background(), id, attemptOf(0)); err != nil {
 				t.Fatal(err)
 			}
 			got := readLedgerDoc(t, client)
 			if got.N != tt.want.N || got.StableRuns != tt.want.StableRuns {
 				t.Fatalf("N %d stable %d, want N %d stable %d", got.N, got.StableRuns, tt.want.N, tt.want.StableRuns)
 			}
-			if _, held := got.Reservations[id]; held {
+			if _, held := got.Reservations[reservationKey(id, 0, dispatcher.StageBuild)]; held {
 				t.Fatal("the settled run's reservation was not dropped")
 			}
 		})
@@ -1317,14 +1322,14 @@ func TestSettleHalvesNOncePerIncident(t *testing.T) {
 		}
 	}
 	holdReservation(t, client, ledgerDoc{N: 4, StableRuns: 3}, claimedAt)
-	if err := q.Settle(ctx, ids[0]); err != nil {
+	if err := q.Settle(ctx, ids[0], attemptOf(0)); err != nil {
 		t.Fatal(err)
 	}
 	if got := readLedgerDoc(t, client); got.N != 2 || got.StableRuns != 0 {
 		t.Fatalf("N %d stable %d, want N halved to 2 with the count restarted", got.N, got.StableRuns)
 	}
 	for _, id := range ids[1:] {
-		if err := q.Settle(ctx, id); err != nil {
+		if err := q.Settle(ctx, id, attemptOf(0)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1341,7 +1346,7 @@ func TestSettleIgnoresARunClaimedAboveAnNAlreadyHalved(t *testing.T) {
 	resetLedger(t, client, 4)
 	seedSettled(t, client, id, "S-"+fresh("overloaded"), runner.OutcomePROpened, 8, time.Hour, queueAt)
 	holdReservation(t, client, ledgerDoc{N: 4, StableRuns: 2, ChangedAfter: queueAt.Add(time.Minute)}, map[string]time.Time{id: queueAt})
-	if err := q.Settle(ctx, id); err != nil {
+	if err := q.Settle(ctx, id, attemptOf(0)); err != nil {
 		t.Fatal(err)
 	}
 	if got := readLedgerDoc(t, client); got.N != 4 || got.StableRuns != 2 {
@@ -1359,7 +1364,7 @@ func TestSettleCapsNAtTheConfiguredPlatformCap(t *testing.T) {
 	resetLedger(t, client, 2)
 	seedSettled(t, client, id, size, runner.OutcomePROpened, 2, 10*time.Minute, queueAt)
 	holdReservation(t, client, ledgerDoc{N: 2, StableRuns: 4, PlatformCap: 2}, map[string]time.Time{id: queueAt})
-	if err := q.Settle(context.Background(), id); err != nil {
+	if err := q.Settle(context.Background(), id, attemptOf(0)); err != nil {
 		t.Fatal(err)
 	}
 	if got := readLedgerDoc(t, client).N; got != 2 {
@@ -1455,7 +1460,7 @@ func TestSettleIgnoresAnInfraFailureThatIsNotAProviderStop(t *testing.T) {
 				t.Fatal(err)
 			}
 			holdReservation(t, client, ledgerDoc{N: 4, StableRuns: 3}, map[string]time.Time{id: queueAt})
-			if err := q.Settle(context.Background(), id); err != nil {
+			if err := q.Settle(context.Background(), id, attemptOf(0)); err != nil {
 				t.Fatal(err)
 			}
 			if got := readLedgerDoc(t, client); got.N != 4 || got.StableRuns != 3 {
@@ -1475,7 +1480,7 @@ func TestSettleNeedsFiveRunsAtNNotOnlyFiveAlone(t *testing.T) {
 	resetLedger(t, client, 2)
 	seedSettled(t, client, id, size, runner.OutcomePROpened, 2, 40*time.Minute, queueAt)
 	holdReservation(t, client, ledgerDoc{N: 2, StableRuns: 3}, map[string]time.Time{id: queueAt})
-	if err := q.Settle(context.Background(), id); err != nil {
+	if err := q.Settle(context.Background(), id, attemptOf(0)); err != nil {
 		t.Fatal(err)
 	}
 	if got := readLedgerDoc(t, client); got.N != 2 || got.StableRuns != 3 {
@@ -1497,7 +1502,7 @@ func TestSettleCountsRunsThatFoundNothingToChange(t *testing.T) {
 	resetLedger(t, client, 1)
 	seedSettled(t, client, id, size, runner.OutcomeNoChanges, 1, 10*time.Minute, queueAt)
 	holdReservation(t, client, ledgerDoc{N: 1, StableRuns: 4}, map[string]time.Time{id: queueAt})
-	if err := q.Settle(context.Background(), id); err != nil {
+	if err := q.Settle(context.Background(), id, attemptOf(0)); err != nil {
 		t.Fatal(err)
 	}
 	if got := readLedgerDoc(t, client).N; got != 2 {
@@ -1517,7 +1522,7 @@ func TestSettleReadsOnlyRunsOfTheSettledRunsSize(t *testing.T) {
 	resetLedger(t, client, 2)
 	seedSettled(t, client, id, size, runner.OutcomePROpened, 2, 10*time.Minute, queueAt)
 	holdReservation(t, client, ledgerDoc{N: 2, StableRuns: 4}, map[string]time.Time{id: queueAt})
-	if err := q.Settle(context.Background(), id); err != nil {
+	if err := q.Settle(context.Background(), id, attemptOf(0)); err != nil {
 		t.Fatal(err)
 	}
 	if got := readLedgerDoc(t, client).N; got != 3 {
@@ -1540,7 +1545,7 @@ func TestSettleSkipsARunWithNoSettlementTime(t *testing.T) {
 	resetLedger(t, client, 1)
 	seedSettled(t, client, id, size, runner.OutcomePROpened, 1, 10*time.Minute, queueAt)
 	holdReservation(t, client, ledgerDoc{N: 1, StableRuns: 4}, map[string]time.Time{id: queueAt})
-	if err := q.Settle(context.Background(), id); err != nil {
+	if err := q.Settle(context.Background(), id, attemptOf(0)); err != nil {
 		t.Fatal(err)
 	}
 	if got := readLedgerDoc(t, client); got.N != 1 || got.StableRuns != 4 {
@@ -1560,7 +1565,7 @@ func TestSettleTakesTheMedianOfOnlyTheLatestFiveLoadedRuns(t *testing.T) {
 	resetLedger(t, client, 2)
 	seedSettled(t, client, id, size, runner.OutcomePROpened, 2, 10*time.Minute, queueAt)
 	holdReservation(t, client, ledgerDoc{N: 2, StableRuns: 3}, map[string]time.Time{id: queueAt})
-	if err := q.Settle(context.Background(), id); err != nil {
+	if err := q.Settle(context.Background(), id, attemptOf(0)); err != nil {
 		t.Fatal(err)
 	}
 	if got := readLedgerDoc(t, client).N; got != 1 {
@@ -1607,7 +1612,7 @@ func TestReleaseDropsOnlyTheReleasedRunsReservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	ledger := readLedgerDoc(t, client)
-	if _, ok := ledger.Reservations[kept.RunID]; !ok || len(ledger.Reservations) != 1 {
+	if _, ok := ledger.Reservations[reservationKey(kept.RunID, 0, dispatcher.StageBuild)]; !ok || len(ledger.Reservations) != 1 {
 		t.Fatalf("reservations = %v, want only the run still in flight", slices.Sorted(maps.Keys(ledger.Reservations)))
 	}
 }
@@ -1639,7 +1644,7 @@ func TestSettleIgnoresARunClaimedBelowNEvenWhereNHasEvidence(t *testing.T) {
 	resetLedger(t, client, 3)
 	seedSettled(t, client, id, size, runner.OutcomePROpened, 1, 10*time.Minute, queueAt)
 	holdReservation(t, client, ledgerDoc{N: 3, StableRuns: 2}, map[string]time.Time{id: queueAt})
-	if err := q.Settle(context.Background(), id); err != nil {
+	if err := q.Settle(context.Background(), id, attemptOf(0)); err != nil {
 		t.Fatal(err)
 	}
 	if got := readLedgerDoc(t, client); got.N != 3 || got.StableRuns != 2 {
@@ -1653,11 +1658,11 @@ func TestSettleDropsTheReservationOfARunWithNoRow(t *testing.T) {
 	forget(t, client, id)
 	resetLedger(t, client, 2)
 	holdReservation(t, client, ledgerDoc{N: 2, StableRuns: 3}, map[string]time.Time{id: queueAt, "other-" + id: queueAt.Add(time.Minute)})
-	if err := q.Settle(context.Background(), id); err != nil {
+	if err := q.Settle(context.Background(), id, attemptOf(0)); err != nil {
 		t.Fatal(err)
 	}
 	got := readLedgerDoc(t, client)
-	if _, held := got.Reservations[id]; held || got.N != 2 || got.StableRuns != 3 {
+	if _, held := got.Reservations[reservationKey(id, 0, dispatcher.StageBuild)]; held || got.N != 2 || got.StableRuns != 3 {
 		t.Fatalf("reservations %v, N %d stable %d, want the reservation dropped and N left alone", got.Reservations, got.N, got.StableRuns)
 	}
 	if !got.ChangedAfter.IsZero() {
@@ -1732,7 +1737,7 @@ func TestTryClaimOnAFreeTierRecordsThePlanAndItsModels(t *testing.T) {
 	if rec.Plan != "command-code" || !rec.LastResort || !reflect.DeepEqual(rec.RunModels(), free) {
 		t.Fatalf("plan %q, last resort %v, models %+v, want the free tier's plan and models", rec.Plan, rec.LastResort, rec.RunModels())
 	}
-	if entry := readLedgerDoc(t, client).Reservations[run.RunID]; entry.ProviderCostMicros != 0 || entry.RunnerMinutes != 12 {
+	if entry := readLedgerDoc(t, client).Reservations[reservationKey(run.RunID, 0, dispatcher.StageBuild)]; entry.ProviderCostMicros != 0 || entry.RunnerMinutes != 12 {
 		t.Fatalf("reservation = %+v, want runner minutes and no provider cost", entry)
 	}
 
@@ -1767,7 +1772,7 @@ func TestTryClaimBooksTheStageAndWriteSetOnTheReservation(t *testing.T) {
 	if ok, _, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, openFacts, res); err != nil || !ok {
 		t.Fatalf("claim: ok %v, err %v", ok, err)
 	}
-	entry, ok := readLedgerDoc(t, client).Reservations[run.RunID]
+	entry, ok := readLedgerDoc(t, client).Reservations[reservationKey(run.RunID, 0, dispatcher.StageBuild)]
 	if !ok || entry.Stage != dispatcher.StageBuild || !slices.Equal(entry.Files, res.Files) {
 		t.Fatalf("reservation = %+v, want the stage and write set booked for the overlap check", entry)
 	}
@@ -1812,7 +1817,7 @@ func TestStopEndsARunAndReleasesItsPlanReservation(t *testing.T) {
 	if !ok || !stamped.Equal(stoppedAt) {
 		t.Fatalf("plan settled at = %v, want the stop's own time: a stopped plan never reaches WritePlan", data[planSettledAtField])
 	}
-	if _, ok := readLedgerDoc(t, client).Reservations[PlanKey(run.RunID)]; ok {
+	if _, ok := readLedgerDoc(t, client).Reservations[reservationKey(run.RunID, 0, dispatcher.StagePlan)]; ok {
 		t.Fatal("the plan reservation was not dropped")
 	}
 	// The stop is not a release: the run does not come back as a candidate.
@@ -1852,7 +1857,7 @@ func TestSettlePlansARunForItsBuild(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.Settle(ctx, PlanKey(run.RunID)); err != nil {
+	if err := q.SettlePlan(ctx, run.RunID, attemptOf(0)); err != nil {
 		t.Fatal(err)
 	}
 	snap, err := client.Collection(runsCollection).Doc(run.RunID).Get(ctx)
@@ -1865,14 +1870,14 @@ func TestSettlePlansARunForItsBuild(t *testing.T) {
 	if snap.Data()[planSpendMicrosField] != int64(res.ProviderCost) || snap.Data()[planSpendMinutesField] != res.RunnerMinutes {
 		t.Fatalf("plan spend = %v/%v, want the reserved estimate booked", snap.Data()[planSpendMicrosField], snap.Data()[planSpendMinutesField])
 	}
-	if _, ok := readLedgerDoc(t, client).Reservations[PlanKey(run.RunID)]; ok {
+	if _, ok := readLedgerDoc(t, client).Reservations[reservationKey(run.RunID, 0, dispatcher.StagePlan)]; ok {
 		t.Fatal("the plan reservation was not dropped")
 	}
 	if got := readLedgerDoc(t, client).N; got != 1 {
 		t.Fatalf("N = %d, want a plan settlement to leave it alone", got)
 	}
 	// A rerun record-plan-stage job settles again without error.
-	if err := q.Settle(ctx, PlanKey(run.RunID)); err != nil {
+	if err := q.SettlePlan(ctx, run.RunID, attemptOf(0)); err != nil {
 		t.Fatalf("settling an already-settled plan: %v", err)
 	}
 	// The run is now a candidate for its build, carrying its write set.
@@ -1947,7 +1952,7 @@ func TestPlannedListsTheRunsAWriteSetIsKnownFor(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := q.Settle(ctx, PlanKey(r.RunID)); err != nil {
+		if err := q.SettlePlan(ctx, r.RunID, attemptOf(0)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1965,7 +1970,7 @@ func TestPlannedListsTheRunsAWriteSetIsKnownFor(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.Settle(ctx, done.RunID); err != nil {
+	if err := q.Settle(ctx, done.RunID, attemptOf(0)); err != nil {
 		t.Fatal(err)
 	}
 	// A single-stage run holds no plan to write, so its write set is unknown.
@@ -2066,7 +2071,7 @@ func TestReleaseReturnsAPlanStageClaimToTheQueue(t *testing.T) {
 	if ok, _, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, openFacts, res); err != nil || !ok {
 		t.Fatalf("plan claim: ok %v, err %v", ok, err)
 	}
-	if _, ok := readLedgerDoc(t, client).Reservations[PlanKey(run.RunID)]; !ok {
+	if _, ok := readLedgerDoc(t, client).Reservations[reservationKey(run.RunID, 0, dispatcher.StagePlan)]; !ok {
 		t.Fatal("the plan-stage reservation was not booked under the plan key")
 	}
 	if err := q.Release(ctx, run.RunID, queueAt.Add(time.Minute)); err != nil {
@@ -2079,7 +2084,7 @@ func TestReleaseReturnsAPlanStageClaimToTheQueue(t *testing.T) {
 	if snap.Data()[stateField] != stateQueued {
 		t.Fatalf("state = %v, want %s: a run whose plan never ran is unplanned again", snap.Data()[stateField], stateQueued)
 	}
-	if _, ok := readLedgerDoc(t, client).Reservations[PlanKey(run.RunID)]; ok {
+	if _, ok := readLedgerDoc(t, client).Reservations[reservationKey(run.RunID, 0, dispatcher.StagePlan)]; ok {
 		t.Fatal("the plan-stage reservation was not dropped")
 	}
 }
@@ -2329,8 +2334,8 @@ func TestRequeueDropsBothOfTheRunsLedgerReservations(t *testing.T) {
 	forget(t, client, id)
 	ledgerRef := client.Collection(dispatchCollection).Doc(ledgerDocID)
 	if _, err := ledgerRef.Set(ctx, ledgerDoc{Reservations: map[string]reservationEntry{
-		id:          {TicketID: id, Stage: dispatcher.StageBuild},
-		PlanKey(id): {TicketID: id, Stage: dispatcher.StagePlan},
+		reservationKey(id, 0, dispatcher.StageBuild): {TicketID: id, Stage: dispatcher.StageBuild},
+		reservationKey(id, 0, dispatcher.StagePlan):  {TicketID: id, Stage: dispatcher.StagePlan},
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -2470,8 +2475,8 @@ func TestRequeueAfterConflictDropsBothOfTheRunsLedgerReservations(t *testing.T) 
 	forget(t, client, id)
 	ledgerRef := client.Collection(dispatchCollection).Doc(ledgerDocID)
 	if _, err := ledgerRef.Set(ctx, ledgerDoc{Reservations: map[string]reservationEntry{
-		id:          {TicketID: id, Stage: dispatcher.StageBuild},
-		PlanKey(id): {TicketID: id, Stage: dispatcher.StagePlan},
+		reservationKey(id, 0, dispatcher.StageBuild): {TicketID: id, Stage: dispatcher.StageBuild},
+		reservationKey(id, 0, dispatcher.StagePlan):  {TicketID: id, Stage: dispatcher.StagePlan},
 	}}); err != nil {
 		t.Fatal(err)
 	}

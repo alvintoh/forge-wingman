@@ -78,7 +78,7 @@ func TestSweepAbandonsAClaimOlderThanItsWindowAndDropsItsReservation(t *testing.
 		t.Fatalf("outcome/stop_reason = %v/%v, want the sweep to leave both empty", row[outcomeField], row[stopReasonField])
 	}
 	ledger := readLedgerDoc(t, client)
-	if _, ok := ledger.Reservations[id]; ok {
+	if _, ok := ledger.Reservations[reservationKey(id, 0, dispatcher.StageBuild)]; ok {
 		t.Fatal("the abandoned run's reservation was not dropped")
 	}
 	if ledger.N != 3 {
@@ -100,7 +100,7 @@ func TestSweepLeavesAClaimInsideItsWindow(t *testing.T) {
 	if st := readRow(t, client, id)[stateField]; st != stateClaimed {
 		t.Fatalf("state = %v, want %s", st, stateClaimed)
 	}
-	if _, ok := readLedgerDoc(t, client).Reservations[id]; !ok {
+	if _, ok := readLedgerDoc(t, client).Reservations[reservationKey(id, 0, dispatcher.StageBuild)]; !ok {
 		t.Fatal("the reservation of a claim inside its window was dropped")
 	}
 }
@@ -120,10 +120,10 @@ func TestSweepUsesTheShorterWindowForAPlanStageClaimAndDropsItsPlanKey(t *testin
 		t.Fatalf("abandoned = %+v, want only the plan-stage run", got)
 	}
 	res := readLedgerDoc(t, client).Reservations
-	if _, ok := res[PlanKey(plan)]; ok {
+	if _, ok := res[reservationKey(plan, 0, dispatcher.StagePlan)]; ok {
 		t.Fatal("the plan-stage reservation was not dropped")
 	}
-	if _, ok := res[build]; !ok {
+	if _, ok := res[reservationKey(build, 0, dispatcher.StageBuild)]; !ok {
 		t.Fatal("the build-stage reservation was dropped")
 	}
 }
@@ -248,7 +248,7 @@ func TestSweepRacingTheRecordOfTheSameRunLosesNothing(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			err := records.PutRecord(context.Background(), id, runner.Record{Outcome: runner.OutcomeAgentFailed, SettledAt: queueAt})
-			errs <- errors.Join(err, q.Settle(context.Background(), id))
+			errs <- errors.Join(err, q.Settle(context.Background(), id, attemptOf(0)))
 		}()
 		wg.Wait()
 		close(errs)
@@ -264,7 +264,7 @@ func TestSweepRacingTheRecordOfTheSameRunLosesNothing(t *testing.T) {
 		if row[outcomeField] != string(runner.OutcomeAgentFailed) {
 			t.Fatalf("outcome = %v, want the record kept", row[outcomeField])
 		}
-		if _, ok := readLedgerDoc(t, client).Reservations[id]; ok {
+		if _, ok := readLedgerDoc(t, client).Reservations[reservationKey(id, 0, dispatcher.StageBuild)]; ok {
 			t.Fatal("the reservation outlived both the sweep and the settle")
 		}
 	}
@@ -281,7 +281,7 @@ func TestALateRecordAndSettleOnAnAbandonedRunStampItWithoutRevivingIt(t *testing
 	if err := NewRecords(client).PutRecord(context.Background(), id, runner.Record{Outcome: runner.OutcomeAgentFailed, SettledAt: queueAt}); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.Settle(context.Background(), id); err != nil {
+	if err := q.Settle(context.Background(), id, attemptOf(0)); err != nil {
 		t.Fatal(err)
 	}
 	row := readRow(t, client, id)

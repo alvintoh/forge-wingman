@@ -68,15 +68,17 @@ func seeded(t *testing.T) fakeRecords {
 
 // fakeLedger is a Ledger that records every run it was asked to settle.
 type fakeLedger struct {
-	settled []string
-	err     error
+	settled  []string
+	attempts []*int
+	err      error
 }
 
-func (l *fakeLedger) Settle(_ context.Context, runID string) error {
+func (l *fakeLedger) Settle(_ context.Context, runID string, attempt *int) error {
 	if l.err != nil {
 		return l.err
 	}
 	l.settled = append(l.settled, runID)
+	l.attempts = append(l.attempts, attempt)
 	return nil
 }
 
@@ -424,6 +426,18 @@ func TestFinalizeSettlesTheLedgerWithTheRunsActualCost(t *testing.T) {
 	}
 	if !slices.Equal(ledger.settled, []string{testRunID}) {
 		t.Fatalf("ledger.Settle was called with %v, want [%s]", ledger.settled, testRunID)
+	}
+}
+
+func TestFinalizeSettlesTheAttemptTheRunWasClaimedAt(t *testing.T) {
+	attempt := 3
+	ledger := &fakeLedger{}
+	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, SummaryUnreadable: true, Attempt: &attempt}
+	if _, err := Finalize(context.Background(), seeded(t), ledger, nil, in, finalizeNow); err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.attempts) != 1 || ledger.attempts[0] == nil || *ledger.attempts[0] != 3 {
+		t.Fatalf("settled attempts = %v, want the claim's attempt 3", ledger.attempts)
 	}
 }
 

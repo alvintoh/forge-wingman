@@ -55,7 +55,7 @@ func parkedRun(t *testing.T, q *Queue, client *firestore.Client) string {
 		t.Fatal(err)
 	}
 	seedLedger(t, client, 1, map[string]reservationEntry{
-		PlanKey(id): {Stage: dispatcher.StagePlan, ProviderCostMicros: 5, RunnerMinutes: 2, ClaimedAt: queueAt},
+		reservationKey(id, 0, dispatcher.StagePlan): {Stage: dispatcher.StagePlan, ProviderCostMicros: 5, RunnerMinutes: 2, ClaimedAt: queueAt},
 	})
 	if err := q.Suspend(context.Background(), id, storeDecision, "https://github.com/o/r/actions/runs/7", queueAt); err != nil {
 		t.Fatal(err)
@@ -83,7 +83,7 @@ func TestSuspendParksTheRunAndDropsItsReservation(t *testing.T) {
 	if row.PlanSpendMicros != 5 || row.PlanSpendMinutes != 2 {
 		t.Fatalf("plan spend = %d/%d, want 5/2", row.PlanSpendMicros, row.PlanSpendMinutes)
 	}
-	if _, has := readLedgerDoc(t, client).Reservations[PlanKey(id)]; has {
+	if _, has := readLedgerDoc(t, client).Reservations[reservationKey(id, 0, dispatcher.StagePlan)]; has {
 		t.Fatal("the suspended run still holds its plan reservation")
 	}
 }
@@ -237,14 +237,14 @@ func TestPlanSpendAccumulatesAcrossARePlan(t *testing.T) {
 	id := parkedRun(t, q, client)
 	// The resumed plan books a fresh plan reservation, then records and settles.
 	seedLedger(t, client, 1, map[string]reservationEntry{
-		PlanKey(id): {Stage: dispatcher.StagePlan, ProviderCostMicros: 7, RunnerMinutes: 3, ClaimedAt: queueAt},
+		reservationKey(id, 0, dispatcher.StagePlan): {Stage: dispatcher.StagePlan, ProviderCostMicros: 7, RunnerMinutes: 3, ClaimedAt: queueAt},
 	})
 	if err := NewRecords(client).WritePlan(ctx, id, runner.PlanRecord{
 		Files: []string{"a.go"}, BaseSHA: "base", SettledAt: queueAt.Add(time.Hour),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.Settle(ctx, PlanKey(id)); err != nil {
+	if err := q.SettlePlan(ctx, id, attemptOf(0)); err != nil {
 		t.Fatal(err)
 	}
 	row := readDecisions(t, client, id)

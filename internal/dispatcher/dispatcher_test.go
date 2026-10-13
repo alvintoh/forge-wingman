@@ -447,7 +447,7 @@ func TestPollNamesTheDependencyItWasNotGiven(t *testing.T) {
 }
 
 func TestPollAdmitsWhatItCanAndRefusesWhatItCannot(t *testing.T) {
-	q := &fakeQueue{candidates: []Candidate{{RunID: "FRG-18", Repo: "octo/scratch", Size: "M", Priority: 2}}}
+	q := &fakeQueue{candidates: []Candidate{{RunID: "FRG-18", Repo: "octo/scratch", Size: "M", Priority: 2, Attempt: 3}}}
 	w := &fakeWorkflow{}
 	res, err := Poll(context.Background(), pollDeps(fakeSource{issues: []Issue{
 		admitted("size:M", "repo:octo/scratch"),
@@ -466,7 +466,7 @@ func TestPollAdmitsWhatItCanAndRefusesWhatItCannot(t *testing.T) {
 	if len(q.queued) != 1 || q.queued[0].Repo != "octo/scratch" || !q.queued[0].At.Equal(pollAt) {
 		t.Fatalf("queued = %+v", q.queued)
 	}
-	if !slices.Equal(res.Dispatched, []string{"FRG-18"}) || !slices.Equal(w.claims, []Claim{{RunID: "FRG-18", Repo: "octo/scratch", Priority: 2}}) {
+	if !slices.Equal(res.Dispatched, []string{"FRG-18"}) || !slices.Equal(w.claims, []Claim{{RunID: "FRG-18", Repo: "octo/scratch", Priority: 2, Attempt: 3}}) {
 		t.Fatalf("dispatched %q, %+v", res.Dispatched, w.claims)
 	}
 }

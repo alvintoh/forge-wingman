@@ -35,7 +35,7 @@ func TestGitHubStartsTheRunWorkflowInTheTicketRepository(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	claim := Claim{RunID: "FRG-18", Repo: "octo/scratch", Priority: 1}
+	claim := Claim{RunID: "FRG-18", Repo: "octo/scratch", Priority: 1, Attempt: 2}
 	if err := (GitHub{Endpoint: srv.URL, Token: "gh-token", Workflow: "run.yml",
 		Branch: "main", Client: srv.Client()}).Dispatch(context.Background(), claim); err != nil {
 		t.Fatal(err)
@@ -51,8 +51,8 @@ func TestGitHubStartsTheRunWorkflowInTheTicketRepository(t *testing.T) {
 		t.Fatalf("ref = %v", got.body["ref"])
 	}
 	inputs, _ := got.body["inputs"].(map[string]any)
-	if len(inputs) != 1 || inputs["run_id"] != "FRG-18" {
-		t.Fatalf("inputs = %v", got.body["inputs"])
+	if len(inputs) != 2 || inputs["run_id"] != "FRG-18" || inputs["attempt"] != "2" {
+		t.Fatalf("inputs = %v, want the run id and attempt=2", got.body["inputs"])
 	}
 }
 
@@ -301,8 +301,8 @@ func TestGitHubDispatchesTheStageAPlanStageClaimNames(t *testing.T) {
 		Branch: "main", Client: srv.Client()}).Dispatch(context.Background(), claim); err != nil {
 		t.Fatal(err)
 	}
-	if len(inputs) != 2 || inputs["stage"] != StagePlan {
-		t.Fatalf("inputs = %v, want the run id and stage=%s", inputs, StagePlan)
+	if len(inputs) != 3 || inputs["stage"] != StagePlan {
+		t.Fatalf("inputs = %v, want the run id, attempt and stage=%s", inputs, StagePlan)
 	}
 }
 
@@ -323,7 +323,7 @@ func TestGitHubSendsNoStageForABuildStageClaim(t *testing.T) {
 		Branch: "main", Client: srv.Client()}).Dispatch(context.Background(), claim); err != nil {
 		t.Fatal(err)
 	}
-	if len(inputs) != 1 || inputs["run_id"] != "FRG-18" {
-		t.Fatalf("inputs = %v, want the run id alone: run.yml's own default reads a missing stage as build", inputs)
+	if len(inputs) != 2 || inputs["run_id"] != "FRG-18" || inputs["attempt"] != "0" {
+		t.Fatalf("inputs = %v, want the run id and attempt 0, no stage: run.yml's own default reads a missing stage as build", inputs)
 	}
 }
