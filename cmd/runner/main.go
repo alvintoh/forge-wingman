@@ -439,7 +439,7 @@ func requireImages(images map[string]string) error {
 		return nil
 	}
 	slices.Sort(missing)
-	return fmt.Errorf("%s required: the agent runs in a container, never on the runner", strings.Join(missing, ", "))
+	return fmt.Errorf("%s required: the agent and its checks run in containers, never on the runner", strings.Join(missing, ", "))
 }
 
 // agentEgressUsage describes the -agent-egress flag of build and plan-stage.
