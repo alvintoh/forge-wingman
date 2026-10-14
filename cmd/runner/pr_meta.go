@@ -92,6 +92,7 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		logger.Warn("changedFilesUnread", "run", *runID, "err", err.Error())
 	}
 	check := prCheck{
+		Planned:   planRecorded(plan),
 		Changed:   changed,
 		Unread:    err != nil || unreadPlanned,
 		OutOfPlan: outOfPlan(plan, changed),
@@ -116,7 +117,7 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	draft := draftPR(sum, check)
 	merge := autoMerge(*autoMergeSwitch, *runID, rec.Ticket(), sum, runner.FailedGate(*checkReport), check)
 	logger.Info("autoMergeDecided", "run", *runID, "autoMerge", merge, "sampled", runner.Sampled(*runID),
-		"draft", draft, "frontEnd", len(check.FrontEnd), "changed", len(check.Changed), "outOfPlan", len(check.OutOfPlan), "overlap", check.Overlap)
+		"draft", draft, "frontEnd", len(check.FrontEnd), "changed", len(check.Changed), "outOfPlan", len(check.OutOfPlan), "overlap", check.Overlap, "planned", check.Planned)
 	if err := writeOutputs(e.output, map[string]string{
 		"title":          title,
 		"branch_segment": rec.Ticket().BranchSegment(),
@@ -131,6 +132,8 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 // prCheck is what pr-meta establishes about a run's write set beyond what its
 // summary claims.
 type prCheck struct {
+	// Planned is set when the run's plan recorded a write set; the zero value holds the PR.
+	Planned bool
 	// Changed is the write set the branch carries, read out of its bundle.
 	Changed []string
 	// OutOfPlan is what Changed holds that the run's recorded plan does not
@@ -151,6 +154,9 @@ type prCheck struct {
 func (c prCheck) clear() bool {
 	return !c.Unread && len(c.OutOfPlan) == 0 && c.Overlap == ""
 }
+
+// planRecorded reports whether plan names a write set to check the branch against.
+func planRecorded(plan runner.PlanRecord) bool { return len(plan.Files) > 0 }
 
 // frontEnd names what marks a run as a front-end change: the ticket's label,
 // then each of repository's declared prefixes that changed has a file under. A
@@ -247,11 +253,11 @@ func draftPR(sum runner.Summary, check prCheck) bool {
 
 // ownerAttention reports whether the run's PR must wait for the owner rather
 // than merge itself (FR-5, FR-17): a draft, sized L, in the review sample,
-// touching a workflow, failing a check gate, or changing front-end code, which
-// holds the PR without making it a draft.
+// touching a workflow, failing a check gate, changing front-end code, or having
+// no recorded plan, which hold the PR without making it a draft.
 func ownerAttention(runID string, t runner.Ticket, sum runner.Summary, failedGate string, check prCheck) bool {
 	return draftPR(sum, check) || (t.Size != "S" && t.Size != "M") || runner.Sampled(runID) ||
-		sum.StopReason == runner.StopWorkflowChange || failedGate != "" || len(check.FrontEnd) > 0
+		sum.StopReason == runner.StopWorkflowChange || failedGate != "" || len(check.FrontEnd) > 0 || !check.Planned
 }
 
 // autoMergeOn is the only WINGMAN_AUTO_MERGE value that lets a run request auto-merge.
@@ -299,7 +305,7 @@ func buildSummary(logger *slog.Logger, raw, attemptID string, t runner.Ticket, n
 // a draft.
 func renderPR(tmpl string, rec runner.Record, sum runner.Summary, failedGate, runURL, loopDetail string, check prCheck) (title, body string, err error) {
 	t := rec.Ticket()
-	body, err = runner.PRBody(tmpl, t, sum.PRSummary, failedGate, runURL, loopDetail, check.Overlap, check.OutOfPlan, check.Unread, check.FrontEnd)
+	body, err = runner.PRBody(tmpl, t, sum.PRSummary, failedGate, runURL, loopDetail, check.Overlap, check.OutOfPlan, check.Unread, check.FrontEnd, !check.Planned)
 	if err != nil {
 		return "", "", err
 	}

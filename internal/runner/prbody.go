@@ -32,8 +32,9 @@ var errTemplate = errors.New("pull request template lacks the ticket line, summa
 // names the in-flight run whose plan these files touch, empty when none does.
 // outOfPlan are the edited files the run's plan did not name, which also keep it
 // a draft. frontEnd names what held a front-end change for the owner, empty when
-// nothing did.
-func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail, overlap string, outOfPlan []string, writeSetUnread bool, frontEnd []string) (string, error) {
+// nothing did. noPlan is set for a run no plan stage recorded a write set for,
+// which waits for the owner rather than merging itself.
+func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail, overlap string, outOfPlan []string, writeSetUnread bool, frontEnd []string, noPlan bool) (string, error) {
 	summary := plainText(prSummary)
 	if summary == "" {
 		summary = "`" + t.ID + "`: " + t.Title
@@ -83,6 +84,9 @@ func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail
 					spans[i] = codeSpan(m)
 				}
 				notes = append(notes, "", "**Front-end change:** waits for the owner — matched "+strings.Join(spans, ", ")+"; run /fe-sweep before reading the diff")
+			}
+			if noPlan {
+				notes = append(notes, "", "**No recorded plan:** not eligible for auto-merge, so this waits for the owner — no plan stage recorded a write set for this run, so nothing it changed could be checked against one")
 			}
 			notes = append(notes, "", "The ticket as built:", "", fence(t.Body), t.Body, fence(t.Body), "")
 			out = append(out, notes...)
