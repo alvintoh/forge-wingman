@@ -83,7 +83,7 @@ const delegatedQuery = `query DelegatedIssues($delegate: ID!, $first: Int, $afte
 // openQuery reads the token's own identity beside every open issue, with the
 // delegate and the milestone a poll needs to choose the tickets it takes on
 // itself: an issue already delegated still counts toward the milestone being
-// worked through (FRG-125).
+// worked through.
 const openQuery = `query OpenIssues($first: Int, $after: String) {
   viewer {
     id

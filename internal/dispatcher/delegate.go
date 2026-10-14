@@ -27,7 +27,7 @@ const (
 )
 
 // autoDelegate delegates the tickets the product takes on itself, up to the
-// level's daily bar, while the review WIP limit leaves room (FRG-125).
+// level's daily bar, while the review WIP limit leaves room.
 //
 // The bar is the level's own — 1, 3, 5, 5 and 10 runs a day at levels 1 to 5 —
 // and level 0 delegates nothing: the phase reads nothing and looks at no ticket

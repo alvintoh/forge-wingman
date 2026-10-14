@@ -487,7 +487,7 @@ func countRows(ctx context.Context, query firestore.Query) (int64, error) {
 }
 
 // ClaimedSince counts the runs claimed at or after since: the runs a level's
-// daily bar of delegations is spent from (FRG-125). A run whose claim was
+// daily bar of delegations is spent from. A run whose claim was
 // released or requeued carries no claim stamp and is not counted, since it never
 // reached a runner.
 func (q *Queue) ClaimedSince(ctx context.Context, since time.Time) (int, error) {
@@ -1242,7 +1242,7 @@ func planStamped(row map[string]any) bool {
 
 // NeedsRequeue reports whether ticketID has a run that has ended — stopped,
 // abandoned, or a claim with a recorded outcome — so that only an operator's
-// own Requeue takes the ticket further, never another delegation (FRG-125). A
+// own Requeue takes the ticket further, never another delegation. A
 // ticket with no run row at all has not ended.
 func (q *Queue) NeedsRequeue(ctx context.Context, ticketID string) (bool, error) {
 	snap, err := q.client.Collection(runsCollection).Doc(ticketID).Get(ctx)

@@ -35,7 +35,7 @@ var autonomyLevels = [...]struct {
 }{
 	{0, "you delegate and you merge", ""},
 	{1, delegatesDescription(1, "and you merge"), ""},
-	{2, delegatesDescription(3, "and you merge"), ""},
+	{3, delegatesDescription(3, "and you merge"), ""},
 	{delegatesAtLevel3And4, delegatesDescription(delegatesAtLevel3And4, "and you merge"), ""},
 	{delegatesAtLevel3And4, "as level 3, and eligible S and M PRs auto-merge",
 		"level 3 held, a rewrite rate of 5% or less over 10 PRs, zero gate misses, and CD on the target repository"},

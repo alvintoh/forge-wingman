@@ -30,11 +30,20 @@ func (f *fakeDelegatable) Open(context.Context) ([]Issue, error) {
 	return f.open, nil
 }
 
-func (f *fakeDelegatable) DelegateIssue(_ context.Context, issueID string) error {
-	if err := f.delegateErr[issueID]; err != nil {
+// DelegateIssue is given the issue's UUID, as Linear's mutation takes it, and
+// records the ticket id that UUID belongs to; an unknown UUID is recorded as is,
+// so a call made with the wrong key still fails the assertion.
+func (f *fakeDelegatable) DelegateIssue(_ context.Context, issueUUID string) error {
+	id := issueUUID
+	for _, issue := range f.open {
+		if issue.UUID == issueUUID {
+			id = issue.ID
+		}
+	}
+	if err := f.delegateErr[id]; err != nil {
 		return err
 	}
-	f.delegated = append(f.delegated, issueID)
+	f.delegated = append(f.delegated, id)
 	return nil
 }
 
@@ -132,7 +141,7 @@ func TestPollCountsTodaysClaimsFromTheStartOfTheDay(t *testing.T) {
 // nothing because the day's bar is spent says so once.
 func TestPollLogsThatTheBarIsReachedOncePerPoll(t *testing.T) {
 	q := &fakeQueue{claimedCount: 3}
-	deps, delegatable, logs := delegationDeps(3, []Issue{openTicket("FRG-20", 1)}, q)
+	deps, delegatable, logs := delegationDeps(2, []Issue{openTicket("FRG-20", 1)}, q)
 	res, err := Poll(context.Background(), deps, buildConfig)
 	if err != nil {
 		t.Fatal(err)

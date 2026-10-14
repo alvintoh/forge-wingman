@@ -2547,7 +2547,7 @@ func listed(t *testing.T, q *Queue, ctx context.Context, runID string) bool {
 	return false
 }
 
-// TestClaimedSinceCountsTheRunsClaimedInsideTheWindow is FRG-125's daily bar: the
+// TestClaimedSinceCountsTheRunsClaimedInsideTheWindow is the daily bar: the
 // runs a level's delegations are spent from, by the claim stamp each one carries.
 func TestClaimedSinceCountsTheRunsClaimedInsideTheWindow(t *testing.T) {
 	q, client := queue(t)
@@ -2585,7 +2585,7 @@ func TestClaimedSinceCountsTheRunsClaimedInsideTheWindow(t *testing.T) {
 	}
 }
 
-// TestNeedsRequeueReportsTheRowsOnlyAnOperatorReturns is FRG-125's settled-row
+// TestNeedsRequeueReportsTheRowsOnlyAnOperatorReturns is the settled-row
 // rule: the ticket of a run that has ended waits for the owner's own `runner
 // requeue`, and one still queued or in flight does not.
 func TestNeedsRequeueReportsTheRowsOnlyAnOperatorReturns(t *testing.T) {

@@ -298,7 +298,7 @@ func TestLinearReadsEveryOpenIssuePageWithWhatDelegatingNeeds(t *testing.T) {
 		second.Milestone != (Milestone{ID: "phase-2", SortOrder: 2}) || len(second.Labels) != 2 {
 		t.Fatalf("issue = %+v, want a ticket with no delegate read as free", second)
 	}
-	if len(*seen) != 2 || (*seen)[0]["after"] != nil || (*seen)[1]["after"] != "cursor-1" {
+	if len(*seen) != 2 || (*seen)[0].variables["after"] != nil || (*seen)[1].variables["after"] != "cursor-1" {
 		t.Fatalf("pages asked with %v", *seen)
 	}
 	for _, field := range []string{"projectMilestone {", "sortOrder", "delegate {", "$first: Int"} {
@@ -317,7 +317,7 @@ func TestLinearOpenRefusesATokenReadingAsAnotherAgent(t *testing.T) {
 	}
 }
 
-// TestLinearDelegatesAnIssueToTheAgentItActsFor is FRG-125's write: the mutation
+// TestLinearDelegatesAnIssueToTheAgentItActsFor is the write: the mutation
 // names the issue's own Linear id, not its identifier, and the configured
 // delegate.
 func TestLinearDelegatesAnIssueToTheAgentItActsFor(t *testing.T) {

@@ -255,7 +255,7 @@ type Source interface {
 }
 
 // Delegatable reads the open tickets the product may take on itself and
-// delegates one to the configured agent (FRG-125).
+// delegates one to the configured agent.
 type Delegatable interface {
 	// Open returns every open issue, with the delegate and milestone a poll
 	// needs to choose the next ticket to delegate itself.
@@ -306,13 +306,13 @@ type Rejector interface {
 }
 
 // ClaimedRuns counts the runs claimed since a moment: the runs a level's daily
-// bar is spent from (FRG-125).
+// bar is spent from.
 type ClaimedRuns interface {
 	ClaimedSince(ctx context.Context, since time.Time) (int, error)
 }
 
 // EndedRuns reports whether a ticket's run has already ended, so that only the
-// owner's own `runner requeue` takes that ticket further (FRG-125).
+// owner's own `runner requeue` takes that ticket further.
 type EndedRuns interface {
 	NeedsRequeue(ctx context.Context, ticketID string) (bool, error)
 }
@@ -355,7 +355,7 @@ type Result struct {
 	// Dispatched is the id of every run this poll claimed and started.
 	Dispatched []string
 	// Delegated is the id of every ticket this poll delegated to the agent
-	// itself, in the order it delegated them (FRG-125).
+	// itself, in the order it delegated them.
 	Delegated []string
 }
 
@@ -366,7 +366,7 @@ type Result struct {
 // withholds is deferred, not rejected, and reconsidered next poll; and a run
 // whose dispatch fails is released rather than left claimed, so the next
 // poll considers it again. The tickets the product delegates to itself are
-// taken on at the end of the poll (FRG-125).
+// taken on at the end of the poll.
 func Poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	if name := d.missing(); name != "" {
 		return Result{}, fmt.Errorf("dispatcher dependency %s is not set", name)
