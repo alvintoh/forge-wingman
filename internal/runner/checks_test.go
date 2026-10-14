@@ -33,7 +33,7 @@ func writeModuleFile(t *testing.T, dir, name, content string) {
 
 func TestRunChecksPassesOnACleanModule(t *testing.T) {
 	dir := initModule(t)
-	gate, output, err := RunChecks(context.Background(), dir)
+	gate, output, err := RunChecks(context.Background(), dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestRunChecksNamesTheFirstFailingGate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := initModule(t)
 			tt.mutate(dir)
-			gate, output, err := RunChecks(context.Background(), dir)
+			gate, output, err := RunChecks(context.Background(), dir, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -87,7 +87,7 @@ func TestRunChecksStopsAtTheFirstFailure(t *testing.T) {
 	dir := initModule(t)
 	writeModuleFile(t, dir, "x.go", "package x\nfunc Add(a,b int) int { return a+b }\n") // gofmt AND vet would both fail
 	writeModuleFile(t, dir, "x_test.go", "package x\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tt.Fatal(\"boom\")\n}\n")
-	gate, _, err := RunChecks(context.Background(), dir)
+	gate, _, err := RunChecks(context.Background(), dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestRunChecksStopsAtTheFirstFailure(t *testing.T) {
 
 func TestRunChecksFailsClosedWhenAGateCannotRunAtAll(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "does-not-exist")
-	if _, _, err := RunChecks(context.Background(), dir); err == nil {
+	if _, _, err := RunChecks(context.Background(), dir, nil); err == nil {
 		t.Fatal("RunChecks succeeded against a directory that does not exist")
 	}
 }
@@ -130,13 +130,86 @@ func TestNoSecretLeaked(t *testing.T) {
 	}
 }
 `)
-	gate, output, err := RunChecks(context.Background(), dir)
+	gate, output, err := RunChecks(context.Background(), dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if gate != "" {
 		t.Fatalf("gate = %q, output = %q, want a clean pass with the secrets stripped", gate, output)
 	}
+}
+
+func TestTouchesWeb(t *testing.T) {
+	tests := []struct {
+		name    string
+		changed []string
+		want    bool
+	}{
+		{"a file under web", []string{"internal/a.go", "web/src/app.tsx"}, true},
+		{"the web directory itself", []string{"web"}, true},
+		{"a sibling whose name begins with web", []string{"webx/app.tsx", "internal/web.go"}, false},
+		{"nothing changed", nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := touchesWeb(tt.changed); got != tt.want {
+				t.Fatalf("touchesWeb(%q) = %v, want %v", tt.changed, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRunChecksRunsTheWebStepsOnTheHostOnlyWhenTheDiffTouchesWeb holds the
+// no-container path to the same gate set the container runs: with a diff that
+// touches web the web job's steps run there with the bun on PATH, one step's
+// failure is named as itself, and a diff that does not touch web runs none.
+func TestRunChecksRunsTheWebStepsOnTheHostOnlyWhenTheDiffTouchesWeb(t *testing.T) {
+	t.Run("a diff that does not touch web", func(t *testing.T) {
+		bun := fakeBun(t, filepath.Join(t.TempDir(), "bun"))
+		t.Setenv("PATH", filepath.Dir(bun)+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+		gate, output, err := RunChecks(context.Background(), initWebModule(t), []string{"internal/runner/checks.go"})
+		if err != nil || gate != "" {
+			t.Fatalf("RunChecks = %q, %q, %v, want a clean pass", gate, output, err)
+		}
+		if _, err := os.Stat(bunLog(bun)); !os.IsNotExist(err) {
+			t.Errorf("bun ran for a diff that does not touch web: %v", err)
+		}
+	})
+
+	t.Run("a diff that touches web", func(t *testing.T) {
+		bun := fakeBun(t, filepath.Join(t.TempDir(), "bun"))
+		t.Setenv("PATH", filepath.Dir(bun)+string(os.PathListSeparator)+os.Getenv("PATH"))
+		dir := initWebModule(t)
+
+		gate, output, err := RunChecks(context.Background(), dir, webTouched)
+		if err != nil || gate != "" {
+			t.Fatalf("RunChecks = %q, %q, %v, want a clean pass", gate, output, err)
+		}
+		var commands []string
+		for _, call := range bunCalls(t, bun) {
+			if call[0] != bun {
+				t.Errorf("a web step ran as %q, want the bun on PATH", call[0])
+			}
+			if call[1] != filepath.Join(dir, webDir) {
+				t.Errorf("a web step ran in %q, want the web directory", call[1])
+			}
+			commands = append(commands, filepath.Base(call[0])+" "+strings.Join(call[2:], " "))
+		}
+		want := []string{"bun install --frozen-lockfile", "bun run lint", "bun run fmt:check", "bun run build"}
+		if !slices.Equal(commands, want) {
+			t.Fatalf("the web steps ran %q, want %q", commands, want)
+		}
+
+		bunFails(t, bun, "fmt:check")
+		gate, output, err = RunChecks(context.Background(), dir, webTouched)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gate != checkWebFmtCheck || output == "" {
+			t.Fatalf("gate = %q, output = %q, want %q with its output", gate, output, checkWebFmtCheck)
+		}
+	})
 }
 
 func TestCheckEnvNamesExcludeTheModelJobsSecretsButKeepTheGoToolchain(t *testing.T) {

@@ -417,12 +417,21 @@ func checkRunner(ctx context.Context, image, tempDir, repo string) (runner.Check
 	if linter, err = filepath.Abs(linter); err != nil {
 		return nil, fmt.Errorf("checks linter: %w", err)
 	}
+	// The checks image pins a Go toolchain alone, so the web gates run on the
+	// bun model.yml installs for its harnesses, mounted into their container.
+	bun, err := exec.LookPath("bun")
+	if err != nil {
+		return nil, fmt.Errorf("checks bun: %w", err)
+	}
+	if bun, err = filepath.Abs(bun); err != nil {
+		return nil, fmt.Errorf("checks bun: %w", err)
+	}
 	gitDir, err := runner.GitCommonDir(ctx, repo)
 	if err != nil {
 		return nil, fmt.Errorf("checks git common dir: %w", err)
 	}
 	c := runner.ContainerChecks{Image: image, ModCache: filepath.Join(tempDir, "checks-modcache"), Linter: linter,
-		GitCommonDir: gitDir}
+		Bun: bun, BunCache: filepath.Join(tempDir, "checks-bun-cache"), GitCommonDir: gitDir}
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}

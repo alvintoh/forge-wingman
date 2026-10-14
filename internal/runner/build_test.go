@@ -150,7 +150,7 @@ func (r *reports) last(t *testing.T) Summary {
 
 // alwaysPassChecks is the Checks fake most tests use: RunChecks's own
 // behavior is checks_test.go's concern, not this file's.
-func alwaysPassChecks(context.Context, string) (string, string, error) { return "", "", nil }
+func alwaysPassChecks(context.Context, string, []string) (string, string, error) { return "", "", nil }
 
 func testDeps(projections fakeObjects, agent *fakeAgent) (BuildDeps, fakeObjects, *reports) {
 	completions, reported := fakeObjects{}, &reports{}
@@ -1085,7 +1085,7 @@ func TestPrePRLoopRebuildsOnceOnAFailingCheckThenPasses(t *testing.T) {
 	}
 	deps, _, reported := testDeps(validObjects(), agent)
 	calls := 0
-	deps.Checks = func(context.Context, string) (string, string, error) {
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
 		calls++
 		if calls == 1 {
 			return checkVet, "vet failed: bad format", nil
@@ -1121,6 +1121,40 @@ func TestPrePRLoopRebuildsOnceOnAFailingCheckThenPasses(t *testing.T) {
 	}
 }
 
+// TestPrePRLoopFeedsAFailingWebStepBackToTheBuildSession holds a failure the Go
+// gates cannot see to the same fix loop: the web step's name and output reach
+// the resumed build session, and the round is recorded against that step.
+func TestPrePRLoopFeedsAFailingWebStepBackToTheBuildSession(t *testing.T) {
+	agent := &fakeAgent{
+		edit:   edit("version.go", "package x\n"),
+		events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{"input":1}}}` + "\n",
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	calls := 0
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		calls++
+		if calls == 1 {
+			return checkWebFmtCheck, "web/src/pages.tsx is not formatted", nil
+		}
+		return "", "", nil
+	}
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 2 {
+		t.Fatalf("build agent ran %d times, want 2 (initial attempt + one rebuild)", agent.calls)
+	}
+	if !strings.Contains(agent.prompts[1], checkWebFmtCheck) || !strings.Contains(agent.prompts[1], "is not formatted") {
+		t.Fatalf("rebuild prompt = %q, want it to name the failing web step and its output", agent.prompts[1])
+	}
+	rec := reported.last(t)
+	if rec.Steps[1].Phase != PhaseBuild || rec.Steps[1].Round != 2 || rec.Steps[1].Detail != checkWebFmtCheck {
+		t.Fatalf("rebuild step = %+v", rec.Steps[1])
+	}
+}
+
 func TestPrePRLoopRecordsCheckTimeAndLogsEachRound(t *testing.T) {
 	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
 	deps, _, reported := testDeps(validObjects(), agent)
@@ -1129,7 +1163,7 @@ func TestPrePRLoopRecordsCheckTimeAndLogsEachRound(t *testing.T) {
 	clock := time.Now()
 	deps.Now = func() time.Time { return clock }
 	calls := 0
-	deps.Checks = func(context.Context, string) (string, string, error) {
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
 		calls++
 		clock = clock.Add(3 * time.Second)
 		if calls == 1 {
@@ -1167,7 +1201,7 @@ func TestPrePRLoopRecordsCheckTimeAndLogsEachRound(t *testing.T) {
 func TestPrePRLoopGivesUpAfterThreeRoundsStillFailing(t *testing.T) {
 	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
 	deps, _, reported := testDeps(validObjects(), agent)
-	deps.Checks = func(context.Context, string) (string, string, error) {
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
 		return checkTest, "still failing", nil
 	}
 	c := testConfig(t, initRepo(t))
@@ -1210,7 +1244,7 @@ func TestPrePRLoopStillGetsThreeRebuildRoundsAfterAMidRoundModelSubstitution(t *
 		events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{"input":1}}}` + "\n",
 	}
 	deps, _, reported := testDeps(validObjects(), agent)
-	deps.Checks = func(context.Context, string) (string, string, error) {
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
 		return checkTest, "still failing", nil
 	}
 	c := testConfig(t, initRepo(t))
@@ -1381,7 +1415,7 @@ func TestPrePRLoopCleanReReviewWithAFailingCheckStaysADraft(t *testing.T) {
 	}}
 	deps.ReviewAgent = review
 	checkCalls := 0
-	deps.Checks = func(context.Context, string) (string, string, error) {
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
 		checkCalls++
 		if checkCalls == 2 {
 			return checkVet, "vet failed: bad format", nil
@@ -1426,7 +1460,7 @@ func TestPrePRLoopLabelsFindingsNotReReviewedWhenTheBudgetIsSpent(t *testing.T) 
 	clock := started
 	deps.Now = func() time.Time { return clock }
 	checkCalls := 0
-	deps.Checks = func(context.Context, string) (string, string, error) {
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
 		checkCalls++
 		if checkCalls == 2 {
 			clock = started.Add(checkLoopBudget + time.Minute)
@@ -1801,7 +1835,7 @@ func TestRedactedTail(t *testing.T) {
 func TestPrePRLoopStopsWithinNFR1Budget(t *testing.T) {
 	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
 	deps, _, reported := testDeps(validObjects(), agent)
-	deps.Checks = func(context.Context, string) (string, string, error) {
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
 		return checkTest, "still failing", nil
 	}
 	started := time.Now()
@@ -1917,7 +1951,7 @@ func TestPrePRLoopWarnsWhenARoundPastTheFirstReportsNoSessionID(t *testing.T) {
 	}
 	deps, _, reported := testDeps(validObjects(), agent)
 	calls := 0
-	deps.Checks = func(context.Context, string) (string, string, error) {
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
 		calls++
 		if calls == 1 {
 			return checkVet, "vet failed", nil

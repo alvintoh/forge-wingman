@@ -420,14 +420,16 @@ func pinnedImageArgs() []string {
 	return []string{"-agent-image", "agent:1" + digest, "-checks-image", "golang:1.27.1" + digest}
 }
 
-// pinnedImagesOnPath puts the linter the checks container mounts and a docker that logs on PATH, and
-// returns the docker log.
+// pinnedImagesOnPath puts the linter the checks container mounts, the bun its
+// web gates mount, and a docker that logs on PATH, and returns the docker log.
 func pinnedImagesOnPath(t *testing.T) string {
 	t.Helper()
 	logFile := fakeDockerLog(t)
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "golangci-lint"), []byte("#!/bin/sh\n"), 0o700); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"golangci-lint", "bun"} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return logFile
@@ -612,8 +614,10 @@ func TestAppendFileAppendsAndCreatesOwnerOnly(t *testing.T) {
 
 func TestCheckRunnerRefusesAnImageNotPinnedByDigest(t *testing.T) {
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "golangci-lint"), []byte("#!/bin/sh\n"), 0o700); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"golangci-lint", "bun"} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	ctx := context.Background()
@@ -622,6 +626,29 @@ func TestCheckRunnerRefusesAnImageNotPinnedByDigest(t *testing.T) {
 	}
 	if _, err := checkRunner(ctx, "golang:1.27.1@sha256:"+strings.Repeat("a", 64), t.TempDir(), "."); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestCheckRunnerRequiresTheBunItsWebGatesMount holds checkRunner to failing
+// before any agent runs when the interpreter its web gates mount is missing, as
+// it does for the linter.
+func TestCheckRunnerRequiresTheBunItsWebGatesMount(t *testing.T) {
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "golangci-lint"), []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// git stays on PATH, which checkRunner resolves the repository through, and
+	// the directories after it are ones a runner's bun is not installed in.
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+"/usr/bin:/bin")
+	image := "golang:1.27.1@sha256:" + strings.Repeat("a", 64)
+	if _, err := checkRunner(context.Background(), image, t.TempDir(), "."); err == nil || !strings.Contains(err.Error(), "checks bun") {
+		t.Fatalf("checkRunner = %v, want an error naming the bun its web gates mount", err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "bun"), []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := checkRunner(context.Background(), image, t.TempDir(), "."); err != nil {
+		t.Fatalf("checkRunner = %v, want it usable with a bun on PATH", err)
 	}
 }
 
