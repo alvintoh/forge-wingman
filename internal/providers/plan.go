@@ -57,7 +57,7 @@ const (
 	dateLayout      = "2006-01-02"
 )
 
-// Locator names a vendor page the weekly refresh reads, and the region of it
+// Locator names a vendor page the plan facts refresh reads, and the region of it
 // to read.
 type Locator struct {
 	URL      string `firestore:"url"`
