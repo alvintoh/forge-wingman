@@ -81,7 +81,9 @@ comma-separated provider/model. Unset, it reviews with
 `WINGMAN_AGENT_IMAGE` is optional: an agent image pinned by digest that provides omp,
 opencode, git and sh. Set it to run the build and plan stages' agent CLIs in a container
 of that image, which mounts only the worktree, the harness home and the git common
-directory; unset, they run on the runner. Unset it to undo.
+directory; the stage runs both CLIs' version commands in that container, over those
+mounts, before the first agent round, so an image missing either binary stops the run
+with stop reason `agent-container`. Unset it to undo.
 
 `WINGMAN_AGENT_EGRESS` is `on` or `off`, where empty is off, and it needs
 `WINGMAN_AGENT_IMAGE` set — a stage refuses `on` without an image. `on` confines that
