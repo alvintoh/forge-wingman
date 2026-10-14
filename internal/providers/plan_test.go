@@ -130,11 +130,11 @@ func TestNewVerdictNoteRefusesAnImpossibleDateAndANonHTTPSSource(t *testing.T) {
 }
 
 func TestCapTextNeverSplitsARuneAndReplacesInvalidUTF8(t *testing.T) {
-	if got := capText("a€b", 2); got != "a" {
-		t.Fatalf("capText = %q, want a: the cap falls inside the three-byte €", got)
+	if got := CapText("a€b", 2); got != "a" {
+		t.Fatalf("CapText = %q, want a: the cap falls inside the three-byte €", got)
 	}
-	if got := capText("a\xffb", 10); got != "a\uFFFDb" {
-		t.Fatalf("capText = %q, want the invalid byte replaced", got)
+	if got := CapText("a\xffb", 10); got != "a\uFFFDb" {
+		t.Fatalf("CapText = %q, want the invalid byte replaced", got)
 	}
 }
 

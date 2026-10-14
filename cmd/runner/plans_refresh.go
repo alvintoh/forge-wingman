@@ -2,19 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/planrefresh"
 	"github.com/alvintoh/forge-wingman/internal/providers"
 )
-
-// refreshTimeout bounds one request the refresh makes, so a source that hangs
-// cannot hold the weekly read open.
-const refreshTimeout = 30 * time.Second
 
 // planFactsStore is everything plans-refresh reads and the one document it
 // writes: the plans themselves, the facts last recorded for one, and the facts
@@ -47,7 +43,7 @@ func plansRefresh(ctx context.Context, logger *slog.Logger, e env, args []string
 
 	// The leaderboard and the free feed are one document for every plan, so each
 	// is read once here and the readings handed to every plan's refresh.
-	client := &http.Client{Timeout: refreshTimeout}
+	client := planrefresh.NewClient()
 	refresher := planrefresh.Refresher{Vendor: planrefresh.Vendor{HTTP: client}, Now: time.Now}
 	board := planrefresh.Board{Endpoint: *leaderboard, HTTP: client}
 	refresher.Board, refresher.BoardErr = board.Read(ctx)
@@ -64,13 +60,15 @@ func plansRefresh(ctx context.Context, logger *slog.Logger, e env, args []string
 
 // refreshPlans refreshes every configured plan the store lists, or the one named,
 // writing one facts document per plan under the plan's own read date and nothing
-// else.
+// else. A plan whose facts cannot be read or written is logged and the rest are
+// still refreshed; the error returned names every plan that failed.
 func refreshPlans(ctx context.Context, logger *slog.Logger, plans planFactsStore, refresher planrefresh.Refresher, named string) error {
 	rows, err := plans.List(ctx)
 	if err != nil {
 		return err
 	}
-	refreshed := 0
+	attempted := 0
+	var failed []error
 	for _, row := range rows {
 		if named != "" && row.Provider != named {
 			continue
@@ -81,22 +79,26 @@ func refreshPlans(ctx context.Context, logger *slog.Logger, plans planFactsStore
 			}
 			continue
 		}
+		attempted++
 		last, _, _, err := plans.LatestFacts(ctx, row.Provider)
 		if err != nil {
-			return err
+			logger.Error("planFactsReadFailed", "provider", row.Provider, "err", err.Error())
+			failed = append(failed, fmt.Errorf("reading the facts last recorded for %s: %w", row.Provider, err))
+			continue
 		}
 		facts := refresher.Refresh(ctx, row.Provider, row.Plan.Definition, last)
 		if err := plans.PutFacts(ctx, row.Provider, facts.ReadOn, facts); err != nil {
-			return err
+			logger.Error("planFactsWriteFailed", "provider", row.Provider, "err", err.Error())
+			failed = append(failed, fmt.Errorf("writing the facts for %s: %w", row.Provider, err))
+			continue
 		}
-		refreshed++
 		logger.Info("planFactsWritten", "provider", row.Provider, "read_on", facts.ReadOn, "flags", fmt.Sprint(facts.Flags))
 	}
 	switch {
-	case refreshed == 0 && named != "":
+	case attempted == 0 && named != "":
 		return fmt.Errorf("plan %s is not a plan this store holds", named)
-	case refreshed == 0:
+	case attempted == 0:
 		logger.Info("plansRefreshNothingToRead")
 	}
-	return nil
+	return errors.Join(failed...)
 }

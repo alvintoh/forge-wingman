@@ -23,7 +23,7 @@ const maxReplyBytes = 1 << 20
 type Board struct {
 	// Endpoint is the leaderboard's address; empty means the built-in one.
 	Endpoint string
-	// HTTP is the client requests go through; nil means http.DefaultClient.
+	// HTTP is the client requests go through; nil means NewClient().
 	HTTP *http.Client
 }
 
@@ -62,12 +62,15 @@ func (b Board) Read(ctx context.Context) (BoardReport, error) {
 		return BoardReport{}, fmt.Errorf("decoding the leaderboard: %w", err)
 	}
 	report := BoardReport{
-		Benchmark: strings.TrimSpace(reply.Benchmark),
-		On:        strings.TrimSpace(reply.Date),
+		Benchmark: providers.CapText(strings.TrimSpace(reply.Benchmark), maxFieldBytes),
+		On:        providers.CapText(strings.TrimSpace(reply.Date), maxFieldBytes),
 		Models:    make(map[string]providers.Score, len(reply.Models)),
 	}
+	// A short name is set only where no exact name holds it, so a model is never
+	// read as another that shares its last segment.
+	shorts := make(map[string]providers.Score)
 	for _, m := range reply.Models {
-		name := strings.TrimSpace(m.Model)
+		name := providers.CapText(strings.TrimSpace(m.Model), maxFieldBytes)
 		if name == "" {
 			continue
 		}
@@ -77,10 +80,17 @@ func (b Board) Read(ctx context.Context) (BoardReport, error) {
 			Benchmark:  report.Benchmark,
 			ScoredOn:   report.On,
 			Provenance: providers.ParseProvenance(m.Provenance),
-			Margin:     strings.TrimSpace(m.Margin),
+			Margin:     providers.CapText(strings.TrimSpace(m.Margin), maxFieldBytes),
 		}
 		report.Models[name] = score
 		if short := bare(name); short != name {
+			if _, taken := shorts[short]; !taken {
+				shorts[short] = score
+			}
+		}
+	}
+	for short, score := range shorts {
+		if _, exact := report.Models[short]; !exact {
 			report.Models[short] = score
 		}
 	}

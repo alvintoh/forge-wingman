@@ -22,7 +22,7 @@ const feedEndpoint = "https://tokenplans.com/api/free-feed"
 type Feed struct {
 	// Endpoint is the feed's address; empty means the built-in one.
 	Endpoint string
-	// HTTP is the client requests go through; nil means http.DefaultClient.
+	// HTTP is the client requests go through; nil means NewClient().
 	HTTP *http.Client
 }
 
@@ -34,7 +34,7 @@ type FeedReport struct {
 }
 
 // FeedPlan is what the free feed states about one provider. Every figure is the
-// feed's own; a refresh records the vendor's page's instead.
+// feed's own; a refresh records the recorded plan's instead.
 type FeedPlan struct {
 	Price          money.Micros
 	LimitBehaviour providers.LimitBehaviour
@@ -66,15 +66,15 @@ func (f Feed) Read(ctx context.Context) (FeedReport, error) {
 	}
 	report := FeedReport{Plans: make(map[string]FeedPlan, len(reply.Plans))}
 	for _, p := range reply.Plans {
-		provider := strings.TrimSpace(p.Provider)
+		provider := providers.CapText(strings.TrimSpace(p.Provider), maxFieldBytes)
 		if provider == "" {
 			continue
 		}
 		report.Plans[provider] = FeedPlan{
 			Price:          money.FromUSD(p.PriceUSD),
-			LimitBehaviour: providers.LimitBehaviour(strings.TrimSpace(p.LimitBehaviour)),
-			Models:         p.Models,
-			Perks:          p.Perks,
+			LimitBehaviour: providers.LimitBehaviour(providers.CapText(strings.TrimSpace(p.LimitBehaviour), maxFieldBytes)),
+			Models:         capList(p.Models, maxModels),
+			Perks:          capList(p.Perks, maxPerks),
 		}
 	}
 	return report, nil

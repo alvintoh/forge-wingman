@@ -102,7 +102,7 @@ type PageFacts struct {
 // NewPageFacts returns one vendor page's read with its text capped on a character
 // boundary, since a vendor's own words may be any length.
 func NewPageFacts(url, selector, text string) PageFacts {
-	return PageFacts{URL: url, Selector: selector, Text: capText(text, MaxPageBytes)}
+	return PageFacts{URL: url, Selector: selector, Text: CapText(text, MaxPageBytes)}
 }
 
 // ModelsFacts is the vendor's own model list, as its models endpoint answered it,
@@ -114,13 +114,13 @@ type ModelsFacts struct {
 
 // FeedFacts is the free feed's own report of the plan, a change signal only: the
 // figures it states are never the ones recorded, and Disagreements names where
-// they differ from the vendor's own.
+// they differ from the recorded plan's.
 type FeedFacts struct {
 	Source         Source         `firestore:"source"`
 	Price          money.Micros   `firestore:"price_micros"`
 	LimitBehaviour LimitBehaviour `firestore:"limit_behaviour"`
-	// Disagreements names where the feed's own figures differ from the vendor's
-	// page's, which are the ones this document records.
+	// Disagreements names where the feed's own figures differ from the recorded
+	// plan's, which are the ones this document records.
 	Disagreements []string `firestore:"disagreements"`
 	// Models are the models the feed lists for the plan, a change signal only.
 	Models []string `firestore:"models"`
@@ -133,18 +133,20 @@ type FeedFacts struct {
 // and the free feed's report. It is written to
 // provider_plans/<provider>/facts/<date>, one document per read date.
 //
-// Price and Limits are the figures the owner recorded from the vendor's own page,
-// which are the plan's own: the free feed is a change signal and never the figure
-// recorded here. The document records what was read and decides nothing, so
+// Price and Limits are the figures in the recorded plan, which the owner took from
+// the vendor's own page; a refresh copies them from the plan and never reads them
+// off a page. The free feed is a change signal and never the figure recorded here.
+//
+// The document records what was read and decides nothing, so
 // nothing in it changes which provider runs.
 type Facts struct {
 	// ReadOn is the yyyy-mm-dd date the sources were read, which is also the
 	// document's own id.
 	ReadOn string `firestore:"read_on"`
-	// Price is the plan's monthly price, as the vendor's own page states it.
+	// Price is the plan's monthly price, as the recorded plan states it.
 	Price money.Micros `firestore:"price_micros"`
-	// Limits is what the plan does once its allowance runs out, as the vendor's
-	// own page states it.
+	// Limits is what the plan does once its allowance runs out, as the recorded
+	// plan states it.
 	Limits LimitBehaviour `firestore:"limit_behaviour"`
 	// Pages is one entry per page the plan's definition names, in its own order.
 	Pages []PageFacts `firestore:"pages"`
@@ -160,11 +162,11 @@ type Facts struct {
 	Flags []Flag `firestore:"flags"`
 }
 
-// Page returns the facts of the page at url, ok false when this document recorded
-// no page at that URL.
-func (f Facts) Page(url string) (PageFacts, bool) {
+// Page returns the facts of the region of the page at url that selector names, ok
+// false when this document recorded none, so two regions of one page stay apart.
+func (f Facts) Page(url, selector string) (PageFacts, bool) {
 	for _, p := range f.Pages {
-		if p.URL == url {
+		if p.URL == url && p.Selector == selector {
 			return p, true
 		}
 	}

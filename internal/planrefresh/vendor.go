@@ -24,7 +24,7 @@ const (
 // Vendor reads a plan's own sources: each vendor page its definition names, and
 // the vendor's OpenAI-compatible models endpoint.
 type Vendor struct {
-	// HTTP is the client requests go through; nil means http.DefaultClient.
+	// HTTP is the client requests go through; nil means NewClient().
 	HTTP *http.Client
 	// Base resolves a provider's OpenAI-compatible API base; nil means the
 	// embedded provider configuration's own.
@@ -69,7 +69,7 @@ func (v Vendor) Models(ctx context.Context, provider string) ([]string, error) {
 			models = append(models, id)
 		}
 	}
-	return models, nil
+	return capList(models, maxModels), nil
 }
 
 // selectText returns the words of the region selector names, with runs of

@@ -59,7 +59,7 @@ func (r Refresher) now() time.Time {
 func (r Refresher) pages(ctx context.Context, def providers.Definition, last providers.Facts, on string) []providers.PageFacts {
 	pages := make([]providers.PageFacts, 0, len(def.Pages))
 	for _, loc := range def.Pages {
-		before, seen := last.Page(loc.URL)
+		before, seen := last.Page(loc.URL, loc.Selector)
 		text, err := r.Vendor.Page(ctx, loc)
 		if err != nil {
 			pages = append(pages, carriedPage(before, loc, err, on))
@@ -145,7 +145,7 @@ func listsModel(feed FeedPlan, model string) bool {
 
 // feed is the free feed's own report of the plan, diffed against the last
 // document. Nothing here supplies a figure the document records: where the feed's
-// own figures differ from the vendor's page's, the vendor's stand and the
+// own figures differ from the recorded plan's, the recorded plan's stand and the
 // difference is named.
 func (r Refresher) feed(provider string, def providers.Definition, last providers.Facts, on string) providers.FeedFacts {
 	if r.FeedErr != nil {
@@ -170,16 +170,16 @@ func (r Refresher) feed(provider string, def providers.Definition, last provider
 	return facts
 }
 
-// disagreements names where the free feed's own figures differ from the vendor's
-// page's, which are the figures the facts document records.
+// disagreements names where the free feed's own figures differ from the recorded
+// plan's, which are the figures the facts document records.
 func disagreements(def providers.Definition, plan FeedPlan) []string {
 	var found []string
 	if plan.Price != def.MonthlyPrice {
-		found = append(found, fmt.Sprintf("price: the feed states $%.2f a month, the vendor's page $%.2f",
+		found = append(found, fmt.Sprintf("price: the feed states $%.2f a month, the recorded plan $%.2f",
 			plan.Price.USD(), def.MonthlyPrice.USD()))
 	}
 	if plan.LimitBehaviour != "" && plan.LimitBehaviour != def.LimitBehaviour {
-		found = append(found, fmt.Sprintf("limit: the feed states %s, the vendor's page %s",
+		found = append(found, fmt.Sprintf("limit: the feed states %s, the recorded plan %s",
 			plan.LimitBehaviour, def.LimitBehaviour))
 	}
 	return found
@@ -317,7 +317,7 @@ func modelNames(models []providers.ModelFacts) []string {
 // forward when it was not.
 func classify(on string, err error, changes []string, last providers.Source) providers.Source {
 	if err != nil {
-		return providers.Source{State: providers.ReadCouldNotRead, LastGoodReadOn: last.LastGoodReadOn, Note: err.Error()}
+		return providers.Source{State: providers.ReadCouldNotRead, LastGoodReadOn: last.LastGoodReadOn, Note: providers.CapText(err.Error(), maxNoteBytes)}
 	}
 	state := providers.ReadUnchanged
 	if len(changes) > 0 {

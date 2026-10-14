@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -135,5 +136,37 @@ func TestRefreshPlansRefusesAPlanTheStoreDoesNotHold(t *testing.T) {
 	}
 	if !slices.Equal(plans.calls, []string{"list"}) {
 		t.Fatalf("calls %v, want the listing alone", plans.calls)
+	}
+}
+
+// failingPut is a plan store whose write for one provider fails.
+type failingPut struct {
+	*recordingPlans
+	fail string
+}
+
+func (p failingPut) PutFacts(ctx context.Context, provider, date string, facts providers.Facts) error {
+	if provider == p.fail {
+		return errors.New("write refused")
+	}
+	return p.recordingPlans.PutFacts(ctx, provider, date, facts)
+}
+
+// TestRefreshPlansContinuesPastAPlanWhoseWriteFails asserts one plan's failed
+// write is logged and the next plan is still refreshed, and that the run still
+// ends in an error naming the plan that failed.
+func TestRefreshPlansContinuesPastAPlanWhoseWriteFails(t *testing.T) {
+	base := planSources(t)
+	second := configuredPlan(base)
+	second.Provider = "second"
+	inner := &recordingPlans{rows: []providers.Listing{configuredPlan(base), second}}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	err := refreshPlans(context.Background(), logger, failingPut{inner, "configured"}, refresherFor(t, base), "")
+	if err == nil || !strings.Contains(err.Error(), "configured") || strings.Contains(err.Error(), "second") {
+		t.Fatalf("err = %v, want only the plan whose write failed named", err)
+	}
+	if _, written := inner.facts["second"]; !written {
+		t.Fatal("the plan after the failed one was not refreshed")
 	}
 }

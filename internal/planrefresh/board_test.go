@@ -56,3 +56,24 @@ func TestBoardRefusesWhatItCannotRead(t *testing.T) {
 		})
 	}
 }
+
+// TestBoardPrefersAnExactNameToAShortOne asserts a model the leaderboard names
+// exactly is never replaced by another model sharing its last segment, whichever
+// the leaderboard lists first.
+func TestBoardPrefersAnExactNameToAShortOne(t *testing.T) {
+	for name, models := range map[string]string{
+		"short first": `{"model":"acme/glm-5","score":10},{"model":"glm-5","score":20}`,
+		"exact first": `{"model":"glm-5","score":20},{"model":"acme/glm-5","score":10}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := bodyServer(t, http.StatusOK, `{"benchmark":"Coding","models":[`+models+`]}`)
+			got, err := (Board{Endpoint: srv.URL, HTTP: srv.Client()}).Read(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Models["glm-5"].Value != 20 || got.Models["acme/glm-5"].Value != 10 {
+				t.Fatalf("glm-5 %v acme/glm-5 %v, want each model its own score", got.Models["glm-5"].Value, got.Models["acme/glm-5"].Value)
+			}
+		})
+	}
+}
