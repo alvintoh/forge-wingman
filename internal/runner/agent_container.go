@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// agentProbeTimeout bounds the container start-up probe, an image pull included.
+// agentProbeTimeout bounds each container start-up check, an image pull included.
 var agentProbeTimeout = 5 * time.Minute
 
 // AgentContainer runs each agent CLI in a container whose only mounts are the
@@ -41,14 +41,37 @@ func (c AgentContainer) Validate() error {
 	return checkMountPath("agent git common dir", c.GitCommonDir)
 }
 
-// Probe starts the agent image over dir and runs the default harness's binary
-// in it, so a missing image, binary or mount fails before the first agent round.
-func (c AgentContainer) Probe(ctx context.Context, dir string) error {
+// probe runs each check in the agent image over dir, one after another, so a
+// missing image, binary, mount or home stops the run before the first agent
+// round rather than at it.
+func (c AgentContainer) probe(ctx context.Context, dir string, checks []agentSpec) error {
+	for _, s := range checks {
+		if err := c.probeOne(ctx, dir, s); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// probeOne runs one harness's start-up check in the agent image, bounded by
+// agentProbeTimeout: over dir, with the check's home created and mounted and the
+// environment a real run sets, so the check runs the way a real run runs it.
+func (c AgentContainer) probeOne(ctx context.Context, dir string, s agentSpec) error {
 	ctx, cancel := context.WithTimeout(ctx, agentProbeTimeout)
 	defer cancel()
+	s.Dir = dir
+	bin := filepath.Base(s.Bin)
+	if err := os.MkdirAll(s.Home, 0o700); err != nil {
+		return fmt.Errorf("agent container probe %s home: %w", bin, err)
+	}
+	cmd, err := c.command(ctx, s)
+	if err != nil {
+		return err
+	}
 	var out bytes.Buffer
-	if err := c.Exec(ctx, dir, "", []string{ompName, "--version"}, &out, &out); err != nil {
-		return fmt.Errorf("agent container probe: %w: %s", err, truncate(strings.TrimSpace(out.String()), logErrorLimit))
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("agent container probe %s: %w: %s", bin, err, truncate(strings.TrimSpace(out.String()), logErrorLimit))
 	}
 	return nil
 }
@@ -176,18 +199,28 @@ func checkMountPath(label, p string) error {
 type containerHarness interface {
 	Harness
 	withContainer(AgentContainer) Harness
+	// startUpCheck is the command the container probe runs for this harness: its
+	// own version command, over its home and the environment a real run sets. The
+	// probe runs it over the worktree it probes.
+	startUpCheck() agentSpec
 }
 
-// WithAgentContainer returns harnesses running their agents in c, and an error
-// for a harness that cannot be contained, which would otherwise run on the host.
-func WithAgentContainer(harnesses []Harness, c AgentContainer) ([]Harness, error) {
+// WithAgentContainer returns harnesses running their agents in c, and the
+// start-up probe over them: each harness's own version command in c, over the
+// worktree the prober names, with its home mounted and the environment a real
+// run sets, so a missing image, binary, mount or home stops the run before the
+// first agent round. It errors on a harness that cannot be contained, which
+// would otherwise run on the host.
+func WithAgentContainer(harnesses []Harness, c AgentContainer) ([]Harness, func(context.Context, string) error, error) {
 	out := make([]Harness, len(harnesses))
+	checks := make([]agentSpec, len(harnesses))
 	for i, h := range harnesses {
 		ch, ok := h.(containerHarness)
 		if !ok {
-			return nil, fmt.Errorf("harness %s cannot run in the agent container", h.Name())
+			return nil, nil, fmt.Errorf("harness %s cannot run in the agent container", h.Name())
 		}
 		out[i] = ch.withContainer(c)
+		checks[i] = ch.startUpCheck()
 	}
-	return out, nil
+	return out, func(ctx context.Context, dir string) error { return c.probe(ctx, dir, checks) }, nil
 }

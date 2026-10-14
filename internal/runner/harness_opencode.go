@@ -45,6 +45,30 @@ const (
 	opencodeRulesFile  = "rules.md"
 )
 
+// opencodeConfigPath is the config a round writes under the run's home, and the
+// file OPENCODE_CONFIG names so opencode reads no other.
+func opencodeConfigPath(home string) string { return filepath.Join(home, opencodeConfigFile) }
+
+// opencodeEnv is the environment opencode runs under: the run's own home, every
+// XDG directory inside it, the config a round writes there, and the switches
+// that keep it from reading another's config, agents and updates.
+func opencodeEnv(home string) []string {
+	return []string{
+		"HOME=" + home,
+		"XDG_CONFIG_HOME=" + filepath.Join(home, ".config"),
+		"XDG_DATA_HOME=" + filepath.Join(home, ".local", "share"),
+		"XDG_CACHE_HOME=" + filepath.Join(home, ".cache"),
+		"XDG_STATE_HOME=" + filepath.Join(home, ".local", "state"),
+		"OPENCODE_CONFIG=" + opencodeConfigPath(home),
+		"OPENCODE_DISABLE_CLAUDE_CODE=1",
+		// A repository's own opencode.json or .opencode directory would
+		// otherwise override this config, the read-only agent's denies included.
+		"OPENCODE_DISABLE_PROJECT_CONFIG=1",
+		"OPENCODE_DISABLE_AUTOUPDATE=1",
+		"OPENCODE_DISABLE_MODELS_FETCH=1",
+	}
+}
+
 func init() {
 	registerHarness(opencodeName, func(getenv func(string) string) Harness {
 		var home string
@@ -89,6 +113,10 @@ func (h OpencodeHarness) Agent(p Profile, model string) Agent {
 }
 
 func (h OpencodeHarness) withContainer(c AgentContainer) Harness { h.Container = c; return h }
+
+func (h OpencodeHarness) startUpCheck() agentSpec {
+	return agentSpec{Bin: h.Bin, Args: []string{"--version"}, Home: h.Home, Env: opencodeEnv(h.Home)}
+}
 
 // Ready reports the harness usable only when plan's key is present (AC7).
 func (h OpencodeHarness) Ready(plan string) error {
@@ -143,7 +171,7 @@ func (a OpencodeAgent) Run(ctx context.Context, dir, session, prompt, rules stri
 	if err := removeAllExcept(a.Home, filepath.Join(a.Home, opencodeSessionDir)); err != nil {
 		return fmt.Errorf("opencode home: %w", err)
 	}
-	rulesPath, configPath := filepath.Join(a.Home, opencodeRulesFile), filepath.Join(a.Home, opencodeConfigFile)
+	rulesPath, configPath := filepath.Join(a.Home, opencodeRulesFile), opencodeConfigPath(a.Home)
 	if err := writeAgentFile(rulesPath, rules); err != nil {
 		return fmt.Errorf("opencode rules: %w", err)
 	}
@@ -166,22 +194,8 @@ func (a OpencodeAgent) Run(ctx context.Context, dir, session, prompt, rules stri
 	if session != "" {
 		args = append(args, "-s", session)
 	}
-	env := []string{
-		"HOME=" + a.Home,
-		"XDG_CONFIG_HOME=" + filepath.Join(a.Home, ".config"),
-		"XDG_DATA_HOME=" + filepath.Join(a.Home, ".local", "share"),
-		"XDG_CACHE_HOME=" + filepath.Join(a.Home, ".cache"),
-		"XDG_STATE_HOME=" + filepath.Join(a.Home, ".local", "state"),
-		"OPENCODE_CONFIG=" + configPath,
-		"OPENCODE_DISABLE_CLAUDE_CODE=1",
-		// A repository's own opencode.json or .opencode directory would
-		// otherwise override this config, the read-only agent's denies included.
-		"OPENCODE_DISABLE_PROJECT_CONFIG=1",
-		"OPENCODE_DISABLE_AUTOUPDATE=1",
-		"OPENCODE_DISABLE_MODELS_FETCH=1",
-	}
 	cmd, err := agentCommand(ctx, a.Container, agentSpec{Bin: a.Bin, Args: args, Dir: dir, Home: a.Home,
-		Env: env, Secret: opencodeKeyEnv(plan) + "=" + a.Key})
+		Env: opencodeEnv(a.Home), Secret: opencodeKeyEnv(plan) + "=" + a.Key})
 	if err != nil {
 		return fmt.Errorf("opencode command: %w", err)
 	}

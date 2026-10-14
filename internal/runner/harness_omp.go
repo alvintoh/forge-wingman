@@ -48,6 +48,16 @@ const (
 	ompModelsFile = "models.yml"
 )
 
+// ompAgentPath is the agent directory omp reads its rules and settings from and
+// writes its sessions to, under the run's home.
+func ompAgentPath(home string) string { return filepath.Join(home, ompAgentDir) }
+
+// ompEnv is the environment omp runs under: the run's own home, and the agent
+// directory inside it, so its rules and sessions never reach another run.
+func ompEnv(home string) []string {
+	return []string{"HOME=" + home, "PI_CODING_AGENT_DIR=" + ompAgentPath(home)}
+}
+
 // ompConfig turns off the update check, project MCP servers and telemetry
 // export; omp loads no other tool's user-level config unless opted in.
 const ompConfig = `setupVersion: 2
@@ -124,6 +134,10 @@ func (h OmpHarness) Agent(p Profile, model string) Agent {
 
 func (h OmpHarness) withContainer(c AgentContainer) Harness { h.Container = c; return h }
 
+func (h OmpHarness) startUpCheck() agentSpec {
+	return agentSpec{Bin: h.Bin, Args: []string{"--version"}, Home: h.Home, Env: ompEnv(h.Home)}
+}
+
 // Ready reports the harness usable only when plan's key is present (AC7).
 func (h OmpHarness) Ready(plan string) error {
 	if h.keyFor(plan) == "" {
@@ -171,7 +185,7 @@ func (a OmpAgent) Run(ctx context.Context, dir, session, prompt, rules string, s
 	if !ok || rest == "" || !reachable {
 		return fmt.Errorf("the omp harness has no provider for plan %q", plan)
 	}
-	agentDir := filepath.Join(a.Home, ompAgentDir)
+	agentDir := ompAgentPath(a.Home)
 	if err := writeAgentFile(filepath.Join(agentDir, ompRulesFile), rules); err != nil {
 		return fmt.Errorf("omp rules: %w", err)
 	}
@@ -193,8 +207,7 @@ func (a OmpAgent) Run(ctx context.Context, dir, session, prompt, rules string, s
 		args = append(args, "--resume", session)
 	}
 	cmd, err := agentCommand(ctx, a.Container, agentSpec{Bin: a.Bin, Args: args, Dir: dir, Home: a.Home,
-		Env:    []string{"HOME=" + a.Home, "PI_CODING_AGENT_DIR=" + agentDir},
-		Secret: reach.keyEnv + "=" + a.Key})
+		Env: ompEnv(a.Home), Secret: reach.keyEnv + "=" + a.Key})
 	if err != nil {
 		return fmt.Errorf("omp command: %w", err)
 	}

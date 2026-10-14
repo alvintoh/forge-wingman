@@ -198,8 +198,12 @@ func TestAgentContainerProbeRefusesAGitDirADockerMountCannotCarry(t *testing.T) 
 	fakeDocker(t)
 	c := testAgentContainer(t)
 	c.GitCommonDir = "/a,b"
-	if err := c.Probe(context.Background(), t.TempDir()); err == nil {
-		t.Fatal("Probe accepted a git common dir with a comma")
+	_, probe, err := WithAgentContainer([]Harness{OmpHarness{Bin: "omp", Home: t.TempDir()}}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := probe(context.Background(), t.TempDir()); err == nil {
+		t.Fatal("the probe accepted a git common dir with a comma")
 	}
 }
 
@@ -210,41 +214,157 @@ func TestAgentContainerProbeStopsAContainerThatNeverStarts(t *testing.T) {
 	agentProbeTimeout = 500 * time.Millisecond
 	t.Cleanup(func() { agentProbeTimeout = old })
 
-	if err := testAgentContainer(t).Probe(context.Background(), t.TempDir()); err == nil {
-		t.Fatal("Probe succeeded on a container that hung")
+	_, probe, err := WithAgentContainer([]Harness{OmpHarness{Bin: "omp", Home: t.TempDir()}}, testAgentContainer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := probe(context.Background(), t.TempDir()); err == nil {
+		t.Fatal("the probe succeeded on a container that hung")
 	}
 	if calls := dockerCalls(t, logFile); len(calls) != 2 || calls[1][0] != "kill" {
 		t.Fatalf("docker ran %v, want the run then a kill", calls)
 	}
 }
 
-func TestAgentContainerProbeRunsTheDefaultHarnessInTheContainer(t *testing.T) {
+func TestAgentContainerProbeRunsEveryHarnessVersionOverItsHome(t *testing.T) {
 	logFile := fakeDocker(t)
-	c := testAgentContainer(t)
-	dir := t.TempDir()
-
-	if err := c.Probe(context.Background(), dir); err != nil {
+	c, dir := testAgentContainer(t), t.TempDir()
+	omp := OmpHarness{Bin: "omp", Home: filepath.Join(t.TempDir(), "omp-home")}
+	oc := OpencodeHarness{Bin: "opencode", Home: filepath.Join(t.TempDir(), "opencode-home")}
+	_, probe, err := WithAgentContainer([]Harness{omp, oc}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := probe(context.Background(), dir); err != nil {
 		t.Fatal(err)
 	}
 	calls := dockerCalls(t, logFile)
-	if len(calls) != 1 || !slices.Equal(calls[0][slices.Index(calls[0], c.Image):], []string{c.Image, "omp", "--version"}) {
-		t.Fatalf("docker ran %v, want omp --version in the image", calls)
+	if len(calls) != 2 {
+		t.Fatalf("docker ran %v, want one container per harness", calls)
 	}
-	wantMounts := []string{
-		"type=bind,src=" + dir + ",dst=" + dir,
-		"type=bind,src=" + c.GitCommonDir + ",dst=" + c.GitCommonDir + ",readonly",
+	// The probe runs the checks in the order the harnesses are given.
+	tests := []struct {
+		bin  string
+		home string
+	}{
+		{"omp", omp.Home},
+		{"opencode", oc.Home},
 	}
-	if got := flagValues(calls[0], "--mount"); !slices.Equal(got, wantMounts) {
-		t.Errorf("mounts = %v, want %v", got, wantMounts)
+	for i, tt := range tests {
+		call := calls[i]
+		if at := slices.Index(call, c.Image); at < 0 || !slices.Equal(call[at+1:], []string{tt.bin, "--version"}) {
+			t.Errorf("docker ran %v, want %s --version in the image", call, tt.bin)
+		}
+		wantMounts := []string{
+			"type=bind,src=" + dir + ",dst=" + dir,
+			"type=bind,src=" + tt.home + ",dst=" + tt.home,
+			"type=bind,src=" + c.GitCommonDir + ",dst=" + c.GitCommonDir + ",readonly",
+		}
+		if got := flagValues(call, "--mount"); !slices.Equal(got, wantMounts) {
+			t.Errorf("%s mounts = %v, want %v", tt.bin, got, wantMounts)
+		}
+		if _, err := os.Stat(tt.home); err != nil {
+			t.Errorf("%s home %s is not there for the mount: %v", tt.bin, tt.home, err)
+		}
 	}
 }
 
-func TestAgentContainerProbeReportsAContainerThatFailsToStart(t *testing.T) {
+func TestAgentContainerProbeSetsTheEnvironmentARealRunSets(t *testing.T) {
+	for _, tt := range containedAgents() {
+		t.Run(tt.name, func(t *testing.T) {
+			logFile := fakeDocker(t)
+			c, dir, home := testAgentContainer(t), t.TempDir(), t.TempDir()
+			h := tt.harness(c, home)
+
+			if err := h.Agent(ProfileBuild, ompTestModel).Run(context.Background(), dir, "", "prompt", "", io.Discard, io.Discard); err != nil {
+				t.Fatal(err)
+			}
+			_, probe, err := WithAgentContainer([]Harness{h}, c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := probe(context.Background(), dir); err != nil {
+				t.Fatal(err)
+			}
+			calls := dockerCalls(t, logFile)
+			if len(calls) != 2 {
+				t.Fatalf("docker ran %v, want the agent then the probe", calls)
+			}
+			run, probed := calls[0], calls[1]
+			if got, want := namedEnv(flagValues(probed, "--env")), namedEnv(flagValues(run, "--env")); !slices.Equal(got, want) {
+				t.Errorf("probe env %v, want the run's %v", got, want)
+			}
+			if got, want := flagValues(probed, "--mount"), flagValues(run, "--mount"); !slices.Equal(got, want) {
+				t.Errorf("probe mounts %v, want the run's %v", got, want)
+			}
+		})
+	}
+}
+
+// namedEnv is the NAME=value entries of --env flags, without the bare names a
+// run inherits its key by: a probe carries the same values and no key.
+func namedEnv(vals []string) []string {
+	var out []string
+	for _, v := range vals {
+		if strings.ContainsRune(v, '=') {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func TestAgentContainerProbeReportsTheHarnessTheImageCannotStart(t *testing.T) {
+	tests := []struct {
+		name    string
+		missing string
+	}{
+		{"the default harness", "omp"},
+		{"the fallback harness", "opencode"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeDocker(t)
+			t.Setenv("DOCKER_FAKE_FAIL", tt.missing)
+			t.Setenv("DOCKER_FAKE_CODE", "127")
+			_, probe, err := WithAgentContainer([]Harness{
+				OmpHarness{Bin: "omp", Home: t.TempDir()},
+				OpencodeHarness{Bin: "opencode", Home: t.TempDir()},
+			}, testAgentContainer(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = probe(context.Background(), t.TempDir())
+			if err == nil || !strings.Contains(err.Error(), "boom") {
+				t.Fatalf("the probe = %v, want an error carrying the container's output", err)
+			}
+			if !strings.Contains(err.Error(), tt.missing) {
+				t.Errorf("the probe = %v, want it to name %s", err, tt.missing)
+			}
+		})
+	}
+}
+
+func TestBuildStopsAtAgentStartWhenTheImageLacksAHarness(t *testing.T) {
 	fakeDocker(t)
-	t.Setenv("DOCKER_FAKE_FAIL", "--version")
-	err := testAgentContainer(t).Probe(context.Background(), t.TempDir())
-	if err == nil || !strings.Contains(err.Error(), "boom") {
-		t.Fatalf("Probe = %v, want an error carrying the container's output", err)
+	t.Setenv("DOCKER_FAKE_FAIL", "opencode")
+	t.Setenv("DOCKER_FAKE_CODE", "127")
+	agent := &fakeAgent{}
+	deps, _, reported := testDeps(validObjects(), agent)
+	_, probe, err := WithAgentContainer([]Harness{
+		OmpHarness{Bin: "omp", Home: t.TempDir()},
+		OpencodeHarness{Bin: "opencode", Home: t.TempDir()},
+	}, testAgentContainer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps.AgentProbe = probe
+
+	if _, err := Build(context.Background(), deps, testConfig(t, initRepo(t))); err == nil {
+		t.Fatal("Build succeeded with an image that cannot run opencode")
+	}
+	rec := reported.last(t)
+	if rec.Outcome != OutcomeInfraFailure || rec.StopReason != StopAgentContainer || rec.Phase != PhaseAgentStart || agent.calls != 0 {
+		t.Fatalf("record = %s/%s at %s, %d agent runs; want an infra failure at agent-start with no agent run", rec.Outcome, rec.StopReason, rec.Phase, agent.calls)
 	}
 }
 
@@ -287,17 +407,29 @@ func TestBuildStopsBeforeAnyAgentRunsWhenTheAgentContainerWillNotStart(t *testin
 func TestEveryRegisteredHarnessCanRunInAContainer(t *testing.T) {
 	c := AgentContainer{Image: pinnedChecksImage(t), GitCommonDir: "/repo/.git"}
 	for _, r := range harnessRegistry {
-		h := r.build(func(string) string { return "" })
-		if _, ok := h.(containerHarness); !ok {
+		h := r.build(func(name string) string {
+			if name == "RUNNER_TEMP" {
+				return t.TempDir()
+			}
+			return ""
+		})
+		ch, ok := h.(containerHarness)
+		if !ok {
 			t.Errorf("harness %s cannot run in a container, so an agent image would not contain it", r.name)
 			continue
 		}
-		contained, err := WithAgentContainer([]Harness{h}, c)
+		contained, _, err := WithAgentContainer([]Harness{h}, c)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if got := reflect.ValueOf(contained[0]).FieldByName("Container"); got.Interface() != c {
 			t.Errorf("WithAgentContainer left harness %s with container %v", r.name, got)
+		}
+		// The probe's check must be the binary the image provides for this
+		// harness, over that harness's home (tools/agent/check-image.sh).
+		check := ch.startUpCheck()
+		if filepath.Base(check.Bin) != r.name || check.Home == "" || !slices.Equal(check.Args, []string{"--version"}) {
+			t.Errorf("harness %s probes %q %v over home %q, want its own version command over that harness's home", r.name, check.Bin, check.Args, check.Home)
 		}
 	}
 }
@@ -308,7 +440,7 @@ type hostOnlyHarness struct{ Harness }
 func (hostOnlyHarness) Name() string { return "host-only" }
 
 func TestWithAgentContainerRefusesAHarnessThatCannotBeContained(t *testing.T) {
-	if _, err := WithAgentContainer([]Harness{hostOnlyHarness{}}, AgentContainer{Image: pinnedChecksImage(t)}); err == nil {
+	if _, _, err := WithAgentContainer([]Harness{hostOnlyHarness{}}, AgentContainer{Image: pinnedChecksImage(t)}); err == nil {
 		t.Fatal("WithAgentContainer let a harness run on the host under an agent image")
 	}
 }

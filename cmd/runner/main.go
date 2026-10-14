@@ -442,9 +442,9 @@ func (s agentSettings) models() []string {
 
 // agentRunner is the harnesses a stage runs agents through, in a container of
 // s.Image when one is given, with repo's git common directory resolved now,
-// before any agent runs, and the probe that proves the container starts; else
-// the host harnesses unchanged and no probe. The returned stop removes the
-// egress network and proxy, and is never nil.
+// before any agent runs, and the probe that proves the image runs every one of
+// them; else the host harnesses unchanged and no probe. The returned stop
+// removes the egress network and proxy, and is never nil.
 func agentRunner(ctx context.Context, s agentSettings, repo string, harnesses []runner.Harness) ([]runner.Harness, func(context.Context, string) error, func(context.Context) error, error) {
 	noStop := func(context.Context) error { return nil }
 	if s.Egress != "" && s.Egress != "on" && s.Egress != "off" {
@@ -470,11 +470,11 @@ func agentRunner(ctx context.Context, s agentSettings, repo string, harnesses []
 			return nil, nil, nil, err
 		}
 	}
-	contained, err := runner.WithAgentContainer(harnesses, c)
+	contained, probe, err := runner.WithAgentContainer(harnesses, c)
 	if err != nil {
 		return nil, nil, nil, errors.Join(err, stop(ctx))
 	}
-	return contained, c.Probe, stop, nil
+	return contained, probe, stop, nil
 }
 
 // startEgress confines c to the API hosts of the plans models name, through
