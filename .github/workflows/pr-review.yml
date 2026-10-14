@@ -90,6 +90,14 @@ jobs:
 
       - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
 
+      # WINGMAN_AGENT_IMAGE is the agent image, pinned by digest. Unset, the agent runs on the
+      # runner as before.
+      - name: Pull the agent image
+        if: vars.WINGMAN_AGENT_IMAGE != ''
+        run: docker pull "$AGENT_IMAGE"
+        env:
+          AGENT_IMAGE: ${{ vars.WINGMAN_AGENT_IMAGE }}
+
       # The bun version is model.yml's; omp's is tools/omp's lockfile.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
@@ -122,7 +130,8 @@ jobs:
           # The default is the one model review-smoke has metered at $0.
           MODELS: ${{ vars.WINGMAN_PR_REVIEW_MODELS || 'command-code/poolside/laguna-s-2.1-free' }}
           COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
-        run: '"$RUNNER_TEMP/runner" pr-review -context "$RUNNER_TEMP/context.json" -out "$RUNNER_TEMP/verdict.json" -models "$MODELS"'
+          AGENT_IMAGE: ${{ vars.WINGMAN_AGENT_IMAGE }}
+        run: '"$RUNNER_TEMP/runner" pr-review -context "$RUNNER_TEMP/context.json" -out "$RUNNER_TEMP/verdict.json" -models "$MODELS" -agent-image "$AGENT_IMAGE"'
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

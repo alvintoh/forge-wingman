@@ -35,6 +35,14 @@ jobs:
 
       - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
 
+      # WINGMAN_AGENT_IMAGE is the agent image, pinned by digest. Unset, the agent runs on the
+      # runner as before.
+      - name: Pull the agent image
+        if: vars.WINGMAN_AGENT_IMAGE != ''
+        run: docker pull "$AGENT_IMAGE"
+        env:
+          AGENT_IMAGE: ${{ vars.WINGMAN_AGENT_IMAGE }}
+
       # The bun version is model.yml's; omp's is tools/omp's lockfile.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
@@ -62,4 +70,5 @@ jobs:
           REVIEW_MODELS: ${{ inputs.review_models }}
           BUILD_MODEL: ${{ inputs.build_model }}
           COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
-        run: '"$RUNNER_TEMP/runner" review-smoke -review-models "$REVIEW_MODELS" -build-model "$BUILD_MODEL"'
+          AGENT_IMAGE: ${{ vars.WINGMAN_AGENT_IMAGE }}
+        run: '"$RUNNER_TEMP/runner" review-smoke -review-models "$REVIEW_MODELS" -build-model "$BUILD_MODEL" -agent-image "$AGENT_IMAGE"'

@@ -8,9 +8,9 @@
 # as the `plan` artifact for run.yml's trusted record-plan-stage job instead.
 # Needs the GCP_WIF_PROVIDER, GCP_MODEL_SERVICE_ACCOUNT and WINGMAN_ACCOUNT variables and
 # the COMMANDCODE_API_KEY secret (infra/README.md), which both harnesses run on.
-# The optional WINGMAN_AGENT_IMAGE variable (an image pinned by digest providing omp, opencode, git and sh)
-# runs the agent CLIs, in the build and plan stages alike, in a container that mounts only the worktree,
-# harness home and git directory; unset, they run on the runner.
+# The WINGMAN_AGENT_IMAGE variable (an image pinned by digest providing omp, opencode, git and sh) is required:
+# the build and plan stages run the agent CLIs in a container that mounts only the worktree,
+# harness home and git directory, and refuse to start without it.
 name: model
 
 on:
@@ -100,10 +100,9 @@ jobs:
       - name: Pull the checks image
         run: docker pull "$CHECKS_IMAGE"
 
-      # WINGMAN_AGENT_IMAGE is the agent image, pinned by digest. Unset, the agent CLIs run
-      # on the runner as before.
+      # WINGMAN_AGENT_IMAGE is the agent image, pinned by digest. The build and plan stages
+      # refuse to start without it.
       - name: Pull the agent image
-        if: vars.WINGMAN_AGENT_IMAGE != ''
         run: docker pull "$AGENT_IMAGE"
         env:
           AGENT_IMAGE: ${{ vars.WINGMAN_AGENT_IMAGE }}
