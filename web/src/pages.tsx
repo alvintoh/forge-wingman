@@ -95,37 +95,39 @@ export function Providers() {
       {state.status === "error" && <p role="alert">The plans could not be read.</p>}
       {state.status === "ready" && state.plans.length === 0 && <p>No plan is recorded.</p>}
       {state.status === "ready" && state.plans.length > 0 && (
-        <table className="mt-6 w-full text-body">
-          <caption className="sr-only">Plans in the order a run walks them</caption>
-          <thead>
-            <tr className="border-b border-hair text-left">
-              <th scope="col" className="py-2 pr-4">
-                Provider
-              </th>
-              <th scope="col" className="py-2 pr-4">
-                Price
-              </th>
-              <th scope="col" className="py-2 pr-4">
-                Window usage
-              </th>
-              <th scope="col" className="py-2">
-                Terms
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {state.plans.map((plan) => (
-              <tr key={plan.provider} className="border-b border-hair">
-                <th scope="row" className="py-2 pr-4 font-mono">
-                  {plan.provider}
+        <div className="mt-6 overflow-x-auto">
+          <table className="w-full text-body">
+            <caption className="sr-only">Plans in the order a run walks them</caption>
+            <thead>
+              <tr className="border-b border-hair text-left">
+                <th scope="col" className="py-2 pr-4">
+                  Provider
                 </th>
-                <td className="py-2 pr-4">{usd(plan.price_usd)}</td>
-                <td className="py-2 pr-4">{usageText(plan.window_usage)}</td>
-                <td className="py-2">{plan.verdict}</td>
+                <th scope="col" className="py-2 pr-4">
+                  Price
+                </th>
+                <th scope="col" className="py-2 pr-4">
+                  Window usage
+                </th>
+                <th scope="col" className="py-2">
+                  Terms
+                </th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {state.plans.map((plan) => (
+                <tr key={plan.provider} className="border-b border-hair">
+                  <th scope="row" className="py-2 pr-4 text-left font-mono">
+                    {plan.provider}
+                  </th>
+                  <td className="py-2 pr-4">{usd(plan.price_usd)}</td>
+                  <td className="py-2 pr-4">{usageText(plan.window_usage)}</td>
+                  <td className="py-2">{plan.verdict}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </section>
   );
