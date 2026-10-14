@@ -4,6 +4,7 @@
 - **Status:** accepted — built in Phase 3, with the dispatcher it wakes
 - *Updated (2026-10-08, FRG-22 planning): the webhook also acknowledges the agent session~~, so it holds `linear-token`~~; the row is a marker keyed on the agent SESSION id, so a redelivery is a no-op while a new session on the same issue is acknowledged and woken; one run per issue stays guaranteed by the poll's `runs/<identifier>` create.*
 - *Updated (2026-10-08, FRG-34): no Linear access token is stored. The webhook mints its own from the app's client credentials (`linear-client-id`, `linear-client-secret`), re-mints when Linear refuses it, and revokes it on shutdown; `linear-token` is deleted.*
+- *Updated (2026-10-13, forge-wingman #116): an Issue update whose priority rank changed also wakes the dispatcher. The webhook writes the new rank to the run row while the run is `queued` or `planned`, and wakes only if a run was changed. Only a `created` session event still enqueues; a priority edit is still not a delegation.*
 - **Supersedes:** `tech-design-v1.md` §Two containers that deliberately do NOT exist,
   *"No inbound webhook receiver"*
 
@@ -56,7 +57,10 @@ Linear: you delegate a ticket
    a redelivery of the same session is a no-op, and the poll's own `runs/<identifier>`
    create keeps one run per issue when the poll delivers the same ticket — acknowledge the agent session with a `thought` (Linear marks a session
    unresponsive without one inside 10 seconds), then start a dispatcher execution, and
-   return inside Linear's 5-second limit. Only `created` events act; it also rejects a
+   return inside Linear's 5-second limit. Only `created` events enqueue; an Issue update
+   whose priority rank changed instead refreshes the stored rank of a `queued` or
+   `planned` run and wakes the dispatcher only if a run was changed
+   (*Updated 2026-10-13*). It also rejects a
    `webhookTimestamp` older than 60 seconds, as Linear recommends. Sizing,
    selection and the budget guard stay in the dispatcher (`adr/0003`).
 3. **The poll stays at 15 minutes.** FR-1's tolerance becomes the WORST case — a lost

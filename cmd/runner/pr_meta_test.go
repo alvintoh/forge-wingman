@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -54,27 +55,24 @@ func TestAutoMerge(t *testing.T) {
 	// run-0 falls in the review sample and run-abc-12 does not.
 	const unsampled, sampled = "run-abc-12", "run-0"
 	for name, tt := range map[string]struct {
-		switchValue, runID, size, failedGate string
-		edit                                 func(*runner.Summary)
-		check                                prCheck
-		want                                 bool
+		runID, size, failedGate string
+		edit                    func(*runner.Summary)
+		check                   prCheck
+		want                    bool
 	}{
-		"a ready M run requests it":            {"on", unsampled, "M", "", nil, prCheck{Planned: true}, true},
-		"an unplanned S run does not":          {"on", unsampled, "S", "", nil, prCheck{}, false},
-		"a run with no recorded plan does not": {"on", unsampled, "M", "", nil, prCheck{}, false},
-		"an L run does not":                    {"on", unsampled, "L", "", nil, prCheck{Planned: true}, false},
-		"a sampled run does not":               {"on", sampled, "M", "", nil, prCheck{Planned: true}, false},
-		"a draft does not":                     {"on", unsampled, "M", "", func(s *runner.Summary) { s.Ready = false }, prCheck{Planned: true}, false},
-		"an out-of-plan edit does not":         {"on", unsampled, "M", "", nil, prCheck{Planned: true, OutOfPlan: []string{"x.go"}}, false},
-		"a concurrent run's plan does not":     {"on", unsampled, "S", "", nil, prCheck{Planned: true, Overlap: "M-2"}, false},
-		"an unread bundle does not":            {"on", unsampled, "M", "", nil, prCheck{Planned: true, Unread: true}, false},
-		"front-end paths do not":               {"on", unsampled, "M", "", nil, prCheck{Planned: true, FrontEnd: []string{"web/"}}, false},
-		"the front-end label does not":         {"on", unsampled, "S", "", nil, prCheck{Planned: true, FrontEnd: []string{"area:fe"}}, false},
-		"a workflow change does not":           {"on", unsampled, "M", "", func(s *runner.Summary) { s.StopReason = runner.StopWorkflowChange }, prCheck{Planned: true}, false},
-		"a failed check gate does not":         {"on", unsampled, "M", "test", nil, prCheck{Planned: true}, false},
-		"the switch unset does not":            {"", unsampled, "M", "", nil, prCheck{Planned: true}, false},
-		"any value but on does not":            {"true", unsampled, "M", "", nil, prCheck{Planned: true}, false},
-		"the switch in capitals does not":      {"ON", unsampled, "M", "", nil, prCheck{Planned: true}, false},
+		"a ready M run requests it":            {unsampled, "M", "", nil, prCheck{Planned: true}, true},
+		"an unplanned S run does not":          {unsampled, "S", "", nil, prCheck{}, false},
+		"a run with no recorded plan does not": {unsampled, "M", "", nil, prCheck{}, false},
+		"an L run does not":                    {unsampled, "L", "", nil, prCheck{Planned: true}, false},
+		"a sampled run does not":               {sampled, "M", "", nil, prCheck{Planned: true}, false},
+		"a draft does not":                     {unsampled, "M", "", func(s *runner.Summary) { s.Ready = false }, prCheck{Planned: true}, false},
+		"an out-of-plan edit does not":         {unsampled, "M", "", nil, prCheck{Planned: true, OutOfPlan: []string{"x.go"}}, false},
+		"a concurrent run's plan does not":     {unsampled, "S", "", nil, prCheck{Planned: true, Overlap: "M-2"}, false},
+		"an unread bundle does not":            {unsampled, "M", "", nil, prCheck{Planned: true, Unread: true}, false},
+		"front-end paths do not":               {unsampled, "M", "", nil, prCheck{Planned: true, FrontEnd: []string{"web/"}}, false},
+		"the front-end label does not":         {unsampled, "S", "", nil, prCheck{Planned: true, FrontEnd: []string{"area:fe"}}, false},
+		"a workflow change does not":           {unsampled, "M", "", func(s *runner.Summary) { s.StopReason = runner.StopWorkflowChange }, prCheck{Planned: true}, false},
+		"a failed check gate does not":         {unsampled, "M", "test", nil, prCheck{Planned: true}, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			sum := runner.Summary{Outcome: runner.OutcomeBuilt, Ready: true}
@@ -83,8 +81,24 @@ func TestAutoMerge(t *testing.T) {
 			}
 			tk := prRecord.Ticket()
 			tk.Size = tt.size
-			if got := autoMerge(tt.switchValue, tt.runID, tk, sum, tt.failedGate, tt.check); got != tt.want {
+			if got := autoMerge(dispatcher.AutonomyAutoMerge, tt.runID, tk, sum, tt.failedGate, tt.check); got != tt.want {
 				t.Fatalf("autoMerge = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAutoMergeNeedsALevelThatAllowsIt(t *testing.T) {
+	sum := runner.Summary{Outcome: runner.OutcomeBuilt, Ready: true}
+	clear, held := prRecord.Ticket(), prRecord.Ticket()
+	held.Size = "L"
+	for level, allows := range map[dispatcher.Autonomy]bool{-1: false, 0: false, 1: false, 2: false, 3: false, 4: true, 5: true, 6: false} {
+		t.Run(strconv.Itoa(int(level)), func(t *testing.T) {
+			if got := autoMerge(level, "run-abc-12", clear, sum, "", prCheck{Planned: true}); got != allows {
+				t.Errorf("a clear run: autoMerge = %v, want %v", got, allows)
+			}
+			if autoMerge(level, "run-abc-12", held, sum, "", prCheck{Planned: true}) {
+				t.Error("a run needing the owner: autoMerge = true, want false at every level")
 			}
 		})
 	}

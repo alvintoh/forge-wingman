@@ -45,7 +45,6 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	runURL := fs.String("run-url", "", "URL of the workflow run")
 	loopDetail := fs.String("loop-detail", "", "the pre-PR loop's report of why the PR is a draft (FR-5)")
 	template := fs.String("template", runner.DefaultPRTemplate, "pull request template to render")
-	autoMergeSwitch := fs.String("auto-merge-switch", "", "the WINGMAN_AUTO_MERGE variable; auto-merge is off unless it is \"on\"")
 	frontEndPaths := fs.String("front-end-paths", "", "the WINGMAN_FRONT_END_PATHS variable: a JSON object of repository to the path prefixes its front-end code lives under")
 	bundle := fs.String("bundle", "", "path to the bundle the model job uploaded")
 	branch := fs.String("branch", "", "the branch the model job bundled")
@@ -115,8 +114,8 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		return err
 	}
 	draft := draftPR(sum, check)
-	merge := autoMerge(*autoMergeSwitch, *runID, rec.Ticket(), sum, runner.FailedGate(*checkReport), check)
-	logger.Info("autoMergeDecided", "run", *runID, "autoMerge", merge, "sampled", runner.Sampled(*runID),
+	merge := autoMerge(dispatcher.Autonomy(rec.Autonomy), *runID, rec.Ticket(), sum, runner.FailedGate(*checkReport), check)
+	logger.Info("autoMergeDecided", "run", *runID, "autoMerge", merge, "autonomy", rec.Autonomy, "sampled", runner.Sampled(*runID),
 		"draft", draft, "frontEnd", len(check.FrontEnd), "changed", len(check.Changed), "outOfPlan", len(check.OutOfPlan), "overlap", check.Overlap, "planned", check.Planned)
 	if err := writeOutputs(e.output, map[string]string{
 		"title":          title,
@@ -260,14 +259,11 @@ func ownerAttention(runID string, t runner.Ticket, sum runner.Summary, failedGat
 		sum.StopReason == runner.StopWorkflowChange || failedGate != "" || len(check.FrontEnd) > 0 || !check.Planned
 }
 
-// autoMergeOn is the only WINGMAN_AUTO_MERGE value that lets a run request auto-merge.
-const autoMergeOn = "on"
-
 // autoMerge reports whether the run's PR is marked eligible for auto-merge,
-// which pr-review.yml requests once its review is clean: the switch is on and
-// nothing in the run needs the owner.
-func autoMerge(switchValue, runID string, t runner.Ticket, sum runner.Summary, failedGate string, check prCheck) bool {
-	return switchValue == autoMergeOn && !ownerAttention(runID, t, sum, failedGate, check)
+// which pr-review.yml requests once its review is clean: the autonomy level the
+// run was claimed at allows it and nothing in the run needs the owner.
+func autoMerge(level dispatcher.Autonomy, runID string, t runner.Ticket, sum runner.Summary, failedGate string, check prCheck) bool {
+	return level.AutoMerges() && !ownerAttention(runID, t, sum, failedGate, check)
 }
 
 // refuseWorkflowPush fails a build whose write set touches a workflow file, so

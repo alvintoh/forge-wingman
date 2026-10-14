@@ -17,7 +17,10 @@ run's estimated cost would breach no ceiling, and otherwise records a deferral
 Three properties, none of which a broker offers:
 
 - **Priority ordering that can change between polls.** Linear priority is editable
-  at any time, so the ranking is a property of the source, re-read each cycle.
+  at any time, so the ranking is a property of the source. ~~Re-read each cycle.~~
+  *Updated (2026-10-13):* the stored rank is refreshed by the webhook while the run
+  is queued or planned (`adr/0013`), not re-read from Linear each cycle; the 15-minute
+  poll is the backstop for a missed delivery.
 - **Indefinite deferral without redelivery semantics.** A budget-blocked run is not
   a failed delivery; it is an eligible row that is not yet affordable.
 - **Re-ranking of the whole eligible set**, every poll.
@@ -34,11 +37,18 @@ contents are re-published on every poll.
 > and each claim also books the run's reservation. The decision itself — no broker,
 > the store is the queue — is unchanged.
 
+> [!NOTE]
+> **Updated (2026-10-13), the queue tie-break (forge-wingman #116).** Order is
+> Linear priority, then **`queued_at`**, oldest first, so equal-priority runs are
+> claimed in the order they arrived. `queued_at` is stamped at enqueue and at
+> requeue; a run that was answered or released keeps its place. The decision itself
+> is unchanged.
+
 **No broker. The run record in Firestore is the queue**, and selection walks it in
 priority order:
 
 ```
-state == "queued"  ORDER BY linear_priority
+state == "queued"  ORDER BY linear_priority, queued_at
   → admit each run whose FR-22 and FR-27 conditions hold, until N runs are in flight
 ```
 
@@ -63,6 +73,11 @@ changes in the same transactional store.
 - **The ledger serialises claims**, deliberately: every claim transaction touches
   one document. At this product's volume that contention is invisible, and it is
   what makes a reservation sum exact rather than approximate.
+- **The tie-break needs a third composite index** on `(state, linear_priority,
+  queued_at)`, added before the previous one is removed. Rows written before
+  `queued_at` existed stay visible through a second, unordered scan in `Candidates`
+  until `runner backfill-queued-at` (idempotent; `-dry-run` previews) has stamped
+  them; deleting that scan is a follow-up once the backfill has run.
 - **One fewer deployable, one fewer thing with its own failure modes.**
 - **The dead-letter requirement is answered by requirements already present.**
   FR-13 bounds retry at one escalation; a second failure terminates with a record

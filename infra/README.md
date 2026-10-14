@@ -131,7 +131,13 @@ Auto-merge is off until both are set:
 | Setting | Value |
 |---|---|
 | Repository "Allow auto-merge" (`allow_auto_merge`) | on |
-| `WINGMAN_AUTO_MERGE` variable | `on`; any other value or none leaves it off |
+| Autonomy level (`runner autonomy -level 4`) | 4 or more; a missing or unreadable level counts as 0 |
+
+The level is stored at `dispatch/autonomy`: `runner autonomy` prints it and what it
+allows, and `-level N` sets it for the next claim. Each run records the level it was
+claimed at, so a later change does not alter a run already claimed. Levels 4 and 5 are
+refused until their advance conditions in the PRD are measured, so auto-merge stays off
+for now.
 
 With both set, a run's S or M PR that has a recorded plan, is not in the review sample,
 edits nothing outside that plan, fails no check gate and is not a front-end change

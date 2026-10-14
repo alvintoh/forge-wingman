@@ -78,6 +78,10 @@ const (
 	planSpendMicrosField  = "plan_spend_micros"
 	planSpendMinutesField = "plan_spend_minutes"
 
+	// autonomyField is the owner's autonomy level the run's attempt was first
+	// claimed at, absent until that claim.
+	autonomyField = "autonomy"
+
 	// decisionsField is the list of decisions a run has parked on, written
 	// outside runner.Record so Finalize's whole-field rebuild cannot clobber it.
 	// stateWaitingField is the pause that accompanies it.
@@ -217,6 +221,7 @@ func (q *Queue) Enqueue(ctx context.Context, run dispatcher.Queued) error {
 	rec.ModelLabels = run.Models
 	rec.UpdatedAt = run.At
 	data := fields(rec)
+	delete(data, autonomyField)
 	data[stateField] = stateQueued
 	data[priorityField] = run.Priority
 	data[queuedAtField] = run.At
@@ -732,6 +737,11 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 			{Path: claimConcurrencyField, Value: len(running) + 1},
 			{Path: waitingOnField, Value: firestore.Delete},
 		}
+		// The level is recorded once per attempt, so a build stage, an answered
+		// decision or a released dispatch keeps the level first claimed at.
+		if _, recorded := data[autonomyField]; !recorded {
+			updates = append(updates, firestore.Update{Path: autonomyField, Value: int64(facts.Autonomy)})
+		}
 		if res.Stage != dispatcher.StageBuild {
 			var lastResortModels, movedFrom, planModels any = firestore.Delete, firestore.Delete, firestore.Delete
 			if facts.LastResort != nil {
@@ -1146,6 +1156,7 @@ func (q *Queue) requeue(ctx context.Context, runID string, at time.Time,
 			{Path: abandonedAtField, Value: firestore.Delete},
 			{Path: queuedAtField, Value: at},
 			{Path: attemptField, Value: attempt},
+			{Path: autonomyField, Value: firestore.Delete},
 		}, extra...)); err != nil {
 			return err
 		}

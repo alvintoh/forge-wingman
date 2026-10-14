@@ -170,6 +170,7 @@ type Deps struct {
 	Providers  ProviderHalts
 	Breaker    Breaker
 	PeakModes  PeakModes
+	Autonomies Autonomies
 	OpenPRs    OpenPRCounter
 	Workflow   Workflow
 	Logger     *slog.Logger
@@ -204,6 +205,7 @@ func (d Deps) missing() string {
 		{"Providers", d.Providers != nil},
 		{"Breaker", d.Breaker != nil},
 		{"PeakModes", d.PeakModes != nil},
+		{"Autonomies", d.Autonomies != nil},
 		{"OpenPRs", d.OpenPRs != nil},
 		{"Workflow", d.Workflow != nil},
 		{"Logger", d.Logger != nil},
@@ -502,9 +504,11 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 	limits := c.Limits.orDefault()
 	var prs openPRCount
 	var mode PeakMode
+	var autonomy Autonomy
 	if len(candidates) > 0 {
 		prs = countOpenPRs(ctx, d, c.Repos)
 		mode = readPeakMode(ctx, d)
+		autonomy = readAutonomy(ctx, d)
 	}
 	// The halt, the verdict and the private opt-in are read lazily and once per
 	// plan, since a run that moves to another free tier is judged by that plan.
@@ -595,7 +599,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		candPlan := runner.Provider(candModel)
 		facts := Facts{Limits: limits, Tuning: c.Tuning.OrDefault(), ProviderHalted: halted(candPlan), BreakerTripped: tripped,
 			OpenPRs: prs.count, OpenPRsKnown: prs.known, Relations: relations[cand.RunID], Model: candModel, LastResort: lastResort,
-			PeakHeld: peakHeld(mode, candModel, d.Now(), est.Minutes)}
+			PeakHeld: peakHeld(mode, candModel, d.Now(), est.Minutes), Autonomy: autonomy}
 		claimVerdict := verdictOf(candPlan)
 		ok, binding, err := d.Queue.TryClaim(ctx, cand.RunID, d.Now(), budget, facts, reservation)
 		if err != nil {
