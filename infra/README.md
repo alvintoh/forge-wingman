@@ -79,17 +79,21 @@ comma-separated provider/model. Unset, it reviews with
 `command-code/poolside/laguna-s-2.1-free`; a paid model is an edit of the variable.
 
 `WINGMAN_AGENT_IMAGE` is optional: an agent image pinned by digest that provides omp,
-opencode, git and sh. Set it to run the build and plan stages' agent CLIs in a container
-of that image, which mounts only the worktree, the harness home and the git common
-directory; the stage runs both CLIs' version commands in that container, over those
-mounts, before the first agent round, so an image missing either binary stops the run
-with stop reason `agent-container`. Unset it to undo.
+opencode, git and sh. Set it to run the build and plan stages' agent CLIs, and those of
+`pr-review`, `review-smoke` and `plan-smoke`, in a container of that image, which mounts
+only the worktree (an empty scratch directory for those three), the harness home and the
+git common directory; the build and plan stages run both CLIs' version commands in that
+container, over those mounts, before the first agent round, so an image missing either
+binary stops the run with stop reason `agent-container`. Unset, the agents run on the
+runner. Unset it to undo.
 
 `WINGMAN_AGENT_EGRESS` is `on` or `off`, where empty is off, and it needs
-`WINGMAN_AGENT_IMAGE` set — a stage refuses `on` without an image. `on` confines that
-container to the API hosts of the plans its models name, through a proxy: it reaches
-those hosts, reaches nothing else without the proxy, and resolves no public name. `off`
-leaves it on the default network. Set it to `off`, or unset it, to undo.
+`WINGMAN_AGENT_IMAGE` set — a stage refuses `on` without an image. It applies to the
+build and plan stages only; `pr-review`, `review-smoke` and `plan-smoke` take no egress
+setting and stay on the default network. `on` confines that container to the API hosts
+of the plans its models name, through a proxy: it reaches those hosts, reaches nothing
+else without the proxy, and resolves no public name. `off` leaves it on the default
+network. Set it to `off`, or unset it, to undo.
 
 Dispatch the `agent-probe` workflow to prove both. Its `probe` job runs a command the way
 an agent is run, from the same job, and it must read no credentials file and write none of

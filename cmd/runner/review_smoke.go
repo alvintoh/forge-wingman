@@ -31,6 +31,7 @@ func reviewSmoke(ctx context.Context, logger *slog.Logger, getenv func(string) s
 	reviewModels := fs.String("review-models", strings.Join(runner.DefaultReviewModels(), ","), "the review models to try, comma-separated provider/model")
 	buildModel := fs.String("build-model", runner.DefaultModel(), "the build model, which no review model may be or fall back to")
 	timeout := fs.Duration("model-timeout", defaultReviewSmokeTimeout, "how long each model's review may run")
+	agentImage := fs.String("agent-image", "", agentImageUsage)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -45,8 +46,12 @@ func reviewSmoke(ctx context.Context, logger *slog.Logger, getenv func(string) s
 	if err := runner.ValidateReviewModels(list, build); err != nil {
 		return err
 	}
-	agent := runner.NewRouter(runner.ProfileReview, runner.Harnesses(getenv)...)
-	return runReviewSmoke(ctx, logger, agent, list, *timeout, getenv("GITHUB_STEP_SUMMARY"), runner.HarnessSecrets(getenv))
+	_, err := withAgents(ctx, logger, agentSettings{Image: *agentImage}, ".", runner.Harnesses(getenv),
+		func(contained []runner.Harness, _ func(context.Context, string) error) error {
+			agent := runner.NewRouter(runner.ProfileReview, contained...)
+			return runReviewSmoke(ctx, logger, agent, list, *timeout, getenv("GITHUB_STEP_SUMMARY"), runner.HarnessSecrets(getenv))
+		})
+	return err
 }
 
 // runReviewSmoke is reviewSmoke's loop over models, each in a fresh directory

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1342,5 +1343,74 @@ func TestRunWorkflowStampsTheClaimAttemptOnEverySettlingStep(t *testing.T) {
 	}
 	if got := strings.Count(s, "ATTEMPT: ${{ inputs.attempt }}"); got != 2 {
 		t.Errorf("run.yml reads the attempt input into %d jobs, want 2: record-plan-stage and record", got)
+	}
+}
+
+func TestAgentSubcommandsRunTheirAgentInAContainerOnlyWithAnImage(t *testing.T) {
+	const key = "model-key-value"
+	image := "golang:1.27.1@sha256:" + strings.Repeat("a", 64)
+	raw, err := json.Marshal(runner.PRReviewContext{PR: 7, HeadSHA: headSHA, Ticket: runner.Ticket{ID: "ABC-12", Title: "Add x", Body: "AC1"}, Diff: "+x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	contextPath := filepath.Join(t.TempDir(), "context.json")
+	if err := os.WriteFile(contextPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	subcommands := map[string]func(getenv func(string) string, args []string) error{
+		"pr-review": func(getenv func(string) string, args []string) error {
+			return prReview(context.Background(), quietLogger(), getenv,
+				append([]string{"-context", contextPath, "-out", filepath.Join(t.TempDir(), "verdict.json"), "-models", freeModel}, args...))
+		},
+		"review-smoke": func(getenv func(string) string, args []string) error {
+			return reviewSmoke(context.Background(), quietLogger(), getenv, append([]string{"-review-models", freeModel}, args...))
+		},
+		"plan-smoke": func(getenv func(string) string, args []string) error {
+			return planSmoke(context.Background(), quietLogger(), getenv, args)
+		},
+	}
+	for name, run := range subcommands {
+		for _, contained := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s contained=%v", name, contained), func(t *testing.T) {
+				dockerLog := fakeDockerLog(t)
+				ompLog := filepath.Join(t.TempDir(), "omp.log")
+				bin := t.TempDir()
+				if err := os.WriteFile(filepath.Join(bin, "omp"), []byte("#!/bin/sh\necho ran >> \""+ompLog+"\"\n"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+				summary := filepath.Join(t.TempDir(), "summary.md")
+				env := map[string]string{"COMMANDCODE_API_KEY": key, "RUNNER_TEMP": t.TempDir(), "GITHUB_STEP_SUMMARY": summary}
+				var args []string
+				if contained {
+					args = []string{"-agent-image", image}
+				}
+				_ = run(func(k string) string { return env[k] }, args)
+
+				if info, err := os.Stat(summary); err != nil || info.Size() == 0 {
+					t.Errorf("no summary written to GITHUB_STEP_SUMMARY: %v", err)
+				}
+				_, ompErr := os.Stat(ompLog)
+				_, dockerErr := os.Stat(dockerLog)
+				if contained {
+					if ompErr == nil {
+						t.Error("the agent ran on the host")
+					}
+					var runs []string
+					for _, l := range dockerLines(t, dockerLog) {
+						if strings.HasPrefix(l, "run ") {
+							runs = append(runs, l)
+						}
+					}
+					if len(runs) == 0 || !strings.Contains(runs[0], image) || !strings.Contains(runs[0], "--env COMMAND_CODE_API_KEY ") || strings.Contains(runs[0], key) {
+						t.Fatalf("docker runs %q, want the agent in the image with the key by name only", runs)
+					}
+					return
+				}
+				if ompErr != nil || dockerErr == nil {
+					t.Fatalf("omp ran on the host: %v, docker called: %v; want the host agent and no docker", ompErr == nil, dockerErr == nil)
+				}
+			})
+		}
 	}
 }
