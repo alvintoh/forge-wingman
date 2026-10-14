@@ -12,10 +12,10 @@
 //	runner requeue         -run-id <id>              return a stopped run to the queue for another attempt
 //	runner backfill-queued-at [-dry-run]             stamp queued_at on the queued and planned runs that lack it
 //	runner plan-define     -provider <name> ...      record a provider plan's price, billing, limit behaviour, pages and harnesses
-//	runner plan-optin      -provider <name>          record the owner's consent to a per-token provider's spend, or with -private to private repos on its free tier
+//	runner plan-optin      -provider <name>          record the owner's consent to a per-token provider's spend, or with -private to private repos on its free tier, or with -harness to a harness that is not open-source
 //	runner plan-verdict    -provider <name> ...      record the verdict on a plan's terms with its wording and source
 //	runner plan-reply      -provider <name> ...      record a vendor reply and the verdict it leads to
-//	runner plan-list                                 print every plan side by side, flagging the ones to look at
+//	runner plan-list                                 print every plan side by side with its harnesses and their licences, flagging the ones to look at
 //	runner plan-smoke      -plan-models <list>       prove the plan agent refuses edit, a new file and bash on the list's first and last model
 //	runner review-smoke    -review-models <list>     try the review agent on a fixture diff with each model, passing those whose findings parse at $0
 //	runner pr-review-context -pr <n> -out <path>     write a pull request's diff and the ticket it names, read from Linear
@@ -352,6 +352,9 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 			defer func() { _ = gcs.Close() }()
 
 			logger = logger.With("attempt", e.attemptID, "ticket", t.ID)
+			// These routers are given no harness opt-in: a run job holds no plan
+			// record, so it runs the plan's next harness rather than one that is
+			// not open-source, which only the owner's own commands admit.
 			res, err := runner.Build(ctx, runner.BuildDeps{
 				Projections: store.NewBucket(gcs, e.project+"-projections"),
 				Completions: store.NewBucket(gcs, e.project+"-completions"),

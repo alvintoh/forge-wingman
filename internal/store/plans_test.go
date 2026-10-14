@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -206,6 +207,37 @@ func TestSetOptInSurvivesRedefiningThePlanAndRefusesAnUndefinedOne(t *testing.T)
 		t.Fatalf("plan = %+v, want the opt-in withdrawn", got)
 	}
 	if err := p.SetOptIn(ctx, undefined, true); err == nil || !strings.Contains(err.Error(), "is not defined") {
+		t.Fatalf("err = %v, want a refusal naming the undefined plan", err)
+	}
+}
+
+func TestSetHarnessOptInRecordsOneHarnessAndRefusesAnUndefinedPlan(t *testing.T) {
+	id, undefined := fresh("plan-harness-optin"), fresh("plan-harness-optin-none")
+	p, client := planStore(t, id, undefined)
+	ctx := context.Background()
+	if err := p.PutDefinition(ctx, id, planDef); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SetHarnessOptIn(ctx, id, "vendor-cli", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SetHarnessOptIn(ctx, id, "other-cli", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PutDefinition(ctx, id, planDef); err != nil {
+		t.Fatal(err)
+	}
+	got := readPlan(t, client, id)
+	if !slices.Contains(got.HarnessOptIn, "vendor-cli") || !slices.Contains(got.HarnessOptIn, "other-cli") {
+		t.Fatalf("harness opt-in = %v, want both harnesses kept through a re-definition", got.HarnessOptIn)
+	}
+	if err := p.SetHarnessOptIn(ctx, id, "vendor-cli", false); err != nil {
+		t.Fatal(err)
+	}
+	if got := readPlan(t, client, id); slices.Contains(got.HarnessOptIn, "vendor-cli") || !slices.Contains(got.HarnessOptIn, "other-cli") {
+		t.Fatalf("harness opt-in = %v, want the withdrawn harness alone gone", got.HarnessOptIn)
+	}
+	if err := p.SetHarnessOptIn(ctx, undefined, "vendor-cli", true); err == nil || !strings.Contains(err.Error(), "is not defined") {
 		t.Fatalf("err = %v, want a refusal naming the undefined plan", err)
 	}
 }

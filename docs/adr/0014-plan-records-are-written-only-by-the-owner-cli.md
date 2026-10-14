@@ -9,9 +9,10 @@ Whether a provider's terms allow unattended use, how it bills and whether it can
 
 ## Decision
 
-One document per provider, `provider_plans/<provider>`: the owner's definition (name, monthly price, billing as free, allowance or per-token, limit behaviour, harness and model pairs, the pages to refresh from), the terms verdict with the wording, source and date it rests on, the vendor replies, and an opt-in flag for per-token spend.
+One document per provider, `provider_plans/<provider>`: the owner's definition (name, monthly price, billing as free, allowance or per-token, limit behaviour, harness and model pairs, the pages to refresh from), the terms verdict with the wording, source and date it rests on, the vendor replies, an opt-in flag for per-token spend, and the harnesses the owner has opted in on that plan.
 
-- **Only the owner CLI writes it** (`plan-define`, `plan-verdict`, `plan-reply`, `plan-optin`). No run job writes it, and the opt-in is written by `plan-optin` alone.
+- **Only the owner CLI writes it** (`plan-define`, `plan-verdict`, `plan-reply`, `plan-optin`). No run job writes it; the spend opt-in is written by `plan-optin` alone, and the harness opt-in by `plan-optin -harness` alone.
+- **A harness that is not open-source runs only where the plan record can be read**: no run job holds one, so a run job selects none of them and moves to the plan's next harness, where the commands that run a harness for the owner (`plan-smoke`, `review-smoke`) read the plan's opt-in and honour it.
 - **The dispatcher reads it at admission.** A provider with no billing recorded is unconfigured and its tickets are refused; a per-token provider not opted in is refused naming the opt-in. A failed read leaves the ticket unadmitted rather than guessing.
 - **Changing a plan's billing clears its opt-in**, so consent given for one billing model cannot carry over to another.
 - A free plan is recorded at a zero price; every other billing needs a positive one.

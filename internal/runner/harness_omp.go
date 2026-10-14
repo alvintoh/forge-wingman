@@ -18,6 +18,9 @@ import (
 // binary oh-my-pi installs (testdata/omp/PACKAGE.txt).
 const ompName = "omp"
 
+// ompLicence is omp's own licence: oh-my-pi is MIT.
+const ompLicence = LicenceOpenSource
+
 // ompPlan is how omp reaches one plan: its own built-in provider name, so the
 // adapter reaches the plan's endpoint with the model id omp recognises, and the
 // variable that provider reads its key from, which is the CLI's own name rather
@@ -126,6 +129,9 @@ func (h OmpHarness) keyFor(plan string) string {
 
 // Name is the harness's own name, the key a plan's configuration selects it by.
 func (h OmpHarness) Name() string { return ompName }
+
+// Licence is the harness's own licence, recorded here alone.
+func (h OmpHarness) Licence() Licence { return ompLicence }
 
 // Agent returns the omp agent for profile p, keyed for the model's plan.
 func (h OmpHarness) Agent(p Profile, model string) Agent {

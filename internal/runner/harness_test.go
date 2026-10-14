@@ -19,11 +19,13 @@ import (
 )
 
 // fakeHarness serves provider "p" — or its own name — through agent, or a fresh
-// fakeAgent when unset; it is ready unless a test says otherwise.
+// fakeAgent when unset; it is ready unless a test says otherwise, and
+// open-source unless a test makes it proprietary.
 type fakeHarness struct {
 	name     string
 	agent    Agent
 	ready    error
+	licence  Licence
 	classify func(string, error) (Outcome, StopReason)
 }
 
@@ -32,6 +34,12 @@ func (h fakeHarness) Name() string {
 		return "p"
 	}
 	return h.name
+}
+func (h fakeHarness) Licence() Licence {
+	if h.licence == "" {
+		return LicenceOpenSource
+	}
+	return h.licence
 }
 func (h fakeHarness) Agent(Profile, string) Agent {
 	if h.agent == nil {
@@ -204,6 +212,55 @@ func TestRouterFallsBackToThePlansNextHarness(t *testing.T) {
 	}
 	if defaultAgent.calls != 0 || fallbackAgent.calls != 1 {
 		t.Fatalf("ran default %d times and fallback %d, want the ready fallback alone", defaultAgent.calls, fallbackAgent.calls)
+	}
+}
+
+// TestRouterPassesOverAProprietaryHarnessThePlanHasNotOptedIn asserts selection
+// returns the plan's next harness where its first is proprietary and no opt-in
+// admits it, so a run job runs an open-source harness rather than none, and that
+// the owner's own opt-in is what selects the proprietary one (AC23).
+func TestRouterPassesOverAProprietaryHarnessThePlanHasNotOptedIn(t *testing.T) {
+	proprietary, openSource := &fakeAgent{}, &fakeAgent{}
+	harnesses := []Harness{
+		fakeHarness{name: "vendor-cli", licence: LicenceProprietary, agent: proprietary},
+		fakeHarness{name: "open-cli", agent: openSource},
+	}
+	order := planOrders(map[string][]string{"plan": {"vendor-cli", "open-cli"}})
+
+	r := newRouter(order, ProfileBuild, harnesses...)
+	if got := r.HarnessFor("plan/x"); got != "open-cli" {
+		t.Fatalf("HarnessFor = %q, want the open-source harness a run may select", got)
+	}
+	var out, errBuf strings.Builder
+	if err := r.WithModel("plan/x").Run(context.Background(), t.TempDir(), "", "p", "", &out, &errBuf); err != nil {
+		t.Fatal(err)
+	}
+	if proprietary.calls != 0 || openSource.calls != 1 {
+		t.Fatalf("ran the proprietary harness %d times and the open-source one %d, want the open-source alone",
+			proprietary.calls, openSource.calls)
+	}
+
+	optedIn := newRouter(order, ProfileBuild, harnesses...).WithOptIn(func(plan, harness string) bool {
+		return plan == "plan" && harness == "vendor-cli"
+	})
+	if got := optedIn.HarnessFor("plan/x"); got != "vendor-cli" {
+		t.Fatalf("HarnessFor = %q, want the harness the owner opted in", got)
+	}
+}
+
+// TestRouterNamesWhyAProprietaryHarnessIsRefused asserts a plan whose only
+// harness is proprietary and unopted-in refuses naming the opt-in, rather than
+// reporting a plan with no harness at all (AC4).
+func TestRouterNamesWhyAProprietaryHarnessIsRefused(t *testing.T) {
+	r := newRouter(planOrders(map[string][]string{"plan": {"vendor-cli"}}), ProfileBuild,
+		fakeHarness{name: "vendor-cli", licence: LicenceProprietary})
+	err := r.Gate("plan/x")
+	if err == nil || !strings.Contains(err.Error(), "has not opted it in") {
+		t.Fatalf("Gate = %v, want the unopted-in proprietary harness named", err)
+	}
+	var notReady *harnessNotReadyError
+	if errors.As(err, &notReady) {
+		t.Fatalf("Gate = %v, want a refusal distinct from a harness that wants a key", err)
 	}
 }
 
@@ -504,5 +561,21 @@ func TestRouterTypesOnlyAnUnreadyRefusal(t *testing.T) {
 	unregistered := newRouter(planOrders(map[string][]string{"plan": {"missing"}}), ProfileBuild, fakeHarness{name: "default"})
 	if err := unregistered.Gate("plan/x"); err == nil || errors.As(err, &notReady) {
 		t.Fatalf("Gate = %v, want an untyped refusal", err)
+	}
+}
+
+// TestEveryRegisteredHarnessDeclaresItsLicence asserts every adapter records one
+// of the two licences, so a harness added without one is caught here rather than
+// reaching selection as a licence nothing admits.
+func TestEveryRegisteredHarnessDeclaresItsLicence(t *testing.T) {
+	if len(harnessRegistry) == 0 {
+		t.Fatal("no harness is registered")
+	}
+	for _, h := range Harnesses(func(string) string { return "" }) {
+		switch h.Licence() {
+		case LicenceOpenSource, LicenceProprietary:
+		default:
+			t.Errorf("harness %s declares licence %q, want %q or %q", h.Name(), h.Licence(), LicenceOpenSource, LicenceProprietary)
+		}
 	}
 }
