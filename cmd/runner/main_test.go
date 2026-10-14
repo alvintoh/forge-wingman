@@ -383,14 +383,23 @@ func TestBuildStopsAsTicketNotDeliveredWithoutATicketFile(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	dir := t.TempDir()
 	output := filepath.Join(dir, "out")
-	err := build(context.Background(), logger, env{output: output, attemptID: "42-1"},
-		[]string{"-model", "command-code/p/m", "-ticket-file", filepath.Join(dir, "absent.json")})
+	pinnedImagesOnPath(t)
+	err := build(context.Background(), logger, env{output: output, attemptID: "42-1", tempDir: dir},
+		append(pinnedImageArgs(), "-model", "command-code/p/m", "-ticket-file", filepath.Join(dir, "absent.json")))
 	if exitCode(err) != 0 {
 		t.Fatalf("exit %d, err %v; want a reported stop", exitCode(err), err)
 	}
-	out, rerr := os.ReadFile(output)
-	if rerr != nil {
-		t.Fatal(rerr)
+	if sum := reportedSummary(t, output); sum.StopReason != runner.StopTicketNotDelivered {
+		t.Fatalf("summary %+v; want ticket-not-delivered", sum)
+	}
+}
+
+// reportedSummary is the summary a stage wrote to its $GITHUB_OUTPUT file at output.
+func reportedSummary(t *testing.T, output string) runner.Summary {
+	t.Helper()
+	out, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
 	}
 	var raw string
 	for _, line := range strings.Split(string(out), "\n") {
@@ -398,9 +407,86 @@ func TestBuildStopsAsTicketNotDeliveredWithoutATicketFile(t *testing.T) {
 			raw = v
 		}
 	}
-	sum, perr := runner.ParseSummary(raw, "42-1", runner.Ticket{}, time.Now())
-	if perr != nil || sum.StopReason != runner.StopTicketNotDelivered {
-		t.Fatalf("summary %+v, err %v; want ticket-not-delivered", sum, perr)
+	sum, err := runner.ParseSummary(raw, "42-1", runner.Ticket{}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sum
+}
+
+// pinnedImageArgs are the image flags of a stage that has both images.
+func pinnedImageArgs() []string {
+	digest := "@sha256:" + strings.Repeat("a", 64)
+	return []string{"-agent-image", "agent:1" + digest, "-checks-image", "golang:1.27.1" + digest}
+}
+
+// pinnedImagesOnPath puts the linter the checks container mounts and a docker that logs on PATH, and
+// returns the docker log.
+func pinnedImagesOnPath(t *testing.T) string {
+	t.Helper()
+	logFile := fakeDockerLog(t)
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "golangci-lint"), []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return logFile
+}
+
+func TestBuildAndPlanStageRefuseAMissingImageBeforeAnyAgentRuns(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	digest := "@sha256:" + strings.Repeat("a", 64)
+	agent, checks := []string{"-agent-image", "agent:1" + digest}, []string{"-checks-image", "golang:1.27.1" + digest}
+	for _, tt := range []struct {
+		name, stage string
+		args        []string
+		missing     string
+	}{
+		{"build with no agent image", "build", checks, "-agent-image"},
+		{"build with no checks image", "build", agent, "-checks-image"},
+		{"build with neither image", "build", nil, "-agent-image, -checks-image"},
+		{"plan-stage with no agent image", "plan-stage", nil, "-agent-image"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dockerLog := fakeDockerLog(t)
+			dir := t.TempDir()
+			output := filepath.Join(dir, "out")
+			args := append(slices.Clone(tt.args), "-ticket-file", filepath.Join(dir, "absent.json"))
+			var err error
+			if tt.stage == "build" {
+				err = build(context.Background(), logger, env{output: output, attemptID: "42-1"}, args)
+			} else {
+				err = planStage(context.Background(), logger, env{output: output, attemptID: "42-1"},
+					append(args, "-out", filepath.Join(dir, "plan.json")))
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.missing+" required") {
+				t.Fatalf("err = %v, want %s refused", err, tt.missing)
+			}
+			if tt.stage == "build" {
+				if exitCode(err) != 0 {
+					t.Fatalf("exit %d; want a reported stop", exitCode(err))
+				}
+				if sum := reportedSummary(t, output); sum.StopReason != runner.StopSetup || !strings.Contains(sum.StopDetail, tt.missing) {
+					t.Fatalf("summary %+v, want a setup failure naming %s", sum, tt.missing)
+				}
+			} else if exitCode(err) != 1 {
+				t.Fatalf("exit %d; want the plan stage to fail", exitCode(err))
+			}
+			if _, statErr := os.Stat(dockerLog); statErr == nil {
+				t.Fatal("docker was called before the missing image was refused")
+			}
+		})
+	}
+}
+
+func TestPlanStageProceedsPastItsImageCheckWithAPinnedImage(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	pinnedImagesOnPath(t)
+	dir := t.TempDir()
+	err := planStage(context.Background(), logger, env{attemptID: "42-1"},
+		append(pinnedImageArgs()[:2], "-ticket-file", filepath.Join(dir, "absent.json"), "-out", filepath.Join(dir, "plan.json")))
+	if !errors.Is(err, errTicketNotDelivered) {
+		t.Fatalf("err = %v, want the stage to reach its ticket", err)
 	}
 }
 

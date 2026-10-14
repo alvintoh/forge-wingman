@@ -37,13 +37,16 @@ func planStage(ctx context.Context, logger *slog.Logger, e env, args []string) e
 	pointer := fs.String("pointer", runner.DefaultPointer, "object naming the current rule-stack sha")
 	ticketFile := fs.String("ticket-file", "", "path to the run's ticket, as the ticket subcommand wrote it")
 	out := fs.String("out", "", "path to write the plan artifact to")
-	agentImage := fs.String("agent-image", "", agentImageUsage)
+	agentImage := fs.String("agent-image", "", agentImageRequiredUsage)
 	agentEgress := fs.String("agent-egress", "", agentEgressUsage)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *out == "" {
 		return errors.New("no -out path to write the plan to")
+	}
+	if err := requireImages(map[string]string{"agent-image": *agentImage}); err != nil {
+		return err
 	}
 	t, err := readTicket(*ticketFile)
 	if err != nil {

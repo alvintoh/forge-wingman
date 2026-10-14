@@ -78,14 +78,15 @@ able to invoke the job.
 comma-separated provider/model. Unset, it reviews with
 `command-code/poolside/laguna-s-2.1-free`; a paid model is an edit of the variable.
 
-`WINGMAN_AGENT_IMAGE` is optional: an agent image pinned by digest that provides omp,
-opencode, git and sh. Set it to run the build and plan stages' agent CLIs, and those of
-`pr-review`, `review-smoke` and `plan-smoke`, in a container of that image, which mounts
-only the worktree (an empty scratch directory for those three), the harness home and the
-git common directory; the build and plan stages run both CLIs' version commands in that
+`WINGMAN_AGENT_IMAGE` is required by the build and plan stages and optional for the rest:
+an agent image pinned by digest that provides omp, opencode, git and sh. It runs those
+stages' agent CLIs, and those of `pr-review`, `review-smoke` and `plan-smoke`, in a
+container of that image, which mounts only the worktree (an empty scratch directory for
+those three), the harness home and the git common directory; the build and plan stages run both CLIs' version commands in that
 container, over those mounts, before the first agent round, so an image missing either
-binary stops the run with stop reason `agent-container`. Unset, the agents run on the
-runner. Unset it to undo.
+binary stops the run with stop reason `agent-container`. Unset, the build and plan stages
+refuse to start, and `pr-review`, `review-smoke` and `plan-smoke` run their agents on the
+runner.
 
 `WINGMAN_AGENT_EGRESS` is `on` or `off`, where empty is off, and it needs
 `WINGMAN_AGENT_IMAGE` set — a stage refuses `on` without an image. It applies to the
@@ -143,13 +144,14 @@ A front-end change is held for the owner, still as a ready PR: a ticket labelled
 `{"alvintoh/forge-wingman":["web/"]}`. Either one holds it, and a value that is not
 valid JSON holds every PR. The PR body names what matched.
 
-Do not set `WINGMAN_AUTO_MERGE` to `on` yet. The review's verdict comes from its
-own job, and the out-of-plan list no longer comes from the model job: pr-meta derives
-the write set from the branch's bundle and measures it against the plan in the run
-record. One input still comes from a runner where the build agent has a shell: the
-summary's `ready` flag decides whether a PR is a draft when the pre-PR loop left
-something open, so it could be forged. The switch is safe once that is trusted, or
-accepted as the risk.
+The build agent runs in the agent container and the pre-PR checks in the checks image,
+so it has no shell on the runner to forge a job output: `build` and `plan-stage` refuse to
+start without `WINGMAN_AGENT_IMAGE`, and `build` without its checks image. The review's
+verdict comes from its own job, and pr-meta derives the write set from the branch's bundle and measures it against the plan in the run record.
+The summary's `ready` flag, which decides whether a PR is a draft when the pre-PR loop
+left something open, is still the model's verdict, so the agent's diff can steer it: it is
+advisory, not trusted. The gates that cover it are the plan's write set, the check gates,
+the required `go` and `web` checks and the pr-review verdict.
 
 The review itself is not proof against the build agent either: the agent writes the
 diff the reviewer reads, so it can plant instructions that steer one model to a clean
