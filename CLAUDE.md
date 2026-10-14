@@ -68,15 +68,18 @@ stays one tap away.
 
 *(Owner's instruction, 2026-10-04.)*
 
-## Agent-built front-end PRs: look before you read
+## Front-end PRs: design first, screenshots last
 
-A PR held for the owner as a front-end change gets `/fe-sweep` first and
-`/pr-review` second, so a wrong design is caught before the diff is read. A code
-fix that changes what renders needs a re-sweep, because an edit invalidates the
-screenshots taken before it.
+A PR held for the owner as a front-end change (`cmd/surface/`, `web/`) is walked in this order:
+the owner finalizes the design, and may change it, so ask "is the design final?" before any
+sweep; then `/fe-sweep` on the final design; then `/pr-review`; then, after its fix commits,
+capture the s, m, l, xl Chromium shots (390, 768, 1024, 1280) of each state the PR touches at
+the final head and attach them to the PR body as one table. An edit after capture invalidates
+the shots, so the capture is the last step before merge. This is the product's own flow for the
+repositories it builds in.
 
-*(Judgment call, owner's instruction 2026-10-13; no authority prescribes the
-order.)*
+*(Judgment call, owner's instruction 2026-10-15, superseding 2026-10-13's "sweep first, review
+second"; no authority prescribes the order.)*
 
 ## Merging PRs for the owner
 
