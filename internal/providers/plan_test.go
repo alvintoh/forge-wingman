@@ -102,6 +102,15 @@ func TestPlanNeedsOptInOnlyWhenBilledPerToken(t *testing.T) {
 	}
 }
 
+func TestRecordedVerdictIsUnconfirmedWhenNoneIsStored(t *testing.T) {
+	if got := (Plan{}).RecordedVerdict(); got != VerdictUnconfirmed {
+		t.Errorf("empty verdict reads %q, want %q", got, VerdictUnconfirmed)
+	}
+	if got := (Plan{Verdict: VerdictAllowed}).RecordedVerdict(); got != VerdictAllowed {
+		t.Errorf("stored verdict reads %q, want %q", got, VerdictAllowed)
+	}
+}
+
 func TestParseVerdictRefusesTheRunLevelUnknown(t *testing.T) {
 	if _, err := ParseVerdict("unknown"); err == nil {
 		t.Fatal("unknown was accepted as a recordable verdict")

@@ -70,10 +70,6 @@ const (
 // harness's runs do not yet fill; TODO(FRG-47) tracks that. A per-model cap
 // binds a run only on the model it names.
 func budgetConfig(provider string) dispatcher.BudgetConfig {
-	var windows []dispatcher.Window
-	for _, w := range providers.Windows(provider) {
-		windows = append(windows, dispatcher.Window{Name: w.Name, Period: w.Period, Limit: w.Limit})
-	}
 	var modelCaps map[string]dispatcher.Window
 	if caps := providers.ModelCaps(provider); len(caps) > 0 {
 		modelCaps = make(map[string]dispatcher.Window, len(caps))
@@ -82,7 +78,7 @@ func budgetConfig(provider string) dispatcher.BudgetConfig {
 		}
 	}
 	return dispatcher.BudgetConfig{
-		ProviderWindows: windows,
+		ProviderWindows: dispatcher.ProviderWindows(provider),
 		ModelCaps:       modelCaps,
 		Cash:            dispatcher.Window{Name: dispatcher.CeilingCash, Calendar: true, Limit: providers.CashLimit()},
 		Runner:          dispatcher.RunnerMinutes{FreeMinutes: providers.RunnerFreeMinutes()},

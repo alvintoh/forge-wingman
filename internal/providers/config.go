@@ -665,6 +665,25 @@ func PaidPlans() []string {
 	return slices.Clone(embeddedConfig.PaidPlans)
 }
 
+// DispatchOrder is every plan a run may walk, in the order the dispatcher
+// reaches them: the paid plans a ticket may start on, in configuration order,
+// then the free tiers of the last-resort fallback, each plan named once.
+func DispatchOrder() []string {
+	order := PaidPlans()
+	seen := make(map[string]bool, len(order))
+	for _, plan := range order {
+		seen[plan] = true
+	}
+	for _, plan := range LastResortPlans() {
+		if seen[plan] {
+			continue
+		}
+		seen[plan] = true
+		order = append(order, plan)
+	}
+	return order
+}
+
 // PlanModels are the models a run moved onto plan starts on, empty for a plan
 // that is not configured.
 func PlanModels(plan string) Models {
