@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -99,10 +100,17 @@ type Plan struct {
 	OptedIn bool `firestore:"opted_in"`
 	// PrivateOptIn is the owner's consent to private repositories' runs on the plan's free tier, written only by plan-optin -private.
 	PrivateOptIn bool `firestore:"private_opt_in"`
+	// HarnessOptIn names the harnesses the owner has opted in on the plan, written only by plan-optin -harness: a harness that is not open-source runs only with this consent.
+	HarnessOptIn []string `firestore:"harness_opt_in"`
 }
 
 // Configured reports whether the owner has recorded how the plan bills.
 func (p Plan) Configured() bool { return p.Definition.Billing != "" }
+
+// OffersHarness reports whether the plan's definition lists harness among its pairs.
+func (p Plan) OffersHarness(harness string) bool {
+	return slices.ContainsFunc(p.Definition.Harnesses, func(h HarnessPair) bool { return h.Harness == harness })
+}
 
 // NeedsOptIn reports whether runs on the plan spend per token, so need the owner's opt-in first.
 func (p Plan) NeedsOptIn() bool { return p.Definition.Billing == BillingPerToken }

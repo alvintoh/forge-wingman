@@ -25,7 +25,8 @@ const reviewSmokeHeader = "| model | outcome | cost | defect | detail |\n|---|--
 // against a fixture diff, one at a time, appending each model's row to the job
 // summary as it finishes. A model passes when its findings parse and the plan
 // meters its run at exactly $0; the job fails only when none passes. It needs
-// only the agent binary and its key, no GCP identity.
+// only the agent binary and its key; with a project set it also reads each plan's
+// harness opt-in, so the owner may smoke a harness no run job may select.
 func reviewSmoke(ctx context.Context, logger *slog.Logger, getenv func(string) string, args []string) error {
 	fs := flag.NewFlagSet("review-smoke", flag.ContinueOnError)
 	reviewModels := fs.String("review-models", strings.Join(runner.DefaultReviewModels(), ","), "the review models to try, comma-separated provider/model")
@@ -46,9 +47,10 @@ func reviewSmoke(ctx context.Context, logger *slog.Logger, getenv func(string) s
 	if err := runner.ValidateReviewModels(list, build); err != nil {
 		return err
 	}
+	optIn := harnessOptIn(ctx, logger, getenv, list)
 	_, err := withAgents(ctx, logger, agentSettings{Image: *agentImage}, ".", runner.Harnesses(getenv),
 		func(contained []runner.Harness, _ func(context.Context, string) error) error {
-			agent := runner.NewRouter(runner.ProfileReview, contained...)
+			agent := runner.NewRouter(runner.ProfileReview, contained...).WithOptIn(optIn)
 			return runReviewSmoke(ctx, logger, agent, list, *timeout, getenv("GITHUB_STEP_SUMMARY"), runner.HarnessSecrets(getenv))
 		})
 	return err

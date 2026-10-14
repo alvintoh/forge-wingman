@@ -29,6 +29,8 @@ const (
 type Harness interface {
 	// Name is the key a plan's configuration selects the harness by.
 	Name() string
+	// Licence is the harness's own licence, recorded once beside its adapter.
+	Licence() Licence
 	// Agent returns the agent that runs profile p on model.
 	Agent(p Profile, model string) Agent
 	// Classify maps a failed run's stderr tail and exit error to an outcome.
@@ -38,6 +40,23 @@ type Harness interface {
 	// trips the dispatch breaker, so refuse only for want of a key.
 	Ready(plan string) error
 }
+
+// Licence is what a harness's own CLI is licensed under, as the adapter that
+// owns it records: an open-source harness any run may select, and a proprietary
+// one only where the owner has opted it in on the plan (plan-optin -harness).
+type Licence string
+
+const (
+	LicenceOpenSource  Licence = "open-source"
+	LicenceProprietary Licence = "proprietary"
+)
+
+// HarnessOptIn reports whether the owner has opted harness in on plan, which a
+// proprietary harness needs before selection may return it. Only the owner CLI
+// records it (plan-optin), and only a process holding the plan record consults
+// it: a harness order supplied with no resolver — every run job's — selects no
+// proprietary harness at all.
+type HarnessOptIn func(plan, harness string) bool
 
 // harnessRegistration is one adapter's entry in the registry: its name, and how
 // to build it from the environment. One registration serves every plan the
@@ -106,6 +125,7 @@ type Router struct {
 	profile   Profile
 	harnesses []Harness
 	order     harnessOrder
+	optIn     HarnessOptIn
 	model     string
 }
 
@@ -124,10 +144,16 @@ func newRouter(order harnessOrder, profile Profile, harnesses ...Harness) Router
 // WithModel returns the router bound to run model.
 func (r Router) WithModel(model string) Agent { r.model = model; return r }
 
+// WithOptIn returns the router that consults optIn before it may select a
+// harness, so a proprietary one runs only where the owner has opted it in. A
+// router given none selects no proprietary harness, which is what a run job
+// holds: it knows no plan record, and only the owner CLI records the consent.
+func (r Router) WithOptIn(optIn HarnessOptIn) Router { r.optIn = optIn; return r }
+
 // Run runs the router's profile through the harness the model's plan selects,
 // refusing a model whose plan names no harness the run is configured for (AC7).
 func (r Router) Run(ctx context.Context, dir, session, prompt, rules string, stdout, stderr io.Writer) error {
-	h, err := pickHarness(r.harnesses, r.order, Provider(r.model))
+	h, err := pickHarness(r.harnesses, r.order, Provider(r.model), r.optIn)
 	if err != nil {
 		return err
 	}
@@ -141,7 +167,7 @@ func (r Router) Run(ctx context.Context, dir, session, prompt, rules string, std
 // than a bare agent failure (AC3).
 func (r Router) Classify(stderrTail string, exitErr error) (Outcome, StopReason) {
 	plan := Provider(r.model)
-	h, err := pickHarness(r.harnesses, r.order, plan)
+	h, err := pickHarness(r.harnesses, r.order, plan, r.optIn)
 	if err != nil {
 		h = routedHarness(r.harnesses, r.order, plan)
 	}
@@ -152,49 +178,74 @@ func (r Router) Classify(stderrTail string, exitErr error) (Outcome, StopReason)
 }
 
 // Gate reports whether the run is configured to use model, refusing one whose
-// plan names no harness the run is configured for (AC7).
+// plan names no harness the run may run it through (AC7).
 func (r Router) Gate(model string) error {
-	_, err := pickHarness(r.harnesses, r.order, Provider(model))
+	_, err := pickHarness(r.harnesses, r.order, Provider(model), r.optIn)
 	return err
 }
 
 // HarnessFor returns the harness the router runs model through — the plan's
-// first registered harness that is ready, the same pick Run makes — or empty
-// when the plan names no harness the run can use.
+// first harness that may run it, the same pick Run makes — or empty when the
+// plan names no harness the run can use.
 func (r Router) HarnessFor(model string) string {
-	h, err := pickHarness(r.harnesses, r.order, Provider(model))
+	h, err := pickHarness(r.harnesses, r.order, Provider(model), r.optIn)
 	if err != nil {
 		return ""
 	}
 	return h.Name()
 }
 
-// pickHarness returns the first harness the plan names, in order, that is
-// registered and ready, so a plan's fallback runs when its default cannot. A
-// plan whose harnesses are all unregistered or unready is refused.
-func pickHarness(harnesses []Harness, order harnessOrder, plan string) (Harness, error) {
+// pickHarness returns the first harness the plan names, in order, that may run
+// it: one the run holds, licensed for this process and ready. A harness the plan
+// has not opted in is passed over, so the plan's next harness runs in its place,
+// and the first refusal is reported when none of them can (AC4).
+func pickHarness(harnesses []Harness, order harnessOrder, plan string, optIn HarnessOptIn) (Harness, error) {
 	names := order(plan)
 	if len(names) == 0 {
 		return nil, fmt.Errorf("no harness is configured for plan %q", plan)
 	}
-	var unready error
+	var refused error
 	for _, name := range names {
 		h := harnessNamed(harnesses, name)
 		if h == nil {
 			continue
 		}
+		if err := licenceRefusal(h.Licence(), name, plan, optIn); err != nil {
+			if refused == nil {
+				refused = err
+			}
+			continue
+		}
 		if err := h.Ready(plan); err != nil {
-			if unready == nil {
-				unready = err
+			if refused == nil {
+				refused = &harnessNotReadyError{Err: err}
 			}
 			continue
 		}
 		return h, nil
 	}
-	if unready != nil {
-		return nil, &harnessNotReadyError{Err: unready}
+	if refused != nil {
+		return nil, refused
 	}
 	return nil, fmt.Errorf("plan %q names no configured harness", plan)
+}
+
+// licenceRefusal is the refusal a harness whose licence bars it from running
+// plan here draws: an open-source harness always runs, and any other runs only
+// where optIn says the owner has opted it in.
+func licenceRefusal(licence Licence, harness, plan string, optIn HarnessOptIn) error {
+	if licence == LicenceOpenSource {
+		return nil
+	}
+	if optIn != nil && optIn(plan, harness) {
+		return nil
+	}
+	licensed := string(licence)
+	if licensed == "" {
+		licensed = "not open-source"
+	}
+	return fmt.Errorf("harness %q is %s and plan %q has not opted it in (runner plan-optin -provider %s -harness %s)",
+		harness, licensed, plan, plan, harness)
 }
 
 // harnessNotReadyError reports a plan whose registered harnesses all refused

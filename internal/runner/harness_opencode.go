@@ -19,6 +19,10 @@ import (
 // the binary opencode-ai installs (testdata/opencode/PACKAGE.txt).
 const opencodeName = "opencode"
 
+// opencodeLicence is opencode's own licence: opencode-ai is MIT
+// (tools/opencode/package-lock.json).
+const opencodeLicence = LicenceOpenSource
+
 // opencodeReadOnlyAgent is the agent the plan and review profiles select: a
 // primary agent whose edit, bash and task permissions are denied.
 const opencodeReadOnlyAgent = "wingman-readonly"
@@ -106,6 +110,9 @@ func (h OpencodeHarness) keyFor(plan string) string {
 
 // Name is the harness's own name, the key a plan's configuration selects it by.
 func (h OpencodeHarness) Name() string { return opencodeName }
+
+// Licence is the harness's own licence, recorded here alone.
+func (h OpencodeHarness) Licence() Licence { return opencodeLicence }
 
 // Agent returns the opencode agent for profile p, keyed for the model's plan.
 func (h OpencodeHarness) Agent(p Profile, model string) Agent {

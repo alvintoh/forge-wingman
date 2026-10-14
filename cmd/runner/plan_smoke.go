@@ -23,7 +23,8 @@ func smokeModels(list []string) []string {
 // planSmoke runs the restricted plan agent on the first and last model of the plan
 // list against a fixture, appends each model and outcome to the job summary, and
 // fails unless every one refused both the edit and the shell command. It needs
-// only the agent binary and its key, no GCP identity.
+// only the agent binary and its key; with a project set it also reads each plan's
+// harness opt-in, so the owner may smoke a harness no run job may select.
 func planSmoke(ctx context.Context, logger *slog.Logger, getenv func(string) string, args []string) error {
 	fs := flag.NewFlagSet("plan-smoke", flag.ContinueOnError)
 	planModels := fs.String("plan-models", runner.DefaultPlanModel(), "the plan phase's models in order, comma-separated provider/model")
@@ -35,9 +36,11 @@ func planSmoke(ctx context.Context, logger *slog.Logger, getenv func(string) str
 	if err := runner.ValidatePlanModels(list); err != nil {
 		return err
 	}
+	optIn := harnessOptIn(ctx, logger, getenv, list)
 	_, err := withAgents(ctx, logger, agentSettings{Image: *agentImage}, ".", runner.Harnesses(getenv),
 		func(contained []runner.Harness, _ func(context.Context, string) error) error {
-			return runPlanSmoke(ctx, logger, runner.NewRouter(runner.ProfilePlan, contained...), list, getenv("GITHUB_STEP_SUMMARY"))
+			router := runner.NewRouter(runner.ProfilePlan, contained...).WithOptIn(optIn)
+			return runPlanSmoke(ctx, logger, router, list, getenv("GITHUB_STEP_SUMMARY"))
 		})
 	return err
 }

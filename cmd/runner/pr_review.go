@@ -179,6 +179,8 @@ func prReview(ctx context.Context, logger *slog.Logger, getenv func(string) stri
 	}
 	_, err := withAgents(ctx, logger, agentSettings{Image: *agentImage}, ".", runner.Harnesses(getenv),
 		func(contained []runner.Harness, _ func(context.Context, string) error) error {
+			// No harness opt-in: a PR review runs unattended, so it admits no
+			// harness that only the owner's own commands may opt in.
 			agent := runner.NewRouter(runner.ProfileReview, contained...)
 			return runPRReview(ctx, logger, agent, list, *timeout, *contextPath, *out, getenv("GITHUB_STEP_SUMMARY"), runner.HarnessSecrets(getenv))
 		})

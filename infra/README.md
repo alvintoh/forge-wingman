@@ -67,6 +67,12 @@ that `run.yml` passes to the runner (a workflow edit the agent cannot push), and
 Until the secret is passed a run moved onto the plan stops as credential-absent. Do not enable
 a plan before its unattended-use terms are ruled on.
 
+A harness whose CLI is not open-source needs `runner plan-optin -provider <name> -harness <name>`
+as well, and even then it runs only for a command that reads the plan record — the owner's own
+`runner plan-smoke` or `review-smoke`, run where `GOOGLE_CLOUD_PROJECT` is set. A build or PR-review job holds
+no plan record and never reads opt-ins, so it never selects one: it runs the plan's next harness instead, and
+`runner plan-list` shows each plan's harnesses with their licences, open-source pairs first.
+
 `WINGMAN_DISPATCHER_RUN_URI` is the dispatcher job's Cloud Run run endpoint, which
 run.yml's `record-plan-stage` job calls to wake the dispatcher for the build stage
 (`https://<region>-run.googleapis.com/v2/projects/<project>/locations/<region>/jobs/forge-wingman-dispatcher:run`,

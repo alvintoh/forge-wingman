@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
 	"cloud.google.com/go/firestore"
 
 	"github.com/alvintoh/forge-wingman/internal/providers"
+	"github.com/alvintoh/forge-wingman/internal/runner"
 	"github.com/alvintoh/forge-wingman/internal/store"
 )
 
@@ -50,22 +52,35 @@ func planDefine(ctx context.Context, logger *slog.Logger, e env, args []string) 
 	return nil
 }
 
-// planOptIn records the owner's consent to spend on a per-token provider, or
-// with -private to private repositories' runs on its free tier, or withdraws
-// it. The dispatcher never writes either, so a ticket cannot opt a provider in.
+// planOptIn records one of the owner's consents on a plan, or withdraws it: to
+// spend on a per-token provider, with -private to private repositories' runs on
+// its free tier, or with -harness to a harness that is not open-source, which no
+// run selects without it. No run job writes any of them, so a ticket or a run
+// cannot opt a provider or a harness in.
 func planOptIn(ctx context.Context, logger *slog.Logger, e env, args []string) error {
 	fs := flag.NewFlagSet("plan-optin", flag.ContinueOnError)
 	provider := fs.String("provider", "", "provider whose per-token spend the owner accepts; per provider, and cleared if its billing is later changed")
 	optedIn := fs.Bool("opted-in", true, "false withdraws the opt-in")
 	private := fs.Bool("private", false, "record the opt-in to private repositories' runs on the provider's free tier instead")
+	harness := fs.String("harness", "", "record the opt-in to this harness on the provider's plan instead, for a harness that is not open-source")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *private && *harness != "" {
+		return errors.New("-private and -harness are separate opt-ins")
 	}
 	plans, closeStore, err := openPlans(ctx, e, *provider, true, nil)
 	if err != nil {
 		return err
 	}
 	defer closeStore()
+	if *harness != "" {
+		if err := plans.SetHarnessOptIn(ctx, *provider, *harness, *optedIn); err != nil {
+			return err
+		}
+		logger.Info("planHarnessOptInRecorded", "provider", *provider, "harness", *harness, "optedIn", *optedIn)
+		return nil
+	}
 	set := plans.SetOptIn
 	if *private {
 		set = plans.SetPrivateOptIn
@@ -127,7 +142,8 @@ func planReply(ctx context.Context, logger *slog.Logger, e env, args []string) e
 	return nil
 }
 
-// planList prints every plan side by side, flagging the ones to look at.
+// planList prints every plan side by side, flagging the ones to look at, with
+// each plan's harness pairs and their licences.
 func planList(ctx context.Context, _ *slog.Logger, e env, args []string) error {
 	if err := flag.NewFlagSet("plan-list", flag.ContinueOnError).Parse(args); err != nil {
 		return err
@@ -141,7 +157,93 @@ func planList(ctx context.Context, _ *slog.Logger, e env, args []string) error {
 	if err != nil {
 		return err
 	}
+	licences := harnessLicences(e.harnesses)
+	for i := range rows {
+		rows[i].Harnesses = harnessLines(rows[i].Plan.Definition.Harnesses, licences)
+	}
 	return providers.WriteTable(os.Stdout, rows)
+}
+
+// harnessLines renders a plan's pairs as the side-by-side view lists them:
+// open-source pairs first, keeping the plan's own order within each group.
+func harnessLines(pairs []providers.HarnessPair, licences map[string]runner.Licence) []providers.HarnessLine {
+	lines := make([]providers.HarnessLine, 0, len(pairs))
+	for _, p := range pairs {
+		lines = append(lines, providers.HarnessLine{Harness: p.Harness, Model: p.Model, Licence: string(licences[p.Harness])})
+	}
+	slices.SortStableFunc(lines, func(a, b providers.HarnessLine) int {
+		return licenceRank(a.Licence) - licenceRank(b.Licence)
+	})
+	return lines
+}
+
+// licenceRank puts the open-source pairs of a plan's row first, since they are
+// the ones every run may select.
+func licenceRank(licence string) int {
+	if licence == string(runner.LicenceOpenSource) {
+		return 0
+	}
+	return 1
+}
+
+// harnessLicences names the licence each harness this build registers runs
+// under, as the adapter that owns it records.
+func harnessLicences(harnesses []runner.Harness) map[string]runner.Licence {
+	licences := make(map[string]runner.Licence, len(harnesses))
+	for _, h := range harnesses {
+		licences[h.Name()] = h.Licence()
+	}
+	return licences
+}
+
+// harnessOptIn reads the opt-in each of models' plans records and returns the
+// resolver a command that runs agents consults before it may select a harness,
+// from the plan store the owner CLI alone writes (plan-optin -harness). It is the
+// only way a harness that is not open-source is admitted: a command with no
+// project to read the store from — every run job — consults no opt-in at all,
+// and a plan whose record cannot be read contributes none.
+func harnessOptIn(ctx context.Context, logger *slog.Logger, getenv func(string) string, models []string) runner.HarnessOptIn {
+	fsc, err := firestore.NewClient(ctx, getenv("GOOGLE_CLOUD_PROJECT"))
+	if err != nil {
+		logger.Warn("harnessOptInUnread", "err", err.Error())
+		return nil
+	}
+	defer func() { _ = fsc.Close() }()
+	return optInResolver(ctx, logger, store.NewPlans(fsc), models)
+}
+
+// planReader reads one provider's plan record; ok is false when none is defined.
+type planReader interface {
+	Plan(ctx context.Context, provider string) (plan providers.Plan, ok bool, err error)
+}
+
+// optInResolver reads each distinct plan of models once; a plan that cannot be
+// read records an empty opt-in set, so it is not re-read and admits no harness.
+func optInResolver(ctx context.Context, logger *slog.Logger, plans planReader, models []string) runner.HarnessOptIn {
+	optedIn := make(map[string]map[string]bool, len(models))
+	for _, model := range models {
+		plan := runner.Provider(model)
+		if plan == "" {
+			continue
+		}
+		if _, read := optedIn[plan]; read {
+			continue
+		}
+		record, ok, err := plans.Plan(ctx, plan)
+		if err != nil {
+			logger.Warn("harnessOptInUnread", "plan", plan, "err", err.Error())
+			optedIn[plan] = map[string]bool{}
+			continue
+		}
+		names := map[string]bool{}
+		if ok {
+			for _, harness := range record.HarnessOptIn {
+				names[harness] = true
+			}
+		}
+		optedIn[plan] = names
+	}
+	return func(plan, harness string) bool { return optedIn[plan][harness] }
 }
 
 // openPlans opens the plan store for an owner command: the account must be the

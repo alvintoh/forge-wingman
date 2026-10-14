@@ -53,13 +53,36 @@ func TestWriteTableShowsAPlanWithNoVerdictAsUnconfirmedAndEmptyCellsAsDashes(t *
 	if len(lines) != 4 {
 		t.Fatalf("got %d lines:\n%s", len(lines), b.String())
 	}
-	if got := strings.Fields(lines[1]); strings.Join(got, " ") != "alpha $15.00 hard-stop - false unconfirmed - -" {
+	if got := strings.Fields(lines[1]); strings.Join(got, " ") != "alpha $15.00 hard-stop - false unconfirmed - - -" {
 		t.Fatalf("alpha row = %q", lines[1])
 	}
-	if got := strings.Fields(lines[2]); strings.Join(got, " ") != "beta $30.00 can-spend-past per-token true restricted 2026-09-27 can-spend-past,outside-price-band" {
+	if got := strings.Fields(lines[2]); strings.Join(got, " ") != "beta $30.00 can-spend-past per-token true restricted 2026-09-27 can-spend-past,outside-price-band -" {
 		t.Fatalf("beta row = %q", lines[2])
 	}
-	if got := strings.Fields(lines[3]); strings.Join(got, " ") != "gamma $15.00 hard-stop per-token false unconfirmed - -" {
+	if got := strings.Fields(lines[3]); strings.Join(got, " ") != "gamma $15.00 hard-stop per-token false unconfirmed - - -" {
 		t.Fatalf("gamma row = %q", lines[3])
+	}
+}
+
+// TestWriteTableShowsEachHarnessPairWithTheLicenceOfItsHarness asserts the
+// side-by-side view prints every pair of a plan with its licence, and prints a
+// pair whose harness records none without one.
+func TestWriteTableShowsEachHarnessPairWithTheLicenceOfItsHarness(t *testing.T) {
+	var b strings.Builder
+	row := Listing{Provider: "alpha", Plan: Plan{Definition: Definition{MonthlyPrice: 15 * money.Dollar, LimitBehaviour: LimitHardStop}}}
+	row.Harnesses = []HarnessLine{
+		{Harness: "open-cli", Model: "model-a", Licence: "open-source"},
+		{Harness: "vendor-cli", Model: "model-b", Licence: "proprietary"},
+		{Harness: "unbuilt-cli", Model: "model-c"},
+	}
+	if err := WriteTable(&b, []Listing{row}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(b.String(), "HARNESSES") {
+		t.Fatalf("the table has no harness column:\n%s", b.String())
+	}
+	want := "open-cli:model-a (open-source),vendor-cli:model-b (proprietary),unbuilt-cli:model-c"
+	if !strings.Contains(b.String(), want) {
+		t.Fatalf("the table does not show %q:\n%s", want, b.String())
 	}
 }
