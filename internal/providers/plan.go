@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -105,6 +106,11 @@ type Plan struct {
 
 // Configured reports whether the owner has recorded how the plan bills.
 func (p Plan) Configured() bool { return p.Definition.Billing != "" }
+
+// OffersHarness reports whether the plan's definition lists harness among its pairs.
+func (p Plan) OffersHarness(harness string) bool {
+	return slices.ContainsFunc(p.Definition.Harnesses, func(h HarnessPair) bool { return h.Harness == harness })
+}
 
 // NeedsOptIn reports whether runs on the plan spend per token, so need the owner's opt-in first.
 func (p Plan) NeedsOptIn() bool { return p.Definition.Billing == BillingPerToken }

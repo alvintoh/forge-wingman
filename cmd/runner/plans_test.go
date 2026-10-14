@@ -187,7 +187,8 @@ func TestPlanOptInHarnessRecordsOnlyTheHarnessOptIn(t *testing.T) {
 		_ = client.Close()
 	})
 	plans := store.NewPlans(client)
-	if err := plans.PutDefinition(ctx, provider, providers.Definition{Name: "n", Billing: providers.BillingAllowance}); err != nil {
+	if err := plans.PutDefinition(ctx, provider, providers.Definition{Name: "n", Billing: providers.BillingAllowance,
+		Harnesses: []providers.HarnessPair{{Harness: "vendor-cli", Model: "m"}}}); err != nil {
 		t.Fatal(err)
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -240,5 +241,36 @@ func TestHarnessOptInConsultsNoPlanRecordWithoutAProject(t *testing.T) {
 	err := run(context.Background(), logger, []string{"plan-optin", "-provider", "command-code", "-private", "-harness", "vendor-cli"}, planEnv("octo"))
 	if err == nil || !strings.Contains(err.Error(), "separate opt-ins") {
 		t.Fatalf("err = %v, want -private and -harness refused as one command", err)
+	}
+}
+
+type fakePlanReader struct {
+	reads map[string]int
+	plans map[string]providers.Plan
+}
+
+func (f *fakePlanReader) Plan(_ context.Context, provider string) (providers.Plan, bool, error) {
+	f.reads[provider]++
+	plan, ok := f.plans[provider]
+	if !ok {
+		return providers.Plan{}, false, errors.New("unavailable")
+	}
+	return plan, true, nil
+}
+
+// TestOptInResolverReadsEachPlanOnceAndAdmitsNothingFromAnUnreadableOne asserts
+// a plan whose record cannot be read is not re-read for each of its models and
+// opts in no harness, while a readable plan's opt-in is honoured.
+func TestOptInResolverReadsEachPlanOnceAndAdmitsNothingFromAnUnreadableOne(t *testing.T) {
+	reader := &fakePlanReader{reads: map[string]int{}, plans: map[string]providers.Plan{
+		"good": {HarnessOptIn: []string{"vendor-cli"}},
+	}}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	optIn := optInResolver(context.Background(), logger, reader, []string{"bad/m1", "bad/m2", "good/m1", "good/m2"})
+	if reader.reads["bad"] != 1 || reader.reads["good"] != 1 {
+		t.Fatalf("reads = %v, want one read per plan", reader.reads)
+	}
+	if optIn("bad", "vendor-cli") || !optIn("good", "vendor-cli") {
+		t.Fatal("opt-in did not follow the readable plan alone")
 	}
 }

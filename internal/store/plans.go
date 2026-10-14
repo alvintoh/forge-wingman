@@ -111,11 +111,23 @@ func (p *Plans) SetPrivateOptIn(ctx context.Context, provider string, optedIn bo
 // SetHarnessOptIn records whether the owner consents to harness running on
 // provider's plan, which must already be defined. The consent is one name in the
 // plan's own list, so two harnesses are opted in independently and a name opted
-// in twice leaves the list as it was.
+// in twice leaves the list as it was. A name the plan does not offer cannot be
+// opted in, though it can still be withdrawn.
 func (p *Plans) SetHarnessOptIn(ctx context.Context, provider, harness string, optedIn bool) error {
 	var consent any = firestore.ArrayUnion(harness)
 	if !optedIn {
 		consent = firestore.ArrayRemove(harness)
+	} else {
+		plan, ok, err := p.Plan(ctx, provider)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("plan %s is not defined", provider)
+		}
+		if !plan.OffersHarness(harness) {
+			return fmt.Errorf("plan %s offers no harness %q", provider, harness)
+		}
 	}
 	_, err := p.doc(provider).Update(ctx, []firestore.Update{{Path: "harness_opt_in", Value: consent}})
 	if status.Code(err) == codes.NotFound {

@@ -134,3 +134,10 @@ func TestNewReplyRefusesEmptyText(t *testing.T) {
 		t.Fatal("an empty reply was accepted")
 	}
 }
+
+func TestPlanOffersHarnessOnlyForAListedPair(t *testing.T) {
+	p := Plan{Definition: Definition{Harnesses: []HarnessPair{{Harness: "vendor-cli", Model: "m"}}}}
+	if !p.OffersHarness("vendor-cli") || p.OffersHarness("vendor-clj") {
+		t.Fatal("OffersHarness did not follow the listed pairs")
+	}
+}

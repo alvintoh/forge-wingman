@@ -203,17 +203,23 @@ func harnessLicences(harnesses []runner.Harness) map[string]runner.Licence {
 // project to read the store from — every run job — consults no opt-in at all,
 // and a plan whose record cannot be read contributes none.
 func harnessOptIn(ctx context.Context, logger *slog.Logger, getenv func(string) string, models []string) runner.HarnessOptIn {
-	project := getenv("GOOGLE_CLOUD_PROJECT")
-	if project == "" {
-		return nil
-	}
-	fsc, err := firestore.NewClient(ctx, project)
+	fsc, err := firestore.NewClient(ctx, getenv("GOOGLE_CLOUD_PROJECT"))
 	if err != nil {
 		logger.Warn("harnessOptInUnread", "err", err.Error())
 		return nil
 	}
 	defer func() { _ = fsc.Close() }()
-	plans := store.NewPlans(fsc)
+	return optInResolver(ctx, logger, store.NewPlans(fsc), models)
+}
+
+// planReader reads one provider's plan record; ok is false when none is defined.
+type planReader interface {
+	Plan(ctx context.Context, provider string) (plan providers.Plan, ok bool, err error)
+}
+
+// optInResolver reads each distinct plan of models once; a plan that cannot be
+// read records an empty opt-in set, so it is not re-read and admits no harness.
+func optInResolver(ctx context.Context, logger *slog.Logger, plans planReader, models []string) runner.HarnessOptIn {
 	optedIn := make(map[string]map[string]bool, len(models))
 	for _, model := range models {
 		plan := runner.Provider(model)
@@ -226,6 +232,7 @@ func harnessOptIn(ctx context.Context, logger *slog.Logger, getenv func(string) 
 		record, ok, err := plans.Plan(ctx, plan)
 		if err != nil {
 			logger.Warn("harnessOptInUnread", "plan", plan, "err", err.Error())
+			optedIn[plan] = map[string]bool{}
 			continue
 		}
 		names := map[string]bool{}

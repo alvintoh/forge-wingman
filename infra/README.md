@@ -69,8 +69,8 @@ a plan before its unattended-use terms are ruled on.
 
 A harness whose CLI is not open-source needs `runner plan-optin -provider <name> -harness <name>`
 as well, and even then it runs only for a command that reads the plan record — the owner's own
-`runner plan-smoke` or `review-smoke`, run where `GOOGLE_CLOUD_PROJECT` is set. A run job holds
-no plan record, so it never selects one: it runs the plan's next harness instead, and
+`runner plan-smoke` or `review-smoke`, run where `GOOGLE_CLOUD_PROJECT` is set. A build or PR-review job holds
+no plan record and never reads opt-ins, so it never selects one: it runs the plan's next harness instead, and
 `runner plan-list` shows each plan's harnesses with their licences, open-source pairs first.
 
 `WINGMAN_DISPATCHER_RUN_URI` is the dispatcher job's Cloud Run run endpoint, which

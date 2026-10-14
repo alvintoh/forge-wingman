@@ -215,8 +215,13 @@ func TestSetHarnessOptInRecordsOneHarnessAndRefusesAnUndefinedPlan(t *testing.T)
 	id, undefined := fresh("plan-harness-optin"), fresh("plan-harness-optin-none")
 	p, client := planStore(t, id, undefined)
 	ctx := context.Background()
-	if err := p.PutDefinition(ctx, id, planDef); err != nil {
+	def := planDef
+	def.Harnesses = []prov.HarnessPair{{Harness: "vendor-cli", Model: "m"}, {Harness: "other-cli", Model: "m"}}
+	if err := p.PutDefinition(ctx, id, def); err != nil {
 		t.Fatal(err)
+	}
+	if err := p.SetHarnessOptIn(ctx, id, "typo-cli", true); err == nil || !strings.Contains(err.Error(), "offers no harness") {
+		t.Fatalf("err = %v, want a refusal naming the harness the plan does not offer", err)
 	}
 	if err := p.SetHarnessOptIn(ctx, id, "vendor-cli", true); err != nil {
 		t.Fatal(err)
@@ -224,7 +229,7 @@ func TestSetHarnessOptInRecordsOneHarnessAndRefusesAnUndefinedPlan(t *testing.T)
 	if err := p.SetHarnessOptIn(ctx, id, "other-cli", true); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.PutDefinition(ctx, id, planDef); err != nil {
+	if err := p.PutDefinition(ctx, id, def); err != nil {
 		t.Fatal(err)
 	}
 	got := readPlan(t, client, id)
