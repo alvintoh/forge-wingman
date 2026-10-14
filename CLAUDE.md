@@ -74,7 +74,7 @@ A PR held for the owner as a front-end change (`cmd/surface/`, `web/`) is walked
 the owner finalizes the design, and may change it, so ask "is the design final?" before any
 sweep; then `/fe-sweep` on the final design; then `/pr-review`; then, after its fix commits,
 capture the s, m, l, xl Chromium shots of each state the PR touches at the final head (s is the
-current iPhone Pro Max, Playwright's `iPhone 17 Pro Max`, 440x763 at scale 3; then 768, 1024, 1280) and attach them to the PR body as one table. An edit after capture invalidates
+current iPhone Pro Max, Playwright's `iPhone 17 Pro Max`, 440x763 at scale 3; then 768, 1024, 1280; shoot `s` at its full viewport, uncropped) and attach them to the PR body as one table. An edit after capture invalidates
 the shots, so the capture is the last step before merge. This is the product's own flow for the
 repositories it builds in.
 
