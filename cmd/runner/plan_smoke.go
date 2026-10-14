@@ -27,6 +27,7 @@ func smokeModels(list []string) []string {
 func planSmoke(ctx context.Context, logger *slog.Logger, getenv func(string) string, args []string) error {
 	fs := flag.NewFlagSet("plan-smoke", flag.ContinueOnError)
 	planModels := fs.String("plan-models", runner.DefaultPlanModel(), "the plan phase's models in order, comma-separated provider/model")
+	agentImage := fs.String("agent-image", "", agentImageUsage)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -34,6 +35,16 @@ func planSmoke(ctx context.Context, logger *slog.Logger, getenv func(string) str
 	if err := runner.ValidatePlanModels(list); err != nil {
 		return err
 	}
+	_, err := withAgents(ctx, logger, agentSettings{Image: *agentImage}, ".", runner.Harnesses(getenv),
+		func(contained []runner.Harness, _ func(context.Context, string) error) error {
+			return runPlanSmoke(ctx, logger, runner.NewRouter(runner.ProfilePlan, contained...), list, getenv("GITHUB_STEP_SUMMARY"))
+		})
+	return err
+}
+
+// runPlanSmoke is planSmoke's loop over the first and last of list, with the
+// summary appended to summaryPath when it is set.
+func runPlanSmoke(ctx context.Context, logger *slog.Logger, agent runner.Agent, list []string, summaryPath string) error {
 	dir, err := os.MkdirTemp("", "plan-smoke-")
 	if err != nil {
 		return fmt.Errorf("creating the fixture directory: %w", err)
@@ -43,7 +54,6 @@ func planSmoke(ctx context.Context, logger *slog.Logger, getenv func(string) str
 	var summary strings.Builder
 	summary.WriteString("| model | outcome | detail |\n|---|---|---|\n")
 	var failed []string
-	agent := runner.NewRouter(runner.ProfilePlan, runner.Harnesses(getenv)...)
 	for _, model := range smokeModels(list) {
 		res, err := runner.PlanSmoke(ctx, agent, model, dir)
 		switch {
@@ -60,8 +70,8 @@ func planSmoke(ctx context.Context, logger *slog.Logger, getenv func(string) str
 			fmt.Fprintf(&summary, "| %s | refused | %s |\n", model, cell(res.Text))
 		}
 	}
-	if path := getenv("GITHUB_STEP_SUMMARY"); path != "" {
-		if err := appendFile(path, summary.String()); err != nil {
+	if summaryPath != "" {
+		if err := appendFile(summaryPath, summary.String()); err != nil {
 			return err
 		}
 	}

@@ -316,7 +316,7 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 	pointer := fs.String("pointer", runner.DefaultPointer, "object naming the current rule-stack sha")
 	ticketFile := fs.String("ticket-file", "", "path to the run's ticket, as the ticket subcommand wrote it")
 	checksImage := fs.String("checks-image", "", "Go image, pinned by digest, to run the pre-PR checks in; empty runs them on the host")
-	agentImage := fs.String("agent-image", "", "agent image, pinned by digest, to run the agent CLIs in; empty runs them on the host")
+	agentImage := fs.String("agent-image", "", agentImageUsage)
 	agentEgress := fs.String("agent-egress", "", agentEgressUsage)
 	if err := fs.Parse(args); err != nil {
 		return setupFailed(logger, e.output, err)
@@ -414,6 +414,9 @@ func checkRunner(ctx context.Context, image, tempDir, repo string) (runner.Check
 	}
 	return c.Run, nil
 }
+
+// agentImageUsage describes the -agent-image flag of every subcommand that runs an agent.
+const agentImageUsage = "agent image, pinned by digest, to run the agent CLIs in; empty runs them on the host"
 
 // agentEgressUsage describes the -agent-egress flag of build and plan-stage.
 const agentEgressUsage = "on confines the agent container to its models' API hosts through a proxy; empty or off leaves it on the default network"

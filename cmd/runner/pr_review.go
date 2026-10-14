@@ -166,6 +166,7 @@ func prReview(ctx context.Context, logger *slog.Logger, getenv func(string) stri
 	out := fs.String("out", "", "path to write the verdict to")
 	models := fs.String("models", "", "the review models to try in order, comma-separated provider/model")
 	timeout := fs.Duration("model-timeout", defaultPRReviewTimeout, "how long each model's review may run")
+	agentImage := fs.String("agent-image", "", agentImageUsage)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -176,8 +177,12 @@ func prReview(ctx context.Context, logger *slog.Logger, getenv func(string) stri
 	if err := runner.ValidateReviewModels(list, runner.DefaultModel()); err != nil {
 		return err
 	}
-	agent := runner.NewRouter(runner.ProfileReview, runner.Harnesses(getenv)...)
-	return runPRReview(ctx, logger, agent, list, *timeout, *contextPath, *out, getenv("GITHUB_STEP_SUMMARY"), runner.HarnessSecrets(getenv))
+	_, err := withAgents(ctx, logger, agentSettings{Image: *agentImage}, ".", runner.Harnesses(getenv),
+		func(contained []runner.Harness, _ func(context.Context, string) error) error {
+			agent := runner.NewRouter(runner.ProfileReview, contained...)
+			return runPRReview(ctx, logger, agent, list, *timeout, *contextPath, *out, getenv("GITHUB_STEP_SUMMARY"), runner.HarnessSecrets(getenv))
+		})
+	return err
 }
 
 // runPRReview is prReview's review of the context at contextPath, with the
