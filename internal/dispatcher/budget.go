@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/money"
+	"github.com/alvintoh/forge-wingman/internal/providers"
 	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
@@ -41,6 +42,21 @@ func (w Window) Since(now time.Time) time.Time {
 		return time.Date(u.Year(), u.Month(), 1, 0, 0, 0, 0, time.UTC)
 	}
 	return now.Add(-w.Period)
+}
+
+// ProviderWindows are a provider's own rolling allowance ceilings as the
+// configuration states them, in the order it states them; nil for a provider
+// it gives none, whose cost is then checked against Cash instead.
+func ProviderWindows(provider string) []Window {
+	stated := providers.Windows(provider)
+	if len(stated) == 0 {
+		return nil
+	}
+	windows := make([]Window, 0, len(stated))
+	for _, w := range stated {
+		windows = append(windows, Window{Name: w.Name, Period: w.Period, Limit: w.Limit})
+	}
+	return windows
 }
 
 // RunnerMinutes is NFR-1's second, independent ceiling: GitHub Actions

@@ -115,6 +115,15 @@ func (p Plan) OffersHarness(harness string) bool {
 // NeedsOptIn reports whether runs on the plan spend per token, so need the owner's opt-in first.
 func (p Plan) NeedsOptIn() bool { return p.Definition.Billing == BillingPerToken }
 
+// RecordedVerdict is the terms verdict on record, unconfirmed when none is:
+// nothing is ever stored as unknown, which is only what a failed lookup records.
+func (p Plan) RecordedVerdict() Verdict {
+	if p.Verdict == "" {
+		return VerdictUnconfirmed
+	}
+	return p.Verdict
+}
+
 // VerdictNote is a verdict with the evidence it rests on.
 type VerdictNote struct {
 	Verdict Verdict

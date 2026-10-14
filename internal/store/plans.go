@@ -173,10 +173,10 @@ func (p *Plans) Verdict(ctx context.Context, provider string) (prov.Verdict, err
 	if err != nil {
 		return "", err
 	}
-	if !ok || plan.Verdict == "" {
+	if !ok {
 		return prov.VerdictUnconfirmed, nil
 	}
-	return plan.Verdict, nil
+	return plan.RecordedVerdict(), nil
 }
 
 // List reads every plan with the date of its latest refreshed facts, ordered by

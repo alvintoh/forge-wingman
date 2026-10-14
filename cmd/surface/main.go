@@ -48,10 +48,12 @@ func run(logger *slog.Logger) error {
 		port = "8080"
 	}
 
-	// The comparison endpoint reads past runs, so it needs the run store. A
-	// local run without GOOGLE_CLOUD_PROJECT has none and serves the SPA
-	// alone, answering that one endpoint with 503.
+	// The comparison and providers endpoints read past runs and the owner's
+	// plan records, so they need the store. A local run without
+	// GOOGLE_CLOUD_PROJECT has none and serves the SPA alone, answering those
+	// two endpoints with 503.
 	var comparison ComparisonReader
+	var providerPlans ProviderPlansReader
 	if project := os.Getenv("GOOGLE_CLOUD_PROJECT"); project != "" {
 		fsc, err := firestore.NewClient(context.Background(), project)
 		if err != nil {
@@ -59,11 +61,12 @@ func run(logger *slog.Logger) error {
 		}
 		defer func() { _ = fsc.Close() }()
 		comparison = store.NewRecords(fsc)
+		providerPlans = store.NewProviderPlans(fsc)
 	}
 
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           newMux(spa, logger, comparison),
+		Handler:           newMux(spa, logger, comparison, providerPlans),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -94,10 +97,19 @@ type ComparisonReader interface {
 	Comparison(ctx context.Context, since time.Time) (store.Comparison, error)
 }
 
+// ProviderPlansReader reads what the providers view lists: every plan the owner
+// has recorded, each with what its provider's own allowance windows hold spent.
+// It has no write method, because the records behind it are written by the owner
+// CLI alone (adr/0014).
+type ProviderPlansReader interface {
+	Providers(ctx context.Context, at time.Time) ([]store.ProviderPlan, error)
+}
+
 // newMux claims /api/ explicitly so an unknown endpoint 404s instead of
 // falling through to the SPA's index.html. A nil comparison serves every
-// endpoint but /api/comparison, which has no store to read.
-func newMux(spa fs.FS, logger *slog.Logger, comparison ComparisonReader) *http.ServeMux {
+// endpoint but /api/comparison, and a nil providerPlans every endpoint but
+// /api/providers, each of which then has no store to read.
+func newMux(spa fs.FS, logger *slog.Logger, comparison ComparisonReader, providerPlans ProviderPlansReader) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -122,6 +134,20 @@ func newMux(spa fs.FS, logger *slog.Logger, comparison ComparisonReader) *http.S
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(renderComparison(cmp))
+	})
+	mux.HandleFunc("GET /api/providers", func(w http.ResponseWriter, r *http.Request) {
+		if providerPlans == nil {
+			http.Error(w, "the providers view needs a plan store", http.StatusServiceUnavailable)
+			return
+		}
+		plans, err := providerPlans.Providers(r.Context(), time.Now())
+		if err != nil {
+			logger.Error("providersNotRead", "err", err.Error())
+			http.Error(w, "reading the plans", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(renderProviders(plans))
 	})
 	mux.Handle("GET /api/", http.NotFoundHandler())
 	mux.Handle("GET /", spaHandler(spa))
@@ -203,6 +229,61 @@ func renderComparison(c store.Comparison) comparisonResponse {
 			RunID: d.RunID, Provider: d.Provider, Model: d.Model,
 			CostUSD: d.Cost.USD(), CostDrift: d.CostDrift,
 		})
+	}
+	return out
+}
+
+// providersResponse is the providers endpoint's wire shape: every plan the owner
+// has recorded, in the order a run walks them. It carries no API key — a plan's
+// key is a repository secret the runner reads directly and is never a field of
+// the record — so nothing of one can reach a reader.
+type providersResponse struct {
+	Plans []providerPlan `json:"plans"`
+}
+
+type providerPlan struct {
+	Provider string  `json:"provider"`
+	PriceUSD float64 `json:"price_usd"`
+	Verdict  string  `json:"verdict"`
+	// WindowUsage is the plan's own allowance windows with what each holds
+	// spent, or usageUnknown for a plan whose provider reports none.
+	WindowUsage any `json:"window_usage"`
+}
+
+// windowUsage is one of a plan's own allowance windows and what is spent in it.
+type windowUsage struct {
+	Name     string  `json:"name"`
+	LimitUSD float64 `json:"limit_usd"`
+	UsedUSD  float64 `json:"used_usd"`
+}
+
+// usageUnknown is what the endpoint reports for a plan whose provider states no
+// window: it has no allowance to have spent.
+const usageUnknown = "unknown"
+
+// renderProviders renders the store's plans as JSON, converting each exact
+// micro-dollar figure to the dollars the endpoint displays.
+func renderProviders(plans []store.ProviderPlan) providersResponse {
+	out := providersResponse{Plans: make([]providerPlan, 0, len(plans))}
+	for _, plan := range plans {
+		entry := providerPlan{
+			Provider: plan.Provider,
+			PriceUSD: plan.Price.USD(),
+			Verdict:  string(plan.Verdict),
+		}
+		entry.WindowUsage = usageUnknown
+		if len(plan.Windows) > 0 {
+			usage := make([]windowUsage, 0, len(plan.Windows))
+			for _, w := range plan.Windows {
+				usage = append(usage, windowUsage{
+					Name:     w.Name,
+					LimitUSD: w.Limit.USD(),
+					UsedUSD:  w.Used.USD(),
+				})
+			}
+			entry.WindowUsage = usage
+		}
+		out.Plans = append(out.Plans, entry)
 	}
 	return out
 }

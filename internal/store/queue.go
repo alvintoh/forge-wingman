@@ -790,6 +790,26 @@ func (q *Queue) Spend(ctx context.Context, cfg dispatcher.BudgetConfig, model st
 	return reserved, settled, nil
 }
 
+// PlanWindows is what each of plan's own allowance windows holds spent at at,
+// one figure per window in the order given, read in one read-only transaction.
+func (q *Queue) PlanWindows(ctx context.Context, plan string, windows []dispatcher.Window, at time.Time) ([]money.Micros, error) {
+	spend := make([]money.Micros, len(windows))
+	err := q.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		for i, window := range windows {
+			spent, err := q.windowSpend(tx, window, plan, at)
+			if err != nil {
+				return err
+			}
+			spend[i] = spent
+		}
+		return nil
+	}, firestore.ReadOnly)
+	if err != nil {
+		return nil, fmt.Errorf("reading plan %s's window spend at %s: %w", plan, at, err)
+	}
+	return spend, nil
+}
+
 // settled sums, within tx, the settled cost inside each of cfg's windows
 // ending at at, the run model's own cap among them. A window and a model cap
 // count only the runs of the model's own plan; the cash ceiling counts every
@@ -801,26 +821,18 @@ func (q *Queue) settled(tx *firestore.Transaction, cfg dispatcher.BudgetConfig, 
 	settled := dispatcher.Settled{Windows: make([]money.Micros, len(cfg.ProviderWindows))}
 	plan := runner.Provider(model)
 	for i, w := range cfg.ProviderWindows {
-		sum, _, err := q.settledSince(tx, w.Since(at), plan)
+		spent, err := q.windowSpend(tx, w, plan, at)
 		if err != nil {
 			return dispatcher.Settled{}, err
 		}
-		planCost, _, err := q.planSince(tx, w.Since(at), plan)
-		if err != nil {
-			return dispatcher.Settled{}, err
-		}
-		settled.Windows[i] = sum + planCost
+		settled.Windows[i] = spent
 	}
 	if modelCap, ok := cfg.ModelCaps[model]; ok {
-		sum, _, err := q.settledSince(tx, modelCap.Since(at), plan)
+		spent, err := q.windowSpend(tx, modelCap, plan, at)
 		if err != nil {
 			return dispatcher.Settled{}, err
 		}
-		planCost, _, err := q.planSince(tx, modelCap.Since(at), plan)
-		if err != nil {
-			return dispatcher.Settled{}, err
-		}
-		settled.ModelCap = sum + planCost
+		settled.ModelCap = spent
 	}
 	var err error
 	settled.CashCost, settled.CashMinutes, err = q.settledSince(tx, cfg.Cash.Since(at), "")
@@ -834,6 +846,21 @@ func (q *Queue) settled(tx *firestore.Transaction, cfg dispatcher.BudgetConfig, 
 	settled.CashCost += planCost
 	settled.CashMinutes += planMinutes
 	return settled, nil
+}
+
+// windowSpend is what window holds at at for plan's own runs, within tx: what
+// they settled for plus the reserved estimate of their plan stages, so a plan
+// is counted against the ceiling it was checked against and never twice.
+func (q *Queue) windowSpend(tx *firestore.Transaction, window dispatcher.Window, plan string, at time.Time) (money.Micros, error) {
+	sum, _, err := q.settledSince(tx, window.Since(at), plan)
+	if err != nil {
+		return 0, err
+	}
+	planCost, _, err := q.planSince(tx, window.Since(at), plan)
+	if err != nil {
+		return 0, err
+	}
+	return sum + planCost, nil
 }
 
 // planSince sums the plan stage's reserved estimate over every run whose plan

@@ -439,6 +439,15 @@ func TestEmbeddedConfigNamesTheFreeTierOrder(t *testing.T) {
 	}
 }
 
+// TestEmbeddedConfigWalksItsPlansPaidFirstThenFree asserts the dispatch order
+// names each plan once: the paid plan a ticket starts on first, then the
+// free-tier fallback, so a plan listed in both is not walked twice.
+func TestEmbeddedConfigWalksItsPlansPaidFirstThenFree(t *testing.T) {
+	if got, want := DispatchOrder(), []string{"command-code", "gemini"}; !slices.Equal(got, want) {
+		t.Fatalf("DispatchOrder() = %v, want %v", got, want)
+	}
+}
+
 // TestEmbeddedGeminiIsAFreeTierPlan asserts the second plan is configuration
 // alone: its OpenAI-compatible base URL, its own key secret, its opencode
 // harness and its free models priced $0, all read through the accessors the
