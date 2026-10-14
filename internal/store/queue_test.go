@@ -2546,3 +2546,91 @@ func listed(t *testing.T, q *Queue, ctx context.Context, runID string) bool {
 	}
 	return false
 }
+
+// TestClaimedSinceCountsTheRunsClaimedInsideTheWindow is FRG-125's daily bar: the
+// runs a level's delegations are spent from, by the claim stamp each one carries.
+func TestClaimedSinceCountsTheRunsClaimedInsideTheWindow(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	since := queueAt
+	before, err := q.ClaimedSince(ctx, since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := func(id string, at time.Time) {
+		t.Helper()
+		forget(t, client, id)
+		resetLedger(t, client, 1)
+		if err := q.Enqueue(ctx, queuedRun(id, 1)); err != nil {
+			t.Fatal(err)
+		}
+		if ok, binding, err := q.TryClaim(ctx, id, at, generousBudget, openFacts, dispatcher.Reservation{}); err != nil || !ok {
+			t.Fatalf("claiming %s: ok = %v, binding = %q, err = %v", id, ok, binding, err)
+		}
+	}
+	claim(fresh("queue-claimed-before"), since.Add(-time.Minute))
+	n, err := q.ClaimedSince(ctx, since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != before {
+		t.Fatalf("claimed since the window opened = %d, want the %d already counted: a claim before it is not spent from it", n, before)
+	}
+	claim(fresh("queue-claimed-inside"), since.Add(time.Minute))
+	if n, err = q.ClaimedSince(ctx, since); err != nil {
+		t.Fatal(err)
+	}
+	if n != before+1 {
+		t.Fatalf("claimed since the window opened = %d, want %d", n, before+1)
+	}
+}
+
+// TestNeedsRequeueReportsTheRowsOnlyAnOperatorReturns is FRG-125's settled-row
+// rule: the ticket of a run that has ended waits for the owner's own `runner
+// requeue`, and one still queued or in flight does not.
+func TestNeedsRequeueReportsTheRowsOnlyAnOperatorReturns(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	spare, queuedRunID := fresh("queue-needs-spare"), fresh("queue-needs-queued")
+	stopped, inFlight, ended := fresh("queue-needs-stopped"), fresh("queue-needs-inflight"), fresh("queue-needs-ended")
+	forget(t, client, spare, queuedRunID, stopped, inFlight, ended)
+	resetLedger(t, client, 5)
+	// Each run needs its own repository: admission holds a second run back while
+	// one is in flight in the same repository with an unknown write set.
+	for _, id := range []string{queuedRunID, stopped, inFlight, ended} {
+		run := queuedRun(id, 1)
+		run.Repo = "octo/" + id
+		if err := q.Enqueue(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []string{stopped, inFlight, ended} {
+		if ok, binding, err := q.TryClaim(ctx, id, queueAt, generousBudget, openFacts, dispatcher.Reservation{}); err != nil || !ok {
+			t.Fatalf("claiming %s: ok = %v, binding = %q, err = %v", id, ok, binding, err)
+		}
+	}
+	if err := q.Stop(ctx, stopped, runner.StopProjectionMissing, "no projection", queueAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Collection(runsCollection).Doc(ended).Update(ctx,
+		[]firestore.Update{{Path: outcomeField, Value: runner.OutcomeBuilt}}); err != nil {
+		t.Fatal(err)
+	}
+	for name, tt := range map[string]struct {
+		id   string
+		want bool
+	}{
+		"a ticket with no run row":        {id: spare},
+		"a run still queued":              {id: queuedRunID},
+		"a run still in flight":           {id: inFlight},
+		"a run that stopped":              {id: stopped, want: true},
+		"a claim with a recorded outcome": {id: ended, want: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := q.NeedsRequeue(ctx, tt.id)
+			if err != nil || got != tt.want {
+				t.Fatalf("NeedsRequeue(%s) = %v, %v, want %v", tt.id, got, err, tt.want)
+			}
+		})
+	}
+}

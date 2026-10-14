@@ -1,6 +1,7 @@
 // Command dispatcher is the scheduled job that polls Linear and dispatches runs.
 //
-// It reads the issues Linear has delegated to the configured agent, queues the
+// It reads the issues Linear has delegated to the configured agent, delegates
+// the next eligible ones itself once the autonomy level lets it, queues the
 // ones it can build, and dispatches the queued runs admission lets start, in
 // priority order, each into the repository its ticket names. Everything it
 // holds is a reference to a value provisioned with the job: the Linear app's
@@ -276,27 +277,31 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 	if err != nil {
 		return err
 	}
+	// The same Linear client reads the tickets a poll admits and delegates the
+	// ones the product takes on itself.
+	tickets := dispatcher.Linear{Tokens: tokens, Delegate: c.delegate, Client: client}
 	if _, err := dispatcher.Poll(ctx, dispatcher.Deps{
-		Source:     dispatcher.Linear{Tokens: tokens, Delegate: c.delegate, Client: client},
-		Queue:      queue,
-		Verdicts:   queue,
-		Estimator:  store.NewEstimates(fsc),
-		Visibility: gh,
-		Providers:  store.NewProviders(fsc),
-		Breaker:    store.NewBreaker(fsc),
-		PeakModes:  store.NewPeakModes(fsc),
-		Autonomies: store.NewAutonomies(fsc),
-		Notices:    store.NewNotices(fsc),
-		OpenPoster: slackPoster(secrets.Token, client),
-		Plans:      plans,
-		ModelPlans: plans,
-		Overrides:  dispatcher.LabelOverrides{},
-		Workflow:   gh,
-		OpenPRs:    gh,
-		Decisions:  queue,
-		Elicit:     webhook.Linear{Tokens: tokens},
-		Logger:     logger,
-		Now:        time.Now,
+		Source:      tickets,
+		Delegatable: tickets,
+		Queue:       queue,
+		Verdicts:    queue,
+		Estimator:   store.NewEstimates(fsc),
+		Visibility:  gh,
+		Providers:   store.NewProviders(fsc),
+		Breaker:     store.NewBreaker(fsc),
+		PeakModes:   store.NewPeakModes(fsc),
+		Autonomies:  store.NewAutonomies(fsc),
+		Notices:     store.NewNotices(fsc),
+		OpenPoster:  slackPoster(secrets.Token, client),
+		Plans:       plans,
+		ModelPlans:  plans,
+		Overrides:   dispatcher.LabelOverrides{},
+		Workflow:    gh,
+		OpenPRs:     gh,
+		Decisions:   queue,
+		Elicit:      webhook.Linear{Tokens: tokens},
+		Logger:      logger,
+		Now:         time.Now,
 	}, dispatcher.Config{Repos: c.repos, Budget: budgetConfig(runner.Provider(model)), Model: model, NextPlans: next, Limits: c.limits, Tuning: c.tuning, LastResortPlans: lastResortPlans(), TwoStage: c.twoStage, DecisionTimeout: c.decisionTimeout}); err != nil {
 		return err
 	}
