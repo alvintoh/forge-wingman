@@ -315,10 +315,13 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 	reviewModels := fs.String("review-models", strings.Join(runner.DefaultReviewModels(), ","), "the review phase's models in order, comma-separated provider/model; later ones are backups (FR-14)")
 	pointer := fs.String("pointer", runner.DefaultPointer, "object naming the current rule-stack sha")
 	ticketFile := fs.String("ticket-file", "", "path to the run's ticket, as the ticket subcommand wrote it")
-	checksImage := fs.String("checks-image", "", "Go image, pinned by digest, to run the pre-PR checks in; empty runs them on the host")
-	agentImage := fs.String("agent-image", "", agentImageUsage)
+	checksImage := fs.String("checks-image", "", "Go image, pinned by digest, to run the pre-PR checks in; required")
+	agentImage := fs.String("agent-image", "", agentImageRequiredUsage)
 	agentEgress := fs.String("agent-egress", "", agentEgressUsage)
 	if err := fs.Parse(args); err != nil {
+		return setupFailed(logger, e.output, err)
+	}
+	if err := requireImages(map[string]string{"agent-image": *agentImage, "checks-image": *checksImage}); err != nil {
 		return setupFailed(logger, e.output, err)
 	}
 	const repo = "."
@@ -415,8 +418,29 @@ func checkRunner(ctx context.Context, image, tempDir, repo string) (runner.Check
 	return c.Run, nil
 }
 
-// agentImageUsage describes the -agent-image flag of every subcommand that runs an agent.
+// agentImageUsage describes the -agent-image flag of the subcommands that may run an agent on the host;
+// build and plan-stage use agentImageRequiredUsage.
 const agentImageUsage = "agent image, pinned by digest, to run the agent CLIs in; empty runs them on the host"
+
+// agentImageRequiredUsage describes the -agent-image flag of build and plan-stage, whose output the trusted jobs read.
+const agentImageRequiredUsage = "agent image, pinned by digest, to run the agent CLIs in; required"
+
+// requireImages refuses a stage whose agent would run on the runner, where it
+// has a shell and could write the outputs the trusted jobs read. images maps
+// each flag name to its value.
+func requireImages(images map[string]string) error {
+	var missing []string
+	for name, image := range images {
+		if image == "" {
+			missing = append(missing, "-"+name)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	slices.Sort(missing)
+	return fmt.Errorf("%s required: the agent runs in a container, never on the runner", strings.Join(missing, ", "))
+}
 
 // agentEgressUsage describes the -agent-egress flag of build and plan-stage.
 const agentEgressUsage = "on confines the agent container to its models' API hosts through a proxy; empty or off leaves it on the default network"
