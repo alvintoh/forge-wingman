@@ -91,9 +91,19 @@ export function Providers() {
       <p className="mt-2 text-body text-ink2">
         Listed in the order a run walks them. Order and models are changed in configuration.
       </p>
-      {state.status === "loading" && <p role="status">Reading the plans…</p>}
-      {state.status === "error" && <p role="alert">The plans could not be read.</p>}
-      {state.status === "ready" && state.plans.length === 0 && <p>No plan is recorded.</p>}
+      {state.status === "loading" && (
+        <p role="status" className="mt-6">
+          Reading the plans…
+        </p>
+      )}
+      {state.status === "error" && (
+        <p role="alert" className="mt-6">
+          The plans could not be read.
+        </p>
+      )}
+      {state.status === "ready" && state.plans.length === 0 && (
+        <p className="mt-6">No plan is recorded.</p>
+      )}
       {state.status === "ready" && state.plans.length > 0 && (
         <div className="mt-6 overflow-x-auto">
           <table className="w-full text-body">
