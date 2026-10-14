@@ -518,8 +518,12 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 		timeout = defaultAgentTimeout
 	}
 	agentCtx, cancel := context.WithTimeout(ctx, timeout)
-	runErr := agent.Run(agentCtx, dir, call.Session, prompt, call.Rules, out, errOut)
+	runCtx, stopRun := context.WithCancel(agentCtx)
+	tap := newProgressTap(call.Phase, stopRun)
+	runErr := agent.Run(runCtx, dir, call.Session, prompt, call.Rules, io.MultiWriter(out, tap), errOut)
+	tap.finish()
 	timedOut := errors.Is(agentCtx.Err(), context.DeadlineExceeded)
+	stopRun()
 	cancel()
 
 	for _, u := range []struct {
@@ -578,20 +582,37 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 		"input", step.Tokens.Input, "output", step.Tokens.Output, "cacheRead", step.Tokens.CacheRead,
 		"cost", step.Tokens.Cost, "usageWarning", sum.UsageWarning != "")
 
+	// A real failure or timeout is classified first; no-progress wins only when our own stop, or a clean exit, ended the run.
 	switch {
-	case prog.stalled(call.Phase):
-		d.Logger.Warn("agentNoProgress", "phase", string(call.Phase), "round", call.Round,
-			"steps", prog.noProgress, "peakContext", prog.peakContext)
-		return text, sessionID, stopWith(OutcomeAgentFailed, StopAgentNoProgress, errors.New(prog.stalledDetail()))
 	case timedOut:
 		logAgentFailure(d.Logger, call, OutcomeAgentFailed, StopAgentTimeout, runErr, stderrPath, c.Secrets)
 		return text, sessionID, stopWith(OutcomeAgentFailed, StopAgentTimeout, fmt.Errorf("agent exceeded %s", timeout))
-	case runErr != nil:
+	case runErr != nil && (!tap.didStop() || !endedByOurStop(runErr)):
 		outcome, reason := classifyAgentFailure(agent, stderrPath, runErr)
 		logAgentFailure(d.Logger, call, outcome, reason, runErr, stderrPath, c.Secrets)
 		return text, sessionID, stopWith(outcome, reason, runErr)
+	case tap.didStop() || prog.stalled(call.Phase):
+		d.Logger.Warn("agentNoProgress", "phase", string(call.Phase), "round", call.Round,
+			"steps", prog.noProgress, "peakContext", prog.peakContext)
+		return text, sessionID, stopWith(OutcomeAgentFailed, StopAgentNoProgress, errors.New(prog.stalledDetail()))
 	}
 	return text, sessionID, nil
+}
+
+// endedByOurStop reports whether err is what an agent returns when the runner cancelled it: a cancelled context or a signalled exit (code -1, or 137/143 from a container).
+func endedByOurStop(err error) bool {
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		return false
+	}
+	switch exit.ExitCode() {
+	case -1, 137, 143:
+		return true
+	}
+	return false
 }
 
 // recordPhaseCache records phase's own prompt-cache figures in sum from the

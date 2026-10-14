@@ -1,39 +1,31 @@
 package runner
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
+	"sync"
 )
 
-// DEFAULT_NO_PROGRESS_STEPS is how many model requests a build phase may
-// complete in a row with no edit or write before its run stops as stalled: the
-// guard a build that loops over reading needs beside the wall clock alone,
-// which a long stall otherwise spends in full. The number is a judgment call,
-// to be tuned from recorded runs.
+// DEFAULT_NO_PROGRESS_STEPS is how many requests a build phase may complete in a row with no file change before it is stopped; a judgment call, to be tuned from recorded runs.
 const DEFAULT_NO_PROGRESS_STEPS = 60
 
-// The tool names the runner reads: an edit or a write is the progress the guard
-// waits for, and a read is work that stops counting as progress once it runs
-// long.
-const (
-	toolRead  = "read"
-	toolEdit  = "edit"
-	toolWrite = "write"
-)
+const toolRead = "read"
 
-// agentProgress is what one agent invocation's event stream says it did: the
-// files its read tool calls touched, the largest context any one request read,
-// and how many requests in a row it completed with no edit or write.
+// fileChangingTools are the tool names the adapters emit for a call that changes files.
+var fileChangingTools = map[string]bool{
+	"edit": true, "write": true, "patch": true, "multiedit": true, "apply_patch": true, "ast_edit": true,
+}
+
+// agentProgress is what one agent invocation's event stream says it did.
 type agentProgress struct {
 	reads       []string
+	readSeen    map[string]bool
 	noProgress  int
 	peakContext int64
 }
 
-// readProgress scans the events an agent wrote and records what the stream says
-// it did in sum — the files it read and the largest context a request read. A
-// stream it cannot read is a usage warning, never a stop: the run's record is
-// still worth writing without it.
+// readProgress scans the finished event file for the summary: files read and peak context; an unreadable stream is a usage warning, never a stop.
 func readProgress(out io.ReadSeeker, sum *Summary) agentProgress {
 	var p agentProgress
 	if _, err := out.Seek(0, io.SeekStart); err != nil {
@@ -49,25 +41,27 @@ func readProgress(out io.ReadSeeker, sum *Summary) agentProgress {
 	return p
 }
 
-// observe records one step of the agent's stream: the files its request read,
-// the context that request carried, and whether it made an edit or a write. A
-// step that made one resets the no-progress count; a step that made none
-// extends it, so the count is of requests that changed nothing.
+// observe records one step: files read (distinct, capped), peak context, and the trailing count of steps with no file change.
 func (p *agentProgress) observe(e event) {
 	if e.Type != "step_finish" {
 		return
 	}
 	progressed := false
 	for _, t := range e.Part.Tools {
-		switch t.Tool {
-		case toolRead:
-			if t.Path != "" {
+		switch {
+		case t.Tool == toolRead:
+			if t.Path != "" && !p.readSeen[t.Path] && len(p.reads) < maxEditedFiles {
+				if p.readSeen == nil {
+					p.readSeen = map[string]bool{}
+				}
+				p.readSeen[t.Path] = true
 				p.reads = append(p.reads, t.Path)
 			}
-		case toolEdit, toolWrite:
+		case fileChangingTools[t.Tool]:
 			progressed = true
 		}
 	}
+	// The count is the trailing run, so a stall broken by a change restarts from zero and never stops the run.
 	if progressed {
 		p.noProgress = 0
 	} else {
@@ -78,21 +72,82 @@ func (p *agentProgress) observe(e event) {
 	}
 }
 
-// stalled reports whether phase ended having run DEFAULT_NO_PROGRESS_STEPS
-// requests in a row with no edit or write. Only the build phase edits: a plan
-// or review pass reading its way through the repository is doing its job.
+// progressTap observes an agent's event stream as it is written and calls stop once a build phase stalls; it never fails a write, so an unreadable stream cannot stop a run.
+type progressTap struct {
+	mu      sync.Mutex
+	phase   Phase
+	stop    func()
+	p       agentProgress
+	buf     []byte
+	skip    bool
+	stopped bool
+}
+
+func newProgressTap(phase Phase, stop func()) *progressTap {
+	return &progressTap{phase: phase, stop: stop}
+}
+
+// Write implements io.Writer over the stream's newline-delimited events.
+func (t *progressTap) Write(b []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, c := range b {
+		if c != '\n' {
+			if !t.skip {
+				t.buf = append(t.buf, c)
+				if len(t.buf) > maxEventLine {
+					t.buf, t.skip = nil, true
+				}
+			}
+			continue
+		}
+		t.line()
+		t.buf, t.skip = t.buf[:0], false
+	}
+	return len(b), nil
+}
+
+// finish observes a final line the stream ended without a newline.
+func (t *progressTap) finish() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.line()
+	t.buf = nil
+}
+
+func (t *progressTap) line() {
+	if t.skip || len(t.buf) == 0 {
+		return
+	}
+	var e event
+	if json.Unmarshal(t.buf, &e) != nil {
+		return
+	}
+	t.p.observe(e)
+	if !t.stopped && t.p.stalled(t.phase) {
+		t.stopped = true
+		t.stop()
+	}
+}
+
+// didStop reports whether the tap stopped the run.
+func (t *progressTap) didStop() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.stopped
+}
+
+// stalled reports whether a build phase is at the limit; plan and review passes never edit, so they are exempt.
 func (p agentProgress) stalled(phase Phase) bool {
 	return phase == PhaseBuild && p.noProgress >= DEFAULT_NO_PROGRESS_STEPS
 }
 
-// stalledDetail is what a stalled build's stop reports: the steps it made no
-// progress over, and the largest context a request read.
+// stalledDetail is the stop's detail: the idle steps and the largest context read.
 func (p agentProgress) stalledDetail() string {
-	return fmt.Sprintf("no edit or write in %d steps (peak context %d tokens)", p.noProgress, p.peakContext)
+	return fmt.Sprintf("no file change in %d steps (peak context %d tokens)", p.noProgress, p.peakContext)
 }
 
-// contextTokens is what one request read: its fresh input plus what the
-// provider served from its cache, which together are the context the model saw.
+// contextTokens is a request's fresh input plus its cache reads.
 func contextTokens(e event) int64 {
 	return e.Part.Tokens.Input + e.Part.Tokens.Cache.Read
 }

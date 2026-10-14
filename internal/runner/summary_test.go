@@ -2,6 +2,7 @@ package runner
 
 import (
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -449,5 +450,44 @@ func TestEncodeTrimsFilesReadBeforeSteps(t *testing.T) {
 	}
 	if len(got.ReadFiles) == 0 || len(got.ReadFiles) >= maxEditedFiles {
 		t.Fatalf("kept %d read files, want some trimmed", len(got.ReadFiles))
+	}
+}
+
+// TestEncodeDropsReadFilesBeforeEditedFiles asserts an oversize summary gives up the read list first.
+func TestEncodeDropsReadFilesBeforeEditedFiles(t *testing.T) {
+	s := validSummary()
+	long := strings.Repeat("d/", 200)
+	for i := range maxEditedFiles {
+		s.ReadFiles = append(s.ReadFiles, fmt.Sprintf("%sr%03d.go", long, i))
+	}
+	for i := range 40 {
+		s.EditedFiles = append(s.EditedFiles, fmt.Sprintf("%se%03d.go", long, i))
+	}
+	s.EditedFiles = append(s.EditedFiles, "version.go")
+	edited := len(s.EditedFiles)
+	raw, err := s.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > maxSummaryBytes {
+		t.Fatalf("encoded %d bytes, over %d", len(raw), maxSummaryBytes)
+	}
+	var got Summary
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.ReadFiles) >= maxEditedFiles {
+		t.Fatalf("read files = %d, want some dropped", len(got.ReadFiles))
+	}
+	if len(got.EditedFiles) != edited {
+		t.Fatalf("edited files = %d, want all %d kept while read files could still go", len(got.EditedFiles), edited)
+	}
+}
+
+// TestMergePathsDropsPathsOutsideTheRepository asserts absolute and escaping paths are left out.
+func TestMergePathsDropsPathsOutsideTheRepository(t *testing.T) {
+	got := mergePaths([]string{"a.go"}, []string{"/etc/passwd", "../x.go", "", "b.go", "a.go"})
+	if want := []string{"a.go", "b.go"}; !slices.Equal(got, want) {
+		t.Fatalf("paths = %q, want %q", got, want)
 	}
 }

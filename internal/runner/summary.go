@@ -209,10 +209,10 @@ func (s Summary) Encode() (string, error) {
 			return string(b), nil
 		}
 		switch {
-		case len(s.EditedFiles) > 0:
-			s.EditedFiles = s.EditedFiles[:len(s.EditedFiles)/2]
 		case len(s.ReadFiles) > 0:
 			s.ReadFiles = s.ReadFiles[:len(s.ReadFiles)/2]
+		case len(s.EditedFiles) > 0:
+			s.EditedFiles = s.EditedFiles[:len(s.EditedFiles)/2]
 		case len(s.Steps) > 0:
 			s.Steps = s.Steps[1:]
 		default:
