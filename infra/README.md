@@ -312,6 +312,48 @@ one issue to the agent, then read the job's log for the poll that took it.
 gcloud logging read 'resource.type="cloud_run_job"' --freshness=1h --limit=50
 ```
 
+## Prompt caching
+
+Every phase of a run sends the same projection prefix to the model, so most of
+what it reads is served from the provider's cache. Measured on three runs
+(2026-10-14; their run ids were not recorded): 96-98% of a run's input
+tokens are cache reads, but a phase's *first* request varies with how warm that prefix still is:
+
+| Run | First request |
+|---|---|
+| build, started soon after another run on the same sha | 99% cached |
+| build, overlapping another run | 64% cached |
+| plan, started hours after the last run on that sha | 4% cached, 52k tokens fresh |
+
+A review pass (FR-28) starts a fresh session, so its first request is always
+cold — 10-16k tokens, every run. A phase's first-request fresh and cached tokens
+and the cached share of its whole input are written to the run record (`cache` in
+`runs/<identifier>`, from the build's `Summary.Cache`), and the statistics
+endpoint prints a run's own share per run (`runs` in `/api/comparison`).
+
+**Why the plan stage runs cold: the gap between runs.** A cache stays warm only
+while something reads it, and a plan stage is the phase that most often starts a
+long time after the last thing that read the prefix — hours before its own build
+in the two-stage dispatch, or hours after the last run of that sha — so its first
+request finds the prefix gone. The record reports how cold a run was, not why. (A
+run planned by the separate plan-stage dispatch carries no plan entry there: that
+job reports no summary at all, its tokens included.)
+
+**Retention is not documented by the provider** (checked 2026-10-14). Command
+Code's docs (`https://api.commandcode.ai/docs`, all 60 pages) carry cache prices
+and a ~98% hit-rate claim, and one TTL — 15 minutes, on the CLI's own fetch-tool
+response cache — but no prompt-cache window. DeepSeek's own cache page is not
+reachable from the runner's egress allowlist (`api.commandcode.ai` and
+`generativelanguage.googleapis.com` alone), and the repository's own measurement
+(2026-10-05: whole-context misses 0.2-1.8 min apart, so not expiry) bounds
+nothing hours out.
+
+**Batch delegations that share a prefix.** Delegate the tickets of one sha
+together rather than one every few hours: each run's first request then reads the
+cache the run before it left warm, and only the batch's first run pays the cold
+prefix — the 52k fresh tokens in the table above. This is measured on runs of one
+sha: two shas are two prefixes, and nothing here says they warm each other.
+
 ## Webhook
 
 `webhook.tf` is the service Linear delivers agent-session events to. It is

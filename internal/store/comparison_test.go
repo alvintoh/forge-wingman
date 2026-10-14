@@ -20,6 +20,9 @@ type comparedRun struct {
 	settledAt                         time.Time
 	cost                              money.Micros
 	lastResort                        bool
+	// input and cacheRead are the run's own recorded input tokens: what it read
+	// fresh and what its provider served from cache.
+	input, cacheRead int64
 	// noSteps writes the document with no step at all, which Finalize never
 	// produces (it settles only a run that reached an agent) and the
 	// comparison still has to read.
@@ -49,10 +52,12 @@ func comparedRecord(t *testing.T, client *firestore.Client, id string, c compare
 	rec.TimeOfUse = c.timeOfUse
 	rec.CostDrift = c.costDrift
 	if !c.noSteps {
+		tokens := runner.Usage{Input: c.input, CacheRead: c.cacheRead, Cost: c.cost.USD()}
 		rec.Steps = []runner.Step{{
 			Phase: runner.PhaseBuild, Round: 1, Model: c.model,
-			Tokens: runner.Usage{Cost: c.cost.USD()}, At: started,
+			Tokens: tokens, At: started,
 		}}
+		rec.Tokens = tokens
 	}
 	if _, err := client.Collection(runsCollection).Doc(id).Set(context.Background(), fields(rec)); err != nil {
 		t.Fatal(err)
@@ -219,6 +224,36 @@ func TestComparisonListsDriftedRunsNewestFirst(t *testing.T) {
 	at := slices.IndexFunc(got.Drifted, func(d DriftedRun) bool { return d.RunID == newer })
 	if at != 0 {
 		t.Fatalf("drifted = %+v, want the newest flagged run first", got.Drifted)
+	}
+}
+
+// TestComparisonReportsEachRunsPromptCacheShare asserts the comparison lists
+// every settled run that read input with the share of it the provider served
+// from cache, newest first, and leaves out a run that read none (AC2).
+func TestComparisonReportsEachRunsPromptCacheShare(t *testing.T) {
+	_, client := queue(t)
+	plan := fresh("cache")
+	cold, warm, hot, none := fresh("cache-cold"), fresh("cache-warm"), fresh("cache-hot"), fresh("cache-none")
+	forget(t, client, cold, warm, hot, none)
+	comparedRecord(t, client, cold, comparedRun{plan: plan, model: "command-code/x", settledAt: queueAt,
+		input: 960, cacheRead: 40})
+	comparedRecord(t, client, warm, comparedRun{plan: plan, model: "command-code/x", settledAt: queueAt.Add(time.Minute),
+		input: 250, cacheRead: 750})
+	comparedRecord(t, client, hot, comparedRun{plan: plan, model: "command-code/x", settledAt: queueAt.Add(2 * time.Minute),
+		input: 10, cacheRead: 990})
+	comparedRecord(t, client, none, comparedRun{plan: plan, model: "command-code/x", settledAt: queueAt.Add(3 * time.Minute)})
+
+	got, err := NewRecords(client).Comparison(context.Background(), queueAt.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []RunCache{
+		{RunID: hot, Provider: plan, Model: "command-code/x", CachedShare: 0.99},
+		{RunID: warm, Provider: plan, Model: "command-code/x", CachedShare: 0.75},
+		{RunID: cold, Provider: plan, Model: "command-code/x", CachedShare: 0.04},
+	}
+	if !slices.Equal(got.Runs, want) {
+		t.Fatalf("runs = %+v, want each run that read input, newest first, at %+v", got.Runs, want)
 	}
 }
 

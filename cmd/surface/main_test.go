@@ -143,6 +143,41 @@ func TestComparisonReportsEachModelAndProviderAndEveryDriftedRun(t *testing.T) {
 	}
 }
 
+// TestComparisonReportsEachRunsPromptCacheShare asserts the statistics endpoint
+// prints, per run, the share of that run's input tokens its provider served from
+// cache (AC2).
+func TestComparisonReportsEachRunsPromptCacheShare(t *testing.T) {
+	reader := &stubComparison{cmp: store.Comparison{
+		Runs: []store.RunCache{{RunID: "run-1", Provider: "command-code", Model: "command-code/x", CachedShare: 0.75}},
+	}}
+	mux := newMux(fstest.MapFS{}, discardLogger(), reader)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/comparison", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var body struct {
+		Runs []map[string]any `json:"runs"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Runs) != 1 {
+		t.Fatalf("body = %s, want one run", rec.Body.String())
+	}
+	if got, want := slices.Sorted(maps.Keys(body.Runs[0])), []string{"cached_share", "model", "provider", "run_id"}; !slices.Equal(got, want) {
+		t.Errorf("run keys = %v, want %v", got, want)
+	}
+	if got, want := body.Runs[0]["cached_share"], 0.75; got != want {
+		t.Errorf("cached share = %v, want %v", got, want)
+	}
+	if got, want := body.Runs[0]["run_id"], "run-1"; got != want {
+		t.Errorf("run id = %v, want %v", got, want)
+	}
+}
+
 func TestComparisonWithoutAStoreIsUnavailable(t *testing.T) {
 	mux := newMux(fstest.MapFS{}, discardLogger(), nil)
 

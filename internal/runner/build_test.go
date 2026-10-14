@@ -295,6 +295,12 @@ func TestBuildCommitsAndBundlesTheAgentsEdits(t *testing.T) {
 	if got := completions[step.CompletionsObject]; !bytes.Equal(got, []byte(agent.events)) {
 		t.Fatalf("completions object %q = %q", step.CompletionsObject, got)
 	}
+	if got := rec.Cache[string(PhaseBuild)]; got != (PhaseCache{FirstFresh: 10, FirstCached: 90, CachedShare: 0.9}) {
+		t.Fatalf("cache = %+v, want the build round's own first request and the phase's share", rec.Cache)
+	}
+	if _, ok := rec.Cache[string(PhaseReview)]; ok {
+		t.Fatalf("cache = %+v, want no entry for the review pass, which reported no model request", rec.Cache)
+	}
 
 	clone := t.TempDir()
 	mustGit(t, clone, "clone", "-q", repo, ".")
@@ -304,9 +310,39 @@ func TestBuildCommitsAndBundlesTheAgentsEdits(t *testing.T) {
 	}
 }
 
-// TestBuildRecordsTheHarnessThatRanEachStep asserts every step names the
-// harness its model's plan routes to, the fallback included when the default is
-// not ready (AC1, AC2).
+// TestRecordPhaseCachePinsTheFirstRequestAndMovesTheShare asserts a phase's
+// first-request figures come from the first round that reported a request, while
+// its share covers every request the phase made — a later round moves the share
+// and leaves the first-request figures where they were (AC1). A phase that
+// reported no model request at all records nothing.
+func TestRecordPhaseCachePinsTheFirstRequestAndMovesTheShare(t *testing.T) {
+	sum := Summary{}
+	sum.Steps = append(sum.Steps, Step{Phase: PhaseBuild, Round: 1, Tokens: Usage{Input: 10, CacheRead: 90}})
+	recordPhaseCache(&sum, PhaseBuild, []Usage{{Input: 10, CacheRead: 90}})
+	if want := (PhaseCache{FirstFresh: 10, FirstCached: 90, CachedShare: 0.9}); sum.Cache[string(PhaseBuild)] != want {
+		t.Fatalf("cache = %+v, want the first round's own request and its share", sum.Cache)
+	}
+
+	sum.Steps = append(sum.Steps, Step{Phase: PhaseBuild, Round: 2, Tokens: Usage{Input: 90, CacheRead: 10}})
+	recordPhaseCache(&sum, PhaseBuild, []Usage{{Input: 90, CacheRead: 10}})
+	if want := (PhaseCache{FirstFresh: 10, FirstCached: 90, CachedShare: 0.5}); sum.Cache[string(PhaseBuild)] != want {
+		t.Fatalf("cache = %+v, want the two rounds' 200 input tokens half cached", sum.Cache)
+	}
+
+	recordPhaseCache(&sum, PhaseReview, nil)
+	if _, ok := sum.Cache[string(PhaseReview)]; ok {
+		t.Fatalf("cache = %+v, want no entry for a phase that made no request", sum.Cache)
+	}
+}
+
+// TestCachedShareIsZeroWithoutInput asserts a run that read no input reports no
+// cached share rather than dividing by zero.
+func TestCachedShareIsZeroWithoutInput(t *testing.T) {
+	if got := cachedShare(0, 0); got != 0 {
+		t.Fatalf("share = %v, want 0 for a run that read no input", got)
+	}
+}
+
 func TestBuildRecordsTheHarnessThatRanEachStep(t *testing.T) {
 	for name, tt := range map[string]struct {
 		defaultReady error

@@ -49,6 +49,25 @@ func TestParseSummaryAcceptsTheChecksDuration(t *testing.T) {
 	}
 }
 
+// TestParseSummaryKeepsThePhasesCacheFigures asserts a phase's first-request
+// fresh and cached tokens and its cached share survive the summary round trip
+// (AC1).
+func TestParseSummaryKeepsThePhasesCacheFigures(t *testing.T) {
+	s := validSummary()
+	s.Cache = map[string]PhaseCache{"build": {FirstFresh: 10, FirstCached: 90, CachedShare: 0.9}}
+	raw, err := s.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParseSummary(raw, "1-1", testTicket, finalizeNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (PhaseCache{FirstFresh: 10, FirstCached: 90, CachedShare: 0.9}); got.Cache["build"] != want {
+		t.Fatalf("cache = %+v, want %+v", got.Cache, want)
+	}
+}
+
 func TestParseSummaryRejects(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -85,6 +104,21 @@ func TestParseSummaryRejects(t *testing.T) {
 		{"another run's branch", func(s *Summary) { s.Branch = "wingman/abc-12-9-1" }},
 		{"a duration for another phase", func(s *Summary) { s.DurationsMS = map[string]int64{"pr": 1} }},
 		{"a negative duration", func(s *Summary) { s.DurationsMS = map[string]int64{"build": -1} }},
+		{"cache figures for something that is not a build phase", func(s *Summary) {
+			s.Cache = map[string]PhaseCache{"pr": {FirstFresh: 1}}
+		}},
+		{"a negative first-request token count", func(s *Summary) {
+			s.Cache = map[string]PhaseCache{"build": {FirstFresh: -1}}
+		}},
+		{"a first-request token count over the ceiling", func(s *Summary) {
+			s.Cache = map[string]PhaseCache{"build": {FirstCached: maxCount + 1}}
+		}},
+		{"a cached share above one", func(s *Summary) {
+			s.Cache = map[string]PhaseCache{"build": {CachedShare: 1.5}}
+		}},
+		{"a negative cached share", func(s *Summary) {
+			s.Cache = map[string]PhaseCache{"build": {CachedShare: -0.1}}
+		}},
 		{"a sha that is not one", func(s *Summary) { s.RuleStackSHA = "main" }},
 		{"a commit subject over two lines", func(s *Summary) { s.CommitSubject = "feat: ABC-12 x\nmore" }},
 		{"a PR summary over two lines", func(s *Summary) { s.PRSummary = "Adds it.\nmore" }},
