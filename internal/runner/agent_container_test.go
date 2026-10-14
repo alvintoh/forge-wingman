@@ -482,7 +482,7 @@ func TestModelWorkflowPassesTheAgentImageVariableToTheBuild(t *testing.T) {
 		`runner" plan-stage `: 1,
 		`-agent-image "$AGENT_IMAGE" -agent-egress "$AGENT_EGRESS"'`: 2,
 		"AGENT_EGRESS: ${{ vars.WINGMAN_AGENT_EGRESS }}":             2,
-		`if: vars.WINGMAN_AGENT_IMAGE != ''`:                         1,
+		`if: vars.WINGMAN_AGENT_IMAGE != ''`:                         0,
 		`docker pull "$AGENT_IMAGE"`:                                 1,
 		"--filter name=" + egressProxyPrefix:                         1,
 		"--filter name=" + egressNetworkPrefix:                       1,
