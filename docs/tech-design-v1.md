@@ -50,7 +50,7 @@ poll**, not a delivery. Pub/Sub has no priority ordering and Cloud Tasks cannot
 re-rank, so either would be fought rather than used. The store is the queue:
 
 ```
-admission  =  state == "queued"  ORDER BY linear_priority
+admission  =  state == "queued"  ORDER BY linear_priority, queued_at
               → admit while FR-22 and FR-27 hold, up to N in flight
 ```
 
@@ -58,6 +58,11 @@ admission  =  state == "queued"  ORDER BY linear_priority
 runs the default, so the query is walked rather than truncated; `adr/0003` records
 the claim transaction and the `dispatch/ledger` document that makes reservations
 exact.
+
+*Updated (2026-10-13), forge-wingman #116:* the order gains a tie-break, `queued_at`
+(oldest first; stamped at enqueue and requeue, kept when a run is answered or
+released), and the webhook refreshes a queued or planned run's stored priority
+(`adr/0013`). `adr/0003` records the third index and the `backfill-queued-at` step.
 
 **Where the DLQ went.** `engineering-defaults` requires a DLQ and bounded retry on
 every async consumer. With no queue there is no dead-letter topic, and the
@@ -177,7 +182,7 @@ One Go binary entrypoint (`cmd/dispatcher`). Per poll:
    the ACs touch more than one module, whether tests cover the named area. The
    classifier decides only the remainder, and a manual Linear label always overrides.
 4. **Enqueue or reject** — a ticket above L is rejected with the reason recorded.
-5. **Admit** runs in Linear priority order while every FR-22 and FR-27 condition
+5. **Admit** runs in Linear priority order, oldest-queued first among equals, while every FR-22 and FR-27 condition
    holds — budget reservations, size, interference, the review WIP limit, platform
    caps, the circuit breaker — up to N in flight. A run that waits records the
    *binding* condition.
@@ -276,6 +281,23 @@ key alone, `post` the comment and status writes plus the App token for the merge
 request. It posts one marked comment and the `wingman-review` status, and requests
 auto-merge only for a clean review of an eligible PR, pinned to the reviewed head
 (`FR-16`). Branch protection requires the `go` and `web` checks and no approval.
+
+**Autonomy level — *Updated (2026-10-14)*, FRG-124.** Whether an eligible PR may merge at
+all is the owner's autonomy level, stored at `dispatch/autonomy` beside the peak mode, set
+with `runner autonomy -level N`, and recorded on each run row when it is claimed. pr-meta
+marks a PR eligible only when that recorded level is 4 or more; a missing level counts as
+0. It replaces the `WINGMAN_AUTO_MERGE` repository variable, which the dispatcher could not
+read. Levels 4 and 5 are refused until their advance conditions are measured (FRG-126).
+
+**Front-end hold — *Updated (2026-10-13)*, forge-wingman #115.** Eligibility for auto-merge
+(`FR-5`) excludes an S or M PR that touches the front end, which stays ready, not a draft.
+It is held when the ticket carries the `area:fe` Linear label (carried on the ticket and
+the run record, set only by the dispatcher) or a changed file falls under a prefix
+declared for its repository in `WINGMAN_FRONT_END_PATHS`, a JSON object of repository to
+prefixes. The two failure directions differ on purpose: unset holds nothing on paths,
+while an unparseable value holds every PR. A rename reports both its old and new path.
+The PR body names why it waits and tells the reviewer to run `/fe-sweep` before
+`/pr-review`.
 
 **When the reviewer is unavailable — decided 2026-10-12 by the owner; not yet built.**
 A review whose models all fail returns **no verdict**, which today requests nothing

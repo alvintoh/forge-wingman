@@ -667,8 +667,6 @@ func TestRunWorkflowMarksAutoMergeEligibilityOnlyOnPRMetasDecision(t *testing.T)
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"AUTO_MERGE_SWITCH: ${{ vars.WINGMAN_AUTO_MERGE }}",
-		`-auto-merge-switch "$AUTO_MERGE_SWITCH"`,
 		"FRONT_END_PATHS: ${{ vars.WINGMAN_FRONT_END_PATHS }}",
 		`-front-end-paths "$FRONT_END_PATHS"`,
 		"if: needs.pr-meta.outputs.auto_merge == 'true'\n",
@@ -683,6 +681,11 @@ func TestRunWorkflowMarksAutoMergeEligibilityOnlyOnPRMetasDecision(t *testing.T)
 	}
 	if strings.Contains(string(yml), "gh pr merge") {
 		t.Error("run.yml requests auto-merge itself; only a clean review may")
+	}
+	for _, gone := range []string{"WINGMAN_AUTO_MERGE", "auto-merge-switch"} {
+		if strings.Contains(string(yml), gone) {
+			t.Errorf("run.yml still passes %q; pr-meta reads the run's recorded autonomy level", gone)
+		}
 	}
 }
 

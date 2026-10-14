@@ -130,6 +130,8 @@ type Facts struct {
 	// repositories, meaningful only when OpenPRsKnown is set.
 	OpenPRs      int
 	OpenPRsKnown bool
+	// Autonomy is the owner's level the poll read, recorded on the run when it is claimed.
+	Autonomy Autonomy
 }
 
 // Move is a run's move from a paid plan whose ceiling bound to the next.

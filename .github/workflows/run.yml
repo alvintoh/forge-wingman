@@ -8,9 +8,9 @@
 # With `stage: plan` (FRG-33) the model job runs the plan phase alone and
 # `record-plan-stage` records it instead, while check, pr-meta, pr and record are skipped.
 # Needs the GCP_WIF_PROVIDER, GCP_SERVICE_ACCOUNT, GCP_MODEL_SERVICE_ACCOUNT and
-# WINGMAN_ACCOUNT variables (infra/README.md) and the COMMANDCODE_API_KEY secret; the
-# WINGMAN_AUTO_MERGE variable is optional and off unless set to `on`. Workload Identity Federation trusts main only, so dispatch
-# from main.
+# WINGMAN_ACCOUNT variables (infra/README.md) and the COMMANDCODE_API_KEY secret; whether
+# a PR may auto-merge is the autonomy level the run was claimed at (`runner autonomy`).
+# Workload Identity Federation trusts main only, so dispatch from main.
 name: run
 
 on:
@@ -319,7 +319,6 @@ jobs:
           LOOP_DETAIL: ${{ needs.model.outputs.loop_detail }}
           ATTEMPT_ID: ${{ needs.model.outputs.attempt_id }}
           SUMMARY: ${{ needs.model.outputs.summary }}
-          AUTO_MERGE_SWITCH: ${{ vars.WINGMAN_AUTO_MERGE }}
           FRONT_END_PATHS: ${{ vars.WINGMAN_FRONT_END_PATHS }}
           BRANCH: ${{ needs.model.outputs.branch }}
           REPOSITORY: ${{ github.repository }}
@@ -327,7 +326,7 @@ jobs:
         run: >-
           "$RUNNER_TEMP/runner" pr-meta -run-id "$RUN_ID" -failed-gate "$FAILED_GATE" -run-url "$RUN_URL"
           -loop-detail "$LOOP_DETAIL" -attempt-id "$ATTEMPT_ID" -summary "$SUMMARY"
-          -auto-merge-switch "$AUTO_MERGE_SWITCH" -front-end-paths "$FRONT_END_PATHS"
+          -front-end-paths "$FRONT_END_PATHS"
           -bundle "$RUNNER_TEMP/wingman.bundle" -branch "$BRANCH" -repository "$REPOSITORY"
 
   pr:

@@ -206,6 +206,8 @@ type Record struct {
 	Sampled bool `firestore:"sampled"`
 	// AutoMerge is whether the pr job marked the PR eligible for auto-merge (FR-16).
 	AutoMerge bool `firestore:"auto_merge"`
+	// Autonomy is the owner's autonomy level when the run was claimed, 0 for a run claimed before it was recorded.
+	Autonomy int `firestore:"autonomy"`
 	// CommitSubject is the subject the build committed with, and the PR's title.
 	CommitSubject string `firestore:"commit_subject"`
 	// CommitBody is the commit message after its subject.
@@ -439,6 +441,7 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, reader Prov
 	rec.Plan, rec.LastResort, rec.LastResortModels = existing.Plan, existing.LastResort, existing.LastResortModels
 	rec.PriorSettledProviderCostMicros, rec.PriorSettledRunnerMinutes = existing.PriorSettledProviderCostMicros, existing.PriorSettledRunnerMinutes
 	rec.MovedFrom, rec.PlanModels = existing.MovedFrom, existing.PlanModels
+	rec.Autonomy = existing.Autonomy
 	identityErr := in.Identity.CheckAccount()
 	sum, err := ParseSummary(in.Summary, in.AttemptID, t, now)
 	switch {
