@@ -17,6 +17,7 @@
 //	runner plan-verdict    -provider <name> ...      record the verdict on a plan's terms with its wording and source
 //	runner plan-reply      -provider <name> ...      record a vendor reply and the verdict it leads to
 //	runner plan-list                                 print every plan side by side with its harnesses and their licences, flagging the ones to look at
+//	runner plans-refresh   [-provider <name>]        read each configured plan's own pages and model list, the leaderboard's scores and the free feed into a dated facts document
 //	runner plan-smoke      -plan-models <list>       prove the plan agent refuses edit, a new file and bash on the list's first and last model
 //	runner review-smoke    -review-models <list>     try the review agent on a fixture diff with each model, passing those whose findings parse at $0
 //	runner pr-review-context -pr <n> -out <path>     write a pull request's diff and the ticket it names, read from Linear
@@ -110,7 +111,7 @@ type env struct {
 func requiredEnv(command string) ([]string, bool) {
 	switch command {
 	case "ticket", "pr-meta", "enable-provider", "reset-breaker", "peak-mode", "autonomy", "requeue", "backfill-queued-at",
-		"plan-define", "plan-optin", "plan-verdict", "plan-reply", "plan-list":
+		"plan-define", "plan-optin", "plan-verdict", "plan-reply", "plan-list", "plans-refresh":
 		return []string{"GOOGLE_CLOUD_PROJECT"}, true
 	case "record", "record-plan-stage":
 		return []string{"GOOGLE_CLOUD_PROJECT", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"}, true
@@ -153,7 +154,7 @@ func loadEnv(getenv func(string) string, required ...string) (env, error) {
 
 func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(string) string) error {
 	if len(args) == 0 {
-		return errors.New("usage: runner ticket|build|plan-stage|record-plan-stage|pr-meta|record|enable-provider|reset-breaker|peak-mode|autonomy|requeue|backfill-queued-at|plan-define|plan-verdict|plan-reply|plan-list|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post|agent-probe|egress-proxy [flags]")
+		return errors.New("usage: runner ticket|build|plan-stage|record-plan-stage|pr-meta|record|enable-provider|reset-breaker|peak-mode|autonomy|requeue|backfill-queued-at|plan-define|plan-verdict|plan-reply|plan-list|plans-refresh|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post|agent-probe|egress-proxy [flags]")
 	}
 	if args[0] == "plan-smoke" {
 		return planSmoke(ctx, logger, getenv, args[1:])
@@ -218,6 +219,8 @@ func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(st
 		return planReply(ctx, logger, e, args[1:])
 	case "plan-list":
 		return planList(ctx, logger, e, args[1:])
+	case "plans-refresh":
+		return plansRefresh(ctx, logger, e, args[1:])
 	default:
 		return fmt.Errorf("unknown subcommand %q", args[0])
 	}

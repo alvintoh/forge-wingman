@@ -57,7 +57,7 @@ const (
 	dateLayout      = "2006-01-02"
 )
 
-// Locator names a vendor page the weekly refresh reads, and the region of it
+// Locator names a vendor page the plan facts refresh reads, and the region of it
 // to read.
 type Locator struct {
 	URL      string `firestore:"url"`
@@ -187,7 +187,7 @@ func NewDefinition(name, priceUSD string, pages, harnesses []string, limit, bill
 		return Definition{}, err
 	}
 	def := Definition{
-		Name:           capText(name, maxNameBytes),
+		Name:           CapText(name, maxNameBytes),
 		MonthlyPrice:   money.FromUSD(price),
 		Pages:          []Locator{},
 		Harnesses:      []HarnessPair{},
@@ -225,7 +225,7 @@ func NewVerdictNote(verdict, wording, source, readOn string) (VerdictNote, error
 	if _, err := time.Parse(dateLayout, readOn); err != nil {
 		return VerdictNote{}, fmt.Errorf("read-on %q is not a yyyy-mm-dd date", readOn)
 	}
-	return VerdictNote{Verdict: v, Wording: capText(wording, maxWordingBytes), Source: source, ReadOn: readOn}, nil
+	return VerdictNote{Verdict: v, Wording: CapText(wording, maxWordingBytes), Source: source, ReadOn: readOn}, nil
 }
 
 // NewReply validates a recorded support reply.
@@ -233,7 +233,7 @@ func NewReply(text string, at time.Time) (Reply, error) {
 	if strings.TrimSpace(text) == "" {
 		return Reply{}, errors.New("reply text is empty")
 	}
-	return Reply{Text: capText(text, maxReplyBytes), At: at}, nil
+	return Reply{Text: CapText(text, maxReplyBytes), At: at}, nil
 }
 
 func checkURL(raw string) error {
@@ -247,9 +247,9 @@ func checkURL(raw string) error {
 	return nil
 }
 
-// capText caps s at n bytes on a character boundary, replacing invalid UTF-8,
+// CapText caps s at n bytes on a character boundary, replacing invalid UTF-8,
 // since Firestore rejects a document holding a string that is not valid UTF-8.
-func capText(s string, n int) string {
+func CapText(s string, n int) string {
 	s = strings.ToValidUTF8(s, "\uFFFD")
 	if len(s) <= n {
 		return s

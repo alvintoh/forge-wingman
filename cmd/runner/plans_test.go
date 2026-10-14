@@ -39,6 +39,7 @@ func TestPlanCommandsRefuseInvalidInputBeforeOpeningFirestore(t *testing.T) {
 		"a definition with no price":             {[]string{"plan-define", "-provider", "command-code", "-name", "n"}, "not a positive amount"},
 		"a definition with no billing":           {[]string{"plan-define", "-provider", "command-code", "-name", "n", "-price-usd", "15"}, "is not free, allowance or per-token"},
 		"an opt-in naming a malformed provider":  {[]string{"plan-optin", "-provider", "Open Code"}, "is not a provider name"},
+		"a refresh naming a malformed provider":  {[]string{"plans-refresh", "-provider", "Open Code"}, "is not a provider name"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := run(context.Background(), logger, tt.args, planEnv("octo"))
@@ -51,7 +52,7 @@ func TestPlanCommandsRefuseInvalidInputBeforeOpeningFirestore(t *testing.T) {
 
 func TestPlanCommandsRefuseAMismatchedIdentity(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	for _, args := range [][]string{{"plan-list"}, {"plan-verdict", "-provider", "command-code"}, {"plan-optin", "-provider", "command-code"}} {
+	for _, args := range [][]string{{"plan-list"}, {"plan-verdict", "-provider", "command-code"}, {"plan-optin", "-provider", "command-code"}, {"plans-refresh"}} {
 		err := run(context.Background(), logger, args, planEnv("work-account"))
 		if !errors.Is(err, runner.ErrIdentityMismatch) {
 			t.Errorf("%v: err = %v, want ErrIdentityMismatch", args, err)

@@ -15,8 +15,8 @@ const (
 	// plansCollection holds one provider_plans/<provider> document per plan,
 	// written only by the owner's runner commands.
 	plansCollection = "provider_plans"
-	// factsCollection is the subcollection of a plan the weekly refresh writes,
-	// one document per read date.
+	// factsCollection is the subcollection of a plan the plan facts refresh
+	// writes, one document per read date.
 	factsCollection = "facts"
 )
 
@@ -199,6 +199,38 @@ func (p *Plans) List(ctx context.Context) ([]prov.Listing, error) {
 		rows = append(rows, prov.Listing{Provider: snap.Ref.ID, Plan: plan, FactsDate: date})
 	}
 	return rows, nil
+}
+
+// PutFacts writes one dated read of provider's sources, which must already be
+// defined. It is this store's only writer of the facts subcollection: nothing
+// here touches the plan's definition, verdict, replies or opt-ins, so a refresh
+// cannot change which provider runs.
+func (p *Plans) PutFacts(ctx context.Context, provider, date string, facts prov.Facts) error {
+	_, err := p.doc(provider).Collection(factsCollection).Doc(date).Set(ctx, facts)
+	if err != nil {
+		return fmt.Errorf("writing plan %s's facts for %s: %w", provider, date, err)
+	}
+	return nil
+}
+
+// LatestFacts reads the newest facts document recorded for provider's plan, with
+// its own date as the id; ok is false when the plan has none.
+func (p *Plans) LatestFacts(ctx context.Context, provider string) (facts prov.Facts, date string, ok bool, err error) {
+	date, err = p.latestFactsDate(ctx, p.doc(provider))
+	if err != nil || date == "" {
+		return prov.Facts{}, "", false, err
+	}
+	snap, err := p.doc(provider).Collection(factsCollection).Doc(date).Get(ctx)
+	if status.Code(err) == codes.NotFound {
+		return prov.Facts{}, "", false, nil
+	}
+	if err != nil {
+		return prov.Facts{}, "", false, fmt.Errorf("reading plan %s's facts for %s: %w", provider, date, err)
+	}
+	if err := snap.DataTo(&facts); err != nil {
+		return prov.Facts{}, "", false, fmt.Errorf("decoding plan %s's facts for %s: %w", provider, date, err)
+	}
+	return facts, date, true, nil
 }
 
 // latestFactsDate is the id, a read date, of the newest document in plan's

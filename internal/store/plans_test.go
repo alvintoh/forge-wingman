@@ -10,6 +10,7 @@ import (
 
 	"cloud.google.com/go/firestore"
 
+	"github.com/alvintoh/forge-wingman/internal/money"
 	prov "github.com/alvintoh/forge-wingman/internal/providers"
 )
 
@@ -291,5 +292,48 @@ func TestSetPrivateOptInLeavesTheSpendOptInAlone(t *testing.T) {
 	}
 	if err := p.SetPrivateOptIn(ctx, undefined, true); err == nil || !strings.Contains(err.Error(), "is not defined") {
 		t.Fatalf("err = %v, want a refusal naming the undefined plan", err)
+	}
+}
+
+// TestPutFactsWritesOneDatedDocumentAndLeavesThePlanAlone asserts the facts
+// subcollection holds one document per read date, that the newest is the one read
+// back, and that writing facts never reaches the plan's own record.
+func TestPutFactsWritesOneDatedDocumentAndLeavesThePlanAlone(t *testing.T) {
+	id := fresh("plan-facts")
+	p, client := planStore(t, id)
+	ctx := context.Background()
+	if err := p.PutDefinition(ctx, id, planDef); err != nil {
+		t.Fatal(err)
+	}
+	if _, date, ok, err := p.LatestFacts(ctx, id); err != nil || ok || date != "" {
+		t.Fatalf("read %q (ok %t), err = %v, want no facts recorded yet", date, ok, err)
+	}
+	first := prov.Facts{ReadOn: "2026-09-20", Price: 15 * money.Dollar, Flags: []prov.Flag{prov.FlagCanSpendPast}}
+	second := prov.Facts{ReadOn: "2026-09-27", Price: 18 * money.Dollar, Flags: []prov.Flag{prov.FlagOutsidePriceBand}}
+	for _, facts := range []prov.Facts{first, second} {
+		if err := p.PutFacts(ctx, id, facts.ReadOn, facts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, date, ok, err := p.LatestFacts(ctx, id)
+	if err != nil || !ok {
+		t.Fatalf("ok = %t, err = %v, want the facts recorded", ok, err)
+	}
+	if date != "2026-09-27" || got.Price != 18*money.Dollar || !slices.Equal(got.Flags, second.Flags) {
+		t.Fatalf("read %+v dated %q, want the newest document alone", got, date)
+	}
+	snaps, err := client.Collection(plansCollection).Doc(id).Collection(factsCollection).OrderBy(firestore.DocumentID, firestore.Asc).Documents(ctx).GetAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, 0, len(snaps))
+	for _, snap := range snaps {
+		ids = append(ids, snap.Ref.ID)
+	}
+	if want := []string{"2026-09-20", "2026-09-27"}; !slices.Equal(ids, want) {
+		t.Fatalf("facts documents %v, want %v", ids, want)
+	}
+	if plan := readPlan(t, client, id); plan.Definition.Name != planDef.Name || plan.Definition.MonthlyPrice != planDef.MonthlyPrice {
+		t.Fatalf("plan = %+v, want the definition it was written with", plan.Definition)
 	}
 }
