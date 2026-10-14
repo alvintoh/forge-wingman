@@ -6,7 +6,10 @@ for the plan agent, and a trimmed one for the unattended build agent that drops
 every human-in-the-loop section and appends a short protocol for resolving what
 the rules leave open. Every claim about the output is asserted against the
 emitted text, so a stack edit that breaks one fails the run rather than shipping
-a silently different prompt.
+a silently different prompt. The build projection also carries the
+`BUILD_ONLY_RULES` file (per-criterion evidence). `BUILD_DROP_BYTES` is measured
+against one shape of the stack, so a stack edit that moves a dropped section ships
+in the same rule-stack push as the pin bump below.
 
     python3 tools/projection/gen_projection.py <rule-stack-root> --out <dir>
 

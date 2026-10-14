@@ -24,6 +24,8 @@ LAYERS = ("base/CLAUDE.md", "profiles/personal/CLAUDE.md", "profiles/work/CLAUDE
 EMPLOYER_LAYER = "profiles/work/CLAUDE.md"   # dropped from BOTH projections
 RULE_FILES = ("base/rules/code-comments.md", "base/rules/testing.md",
               "base/rules/schema-changes.md")
+# Only the unattended builder reports per-criterion evidence; a plan agent writes no code.
+BUILD_ONLY_RULES = ("base/projection/agent-ac-evidence.md",)
 
 # ---- FR-19's trim rule, as section-heading prefixes -------------------------
 # Each entry is one of the five human-in-the-loop concerns FR-19 names. The
@@ -36,7 +38,7 @@ BUILD_DROPS = (
     "## Proactively Offer to Codify Learnings",# offering to codify learnings
     "## Delegating to Agents",                 # delegating to agents
 )
-BUILD_DROP_BYTES = 47256          # measured 2026-09-22; PRD states "roughly 47 KB"
+BUILD_DROP_BYTES = 39439          # measured 2026-10-14, after self-review left Code Review Scope
 BUILD_DROP_TOLERANCE = 6000       # a stack edit inside this is drift, not a defect
 
 # ---- the projection must not send the agent OUT of its sandbox --------------
@@ -68,6 +70,8 @@ MUST_SURVIVE_BUILD = {
         "ship it as a clearly-marked **TODO/assumption**",
     "trap 3 staging is by explicit path":
         "Stage by explicit PATH",
+    "self-review hunts what green gates miss":
+        "Hunt the defects every automated gate is GREEN on",
 }
 
 # The runner replaces this and reads projection-build.md by name: internal/runner/prompt.go
@@ -129,6 +133,7 @@ def build(root, *, trimmed):
         chunks.append((root / rel).read_text())
 
     if trimmed:
+        chunks.extend((root / rel).read_text() for rel in BUILD_ONLY_RULES)
         chunks.append(PROTOCOL)           # after the rules it governs
 
     # ORDER: the invariant stack is the cacheable prefix, so the ticket is last.
@@ -161,6 +166,10 @@ def check(root, name, text, *, trimmed):
         # the build agent writes code, so it KEEPS comment conventions
         assert _own_heading(root, PLAN_DROP_RULES[0]) in text, \
             f"{name}: build projection lost comment conventions"
+        for rel in BUILD_ONLY_RULES:
+            assert _own_heading(root, rel) in text, f"{name}: build projection lost {rel}"
+            assert text.index(_own_heading(root, rel)) < text.index(PROTOCOL_HEADING), \
+                f"{name}: {rel} is not before the protocol"
         # the protocol sits between the last rule and the ticket, whole
         for line in PROTOCOL.splitlines()[2:]:
             assert line in text, f"{name}: protocol line missing: {line[:40]!r}"
@@ -179,6 +188,8 @@ def check(root, name, text, *, trimmed):
         # that and reported a correct output as broken.
         h1 = _own_heading(root, PLAN_DROP_RULES[0])
         assert h1 not in text, f"{name}: plan projection kept comment conventions"
+        for rel in BUILD_ONLY_RULES:
+            assert _own_heading(root, rel) not in text, f"{name}: plan projection kept {rel}"
         # the protocol serves the unattended build agent only
         assert PROTOCOL_HEADING not in text, f"{name}: plan projection kept the protocol"
 
