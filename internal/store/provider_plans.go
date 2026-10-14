@@ -42,15 +42,22 @@ func NewProviderPlans(client *firestore.Client) *ProviderPlans {
 	return &ProviderPlans{plans: NewPlans(client), queue: NewQueue(client)}
 }
 
-// Providers lists every plan the owner has recorded, in the order a run walks
-// the configuration, each with what its provider's own allowance windows hold
-// spent at at.
+// Providers lists every configured plan and every plan the owner has recorded,
+// in the order a run walks the configuration, each with what its provider's own
+// allowance windows hold spent at at. A configured plan with no record is listed
+// unpriced and unconfirmed, its usage unreported.
 func (p *ProviderPlans) Providers(ctx context.Context, at time.Time) ([]ProviderPlan, error) {
 	rows, err := p.plans.List(ctx)
 	if err != nil {
 		return nil, err
 	}
-	sortByDispatch(rows, prov.DispatchOrder())
+	order := prov.DispatchOrder()
+	recorded := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		recorded[row.Provider] = true
+	}
+	rows = withConfigured(rows, order)
+	sortByDispatch(rows, order)
 	out := make([]ProviderPlan, 0, len(rows))
 	for _, row := range rows {
 		view := ProviderPlan{
@@ -59,7 +66,7 @@ func (p *ProviderPlans) Providers(ctx context.Context, at time.Time) ([]Provider
 			Verdict:  row.Plan.RecordedVerdict(),
 		}
 		windows := dispatcher.ProviderWindows(row.Provider)
-		if len(windows) > 0 {
+		if recorded[row.Provider] && len(windows) > 0 {
 			spend, err := p.queue.PlanWindows(ctx, row.Provider, windows, at)
 			if err != nil {
 				return nil, err
@@ -75,6 +82,17 @@ func (p *ProviderPlans) Providers(ctx context.Context, at time.Time) ([]Provider
 		out = append(out, view)
 	}
 	return out, nil
+}
+
+// withConfigured adds a row, holding no record, for each plan of order that rows
+// lacks.
+func withConfigured(rows []prov.Listing, order []string) []prov.Listing {
+	for _, plan := range order {
+		if !slices.ContainsFunc(rows, func(r prov.Listing) bool { return r.Provider == plan }) {
+			rows = append(rows, prov.Listing{Provider: plan})
+		}
+	}
+	return rows
 }
 
 // sortByDispatch orders rows the way a run walks the plans of order: those it

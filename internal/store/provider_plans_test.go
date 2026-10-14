@@ -30,3 +30,19 @@ func TestSortByDispatchPutsTheNamedPlansInOrderAndTheOthersLast(t *testing.T) {
 		t.Errorf("order = %v, want %v", got, want)
 	}
 }
+
+// TestWithConfiguredListsAPlanTheStoreHoldsNoRecordOf asserts a configured plan
+// with no stored record still gets a row, holding no plan record, while a
+// recorded plan is not listed twice.
+func TestWithConfiguredListsAPlanTheStoreHoldsNoRecordOf(t *testing.T) {
+	rows := []prov.Listing{{Provider: "gemini", Plan: prov.Plan{Verdict: prov.VerdictAllowed}}}
+
+	got := withConfigured(rows, []string{"command-code", "gemini"})
+
+	if len(got) != 2 || got[0].Provider != "gemini" || got[1].Provider != "command-code" {
+		t.Fatalf("rows = %+v, want gemini then command-code", got)
+	}
+	if got[1].Plan.RecordedVerdict() != prov.VerdictUnconfirmed || got[1].Plan.Definition.MonthlyPrice != 0 {
+		t.Errorf("unrecorded plan = %+v, want unpriced and unconfirmed", got[1].Plan)
+	}
+}
