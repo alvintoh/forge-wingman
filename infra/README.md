@@ -316,8 +316,8 @@ gcloud logging read 'resource.type="cloud_run_job"' --freshness=1h --limit=50
 
 Every phase of a run sends the same projection prefix to the model, so most of
 what it reads is served from the provider's cache. Measured on three runs
-(2026-10-14): 96-98% of a run's input tokens are cache reads, but a phase's
-*first* request varies with how warm that prefix still is:
+(2026-10-14; their run ids were not recorded): 96-98% of a run's input
+tokens are cache reads, but a phase's *first* request varies with how warm that prefix still is:
 
 | Run | First request |
 |---|---|
