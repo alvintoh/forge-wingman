@@ -546,13 +546,6 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 	} else {
 		step.Tokens = usage
 	}
-	if _, err := out.Seek(0, io.SeekStart); err == nil {
-		requests, _ := RequestUsage(out)
-		for i, r := range requests {
-			d.Logger.Info("modelRequest", "phase", string(call.Phase), "round", call.Round, "request", i+1,
-				"input", r.Input, "cacheRead", r.CacheRead, "output", r.Output)
-		}
-	}
 	var text, sessionID string
 	if _, err := out.Seek(0, io.SeekStart); err == nil {
 		text, _ = FinalText(out)
@@ -570,6 +563,16 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 	}
 	step.DurationMS = d.Now().Sub(start).Milliseconds()
 	sum.Steps = append(sum.Steps, step)
+	// The phase's prompt-cache figures are read from the same events, once the
+	// step is in place so its own tokens count toward the phase's total.
+	if _, err := out.Seek(0, io.SeekStart); err == nil {
+		requests, _ := RequestUsage(out)
+		for i, r := range requests {
+			d.Logger.Info("modelRequest", "phase", string(call.Phase), "round", call.Round, "request", i+1,
+				"input", r.Input, "cacheRead", r.CacheRead, "output", r.Output)
+		}
+		recordPhaseCache(sum, call.Phase, requests)
+	}
 	d.Logger.Info("agentFinished", "phase", string(call.Phase), "round", call.Round, "steps", step.Tokens.Steps,
 		"input", step.Tokens.Input, "output", step.Tokens.Output, "cacheRead", step.Tokens.CacheRead,
 		"cost", step.Tokens.Cost, "usageWarning", sum.UsageWarning != "")
@@ -584,6 +587,34 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 		return text, sessionID, stopWith(outcome, reason, runErr)
 	}
 	return text, sessionID, nil
+}
+
+// recordPhaseCache records phase's own prompt-cache figures in sum from the
+// round's requests and the phase's steps: the first request the phase made,
+// kept from its first round that reported one, and the cached share of every
+// input token the phase has read. A phase's later round moves the share without
+// moving its first-request figures (AC1).
+func recordPhaseCache(sum *Summary, phase Phase, requests []Usage) {
+	if len(requests) == 0 {
+		return
+	}
+	if sum.Cache == nil {
+		sum.Cache = map[string]PhaseCache{}
+	}
+	key := string(phase)
+	c, seen := sum.Cache[key]
+	if !seen {
+		c.FirstFresh, c.FirstCached = requests[0].Input, requests[0].CacheRead
+	}
+	var fresh, cached int64
+	for _, st := range sum.Steps {
+		if st.Phase == phase {
+			fresh += st.Tokens.Input
+			cached += st.Tokens.CacheRead
+		}
+	}
+	c.CachedShare = cachedShare(fresh, cached)
+	sum.Cache[key] = c
 }
 
 // addUsageWarning appends warning to the summary's usage warning.

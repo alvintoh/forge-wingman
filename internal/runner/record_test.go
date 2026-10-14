@@ -275,6 +275,7 @@ func TestFinalizeWritesTheWholeRecordFromTheSummary(t *testing.T) {
 		EditedFiles:   []string{"version.go"},
 		DiffLines:     DiffLines{Added: 3},
 		DurationsMS:   map[string]int64{"build": 1200},
+		Cache:         map[string]PhaseCache{"build": {FirstFresh: 10, FirstCached: 90, CachedShare: 0.9}},
 		RuleStackSHA:  testSHA,
 		Branch:        BranchName(testTicket.BranchSegment(), "1-1"),
 		CommitSubject: "feat(x): ABC-12 add a file",
@@ -293,7 +294,7 @@ func TestFinalizeWritesTheWholeRecordFromTheSummary(t *testing.T) {
 		got.DiffLines != sum.DiffLines || got.RuleStackSHA != testSHA || got.Branch != sum.Branch ||
 		got.DurationsMS["build"] != 1200 || !got.StartedAt.Equal(seededAt) || len(got.EditedFiles) != 1 ||
 		got.Phase != PhasePR || got.CommitSubject != sum.CommitSubject || got.CommitBody != sum.CommitBody ||
-		got.PRSummary != sum.PRSummary {
+		got.PRSummary != sum.PRSummary || got.Cache["build"] != sum.Cache["build"] {
 		t.Fatalf("record = %+v", got)
 	}
 }

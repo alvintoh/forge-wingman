@@ -45,6 +45,8 @@ type Summary struct {
 	RuleStackSHA string           `json:"rule_stack_sha,omitempty"`
 	Branch       string           `json:"branch,omitempty"`
 	UsageWarning string           `json:"usage_warning,omitempty"`
+	// Cache is each phase's own prompt-cache figures, keyed by phase (AC1).
+	Cache map[string]PhaseCache `json:"cache,omitempty"`
 	// Ready is FR-5's draft-vs-ready decision, from the pre-PR loop (FR-28):
 	// true only when the checks passed and the review found nothing open.
 	Ready      bool   `json:"ready"`
@@ -78,6 +80,28 @@ type Step struct {
 	// Rates.At, but nothing of that time survives the events themselves, so
 	// the record job reads this back to tag the run's own time of use.
 	At time.Time `firestore:"at" json:"at"`
+}
+
+// PhaseCache is one phase's prompt-cache figures: what its first request read
+// fresh and from the provider's cache, and the cached share of every input token
+// the phase read. Both harnesses report a request's input exclusive of what it
+// read from cache, so a first request's fresh tokens are its own input and its
+// cached tokens its cache read.
+type PhaseCache struct {
+	FirstFresh  int64 `firestore:"first_fresh" json:"first_fresh"`
+	FirstCached int64 `firestore:"first_cached" json:"first_cached"`
+	// CachedShare is the share of the phase's whole input — fresh and cached
+	// together — that came from the provider's cache.
+	CachedShare float64 `firestore:"cached_share" json:"cached_share"`
+}
+
+// cachedShare is the share of a fresh + cached input total that came from the
+// provider's cache, zero when nothing was read at all.
+func cachedShare(fresh, cached int64) float64 {
+	if total := fresh + cached; total > 0 {
+		return float64(cached) / float64(total)
+	}
+	return 0
 }
 
 type ending struct {
@@ -288,6 +312,17 @@ func (s Summary) validate(attemptID string, t Ticket, now time.Time) error {
 		}
 		if ms < 0 || ms > maxPhaseDuration.Milliseconds() {
 			return fmt.Errorf("duration %d ms for %s is out of range", ms, p)
+		}
+	}
+	for p, c := range s.Cache {
+		if !buildPhases[Phase(p)] {
+			return fmt.Errorf("cache figures for %q, which is not a build phase", truncate(p, logErrorLimit))
+		}
+		if c.FirstFresh < 0 || c.FirstFresh > maxCount || c.FirstCached < 0 || c.FirstCached > maxCount {
+			return errors.New("a phase's first-request token count is out of range")
+		}
+		if !(c.CachedShare >= 0 && c.CachedShare <= 1) {
+			return errors.New("a phase's cached share is outside 0-1")
 		}
 	}
 	if !printable(s.CommitSubject) || !printable(s.PRSummary) {

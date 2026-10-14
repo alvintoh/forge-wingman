@@ -129,13 +129,14 @@ func newMux(spa fs.FS, logger *slog.Logger, comparison ComparisonReader) *http.S
 	return mux
 }
 
-// comparisonResponse is the comparison endpoint's wire shape. It carries
-// aggregates only: the run records it reads hold ticket titles and bodies, and
-// what gates this binary today is IAP rather than the endpoint itself, so none
-// of them is ever served from here.
+// comparisonResponse is the comparison endpoint's wire shape. It carries no
+// ticket text: the run records it reads hold ticket titles and bodies, and what
+// gates this binary today is IAP rather than the endpoint itself, so none of them
+// is ever served from here.
 type comparisonResponse struct {
 	Models    []modelComparison    `json:"models"`
 	Providers []providerComparison `json:"providers"`
+	Runs      []runCache           `json:"runs"`
 	Drifted   []driftedRun         `json:"drifted_runs"`
 }
 
@@ -156,6 +157,15 @@ type providerComparison struct {
 	PeakCostUSD              float64 `json:"peak_cost_usd"`
 	OffPeakTickets           int     `json:"offpeak_tickets"`
 	OffPeakCostUSD           float64 `json:"offpeak_cost_usd"`
+}
+
+// runCache is one run's own prompt-cache share: the share of its input tokens
+// that came from the provider's cache.
+type runCache struct {
+	RunID       string  `json:"run_id"`
+	Provider    string  `json:"provider"`
+	Model       string  `json:"model"`
+	CachedShare float64 `json:"cached_share"`
 }
 
 type driftedRun struct {
@@ -181,6 +191,11 @@ func renderComparison(c store.Comparison) comparisonResponse {
 			Provider: p.Provider, TrailingCostPerTicketUSD: p.TrailingCostPerTicket.USD(), Sample: p.Sample,
 			PeakTickets: p.PeakTickets, PeakCostUSD: p.PeakCost.USD(),
 			OffPeakTickets: p.OffPeakTickets, OffPeakCostUSD: p.OffPeakCost.USD(),
+		})
+	}
+	for _, r := range c.Runs {
+		out.Runs = append(out.Runs, runCache{
+			RunID: r.RunID, Provider: r.Provider, Model: r.Model, CachedShare: r.CachedShare,
 		})
 	}
 	for _, d := range c.Drifted {

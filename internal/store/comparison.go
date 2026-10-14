@@ -15,11 +15,13 @@ import (
 )
 
 // Comparison is what the store's settled runs say about the models and
-// providers that produced them (AC2, AC3): every number is read from a record
-// the product already wrote, so comparing models costs no spend of its own.
+// providers that produced them and about each run's own prompt-cache share
+// (AC2, AC3): every number is read from a record the product already wrote, so
+// comparing models costs no spend of its own.
 type Comparison struct {
 	Models    []ModelComparison
 	Providers []ProviderComparison
+	Runs      []RunCache
 	Drifted   []DriftedRun
 }
 
@@ -50,6 +52,17 @@ type ProviderComparison struct {
 	PeakCost              money.Micros
 	OffPeakTickets        int
 	OffPeakCost           money.Micros
+}
+
+// RunCache is one settled run's own prompt-cache share, read from the input and
+// cache-read tokens the record already holds (AC1, AC2).
+type RunCache struct {
+	RunID    string
+	Provider string
+	Model    string
+	// CachedShare is the share of the run's input tokens — fresh and cached
+	// together — that came from the provider's cache.
+	CachedShare float64
 }
 
 // DriftedRun is one recent run whose settled cost was flagged as sitting above
@@ -89,7 +102,8 @@ func (r *Records) ProviderTrailingCost(ctx context.Context, plan string, since t
 }
 
 // Comparison aggregates every settled run in the window into per-model and
-// per-provider records, and lists the runs that were flagged as cost drift.
+// per-provider records, lists each run that read input with the share of it the
+// provider served from cache, and lists the runs that were flagged as cost drift.
 func (r *Records) Comparison(ctx context.Context, since time.Time) (Comparison, error) {
 	recs, err := r.settledSince(ctx, since)
 	if err != nil {
@@ -100,6 +114,7 @@ func (r *Records) Comparison(ctx context.Context, since time.Time) (Comparison, 
 
 	models := map[string]*modelTotal{}
 	providers := map[string]*providerTotal{}
+	var runs []RunCache
 	var drifted []DriftedRun
 	for _, rec := range recs {
 		if len(rec.Steps) == 0 {
@@ -145,10 +160,17 @@ func (r *Records) Comparison(ctx context.Context, since time.Time) (Comparison, 
 				Cost: rec.SettledProviderCostMicros, CostDrift: rec.CostDrift,
 			})
 		}
+		// A run that read no input at all has no share to report, so it is left
+		// out rather than printed as a cold one.
+		if rec.Tokens.Input+rec.Tokens.CacheRead > 0 {
+			runs = append(runs, RunCache{RunID: rec.RunID, Provider: rec.Plan, Model: model,
+				CachedShare: rec.CachedShare()})
+		}
 	}
 	slices.Reverse(drifted)
+	slices.Reverse(runs)
 
-	out := Comparison{Drifted: drifted}
+	out := Comparison{Runs: runs, Drifted: drifted}
 	for model, m := range models {
 		out.Models = append(out.Models, ModelComparison{
 			Model: model, Tickets: m.tickets, Passed: m.passed,

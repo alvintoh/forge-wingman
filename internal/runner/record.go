@@ -145,6 +145,10 @@ type Record struct {
 	Phase   Phase  `firestore:"phase"`
 	Steps   []Step `firestore:"steps"`
 	Tokens  Usage  `firestore:"tokens"`
+	// Cache is each phase's prompt-cache figures, keyed by phase: what its first
+	// request read fresh and from cache, and the cached share of the phase's
+	// whole input (AC1).
+	Cache map[string]PhaseCache `firestore:"cache"`
 	// ProviderVerdict is the owner's verdict on the run's provider plan, never read from a summary.
 	ProviderVerdict providers.Verdict `firestore:"provider_verdict"`
 	// ModelLabels is what the ticket named at admission, never rewritten by the run.
@@ -369,6 +373,7 @@ func NewRecord(id string, t Ticket, now time.Time) Record {
 		SizedBy:     t.SizedBy,
 		FrontEnd:    t.FrontEnd,
 		DurationsMS: map[string]int64{},
+		Cache:       map[string]PhaseCache{},
 		JobResults:  map[string]string{},
 		StartedAt:   now,
 	}
@@ -589,6 +594,10 @@ func (r Record) Succeeded() bool {
 	return r.Outcome == OutcomePROpened || r.Outcome == OutcomeNoChanges
 }
 
+// CachedShare is the share of the run's own input tokens that came from the
+// provider's cache: zero for a run that read no input at all.
+func (r Record) CachedShare() float64 { return cachedShare(r.Tokens.Input, r.Tokens.CacheRead) }
+
 // breakerStops are the systemic stops that halt every dispatch until an
 // operator resets the breaker. An exhausted allowance is one only once the
 // plan's free models have refused too.
@@ -612,6 +621,9 @@ func (s Summary) apply(rec *Record) {
 	rec.DiffLines = s.DiffLines
 	for p, ms := range s.DurationsMS {
 		rec.DurationsMS[p] = ms
+	}
+	for p, c := range s.Cache {
+		rec.Cache[p] = c
 	}
 	rec.RuleStackSHA = s.RuleStackSHA
 	rec.Branch = s.Branch
