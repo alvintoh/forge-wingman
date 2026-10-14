@@ -563,6 +563,7 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 	}
 	step.DurationMS = d.Now().Sub(start).Milliseconds()
 	sum.Steps = append(sum.Steps, step)
+	prog := readProgress(out, sum)
 	// The phase's prompt-cache figures are read from the same events, once the
 	// step is in place so its own tokens count toward the phase's total.
 	if _, err := out.Seek(0, io.SeekStart); err == nil {
@@ -578,6 +579,10 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 		"cost", step.Tokens.Cost, "usageWarning", sum.UsageWarning != "")
 
 	switch {
+	case prog.stalled(call.Phase):
+		d.Logger.Warn("agentNoProgress", "phase", string(call.Phase), "round", call.Round,
+			"steps", prog.noProgress, "peakContext", prog.peakContext)
+		return text, sessionID, stopWith(OutcomeAgentFailed, StopAgentNoProgress, errors.New(prog.stalledDetail()))
 	case timedOut:
 		logAgentFailure(d.Logger, call, OutcomeAgentFailed, StopAgentTimeout, runErr, stderrPath, c.Secrets)
 		return text, sessionID, stopWith(OutcomeAgentFailed, StopAgentTimeout, fmt.Errorf("agent exceeded %s", timeout))

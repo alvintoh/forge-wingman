@@ -282,6 +282,9 @@ func TestFinalizeWritesTheWholeRecordFromTheSummary(t *testing.T) {
 		CommitBody:    "- add version.go",
 		PRSummary:     "Adds a file.",
 		StartedAt:     started,
+		// The files the agent read and the largest context a request read.
+		ReadFiles:         []string{"version.go", "main.go"},
+		PeakContextTokens: 480000,
 	}
 	store := seeded(t)
 	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: encoded(t, sum), RunResult: "success",
@@ -294,7 +297,8 @@ func TestFinalizeWritesTheWholeRecordFromTheSummary(t *testing.T) {
 		got.DiffLines != sum.DiffLines || got.RuleStackSHA != testSHA || got.Branch != sum.Branch ||
 		got.DurationsMS["build"] != 1200 || !got.StartedAt.Equal(seededAt) || len(got.EditedFiles) != 1 ||
 		got.Phase != PhasePR || got.CommitSubject != sum.CommitSubject || got.CommitBody != sum.CommitBody ||
-		got.PRSummary != sum.PRSummary || got.Cache["build"] != sum.Cache["build"] {
+		got.PRSummary != sum.PRSummary || got.Cache["build"] != sum.Cache["build"] ||
+		!slices.Equal(got.ReadFiles, sum.ReadFiles) || got.PeakContextTokens != sum.PeakContextTokens {
 		t.Fatalf("record = %+v", got)
 	}
 }

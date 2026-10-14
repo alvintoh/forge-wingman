@@ -209,7 +209,7 @@ func (a OpencodeAgent) Run(ctx context.Context, dir, session, prompt, rules stri
 	cmd.Stdin = strings.NewReader(prompt)
 	watched := &markerWriter{w: stderr, marker: []byte(opencodeFallbackMarker)}
 	return runAgentCLI(cmd, a.Home, watched, func(events io.Reader, _ error) error {
-		if err := translateOpencodeEvents(events, stdout, stderr); err != nil {
+		if err := translateOpencodeEvents(events, dir, stdout, stderr); err != nil {
 			return err
 		}
 		if watched.seen {
@@ -348,6 +348,13 @@ type opencodeEvent struct {
 		Text   string          `json:"text"`
 		Tokens *opencodeTokens `json:"tokens"`
 		Cost   float64         `json:"cost"`
+		Tool   string          `json:"tool"`
+		State  struct {
+			Status string `json:"status"`
+			Input  struct {
+				FilePath string `json:"filePath"`
+			} `json:"input"`
+		} `json:"state"`
 	} `json:"part"`
 	Error *struct {
 		Name string `json:"name"`
@@ -369,17 +376,24 @@ type opencodeTokens struct {
 	} `json:"cache"`
 }
 
+// opencodeToolCompleted is the state a tool call's part reaches once it has
+// run: one still running, or one that failed, is not what the request did.
+const opencodeToolCompleted = "completed"
+
 // translateOpencodeEvents rewrites opencode's events as the runner's own event
 // shape: the session, each text part, and one step per step_finish, stamped
-// with the event's time and with reasoning counted in its output. An error
-// event is echoed to stderr, where Classify reads it (AC3); the fallback
+// with the event's time, with reasoning counted in its output and with the tool
+// calls that request made — this harness reports a call before the step it
+// belongs to, so the calls seen since the last step go onto the next one. An
+// error event is echoed to stderr, where Classify reads it (AC3); the fallback
 // warning on a line of its own fails the run.
-func translateOpencodeEvents(r io.Reader, stdout, stderr io.Writer) error {
+func translateOpencodeEvents(r io.Reader, dir string, stdout, stderr io.Writer) error {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, min(64*1024, maxEventLine)), maxEventLine)
 	enc := json.NewEncoder(stdout)
 	var session string
 	var fellBack bool
+	var tools []ToolUse
 	for sc.Scan() {
 		var ev opencodeEvent
 		if json.Unmarshal(sc.Bytes(), &ev) != nil {
@@ -392,8 +406,35 @@ func translateOpencodeEvents(r io.Reader, stdout, stderr io.Writer) error {
 				return err
 			}
 		}
-		if err := emitOpencodeEvent(enc, stderr, ev); err != nil {
-			return err
+		switch {
+		case ev.Type == "tool_use":
+			if tool, ok := opencodeToolUse(ev, dir); ok {
+				tools = append(tools, tool)
+			}
+		case ev.Type == "step_finish" && ev.Part.Tokens != nil:
+			t := ev.Part.Tokens
+			var e event
+			e.Type = "step_finish"
+			e.Part.Tokens.Input = t.Input
+			e.Part.Tokens.Output = t.Output + t.Reasoning
+			e.Part.Tokens.Reasoning = t.Reasoning
+			e.Part.Tokens.Cache.Read = t.Cache.Read
+			e.Part.Tokens.Cache.Write = t.Cache.Write
+			e.Part.Cost = ev.Part.Cost
+			e.Part.Time = ev.Timestamp
+			e.Part.Tools = tools
+			tools = nil
+			if err := enc.Encode(e); err != nil {
+				return err
+			}
+		case ev.Type == "text" && ev.Part.Text != "":
+			if err := enc.Encode(newTextEvent(ev.Part.Text)); err != nil {
+				return err
+			}
+		case ev.Type == "error" && ev.Error != nil:
+			if _, err := fmt.Fprintf(stderr, "opencode error: %s: %s\n", ev.Error.Name, ev.Error.Data.Message); err != nil {
+				return err
+			}
 		}
 	}
 	if err := sc.Err(); err != nil {
@@ -405,25 +446,11 @@ func translateOpencodeEvents(r io.Reader, stdout, stderr io.Writer) error {
 	return nil
 }
 
-func emitOpencodeEvent(enc *json.Encoder, stderr io.Writer, ev opencodeEvent) error {
-	switch {
-	case ev.Type == "text" && ev.Part.Text != "":
-		return enc.Encode(newTextEvent(ev.Part.Text))
-	case ev.Type == "step_finish" && ev.Part.Tokens != nil:
-		t := ev.Part.Tokens
-		var e event
-		e.Type = "step_finish"
-		e.Part.Tokens.Input = t.Input
-		e.Part.Tokens.Output = t.Output + t.Reasoning
-		e.Part.Tokens.Reasoning = t.Reasoning
-		e.Part.Tokens.Cache.Read = t.Cache.Read
-		e.Part.Tokens.Cache.Write = t.Cache.Write
-		e.Part.Cost = ev.Part.Cost
-		e.Part.Time = ev.Timestamp
-		return enc.Encode(e)
-	case ev.Type == "error" && ev.Error != nil:
-		_, err := fmt.Fprintf(stderr, "opencode error: %s: %s\n", ev.Error.Name, ev.Error.Data.Message)
-		return err
+// opencodeToolUse is one tool call a step made, when the call ran to
+// completion. A tool that names no file is reported without a path.
+func opencodeToolUse(ev opencodeEvent, dir string) (ToolUse, bool) {
+	if ev.Part.Tool == "" || ev.Part.State.Status != opencodeToolCompleted {
+		return ToolUse{}, false
 	}
-	return nil
+	return ToolUse{Tool: ev.Part.Tool, Path: repoPath(dir, ev.Part.State.Input.FilePath)}, true
 }

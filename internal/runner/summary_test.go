@@ -2,6 +2,7 @@ package runner
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -95,6 +96,10 @@ func TestParseSummaryRejects(t *testing.T) {
 		{"an edited file above the repository", func(s *Summary) { s.EditedFiles = []string{"../x"} }},
 		{"an edited file through a parent segment", func(s *Summary) { s.EditedFiles = []string{"a/../b"} }},
 		{"an edited file ending in a parent segment", func(s *Summary) { s.EditedFiles = []string{"a/.."} }},
+		{"an absolute read file", func(s *Summary) { s.ReadFiles = []string{"/etc/passwd"} }},
+		{"a read file through a parent segment", func(s *Summary) { s.ReadFiles = []string{"a/../b"} }},
+		{"a negative peak context", func(s *Summary) { s.PeakContextTokens = -1 }},
+		{"a peak context over the ceiling", func(s *Summary) { s.PeakContextTokens = maxCount + 1 }},
 		{"a start time over a week old", func(s *Summary) { s.StartedAt = finalizeNow.Add(-8 * 24 * time.Hour) }},
 		{"another run's completions", func(s *Summary) { s.Steps[0].CompletionsObject = "completions/1-2-build-1.jsonl" }},
 		{"a completions path escape", func(s *Summary) { s.Steps[0].CompletionsObject = "completions/../x.jsonl" }},
@@ -378,5 +383,71 @@ func TestStepRejectsAModelTooLongToRecord(t *testing.T) {
 	step.Model = "p/" + strings.Repeat("a", maxModelBytes-2)
 	if err := step.validate("1-1"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestParseSummaryKeepsTheAgentsReadsAndPeakContext asserts the files an agent
+// read and the largest context a request read survive the summary round trip.
+func TestParseSummaryKeepsTheAgentsReadsAndPeakContext(t *testing.T) {
+	s := validSummary()
+	s.ReadFiles = []string{"a.go", "b.go"}
+	s.PeakContextTokens = 480000
+	raw, err := s.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParseSummary(raw, "1-1", testTicket, finalizeNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got.ReadFiles, s.ReadFiles) || got.PeakContextTokens != s.PeakContextTokens {
+		t.Fatalf("read files %q, peak context %d, want %q and %d",
+			got.ReadFiles, got.PeakContextTokens, s.ReadFiles, s.PeakContextTokens)
+	}
+}
+
+// TestParseSummaryRejectsTooManyReadFiles covers a summary that did not come
+// through Encode, which is what caps a build's own list: a run reports the
+// files it read, never an unbounded pile of them.
+func TestParseSummaryRejectsTooManyReadFiles(t *testing.T) {
+	s := validSummary()
+	s.ReadFiles = make([]string, maxEditedFiles+1)
+	for i := range s.ReadFiles {
+		s.ReadFiles[i] = "a.go"
+	}
+	raw, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseSummary(string(raw), "1-1", testTicket, finalizeNow); err == nil {
+		t.Fatal("a summary carrying more read files than a run can report was accepted")
+	}
+}
+
+// TestEncodeTrimsFilesReadBeforeSteps keeps the run's own steps, which say what
+// the agent did, over a list of read files too large to carry whole.
+func TestEncodeTrimsFilesReadBeforeSteps(t *testing.T) {
+	s := validSummary()
+	s.EditedFiles = nil
+	s.ReadFiles = make([]string, maxEditedFiles)
+	for i := range s.ReadFiles {
+		s.ReadFiles[i] = strings.Repeat("a", maxPathBytes)
+	}
+	raw, err := s.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > maxSummaryBytes {
+		t.Fatalf("summary is %d bytes, over %d", len(raw), maxSummaryBytes)
+	}
+	var got Summary
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Steps) != len(s.Steps) {
+		t.Fatalf("kept %d of %d steps, want every step kept", len(got.Steps), len(s.Steps))
+	}
+	if len(got.ReadFiles) == 0 || len(got.ReadFiles) >= maxEditedFiles {
+		t.Fatalf("kept %d read files, want some trimmed", len(got.ReadFiles))
 	}
 }

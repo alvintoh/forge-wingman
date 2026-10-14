@@ -2743,3 +2743,119 @@ func TestDetailPartsDropsEmptyParts(t *testing.T) {
 		}
 	}
 }
+
+// readsOnlyEvents is one agent invocation's stream that only reads: n model
+// requests, each carrying a read of one file and no edit or write. The last
+// request reads the largest context, so the invocation's peak context is
+// unambiguous.
+func readsOnlyEvents(n int) string {
+	var b strings.Builder
+	for i := range n {
+		fmt.Fprintf(&b, `{"type":"step_finish","part":{"tokens":{"input":%d,"cache":{"read":%d}},`+
+			`"tools":[{"tool":"read","path":"pkg/file-%d.go"}]}}`+"\n", i+1, i+1, i)
+	}
+	return b.String()
+}
+
+// TestBuildStopsWhenTheAgentMakesNoProgress covers a build phase that only
+// reads: it stops at the limit rather than at the wall clock, and its summary
+// names what the agent did on the way.
+func TestBuildStopsWhenTheAgentMakesNoProgress(t *testing.T) {
+	agent := &fakeAgent{edit: edit("version.go", "package x\n"), events: readsOnlyEvents(DEFAULT_NO_PROGRESS_STEPS)}
+	deps, _, reported := testDeps(validObjects(), agent)
+	c := testConfig(t, initRepo(t))
+
+	_, err := Build(context.Background(), deps, c)
+	var stop *StopError
+	if !errors.As(err, &stop) || stop.Outcome != OutcomeAgentFailed || stop.Reason != StopAgentNoProgress {
+		t.Fatalf("err = %v, want the no-progress stop", err)
+	}
+	sum := reported.last(t)
+	if sum.Phase != PhaseBuild {
+		t.Fatalf("phase = %s, want the build phase", sum.Phase)
+	}
+	want := fmt.Sprintf("no edit or write in %d steps (peak context %d tokens)",
+		DEFAULT_NO_PROGRESS_STEPS, 2*DEFAULT_NO_PROGRESS_STEPS)
+	if sum.StopDetail != want {
+		t.Fatalf("stop detail = %q, want %q", sum.StopDetail, want)
+	}
+	if len(sum.ReadFiles) != DEFAULT_NO_PROGRESS_STEPS || sum.ReadFiles[0] != "pkg/file-0.go" {
+		t.Fatalf("files read = %q, want the %d files the agent read", sum.ReadFiles, DEFAULT_NO_PROGRESS_STEPS)
+	}
+	if sum.PeakContextTokens != 2*DEFAULT_NO_PROGRESS_STEPS {
+		t.Fatalf("peak context = %d, want the largest request's own context", sum.PeakContextTokens)
+	}
+	if len(agent.prompts) != 1 {
+		t.Fatalf("the build agent ran %d times, want the one round it stalled in", len(agent.prompts))
+	}
+}
+
+// TestBuildDoesNotStopWhenTheAgentEdits covers a run that edits within the
+// limit: every read stretch sits under it, so the run is exactly the run it was
+// before the guard.
+func TestBuildDoesNotStopWhenTheAgentEdits(t *testing.T) {
+	reads := readsOnlyEvents(DEFAULT_NO_PROGRESS_STEPS - 1)
+	writeStep := `{"type":"step_finish","part":{"tokens":{"input":1},"tools":[{"tool":"write","path":"version.go"}]}}` + "\n"
+	agent := &fakeAgent{
+		edit:   edit("version.go", "package x\n"),
+		events: reads + writeStep + reads,
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if sum := reported.last(t); sum.Outcome != OutcomeBuilt || sum.StopReason != "" {
+		t.Fatalf("summary = %s/%s, want the ordinary built run", sum.Outcome, sum.StopReason)
+	}
+}
+
+// TestBuildFixRoundResetsTheNoProgressCount covers the fix round a review's
+// findings drive: it is its own invocation, so it measures its own stream
+// rather than inheriting the round before it.
+func TestBuildFixRoundResetsTheNoProgressCount(t *testing.T) {
+	underLimit := readsOnlyEvents(DEFAULT_NO_PROGRESS_STEPS - 1)
+	agent := &fakeAgent{edit: edit("version.go", "package x\n"), eventsFn: func(int) string { return underLimit }}
+	deps, _, reported := testDeps(validObjects(), agent)
+	deps.ReviewAgent = &fakeAgent{events: reviewEvent("the ticket also asks for a second file")}
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.prompts) != 2 {
+		t.Fatalf("the build agent ran %d times, want the build round then the fix round", len(agent.prompts))
+	}
+	if !strings.Contains(agent.prompts[1], "a second file") {
+		t.Fatalf("fix round prompt = %q, want the review's finding", agent.prompts[1])
+	}
+	if sum := reported.last(t); sum.Outcome != OutcomeBuilt {
+		t.Fatalf("summary = %s/%s, want the two rounds' counts measured apart", sum.Outcome, sum.StopReason)
+	}
+}
+
+// TestBuildDoesNotGuardThePlanPhase covers the plan pass: it never edits, so a
+// plan that reads its way through the repository is doing its job.
+func TestBuildDoesNotGuardThePlanPhase(t *testing.T) {
+	planAgent := &fakeAgent{events: readsOnlyEvents(2*DEFAULT_NO_PROGRESS_STEPS) +
+		planEvent("```plan-files\nversion.go\n```")}
+	buildAgent := &fakeAgent{edit: edit("version.go", "package x\n")}
+	objects := validObjects()
+	objects["projections/"+testSHA+"/"+planProjectionFile] = []byte("# Plan rules\n\n" + ticketSentinel)
+	deps, _, reported := testDeps(objects, buildAgent)
+	deps.PlanAgent = planAgent
+	c := testConfig(t, initRepo(t))
+	c.Ticket.Size = "M"
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	sum := reported.last(t)
+	if sum.Outcome != OutcomeBuilt {
+		t.Fatalf("summary = %s/%s, want the plan phase exempt so the build proceeds", sum.Outcome, sum.StopReason)
+	}
+	if len(sum.ReadFiles) != 2*DEFAULT_NO_PROGRESS_STEPS {
+		t.Fatalf("files read = %d, want the plan agent's own reads in the run's summary", len(sum.ReadFiles))
+	}
+}

@@ -320,8 +320,9 @@ func TestOmpAgentNeedsAHomeAndAKey(t *testing.T) {
 
 // TestTranslateOmpEvents pins the event translation: the session line, one
 // timed step per assistant request with omp's own figures, one text part per
-// assistant text, user and tool messages ignored, and a turn-fatal error
-// echoed to stderr.
+// assistant text, each step carrying the calls its own request made — one that
+// ran, with the path it touched, and never one that was refused — and a
+// turn-fatal error echoed to stderr.
 func TestTranslateOmpEvents(t *testing.T) {
 	stream := strings.Join([]string{
 		`{"type":"session","version":3,"id":"ses_1"}`,
@@ -329,12 +330,18 @@ func TestTranslateOmpEvents(t *testing.T) {
 		`{"type":"message_end","message":{"role":"assistant","timestamp":1791413995593,"stopReason":"toolUse",` +
 			`"content":[{"type":"thinking","thinking":"hm"},{"type":"text","text":"first"}],` +
 			`"usage":{"input":10,"output":3,"cacheRead":4,"cacheWrite":5,"reasoningTokens":2,"cost":{"total":0.5}}}}`,
+		`{"type":"tool_execution_start","toolCallId":"c1","toolName":"read","args":{"path":"README.md"}}`,
+		`{"type":"tool_execution_end","toolCallId":"c1","toolName":"read","result":{},"isError":false}`,
+		`{"type":"tool_execution_start","toolCallId":"c2","toolName":"edit","args":{"path":"a.go"}}`,
+		`{"type":"tool_execution_end","toolCallId":"c2","toolName":"edit","result":{},"isError":true}`,
+		`{"type":"tool_execution_start","toolCallId":"c3","toolName":"bash","args":{"command":"ls -a"}}`,
+		`{"type":"tool_execution_end","toolCallId":"c3","toolName":"bash","result":{},"isError":false}`,
 		`{"type":"message_end","message":{"role":"toolResult","content":[{"type":"text","text":"tool output"}]}}`,
 		`{"type":"message_end","message":{"role":"assistant","timestamp":1791413997525,"stopReason":"error",` +
 			`"errorMessage":"insufficient balance","content":[{"type":"text","text":"last"}],"usage":{"input":1,"output":1}}}`,
 	}, "\n")
 	var stdout, stderr strings.Builder
-	if err := translateOmpEvents(strings.NewReader(stream), &stdout, &stderr); err != nil {
+	if err := translateOmpEvents(strings.NewReader(stream), t.TempDir(), &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
 	out := stdout.String()
@@ -346,6 +353,24 @@ func TestTranslateOmpEvents(t *testing.T) {
 	}
 	if !strings.Contains(out, `"time":1791413995593`) {
 		t.Errorf("the steps carry no request time:\n%s", out)
+	}
+	var steps []event
+	if err := scanEvents(strings.NewReader(out), func(e event) {
+		if e.Type == "step_finish" {
+			steps = append(steps, e)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(steps) != 2 {
+		t.Fatalf("steps = %d, want the two requests", len(steps))
+	}
+	want := []ToolUse{{Tool: "read", Path: "README.md"}, {Tool: "bash"}}
+	if !slices.Equal(steps[0].Part.Tools, want) {
+		t.Fatalf("first step's calls = %+v, want %+v: a refused edit is not what the request did", steps[0].Part.Tools, want)
+	}
+	if len(steps[1].Part.Tools) != 0 {
+		t.Fatalf("second step's calls = %+v, want none", steps[1].Part.Tools)
 	}
 	if strings.Contains(out, "prompt") || strings.Contains(out, "tool output") {
 		t.Errorf("a user or tool message was translated:\n%s", out)
@@ -363,7 +388,7 @@ func TestTranslateOmpEvents(t *testing.T) {
 func TestOmpHarnessClassifiesAnExhaustedPlanFromItsErrorText(t *testing.T) {
 	var stdout, stderr strings.Builder
 	msg := `{"type":"message_end","message":{"role":"assistant","stopReason":"error","errorMessage":"402 Insufficient balance"}}`
-	if err := translateOmpEvents(strings.NewReader(msg), &stdout, &stderr); err != nil {
+	if err := translateOmpEvents(strings.NewReader(msg), t.TempDir(), &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
 	if outcome, reason := (OmpHarness{}).Classify(stderr.String(), errors.New("exit status 1")); outcome != OutcomeBudgetStop || reason != StopAllowanceExhausted {

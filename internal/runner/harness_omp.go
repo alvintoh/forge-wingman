@@ -219,16 +219,22 @@ func (a OmpAgent) Run(ctx context.Context, dir, session, prompt, rules string, s
 	}
 	cmd.Stdin = strings.NewReader(prompt)
 	return runAgentCLI(cmd, a.Home, stderr, func(events io.Reader, _ error) error {
-		return translateOmpEvents(events, stdout, stderr)
+		return translateOmpEvents(events, dir, stdout, stderr)
 	})
 }
 
-// ompEvent is one line of omp's JSON output: the session line, or an event
-// carrying a finished message.
+// ompEvent is one line of omp's JSON output: the session line, an event
+// carrying a finished message, or one tool call's start or end.
 type ompEvent struct {
-	Type    string      `json:"type"`
-	ID      string      `json:"id"`
-	Message *ompMessage `json:"message"`
+	Type       string      `json:"type"`
+	ID         string      `json:"id"`
+	Message    *ompMessage `json:"message"`
+	ToolCallID string      `json:"toolCallId"`
+	ToolName   string      `json:"toolName"`
+	IsError    bool        `json:"isError"`
+	Args       struct {
+		Path string `json:"path"`
+	} `json:"args"`
 }
 
 type ompMessage struct {
@@ -258,12 +264,28 @@ type ompUsage struct {
 
 // translateOmpEvents rewrites omp's events as the runner's own event shape: the
 // session, one text part per finished assistant text, and one step per request,
-// stamped with the request's time. A turn-fatal error, which omp reports only
-// in the message, is echoed to stderr, where Classify reads it (AC3).
-func translateOmpEvents(r io.Reader, stdout, stderr io.Writer) error {
+// stamped with the request's time and carrying the tool calls that request
+// made — this harness reports a request's usage before the calls it decided on,
+// so the step is held until the tools that follow it have run. A turn-fatal
+// error, which omp reports only in the message, is echoed to stderr, where
+// Classify reads it (AC3).
+func translateOmpEvents(r io.Reader, dir string, stdout, stderr io.Writer) error {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, min(64*1024, maxEventLine)), maxEventLine)
 	enc := json.NewEncoder(stdout)
+	// paths are the calls started but not yet ended, by call id: the path is on
+	// the start — which a call that is refused still gets — and the outcome on
+	// the end.
+	paths := map[string]string{}
+	var step *event
+	flush := func() error {
+		if step == nil {
+			return nil
+		}
+		e := *step
+		step = nil
+		return enc.Encode(e)
+	}
 	for sc.Scan() {
 		var ev ompEvent
 		if json.Unmarshal(sc.Bytes(), &ev) != nil {
@@ -274,16 +296,36 @@ func translateOmpEvents(r io.Reader, stdout, stderr io.Writer) error {
 			if err := enc.Encode(sessionEvent{Type: "session", SessionID: ev.ID}); err != nil {
 				return err
 			}
+		case ev.Type == "tool_execution_start" && ev.ToolCallID != "":
+			paths[ev.ToolCallID] = repoPath(dir, ev.Args.Path)
+		case ev.Type == "tool_execution_end" && ev.ToolName != "":
+			path := paths[ev.ToolCallID]
+			delete(paths, ev.ToolCallID)
+			// A call that failed or was refused never ran, so it is not what
+			// the request did.
+			if ev.IsError || step == nil {
+				continue
+			}
+			step.Part.Tools = append(step.Part.Tools, ToolUse{Tool: ev.ToolName, Path: path})
 		case ev.Type == "message_end" && ev.Message != nil && ev.Message.Role == "assistant":
-			if err := emitOmpMessage(enc, stderr, *ev.Message); err != nil {
+			if err := flush(); err != nil {
 				return err
 			}
+			if err := emitOmpText(enc, stderr, *ev.Message); err != nil {
+				return err
+			}
+			step = ompStep(*ev.Message)
 		}
 	}
-	return sc.Err()
+	if err := sc.Err(); err != nil {
+		return err
+	}
+	return flush()
 }
 
-func emitOmpMessage(enc *json.Encoder, stderr io.Writer, m ompMessage) error {
+// emitOmpText writes one assistant message's text parts, and the turn-fatal
+// error it reports in the message alone, which Classify reads on stderr.
+func emitOmpText(enc *json.Encoder, stderr io.Writer, m ompMessage) error {
 	for _, c := range m.Content {
 		if c.Type == "text" && c.Text != "" {
 			if err := enc.Encode(newTextEvent(c.Text)); err != nil {
@@ -291,11 +333,16 @@ func emitOmpMessage(enc *json.Encoder, stderr io.Writer, m ompMessage) error {
 			}
 		}
 	}
-	if m.StopReason == "error" && m.ErrorMessage != "" {
-		if _, err := fmt.Fprintf(stderr, "omp error: %s\n", m.ErrorMessage); err != nil {
-			return err
-		}
+	if m.StopReason != "error" || m.ErrorMessage == "" {
+		return nil
 	}
+	_, err := fmt.Fprintf(stderr, "omp error: %s\n", m.ErrorMessage)
+	return err
+}
+
+// ompStep is one assistant message's own step — the request's tokens and cost —
+// or nil for a message that carries no usage.
+func ompStep(m ompMessage) *event {
 	if m.Usage == nil {
 		return nil
 	}
@@ -308,5 +355,5 @@ func emitOmpMessage(enc *json.Encoder, stderr io.Writer, m ompMessage) error {
 	e.Part.Tokens.Cache.Write = m.Usage.CacheWrite
 	e.Part.Cost = m.Usage.Cost.Total
 	e.Part.Time = m.Timestamp
-	return enc.Encode(e)
+	return &e
 }
