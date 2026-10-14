@@ -313,6 +313,31 @@ func namedEnv(vals []string) []string {
 	return out
 }
 
+func TestAgentContainerProbeCarriesNoModelKey(t *testing.T) {
+	for _, tt := range containedAgents() {
+		t.Run(tt.name, func(t *testing.T) {
+			logFile := fakeDocker(t)
+			c := testAgentContainer(t)
+			_, probe, err := WithAgentContainer([]Harness{tt.harness(c, t.TempDir())}, c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := probe(context.Background(), t.TempDir()); err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range []string{logFile, logFile + ".env"} {
+				raw, err := os.ReadFile(f)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(string(raw), tt.key) {
+					t.Errorf("the probe put the model key in %s", filepath.Base(f))
+				}
+			}
+		})
+	}
+}
+
 func TestAgentContainerProbeReportsTheHarnessTheImageCannotStart(t *testing.T) {
 	tests := []struct {
 		name    string
