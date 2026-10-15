@@ -23,6 +23,14 @@ type Usage struct {
 	Steps      int     `firestore:"steps" json:"steps"`
 }
 
+// ToolUse is one tool call a step made: the tool's name and, for the tools that
+// name one, the repository path it touched. A call a harness reports as failed
+// or unfinished is not one — it is not what the request did.
+type ToolUse struct {
+	Tool string `json:"tool"`
+	Path string `json:"path,omitempty"`
+}
+
 // event is one line of the agent's own event stream: every harness translates
 // its frames into this shape, so the parsers below stay harness-neutral.
 type event struct {
@@ -40,6 +48,11 @@ type event struct {
 		Cost float64 `json:"cost"`
 		// Time is when a step's request was made, in epoch milliseconds; zero when the harness does not say.
 		Time int64 `json:"time,omitempty"`
+		// Tools are the calls this step's request made, each with the path it
+		// touched, so a step's record names what the agent did in it.
+		Tools []ToolUse `json:"tools,omitempty"`
+		// ContextTokens is what the step's request read: its input plus its cache reads.
+		ContextTokens int64 `json:"context_tokens,omitempty"`
 	} `json:"part"`
 }
 

@@ -490,12 +490,16 @@ func TestOpencodeAgentNeedsAHomeAndAKey(t *testing.T) {
 
 // TestTranslateOpencodeEvents pins the event translation: the session once,
 // one step per step_finish timed by its event with reasoning counted in its
-// output, one text part per non-empty text event, other events ignored, and an error
-// echoed to stderr.
+// output, one text part per non-empty text event, each step carrying the calls
+// its own request made — a finished call with the path it touched, and never
+// one still running — and an error echoed to stderr.
 func TestTranslateOpencodeEvents(t *testing.T) {
 	stream := strings.Join([]string{
 		`{"type":"step_start","timestamp":1,"sessionID":"ses_1","part":{"type":"step-start"}}`,
-		`{"type":"tool_use","timestamp":2,"sessionID":"ses_1","part":{"type":"tool","tool":"write","state":{"output":"tool output"}}}`,
+		`{"type":"tool_use","timestamp":2,"sessionID":"ses_1","part":{"type":"tool","tool":"write","callID":"c1",` +
+			`"state":{"status":"completed","input":{"filePath":"/repo/hello.txt","content":"hi\n"},"output":"tool output"}}}`,
+		`{"type":"tool_use","timestamp":2,"sessionID":"ses_1","part":{"type":"tool","tool":"edit","callID":"c2",` +
+			`"state":{"status":"running","input":{"filePath":"/repo/main.go"}}}}`,
 		`{"type":"step_finish","timestamp":1791426695160,"sessionID":"ses_1","part":{"type":"step-finish",` +
 			`"tokens":{"total":19,"input":10,"output":3,"reasoning":2,"cache":{"write":5,"read":4}},"cost":0.5}}`,
 		`{"type":"text","timestamp":3,"sessionID":"ses_1","part":{"type":"text","text":"last"}}`,
@@ -504,7 +508,7 @@ func TestTranslateOpencodeEvents(t *testing.T) {
 		`{"type":"error","timestamp":4,"sessionID":"ses_1","error":{"name":"APIError","data":{"message":"402 Insufficient balance"}}}`,
 	}, "\n")
 	var stdout, stderr strings.Builder
-	if err := translateOpencodeEvents(strings.NewReader(stream), &stdout, &stderr); err != nil {
+	if err := translateOpencodeEvents(strings.NewReader(stream), "/repo", &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
 	out := stdout.String()
@@ -520,8 +524,28 @@ func TestTranslateOpencodeEvents(t *testing.T) {
 	if !strings.Contains(out, `"time":1791426695160`) {
 		t.Errorf("the steps carry no time:\n%s", out)
 	}
-	if strings.Contains(out, "tool output") {
-		t.Errorf("a tool event was translated:\n%s", out)
+	var steps []event
+	if err := scanEvents(strings.NewReader(out), func(e event) {
+		if e.Type == "step_finish" {
+			steps = append(steps, e)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(steps) != 2 {
+		t.Fatalf("steps = %d, want the two requests", len(steps))
+	}
+	if want := []ToolUse{{Tool: "write", Path: "hello.txt"}}; !slices.Equal(steps[0].Part.Tools, want) {
+		t.Fatalf("first step's calls = %+v, want %+v: a call still running is not what the request did", steps[0].Part.Tools, want)
+	}
+	if len(steps[1].Part.Tools) != 0 {
+		t.Fatalf("second step's calls = %+v, want none", steps[1].Part.Tools)
+	}
+	if steps[0].Part.ContextTokens != 14 || steps[1].Part.ContextTokens != 1 {
+		t.Fatalf("context tokens = %d, %d, want input plus cache read: 14 and 1", steps[0].Part.ContextTokens, steps[1].Part.ContextTokens)
+	}
+	if strings.Contains(out, "tool output") || strings.Contains(out, "hi\\n") {
+		t.Errorf("the tool's own payload was translated:\n%s", out)
 	}
 	if got, _ := FinalText(strings.NewReader(out)); got != "last" {
 		t.Errorf("final text = %q, want last", got)
@@ -686,5 +710,24 @@ func TestOpencodeConfigReachesAnotherPlanOnItsOwnEndpoint(t *testing.T) {
 	}
 	if p.Options.BaseURL != "https://generativelanguage.googleapis.com/v1beta/openai/" || p.Options.APIKey != "{env:GEMINI_API_KEY}" {
 		t.Fatalf("provider = %+v, want the Gemini endpoint and its secret's name", p)
+	}
+}
+
+// TestTranslateOpencodeEventsFlushesTrailingCalls asserts an edit with no step_finish after it is recorded and counts as progress.
+func TestTranslateOpencodeEventsFlushesTrailingCalls(t *testing.T) {
+	stream := strings.Join([]string{
+		`{"type":"step_finish","sessionID":"s","part":{"tokens":{"input":1}}}`,
+		`{"type":"tool_use","sessionID":"s","part":{"tool":"edit","state":{"status":"completed","input":{"filePath":"/repo/a.go"}}}}`,
+	}, "\n")
+	var out, errOut strings.Builder
+	if err := translateOpencodeEvents(strings.NewReader(stream), "/repo", &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"tool":"edit","path":"a.go"`) {
+		t.Fatalf("the trailing edit is missing from the record:\n%s", out.String())
+	}
+	var sum Summary
+	if got := readProgress(strings.NewReader(out.String()), &sum); got.noProgress != 0 {
+		t.Fatalf("no progress = %d, want the trailing edit to count", got.noProgress)
 	}
 }

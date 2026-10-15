@@ -372,6 +372,20 @@ func runAgentCLI(cmd *exec.Cmd, scratch string, stderr io.Writer, translate func
 	return nil
 }
 
+// repoPath names a path a tool touched as the repository sees it: an absolute
+// path inside the agent's own directory becomes its relative form, and any
+// other path is kept as the harness reported it.
+func repoPath(dir, path string) string {
+	if path == "" || !filepath.IsAbs(path) {
+		return path
+	}
+	rel, err := filepath.Rel(dir, path)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return path
+	}
+	return rel
+}
+
 // writeAgentFile writes body to path, creating its directory, or removes path
 // when body is empty, so a later round in the same HOME never inherits an
 // earlier round's file.

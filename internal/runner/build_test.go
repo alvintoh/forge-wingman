@@ -2743,3 +2743,228 @@ func TestDetailPartsDropsEmptyParts(t *testing.T) {
 		}
 	}
 }
+
+// readsOnlyEvents is one agent invocation's stream that only reads: n model
+// requests, each carrying a read of one file and no edit or write. The last
+// request reads the largest context, so the invocation's peak context is
+// unambiguous.
+func readsOnlyEvents(n int) string {
+	var b strings.Builder
+	for i := range n {
+		fmt.Fprintf(&b, `{"type":"step_finish","part":{"tokens":{"input":%d,"cache":{"read":%d}},`+
+			`"tools":[{"tool":"read","path":"pkg/file-%d.go"}]}}`+"\n", i+1, i+1, i)
+	}
+	return b.String()
+}
+
+// TestBuildStopsWhenTheAgentMakesNoProgress covers a build phase that only
+// reads: it stops at the limit rather than at the wall clock, and its summary
+// names what the agent did on the way.
+func TestBuildStopsWhenTheAgentMakesNoProgress(t *testing.T) {
+	agent := &fakeAgent{edit: edit("version.go", "package x\n"), events: readsOnlyEvents(DEFAULT_NO_PROGRESS_STEPS)}
+	deps, _, reported := testDeps(validObjects(), agent)
+	c := testConfig(t, initRepo(t))
+
+	_, err := Build(context.Background(), deps, c)
+	var stop *StopError
+	if !errors.As(err, &stop) || stop.Outcome != OutcomeAgentFailed || stop.Reason != StopAgentNoProgress {
+		t.Fatalf("err = %v, want the no-progress stop", err)
+	}
+	sum := reported.last(t)
+	if sum.Phase != PhaseBuild {
+		t.Fatalf("phase = %s, want the build phase", sum.Phase)
+	}
+	want := fmt.Sprintf("no file change in %d steps (peak context %d tokens)",
+		DEFAULT_NO_PROGRESS_STEPS, 2*DEFAULT_NO_PROGRESS_STEPS)
+	if sum.StopDetail != want {
+		t.Fatalf("stop detail = %q, want %q", sum.StopDetail, want)
+	}
+	if len(sum.ReadFiles) != DEFAULT_NO_PROGRESS_STEPS || sum.ReadFiles[0] != "pkg/file-0.go" {
+		t.Fatalf("files read = %q, want the %d files the agent read", sum.ReadFiles, DEFAULT_NO_PROGRESS_STEPS)
+	}
+	if sum.PeakContextTokens != 2*DEFAULT_NO_PROGRESS_STEPS {
+		t.Fatalf("peak context = %d, want the largest request's own context", sum.PeakContextTokens)
+	}
+	if len(agent.prompts) != 1 {
+		t.Fatalf("the build agent ran %d times, want the one round it stalled in", len(agent.prompts))
+	}
+}
+
+// TestBuildDoesNotStopWhenTheAgentEdits covers a run that edits within the
+// limit: every read stretch sits under it, so the run is exactly the run it was
+// before the guard.
+func TestBuildDoesNotStopWhenTheAgentEdits(t *testing.T) {
+	reads := readsOnlyEvents(DEFAULT_NO_PROGRESS_STEPS - 1)
+	writeStep := `{"type":"step_finish","part":{"tokens":{"input":1},"tools":[{"tool":"write","path":"version.go"}]}}` + "\n"
+	agent := &fakeAgent{
+		edit:   edit("version.go", "package x\n"),
+		events: reads + writeStep + reads,
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if sum := reported.last(t); sum.Outcome != OutcomeBuilt || sum.StopReason != "" {
+		t.Fatalf("summary = %s/%s, want the ordinary built run", sum.Outcome, sum.StopReason)
+	}
+}
+
+// stallingAgent reads past the limit, then runs until the runner cancels it.
+type stallingAgent struct{}
+
+func (stallingAgent) Run(ctx context.Context, _, _, _, _ string, stdout, _ io.Writer) error {
+	if _, err := io.WriteString(stdout, readsOnlyEvents(DEFAULT_NO_PROGRESS_STEPS)); err != nil {
+		return err
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// TestBuildCancelsAStalledAgentWhileItRuns asserts the guard stops an agent that would run to its deadline.
+func TestBuildCancelsAStalledAgentWhileItRuns(t *testing.T) {
+	deps, completions, reported := testDeps(validObjects(), nil)
+	deps.Agent = stallingAgent{}
+	c := testConfig(t, initRepo(t))
+	c.AgentTimeout = 30 * time.Second
+
+	begun := time.Now()
+	_, err := Build(context.Background(), deps, c)
+	if took := time.Since(begun); took > 10*time.Second {
+		t.Fatalf("Build took %s, want the guard to stop the agent long before its deadline", took)
+	}
+	var stop *StopError
+	if !errors.As(err, &stop) || stop.Reason != StopAgentNoProgress {
+		t.Fatalf("err = %v, want the no-progress stop", err)
+	}
+	rec := reported.last(t)
+	if _, ok := completions[rec.Steps[0].CompletionsObject]; !ok {
+		t.Fatal("completions were not uploaded after the guard's stop")
+	}
+}
+
+// TestBuildClassifiesARealFailureBeforeNoProgress asserts a stalled stream that
+// also ended in a failure reports the failure, with its stderr tail logged.
+func TestBuildClassifiesARealFailureBeforeNoProgress(t *testing.T) {
+	agent := exitClassifiedAgent{&fakeAgent{events: readsOnlyEvents(DEFAULT_NO_PROGRESS_STEPS), stderr: "model unreachable", err: exitWith(t, 7)}}
+	deps, _, reported := testDeps(validObjects(), nil)
+	deps.Agent = agent
+	var logs strings.Builder
+	deps.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	c := testConfig(t, initRepo(t))
+
+	_, err := Build(context.Background(), deps, c)
+	var stop *StopError
+	if !errors.As(err, &stop) || stop.Outcome != OutcomeInfraFailure || stop.Reason != StopModelUnavailable {
+		t.Fatalf("err = %v, want the classified failure, not no-progress", err)
+	}
+	if got := reported.last(t).StopReason; got != StopModelUnavailable {
+		t.Fatalf("reason = %s", got)
+	}
+	if !strings.Contains(logs.String(), "agentFailed") || !strings.Contains(logs.String(), "model unreachable") {
+		t.Fatalf("logs = %s, want the failure and its stderr tail", logs.String())
+	}
+}
+
+// ignoringAgent stalls, then ignores the guard's cancel and outlives its deadline.
+type ignoringAgent struct{}
+
+func (ignoringAgent) Run(_ context.Context, _, _, _, _ string, stdout, _ io.Writer) error {
+	if _, err := io.WriteString(stdout, readsOnlyEvents(DEFAULT_NO_PROGRESS_STEPS)); err != nil {
+		return err
+	}
+	time.Sleep(300 * time.Millisecond)
+	return nil
+}
+
+// TestBuildReportsATimeoutOverNoProgress asserts a stalled agent that also ran out its deadline is a timeout.
+func TestBuildReportsATimeoutOverNoProgress(t *testing.T) {
+	deps, _, reported := testDeps(validObjects(), nil)
+	deps.Agent = ignoringAgent{}
+	c := testConfig(t, initRepo(t))
+	c.AgentTimeout = 100 * time.Millisecond
+
+	if _, err := Build(context.Background(), deps, c); err == nil {
+		t.Fatal("Build succeeded")
+	}
+	if got := reported.last(t).StopReason; got != StopAgentTimeout {
+		t.Fatalf("reason = %s, want the timeout", got)
+	}
+}
+
+func TestEndedByOurStop(t *testing.T) {
+	signalled := exec.Command("sh", "-c", "kill -9 $$").Run()
+	for _, tt := range []struct {
+		name      string
+		err       error
+		want      bool
+		delivered bool
+	}{
+		{"cancelled context", fmt.Errorf("run: %w", context.Canceled), true, true},
+		{"killed process", signalled, true, true},
+		{"killed process with no cancel delivered", signalled, false, false},
+		{"cancelled context with no cancel delivered", context.Canceled, false, false},
+		{"ordinary exit", exitWith(t, 1), false, true},
+		{"other error", errors.New("boom"), false, true},
+	} {
+		if got := endedByOurStop(tt.err, tt.delivered); got != tt.want {
+			t.Errorf("%s: endedByOurStop = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+// TestBuildCountsNoProgressPerRound pins that the count is per invocation by construction: two rounds each one step under the limit pass, a fix round at the limit stops.
+func TestBuildCountsNoProgressPerRound(t *testing.T) {
+	underLimit := readsOnlyEvents(DEFAULT_NO_PROGRESS_STEPS - 1)
+	run := func(t *testing.T, secondRound string) (*fakeAgent, BuildResult) {
+		agent := &fakeAgent{edit: edit("version.go", "package x\n"), eventsFn: func(call int) string {
+			if call == 1 {
+				return underLimit
+			}
+			return secondRound
+		}}
+		deps, _, _ := testDeps(validObjects(), agent)
+		deps.ReviewAgent = &fakeAgent{events: reviewEvent("the ticket also asks for a second file")}
+		res, err := Build(context.Background(), deps, testConfig(t, initRepo(t)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return agent, res
+	}
+
+	agent, res := run(t, underLimit)
+	if len(agent.prompts) != 2 || strings.Contains(res.LoopDetail, "no file change") {
+		t.Fatalf("rounds = %d, loop detail = %q, want both rounds to pass the guard", len(agent.prompts), res.LoopDetail)
+	}
+	// A fix round's stop surfaces as the review failure the run opens as a draft with.
+	_, res = run(t, readsOnlyEvents(DEFAULT_NO_PROGRESS_STEPS))
+	if !strings.Contains(res.LoopDetail, "no file change in") {
+		t.Fatalf("loop detail = %q, want the fix round stopped for no progress", res.LoopDetail)
+	}
+}
+
+// TestBuildDoesNotGuardThePlanPhase covers the plan pass: it never edits, so a
+// plan that reads its way through the repository is doing its job.
+func TestBuildDoesNotGuardThePlanPhase(t *testing.T) {
+	planAgent := &fakeAgent{events: readsOnlyEvents(2*DEFAULT_NO_PROGRESS_STEPS) +
+		planEvent("```plan-files\nversion.go\n```")}
+	buildAgent := &fakeAgent{edit: edit("version.go", "package x\n")}
+	objects := validObjects()
+	objects["projections/"+testSHA+"/"+planProjectionFile] = []byte("# Plan rules\n\n" + ticketSentinel)
+	deps, _, reported := testDeps(objects, buildAgent)
+	deps.PlanAgent = planAgent
+	c := testConfig(t, initRepo(t))
+	c.Ticket.Size = "M"
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	sum := reported.last(t)
+	if sum.Outcome != OutcomeBuilt {
+		t.Fatalf("summary = %s/%s, want the plan phase exempt so the build proceeds", sum.Outcome, sum.StopReason)
+	}
+	if len(sum.ReadFiles) != 2*DEFAULT_NO_PROGRESS_STEPS {
+		t.Fatalf("files read = %d, want the plan agent's own reads in the run's summary", len(sum.ReadFiles))
+	}
+}

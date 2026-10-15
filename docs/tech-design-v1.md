@@ -496,7 +496,12 @@ also what FR-21's ADMISSION gate reads, since a fabricated value or a runaway
 tool-call count is only visible in the record. *(Amended 2026-09-22: this cited
 FR-21 promoting a challenger on rewrite rate over ≥10 sampled tickets.
 Champion-challenger was superseded, and the dependency on FR-6 is STRONGER rather
-than weaker — admission needs per-run evidence.)* Langfuse would be a
+than weaker — admission needs per-run evidence.)* *(Amended 2026-10-14: the
+record also carries the files each phase's agent read and the largest context any
+one request read, and a build phase that completes a run of requests with no file
+change is cancelled while it runs and ends as `agent-no-progress`, unless a real
+agent failure or the timeout ended it first — a loop over reading is otherwise
+indistinguishable from slow work over a large context in the token totals.)* Langfuse would be a
 second copy of data the product must hold anyway. It stays available — it is
 OTEL-native, so Go exports to it — if tracing is ever wanted beyond the record.
 

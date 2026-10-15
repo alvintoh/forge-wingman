@@ -58,6 +58,10 @@ type Summary struct {
 	// PRSummary is the PR's one-line summary.
 	PRSummary string    `json:"pr_summary,omitempty"`
 	StartedAt time.Time `json:"started_at"`
+	// ReadFiles is every repository file the agent's read tool calls touched,
+	// and PeakContextTokens the largest context a single request read.
+	ReadFiles         []string `json:"read_files,omitempty"`
+	PeakContextTokens int64    `json:"peak_context_tokens,omitempty"`
 }
 
 // Step is one agent invocation in a run's build, distinct from Usage.Steps,
@@ -76,6 +80,8 @@ type Step struct {
 	Tokens            Usage  `firestore:"tokens" json:"tokens"`
 	DurationMS        int64  `firestore:"duration_ms" json:"duration_ms"`
 	CompletionsObject string `firestore:"completions_object" json:"completions_object"`
+	// PeakContextTokens is the largest context one of this step's requests read.
+	PeakContextTokens int64 `firestore:"peak_context_tokens" json:"peak_context_tokens,omitempty"`
 	// At is when the step started. The step is priced per event time by
 	// Rates.At, but nothing of that time survives the events themselves, so
 	// the record job reads this back to tag the run's own time of use.
@@ -139,6 +145,7 @@ var buildEndings = func() map[ending]bool {
 		{OutcomeInfraFailure, StopAgentContainer, PhaseBuild}:      true,
 		{OutcomeAgentFailed, StopAgentTimeout, PhaseBuild}:         true,
 		{OutcomeAgentFailed, StopAgentExit, PhaseBuild}:            true,
+		{OutcomeAgentFailed, StopAgentNoProgress, PhaseBuild}:      true,
 		{OutcomeBudgetStop, StopAllowanceExhausted, PhaseBuild}:    true,
 		{OutcomeInfraFailure, StopModelUnavailable, PhaseBuild}:    true,
 		{OutcomeInfraFailure, StopChecksRun, PhaseBuild}:           true,
@@ -194,6 +201,7 @@ func StoppedSummary(reason StopReason, err error, now time.Time) Summary {
 // left, dropping the oldest steps until it fits.
 func (s Summary) Encode() (string, error) {
 	s.EditedFiles = capFiles(s.EditedFiles)
+	s.ReadFiles = capFiles(s.ReadFiles)
 	for {
 		b, err := json.Marshal(s)
 		if err != nil {
@@ -203,6 +211,8 @@ func (s Summary) Encode() (string, error) {
 			return string(b), nil
 		}
 		switch {
+		case len(s.ReadFiles) > 0:
+			s.ReadFiles = s.ReadFiles[:len(s.ReadFiles)/2]
 		case len(s.EditedFiles) > 0:
 			s.EditedFiles = s.EditedFiles[:len(s.EditedFiles)/2]
 		case len(s.Steps) > 0:
@@ -222,6 +232,26 @@ func capFiles(files []string) []string {
 		out[i] = truncate(f, maxPathBytes)
 	}
 	return out
+}
+
+// mergePaths appends add's repository paths to paths in first-seen order and
+// without repeats, so two phases or rounds touching one file name it once. A
+// path that stays outside the repository is left out: the summary carries only
+// what the run could have touched inside it.
+func mergePaths(paths, add []string) []string {
+	seen := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		seen[p] = true
+	}
+	for _, p := range add {
+		p = truncate(p, maxPathBytes)
+		if !repoRelative(p) || seen[p] {
+			continue
+		}
+		seen[p] = true
+		paths = append(paths, p)
+	}
+	return paths
 }
 
 // ParseSummary decodes and validates a summary written by attempt attemptID's build
@@ -253,6 +283,7 @@ func ParseSummary(raw, attemptID string, t Ticket, now time.Time) (Summary, erro
 	s.CommitBody = truncate(s.CommitBody, maxTicketBodyBytes)
 	s.PRSummary = truncate(s.PRSummary, stopDetailLimit)
 	s.EditedFiles = capFiles(s.EditedFiles)
+	s.ReadFiles = capFiles(s.ReadFiles)
 	return s, nil
 }
 
@@ -300,6 +331,17 @@ func (s Summary) validate(attemptID string, t Ticket, now time.Time) error {
 		if !repoRelative(f) {
 			return fmt.Errorf("edited file %q is not a path inside the repository", truncate(f, logErrorLimit))
 		}
+	}
+	if len(s.ReadFiles) > maxEditedFiles {
+		return fmt.Errorf("%d read files, over %d", len(s.ReadFiles), maxEditedFiles)
+	}
+	for _, f := range s.ReadFiles {
+		if !repoRelative(f) {
+			return fmt.Errorf("read file %q is not a path inside the repository", truncate(f, logErrorLimit))
+		}
+	}
+	if s.PeakContextTokens < 0 || s.PeakContextTokens > maxCount {
+		return fmt.Errorf("peak context tokens %d is out of range", s.PeakContextTokens)
 	}
 	for _, n := range []int64{s.DiffLines.Added, s.DiffLines.Removed} {
 		if n < 0 || n > maxCount {
@@ -369,6 +411,9 @@ func (st Step) validate(attemptID string) error {
 	}
 	if err := st.Tokens.validate(); err != nil {
 		return err
+	}
+	if st.PeakContextTokens < 0 || st.PeakContextTokens > maxCount {
+		return fmt.Errorf("step peak context tokens %d is out of range", st.PeakContextTokens)
 	}
 	if st.CompletionsObject != completionsObject(attemptID, st.Phase, st.Round) {
 		return errors.New("completions object is not this run's")

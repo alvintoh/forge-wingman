@@ -110,6 +110,11 @@ const (
 	// did not answer within the configured window, so the dispatcher stopped it
 	// rather than hold it forever.
 	StopWaitingOnOwner StopReason = "waiting-on-owner"
+	// StopAgentNoProgress reports a build phase that completed
+	// DEFAULT_NO_PROGRESS_STEPS requests in a row with no edit or write, so a
+	// loop over reading is stopped by what the agent is doing rather than by
+	// the wall clock alone.
+	StopAgentNoProgress StopReason = "agent-no-progress"
 )
 
 // gates are the checks run.yml's check job — and RunChecks, in-job — run on
@@ -222,6 +227,12 @@ type Record struct {
 	UpdatedAt    time.Time         `firestore:"updated_at"`
 	// RunURL is the GitHub Actions run that recorded the outcome.
 	RunURL string `firestore:"run_url"`
+	// ReadFiles is every repository file the agent's read tool calls touched,
+	// and PeakContextTokens the largest context a single request read. A run
+	// that reads its way over a large context shows here, which the token
+	// totals alone cannot tell from slow work.
+	ReadFiles         []string `firestore:"read_files"`
+	PeakContextTokens int64    `firestore:"peak_context_tokens"`
 }
 
 // DiffLines is the size of the branch's diff against its base.
@@ -621,6 +632,8 @@ func (s Summary) apply(rec *Record) {
 	rec.Steps = s.Steps
 	rec.Tokens = sumSteps(s.Steps)
 	rec.EditedFiles = s.EditedFiles
+	rec.ReadFiles = s.ReadFiles
+	rec.PeakContextTokens = s.PeakContextTokens
 	rec.DiffLines = s.DiffLines
 	for p, ms := range s.DurationsMS {
 		rec.DurationsMS[p] = ms
