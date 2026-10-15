@@ -233,6 +233,24 @@ func TestOmpModelsWritesThePlansOutputCap(t *testing.T) {
 	}
 }
 
+// TestOmpAgentWritesNoOverrideFileWhenNothingIsCapped covers the wiring the
+// hermetic test above cannot: with no configured model carrying a ceiling, an
+// agent run must leave omp's own default in force and write no models.yml, so
+// harness_omp.go's own path — the model's caps through providers.OutputCaps to
+// the file — is exercised either way. A positive end-to-end case returns when a
+// configured model carries a cap again.
+func TestOmpAgentWritesNoOverrideFileWhenNothingIsCapped(t *testing.T) {
+	bin, _ := scriptedOmp(t, "normal")
+	home := t.TempDir()
+	agent := OmpHarness{Bin: bin, Key: "k", Home: home}.Agent(ProfileBuild, ompTestModel)
+	if err := agent.Run(context.Background(), t.TempDir(), "", "p", "", io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "agent", "models.yml")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("models.yml stat = %v, want no file when no model is capped", err)
+	}
+}
+
 // TestOmpModelsCapsOnlyThePlansOwnModels keeps the override file to the plan's
 // own models: another plan's model has no ceiling here, and the file is left out
 // entirely when nothing is capped, so omp keeps its own default.
