@@ -468,7 +468,7 @@ func TestNoHarnessIsNamedOutsideItsAdapter(t *testing.T) {
 		}
 		lower := strings.ToLower(string(b))
 		if strings.Contains(lower, "commandcode") || strings.Contains(lower, "command-code") ||
-			strings.Contains(lower, "command code") || strings.Contains(lower, "opencode") || ompVocabulary.MatchString(lower) {
+			strings.Contains(lower, "command code") || ompVocabulary.MatchString(lower) {
 			offenders = append(offenders, rel)
 		}
 		return nil
@@ -487,7 +487,7 @@ var ompVocabulary = regexp.MustCompile(`oh-my-pi|\bomp\b`)
 // harnessNameAllowed lists where a harness name may appear: its own adapter
 // alone, so every provider fact elsewhere is read from configuration.
 func harnessNameAllowed(rel string) bool {
-	return rel == "internal/runner/harness_omp.go" || rel == "internal/runner/harness_opencode.go"
+	return rel == "internal/runner/harness_omp.go"
 }
 
 // TestNoRetiredModelSetIsNamed asserts no tracked file outside the vault copies

@@ -32,12 +32,6 @@ func containedAgents() []containedAgent {
 		{"omp", func(c AgentContainer, home string) Harness {
 			return OmpHarness{Bin: "/host/bin/omp", Key: conformanceKey, Home: home, Container: c}
 		}, conformanceKey, "COMMAND_CODE_API_KEY", "omp", func(home string) []string { return []string{"HOME=" + home} }},
-		{"opencode", func(c AgentContainer, home string) Harness {
-			return OpencodeHarness{Bin: "/host/bin/opencode", Key: conformanceKey, Home: home, Container: c}
-		}, conformanceKey, "COMMAND_CODE_API_KEY", "opencode", func(home string) []string {
-			return []string{"HOME=" + home, "XDG_CONFIG_HOME=" + home + "/.config", "XDG_DATA_HOME=" + home + "/.local/share",
-				"XDG_CACHE_HOME=" + home + "/.cache", "XDG_STATE_HOME=" + home + "/.local/state"}
-		}},
 	}
 }
 
@@ -230,8 +224,7 @@ func TestAgentContainerProbeRunsEveryHarnessVersionOverItsHome(t *testing.T) {
 	logFile := fakeDocker(t)
 	c, dir := testAgentContainer(t), t.TempDir()
 	omp := OmpHarness{Bin: "omp", Home: filepath.Join(t.TempDir(), "omp-home")}
-	oc := OpencodeHarness{Bin: "opencode", Home: filepath.Join(t.TempDir(), "opencode-home")}
-	_, probe, err := WithAgentContainer([]Harness{omp, oc}, c)
+	_, probe, err := WithAgentContainer([]Harness{omp}, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +232,7 @@ func TestAgentContainerProbeRunsEveryHarnessVersionOverItsHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls := dockerCalls(t, logFile)
-	if len(calls) != 2 {
+	if len(calls) != 1 {
 		t.Fatalf("docker ran %v, want one container per harness", calls)
 	}
 	// The probe runs the checks in the order the harnesses are given.
@@ -248,7 +241,6 @@ func TestAgentContainerProbeRunsEveryHarnessVersionOverItsHome(t *testing.T) {
 		home string
 	}{
 		{"omp", omp.Home},
-		{"opencode", oc.Home},
 	}
 	for i, tt := range tests {
 		call := calls[i]
@@ -339,53 +331,36 @@ func TestAgentContainerProbeCarriesNoModelKey(t *testing.T) {
 }
 
 func TestAgentContainerProbeReportsTheHarnessTheImageCannotStart(t *testing.T) {
-	tests := []struct {
-		name    string
-		missing string
-	}{
-		{"the default harness", "omp"},
-		{"the fallback harness", "opencode"},
+	fakeDocker(t)
+	t.Setenv("DOCKER_FAKE_FAIL", "omp")
+	t.Setenv("DOCKER_FAKE_CODE", "127")
+	_, probe, err := WithAgentContainer([]Harness{OmpHarness{Bin: "omp", Home: t.TempDir()}}, testAgentContainer(t))
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			fakeDocker(t)
-			t.Setenv("DOCKER_FAKE_FAIL", tt.missing)
-			t.Setenv("DOCKER_FAKE_CODE", "127")
-			_, probe, err := WithAgentContainer([]Harness{
-				OmpHarness{Bin: "omp", Home: t.TempDir()},
-				OpencodeHarness{Bin: "opencode", Home: t.TempDir()},
-			}, testAgentContainer(t))
-			if err != nil {
-				t.Fatal(err)
-			}
-			err = probe(context.Background(), t.TempDir())
-			if err == nil || !strings.Contains(err.Error(), "boom") {
-				t.Fatalf("the probe = %v, want an error carrying the container's output", err)
-			}
-			if !strings.Contains(err.Error(), tt.missing) {
-				t.Errorf("the probe = %v, want it to name %s", err, tt.missing)
-			}
-		})
+	err = probe(context.Background(), t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("the probe = %v, want an error carrying the container's output", err)
+	}
+	if !strings.Contains(err.Error(), "omp") {
+		t.Errorf("the probe = %v, want it to name omp", err)
 	}
 }
 
 func TestBuildStopsAtAgentStartWhenTheImageLacksAHarness(t *testing.T) {
 	fakeDocker(t)
-	t.Setenv("DOCKER_FAKE_FAIL", "opencode")
+	t.Setenv("DOCKER_FAKE_FAIL", "omp")
 	t.Setenv("DOCKER_FAKE_CODE", "127")
 	agent := &fakeAgent{}
 	deps, _, reported := testDeps(validObjects(), agent)
-	_, probe, err := WithAgentContainer([]Harness{
-		OmpHarness{Bin: "omp", Home: t.TempDir()},
-		OpencodeHarness{Bin: "opencode", Home: t.TempDir()},
-	}, testAgentContainer(t))
+	_, probe, err := WithAgentContainer([]Harness{OmpHarness{Bin: "omp", Home: t.TempDir()}}, testAgentContainer(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	deps.AgentProbe = probe
 
 	if _, err := Build(context.Background(), deps, testConfig(t, initRepo(t))); err == nil {
-		t.Fatal("Build succeeded with an image that cannot run opencode")
+		t.Fatal("Build succeeded with an image that cannot run omp")
 	}
 	rec := reported.last(t)
 	if rec.Outcome != OutcomeInfraFailure || rec.StopReason != StopAgentContainer || rec.Phase != PhaseAgentStart || agent.calls != 0 {
@@ -603,20 +578,6 @@ func TestContainerAgentClassifiesDockerFailingToRunItAsInfrastructure(t *testing
 				t.Errorf("exit %s classified %s/%s, want %s/%s", tt.code, outcome, reason, tt.wantOutcome, tt.wantReason)
 			}
 		})
-	}
-}
-
-func TestOpencodeContainerAgentClassifiesDockerFailingToRunItAsInfrastructure(t *testing.T) {
-	fakeDocker(t)
-	t.Setenv("DOCKER_FAKE_FAIL", "run")
-	t.Setenv("DOCKER_FAKE_CODE", "127")
-	h := OpencodeHarness{Bin: "opencode", Key: conformanceKey, Home: t.TempDir(), Container: testAgentContainer(t)}
-	err := h.Agent(ProfileBuild, ompTestModel).Run(context.Background(), t.TempDir(), "", "p", "", io.Discard, io.Discard)
-	if err == nil {
-		t.Fatal("Run succeeded")
-	}
-	if outcome, reason := h.Classify("", err); outcome != OutcomeInfraFailure || reason != StopAgentContainer {
-		t.Errorf("classified %s/%s, want infra-failure/agent-container", outcome, reason)
 	}
 }
 

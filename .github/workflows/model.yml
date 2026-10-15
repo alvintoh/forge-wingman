@@ -8,7 +8,7 @@
 # as the `plan` artifact for run.yml's trusted record-plan-stage job instead.
 # Needs the GCP_WIF_PROVIDER, GCP_MODEL_SERVICE_ACCOUNT and WINGMAN_ACCOUNT variables and
 # the COMMANDCODE_API_KEY secret (infra/README.md), which both harnesses run on.
-# The WINGMAN_AGENT_IMAGE variable (an image pinned by digest providing omp, opencode, git and sh) is required:
+# The WINGMAN_AGENT_IMAGE variable (an image pinned by digest providing omp, git and sh) is required:
 # the build and plan stages run the agent CLIs in a container that mounts only the worktree,
 # harness home and git directory, and refuse to start without it.
 name: model
