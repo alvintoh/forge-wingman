@@ -14,6 +14,26 @@ func TestReviewPromptCarriesTheDiffAndTheTicket(t *testing.T) {
 	}
 }
 
+// TestPreOpenReviewPromptAsksForWhatAWalkthroughChecks is what the pre-open
+// review pass is held to: the checks the runner cannot make mechanically, which
+// a walkthrough makes by reading around the change.
+func TestPreOpenReviewPromptAsksForWhatAWalkthroughChecks(t *testing.T) {
+	got := PreOpenReviewPrompt("diff --git a/x.go\n+x", testTicket)
+	if !strings.Contains(got, "```diff\ndiff --git a/x.go\n+x\n```") || !strings.Contains(got, testTicket.Text()) {
+		t.Fatalf("prompt = %q, want the diff and the ticket", got)
+	}
+	for _, want := range []string{
+		"caller", "early return", "rule in force", "fail-closed path", "```review-findings\n```",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("prompt = %q, want it to ask for %q", got, want)
+		}
+	}
+	if strings.Contains(got, "run any shell commands") {
+		t.Fatalf("prompt = %q, want the review able to read and search the repository", got)
+	}
+}
+
 func TestParseReviewFindings(t *testing.T) {
 	tests := []struct {
 		name string

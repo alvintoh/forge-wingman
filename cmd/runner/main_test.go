@@ -612,7 +612,7 @@ func TestAppendFileAppendsAndCreatesOwnerOnly(t *testing.T) {
 	}
 }
 
-func TestCheckRunnerRefusesAnImageNotPinnedByDigest(t *testing.T) {
+func TestCheckRunnersRefuseAnImageNotPinnedByDigest(t *testing.T) {
 	bin := t.TempDir()
 	for _, name := range []string{"golangci-lint", "bun"} {
 		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"), 0o700); err != nil {
@@ -621,42 +621,42 @@ func TestCheckRunnerRefusesAnImageNotPinnedByDigest(t *testing.T) {
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	ctx := context.Background()
-	if _, err := checkRunner(ctx, "golang:1.27.1", t.TempDir(), "."); err == nil {
-		t.Fatal("checkRunner accepted an image pinned by tag alone")
+	if _, _, err := checkRunners(ctx, "golang:1.27.1", t.TempDir(), "."); err == nil {
+		t.Fatal("checkRunners accepted an image pinned by tag alone")
 	}
-	if _, err := checkRunner(ctx, "golang:1.27.1@sha256:"+strings.Repeat("a", 64), t.TempDir(), "."); err != nil {
+	if _, _, err := checkRunners(ctx, "golang:1.27.1@sha256:"+strings.Repeat("a", 64), t.TempDir(), "."); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// TestCheckRunnerRequiresTheBunItsWebGatesMount holds checkRunner to failing
+// TestCheckRunnersRequireTheBunItsWebGatesMount holds checkRunners to failing
 // before any agent runs when the interpreter its web gates mount is missing, as
 // it does for the linter.
-func TestCheckRunnerRequiresTheBunItsWebGatesMount(t *testing.T) {
+func TestCheckRunnersRequireTheBunItsWebGatesMount(t *testing.T) {
 	bin := t.TempDir()
 	if err := os.WriteFile(filepath.Join(bin, "golangci-lint"), []byte("#!/bin/sh\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// git stays on PATH, which checkRunner resolves the repository through, and
+	// git stays on PATH, which checkRunners resolves the repository through, and
 	// the directories after it are ones a runner's bun is not installed in.
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+"/usr/bin:/bin")
 	image := "golang:1.27.1@sha256:" + strings.Repeat("a", 64)
-	if _, err := checkRunner(context.Background(), image, t.TempDir(), "."); err == nil || !strings.Contains(err.Error(), "checks bun") {
-		t.Fatalf("checkRunner = %v, want an error naming the bun its web gates mount", err)
+	if _, _, err := checkRunners(context.Background(), image, t.TempDir(), "."); err == nil || !strings.Contains(err.Error(), "checks bun") {
+		t.Fatalf("checkRunners = %v, want an error naming the bun its web gates mount", err)
 	}
 	if err := os.WriteFile(filepath.Join(bin, "bun"), []byte("#!/bin/sh\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := checkRunner(context.Background(), image, t.TempDir(), "."); err != nil {
-		t.Fatalf("checkRunner = %v, want it usable with a bun on PATH", err)
+	if _, _, err := checkRunners(context.Background(), image, t.TempDir(), "."); err != nil {
+		t.Fatalf("checkRunners = %v, want it usable with a bun on PATH", err)
 	}
 }
 
-func TestCheckRunnerRunsOnTheHostWithNoImage(t *testing.T) {
+func TestCheckRunnersRunOnTheHostWithNoImage(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	checks, err := checkRunner(context.Background(), "", t.TempDir(), t.TempDir())
+	checks, _, err := checkRunners(context.Background(), "", t.TempDir(), t.TempDir())
 	if err != nil || checks == nil {
-		t.Fatalf("checkRunner with no image = %v, %v; want the host runner and no lookups", checks != nil, err)
+		t.Fatalf("checkRunners with no image = %v, %v; want the host runner and no lookups", checks != nil, err)
 	}
 }
 

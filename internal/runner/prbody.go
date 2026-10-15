@@ -28,13 +28,15 @@ var errTemplate = errors.New("pull request template lacks the ticket line, summa
 // check job's report in place of the example rows, and runURL and the ticket's
 // body, fenced, in the notes, dropping the screenshots section. failedGate is
 // empty when the check reported a pass. loopDetail is the pre-PR loop's report
-// of why the PR opened as a draft (FR-5), empty when it did not, and overlap
-// names the in-flight run whose plan these files touch, empty when none does.
+// of why the PR opened as a draft (FR-5), empty when it did not. overlap names
+// the in-flight run whose plan these files touch, empty when none does.
 // outOfPlan are the edited files the run's plan did not name, which also keep it
 // a draft. frontEnd names what held a front-end change for the owner, empty when
 // nothing did. noPlan is set for a run no plan stage recorded a write set for,
-// which waits for the owner rather than merging itself.
-func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail, overlap string, outOfPlan []string, writeSetUnread bool, frontEnd []string, noPlan bool) (string, error) {
+// which waits for the owner rather than merging itself. review is what the
+// pre-open review found and how the run left it, listed in the notes and empty
+// for a run whose review found nothing.
+func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail, overlap string, outOfPlan []string, writeSetUnread bool, frontEnd []string, noPlan bool, review []ReviewFinding) (string, error) {
 	summary := plainText(prSummary)
 	if summary == "" {
 		summary = "`" + t.ID + "`: " + t.Title
@@ -87,6 +89,12 @@ func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail
 			}
 			if noPlan {
 				notes = append(notes, "", "**No recorded plan:** not eligible for auto-merge, so this waits for the owner — no plan stage recorded a write set for this run, so nothing it changed could be checked against one")
+			}
+			if len(review) > 0 {
+				notes = append(notes, "", "**Pre-open review:** every finding it made, and how the run left it")
+				for _, f := range review {
+					notes = append(notes, "- "+plainText(f.Finding)+" — "+plainText(f.Resolution))
+				}
 			}
 			notes = append(notes, "", "The ticket as built:", "", fence(t.Body), t.Body, fence(t.Body), "")
 			out = append(out, notes...)

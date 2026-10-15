@@ -25,6 +25,14 @@ const (
 	maxClockSkew     = 5 * time.Minute
 )
 
+// maxReviewFindings and maxFindingBytes bound what a summary carries of the
+// pre-open review: room for every finding a review pass and a capped guard scan
+// can make, and never enough for one long finding to crowd out the rest.
+const (
+	maxReviewFindings = 24
+	maxFindingBytes   = 512
+)
+
 // ErrSummaryMissing reports a record job that received no build summary.
 var ErrSummaryMissing = errors.New("no build summary")
 
@@ -62,6 +70,10 @@ type Summary struct {
 	// and PeakContextTokens the largest context a single request read.
 	ReadFiles         []string `json:"read_files,omitempty"`
 	PeakContextTokens int64    `json:"peak_context_tokens,omitempty"`
+	// ReviewFindings is each finding the pre-open review made and how the run
+	// left it, which the PR body publishes so a reader sees what the run fixed
+	// before opening the pull request (AC5).
+	ReviewFindings []ReviewFinding `json:"review_findings,omitempty"`
 }
 
 // Step is one agent invocation in a run's build, distinct from Usage.Steps,
@@ -86,6 +98,15 @@ type Step struct {
 	// Rates.At, but nothing of that time survives the events themselves, so
 	// the record job reads this back to tag the run's own time of use.
 	At time.Time `firestore:"at" json:"at"`
+}
+
+// ReviewFinding is one finding the pre-open review made and how the run left
+// it: a guard the guard scan broke, or a review pass's own finding, and whether
+// the fix round resolved it. The PR body lists them, so a reader sees what the
+// run fixed before it opened the pull request.
+type ReviewFinding struct {
+	Finding    string `json:"finding"`
+	Resolution string `json:"resolution"`
 }
 
 // PhaseCache is one phase's prompt-cache figures: what its first request read
@@ -252,6 +273,8 @@ func (s Summary) Encode() (string, error) {
 			s.EditedFiles = s.EditedFiles[:len(s.EditedFiles)/2]
 		case len(s.Steps) > 0:
 			s.Steps = s.Steps[1:]
+		case len(s.ReviewFindings) > 0:
+			s.ReviewFindings = s.ReviewFindings[:len(s.ReviewFindings)/2]
 		default:
 			return "", fmt.Errorf("summary is %d bytes, over %d", len(b), maxSummaryBytes)
 		}
@@ -265,6 +288,20 @@ func capFiles(files []string) []string {
 	out := make([]string, len(files))
 	for i, f := range files {
 		out[i] = truncate(f, maxPathBytes)
+	}
+	return out
+}
+
+// capFindings bounds how many findings a summary carries and how long each is.
+// The run that reports them and the job that reads them both apply it, so what
+// one writes is what the other accepts.
+func capFindings(findings []ReviewFinding) []ReviewFinding {
+	if len(findings) > maxReviewFindings {
+		findings = findings[:maxReviewFindings]
+	}
+	out := make([]ReviewFinding, len(findings))
+	for i, f := range findings {
+		out[i] = ReviewFinding{Finding: truncate(f.Finding, maxFindingBytes), Resolution: truncate(f.Resolution, maxFindingBytes)}
 	}
 	return out
 }
@@ -319,6 +356,7 @@ func ParseSummary(raw, attemptID string, t Ticket, now time.Time) (Summary, erro
 	s.PRSummary = truncate(s.PRSummary, stopDetailLimit)
 	s.EditedFiles = capFiles(s.EditedFiles)
 	s.ReadFiles = capFiles(s.ReadFiles)
+	s.ReviewFindings = capFindings(s.ReviewFindings)
 	return s, nil
 }
 
@@ -373,6 +411,14 @@ func (s Summary) validate(attemptID string, t Ticket, now time.Time) error {
 	for _, f := range s.ReadFiles {
 		if !repoRelative(f) {
 			return fmt.Errorf("read file %q is not a path inside the repository", truncate(f, logErrorLimit))
+		}
+	}
+	if len(s.ReviewFindings) > maxReviewFindings {
+		return fmt.Errorf("%d review findings, over %d", len(s.ReviewFindings), maxReviewFindings)
+	}
+	for _, f := range s.ReviewFindings {
+		if !printable(f.Finding) || !printable(f.Resolution) {
+			return errors.New("a review finding or its resolution is not one printable line")
 		}
 	}
 	if s.PeakContextTokens < 0 || s.PeakContextTokens > maxCount {

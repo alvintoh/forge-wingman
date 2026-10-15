@@ -450,6 +450,45 @@ func TestParseSummaryRejectsTooManyReadFiles(t *testing.T) {
 	}
 }
 
+// TestParseSummaryKeepsTheReviewFindings asserts the pre-open review's findings
+// and how the run left them survive the trip to the job that renders the PR.
+func TestParseSummaryKeepsTheReviewFindings(t *testing.T) {
+	s := validSummary()
+	s.ReviewFindings = []ReviewFinding{
+		{Finding: "guard at a.go:4 can be removed and every test in . still passes", Resolution: "fixed in round 2"},
+		{Finding: "the retry never bounds its attempts", Resolution: "still open"},
+	}
+	raw, err := s.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParseSummary(raw, "1-1", testTicket, finalizeNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got.ReviewFindings, s.ReviewFindings) {
+		t.Fatalf("findings = %+v, want %+v", got.ReviewFindings, s.ReviewFindings)
+	}
+}
+
+// TestParseSummaryRejectsTooManyReviewFindings is the same boundary for the
+// pre-open review's findings: a run reports what a review found, never an
+// unbounded pile of findings.
+func TestParseSummaryRejectsTooManyReviewFindings(t *testing.T) {
+	s := validSummary()
+	s.ReviewFindings = make([]ReviewFinding, maxReviewFindings+1)
+	for i := range s.ReviewFindings {
+		s.ReviewFindings[i] = ReviewFinding{Finding: "a finding", Resolution: "still open"}
+	}
+	raw, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseSummary(string(raw), "1-1", testTicket, finalizeNow); err == nil {
+		t.Fatal("a summary carrying more review findings than a run can make was accepted")
+	}
+}
+
 // TestEncodeTrimsFilesReadBeforeSteps keeps the run's own steps, which say what
 // the agent did, over a list of read files too large to carry whole.
 func TestEncodeTrimsFilesReadBeforeSteps(t *testing.T) {

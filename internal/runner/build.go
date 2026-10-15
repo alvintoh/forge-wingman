@@ -68,6 +68,9 @@ type BuildDeps struct {
 	ReviewAgent Agent
 	// Checks runs the repository's own quality gates for the pre-PR loop.
 	Checks CheckRunner
+	// PackageTests runs one package's tests, which the pre-PR loop's guard
+	// probe breaks a changed guard against; nil skips the probe.
+	PackageTests PackageTestRunner
 	// AgentProbe, when set, proves the agent container starts over dir before
 	// any agent runs; nil runs agents on the host.
 	AgentProbe func(ctx context.Context, dir string) error

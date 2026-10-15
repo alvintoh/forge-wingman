@@ -68,8 +68,9 @@ type fakeAgent struct {
 	calls   int
 	prompt  string
 	prompts []string
-	// rules records the rules head every call received, in order — every round
-	// of the build session carries the projection's rules, the review pass none.
+	// rules records the rules head every call received, in order — the build's
+	// rounds and the review's passes all carry the projection's rules, since a
+	// review checks the diff against the conventions the build was given.
 	rules []string
 	// dirs records the directory every call ran in, in order.
 	dirs []string
@@ -152,14 +153,21 @@ func (r *reports) last(t *testing.T) Summary {
 // behavior is checks_test.go's concern, not this file's.
 func alwaysPassChecks(context.Context, string, []string) (string, string, error) { return "", "", nil }
 
+// alwaysCoversGuards is the PackageTests fake most tests use: breaking any
+// guard fails a test in its package, so the guard scan reports nothing and a
+// test that wants a finding scripts its own runner. The scan's own behaviour is
+// guards_test.go's concern, not this file's.
+func alwaysCoversGuards(context.Context, string, string) (bool, string, error) { return true, "", nil }
+
 func testDeps(projections fakeObjects, agent *fakeAgent) (BuildDeps, fakeObjects, *reports) {
 	completions, reported := fakeObjects{}, &reports{}
 	return BuildDeps{
-		Projections: projections,
-		Completions: completions,
-		Agent:       agent,
-		ReviewAgent: &fakeAgent{events: reviewEvent("")},
-		Checks:      alwaysPassChecks,
+		Projections:  projections,
+		Completions:  completions,
+		Agent:        agent,
+		ReviewAgent:  &fakeAgent{events: reviewEvent("")},
+		Checks:       alwaysPassChecks,
+		PackageTests: alwaysCoversGuards,
 		Report: func(s Summary) error {
 			*reported = append(*reported, s)
 			return nil
@@ -1287,13 +1295,12 @@ func TestPrePRLoopReviewFindingsForceADraftAndOneFixRound(t *testing.T) {
 	if !strings.Contains(agent.prompts[1], finding) {
 		t.Fatalf("fix round prompt = %q, want it to carry the review's finding", agent.prompts[1])
 	}
-	// The review pass starts a fresh session with no projection, so it carries
-	// no rules; its fix round resumes the build session, so it must carry the
-	// build round's rules — an empty rules would change the resumed session's
-	// system prompt mid-conversation. The re-review starts fresh too, so it
-	// carries no rules either.
-	if len(review.rules) != 2 || review.rules[0] != "" || review.rules[1] != "" {
-		t.Fatalf("review pass rules = %q, want none on either pass", review.rules)
+	// Both review passes carry the build's own rules, which is what lets the
+	// review judge the diff against the conventions the build was given; the
+	// fix round resumes the build session, so it must carry them too — an empty
+	// rules would change the resumed session's system prompt mid-conversation.
+	if len(review.rules) != 2 || review.rules[0] == "" || review.rules[0] != agent.rules[0] || review.rules[1] != agent.rules[0] {
+		t.Fatalf("review pass rules = %q, want the build round's %q on both passes", review.rules, agent.rules[0])
 	}
 	if agent.rules[1] == "" || agent.rules[1] != agent.rules[0] {
 		t.Fatalf("fix round rules = %q, want the build round's %q", agent.rules[1], agent.rules[0])
@@ -1487,6 +1494,157 @@ func TestPrePRLoopLabelsFindingsNotReReviewedWhenTheBudgetIsSpent(t *testing.T) 
 	}
 	if strings.Contains(rec.LoopDetail, "review findings open") {
 		t.Fatalf("loop detail = %q, must not call the findings open when they were not re-reviewed", rec.LoopDetail)
+	}
+}
+
+// TestPrePRLoopDrivesAFixRoundFromAGuardNoTestCovers is the mechanical half of
+// the pre-open review: the scan breaks the guard the diff adds, the finding
+// reaches the build session's fix round, and the run records it as still open
+// once the fixed diff is probed again.
+func TestPrePRLoopDrivesAFixRoundFromAGuardNoTestCovers(t *testing.T) {
+	const finding = "guard at a.go:4 can be removed and every test in . still passes"
+	agent := &fakeAgent{
+		edit:   edit("a.go", guardedFile),
+		events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{}}}` + "\n",
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	probes := 0
+	deps.PackageTests = func(context.Context, string, string) (bool, string, error) {
+		probes++
+		return false, "", nil // every test passes: the guard is uncovered
+	}
+	review := &fakeAgent{events: reviewEvent("")}
+	deps.ReviewAgent = review
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if probes != 2 {
+		t.Fatalf("probed the guard %d times, want once before the fix round and once after it", probes)
+	}
+	if agent.calls != 2 {
+		t.Fatalf("build agent ran %d times, want 2: the guard's finding gets one fix round", agent.calls)
+	}
+	if !strings.Contains(agent.prompts[1], finding) {
+		t.Fatalf("fix round prompt = %q, want it to carry the guard's finding", agent.prompts[1])
+	}
+	if !strings.Contains(review.prompts[0], "early return") {
+		t.Fatalf("review prompt = %q, want the checks a walkthrough makes", review.prompts[0])
+	}
+	rec := reported.last(t)
+	if rec.Ready {
+		t.Fatal("ready = true, want false: the guard is still uncovered")
+	}
+	if !strings.Contains(rec.LoopDetail, finding) {
+		t.Fatalf("loop detail = %q, want it to name the guard still open", rec.LoopDetail)
+	}
+	if len(rec.Steps) != 4 || rec.Steps[2].Detail != finding {
+		t.Fatalf("steps = %+v, want [build] [review] [the fix round carrying the guard's finding] [re-review]", rec.Steps)
+	}
+	if want := []ReviewFinding{{Finding: finding, Resolution: "still open"}}; !slices.Equal(rec.ReviewFindings, want) {
+		t.Fatalf("findings = %+v, want %+v", rec.ReviewFindings, want)
+	}
+}
+
+// TestPrePRLoopRecordsAGuardTheFixRoundCovered is the other resolution: once a
+// test catches the broken guard, the run leaves it fixed and opens ready.
+func TestPrePRLoopRecordsAGuardTheFixRoundCovered(t *testing.T) {
+	const finding = "guard at a.go:4 can be removed and every test in . still passes"
+	agent := &fakeAgent{
+		edit:   edit("a.go", guardedFile),
+		events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{}}}` + "\n",
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	probes := 0
+	deps.PackageTests = func(context.Context, string, string) (bool, string, error) {
+		probes++
+		return probes > 1, "", nil // a test catches the break once the fix round has been in
+	}
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	rec := reported.last(t)
+	if !rec.Ready || rec.LoopDetail != "" {
+		t.Fatalf("record ready = %v, detail = %q, want ready with no detail", rec.Ready, rec.LoopDetail)
+	}
+	if want := []ReviewFinding{{Finding: finding, Resolution: "fixed in round 2"}}; !slices.Equal(rec.ReviewFindings, want) {
+		t.Fatalf("findings = %+v, want %+v", rec.ReviewFindings, want)
+	}
+}
+
+// TestPrePRLoopLeavesARunWithNoFindingsUntouched is AC6: a guard the tests do
+// catch, and a review that found nothing, leave the run exactly as it was —
+// no fix round, no findings recorded, no draft.
+func TestPrePRLoopLeavesARunWithNoFindingsUntouched(t *testing.T) {
+	agent := &fakeAgent{edit: edit("a.go", guardedFile)}
+	deps, _, reported := testDeps(validObjects(), agent)
+	probes := 0
+	deps.PackageTests = func(context.Context, string, string) (bool, string, error) {
+		probes++
+		return true, "", nil
+	}
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if probes != 1 {
+		t.Fatalf("probed the guard %d times, want once: a run with no finding gets no fix round", probes)
+	}
+	if agent.calls != 1 {
+		t.Fatalf("build agent ran %d times, want 1: no finding, no fix round", agent.calls)
+	}
+	rec := reported.last(t)
+	if !rec.Ready || rec.LoopDetail != "" || len(rec.ReviewFindings) != 0 {
+		t.Fatalf("record = ready %v, detail %q, findings %+v; want a run the scan left alone",
+			rec.Ready, rec.LoopDetail, rec.ReviewFindings)
+	}
+	if len(rec.Steps) != 2 || rec.Steps[0].Phase != PhaseBuild || rec.Steps[1].Phase != PhaseReview {
+		t.Fatalf("steps = %+v, want the build round then the review pass", rec.Steps)
+	}
+}
+
+// TestPrePRLoopRecordsFindingsAsOpenWhenNoFixRoundRan holds the budget path
+// that skips the fix round whole: nothing was done about the findings, so none
+// of them may be reported as addressed by a round that never ran.
+func TestPrePRLoopRecordsFindingsAsOpenWhenNoFixRoundRan(t *testing.T) {
+	const finding = "guard at a.go:4 can be removed and every test in . still passes"
+	agent := &fakeAgent{edit: edit("a.go", guardedFile)}
+	deps, _, reported := testDeps(validObjects(), agent)
+	started := time.Now()
+	clock := started
+	deps.Now = func() time.Time { return clock }
+	deps.PackageTests = func(context.Context, string, string) (bool, string, error) {
+		// The probe spends what the run had left, and every test passes: the
+		// guard is uncovered, so the run opens with one finding it never acted on.
+		clock = started.Add(checkLoopBudget + time.Minute)
+		return false, "", nil
+	}
+	review := &fakeAgent{events: reviewEvent("")}
+	deps.ReviewAgent = review
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 1 {
+		t.Fatalf("build agent ran %d times, want 1: the budget left no fix round", agent.calls)
+	}
+	if review.calls != 1 {
+		t.Fatalf("review agent ran %d times, want the review pass alone", review.calls)
+	}
+	rec := reported.last(t)
+	if rec.Ready {
+		t.Fatal("ready = true, want false: the guard is uncovered and nothing was done about it")
+	}
+	if !strings.Contains(rec.LoopDetail, "fix round skipped") {
+		t.Fatalf("loop detail = %q, want it to say the fix round was skipped", rec.LoopDetail)
+	}
+	if want := []ReviewFinding{{Finding: finding, Resolution: "still open"}}; !slices.Equal(rec.ReviewFindings, want) {
+		t.Fatalf("findings = %+v, want %+v", rec.ReviewFindings, want)
 	}
 }
 

@@ -117,6 +117,13 @@ func checkCmdEnv() []string {
 // Go toolchain.
 type CheckRunner func(ctx context.Context, dir string, changed []string) (failedGate, output string, err error)
 
+// PackageTestRunner runs one package's tests against dir, and reports whether
+// they failed. It is ContainerChecks.RunPackageTest in production and
+// RunPackageTest where no checks image is configured, so a package's tests run
+// under the same boundary as the gates; the pre-PR loop's guard probe is its
+// only caller, and a build with none set skips that probe.
+type PackageTestRunner func(ctx context.Context, dir, pkg string) (failed bool, output string, err error)
+
 // RunChecks runs the repository's own quality gates against dir, in the same
 // order and with the same commands as Makefile's check target and, when changed
 // touches webDir, ci.yml's web job after them, stopping at the first failure.
@@ -155,6 +162,19 @@ func RunChecks(ctx context.Context, dir string, changed []string) (string, strin
 
 // lookPath finds a binary on PATH; a test replaces it to make bun missing.
 var lookPath = exec.LookPath
+
+// RunPackageTest runs one package's tests against dir with the go on PATH: this
+// pass's counterpart to RunChecks for a single package, which the guard probe
+// breaks a guard against. A package that cannot be tested at all — a pattern
+// naming no package, or a tree that does not build — is reported as a failure,
+// so nothing is read into an answer the tests never gave.
+func RunPackageTest(ctx context.Context, dir, pkg string) (bool, string, error) {
+	output, failed, err := runGate(ctx, dir, "go", "test", pkg)
+	if err != nil {
+		return false, "", err
+	}
+	return failed, output, nil
+}
 
 // runWebSteps runs the web job's steps against dir's web directory with the
 // bun on PATH, the way the web job runs them in its own job with the working

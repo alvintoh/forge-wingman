@@ -298,10 +298,11 @@ func buildSummary(logger *slog.Logger, raw, attemptID string, t runner.Ticket, n
 // summary: the record gains the build's fields only after the PR opens.
 // loopDetail is the pre-PR loop's report of why it is a draft, and check names
 // what pr-meta established about the write set — each of which also keeps it
-// a draft.
+// a draft. The summary's own findings travel with it: the pre-open review's
+// report is part of the body whether or not they kept it a draft.
 func renderPR(tmpl string, rec runner.Record, sum runner.Summary, failedGate, runURL, loopDetail string, check prCheck) (title, body string, err error) {
 	t := rec.Ticket()
-	body, err = runner.PRBody(tmpl, t, sum.PRSummary, failedGate, runURL, loopDetail, check.Overlap, check.OutOfPlan, check.Unread, check.FrontEnd, !check.Planned)
+	body, err = runner.PRBody(tmpl, t, sum.PRSummary, failedGate, runURL, loopDetail, check.Overlap, check.OutOfPlan, check.Unread, check.FrontEnd, !check.Planned, sum.ReviewFindings)
 	if err != nil {
 		return "", "", err
 	}

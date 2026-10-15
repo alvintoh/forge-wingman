@@ -333,7 +333,7 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 		return setupFailed(logger, e.output, err)
 	}
 	const repo = "."
-	checks, err := checkRunner(ctx, *checksImage, e.tempDir, repo)
+	checks, packageTests, err := checkRunners(ctx, *checksImage, e.tempDir, repo)
 	if err != nil {
 		return setupFailed(logger, e.output, err)
 	}
@@ -364,16 +364,17 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 			// record, so it runs the plan's next harness rather than one that is
 			// not open-source, which only the owner's own commands admit.
 			res, err := runner.Build(ctx, runner.BuildDeps{
-				Projections: store.NewBucket(gcs, e.project+"-projections"),
-				Completions: store.NewBucket(gcs, e.project+"-completions"),
-				Agent:       runner.NewRouter(runner.ProfileBuild, e.harnesses...),
-				PlanAgent:   runner.NewRouter(runner.ProfilePlan, e.harnesses...),
-				ReviewAgent: runner.NewRouter(runner.ProfileReview, e.harnesses...),
-				Checks:      checks,
-				AgentProbe:  probe,
-				Report:      func(s runner.Summary) error { return writeSummary(e.output, s) },
-				Logger:      logger,
-				Now:         time.Now,
+				Projections:  store.NewBucket(gcs, e.project+"-projections"),
+				Completions:  store.NewBucket(gcs, e.project+"-completions"),
+				Agent:        runner.NewRouter(runner.ProfileBuild, e.harnesses...),
+				PlanAgent:    runner.NewRouter(runner.ProfilePlan, e.harnesses...),
+				ReviewAgent:  runner.NewRouter(runner.ProfileReview, e.harnesses...),
+				Checks:       checks,
+				PackageTests: packageTests,
+				AgentProbe:   probe,
+				Report:       func(s runner.Summary) error { return writeSummary(e.output, s) },
+				Logger:       logger,
+				Now:          time.Now,
 			}, runner.BuildConfig{
 				AttemptID:    e.attemptID,
 				Repo:         repo,
@@ -403,39 +404,41 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 	return err
 }
 
-// checkRunner is the pre-PR loop's checks: in a container of image when one is
-// given, with its module cache under tempDir and repo's git common directory
-// resolved now, before any agent runs; else on the host.
-func checkRunner(ctx context.Context, image, tempDir, repo string) (runner.CheckRunner, error) {
+// checkRunners are the pre-PR loop's checks: the repository's own gates, and one
+// package's tests, which the guard probe breaks a changed guard against. Both
+// run in a container of image when one is given, with the module cache under
+// tempDir and repo's git common directory resolved now, before any agent runs;
+// else on the host.
+func checkRunners(ctx context.Context, image, tempDir, repo string) (runner.CheckRunner, runner.PackageTestRunner, error) {
 	if image == "" {
-		return runner.RunChecks, nil
+		return runner.RunChecks, runner.RunPackageTest, nil
 	}
 	linter, err := exec.LookPath("golangci-lint")
 	if err != nil {
-		return nil, fmt.Errorf("checks linter: %w", err)
+		return nil, nil, fmt.Errorf("checks linter: %w", err)
 	}
 	if linter, err = filepath.Abs(linter); err != nil {
-		return nil, fmt.Errorf("checks linter: %w", err)
+		return nil, nil, fmt.Errorf("checks linter: %w", err)
 	}
 	// The checks image pins a Go toolchain alone, so the web gates run on the
 	// bun model.yml installs for its harnesses, mounted into their container.
 	bun, err := exec.LookPath("bun")
 	if err != nil {
-		return nil, fmt.Errorf("checks bun: %w", err)
+		return nil, nil, fmt.Errorf("checks bun: %w", err)
 	}
 	if bun, err = filepath.Abs(bun); err != nil {
-		return nil, fmt.Errorf("checks bun: %w", err)
+		return nil, nil, fmt.Errorf("checks bun: %w", err)
 	}
 	gitDir, err := runner.GitCommonDir(ctx, repo)
 	if err != nil {
-		return nil, fmt.Errorf("checks git common dir: %w", err)
+		return nil, nil, fmt.Errorf("checks git common dir: %w", err)
 	}
 	c := runner.ContainerChecks{Image: image, ModCache: filepath.Join(tempDir, "checks-modcache"), Linter: linter,
 		Bun: bun, BunCache: filepath.Join(tempDir, "checks-bun-cache"), GitCommonDir: gitDir}
 	if err := c.Validate(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return c.Run, nil
+	return c.Run, c.RunPackageTest, nil
 }
 
 // agentImageUsage describes the -agent-image flag of the subcommands that may run an agent on the host;
