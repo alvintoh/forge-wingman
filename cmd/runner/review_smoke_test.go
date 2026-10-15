@@ -18,7 +18,6 @@ import (
 
 const (
 	freeModel     = "command-code/poolside/laguna-s-2.1-free"
-	otherFree     = "command-code/inclusionai/ling-3.1-flash:free"
 	pricedModel   = "command-code/deepseek/deepseek-v4.1-flash"
 	unpricedModel = "command-code/unpriced/model"
 	tokensUsed    = `{"type":"step_finish","part":{"tokens":{"input":1000,"output":100}}}` + "\n"
@@ -71,7 +70,6 @@ func readSummary(t *testing.T, path string) string {
 func TestReviewSmokeWritesARowPerOutcome(t *testing.T) {
 	agent, _ := newSmokeAgent(map[string]smokeRun{
 		freeModel:      reviewReply(tokensUsed, "Percent panics on division by zero"),
-		otherFree:      reviewReply(tokensUsed, ""),
 		pricedModel:    reviewReply(tokensUsed, ""),
 		unpricedModel:  reviewReply(tokensUsed, ""),
 		"p/unreadable": reply(`{"type":"text","part":{"text":"looks fine"}}` + "\n"),
@@ -81,7 +79,7 @@ func TestReviewSmokeWritesARowPerOutcome(t *testing.T) {
 		},
 	})
 	path := filepath.Join(t.TempDir(), "summary.md")
-	models := []string{freeModel, otherFree, pricedModel, unpricedModel, "p/unreadable", "p/failing"}
+	models := []string{freeModel, pricedModel, unpricedModel, "p/unreadable", "p/failing"}
 	if err := runReviewSmoke(context.Background(), quietLogger(), agent, models, time.Minute, path, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +87,6 @@ func TestReviewSmokeWritesARowPerOutcome(t *testing.T) {
 	for _, want := range []string{
 		"| model | outcome | cost | defect | detail |\n|---|---|---|---|---|\n",
 		"| command-code/poolside/laguna-s-2.1-free | pass | $0 | flagged | Percent panics on division by zero |\n",
-		"| command-code/inclusionai/ling-3.1-flash:free | pass | $0 | missed | no findings |\n",
 		"| command-code/deepseek/deepseek-v4.1-flash | cost > $0 | $0.0004",
 		"| command-code/unpriced/model | unpriced | — | missed | no rate card in providers.json |\n",
 		"| p/unreadable | findings unreadable | — | — | looks fine |\n",
@@ -107,16 +104,16 @@ func TestReviewSmokeTimesOutOneModelAndRunsTheNext(t *testing.T) {
 			<-ctx.Done()
 			return errors.New("signal: killed")
 		},
-		otherFree: reviewReply("", ""),
+		pricedModel: reviewReply("", ""),
 	})
 	path := filepath.Join(t.TempDir(), "summary.md")
-	if err := runReviewSmoke(context.Background(), quietLogger(), agent, []string{freeModel, otherFree}, 50*time.Millisecond, path, nil); err != nil {
+	if err := runReviewSmoke(context.Background(), quietLogger(), agent, []string{freeModel, pricedModel}, 50*time.Millisecond, path, nil); err != nil {
 		t.Fatal(err)
 	}
 	got := readSummary(t, path)
 	for _, want := range []string{
 		"| command-code/poolside/laguna-s-2.1-free | timed out | — | — | exceeded 50ms |\n",
-		"| command-code/inclusionai/ling-3.1-flash:free | pass | $0 | missed | no findings |\n",
+		"| command-code/deepseek/deepseek-v4.1-flash | pass | $0 | missed | no findings |\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("summary lacks %q:\n%s", want, got)
@@ -129,7 +126,7 @@ func TestReviewSmokeWritesEachRowBeforeTheNextModelRuns(t *testing.T) {
 	var seen string
 	agent, _ := newSmokeAgent(map[string]smokeRun{
 		freeModel: reviewReply("", ""),
-		otherFree: func(ctx context.Context, dir string, stdout, stderr io.Writer) error {
+		pricedModel: func(ctx context.Context, dir string, stdout, stderr io.Writer) error {
 			b, err := os.ReadFile(path)
 			seen = string(b)
 			if err != nil {
@@ -138,7 +135,7 @@ func TestReviewSmokeWritesEachRowBeforeTheNextModelRuns(t *testing.T) {
 			return reviewReply("", "")(ctx, dir, stdout, stderr)
 		},
 	})
-	if err := runReviewSmoke(context.Background(), quietLogger(), agent, []string{freeModel, otherFree}, time.Minute, path, nil); err != nil {
+	if err := runReviewSmoke(context.Background(), quietLogger(), agent, []string{freeModel, pricedModel}, time.Minute, path, nil); err != nil {
 		t.Fatal(err)
 	}
 	if want := "| model | outcome | cost | defect | detail |\n|---|---|---|---|---|\n" +
@@ -161,8 +158,8 @@ func TestReviewSmokeFailsOnlyWhenNoModelPasses(t *testing.T) {
 }
 
 func TestReviewSmokeRunsEachModelInAFreshDirectory(t *testing.T) {
-	agent, dirs := newSmokeAgent(map[string]smokeRun{freeModel: reviewReply("", ""), otherFree: reviewReply("", "")})
-	if err := runReviewSmoke(context.Background(), quietLogger(), agent, []string{freeModel, otherFree}, time.Minute, "", nil); err != nil {
+	agent, dirs := newSmokeAgent(map[string]smokeRun{freeModel: reviewReply("", ""), pricedModel: reviewReply("", "")})
+	if err := runReviewSmoke(context.Background(), quietLogger(), agent, []string{freeModel, pricedModel}, time.Minute, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(*dirs) != 2 || (*dirs)[0] == (*dirs)[1] {
@@ -177,7 +174,7 @@ func TestReviewSmokeRunsEachModelInAFreshDirectory(t *testing.T) {
 
 func TestReviewSmokeRefusesABuildFallbackInTheList(t *testing.T) {
 	err := reviewSmoke(context.Background(), quietLogger(), func(string) string { return "" },
-		[]string{"-review-models", otherFree, "-build-model", pricedModel})
+		[]string{"-review-models", freeModel, "-build-model", pricedModel})
 	if err == nil || !strings.Contains(err.Error(), "fallbacks") {
 		t.Fatalf("err = %v, want the build fallback refused", err)
 	}
@@ -206,10 +203,10 @@ func TestReviewSmokeStopsAfterTheRowOfAModelRunningWhenTheJobIsCancelled(t *test
 			cancel()
 			return reviewReply(tokensUsed, "")(ctx, "", stdout, nil)
 		},
-		otherFree: reviewReply(tokensUsed, ""),
+		pricedModel: reviewReply(tokensUsed, ""),
 	})
 	summary := filepath.Join(t.TempDir(), "summary.md")
-	err := runReviewSmoke(ctx, quietLogger(), agent, []string{freeModel, otherFree}, time.Minute, summary, nil)
+	err := runReviewSmoke(ctx, quietLogger(), agent, []string{freeModel, pricedModel}, time.Minute, summary, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}

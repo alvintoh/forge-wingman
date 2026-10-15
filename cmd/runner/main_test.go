@@ -1473,13 +1473,16 @@ func TestAgentSubcommandsRunTheirAgentInAContainerOnlyWithAnImage(t *testing.T) 
 	if err := os.WriteFile(contextPath, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// laguna is the build fallback now, and the checker refuses a review model that
+	// is the build model or one of its fallbacks, so the fixtures use the configured list.
+	reviewModel := runner.DefaultReviewModels()[0]
 	subcommands := map[string]func(getenv func(string) string, args []string) error{
 		"pr-review": func(getenv func(string) string, args []string) error {
 			return prReview(context.Background(), quietLogger(), getenv,
-				append([]string{"-context", contextPath, "-out", filepath.Join(t.TempDir(), "verdict.json"), "-models", freeModel}, args...))
+				append([]string{"-context", contextPath, "-out", filepath.Join(t.TempDir(), "verdict.json"), "-models", reviewModel}, args...))
 		},
 		"review-smoke": func(getenv func(string) string, args []string) error {
-			return reviewSmoke(context.Background(), quietLogger(), getenv, append([]string{"-review-models", freeModel}, args...))
+			return reviewSmoke(context.Background(), quietLogger(), getenv, append([]string{"-review-models", reviewModel}, args...))
 		},
 		"plan-smoke": func(getenv func(string) string, args []string) error {
 			return planSmoke(context.Background(), quietLogger(), getenv, args)

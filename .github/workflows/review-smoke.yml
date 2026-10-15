@@ -10,7 +10,7 @@ on:
       review_models:
         description: the review models to try, comma-separated provider/model; none may be the build model or one of its fallbacks
         type: string
-        default: command-code/meta/muse-spark-1.3-contributor,command-code/poolside/laguna-s-2.1-free
+        default: command-code/meta/muse-spark-1.3-contributor
       build_model:
         description: the build model, as provider/model; empty uses the default in internal/runner/models.json
         type: string

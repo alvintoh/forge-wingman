@@ -106,7 +106,7 @@ func TestPollNeverHoldsARunWhoseModelHasNoPeakWindow(t *testing.T) {
 
 func TestPollNeverHoldsABuildOnTheFreeTier(t *testing.T) {
 	cand := Candidate{RunID: "run-a", Repo: "octo/scratch", Size: "M", Stage: StageBuild,
-		LastResort: &runner.ModelLabels{Build: freeModel, Review: "command-code/inclusionai/ling-3.1-flash:free"}}
+		LastResort: &runner.ModelLabels{Build: freeModel, Review: "command-code/glyph-cluster:free"}}
 	cfg := peakConfig()
 	cfg.TwoStage = true
 	q, w, _ := peakPoll(t, cand, cfg, PeakOffPeakOnly, monday(2, 0), 30)
