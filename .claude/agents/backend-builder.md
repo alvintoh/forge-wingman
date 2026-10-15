@@ -2,7 +2,7 @@
 name: backend-builder
 domain: backend
 description: Implement server-side code — handlers, input validation, data access, error handling — to best practices. The build counterpart to the `backend-reviewer` agent; dispatched by /agent-mode per plan section.
-stacks: [go, gcp, command-code, omp, opencode, linear]
+stacks: [go, gcp, command-code, omp, linear]
 owns-readme: none
 layer: specialized
 ---
@@ -339,10 +339,8 @@ and forge-wingman's runner default (`omp.md`); opencode is the runner fallback (
 
 `GET https://api.commandcode.ai/provider/v1/models` (85 at this date). DeepSeek:
 `deepseek/deepseek-v4.1-flash`, `deepseek/deepseek-v4-flash`, `-fast` variants,
-`deepseek/deepseek-v4-pro`. Free ids exist (`poolside/laguna-s-2.1-free`, `inclusionai/ling-3.0-flash-sante:free`,
-`stealth/space-bunny-alpha`); their quality and unattended-use terms are UNVERIFIED. `inclusionai/ling-3.1-flash:free`
-is retired — the pricing page lists only the paid Ling 3.1 Flash (read 2026-10-15) — and each live free id allows 100
-requests a day per account, reset at midnight UTC.
+`deepseek/deepseek-v4-pro`. Free ids exist (`poolside/laguna-s-2.1-free`, `inclusionai/ling-3.1-flash:free`,
+`stealth/space-bunny-alpha`); their quality and unattended-use terms are UNVERIFIED.
 
 <!-- snapshot checked=2026-10-06 refresh="GET api.commandcode.ai/provider/v1/models; commandcode.ai/docs/resources/pricing-limits" -->
 **Prices (checked 2026-10-06, `commandcode.ai/docs/resources/pricing-limits`; per 1M: uncached
@@ -473,7 +471,7 @@ Model calls bill to the GOAT plan through its Provider API (`command-code.md`).
   id `commandcode` is omp's own and cannot be renamed.)*
 - **`~/.omp/agent/config.yml`** (owner's, re-read 2026-10-09): `modelRoles: {default:
   commandcode/deepseek/deepseek-v4.1-flash:high, plan/slow: …flash:max}`, `retry.fallbackChains:
-  {default: [commandcode/poolside/laguna-s-2.1-free, commandcode/inclusionai/ling-3.0-flash-sante:free]}`, `startup: {checkUpdate: false}`,
+  {default: [commandcode/poolside/laguna-s-2.1-free, commandcode/inclusionai/ling-3.1-flash:free]}`, `startup: {checkUpdate: false}`,
   `enabledProviders: [claude]`, `tools: {approvalMode: yolo}`, `advisor: {enabled: false}`,
   `symbolPreset: nerd` (`unicode` is the fallback where Nerd icons do not draw — the thinking level
   once showed as `~`), plus the look keys an onboarding agent would otherwise miss: `composer:
@@ -610,121 +608,6 @@ key; note the version.
 135.0); median output 5.7K tokens (11.4K, 7.1K). A baseline before any harness tuning; the method
 is in `command-code.md` §Models.
 
-### opencode
-
-# opencode — headless agent harness (forge-wingman's runner fallback)
-
-forge-wingman's runner defaults to omp (`omp.md`) and falls back to **opencode**; omp is also
-the interactive harness, and Command Code's `cmd` CLI is retired. Both bill to GOAT through
-Command Code's Provider API (`command-code.md`). *(Owner decision 2026-10-07, on cost per success:
-omp $0.0133, opencode $0.0153, cmd $0.0184.)* The slots follow measurement: opencode is the
-fallback only while it measures second. Measured on opencode 1.18.30.
-
-⚠️ **RE-RUN BEFORE QUOTING.** A flag, env var or event name here is a dated observation.
-**Replace a line in place** when a re-run changes it.
-
-## Install
-
-- `curl -fsSL https://opencode.ai/install | bash`, `npm install -g opencode-ai` (also bun,
-  pnpm, yarn), or `brew install anomalyco/tap/opencode`; Windows adds choco, scoop and mise.
-  *(Source: opencode.ai/docs, read 2026-10-07. Homebrew core also carries an `opencode`
-  formula, observed via `brew info` on 1.18.30.)* CI pins the version (`opencode-ai@<v>`).
-- **Check:** `opencode --version` prints the bare version (`1.18.30`).
-
-## Running it on GOAT (the runner recipe)
-
-- **Provider:** a custom provider in the config file, through the npm package
-  `@ai-sdk/openai-compatible`, `baseURL` `https://api.commandcode.ai/provider/v1`, and
-  `apiKey: "{env:<VAR>}"` so the key lives in the environment only, never in the file.
-  The model id is `<provider>/deepseek/deepseek-v4.1-flash`, exactly as
-  `opencode models <provider>` lists it.
-
-  ```json
-  {
-    "$schema": "https://opencode.ai/config.json",
-    "provider": {
-      "command-code": {
-        "npm": "@ai-sdk/openai-compatible",
-        "options": {
-          "baseURL": "https://api.commandcode.ai/provider/v1",
-          "apiKey": "{env:COMMAND_CODE_API_KEY}"
-        },
-        "models": { "deepseek/deepseek-v4.1-flash": {} }
-      }
-    },
-    "instructions": ["CLAUDE.md"]
-  }
-  ```
-
-- **Rules:** opencode does NOT resolve `@` imports, in `AGENTS.md` or in `~/.claude/CLAUDE.md`
-  (loaded as plain text), so an import-only entry file gives it nothing. List each file in
-  `instructions`: `"CLAUDE.md"` for the repo, plus the poly-mind layers by absolute path for
-  interactive use. *(Verified 2026-10-09, 1.18.32: without the list, the model reported no Gate
-  Decisions section; with it, YES.)*
-- **Headless:** `opencode run --format json --auto --pure -m <provider>/<model> "<prompt>"`.
-  `--auto` approves every permission request not explicitly denied; `--pure` loads no external
-  plugins.
-- **Isolation:** a throwaway `HOME` plus throwaway `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
-  `XDG_CACHE_HOME` and `XDG_STATE_HOME`; `OPENCODE_CONFIG=<file>`; and
-  - `OPENCODE_DISABLE_CLAUDE_CODE=1`, or it loads `~/.claude` (rules and skills);
-  - `OPENCODE_DISABLE_PROJECT_CONFIG=1`, or a repo's `opencode.json` / `.opencode/` overrides
-    your agents' permissions; name instruction files by ABSOLUTE path, since relative ones
-    resolve against the project config this disables;
-  - `OPENCODE_DISABLE_AUTOUPDATE=1`;
-  - `OPENCODE_DISABLE_MODELS_FETCH=1`.
-- **`$HOME/.opencode/` is a GLOBAL config dir** read regardless of those flags: an
-  `opencode.json`, `agent/*.md` or `plugin/*.js` planted there by an earlier round overrides
-  permissions or runs code. Between rounds that share a HOME, wipe everything except
-  `XDG_DATA_HOME/opencode` (sessions; nothing there is loaded as config, verified). Pass `--pure`.
-- **Git and `gh`:** not guarded. The owner's 2026-10-05 decision binds every runner harness
-  (`omp.md` §Unattended build).
-- **Usage:** read `step_finish` events. `tokens.input` EXCLUDES cache reads, and
-  `tokens.output` EXCLUDES reasoning (measured: total = input + output + reasoning + cache
-  read), so add reasoning to output yourself. The part has no time; the event's outer
-  `timestamp` (epoch ms, step end) is the step's time.
-- **Events:** no separate session event; every event carries a top-level `sessionID`;
-  resume with `-s <id>`. A bad key exits 1 with one `error` event and empty stderr.
-- **Cost:** it reports `cost: 0` for a custom provider, so price the tokens yourself.
-
-## Interactive use (verified 2026-10-09, 1.18.32, WSL)
-
-- Install it natively in the Linux home. On WSL, a Windows npm shim on PATH reads the Windows
-  `~/.claude`, not poly-mind.
-- `mcp` in `~/.config/opencode/opencode.json` repeats Claude Code's user-scope servers, which
-  opencode does not read. Authorise a remote server with `opencode mcp auth <name>`; pass a secret
-  with `{file:<600-mode path>}`, never inline.
-- **Zen free models run only inside opencode, and the gate is key-independent.** A direct
-  `/zen/v1/chat/completions` call answers HTTP 403 `FreeTierError` ("OpenCode's free tier can
-  only be used from within OpenCode") with no key *and* with the user-agent spoofed to
-  `opencode/1.18.35`; a bogus key gives 401 `AuthError` instead, so the gate is not a
-  user-agent check. Neither omp nor the runner can use the free tier. (Probed 2026-10-10.)
-- **`GET https://opencode.ai/zen/v1/models` is public** — no key, and it runs ahead of the docs
-  page (87 models, 12 `-free` ids; re-check with `curl -s https://opencode.ai/zen/v1/models`).
-  **The endpoint family is per model, not per plan**: most on `/zen/v1/chat/completions`,
-  `muse-spark-1.3-contributor-free` on `/zen/v1/responses`, and `jev-1.13-free` on
-  `/zen/v1/systemone`, which is not a chat API at all. **The privacy terms are per model too** —
-  Exo/MiMo/Ling `-free` may train on free-period data, the Nemotron free endpoints are NVIDIA
-  trial terms (no confidential data), and Muse Spark Contributor trains Meta models on prompts
-  *and* completions — so record a per-model caveat set, not one plan-level posture.
-
-## Read-only plan phase (verified 2026-10-08, 1.18.30)
-
-- A dedicated agent with `"mode": "primary"` and `permission` denying **`edit`, `bash` and
-  `task`**, run with `--agent <name>` and **never `--auto`**. Denying `edit` also turns off
-  `write`. `task` must be denied too: its `general` subagent has edit, write and bash.
-- **An unknown or disabled `--agent` silently falls back to the full-tools `build` agent**
-  (stderr: "Falling back to default agent"). Put the same denies at the TOP-LEVEL
-  `permission` as well, and fail the run on that message.
-- Live proof: asked to edit a file, create `marker` and run `touch marker2`, it refused all
-  three; `ls` found neither file and `git diff --stat` was empty. Check offline any time with
-  `opencode debug agent <name>` (no model call).
-
-## Measured (2026-10-06, DeepSeek V4.1 Flash via GOAT, same task and rules as cmd and omp, n=5)
-
-5/5, $0.0153 per success (omp $0.0133, cmd $0.0184); median 135.0 s (omp 81.6, cmd 139.5);
-median output 7.1K tokens (omp 5.7K, cmd 11.4K). A baseline before any harness tuning; the
-method is in `command-code.md` §Models.
-
 ### linear
 
 # Linear — API, OAuth apps and agents
@@ -852,7 +735,7 @@ that ticket.
 
 - Go module `github.com/alvintoh/forge-wingman`, `go 1.27` floor, `toolchain go1.27.1` (`go.mod` is authoritative over the README's floor).
 - Deployables: `cmd/dispatcher` (Cloud Run job), `cmd/webhook` (public Cloud Run service; Linear's `Linear-Signature` HMAC is the gate, and it wakes the dispatcher), `cmd/runner` (Go binary in GitHub Actions), `cmd/surface` (Cloud Run service behind IAP). Logic lives in `internal/`: `dispatcher`, `webhook`, `linear` (the shared GraphQL client), `runner`, `providers`, `store`, `money`.
-- Runner harnesses: omp is the default and opencode the fallback, chosen per provider by `harnesses` in `internal/providers/providers.json`; adapters are `internal/runner/harness_omp.go` and `internal/runner/harness_opencode.go`, with `harness_conformance_test.go` holding both to one contract. `command-code` is only the provider every model call bills through (the GOAT plan), not a harness.
+- Runner harnesses: omp is the only harness, chosen per provider by `harnesses` in `internal/providers/providers.json`; the adapter is `internal/runner/harness_omp.go`, with `harness_conformance_test.go` holding it to the harness contract. `command-code` is only the provider every model call bills through (the GOAT plan), not a harness.
 - Systemic stops: `internal/store/breaker.go` trips the breaker and `internal/dispatcher/notice.go` posts the notices to Slack; `runner reset-breaker` clears it.
 - Routing is stdlib `net/http` `ServeMux`; no third-party router.
 - Gate: `make check` (gofmt, vet, golangci-lint, `go test -race -shuffle=on -cover ./...`). The `internal/store` tests skip unless `FIRESTORE_EMULATOR_HOST` is set; `.github/workflows/ci.yml` starts the emulator on `:8080` and sets it.
