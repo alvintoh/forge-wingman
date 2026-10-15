@@ -609,13 +609,14 @@ func TestBuildStopsOnABadKey(t *testing.T) {
 
 // TestRouterRunsOmpAndFallsBackToOpencode asserts the embedded plan
 // configuration runs omp first, and the opencode harness when omp is not ready.
-func TestRouterRunsOmpAndFallsBackToOpencode(t *testing.T) {
+func TestRouterRunsOmpAndHasNoOpencodeFallback(t *testing.T) {
 	for name, tt := range map[string]struct {
-		ompKey            string
-		wantOmp, wantOpen int
+		ompKey  string
+		wantOmp int
+		wantErr string
 	}{
-		"omp ready":     {"k", 1, 0},
-		"omp not ready": {"", 0, 1},
+		"omp ready":     {"k", 1, ""},
+		"omp not ready": {"", 0, "COMMANDCODE_API_KEY"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			ompBin, ompRuns := scriptedOmp(t, "normal")
@@ -623,36 +624,18 @@ func TestRouterRunsOmpAndFallsBackToOpencode(t *testing.T) {
 			omp := OmpHarness{Bin: ompBin, Key: tt.ompKey, Home: t.TempDir()}
 			oc := OpencodeHarness{Bin: ocBin, Key: "k", Home: t.TempDir()}
 			var out, errBuf strings.Builder
-			if err := NewRouter(ProfileBuild, omp, oc).WithModel(opencodeTestModel).Run(context.Background(), t.TempDir(), "", "p", "", &out, &errBuf); err != nil {
+			err := NewRouter(ProfileBuild, omp, oc).WithModel(opencodeTestModel).Run(context.Background(), t.TempDir(), "", "p", "", &out, &errBuf)
+			switch {
+			case tt.wantErr == "" && err != nil:
 				t.Fatal(err)
+			case tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)):
+				t.Fatalf("err = %v, want omp's own reason naming %s, not a fallback", err, tt.wantErr)
 			}
-			if len(ompRuns()) != tt.wantOmp || len(ocRuns()) != tt.wantOpen {
-				t.Fatalf("omp ran %d and opencode %d times, want %d and %d", len(ompRuns()), len(ocRuns()), tt.wantOmp, tt.wantOpen)
+			// The plan names omp alone, so opencode never runs, ready or not.
+			if len(ompRuns()) != tt.wantOmp || len(ocRuns()) != 0 {
+				t.Fatalf("omp ran %d and opencode %d times, want %d and 0", len(ompRuns()), len(ocRuns()), tt.wantOmp)
 			}
 		})
-	}
-}
-
-// TestWorkflowsInstallThePinnedOpencode asserts the workflows that run an
-// agent install opencode from its lockfile with npm and check the pinned version.
-func TestWorkflowsInstallThePinnedOpencode(t *testing.T) {
-	for _, name := range []string{"model.yml", "plan-smoke.yml", "review-smoke.yml"} {
-		b, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", name))
-		if err != nil {
-			t.Fatal(err)
-		}
-		yml := string(b)
-		for _, want := range []string{
-			"uses: actions/setup-node@",
-			"npm ci --prefix tools/opencode",
-			"tools/opencode/node_modules/.bin",
-			`jq -r '.dependencies["opencode-ai"]' tools/opencode/package.json`,
-			"COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}",
-		} {
-			if !strings.Contains(yml, want) {
-				t.Errorf("%s has no %q", name, want)
-			}
-		}
 	}
 }
 

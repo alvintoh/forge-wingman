@@ -50,8 +50,7 @@
         "command-code/deepseek/deepseek-v4.1-flash": 60
       },
       "harnesses": {
-        "default": "omp",
-        "fallbacks": ["opencode"]
+        "default": "omp"
       },
       "rates": {
         "command-code/deepseek/deepseek-v4.1-flash": {
