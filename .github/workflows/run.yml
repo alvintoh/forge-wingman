@@ -76,6 +76,8 @@ jobs:
       override_model: ${{ steps.read.outputs.override_model }}
       override_review_models: ${{ steps.read.outputs.override_review_models }}
       override_plan_models: ${{ steps.read.outputs.override_plan_models }}
+      # The checksum of the runner binary this job uploads, which the later jobs verify.
+      runner_sha256: ${{ steps.runner.outputs.sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -101,7 +103,22 @@ jobs:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
+      # Static, so the model job's egress proxy container can run the binary it mounts. Every
+      # later job downloads this build instead of compiling its own (.github/actions/runner-binary).
       - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
+        env:
+          CGO_ENABLED: "0"
+
+      - id: runner
+        name: Checksum the runner binary
+        run: echo "sha256=$(sha256sum "$RUNNER_TEMP/runner" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runner
+          path: ${{ runner.temp }}/runner
+          if-no-files-found: error
+          retention-days: 1
 
       # A missing record or ticket fails here, before any model call; record says why.
       - id: read
@@ -133,6 +150,7 @@ jobs:
       review_models: ${{ needs.ticket.outputs.override_review_models || inputs.review_models }}
       plan_models: ${{ needs.ticket.outputs.override_plan_models || inputs.plan_models }}
       stage: ${{ inputs.stage }}
+      runner_sha256: ${{ needs.ticket.outputs.runner_sha256 }}
     secrets:
       COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
       # The free-tier plan's key, read only when a run falls through to it. Left
@@ -165,18 +183,15 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: false
-
       - id: auth
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
-      - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
+      - uses: ./.github/actions/runner-binary
+        with:
+          sha256: ${{ needs.ticket.outputs.runner_sha256 }}
 
       # A plan stage that stopped wrote no artifact to download: the job below
       # ends its run rather than recording a plan.
@@ -220,8 +235,7 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      # The version is ci.yml's golangci-lint-action version.
-      - run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
+      - uses: ./.github/actions/golangci-lint
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -270,7 +284,7 @@ jobs:
 
   pr-meta:
     name: pr-meta ${{ inputs.run_id }}
-    needs: [model, check]
+    needs: [ticket, model, check]
     if: ${{ !cancelled() && inputs.stage != 'plan' && needs.model.result == 'success' && needs.model.outputs.changed == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -296,18 +310,15 @@ jobs:
           # than its tip alone for that base to be there at all.
           fetch-depth: 0
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: false
-
       - id: auth
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
-      - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
+      - uses: ./.github/actions/runner-binary
+        with:
+          sha256: ${{ needs.ticket.outputs.runner_sha256 }}
 
       # Nothing on GitHub carries the branch yet — the pr job pushes it — so the
       # write set it produced is read from the bundle the model job uploaded.
@@ -492,18 +503,15 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: false
-
       - id: auth
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
-      - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
+      - uses: ./.github/actions/runner-binary
+        with:
+          sha256: ${{ needs.ticket.outputs.runner_sha256 }}
 
       # record exits 1 after writing the record of any run that did not succeed.
       - id: finalize

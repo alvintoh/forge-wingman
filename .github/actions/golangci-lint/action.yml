@@ -1,0 +1,22 @@
+# Installs the pinned golangci-lint release into ~/.local/bin and puts it on PATH.
+# The release is static, so the checks container can also run the binary it mounts.
+# ci.yml's golangci-lint-action version is the same version. The binary is built with
+# Go 1.27.0, so go.mod's `go` line moving past it needs a newer release here.
+name: golangci-lint
+description: Installs the pinned golangci-lint release and verifies its checksum.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        VERSION: 2.13.2
+        SHA256: 2277d43b98ec0054280f2ac26b53268bae97682444678a59a657dd565da021d6
+      run: |
+        archive="golangci-lint-${VERSION}-linux-amd64"
+        curl -fsSL --retry 3 -o "$RUNNER_TEMP/$archive.tar.gz" \
+          "https://github.com/golangci/golangci-lint/releases/download/v${VERSION}/$archive.tar.gz"
+        echo "$SHA256  $RUNNER_TEMP/$archive.tar.gz" | sha256sum --check --strict -
+        mkdir -p "$HOME/.local/bin"
+        tar -xzf "$RUNNER_TEMP/$archive.tar.gz" -C "$HOME/.local/bin" --strip-components=1 "$archive/golangci-lint"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        "$HOME/.local/bin/golangci-lint" version

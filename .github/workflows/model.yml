@@ -36,6 +36,10 @@ on:
       stage:
         type: string
         required: true
+      # runner_sha256 is the checksum run.yml's ticket job reported for the runner binary it uploaded.
+      runner_sha256:
+        type: string
+        required: true
     secrets:
       # The plan's key: omp runs on it.
       COMMANDCODE_API_KEY:
@@ -85,25 +89,21 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      # Static, so the egress proxy container can run the binary it mounts.
-      - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
-        env:
-          CGO_ENABLED: "0"
+      - uses: ./.github/actions/runner-binary
+        with:
+          sha256: ${{ inputs.runner_sha256 }}
 
-      # The version is ci.yml's golangci-lint-action version, and run.yml's check
-      # job's — the pre-PR loop (FR-28) runs the same four gates in-job, first.
-      # Static, so the checks container can run the binary it mounts.
-      - run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
-        env:
-          CGO_ENABLED: "0"
-
-      - name: Pull the checks image
-        run: docker pull "$CHECKS_IMAGE"
+      # The pre-PR loop (FR-28) runs the same four gates as run.yml's check job, in-job, first.
+      - uses: ./.github/actions/golangci-lint
 
       # WINGMAN_AGENT_IMAGE is the agent image, pinned by digest. The build and plan stages
-      # refuse to start without it.
-      - name: Pull the agent image
-        run: docker pull "$AGENT_IMAGE"
+      # refuse to start without it. The two pulls overlap; a failed pull fails the step.
+      - name: Pull the checks and agent images
+        run: |
+          docker pull "$CHECKS_IMAGE" & checks=$!
+          docker pull "$AGENT_IMAGE" & agent=$!
+          wait "$checks"
+          wait "$agent"
         env:
           AGENT_IMAGE: ${{ vars.WINGMAN_AGENT_IMAGE }}
 
