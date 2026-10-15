@@ -659,3 +659,20 @@ func TestEmbeddedGoatIsTheOnlyPaidPlan(t *testing.T) {
 		t.Fatalf("PlanModels(command-code) = %+v", m)
 	}
 }
+
+// TestCheckFreeIDsRefusesAMarkedFreeIDWithNoSmokeRun asserts an id whose own
+// name marks it free is refused until a smoke run is recorded for it, even when
+// no plan names it on a free rung, while the proven rung model and a paid model
+// pass.
+func TestCheckFreeIDsRefusesAMarkedFreeIDWithNoSmokeRun(t *testing.T) {
+	for _, id := range []string{"command-code/vendor/model:free", "command-code/vendor/model-free"} {
+		if err := CheckFreeIDs([]string{id}); err == nil || !strings.Contains(err.Error(), "no recorded plan-smoke run") {
+			t.Fatalf("CheckFreeIDs(%s) = %v, want it refused for having no smoke run", id, err)
+		}
+	}
+	for _, id := range []string{"command-code/poolside/laguna-s-2.1-free", "command-code/deepseek/deepseek-v4.1-flash"} {
+		if err := CheckFreeIDs([]string{id}); err != nil {
+			t.Fatalf("CheckFreeIDs(%s) = %v, want a proven free model and a paid model accepted", id, err)
+		}
+	}
+}
