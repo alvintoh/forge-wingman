@@ -302,6 +302,25 @@ func TestComparisonSkipsABuildStepThatNamesNoModel(t *testing.T) {
 	}
 }
 
+func TestComparisonCreditsNoModelForABuildThatSwitchedModel(t *testing.T) {
+	_, client := queue(t)
+	plan, fallback, id := fresh("credit-switch"), fresh("credit-switch-fallback"), fresh("credit-switch-run")
+	forget(t, client, id)
+	// The trial model's build failed over to a fallback, which finished it.
+	comparedRecord(t, client, id, comparedRun{plan: plan, settledAt: queueAt, stepModel: fallback,
+		leadingSteps: []runner.Step{{Phase: runner.PhaseBuild, Round: 1, Model: trialModel, At: queueAt.Add(-time.Hour)}}})
+
+	got, err := NewRecords(client).Comparison(context.Background(), queueAt.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, model := range []string{trialModel, fallback} {
+		if m, ok := findModel(got.Models, model); ok {
+			t.Fatalf("model %s = %+v, want a build that switched model credited to neither", model, m)
+		}
+	}
+}
+
 // TestComparisonReportsEachModelsWallClock asserts a model's row carries the mean
 // wall-clock minutes of its own runs, each read from the run's start to its
 // settlement (AC2).

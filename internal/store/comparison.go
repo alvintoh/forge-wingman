@@ -298,16 +298,25 @@ type modelTotal struct {
 	rewriteSample int
 }
 
-// creditedModel is the model a run is credited to: the model its first
-// build-phase step ran on, so a run whose ticket named none is still credited to
-// the model that built it. A record with no build step at all (a run that
-// stopped before its build) falls back to the label the ticket named, empty when
-// it named none.
+// creditedModel is the model a run is credited to: the one model its build-phase
+// steps ran on, so a run whose ticket named none is still credited to the model
+// that built it. A run whose build moved to another model part way, a fallback
+// among them, is credited to neither, since its lines are no one model's. A
+// record with no build step at all (a run that stopped before its build) falls
+// back to the label the ticket named, empty when it named none.
 func creditedModel(rec runner.Record) string {
+	built := ""
 	for _, step := range rec.Steps {
-		if step.Phase == runner.PhaseBuild && step.Model != "" {
-			return step.Model
+		if step.Phase != runner.PhaseBuild || step.Model == "" {
+			continue
 		}
+		if built != "" && step.Model != built {
+			return ""
+		}
+		built = step.Model
+	}
+	if built != "" {
+		return built
 	}
 	return rec.RunModels().Build
 }
