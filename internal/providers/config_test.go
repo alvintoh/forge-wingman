@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -79,6 +80,12 @@ func TestParseConfigRejectsAnInvalidConfig(t *testing.T) {
 		"a last resort measured on no date": {configWith(providerFacts + `,"rates":` + freeRates("p/free") +
 			`,"last_resort":{"models":["p/free"],"measured_on":"soon"}`), "not a yyyy-mm-dd date"},
 		"a last resort naming no models": {configWith(providerFacts + `,"last_resort":{"measured_on":"unmeasured"}`), "no models"},
+		"a free rung with no smoke run": {configWith(providerFacts + paidRates +
+			`,"last_resort":{"models":["p/free"],"measured_on":"unmeasured"}`), "no recorded plan-smoke run"},
+		"a smoke run for a model off the rung": {configWith(providerFacts + paidRates +
+			`,"last_resort":{"models":["p/free"],"measured_on":"unmeasured","smoke_runs":{"p/paid":5}}`), "not a last-resort model"},
+		"a smoke run that is not a run id": {configWith(providerFacts + paidRates +
+			`,"last_resort":{"models":["p/free"],"measured_on":"unmeasured","smoke_runs":{"p/free":0}}`), "not a run id"},
 		"only free-only plans": {configWith(providerFacts + `,"rates":` + freeRates("p/free") +
 			`,"last_resort":{"models":["p/free"],"measured_on":"2026-10-08"}`), "every provider is free-only"},
 	} {
@@ -90,6 +97,10 @@ func TestParseConfigRejectsAnInvalidConfig(t *testing.T) {
 		})
 	}
 }
+
+// paidRates is a billing plan's window and rates: one model it charges for, and
+// its free rung's model at $0, so a run can fall to the rung.
+const paidRates = `,"windows":[{"name":"p-5h","hours":5,"limit_usd":14}],"rates":{"p/paid":{"input_usd_per_mtok":1},"p/free":{}}`
 
 // freeRates is a rate card pricing each model at $0.
 func freeRates(models ...string) string {
@@ -103,12 +114,15 @@ func freeRates(models ...string) string {
 func TestParseConfigReadsALastResortBesideThePaidModels(t *testing.T) {
 	cfg, err := parseConfig([]byte(configWith(providerFacts +
 		`,"windows":[{"name":"p-5h","hours":5,"limit_usd":14}],"rates":{"p/paid":{"input_usd_per_mtok":1},"p/a":{},"p/b":{}}` +
-		`,"last_resort":{"models":["p/b","p/a"],"measured_on":"unmeasured"}`)))
+		`,"last_resort":{"models":["p/b","p/a"],"measured_on":"unmeasured","smoke_runs":{"p/a":7,"p/b":8}}`)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := cfg.Providers["p"].LastResort.Models; !slices.Equal(got, []string{"p/b", "p/a"}) {
 		t.Fatalf("last resort = %v, want the configured order", got)
+	}
+	if got := cfg.Providers["p"].LastResort.SmokeRuns; !maps.Equal(got, map[string]int64{"p/a": 7, "p/b": 8}) {
+		t.Fatalf("smoke runs = %v, want each free model's recorded run id", got)
 	}
 }
 
@@ -122,7 +136,7 @@ func TestParseConfigAcceptsAFreeOnlyPlanBesideAPaidOne(t *testing.T) {
 }
 
 func TestParseConfigCountsAPlanWithAnythingPaidAsPaid(t *testing.T) {
-	lastResort := `,"last_resort":{"models":["p/free"],"measured_on":"unmeasured"}`
+	lastResort := `,"last_resort":{"models":["p/free"],"measured_on":"unmeasured","smoke_runs":{"p/free":11}}`
 	for name, facts := range map[string]string{
 		"a window":    `,"windows":[{"name":"p-5h","hours":5,"limit_usd":14}],"rates":` + freeRates("p/free"),
 		"a model cap": `,"model_caps":{"p/paid":5},"rates":` + freeRates("p/free"),
@@ -143,6 +157,21 @@ func TestEmbeddedGoatFallsToItsOwnFreeModels(t *testing.T) {
 	}
 	if got := LastResortModels("nobody"); len(got) != 0 {
 		t.Fatalf("LastResortModels(nobody) = %v, want none", got)
+	}
+}
+
+// TestEmbeddedGoatFreeRungRecordsItsSmokeRun asserts the free rung's model
+// carries the plan-smoke run that proved it serves a run, and that the
+// free-only plan records none: a free id is configured only once the smoke has
+// proved it, where a free-only plan's models are its whole inventory rather
+// than a rung to fall to (adr/0015).
+func TestEmbeddedGoatFreeRungRecordsItsSmokeRun(t *testing.T) {
+	want := map[string]int64{"command-code/poolside/laguna-s-2.1-free": 38702659143}
+	if got := embeddedConfig.Providers["command-code"].LastResort.SmokeRuns; !maps.Equal(got, want) {
+		t.Fatalf("command-code smoke runs = %v, want %v", got, want)
+	}
+	if got := embeddedConfig.Providers["gemini"].LastResort.SmokeRuns; len(got) != 0 {
+		t.Fatalf("gemini smoke runs = %v, want none for a free-only plan", got)
 	}
 }
 
@@ -628,5 +657,22 @@ func TestEmbeddedGoatIsTheOnlyPaidPlan(t *testing.T) {
 	if m.Build != "command-code/deepseek/deepseek-v4.1-flash" || m.Review != "command-code/meta/muse-spark-1.3-contributor" ||
 		!slices.Equal(m.Plan, []string{"command-code/deepseek/deepseek-v4.1-flash"}) {
 		t.Fatalf("PlanModels(command-code) = %+v", m)
+	}
+}
+
+// TestCheckFreeIDsRefusesAMarkedFreeIDWithNoSmokeRun asserts an id whose own
+// name marks it free is refused until a smoke run is recorded for it, even when
+// no plan names it on a free rung, while the proven rung model and a paid model
+// pass.
+func TestCheckFreeIDsRefusesAMarkedFreeIDWithNoSmokeRun(t *testing.T) {
+	for _, id := range []string{"command-code/vendor/model:free", "command-code/vendor/model-free"} {
+		if err := CheckFreeIDs([]string{id}); err == nil || !strings.Contains(err.Error(), "no recorded plan-smoke run") {
+			t.Fatalf("CheckFreeIDs(%s) = %v, want it refused for having no smoke run", id, err)
+		}
+	}
+	for _, id := range []string{"command-code/poolside/laguna-s-2.1-free", "command-code/deepseek/deepseek-v4.1-flash"} {
+		if err := CheckFreeIDs([]string{id}); err != nil {
+			t.Fatalf("CheckFreeIDs(%s) = %v, want a proven free model and a paid model accepted", id, err)
+		}
 	}
 }

@@ -45,6 +45,10 @@ func TestParseModelSetRejectsAnInvalidSet(t *testing.T) {
 		"malformed review": {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":["p/r",""]}`, "not provider/model"},
 		"foreign review":   {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":["p/r","q/r"]}`, "not a p model"},
 		"repeated review":  {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":["p/r","p/r"]}`, "listed twice"},
+		"a free model with no smoke run": {`{"default":"command-code/deepseek/deepseek-v4.1-flash",` +
+			`"fallbacks":["command-code/ling-3.0-flash-sante:free"],` +
+			`"plan":"command-code/deepseek/deepseek-v4.1-flash","review":["command-code/meta/muse-spark-1.3-contributor"]}`,
+			"no recorded plan-smoke run"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := parseModelSet([]byte(tc.doc))

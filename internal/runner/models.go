@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+
+	"github.com/alvintoh/forge-wingman/internal/providers"
 )
 
 //go:embed models.json
@@ -61,7 +63,7 @@ func mustParseModelSet(b []byte) ModelSet {
 // Validate reports whether the set names well-formed models of one provider:
 // the default and its fallbacks, which must also be distinct, the plan default,
 // which may repeat one of them, and a non-empty review list with no entry
-// repeated.
+// repeated. A free id among them must be one a plan-smoke run has proved.
 func (s ModelSet) Validate() error {
 	provider := Provider(s.Default)
 	seen := map[string]bool{}
@@ -86,6 +88,9 @@ func (s ModelSet) Validate() error {
 		case Provider(m) != provider:
 			return fmt.Errorf("model %q is not a %s model", m, provider)
 		}
+	}
+	if err := providers.CheckFreeIDs(slices.Concat([]string{s.Default, s.Plan}, s.Fallbacks, s.Review)); err != nil {
+		return err
 	}
 	return nil
 }
