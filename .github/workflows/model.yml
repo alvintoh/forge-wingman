@@ -36,6 +36,10 @@ on:
       stage:
         type: string
         required: true
+      # runner_sha256 is the checksum run.yml's ticket job reported for the runner binary it uploaded.
+      runner_sha256:
+        type: string
+        required: true
     secrets:
       # The plan's key: omp runs on it.
       COMMANDCODE_API_KEY:
@@ -86,6 +90,8 @@ jobs:
           cache: false
 
       - uses: ./.github/actions/runner-binary
+        with:
+          sha256: ${{ inputs.runner_sha256 }}
 
       # The pre-PR loop (FR-28) runs the same four gates as run.yml's check job, in-job, first.
       - uses: ./.github/actions/golangci-lint
