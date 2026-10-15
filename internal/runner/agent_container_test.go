@@ -461,10 +461,31 @@ func TestModelWorkflowPassesTheAgentImageVariableToTheBuild(t *testing.T) {
 		`docker pull "$AGENT_IMAGE"`:                                 1,
 		"--filter name=" + egressProxyPrefix:                         1,
 		"--filter name=" + egressNetworkPrefix:                       1,
-		"./cmd/runner\n        env:\n          CGO_ENABLED: \"0\"":   1,
+		"./cmd/runner":                                               0,
 	} {
 		if got := strings.Count(yml, want); got != count {
 			t.Errorf("model.yml has %d of %q, want %d", got, want, count)
+		}
+	}
+}
+
+// The egress proxy container runs the runner binary it mounts, so the binary is
+// built static wherever it is built: in run.yml's ticket job, and in the action
+// the later jobs fall back to.
+func TestRunnerBinaryIsBuiltStaticWhereverItIsBuilt(t *testing.T) {
+	for _, path := range []string{
+		filepath.Join(".github", "workflows", "run.yml"),
+		filepath.Join(".github", "actions", "runner-binary", "action.yml"),
+	} {
+		raw, err := os.ReadFile(filepath.Join("..", "..", path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Count(string(raw), `CGO_ENABLED: "0"`); got != 1 {
+			t.Errorf("%s has %d static builds of the runner, want 1", path, got)
+		}
+		if got := strings.Count(string(raw), "go build -o \"$RUNNER_TEMP/runner\" ./cmd/runner"); got != 1 {
+			t.Errorf("%s builds the runner %d times, want once", path, got)
 		}
 	}
 }

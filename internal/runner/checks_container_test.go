@@ -587,13 +587,22 @@ func TestModelWorkflowRunsTheChecksInGoModsToolchainImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	yml := string(raw)
-	pull := strings.Index(yml, `run: docker pull "$CHECKS_IMAGE"`)
+	pull := strings.Index(yml, `docker pull "$CHECKS_IMAGE"`)
 	build := strings.Index(yml, `-checks-image "$CHECKS_IMAGE"`)
 	if pull < 0 || build < pull {
 		t.Errorf("model.yml pulls the checks image at %d and passes it to the build at %d, want the pull first", pull, build)
 	}
-	if !strings.Contains(yml, "golangci-lint@v2.13.2\n        env:\n          CGO_ENABLED: \"0\"\n") {
-		t.Error("model.yml does not build golangci-lint static, so the container cannot run it")
+	if !strings.Contains(yml, "uses: ./.github/actions/golangci-lint\n") {
+		t.Error("model.yml does not install golangci-lint through the pinned action the checks container mounts it from")
+	}
+	action, err := os.ReadFile(filepath.Join("..", "..", ".github", "actions", "golangci-lint", "action.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"-linux-amd64", "sha256sum --check --strict"} {
+		if !strings.Contains(string(action), want) {
+			t.Errorf("the golangci-lint action lacks %q: it must install the static linux release and verify its checksum", want)
+		}
 	}
 }
 
