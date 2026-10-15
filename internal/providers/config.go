@@ -695,7 +695,13 @@ func PlanModels(plan string) Models {
 // RunModels are the models a run may use, each named once: every configured
 // plan in name order, and within a plan its build, review and plan models, then
 // its free-tier models.
-func RunModels() []string {
+func RunModels() []string { return runModels(embeddedConfig.Providers, Plans()) }
+
+// runModels is RunModels over a providers map and the plan names to walk, so a
+// test can hand it a plan whose plan model is neither its build nor its review
+// model. The embedded config names no such plan, so the loop below is otherwise
+// indistinguishable from dropping it.
+func runModels(providers map[string]Provider, plans []string) []string {
 	var models []string
 	seen := make(map[string]bool)
 	add := func(model string) {
@@ -705,8 +711,8 @@ func RunModels() []string {
 		seen[model] = true
 		models = append(models, model)
 	}
-	for _, plan := range Plans() {
-		p := embeddedConfig.Providers[plan]
+	for _, plan := range plans {
+		p := providers[plan]
 		add(p.Models.Build)
 		add(p.Models.Review)
 		for _, model := range p.Models.Plan {
