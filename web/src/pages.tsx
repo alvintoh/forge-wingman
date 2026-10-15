@@ -229,9 +229,9 @@ export function Providers() {
       )}
       {state.status === "ready" && state.plans.length > 0 && (
         <div className="mt-6 overflow-x-auto">
-          <table className="w-full text-body">
+          <table className="w-full text-body max-md:block">
             <caption className="sr-only">Plans in the order a run walks them</caption>
-            <thead>
+            <thead className="max-md:sr-only">
               <tr className="border-b border-hair text-left">
                 <th scope="col" className="py-2 pr-4">
                   Provider
@@ -247,15 +247,24 @@ export function Providers() {
                 </th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="max-md:block">
               {state.plans.map((plan) => (
-                <tr key={plan.provider} className="border-b border-hair">
-                  <th scope="row" className="py-2 pr-4 text-left font-mono">
+                <tr key={plan.provider} className="border-b border-hair max-md:block max-md:py-2">
+                  <th
+                    scope="row"
+                    className="py-2 pr-4 text-left font-mono max-md:block max-md:py-1"
+                  >
                     {plan.provider}
                   </th>
-                  <td className="py-2 pr-4">{usd(plan.price_usd)}</td>
-                  <td className="py-2 pr-4">{usageText(plan.window_usage)}</td>
-                  <td className="py-2">{plan.verdict}</td>
+                  <td className={cell} data-label="Price">
+                    {usd(plan.price_usd)}
+                  </td>
+                  <td className={cell} data-label="Window usage">
+                    <UsageList usage={plan.window_usage} />
+                  </td>
+                  <td className={cell} data-label="Terms">
+                    {plan.verdict}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -265,6 +274,10 @@ export function Providers() {
     </section>
   );
 }
+
+// cell is a plans-table cell; below md its row stacks and its data-label heads it.
+const cell =
+  "py-2 pr-4 max-md:block max-md:py-1 max-md:pr-0 max-md:before:block max-md:before:text-label max-md:before:text-muted max-md:before:content-[attr(data-label)]";
 
 function usd(amount: number): string {
   return `$${amount.toFixed(2)}`;
@@ -276,17 +289,21 @@ function isPlans(body: unknown): body is ProvidersResponse {
   return typeof body === "object" && body !== null && "plans" in body && Array.isArray(body.plans);
 }
 
-// usageText renders a plan's window usage, one part per window; a provider that
-// reports no window sent the word itself.
-function usageText(usage: WindowUsage[] | "unknown"): string {
+// UsageList lists a plan's windows, one bullet each; a provider that reports no
+// window sent the word itself.
+function UsageList({ usage }: { usage: WindowUsage[] | "unknown" }) {
   if (usage === "unknown") {
-    return "unknown";
+    return <>unknown</>;
   }
-  const parts: string[] = [];
-  for (const window of usage) {
-    parts.push(`${window.name}: ${usd(window.used_usd)} of ${usd(window.limit_usd)}`);
-  }
-  return parts.join(" · ");
+  return (
+    <ul className="list-disc pl-4">
+      {usage.map((window) => (
+        <li key={window.name} className="min-[380px]:whitespace-nowrap">
+          {window.name}: {usd(window.used_usd)} of {usd(window.limit_usd)}
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 type Evidence = {
