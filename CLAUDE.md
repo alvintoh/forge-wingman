@@ -57,6 +57,13 @@ this file as project memory, so both rules below reach the run.
   of it for a retry in the same change: `git worktree prune` then `add -B`, never
   `-b`. *(Judgment call. Verified 2026-10-06 on FRG-50.)*
 
+- **A guard added in review that the ticket does not state goes into the ticket's acceptance
+  criteria in the same change.** The Wingman review judges the code against the ticket text, so an
+  unstated guard is flagged as scope the ticket never asked for; label the edit `Updated (<date>)`
+  or `Added (<date>)` in the ticket. *(Judgment call. Verified 2026-10-15 on FRG-125: a state
+  guard and an admission hold added after a mutation review were flagged until AC2 and a new AC6
+  named them.)*
+
 ## Walk agent-built changes in auto mode
 
 When reviewing a change an agent built in this repo, run `/changes-walkthrough` in
