@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -159,5 +160,38 @@ func TestEstimatePlanFallsBackToTheColdStartDefaultWhenNoPlanPhaseHasSettled(t *
 	}
 	if got != dispatcher.DefaultPlanEstimate {
 		t.Fatalf("plan estimate = %+v, want the cold-start default %+v", got, dispatcher.DefaultPlanEstimate)
+	}
+}
+
+// The size estimate reads the latest estimateScanLimit settled runs of its size
+// and averages those, so its read does not grow as the size's history does
+// (AC6): 40 settled runs cost it 20 reads, and the mean of the latest 20, not
+// of all 40.
+func TestEstimateReadsOnlyTheLatestSettledRunsOfASize(t *testing.T) {
+	reads := new(atomic.Int64)
+	client := countingClient(t, reads, new(atomic.Int64), new(atomic.Int64), new(atomic.Int64), false)
+	size := "S-" + fresh("estimate-latest")
+	var ids []string
+	for i := 1; i <= 2*estimateScanLimit; i++ {
+		id := fresh("estimate-latest")
+		ids = append(ids, id)
+		// A dollar for the newest through 40 for the oldest, so the mean of the
+		// latest estimateScanLimit runs cannot be the mean of them all.
+		settledRecord(t, client, id, size, money.Micros(i)*money.Dollar, 60_000, queueAt.Add(-time.Duration(i)*time.Minute))
+	}
+	forget(t, client, ids...)
+	seeded := reads.Load()
+
+	got, err := NewEstimates(client).Estimate(context.Background(), size)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read := reads.Load() - seeded; read > estimateScanLimit {
+		t.Fatalf("the estimate read %d settled runs of size %s, want at most %d", read, size, estimateScanLimit)
+	}
+	// The $1 run is the newest and the $40 run the oldest, so the latest
+	// estimateScanLimit of them average $10.50 where all 40 average $20.50.
+	if want := money.FromUSD(10.5); got.ProviderCost != want {
+		t.Fatalf("estimate = %v, want %v: the mean of the latest %d settled runs", got.ProviderCost, want, estimateScanLimit)
 	}
 }

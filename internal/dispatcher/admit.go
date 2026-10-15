@@ -132,6 +132,13 @@ type Facts struct {
 	OpenPRsKnown bool
 	// Autonomy is the owner's level the poll read, recorded on the run when it is claimed.
 	Autonomy Autonomy
+	// History loads the poll's snapshot of the settled run history, which the
+	// budget ceilings are summed from: read once for a whole poll however many
+	// candidates it walks, and only once a candidate reaches its ceilings, so a
+	// candidate a non-budget limit holds is withheld without reading it (AC1,
+	// AC5). Nil where the claimant holds no snapshot, which then reads the
+	// history in its own transaction.
+	History HistoryLoader
 }
 
 // Move is a run's move from a paid plan whose ceiling bound to the next.
@@ -179,36 +186,47 @@ type AdmitInput struct {
 // When the open-PR count could not be read, a candidate is admitted only if
 // nothing is in flight.
 func Admit(in AdmitInput) (ok bool, binding string) {
+	if why := HeldBeforeBudget(in); why != "" {
+		return false, why
+	}
+	if fits, why := Decide(in.Budget, in.Facts.Model, in.Reserved, in.Settled, in.Reservation); !fits {
+		return false, why
+	}
+	return true, ""
+}
+
+// HeldBeforeBudget reports the first condition withholding in before its budget
+// ceilings are checked, and "" when it reaches them: the conditions Admit
+// checks ahead of the ceilings, in the same order. A claimant asks it first, so
+// a candidate a non-budget limit holds is withheld without the settled run
+// history its ceilings would have been summed from (AC5). It does no IO.
+func HeldBeforeBudget(in AdmitInput) string {
 	in.N = max(in.N, 1)
 	running := len(in.InFlight)
 	switch {
 	case in.Facts.BreakerTripped:
-		return false, ConditionCircuitBreaker
+		return ConditionCircuitBreaker
 	case in.Facts.ProviderHalted:
-		return false, CeilingProviderHalted
+		return CeilingProviderHalted
 	case in.Facts.PeakHeld:
-		return false, ConditionPeakHours
+		return ConditionPeakHours
 	case running >= in.Facts.Limits.PlatformCap:
-		return false, ConditionPlatformCap
+		return ConditionPlatformCap
 	case running >= in.N:
-		return false, ConditionConcurrency
+		return ConditionConcurrency
 	case in.Candidate.Size == largeSize && countSize(in.InFlight, largeSize) >= in.Facts.Limits.LargeCap:
-		return false, ConditionLargeCap
+		return ConditionLargeCap
 	case slices.ContainsFunc(in.InFlight, func(f InFlight) bool {
 		return f.Repo == in.Candidate.Repo && writeSetsCollide(f, in.Candidate)
 	}):
-		return false, ConditionRepoBusy
+		return ConditionRepoBusy
 	case blocked(in.Candidate, in.InFlight):
-		return false, ConditionBlocked
+		return ConditionBlocked
 	case in.Facts.OpenPRsKnown && in.Facts.OpenPRs >= in.Facts.Limits.ReviewWIP,
 		!in.Facts.OpenPRsKnown && running > 0:
-		return false, ConditionReviewWIP
+		return ConditionReviewWIP
 	}
-	s := in.Settled
-	if fits, why := Decide(in.Budget, in.Facts.Model, in.Reserved, s, in.Reservation); !fits {
-		return false, why
-	}
-	return true, ""
+	return ""
 }
 
 func countSize(runs []InFlight, size string) int {

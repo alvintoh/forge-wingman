@@ -63,9 +63,11 @@ type Poster interface {
 
 // Spender reads the spend FR-22's ceilings measure as it stands at a moment:
 // what the ledger holds reserved, and the settled cost inside each of cfg's
-// windows ending then.
+// windows ending then, summed from the poll's own snapshot of the settled run
+// history rather than from a scan of its own, so a poll reads that history once
+// (AC1). A nil history reads it in this call's transaction instead.
 type Spender interface {
-	Spend(ctx context.Context, cfg BudgetConfig, model string, at time.Time) (Totals, Settled, error)
+	Spend(ctx context.Context, cfg BudgetConfig, model string, at time.Time, history HistoryLoader) (Totals, Settled, error)
 }
 
 // postNotices posts every notice it can claim, opening the poster only once
@@ -109,13 +111,13 @@ func postNotices(ctx context.Context, d Deps) error {
 // window, reporting whether it raised one. A run with no issue link raises
 // none, since a notice carries one. A failed read or write is logged, and the
 // next poll asks again.
-func noticeDeferral(ctx context.Context, d Deps, cfg BudgetConfig, model string, estimate Reservation, ceiling, link string) bool {
+func noticeDeferral(ctx context.Context, d Deps, cfg BudgetConfig, model string, estimate Reservation, ceiling, link string, history HistoryLoader) bool {
 	at := d.Now()
 	start, ok := cfg.ceilingStart(ceiling, at)
 	if !ok || link == "" {
 		return false
 	}
-	reserved, settled, err := d.Queue.Spend(ctx, cfg, model, at.Add(pollInterval))
+	reserved, settled, err := d.Queue.Spend(ctx, cfg, model, at.Add(pollInterval), history)
 	if err != nil {
 		d.Logger.Warn("deferralSpendUnread", "ceiling", ceiling, "err", err.Error())
 		return false

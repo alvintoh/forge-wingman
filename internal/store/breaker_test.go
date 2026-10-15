@@ -159,14 +159,16 @@ func TestSpendReadsTheReservedAndTheSettledAtTheMomentAsked(t *testing.T) {
 	}
 	cfg := dispatcher.BudgetConfig{ProviderWindows: []dispatcher.Window{{Name: "5h", Period: 5 * time.Hour}}}
 
-	reserved, inside, err := q.Spend(ctx, cfg, "", settledAt.Add(time.Minute))
+	// A caller holding no poll snapshot reads the settled history in the spend's
+	// own transaction, which is the path this test measures.
+	reserved, inside, err := q.Spend(ctx, cfg, "", settledAt.Add(time.Minute), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if reserved.ProviderCost != 3*money.Dollar || inside.Windows[0] != 4*money.Dollar {
 		t.Fatalf("reserved %v, settled %v", reserved, inside.Windows)
 	}
-	_, later, err := q.Spend(ctx, cfg, "", settledAt.Add(6*time.Hour))
+	_, later, err := q.Spend(ctx, cfg, "", settledAt.Add(6*time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

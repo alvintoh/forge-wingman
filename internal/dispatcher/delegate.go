@@ -51,7 +51,7 @@ const (
 // dispatch that already succeeded. One is returned rather than swallowed, since
 // nothing else would report it. The ticket it delegates is admitted by the next
 // poll — the agent session that delegation opens wakes one within seconds.
-func autoDelegate(ctx context.Context, d Deps, c Config, level Autonomy, res *Result) error {
+func autoDelegate(ctx context.Context, d Deps, c Config, level Autonomy, res *Result, history HistoryLoader) error {
 	bar := level.Delegates()
 	if bar == 0 {
 		return nil
@@ -65,7 +65,7 @@ func autoDelegate(ctx context.Context, d Deps, c Config, level Autonomy, res *Re
 			"level", int(level), "claimed", claimed, "bar", bar)
 		return nil
 	}
-	if reason, ceiling := admissionHold(ctx, d, c); reason != "" {
+	if reason, ceiling := admissionHold(ctx, d, c, history); reason != "" {
 		d.Logger.Info("ticketAutoDelegationSkipped", "reason", reason, "level", int(level), "ceiling", ceiling)
 		return nil
 	}
@@ -112,7 +112,7 @@ func autoDelegate(ctx context.Context, d Deps, c Config, level Autonomy, res *Re
 // peak-hour hold and the budget ceiling. A ticket delegated into a held
 // admission only queues, so the delegation phase waits too. The ceiling names
 // the budget window when that is the reason, and an unreadable spend holds.
-func admissionHold(ctx context.Context, d Deps, c Config) (reason, ceiling string) {
+func admissionHold(ctx context.Context, d Deps, c Config, history HistoryLoader) (reason, ceiling string) {
 	if breakerTripped(ctx, d) {
 		return "breaker-tripped", ""
 	}
@@ -122,7 +122,7 @@ func admissionHold(ctx context.Context, d Deps, c Config) (reason, ceiling strin
 	if PeakHeld(readPeakMode(ctx, d), c.Model, d.Now(), 0) {
 		return "peak-hold", ""
 	}
-	reserved, settled, err := d.Queue.Spend(ctx, c.Budget, c.Model, d.Now())
+	reserved, settled, err := d.Queue.Spend(ctx, c.Budget, c.Model, d.Now(), history)
 	if err != nil {
 		d.Logger.Warn("delegationSpendUnread", "err", err.Error())
 		return "budget-unknown", ""

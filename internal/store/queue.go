@@ -662,9 +662,14 @@ func reservedTotals(doc ledgerDoc) dispatcher.Totals {
 // ledger, sums the ledger's in-flight reservations and the settled cost of
 // runs that ended inside each of cfg's windows, and commits — claiming the
 // row and adding res to the ledger — only if dispatcher.Admit lets it start
-// (adr/0003). It reports (false, "", nil) when another poll already claimed
-// the row, and (false, <binding>, nil) when a condition withholds it, which
-// it also records on the row.
+// (adr/0003). The row and the ledger are read here, so two polls cannot both
+// claim one run (AC2); the settled cost is summed from facts.History, the
+// poll's own snapshot, so a poll reads that history once however many
+// candidates it walks (AC1), and a candidate a condition checked ahead of the
+// ceilings holds is withheld without reading it at all (AC5). It reports
+// (false, "", nil) when another poll already claimed the row, and
+// (false, <binding>, nil) when a condition withholds it, which it also records
+// on the row.
 //
 // The reservation is booked under the key of the row's attempt, a plan-stage
 // one beside the build's, so the build stage can claim the run while its plan
@@ -695,27 +700,35 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 			return err
 		}
 
-		settled, err := q.settled(tx, cfg, facts.Model, at)
-		if err != nil {
-			return err
-		}
-
 		running := inFlight(ledger)
 		cand := subject(data)
 		if facts.Relations.Known {
 			cand.BlockedBy, cand.Blocks = facts.Relations.BlockedBy, facts.Relations.Blocks
 			cand.BlockedByOpen = facts.Relations.BlockedByOpen
 		}
-		ok, why := dispatcher.Admit(dispatcher.AdmitInput{
+		input := dispatcher.AdmitInput{
 			Facts:       facts,
 			N:           ledger.concurrency().N,
 			InFlight:    running,
 			Candidate:   cand,
 			Budget:      cfg,
 			Reserved:    reservedTotals(ledger),
-			Settled:     settled,
 			Reservation: res,
-		})
+		}
+		// A condition checked ahead of the ceilings withholds the candidate
+		// without reading the settled history its ceilings would be summed from
+		// (AC5): a poll the review WIP or the concurrency limit already holds
+		// reads no history at all.
+		if why := dispatcher.HeldBeforeBudget(input); why != "" {
+			binding = why
+			return tx.Update(rowRef, []firestore.Update{{Path: waitingOnField, Value: why}})
+		}
+		settled, err := q.settledFor(tx, cfg, facts.Model, at, facts.History)
+		if err != nil {
+			return err
+		}
+		input.Settled = settled
+		ok, why := dispatcher.Admit(input)
 		if !ok {
 			binding = why
 			return tx.Update(rowRef, []firestore.Update{{Path: waitingOnField, Value: why}})
@@ -783,8 +796,12 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 }
 
 // Spend is what the ledger holds reserved now, and the settled cost inside each
-// of cfg's windows ending at at, read in one read-only transaction.
-func (q *Queue) Spend(ctx context.Context, cfg dispatcher.BudgetConfig, model string, at time.Time) (dispatcher.Totals, dispatcher.Settled, error) {
+// of cfg's windows ending at at: the ledger is read in one read-only
+// transaction, and the settled half is summed from history — the poll's own
+// snapshot, so a poll reads the settled run history once however many deferrals
+// raise a notice (AC1) — or, for a caller holding none, in that transaction
+// itself.
+func (q *Queue) Spend(ctx context.Context, cfg dispatcher.BudgetConfig, model string, at time.Time, history dispatcher.HistoryLoader) (dispatcher.Totals, dispatcher.Settled, error) {
 	var reserved dispatcher.Totals
 	var settled dispatcher.Settled
 	err := q.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
@@ -793,7 +810,7 @@ func (q *Queue) Spend(ctx context.Context, cfg dispatcher.BudgetConfig, model st
 			return err
 		}
 		reserved = reservedTotals(ledger)
-		settled, err = q.settled(tx, cfg, model, at)
+		settled, err = q.settledFor(tx, cfg, model, at, history)
 		return err
 	}, firestore.ReadOnly)
 	if err != nil {
@@ -820,6 +837,22 @@ func (q *Queue) PlanWindows(ctx context.Context, plan string, windows []dispatch
 		return nil, fmt.Errorf("reading plan %s's window spend at %s: %w", plan, at, err)
 	}
 	return spend, nil
+}
+
+// settledFor is the settled spend a caller's ceilings are checked against: the
+// poll's own snapshot of the settled history where the caller carries one — read
+// once for the whole poll, however many candidates it walks and however many
+// deferrals raise a notice (AC1) — and this transaction's own scan where it
+// carries none.
+func (q *Queue) settledFor(tx *firestore.Transaction, cfg dispatcher.BudgetConfig, model string, at time.Time, history dispatcher.HistoryLoader) (dispatcher.Settled, error) {
+	if history == nil {
+		return q.settled(tx, cfg, model, at)
+	}
+	rows, err := history()
+	if err != nil {
+		return dispatcher.Settled{}, err
+	}
+	return rows.Sums(cfg, model, at), nil
 }
 
 // settled sums, within tx, the settled cost inside each of cfg's windows
@@ -924,16 +957,70 @@ func (q *Queue) readLedger(tx *firestore.Transaction, ledgerRef *firestore.Docum
 	return ledger, nil
 }
 
+// SettledHistory reads the settled run history at or after since, once for a
+// poll: every run whose settlement, or whose plan stage's settlement, falls in
+// that range, projected to the fields the budget ceilings sum. One poll sums
+// every candidate's ceilings from the result in memory, so the history costs a
+// poll one read however many candidates it walks (AC1).
+//
+// Two scans, because the two stamps are written independently — a run that
+// planned and never built carries plan_settled_at alone — so neither range
+// contains the other. A run inside both is read once, under whichever scan
+// reached it first, since the rows are keyed by their path.
+func (q *Queue) SettledHistory(ctx context.Context, since time.Time) (dispatcher.SettledHistory, error) {
+	rows := map[string]dispatcher.Settlement{}
+	for _, field := range []string{settledAtField, planSettledAtField} {
+		if err := q.settledRows(ctx, field, since, rows); err != nil {
+			return nil, err
+		}
+	}
+	history := make(dispatcher.SettledHistory, 0, len(rows))
+	for _, s := range rows {
+		history = append(history, s)
+	}
+	return history, nil
+}
+
+// settledRows adds every run whose field falls at or after since to rows, keyed
+// by its document path, reading only the fields the budget ceilings sum.
+func (q *Queue) settledRows(ctx context.Context, field string, since time.Time, rows map[string]dispatcher.Settlement) error {
+	iter := q.client.Collection(runsCollection).
+		Where(field, ">=", since).
+		Select(settledAtField, planSettledAtField, planField,
+			settledProviderCostField, settledRunnerMinutesField, planSpendMicrosField, planSpendMinutesField).
+		Documents(ctx)
+	defer iter.Stop()
+	for {
+		snap, err := iter.Next()
+		if errors.Is(err, iterator.Done) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("reading the runs settled since %s: %w", since, err)
+		}
+		row := snap.Data()
+		settledAt, _ := row[settledAtField].(time.Time)
+		planSettledAt, _ := row[planSettledAtField].(time.Time)
+		cost, _ := row[settledProviderCostField].(int64)
+		minutes, _ := row[settledRunnerMinutesField].(int64)
+		planCost, _ := row[planSpendMicrosField].(int64)
+		planMinutes, _ := row[planSpendMinutesField].(int64)
+		rows[snap.Ref.Path] = dispatcher.Settlement{
+			SettledAt: settledAt, PlanSettledAt: planSettledAt, Plan: str(row, planField),
+			Cost: money.Micros(cost), Minutes: minutes,
+			PlanCost: money.Micros(planCost), PlanMinutes: planMinutes,
+		}
+	}
+}
+
 // settledSince sums settled_provider_cost_micros and settled_runner_minutes
 // over every run whose settlement fell at or after since, within tx — one
 // scan shared by every window's admission check, so the provider-window and
 // cash queries cannot silently diverge from each other.
 //
-// This re-scans the full window on every call, and TryClaim calls it once per
-// candidate walked in one poll (up to candidateScanLimit). Accepted at this
-// project's personal-scale volume, same as Estimates' query (internal/store/
-// estimate.go) — revisit both together if either the run history or the
-// candidate backlog grows enough to matter.
+// A poll's claims no longer call it: they sum a window from the poll's own
+// snapshot of the history in memory (SettledHistory), one read for the whole
+// poll. This in-transaction scan serves a caller holding no snapshot.
 //
 // A plan other than "" limits the sum to that plan's runs, filtered here rather
 // than in the query so a run settled before its plan was written still counts.

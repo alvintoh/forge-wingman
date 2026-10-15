@@ -63,3 +63,21 @@ resource "google_firestore_index" "settled_by_size_and_concurrency" {
     order      = "DESCENDING"
   }
 }
+
+# Serves the size estimate's scan: the latest settled runs of one size, which an
+# equality on size alone cannot order.
+resource "google_firestore_index" "settled_runs_of_size" {
+  project    = var.project_id
+  database   = google_firestore_database.default.name
+  collection = "runs"
+
+  fields {
+    field_path = "size"
+    order      = "ASCENDING"
+  }
+
+  fields {
+    field_path = "settled_at"
+    order      = "DESCENDING"
+  }
+}

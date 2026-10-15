@@ -75,6 +75,13 @@ type fakeQueue struct {
 	// tryClaimErrFor fails TryClaim for one run id only.
 	tryClaimErrFor map[string]error
 
+	// history is the snapshot a poll's loader reads, and histories counts the
+	// reads made of it: one poll reads the settled history once however many
+	// candidates it walks (AC1).
+	history    SettledHistory
+	historyErr error
+	histories  int
+
 	claimed   []string
 	tryClaims []tryClaimCall
 
@@ -120,9 +127,16 @@ func (q *fakeQueue) SweepAbandoned(_ context.Context, now time.Time, w AbandonWi
 	return out, q.sweepErr
 }
 
-func (q *fakeQueue) Spend(_ context.Context, _ BudgetConfig, _ string, at time.Time) (Totals, Settled, error) {
+func (q *fakeQueue) Spend(_ context.Context, _ BudgetConfig, _ string, at time.Time, _ HistoryLoader) (Totals, Settled, error) {
 	q.spends = append(q.spends, at)
 	return q.reserved, q.settled, q.spendErr
+}
+
+// SettledHistory is the snapshot a poll's loader reads, counted so a test can
+// assert a poll read it once whatever it walked (AC1).
+func (q *fakeQueue) SettledHistory(context.Context, time.Time) (SettledHistory, error) {
+	q.histories++
+	return q.history, q.historyErr
 }
 
 func (q *fakeQueue) Exists(_ context.Context, runID string) (bool, error) {
@@ -181,6 +195,14 @@ func (q *fakeQueue) TryClaim(_ context.Context, runID string, _ time.Time, cfg B
 		return false, "", err
 	}
 	q.tryClaims = append(q.tryClaims, tryClaimCall{runID: runID, cfg: cfg, facts: facts, res: res})
+	// The store sums a claim's ceilings from the poll's snapshot, so the fake
+	// loads it the way a claim does: one poll hands the same loader to every
+	// candidate, which is what its read count asserts (AC1).
+	if facts.History != nil {
+		if _, err := facts.History(); err != nil {
+			return false, "", err
+		}
+	}
 	if facts.PeakHeld {
 		return false, ConditionPeakHours, nil
 	}
@@ -676,6 +698,27 @@ func TestPollDispatchesNothingWhenEveryCandidateBreachesItsCeiling(t *testing.T)
 	}
 	if got := deferredCeilings(res.Deferrals); !slices.Equal(got, []string{CeilingCash, "5h"}) {
 		t.Fatalf("deferrals named %v", got)
+	}
+}
+
+// A backlog costs a poll one read of the settled history, not one per candidate
+// (AC1): the walk hands every candidate the same loader, which reads once.
+func TestPollReadsTheSettledHistoryOnceHoweverManyCandidatesItWalks(t *testing.T) {
+	ids := []string{"FRG-18", "FRG-19", "FRG-20", "FRG-21", "FRG-22", "FRG-23",
+		"FRG-24", "FRG-25", "FRG-26", "FRG-27", "FRG-28", "FRG-29"}
+	q := &fakeQueue{}
+	for rank, id := range ids {
+		q.candidates = append(q.candidates, Candidate{RunID: id, Repo: "octo/scratch", Size: "M", Priority: rank + 1})
+	}
+	res, err := Poll(context.Background(), pollDeps(fakeSource{}, q, &fakeWorkflow{}), buildConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(q.tryClaims) != len(ids) || len(res.Dispatched) != len(ids) {
+		t.Fatalf("walked %d candidates and dispatched %d, want %d of each", len(q.tryClaims), len(res.Dispatched), len(ids))
+	}
+	if q.histories != 1 {
+		t.Fatalf("the settled history was read %d times for %d candidates, want once", q.histories, len(ids))
 	}
 }
 
