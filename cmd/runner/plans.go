@@ -165,11 +165,19 @@ func planList(ctx context.Context, _ *slog.Logger, e env, args []string) error {
 	licences := harnessLicences(e.harnesses)
 	for i := range rows {
 		rows[i].Harnesses = harnessLines(rows[i].Plan.Definition.Harnesses, licences)
+	}
+	attachPlanCaches(rows, caches)
+	return providers.WriteTable(os.Stdout, rows)
+}
+
+// attachPlanCaches sets each row's phase cache cells from the figures of the
+// plan named by the row's provider.
+func attachPlanCaches(rows []providers.Listing, caches map[string]store.PlanCache) {
+	for i := range rows {
 		cache := caches[rows[i].Provider]
 		rows[i].BuildCache = runner.PhaseCacheCell(cache, runner.PhaseBuild)
 		rows[i].PlanCache = runner.PhaseCacheCell(cache, runner.PhasePlan)
 	}
-	return providers.WriteTable(os.Stdout, rows)
 }
 
 // harnessLines renders a plan's pairs as the side-by-side view lists them:

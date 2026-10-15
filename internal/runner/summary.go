@@ -114,8 +114,9 @@ const (
 	// PhaseCacheNone is what a view prints for a phase that made no model
 	// request.
 	PhaseCacheNone = "none"
-	// PhaseCacheNotRecorded is what a view prints for a phase of a run whose
-	// prompt-cache figures were never recorded at all.
+	// PhaseCacheNotRecorded is what a view prints when there is no share to
+	// print: "not recorded" means no cache map, "none" means no request in that
+	// phase, and a phase whose first request read no tokens reads as not recorded.
 	PhaseCacheNotRecorded = "not recorded"
 )
 
@@ -132,6 +133,9 @@ func PhaseCacheCell(cache map[string]PhaseCache, phase Phase) string {
 			return PhaseCacheNotRecorded
 		}
 		return PhaseCacheNone
+	}
+	if c.FirstFresh+c.FirstCached == 0 {
+		return PhaseCacheNotRecorded
 	}
 	return fmt.Sprintf("%s first, %s phase", percentShare(CachedShare(c.FirstFresh, c.FirstCached)), percentShare(c.CachedShare))
 }

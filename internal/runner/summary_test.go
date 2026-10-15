@@ -88,6 +88,9 @@ func TestPhaseCacheCellPrintsThePhasesSharesOrTheWordForAMissingOne(t *testing.T
 	if got, want := PhaseCacheCell(nil, PhaseBuild), PhaseCacheNotRecorded; got != want {
 		t.Errorf("a run with no figures recorded = %q, want %q", got, want)
 	}
+	if got, want := PhaseCacheCell(map[string]PhaseCache{string(PhaseBuild): {}}, PhaseBuild), PhaseCacheNotRecorded; got != want {
+		t.Errorf("a phase that read no tokens = %q, want %q, never 0%%", got, want)
+	}
 }
 
 func TestParseSummaryRejects(t *testing.T) {

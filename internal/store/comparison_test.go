@@ -278,8 +278,8 @@ func TestComparisonReportsEachRunsPromptCacheShare(t *testing.T) {
 func TestPlanCachesSumsEachPlansTrailingRunsPerPhase(t *testing.T) {
 	_, client := queue(t)
 	plan, quiet := fresh("plancache"), fresh("plancache-quiet")
-	hot, cold, bare := fresh("plancache-hot"), fresh("plancache-cold"), fresh("plancache-bare")
-	forget(t, client, hot, cold, bare)
+	hot, cold, bare, planless := fresh("plancache-hot"), fresh("plancache-cold"), fresh("plancache-bare"), fresh("plancache-planless")
+	forget(t, client, hot, cold, bare, planless)
 	build := map[string]runner.PhaseCache{string(runner.PhaseBuild): {FirstFresh: 10, FirstCached: 90}}
 	comparedRecord(t, client, hot, comparedRun{plan: plan, model: "command-code/x", settledAt: queueAt,
 		input: 10, cacheRead: 90, cache: build})
@@ -287,6 +287,8 @@ func TestPlanCachesSumsEachPlansTrailingRunsPerPhase(t *testing.T) {
 		input: 90, cacheRead: 10, cache: build})
 	comparedRecord(t, client, bare, comparedRun{plan: quiet, model: "command-code/x", settledAt: queueAt.Add(2 * time.Minute),
 		input: 10, cacheRead: 90})
+	comparedRecord(t, client, planless, comparedRun{plan: "", model: "command-code/x", settledAt: queueAt.Add(3 * time.Minute),
+		input: 10, cacheRead: 90, cache: build})
 
 	got, err := NewRecords(client).PlanCaches(context.Background(), queueAt.Add(-time.Hour))
 	if err != nil {
@@ -295,6 +297,9 @@ func TestPlanCachesSumsEachPlansTrailingRunsPerPhase(t *testing.T) {
 	want := PlanCache{string(runner.PhaseBuild): {FirstFresh: 20, FirstCached: 180, CachedShare: 0.5}}
 	if !maps.Equal(got[plan], want) {
 		t.Fatalf("plan cache = %+v, want %+v", got[plan], want)
+	}
+	if _, ok := got[""]; ok {
+		t.Fatalf("a run with no plan got %+v", got[""])
 	}
 	if _, ok := got[quiet]; ok {
 		t.Fatalf("a plan whose runs recorded no figure got %+v", got[quiet])

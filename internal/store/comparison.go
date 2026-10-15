@@ -213,7 +213,7 @@ func (r *Records) PlanCaches(ctx context.Context, since time.Time) (map[string]P
 	}
 	totals := map[string]map[string]*phaseTotal{}
 	for _, rec := range recs {
-		if rec.Plan == "" || len(rec.Cache) == 0 {
+		if rec.Plan == "" || len(rec.Cache) == 0 { // a run with no plan has no row to join to
 			continue
 		}
 		byPhase := totals[rec.Plan]
