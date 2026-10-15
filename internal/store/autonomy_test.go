@@ -210,3 +210,68 @@ func TestRequeueClearsTheLevelSoTheNextAttemptRecordsItsOwn(t *testing.T) {
 		t.Fatalf("autonomy = %v, want the second attempt's 0", got)
 	}
 }
+
+// TestAutonomyViewReadsTheLevelTheSnapshotAndTheHistoryNewestFirst asserts the
+// surface's whole read in one call: the level the owner set, the snapshot the
+// measured PRs last earned with the numbers behind it, and the changes
+// recorded, newest first (AC1, AC2).
+func TestAutonomyViewReadsTheLevelTheSnapshotAndTheHistoryNewestFirst(t *testing.T) {
+	a, client := autonomiesOver(t)
+	ctx := context.Background()
+	h := NewAutonomyHistory(client)
+	clearHistory(t, h)
+	if err := a.Set(ctx, 3, noticeAt); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC)
+	if err := a.SetEarned(ctx, dispatcher.Earned{Level: 4, ComputedAt: at, Numbers: dispatcher.Numbers{
+		PRs: []int{9, 8}, Rate: 0.02, AgentLines: 100, OwnerLines: 2,
+		ReviewFoundLines: 1, OwnerChangeLines: 1,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []dispatcher.Change{
+		{From: 3, To: 4, Cause: dispatcher.ChangeAdvance, Numbers: dispatcher.Numbers{PRs: []int{8}, AgentLines: 100}, At: at},
+		{From: 4, To: 3, Cause: string(dispatcher.RollbackSampledRate),
+			Numbers: dispatcher.Numbers{PRs: []int{9}, Rate: 0.2, AgentLines: 100, OwnerLines: 20}, At: at.Add(time.Hour)},
+	} {
+		if err := h.Append(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	view, err := a.AutonomyView(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Level != 3 || !view.HasEarned || view.Earned.Level != 4 || !view.Earned.ComputedAt.Equal(at) ||
+		view.Earned.Numbers.Rate != 0.02 || len(view.Earned.Numbers.PRs) != 2 || view.Earned.Numbers.ReviewFoundLines != 1 {
+		t.Fatalf("view = %+v, want level 3 with the earned snapshot read back whole", view)
+	}
+	if len(view.History) != 2 || view.History[0].Cause != string(dispatcher.RollbackSampledRate) ||
+		view.History[1].Cause != dispatcher.ChangeAdvance {
+		t.Fatalf("history = %+v, want the drop newest first", view.History)
+	}
+	if view.History[0].From != 4 || view.History[0].To != 3 || view.History[0].Numbers.OwnerLines != 20 ||
+		!view.History[0].At.Equal(at.Add(time.Hour)) {
+		t.Fatalf("newest change = %+v, want its levels, numbers and time read back", view.History[0])
+	}
+	if one, err := a.AutonomyView(ctx, 1); err != nil || len(one.History) != 1 ||
+		one.History[0].Cause != string(dispatcher.RollbackSampledRate) {
+		t.Fatalf("history = %+v, %v, want the limit to keep the newest change alone", one.History, err)
+	}
+}
+
+// TestAutonomyViewWithoutADocumentOrHistoryReadsEmpty covers the surface's first
+// load: no level set, no snapshot stored and no change recorded (AC6).
+func TestAutonomyViewWithoutADocumentOrHistoryReadsEmpty(t *testing.T) {
+	a, client := autonomiesOver(t)
+	clearHistory(t, NewAutonomyHistory(client))
+	view, err := a.AutonomyView(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Level != 0 || view.HasEarned || len(view.History) != 0 {
+		t.Fatalf("view = %+v, want no level, no snapshot and no change", view)
+	}
+}

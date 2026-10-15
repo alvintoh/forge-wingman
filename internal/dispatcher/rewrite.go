@@ -152,6 +152,9 @@ type Numbers struct {
 	Reverts int
 	// Unavailable is set when the evidence could not be read, so the rest is empty.
 	Unavailable bool
+	// NotRecorded is set when the stored record carried no evidence at all, so the
+	// zeros in the rest are absent rather than measured.
+	NotRecorded bool
 }
 
 // NumbersOf is the evidence samples carry.

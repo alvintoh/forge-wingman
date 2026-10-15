@@ -77,6 +77,8 @@ func (h *AutonomyHistory) List(ctx context.Context, limit int) ([]dispatcher.Cha
 		c.At, _ = data[historyAtField].(time.Time)
 		if evidence, ok := data[historyEvidence].(map[string]any); ok {
 			c.Numbers = numbersFrom(evidence)
+		} else {
+			c.Numbers = dispatcher.Numbers{NotRecorded: true}
 		}
 		out = append(out, c)
 	}

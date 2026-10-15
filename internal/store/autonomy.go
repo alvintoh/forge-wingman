@@ -18,15 +18,17 @@ const (
 )
 
 // Autonomies keeps the dispatch/autonomy document the owner sets and every poll
-// reads, beside the CD flag its conditions are checked against.
+// reads, beside the CD flag its conditions are checked against and the history
+// of its changes.
 type Autonomies struct {
-	client *firestore.Client
-	cds    *CDs
+	client  *firestore.Client
+	cds     *CDs
+	history *AutonomyHistory
 }
 
 // NewAutonomies returns an Autonomies backed by client.
 func NewAutonomies(client *firestore.Client) *Autonomies {
-	return &Autonomies{client: client, cds: NewCDs(client)}
+	return &Autonomies{client: client, cds: NewCDs(client), history: NewAutonomyHistory(client)}
 }
 
 func (a *Autonomies) doc() *firestore.DocumentRef {
@@ -98,4 +100,33 @@ func (a *Autonomies) Evidence(ctx context.Context) (dispatcher.Evidence, error) 
 		return dispatcher.Evidence{}, err
 	}
 	return dispatcher.Evidence{Level: level, Trailing: samples, CD: cd}, nil
+}
+
+// AutonomyView is the surface's read of the level: the one the owner set, the
+// snapshot the measured PRs last earned, and the changes recorded since, newest
+// first.
+type AutonomyView struct {
+	Level dispatcher.Autonomy
+	// Earned is the earned snapshot, and HasEarned is false while none is stored.
+	Earned    dispatcher.Earned
+	HasEarned bool
+	History   []dispatcher.Change
+}
+
+// AutonomyView reads the stored level, the earned snapshot beside it and up to
+// history changes, newest first.
+func (a *Autonomies) AutonomyView(ctx context.Context, history int) (AutonomyView, error) {
+	level, err := a.Level(ctx)
+	if err != nil {
+		return AutonomyView{}, err
+	}
+	earned, found, err := a.Earned(ctx)
+	if err != nil {
+		return AutonomyView{}, err
+	}
+	changes, err := a.history.List(ctx, history)
+	if err != nil {
+		return AutonomyView{}, err
+	}
+	return AutonomyView{Level: level, Earned: earned, HasEarned: found, History: changes}, nil
 }

@@ -1,7 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { RouterProvider, createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
-import { Inbox, Providers, Root, Run, Stats } from "./pages";
+import { Autonomy, Inbox, Providers, Root, Run, Stats } from "./pages";
 import "./index.css";
 
 const rootRoute = createRootRoute({ component: Root });
@@ -30,8 +30,20 @@ const providersRoute = createRoute({
   component: Providers,
 });
 
+const autonomyRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/autonomy",
+  component: Autonomy,
+});
+
 const router = createRouter({
-  routeTree: rootRoute.addChildren([inboxRoute, runRoute, statsRoute, providersRoute]),
+  routeTree: rootRoute.addChildren([
+    inboxRoute,
+    runRoute,
+    statsRoute,
+    providersRoute,
+    autonomyRoute,
+  ]),
 });
 
 declare module "@tanstack/react-router" {

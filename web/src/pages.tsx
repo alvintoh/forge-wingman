@@ -13,7 +13,10 @@ export function Inbox() {
   return (
     <>
       <h1>Inbox</h1>
-      <nav aria-label="Views" className="mt-2 flex gap-gap">
+      <nav aria-label="Views" className="mt-2 flex flex-wrap gap-gap">
+        <Link to="/autonomy" className="inline-flex min-h-11 min-w-11 items-center">
+          Autonomy
+        </Link>
         <Link to="/providers" className="inline-flex min-h-11 min-w-11 items-center">
           Providers
         </Link>
@@ -284,4 +287,287 @@ function usageText(usage: WindowUsage[] | "unknown"): string {
     parts.push(`${window.name}: ${usd(window.used_usd)} of ${usd(window.limit_usd)}`);
   }
   return parts.join(" · ");
+}
+
+type Evidence = {
+  // The rate as the endpoint prints it: a percentage, or the words for a rate
+  // measured over none of the agent's lines at all.
+  rate: string;
+  // Null never comes from the endpoint; the view reads it as no PRs.
+  prs: number[] | null;
+  agent_lines: number;
+  owner_lines: number;
+  review_found_lines: number;
+  owner_change_lines: number;
+  unlabelled_lines: number;
+  reverts: number;
+  unavailable: boolean;
+  // False when the stored record held no evidence, so the numbers are absent.
+  recorded: boolean;
+};
+
+type Earned = {
+  level: number;
+  stale: boolean;
+  computed_at: string;
+  evidence: Evidence;
+};
+
+type LevelChange = {
+  at: string;
+  from: number;
+  to: number;
+  cause: string;
+  evidence: Evidence;
+};
+
+// The autonomy endpoint's own shape; earned is null while no snapshot is stored.
+type AutonomyView = {
+  level: number;
+  allows: string;
+  earned: Earned | null;
+  history: LevelChange[];
+  // The cap the history reached, so older changes may exist; absent while whole.
+  history_cut_at?: number;
+};
+
+type AutonomyState = {
+  status: "loading" | "error" | "ready";
+  view: AutonomyView;
+};
+
+// noView is what the section holds before the level is read and after a read
+// that failed; it renders in neither state.
+const noView: AutonomyView = { level: 0, allows: "", earned: null, history: [] };
+
+// Autonomy shows the level the product runs at and what it allows, the PRs the
+// level was earned on, and every recorded change of it. It reads only: the
+// level is set with `runner autonomy -level`.
+export function Autonomy() {
+  const [state, setState] = useState<AutonomyState>({ status: "loading", view: noView });
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    async function read() {
+      const response = await fetch("/api/autonomy", { signal: controller.signal });
+      if (!response.ok) {
+        throw new Error(`the autonomy endpoint answered ${response.status}`);
+      }
+      const body: unknown = await response.json();
+      if (!isAutonomy(body)) {
+        throw new Error("the autonomy endpoint answered no level");
+      }
+      if (controller.signal.aborted) {
+        return;
+      }
+      setState({ status: "ready", view: body });
+    }
+
+    read().catch((err: unknown) => {
+      if (controller.signal.aborted) {
+        return;
+      }
+      console.error("autonomyNotRead", err);
+      setState({ status: "error", view: noView });
+    });
+
+    return () => controller.abort();
+  }, []);
+
+  const view = state.view;
+
+  return (
+    <section className="mx-auto max-w-desk px-pad py-band">
+      <h1 className="text-title font-semibold text-ink">Autonomy</h1>
+      <p className="mt-2 text-body text-ink2">What the product may do on its own.</p>
+      <p className="mt-1 text-body text-ink2">Set with the runner autonomy command.</p>
+      {state.status === "loading" && (
+        <p role="status" className="mt-6">
+          Reading the level…
+        </p>
+      )}
+      {state.status === "error" && (
+        <p role="alert" className="mt-6">
+          The level could not be read.
+        </p>
+      )}
+      {state.status === "ready" && (
+        <>
+          <p className="mt-6 font-mono text-title text-ink">Level {view.level}</p>
+          <p className="mt-1 text-body text-ink2">{view.allows}</p>
+          {levelNotes(view).map((note) => (
+            <p key={note} className="mt-2 text-body text-defer">
+              {note}
+            </p>
+          ))}
+          <h2 className="mt-8 text-head font-semibold text-ink">Evidence</h2>
+          {view.earned === null ? (
+            <p className="mt-2 text-body text-ink2">No snapshot is stored.</p>
+          ) : (
+            <>
+              <p className="mt-2 text-body text-ink2">Earned level {view.earned.level}.</p>
+              {evidenceGap(view.earned.evidence) !== null && (
+                <p className="mt-2 text-body text-defer">{evidenceGap(view.earned.evidence)}</p>
+              )}
+              <div className="mt-4 overflow-x-auto">
+                <table className="w-full text-body">
+                  <caption className="sr-only">The evidence the level was computed from</caption>
+                  <tbody>
+                    {evidenceRows(view.earned).map((row) => (
+                      <tr key={row.measure} className="border-b border-hair">
+                        <th scope="row" className="py-2 pr-4 text-left font-normal text-ink2">
+                          {row.measure}
+                        </th>
+                        <td className="py-2 font-mono">{row.value}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+          <h2 className="mt-8 text-head font-semibold text-ink">History</h2>
+          {view.history_cut_at !== undefined && view.history_cut_at > 0 && (
+            <p className="mt-2 text-body text-ink2">
+              {`Showing the latest ${view.history_cut_at} changes.`}
+            </p>
+          )}
+          {view.history.length === 0 ? (
+            <p className="mt-2 text-body text-ink2">No change is recorded.</p>
+          ) : (
+            <ul className="mt-2">
+              {view.history.map((change, i) => (
+                <li key={`${change.at}-${i}`} className="border-b border-hair py-3 text-body">
+                  <p className="flex flex-wrap items-baseline gap-2">
+                    <span className="font-mono">{`${change.from} → ${change.to}`}</span>
+                    <span className={change.to < change.from ? "text-stop" : "text-ink2"}>
+                      {changeKind(change)}
+                    </span>
+                    <span className="text-ink">{change.cause}</span>
+                    <span className="text-label text-muted">
+                      {new Date(change.at).toLocaleString()}
+                    </span>
+                  </p>
+                  <p className="mt-1 text-label text-ink2">{evidenceLine(change.evidence)}</p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+// isAutonomy checks the top-level fields the view reads have their declared types.
+function isAutonomy(body: unknown): body is AutonomyView {
+  if (typeof body !== "object" || body === null) {
+    return false;
+  }
+  if (!("level" in body && "allows" in body && "earned" in body && "history" in body)) {
+    return false;
+  }
+  const earnedOk = body.earned === null || typeof body.earned === "object";
+  return (
+    typeof body.level === "number" &&
+    typeof body.allows === "string" &&
+    earnedOk &&
+    Array.isArray(body.history)
+  );
+}
+
+// The levels the autonomy ladder spans, and the first at which a PR merges itself.
+const maxLevel = 5;
+const autoMergeLevel = 4;
+
+// levelNotes is what the view says about a level the PRs have not earned; a held
+// back merge is only worth saying at a stored level that would auto-merge.
+function levelNotes(view: AutonomyView): string[] {
+  const notes: string[] = [];
+  const merges = view.level >= autoMergeLevel;
+  if (view.earned === null) {
+    if (merges) {
+      notes.push("No snapshot is stored: nothing auto-merges until one is computed.");
+    }
+    return notes;
+  }
+  if (
+    !Number.isInteger(view.earned.level) ||
+    view.earned.level < 0 ||
+    view.earned.level > maxLevel
+  ) {
+    notes.push(
+      merges
+        ? "The snapshot names no level and is unusable: nothing auto-merges until it is recomputed."
+        : "The snapshot names no level and is unusable.",
+    );
+    return notes;
+  }
+  if (view.earned.stale) {
+    notes.push(
+      merges
+        ? "The snapshot is stale: nothing auto-merges until it is recomputed."
+        : "The snapshot is stale.",
+    );
+  }
+  if (view.level > view.earned.level) {
+    notes.push("The stored level is above the earned one, so the earned level runs.");
+  }
+  return notes;
+}
+
+// evidenceGap is why a piece of evidence has no numbers to show, null when it has.
+function evidenceGap(e: Evidence): string | null {
+  if (!e.recorded) {
+    return "Not recorded.";
+  }
+  if (e.unavailable) {
+    return "The evidence could not be read.";
+  }
+  return null;
+}
+
+// evidenceRows is the snapshot as the view's table lists it: when it was
+// computed, and the evidence it was computed from when there is any.
+function evidenceRows(earned: Earned): { measure: string; value: string }[] {
+  const e = earned.evidence;
+  const rows = [{ measure: "Computed", value: new Date(earned.computed_at).toLocaleString() }];
+  if (evidenceGap(e) !== null) {
+    return rows;
+  }
+  const prs = e.prs ?? [];
+  return [
+    ...rows,
+    { measure: "Rewrite rate", value: e.rate },
+    { measure: "PRs", value: prs.length === 0 ? "none" : prs.join(", ") },
+    { measure: "Agent lines", value: String(e.agent_lines) },
+    { measure: "Owner lines", value: String(e.owner_lines) },
+    { measure: "Review-found lines", value: String(e.review_found_lines) },
+    { measure: "Owner-change lines", value: String(e.owner_change_lines) },
+    { measure: "Unlabelled lines", value: String(e.unlabelled_lines) },
+    { measure: "Reverts", value: String(e.reverts) },
+  ];
+}
+
+// evidenceLine is one change's evidence in a line: what it was measured on, or
+// why it has none.
+function evidenceLine(e: Evidence): string {
+  const gap = evidenceGap(e);
+  if (gap !== null) {
+    return gap;
+  }
+  return `${e.rate} over ${(e.prs ?? []).length} PRs, ${e.owner_lines} owner lines`;
+}
+
+// changeKind is the word the history marks a change with: a drop is the one that
+// takes a level back, and the word carries it besides the colour.
+function changeKind(change: LevelChange): string {
+  if (change.to < change.from) {
+    return "drop";
+  }
+  if (change.to > change.from) {
+    return "raise";
+  }
+  return "unchanged";
 }
