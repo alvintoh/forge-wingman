@@ -85,7 +85,7 @@ func scanGuards(ctx context.Context, d BuildDeps, wt Worktree, sum *Summary) ([]
 		if !uncovered {
 			continue
 		}
-		findings = append(findings, pendingFinding{key: g.key(), text: guardFinding(g)})
+		findings = append(findings, pendingFinding{key: g.key(), text: guardFinding(g), stable: true})
 		d.Logger.Info("guardFinding", "file", g.file, "line", g.line)
 	}
 	return findings, nil

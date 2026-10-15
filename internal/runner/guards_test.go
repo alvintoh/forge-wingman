@@ -194,6 +194,9 @@ func TestGuardScanReportsAGuardNoTestCovers(t *testing.T) {
 	if !strings.Contains(findings[0].text, "can be removed and every test in . still passes") {
 		t.Fatalf("finding = %q, want it to say what the probe established", findings[0].text)
 	}
+	if !findings[0].stable {
+		t.Fatalf("finding = %+v, want a guard's finding keyed stably across a rewording", findings[0])
+	}
 	got, err := os.ReadFile(filepath.Join(w.Dir, "extra.go"))
 	if err != nil {
 		t.Fatal(err)

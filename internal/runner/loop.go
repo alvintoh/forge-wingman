@@ -256,6 +256,10 @@ func detailParts(parts ...string) string {
 type pendingFinding struct {
 	key  string
 	text string
+	// stable is set when the key survives a rewording — a guard's file and
+	// header — and unset for a model's finding, whose text a re-review may word
+	// differently.
+	stable bool
 }
 
 // findingsText is findings as the fix round receives them: one per line, empty
@@ -326,6 +330,16 @@ func findingResolution(key string, stillOpen map[string]bool, fixRound int, rech
 // the fix round never saw — a guard the round itself added uncovered, say.
 func reviewRows(pending, open []pendingFinding, fixRound int) []ReviewFinding {
 	rows := resolveFindings(pending, findingKeys(open), fixRound, true)
+	// A model's finding is matched only by its text, so while the re-review
+	// still reports any finding of its own, an earlier one it did not repeat
+	// word for word may be that same finding reworded: it is not shown as fixed.
+	if slices.ContainsFunc(open, func(f pendingFinding) bool { return !f.stable }) {
+		for i, f := range pending {
+			if !f.stable && rows[i].Resolution == fmt.Sprintf("fixed in round %d", fixRound) {
+				rows[i].Resolution = fmt.Sprintf("addressed in round %d; the re-review still reported findings", fixRound)
+			}
+		}
+	}
 	seen := findingKeys(pending)
 	for _, f := range open {
 		if !seen[f.key] {
