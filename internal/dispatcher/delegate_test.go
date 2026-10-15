@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/alvintoh/forge-wingman/internal/money"
 )
 
 // fakeDelegatable hands over the open issues a poll delegates from, and records
@@ -20,6 +22,8 @@ type fakeDelegatable struct {
 	delegateErr map[string]error
 	opened      int
 	delegated   []string
+	// delegatedArgs records each argument DelegateIssue was given, unmapped.
+	delegatedArgs []string
 }
 
 func (f *fakeDelegatable) Open(context.Context) ([]Issue, error) {
@@ -34,6 +38,7 @@ func (f *fakeDelegatable) Open(context.Context) ([]Issue, error) {
 // records the ticket id that UUID belongs to; an unknown UUID is recorded as is,
 // so a call made with the wrong key still fails the assertion.
 func (f *fakeDelegatable) DelegateIssue(_ context.Context, issueUUID string) error {
+	f.delegatedArgs = append(f.delegatedArgs, issueUUID)
 	id := issueUUID
 	for _, issue := range f.open {
 		if issue.UUID == issueUUID {
@@ -54,7 +59,7 @@ func openTicket(id string, priority int) Issue {
 		ID: id, URL: "https://linear.app/w/issue/" + id, Title: "[BE] add " + id,
 		Body: "Add it.", Priority: priority, UUID: "uuid-" + id,
 		Labels:    []string{"size:M", "repo:octo/scratch"},
-		Milestone: Milestone{ID: "phase-1", SortOrder: 1},
+		Milestone: Milestone{ID: "phase-1", SortOrder: 1}, StateType: "unstarted",
 	}
 }
 
@@ -205,6 +210,9 @@ func TestPollDelegatesOnlyTicketsBreakingNoEligibilityRule(t *testing.T) {
 		"hold label":        func(i *Issue) { i.Labels = append(i.Labels, "wingman:hold") },
 		"bad priority":      func(i *Issue) { i.Priority = 5 },
 		"already delegated": func(i *Issue) { i.DelegatedTo = "agent-1" },
+		"lane not leading":  func(i *Issue) { i.Title = "fix [BE] add the widget" },
+		"started":           func(i *Issue) { i.StateType = "started" },
+		"unknown state":     func(i *Issue) { i.StateType = "" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			issue := openTicket("FRG-20", 2)
@@ -235,6 +243,8 @@ func TestPollDelegatesTheTicketsAnEligibilityRuleAllows(t *testing.T) {
 		"an L size":        func(i *Issue) { i.Labels = []string{"size:L", "repo:octo/scratch"} },
 		"no milestone":     func(i *Issue) { i.Milestone = Milestone{} },
 		"an open blocker":  func(i *Issue) { i.BlockedByOpen = []string{"FRG-19"} },
+		"a todo":           func(i *Issue) { i.StateType = "unstarted" },
+		"a backlog":        func(i *Issue) { i.StateType = "backlog" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			issue := openTicket("FRG-20", 2)
@@ -273,7 +283,7 @@ func TestPollDelegatesFromTheEarliestMilestoneWithOpenTickets(t *testing.T) {
 	later.Milestone = Milestone{ID: "phase-2", SortOrder: 2}
 	noMilestone := Issue{
 		ID: "FRG-23", Title: "[BE] add it", Body: "Add it.", UUID: "uuid-23",
-		Labels: []string{"size:M", "repo:octo/scratch"},
+		Labels: []string{"size:M", "repo:octo/scratch"}, StateType: "unstarted",
 	}
 	for name, tt := range map[string]struct {
 		open []Issue
@@ -282,6 +292,7 @@ func TestPollDelegatesFromTheEarliestMilestoneWithOpenTickets(t *testing.T) {
 		"the next milestone waits":  {open: []Issue{inFlight, later}},
 		"the earliest is delegated": {open: []Issue{openTicket("FRG-22", 2), later}, want: []string{"FRG-22"}},
 		"no milestone at all":       {open: []Issue{noMilestone}, want: []string{"FRG-23"}},
+		"a ticket in none waits":    {open: []Issue{noMilestone, openTicket("FRG-22", 2)}, want: []string{"FRG-22"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			deps, delegatable, logs := delegationDeps(3, tt.open, &fakeQueue{})
@@ -308,6 +319,72 @@ func TestPollDelegatesTheHighestPriorityTicketFirst(t *testing.T) {
 	}
 	if !slices.Equal(delegatable.delegated, []string{"FRG-20"}) {
 		t.Fatalf("delegated %v, want the urgent ticket and the identifier tie-break", delegatable.delegated)
+	}
+}
+
+// TestPollDelegatesByTheIssuesOwnUUID: Linear's mutation names the issue by its
+// own id, so the identifier would be refused.
+func TestPollDelegatesByTheIssuesOwnUUID(t *testing.T) {
+	deps, delegatable, _ := delegationDeps(1, []Issue{openTicket("FRG-20", 1)}, &fakeQueue{})
+	if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(delegatable.delegatedArgs, []string{"uuid-FRG-20"}) {
+		t.Fatalf("DelegateIssue was given %v, want the issue's UUID", delegatable.delegatedArgs)
+	}
+}
+
+// TestPollDelegatesNothingWhileAdmissionIsHeld: a held admission claims nothing,
+// so the day's bar never fills and every poll would delegate more tickets into a
+// queue that cannot move.
+func TestPollDelegatesNothingWhileAdmissionIsHeld(t *testing.T) {
+	peakAt := time.Date(2026, 9, 28, 8, 0, 0, 0, time.UTC)
+	cfg := buildConfig
+	cfg.Model = peakModel
+	cfg.Budget = BudgetConfig{ProviderWindows: []Window{{Name: "5h", Limit: 12 * money.Dollar}}}
+	for name, tt := range map[string]struct {
+		hold   func(*Deps, *fakeQueue)
+		reason string
+	}{
+		"healthy": {hold: func(*Deps, *fakeQueue) {}},
+		"tripped breaker": {reason: "breaker-tripped",
+			hold: func(d *Deps, _ *fakeQueue) { d.Breaker = fakeBreaker{tripped: true} }},
+		"unreadable breaker": {reason: "breaker-tripped",
+			hold: func(d *Deps, _ *fakeQueue) { d.Breaker = fakeBreaker{err: errFirestore} }},
+		"halted provider": {reason: "provider-halted",
+			hold: func(d *Deps, _ *fakeQueue) {
+				d.Providers = fakeProviders{halted: map[string]bool{"command-code": true}}
+			}},
+		"peak hold": {reason: "peak-hold",
+			hold: func(d *Deps, _ *fakeQueue) { d.Now = func() time.Time { return peakAt } }},
+		"budget ceiling": {reason: "budget-ceiling",
+			hold: func(_ *Deps, q *fakeQueue) {
+				q.settled = Settled{Windows: []money.Micros{13 * money.Dollar}}
+			}},
+		"unreadable spend": {reason: "budget-unknown",
+			hold: func(_ *Deps, q *fakeQueue) { q.spendErr = errFirestore }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			q := &fakeQueue{claimedCount: 1}
+			deps, delegatable, logs := delegationDeps(3, []Issue{openTicket("FRG-20", 1)}, q)
+			tt.hold(&deps, q)
+			res, err := Poll(context.Background(), deps, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.reason == "" {
+				if !slices.Equal(res.Delegated, []string{"FRG-20"}) {
+					t.Fatalf("delegated %v, want a healthy poll to delegate:\n%s", res.Delegated, logs.String())
+				}
+				return
+			}
+			if len(res.Delegated) != 0 || delegatable.opened != 0 {
+				t.Fatalf("delegated %v, opened %d times, want nothing while held", res.Delegated, delegatable.opened)
+			}
+			if !strings.Contains(logs.String(), "reason="+tt.reason) {
+				t.Fatalf("the skip does not name %s:\n%s", tt.reason, logs.String())
+			}
+		})
 	}
 }
 

@@ -253,6 +253,7 @@ func openNode(id, uuid, milestone string, sortOrder float64, delegate string) ma
 		"title":       "[BE] add " + id,
 		"description": "Add it.",
 		"priority":    2,
+		"state":       map[string]any{"type": "unstarted"},
 		"labels":      map[string]any{"nodes": []map[string]any{{"name": "size:M"}, {"name": "repo:octo/scratch"}}},
 	}
 	if milestone != "" {
@@ -290,7 +291,7 @@ func TestLinearReadsEveryOpenIssuePageWithWhatDelegatingNeeds(t *testing.T) {
 	if len(issues) != 2 {
 		t.Fatalf("issues = %+v, want both pages", issues)
 	}
-	if first := issues[0]; first.ID != "FRG-20" || first.UUID != "uuid-20" || first.DelegatedTo != "agent-1" ||
+	if first := issues[0]; first.ID != "FRG-20" || first.UUID != "uuid-20" || first.DelegatedTo != "agent-1" || first.StateType != "unstarted" ||
 		first.Milestone != (Milestone{ID: "phase-1", SortOrder: 1}) {
 		t.Fatalf("issue = %+v, want the id, the milestone and the delegate read", first)
 	}
@@ -301,7 +302,7 @@ func TestLinearReadsEveryOpenIssuePageWithWhatDelegatingNeeds(t *testing.T) {
 	if len(*seen) != 2 || (*seen)[0].variables["after"] != nil || (*seen)[1].variables["after"] != "cursor-1" {
 		t.Fatalf("pages asked with %v", *seen)
 	}
-	for _, field := range []string{"projectMilestone {", "sortOrder", "delegate {", "$first: Int"} {
+	for _, field := range []string{"projectMilestone {", "state {", "sortOrder", "delegate {", "$first: Int"} {
 		if !strings.Contains((*seen)[0].query, field) {
 			t.Errorf("the open query does not ask for %s: %s", field, (*seen)[0].query)
 		}
@@ -348,6 +349,24 @@ func TestLinearRefusesADelegationLinearDidNotTake(t *testing.T) {
 		Client: srv.Client()}.DelegateIssue(context.Background(), "uuid-20")
 	if err == nil || !strings.Contains(err.Error(), "did not report it delegated to agent-1") {
 		t.Fatalf("err = %v, want the reply read back before the delegation is reported", err)
+	}
+}
+
+// TestLinearRefusesADelegationReplyThatNamesNoDelegate: a reply that says success
+// without a delegate, or a delegate without success, is not a delegation.
+func TestLinearRefusesADelegationReplyThatNamesNoDelegate(t *testing.T) {
+	for name, reply := range map[string]map[string]any{
+		"success with a null delegate": delegateReply(true, ""),
+		"no success":                   delegateReply(false, "agent-1"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv, _ := queryServer(t, reply)
+			err := Linear{Endpoint: linearURL(srv), Tokens: fixedToken("linear-token"), Delegate: "agent-1",
+				Client: srv.Client()}.DelegateIssue(context.Background(), "uuid-20")
+			if err == nil || !strings.Contains(err.Error(), "did not report it delegated") {
+				t.Fatalf("err = %v, want the delegation refused", err)
+			}
+		})
 	}
 }
 

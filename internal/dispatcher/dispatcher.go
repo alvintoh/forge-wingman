@@ -29,6 +29,9 @@ type Issue struct {
 	// DelegatedTo is the id of the agent the issue is delegated to, empty when
 	// none: Open reads it, and a ticket that names one is never delegated again.
 	DelegatedTo string
+	// StateType is the Linear state type of the issue's workflow state, empty
+	// when the reply did not carry it.
+	StateType string
 	// Milestone is the project milestone the issue belongs to, zero when it has
 	// none.
 	Milestone Milestone
@@ -554,11 +557,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, level Autonomy, relation
 	if err != nil {
 		return nil, err
 	}
-	tripped, err := d.Breaker.Tripped(ctx)
-	if err != nil {
-		d.Logger.Warn("breakerCheckFailed", "err", err.Error())
-		tripped = true
-	}
+	tripped := breakerTripped(ctx, d)
 	limits := c.Limits.orDefault()
 	var prs openPRCount
 	var mode PeakMode
@@ -573,11 +572,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, level Autonomy, relation
 		if v, ok := halts[plan]; ok {
 			return v
 		}
-		v, err := d.Providers.Halted(ctx, plan)
-		if err != nil {
-			d.Logger.Info("providerHaltCheckFailed", "provider", plan, "err", err.Error())
-			v = false
-		}
+		v := providerHalted(ctx, d, plan)
 		halts[plan] = v
 		return v
 	}
@@ -737,6 +732,28 @@ func admitClaims(ctx context.Context, d Deps, c Config, level Autonomy, relation
 		d.Logger.Info("everyCandidateDeferred", "candidates", len(candidates))
 	}
 	return claims, nil
+}
+
+// breakerTripped reads the breaker the way admission does: one that cannot be
+// read holds as a tripped one would.
+func breakerTripped(ctx context.Context, d Deps) bool {
+	tripped, err := d.Breaker.Tripped(ctx)
+	if err != nil {
+		d.Logger.Warn("breakerCheckFailed", "err", err.Error())
+		return true
+	}
+	return tripped
+}
+
+// providerHalted reads plan's halt the way admission does: a read that fails
+// is logged and reads as not halted.
+func providerHalted(ctx context.Context, d Deps, plan string) bool {
+	v, err := d.Providers.Halted(ctx, plan)
+	if err != nil {
+		d.Logger.Info("providerHaltCheckFailed", "provider", plan, "err", err.Error())
+		return false
+	}
+	return v
 }
 
 // buildTier is the budget, build model and free-tier models a build-stage claim

@@ -7,12 +7,17 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
 // delegateLane matches the lane a delegatable title opens with: the ticket
 // templates' [BE], [FE] and [SLICE], read in any case as the runner reads a
 // ticket's own lane tag.
 var delegateLane = regexp.MustCompile(`(?i)^\[(BE|FE|SLICE)\]`)
+
+// unstartedStates are the Linear state types of a ticket nobody has begun.
+var unstartedStates = []string{"backlog", "unstarted"}
 
 const (
 	// holdLabel takes a ticket out of the automatic queue: the dispatcher never
@@ -37,8 +42,9 @@ const (
 // than the day has left.
 //
 // A poll that delegates nothing logs ticketAutoDelegationSkipped once, naming
-// the condition that stopped it: the day's bar is spent (bar-reached), the
-// review WIP limit has no room (wip-full), the open-PR count could not be read
+// the condition that stopped it: the day's bar is spent (bar-reached), admission
+// is held (breaker-tripped, provider-halted, peak-hold, budget-ceiling or
+// budget-unknown), the review WIP limit has no room (wip-full), the open-PR count could not be read
 // (wip-unknown), or the milestone had no eligible ticket (no-eligible-ticket).
 //
 // It runs last in a poll, so a failure here cannot withhold the admission and
@@ -57,6 +63,10 @@ func autoDelegate(ctx context.Context, d Deps, c Config, level Autonomy, res *Re
 	if claimed >= bar {
 		d.Logger.Info("ticketAutoDelegationSkipped", "reason", "bar-reached",
 			"level", int(level), "claimed", claimed, "bar", bar)
+		return nil
+	}
+	if reason, ceiling := admissionHold(ctx, d, c); reason != "" {
+		d.Logger.Info("ticketAutoDelegationSkipped", "reason", reason, "level", int(level), "ceiling", ceiling)
 		return nil
 	}
 	limits := c.Limits.orDefault()
@@ -95,6 +105,32 @@ func autoDelegate(ctx context.Context, d Deps, c Config, level Autonomy, res *Re
 		res.Delegated = append(res.Delegated, issue.ID)
 	}
 	return nil
+}
+
+// admissionHold names what would stop the poll's admission claiming the default
+// plan's next run, read as admission reads it: the breaker, the plan's halt, the
+// peak-hour hold and the budget ceiling. A ticket delegated into a held
+// admission only queues, so the delegation phase waits too. The ceiling names
+// the budget window when that is the reason, and an unreadable spend holds.
+func admissionHold(ctx context.Context, d Deps, c Config) (reason, ceiling string) {
+	if breakerTripped(ctx, d) {
+		return "breaker-tripped", ""
+	}
+	if providerHalted(ctx, d, runner.Provider(c.Model)) {
+		return "provider-halted", ""
+	}
+	if peakHeld(readPeakMode(ctx, d), c.Model, d.Now(), 0) {
+		return "peak-hold", ""
+	}
+	reserved, settled, err := d.Queue.Spend(ctx, c.Budget, c.Model, d.Now())
+	if err != nil {
+		d.Logger.Warn("delegationSpendUnread", "err", err.Error())
+		return "budget-unknown", ""
+	}
+	if fits, binding := Decide(c.Budget, c.Model, reserved, settled, Reservation{}); !fits {
+		return "budget-ceiling", binding
+	}
+	return "", ""
 }
 
 // activeMilestone is the milestone a poll works through: the earliest one that
@@ -167,6 +203,9 @@ func delegatableTicket(issue Issue, c Config) (rank int, ok bool) {
 	rank, err := PriorityRank(issue.Priority)
 	switch {
 	case err != nil,
+		// An unknown state reads as started, so only a ticket Linear reports as
+		// not begun is taken.
+		!slices.Contains(unstartedStates, issue.StateType),
 		!delegateLane.MatchString(issue.Title),
 		strings.Contains(issue.Body, workflowPath),
 		issue.DelegatedTo != "",

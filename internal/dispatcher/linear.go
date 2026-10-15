@@ -105,6 +105,9 @@ const openQuery = `query OpenIssues($first: Int, $after: String) {
           name
         }
       }
+      state {
+        type
+      }
       delegate {
         id
       }
@@ -177,6 +180,7 @@ type linearIssue struct {
 			Name string `json:"name"`
 		} `json:"nodes"`
 	} `json:"labels"`
+	State     linearState      `json:"state"`
 	Delegate  *linearDelegate  `json:"delegate"`
 	Milestone *linearMilestone `json:"projectMilestone"`
 	Relations struct {
@@ -308,12 +312,13 @@ func (l Linear) DelegateIssue(ctx context.Context, issueID string) error {
 // issue is the issue one reply's node names.
 func (n linearIssue) issue() Issue {
 	issue := Issue{
-		ID:       n.Identifier,
-		URL:      n.URL,
-		Title:    n.Title,
-		Body:     n.Description,
-		Priority: n.Priority,
-		UUID:     n.ID,
+		ID:        n.Identifier,
+		URL:       n.URL,
+		Title:     n.Title,
+		Body:      n.Description,
+		Priority:  n.Priority,
+		UUID:      n.ID,
+		StateType: n.State.Type,
 	}
 	if n.Delegate != nil {
 		issue.DelegatedTo = n.Delegate.ID

@@ -2583,6 +2583,13 @@ func TestClaimedSinceCountsTheRunsClaimedInsideTheWindow(t *testing.T) {
 	if n != before+1 {
 		t.Fatalf("claimed since the window opened = %d, want %d", n, before+1)
 	}
+	claim(fresh("queue-claimed-at-since"), since)
+	if n, err = q.ClaimedSince(ctx, since); err != nil {
+		t.Fatal(err)
+	}
+	if n != before+2 {
+		t.Fatalf("claimed since the window opened = %d, want %d: a claim stamped exactly at it counts", n, before+2)
+	}
 }
 
 // TestNeedsRequeueReportsTheRowsOnlyAnOperatorReturns is the settled-row
