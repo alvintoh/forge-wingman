@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -86,6 +87,7 @@ type progressTap struct {
 	p       agentProgress
 	buf     []byte
 	skip    bool
+	unknown bool
 	stopped bool
 }
 
@@ -102,13 +104,15 @@ func (t *progressTap) Write(b []byte) (int, error) {
 			if !t.skip {
 				t.buf = append(t.buf, c)
 				if len(t.buf) > maxEventLine {
+					// An overlong step cannot be read for its tools, so it counts as unknown and fails open.
+					t.unknown = bytes.Contains(t.buf[:min(len(t.buf), 4096)], []byte(`"step_finish"`))
 					t.buf, t.skip = nil, true
 				}
 			}
 			continue
 		}
 		t.line()
-		t.buf, t.skip = t.buf[:0], false
+		t.buf, t.skip, t.unknown = t.buf[:0], false, false
 	}
 	return len(b), nil
 }
@@ -122,7 +126,13 @@ func (t *progressTap) finish() {
 }
 
 func (t *progressTap) line() {
-	if t.skip || len(t.buf) == 0 {
+	if t.skip {
+		if t.unknown {
+			t.p.noProgress = 0
+		}
+		return
+	}
+	if len(t.buf) == 0 {
 		return
 	}
 	var e event

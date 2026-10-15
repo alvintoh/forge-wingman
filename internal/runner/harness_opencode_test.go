@@ -712,3 +712,22 @@ func TestOpencodeConfigReachesAnotherPlanOnItsOwnEndpoint(t *testing.T) {
 		t.Fatalf("provider = %+v, want the Gemini endpoint and its secret's name", p)
 	}
 }
+
+// TestTranslateOpencodeEventsFlushesTrailingCalls asserts an edit with no step_finish after it is recorded and counts as progress.
+func TestTranslateOpencodeEventsFlushesTrailingCalls(t *testing.T) {
+	stream := strings.Join([]string{
+		`{"type":"step_finish","sessionID":"s","part":{"tokens":{"input":1}}}`,
+		`{"type":"tool_use","sessionID":"s","part":{"tool":"edit","state":{"status":"completed","input":{"filePath":"/repo/a.go"}}}}`,
+	}, "\n")
+	var out, errOut strings.Builder
+	if err := translateOpencodeEvents(strings.NewReader(stream), "/repo", &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"tool":"edit","path":"a.go"`) {
+		t.Fatalf("the trailing edit is missing from the record:\n%s", out.String())
+	}
+	var sum Summary
+	if got := readProgress(strings.NewReader(out.String()), &sum); got.noProgress != 0 {
+		t.Fatalf("no progress = %d, want the trailing edit to count", got.noProgress)
+	}
+}

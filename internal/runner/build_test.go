@@ -2896,16 +2896,19 @@ func TestBuildReportsATimeoutOverNoProgress(t *testing.T) {
 func TestEndedByOurStop(t *testing.T) {
 	signalled := exec.Command("sh", "-c", "kill -9 $$").Run()
 	for _, tt := range []struct {
-		name string
-		err  error
-		want bool
+		name      string
+		err       error
+		want      bool
+		delivered bool
 	}{
-		{"cancelled context", fmt.Errorf("run: %w", context.Canceled), true},
-		{"killed process", signalled, true},
-		{"ordinary exit", exitWith(t, 1), false},
-		{"other error", errors.New("boom"), false},
+		{"cancelled context", fmt.Errorf("run: %w", context.Canceled), true, true},
+		{"killed process", signalled, true, true},
+		{"killed process with no cancel delivered", signalled, false, false},
+		{"cancelled context with no cancel delivered", context.Canceled, false, false},
+		{"ordinary exit", exitWith(t, 1), false, true},
+		{"other error", errors.New("boom"), false, true},
 	} {
-		if got := endedByOurStop(tt.err); got != tt.want {
+		if got := endedByOurStop(tt.err, tt.delivered); got != tt.want {
 			t.Errorf("%s: endedByOurStop = %v, want %v", tt.name, got, tt.want)
 		}
 	}

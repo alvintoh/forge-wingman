@@ -522,6 +522,7 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 	tap := newProgressTap(call.Phase, stopRun)
 	runErr := agent.Run(runCtx, dir, call.Session, prompt, call.Rules, io.MultiWriter(out, tap), errOut)
 	tap.finish()
+	delivered := runCtx.Err() != nil
 	timedOut := errors.Is(agentCtx.Err(), context.DeadlineExceeded)
 	stopRun()
 	cancel()
@@ -587,7 +588,7 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 	case timedOut:
 		logAgentFailure(d.Logger, call, OutcomeAgentFailed, StopAgentTimeout, runErr, stderrPath, c.Secrets)
 		return text, sessionID, stopWith(OutcomeAgentFailed, StopAgentTimeout, fmt.Errorf("agent exceeded %s", timeout))
-	case runErr != nil && (!tap.didStop() || !endedByOurStop(runErr)):
+	case runErr != nil && (!tap.didStop() || !endedByOurStop(runErr, delivered)):
 		outcome, reason := classifyAgentFailure(agent, stderrPath, runErr)
 		logAgentFailure(d.Logger, call, outcome, reason, runErr, stderrPath, c.Secrets)
 		return text, sessionID, stopWith(outcome, reason, runErr)
@@ -599,8 +600,11 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 	return text, sessionID, nil
 }
 
-// endedByOurStop reports whether err is what an agent returns when the runner cancelled it: a cancelled context or a signalled exit (code -1, or 137/143 from a container).
-func endedByOurStop(err error) bool {
+// endedByOurStop reports whether err is what an agent returns after the runner's own cancel was delivered: a cancelled context or a signalled exit; without a delivered cancel any kill is a failure.
+func endedByOurStop(err error, delivered bool) bool {
+	if !delivered {
+		return false
+	}
 	if errors.Is(err, context.Canceled) {
 		return true
 	}

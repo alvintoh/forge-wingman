@@ -567,3 +567,29 @@ func TestOmpHarnessKeysEachPlanOnItsOwnSecret(t *testing.T) {
 		t.Errorf("Ready(gemini) = %v, want the missing GEMINI_API_KEY named", err)
 	}
 }
+
+// TestTranslateOmpEventsKeepsCallsOfARequestWithNoUsage asserts a successful edit in a message with no usage still counts as progress.
+func TestTranslateOmpEventsKeepsCallsOfARequestWithNoUsage(t *testing.T) {
+	stream := strings.Join([]string{
+		`{"type":"message_end","message":{"role":"assistant","content":[]}}`,
+		`{"type":"tool_execution_start","toolCallId":"c1","toolName":"edit","args":{"path":"a.go"}}`,
+		`{"type":"tool_execution_end","toolCallId":"c1","toolName":"edit","isError":false}`,
+		`{"type":"message_end","message":{"role":"assistant","usage":{"input":1}}}`,
+		`{"type":"message_end","message":{"role":"assistant","usage":{"input":1}}}`,
+	}, "\n")
+	var out, errOut strings.Builder
+	if err := translateOmpEvents(strings.NewReader(stream), "/repo", &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	var sum Summary
+	if got := readProgress(strings.NewReader(out.String()), &sum); got.noProgress != 1 {
+		t.Fatalf("no progress = %d, want 1: the usage-less request's edit counts", got.noProgress)
+	}
+	var tail strings.Builder
+	if err := translateOmpEvents(strings.NewReader(strings.Join(strings.Split(stream, "\n")[:3], "\n")), "/repo", &tail, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(tail.String(), `"tool":"edit"`) {
+		t.Fatalf("a trailing usage-less edit is missing from the record:\n%s", tail.String())
+	}
+}

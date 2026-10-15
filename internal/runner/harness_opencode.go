@@ -441,6 +441,15 @@ func translateOpencodeEvents(r io.Reader, dir string, stdout, stderr io.Writer) 
 	if err := sc.Err(); err != nil {
 		return err
 	}
+	if len(tools) > 0 {
+		// Calls with no step_finish after them are still what the agent did.
+		var e event
+		e.Type = "step_finish"
+		e.Part.Tools = tools
+		if err := enc.Encode(e); err != nil {
+			return err
+		}
+	}
 	if fellBack {
 		return errOpencodeFallback
 	}

@@ -201,3 +201,22 @@ func TestObserveKeepsDistinctReadsUpToTheCap(t *testing.T) {
 		t.Fatalf("reads = %q, want first-seen order", p.reads[:2])
 	}
 }
+
+// TestProgressTapDoesNotCountAnOverlongStepAsIdle asserts a step too long to read resets the idle count rather than extending it.
+func TestProgressTapDoesNotCountAnOverlongStepAsIdle(t *testing.T) {
+	old := maxEventLine
+	maxEventLine = 200
+	t.Cleanup(func() { maxEventLine = old })
+	tap := newProgressTap(PhaseBuild, func() {})
+	_, _ = tap.Write([]byte(readsOnlyEvents(3)))
+	long := `{"type":"step_finish","part":{"tools":[{"tool":"edit","path":"a.go"}],"pad":"` + strings.Repeat("x", 400) + `"}}` + "\n"
+	_, _ = tap.Write([]byte(long))
+	if tap.p.noProgress != 0 {
+		t.Fatalf("no progress = %d, want the overlong step to reset it", tap.p.noProgress)
+	}
+	_, _ = tap.Write([]byte(strings.Repeat("x", 400) + "\n"))
+	_, _ = tap.Write([]byte(readsOnlyEvents(1)))
+	if tap.p.noProgress != 1 {
+		t.Fatalf("no progress = %d, want a long non-step line left the count alone", tap.p.noProgress)
+	}
+}

@@ -278,6 +278,7 @@ func translateOmpEvents(r io.Reader, dir string, stdout, stderr io.Writer) error
 	// the end.
 	paths := map[string]string{}
 	var step *event
+	var carry []ToolUse
 	flush := func() error {
 		if step == nil {
 			return nil
@@ -303,10 +304,16 @@ func translateOmpEvents(r io.Reader, dir string, stdout, stderr io.Writer) error
 			delete(paths, ev.ToolCallID)
 			// A call that failed or was refused never ran, so it is not what
 			// the request did.
-			if ev.IsError || step == nil {
+			if ev.IsError {
 				continue
 			}
-			step.Part.Tools = append(step.Part.Tools, ToolUse{Tool: ev.ToolName, Path: path})
+			use := ToolUse{Tool: ev.ToolName, Path: path}
+			if step == nil {
+				// No usage was reported for this request, so its calls ride on the next step.
+				carry = append(carry, use)
+				continue
+			}
+			step.Part.Tools = append(step.Part.Tools, use)
 		case ev.Type == "message_end" && ev.Message != nil && ev.Message.Role == "assistant":
 			if err := flush(); err != nil {
 				return err
@@ -315,10 +322,19 @@ func translateOmpEvents(r io.Reader, dir string, stdout, stderr io.Writer) error
 				return err
 			}
 			step = ompStep(*ev.Message)
+			if step != nil && len(carry) > 0 {
+				step.Part.Tools, carry = carry, nil
+			}
 		}
 	}
 	if err := sc.Err(); err != nil {
 		return err
+	}
+	if len(carry) > 0 {
+		if step == nil {
+			step = &event{Type: "step_finish"}
+		}
+		step.Part.Tools = append(step.Part.Tools, carry...)
 	}
 	return flush()
 }
