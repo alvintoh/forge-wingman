@@ -44,11 +44,12 @@ func readPeakMode(ctx context.Context, d Deps) PeakMode {
 	return mode
 }
 
-// peakHeld reports whether a run of model, estimated at minutes, waits for the
+// PeakHeld reports whether a run of model, estimated at minutes, waits for the
 // peak window to pass: its model prices peak hours and the run would start in
 // one or reach the next. An unknown estimate, zero, holds only while a window
-// is open.
-func peakHeld(mode PeakMode, model string, now time.Time, minutes int64) bool {
+// is open, which is what the surface's peak view asks with — it has no run to
+// estimate.
+func PeakHeld(mode PeakMode, model string, now time.Time, minutes int64) bool {
 	if mode == PeakAlways {
 		return false
 	}

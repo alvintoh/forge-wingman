@@ -119,7 +119,7 @@ func admissionHold(ctx context.Context, d Deps, c Config) (reason, ceiling strin
 	if providerHalted(ctx, d, runner.Provider(c.Model)) {
 		return "provider-halted", ""
 	}
-	if peakHeld(readPeakMode(ctx, d), c.Model, d.Now(), 0) {
+	if PeakHeld(readPeakMode(ctx, d), c.Model, d.Now(), 0) {
 		return "peak-hold", ""
 	}
 	reserved, settled, err := d.Queue.Spend(ctx, c.Budget, c.Model, d.Now())

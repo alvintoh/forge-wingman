@@ -13,12 +13,14 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"strings"
 	"syscall"
 	"time"
 
 	"cloud.google.com/go/firestore"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
+	"github.com/alvintoh/forge-wingman/internal/providers"
 	"github.com/alvintoh/forge-wingman/internal/runner"
 	"github.com/alvintoh/forge-wingman/internal/store"
 	"github.com/alvintoh/forge-wingman/web"
@@ -50,13 +52,14 @@ func run(logger *slog.Logger) error {
 		port = "8080"
 	}
 
-	// The comparison, providers and autonomy endpoints read past runs, the
-	// owner's plan records and the level, so they need the store. A local run
-	// without GOOGLE_CLOUD_PROJECT has none and serves the SPA alone, answering
-	// those endpoints with 503.
+	// The comparison, providers, autonomy and peak endpoints read past runs,
+	// the owner's plan records, the level and the peak mode, so they need the
+	// store. A local run without GOOGLE_CLOUD_PROJECT has none and serves the
+	// SPA alone, answering those endpoints with 503.
 	var comparison ComparisonReader
 	var providerPlans ProviderPlansReader
 	var autonomy AutonomyReader
+	var peak PeakModeStore
 	if project := os.Getenv("GOOGLE_CLOUD_PROJECT"); project != "" {
 		fsc, err := firestore.NewClient(context.Background(), project)
 		if err != nil {
@@ -66,11 +69,12 @@ func run(logger *slog.Logger) error {
 		comparison = store.NewRecords(fsc)
 		providerPlans = store.NewProviderPlans(fsc)
 		autonomy = store.NewAutonomies(fsc)
+		peak = store.NewPeakModes(fsc)
 	}
 
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           newMux(spa, logger, comparison, providerPlans, autonomy),
+		Handler:           newMux(spa, logger, comparison, providerPlans, autonomy, peak),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -116,12 +120,21 @@ type AutonomyReader interface {
 	AutonomyView(ctx context.Context, history int) (store.AutonomyView, error)
 }
 
+// PeakModeStore reads and sets what the peak view shows: whether a run waits out
+// its model's peak-price hours. Unlike the readers above it writes, since the
+// view's control sets the mode; the service sits behind IAP, whose only
+// authorised principal is the owner, so those are the owner's changes alone.
+type PeakModeStore interface {
+	Mode(ctx context.Context) (dispatcher.PeakMode, error)
+	Set(ctx context.Context, mode dispatcher.PeakMode, at time.Time) error
+}
+
 // newMux claims /api/ explicitly so an unknown endpoint 404s instead of
 // falling through to the SPA's index.html. A nil comparison serves every
 // endpoint but /api/comparison, a nil providerPlans every endpoint but
-// /api/providers, and a nil autonomy every endpoint but /api/autonomy, each of
-// which then has no store to read.
-func newMux(spa fs.FS, logger *slog.Logger, comparison ComparisonReader, providerPlans ProviderPlansReader, autonomy AutonomyReader) *http.ServeMux {
+// /api/providers, a nil autonomy every endpoint but /api/autonomy, and a nil
+// peak every endpoint but /api/peak, each of which then has no store to read.
+func newMux(spa fs.FS, logger *slog.Logger, comparison ComparisonReader, providerPlans ProviderPlansReader, autonomy AutonomyReader, peak PeakModeStore) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -174,6 +187,55 @@ func newMux(spa fs.FS, logger *slog.Logger, comparison ComparisonReader, provide
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(renderAutonomy(view, autonomyHistoryShown))
+	})
+	mux.HandleFunc("GET /api/peak", func(w http.ResponseWriter, r *http.Request) {
+		if peak == nil {
+			http.Error(w, "the peak view needs a store", http.StatusServiceUnavailable)
+			return
+		}
+		mode, err := peak.Mode(r.Context())
+		if err != nil {
+			logger.Error("peakModeNotRead", "err", err.Error())
+			http.Error(w, "reading the peak mode", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(renderPeak(mode, time.Now()))
+	})
+	// Setting the mode is the one write on this surface. It requires a JSON
+	// body, which a browser cannot send cross-origin without a preflight, so a
+	// page that is not the surface cannot switch the mode with the session
+	// cookie IAP establishes.
+	mux.HandleFunc("POST /api/peak", func(w http.ResponseWriter, r *http.Request) {
+		if peak == nil {
+			http.Error(w, "the peak view needs a store", http.StatusServiceUnavailable)
+			return
+		}
+		if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+			http.Error(w, "the peak mode is set with a JSON body", http.StatusUnsupportedMediaType)
+			return
+		}
+		var body struct {
+			Mode string `json:"mode"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "the request body is not JSON naming a mode", http.StatusBadRequest)
+			return
+		}
+		mode := dispatcher.PeakMode(body.Mode)
+		if !mode.Valid() {
+			http.Error(w, fmt.Sprintf("mode %q is not %s or %s", body.Mode, dispatcher.PeakOffPeakOnly, dispatcher.PeakAlways), http.StatusBadRequest)
+			return
+		}
+		now := time.Now()
+		if err := peak.Set(r.Context(), mode, now); err != nil {
+			logger.Error("peakModeNotSet", "err", err.Error())
+			http.Error(w, "setting the peak mode", http.StatusInternalServerError)
+			return
+		}
+		logger.Info("peakModeSet", "mode", string(mode))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(renderPeak(mode, now))
 	})
 	mux.Handle("GET /api/", http.NotFoundHandler())
 	mux.Handle("GET /", spaHandler(spa))
@@ -446,6 +508,80 @@ func rateText(rate float64) string {
 		return "no agent lines"
 	}
 	return fmt.Sprintf("%.1f%%", rate*100)
+}
+
+// peakResponse is the peak endpoint's wire shape: the mode runs wait out their
+// model's peak-price hours under, whether admission is holding a run now, and
+// every model a run may use with the window its rate prices peak hours in.
+type peakResponse struct {
+	Mode string `json:"mode"`
+	// Holding is true while admission is holding a run out of its model's peak
+	// window: the mode holds runs and a window is open.
+	Holding bool `json:"holding"`
+	// Models is every model a run may use, whether or not it prices peak hours,
+	// so the view can show a flat-priced model as such.
+	Models []peakModel `json:"models"`
+}
+
+type peakModel struct {
+	Model string `json:"model"`
+	// Peak is the window the model's rate prices peak hours in, null for a model
+	// priced the same at every hour and for one the plan does not price.
+	Peak *peakWindow `json:"peak"`
+	// Priced is whether the plan has a rate card for the model at all, so the
+	// view tells a model priced the same at every hour from one it never prices.
+	Priced bool `json:"priced"`
+}
+
+type peakWindow struct {
+	Multiplier float64 `json:"multiplier"`
+	// Hours are the weekday UTC hour ranges the multiplier applies in, each
+	// [from, to).
+	Hours []peakHour `json:"hours"`
+}
+
+type peakHour struct {
+	From int `json:"from"`
+	To   int `json:"to"`
+}
+
+// renderPeak renders the peak view as JSON at now, converting each model's rate
+// card to the window the view displays. Every model is rendered whether or not
+// it prices peak hours, so a view narrowing to the peak-priced ones reads an
+// empty list rather than a null.
+func renderPeak(mode dispatcher.PeakMode, now time.Time) peakResponse {
+	models := providers.RunModels()
+	out := peakResponse{
+		Mode:   string(mode),
+		Models: make([]peakModel, 0, len(models)),
+	}
+	for _, model := range models {
+		rates, priced := providers.RatesFor(model)
+		entry := peakModel{Model: model, Priced: priced}
+		if priced && rates.Peak != nil {
+			window := peakWindow{Multiplier: rates.Peak.Multiplier, Hours: make([]peakHour, 0, len(rates.Peak.Hours))}
+			for _, span := range rates.Peak.Hours {
+				window.Hours = append(window.Hours, peakHour{From: span.From, To: span.To})
+			}
+			entry.Peak = &window
+		}
+		out.Models = append(out.Models, entry)
+	}
+	out.Holding = holdingNow(mode, out.Models, now)
+	return out
+}
+
+// holdingNow reports whether some model a run may use is inside its own peak
+// window right now. It asks as a run of no estimated minutes does, so it answers
+// the narrower window-open question: admission also holds a run whose estimate
+// reaches the next window, which this view does not read.
+func holdingNow(mode dispatcher.PeakMode, models []peakModel, now time.Time) bool {
+	for _, model := range models {
+		if dispatcher.PeakHeld(mode, model.Model, now, 0) {
+			return true
+		}
+	}
+	return false
 }
 
 // spaHandler serves index.html for client-side routes, but 404s a missing path

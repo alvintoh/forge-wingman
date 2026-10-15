@@ -557,6 +557,40 @@ func TestParseConfigReadsThePaidPlanOrderAndModels(t *testing.T) {
 	}
 }
 
+// TestRunModelsListsEveryModelARunMayUseOnce asserts the models a run may use
+// are each plan's build, review and plan models and its free-tier ones, each
+// named once — the review model included, which its own plan's rate card does
+// not price.
+func TestRunModelsListsEveryModelARunMayUseOnce(t *testing.T) {
+	want := []string{
+		"command-code/deepseek/deepseek-v4.1-flash",
+		"command-code/meta/muse-spark-1.3-contributor",
+		"command-code/poolside/laguna-s-2.1-free",
+		"gemini/gemini-3.8-flash",
+		"gemini/gemini-3.5-flash-lite",
+	}
+	if got := RunModels(); !slices.Equal(got, want) {
+		t.Fatalf("RunModels() = %v, want %v", got, want)
+	}
+}
+
+// TestRunModelsWalksAPlansPlanModels asserts a plan's own plan models are walked
+// beside its build and review models, from a plan the embedded config does not
+// hold: there the one plan model is also that plan's build model, so dropping
+// the walk over them changes nothing the embedded config can show. The plan
+// names its build model too, so the walk names it once (AC1).
+func TestRunModelsWalksAPlansPlanModels(t *testing.T) {
+	cfg, err := parseConfig([]byte(configWith(providerFacts +
+		`,"models":{"build":"p/build","review":"p/review","plan":["p/build","p/plan"]}}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"p/build", "p/review", "p/plan"}
+	if got := runModels(cfg.Providers, []string{"p"}); !slices.Equal(got, want) {
+		t.Fatalf("runModels = %v, want %v", got, want)
+	}
+}
+
 func TestEmbeddedGoatIsTheOnlyPaidPlan(t *testing.T) {
 	if got := PaidPlans(); !slices.Equal(got, []string{"command-code"}) {
 		t.Fatalf("PaidPlans() = %v, want command-code alone", got)

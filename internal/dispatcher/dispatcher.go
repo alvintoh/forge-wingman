@@ -674,7 +674,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, level Autonomy, relation
 		candPlan := runner.Provider(candModel)
 		facts := Facts{Limits: limits, Tuning: c.Tuning.OrDefault(), ProviderHalted: halted(candPlan), BreakerTripped: tripped,
 			OpenPRs: prs.count, OpenPRsKnown: prs.known, Relations: relations[cand.RunID], Model: candModel, LastResort: lastResort,
-			PeakHeld: peakHeld(mode, candModel, d.Now(), est.Minutes), Autonomy: level}
+			PeakHeld: PeakHeld(mode, candModel, d.Now(), est.Minutes), Autonomy: level}
 		claimVerdict := verdictOf(candPlan)
 		ok, binding, err := d.Queue.TryClaim(ctx, cand.RunID, d.Now(), budget, facts, reservation)
 		if err != nil {
@@ -694,7 +694,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, level Autonomy, relation
 					continue
 				}
 				moved := onPlan(facts, next, from)
-				moved.PeakHeld = peakHeld(mode, moved.Model, d.Now(), est.Minutes)
+				moved.PeakHeld = PeakHeld(mode, moved.Model, d.Now(), est.Minutes)
 				ok, binding, err = d.Queue.TryClaim(ctx, cand.RunID, d.Now(), next.Budget, moved, reservation)
 				if err != nil {
 					return claims, err
