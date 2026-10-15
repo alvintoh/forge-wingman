@@ -57,10 +57,9 @@ STACK_PACKS = (
 # The packs' combined size AFTER the frontmatter strip and the dropped lines —
 # the bytes the build prompt actually grows by — so a stack edit that adds,
 # removes or rewrites a pack fails the generation instead of shipping a silently
-# different prompt. 113 KiB is the figure the packs were selected at; the
-# assertion prints the size it measured, so a first run that differs pins it in
-# one line.
-STACK_PACK_BYTES = 115712
+# different prompt. The assertion prints the size it measured, so a stack edit
+# that moves it pins the new figure in one line.
+STACK_PACK_BYTES = 112264         # measured 2026-10-15 against the rule stack at 7cbdab8
 STACK_PACK_TOLERANCE = 17000      # 15%, the proportion BUILD_DROP_TOLERANCE uses
 
 # ---- the projection must not send the agent OUT of its sandbox --------------
@@ -310,8 +309,9 @@ def main():
         (out / name).write_text(text)
         n = len(text.encode())
         print(f"  {name:22s} {n:7d} bytes  ~{n // 4:6d} tokens")
-    saved = len(full.encode()) - len(trim.encode())
     packs = sum(len(pack_projection(root, rel).encode()) for rel in STACK_PACKS)
+    # The packs are added, not trimmed, so they are left out of what the trim saves.
+    saved = len(full.encode()) - len(trim.encode()) + packs
     print(f"  {'the stack packs':22s} {packs:7d} bytes  ~{packs // 4:6d} tokens"
           f"  (recorded {STACK_PACK_BYTES}±{STACK_PACK_TOLERANCE})")
     print(f"  the build trim removes {saved} bytes (~{saved // 4} tokens) "

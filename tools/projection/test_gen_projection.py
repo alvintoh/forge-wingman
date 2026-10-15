@@ -115,6 +115,39 @@ class GenProjectionTest(unittest.TestCase):
         self.assertEqual(list(self.out.iterdir()), [])
         self.assertNotIn(MARKER, result.stdout + result.stderr)
 
+    def test_generation_fails_when_the_packs_grow_past_the_tolerance(self):
+        write_stack(self.root, pack_scale=150)
+        result = run(self.root, self.out)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("STACK_PACK_BYTES", result.stderr)
+        self.assertEqual(list(self.out.iterdir()), [])
+
+    def test_check_rejects_build_text_missing_a_pack(self):
+        write_stack(self.root)
+        pack = gen.pack_projection(self.root, gen.STACK_PACKS[0])
+        text = gen.build(self.root, trimmed=True).replace(pack, "")
+        with self.assertRaises(AssertionError) as caught:
+            gen.check(self.root, "build", text, trimmed=True)
+        self.assertIn("build projection lost", str(caught.exception))
+
+    def test_check_rejects_a_pack_after_the_protocol(self):
+        write_stack(self.root)
+        pack = gen.pack_projection(self.root, gen.STACK_PACKS[0])
+        text = gen.build(self.root, trimmed=True).replace(pack, "").replace(
+            gen.TICKET_SENTINEL, f"{pack}\n\n{gen.TICKET_SENTINEL}")
+        with self.assertRaises(AssertionError) as caught:
+            gen.check(self.root, "build", text, trimmed=True)
+        self.assertIn("is not before the protocol", str(caught.exception))
+
+    def test_check_rejects_plan_text_carrying_a_pack(self):
+        write_stack(self.root)
+        pack = gen.pack_projection(self.root, gen.STACK_PACKS[0])
+        text = gen.build(self.root, trimmed=False).replace(
+            gen.TICKET_SENTINEL, f"{pack}\n\n{gen.TICKET_SENTINEL}")
+        with self.assertRaises(AssertionError) as caught:
+            gen.check(self.root, "plan", text, trimmed=False)
+        self.assertIn("plan projection kept", str(caught.exception))
+
     def test_a_pack_line_naming_a_home_path_is_dropped_not_shipped(self):
         write_stack(self.root, pack_line=f"read ~/dev/{MARKER}/base/CLAUDE.md for the rest")
         result = run(self.root, self.out)
