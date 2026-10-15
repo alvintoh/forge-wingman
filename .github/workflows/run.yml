@@ -12,6 +12,9 @@
 # a PR may auto-merge is the autonomy level the run was claimed at (`runner autonomy`).
 # Workload Identity Federation trusts main only, so dispatch from main.
 name: run
+# The run's title carries the ticket and the stage, and each job's name carries the ticket: the
+# failure email lists the jobs by name, so it says which ticket failed.
+run-name: ${{ format('run {0}{1}', inputs.run_id, inputs.stage && format(' ({0})', inputs.stage) || '') }}
 
 on:
   workflow_dispatch:
@@ -60,6 +63,7 @@ concurrency:
 
 jobs:
   ticket:
+    name: ticket ${{ inputs.run_id }}
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -118,6 +122,7 @@ jobs:
           retention-days: 1
 
   model:
+    name: model ${{ inputs.run_id }}
     needs: ticket
     uses: ./.github/workflows/model.yml
     permissions:
@@ -143,6 +148,7 @@ jobs:
   # artifact and nothing else would release the reservation it holds, so this job
   # ends the run instead (FRG-88).
   record-plan-stage:
+    name: record-plan-stage ${{ inputs.run_id }}
     needs: [ticket, model]
     if: always() && github.ref == 'refs/heads/main' && inputs.stage == 'plan'
     runs-on: ubuntu-latest
@@ -194,6 +200,7 @@ jobs:
   # The branch's code runs here, so the job holds nothing it could misuse. Each gate is
   # a fixed step, so the branch cannot redefine one; a failing gate is named, not fatal.
   check:
+    name: check ${{ inputs.run_id }}
     needs: model
     if: inputs.stage != 'plan' && needs.model.outputs.changed == 'true'
     runs-on: ubuntu-latest
@@ -262,6 +269,7 @@ jobs:
           echo "failed_gate=${gate}" >> "$GITHUB_OUTPUT"
 
   pr-meta:
+    name: pr-meta ${{ inputs.run_id }}
     needs: [model, check]
     if: ${{ !cancelled() && inputs.stage != 'plan' && needs.model.result == 'success' && needs.model.outputs.changed == 'true' }}
     runs-on: ubuntu-latest
@@ -330,6 +338,7 @@ jobs:
           -bundle "$RUNNER_TEMP/wingman.bundle" -branch "$BRANCH" -repository "$REPOSITORY"
 
   pr:
+    name: pr ${{ inputs.run_id }}
     needs: [model, pr-meta]
     if: ${{ !cancelled() && inputs.stage != 'plan' && needs.model.result == 'success' && needs.model.outputs.changed == 'true' && needs.pr-meta.result == 'success' }}
     runs-on: ubuntu-latest
@@ -457,6 +466,7 @@ jobs:
         run: gh workflow run ci.yml --ref "$BRANCH"
 
   record:
+    name: record ${{ inputs.run_id }}
     needs: [ticket, model, check, pr-meta, pr]
     if: always() && inputs.stage != 'plan' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
