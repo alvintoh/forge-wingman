@@ -64,6 +64,15 @@ this file as project memory, so both rules below reach the run.
   guard and an admission hold added after a mutation review were flagged until AC2 and a new AC6
   named them.)*
 
+## Fixing a runner PR: add commits, never rewrite the agent's
+
+Fix a runner PR with new commits on top, each with `Rework: review-found` or `Rework: owner-change`
+in its body. A rebase keeps each commit's author and is safe. Never squash or re-author the agent's
+commits: the rewrite rate counts a commit as the agent's only when GitHub's author login for it is the
+runner's, so a squash turns the agent's lines into owner lines. *(Judgment call from a measured effect.
+Verified 2026-10-15: squashing the runner's commits on PR 141 made the first live poll read 0 agent
+lines and 4,715 owner lines for it, and the trailing-10 rate 110.4%.)*
+
 ## Walk agent-built changes in auto mode
 
 When reviewing a change an agent built in this repo, run `/changes-walkthrough` in
