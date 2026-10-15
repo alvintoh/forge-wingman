@@ -83,6 +83,10 @@ func measureRewrites(ctx context.Context, d Deps, c Config) error {
 	}
 	for _, repo := range c.Repos {
 		prs, err := d.PullRequests.Closed(ctx, repo)
+		truncated := errors.Is(err, ErrClosedTruncated)
+		if truncated {
+			err = nil
+		}
 		if err != nil {
 			unreadable = true
 			// One repository's listing failing must not stop the others', and
@@ -90,7 +94,10 @@ func measureRewrites(ctx context.Context, d Deps, c Config) error {
 			errs = append(errs, fmt.Errorf("listing the closed pull requests of %s: %w", repo, err))
 			continue
 		}
-		if err := measureRepo(ctx, d, m, repo, prs); err != nil {
+		if err := measureRepo(ctx, d, m, repo, prs, truncated); err != nil {
+			if errors.Is(err, ErrClosedTruncated) {
+				unreadable = true
+			}
 			errs = append(errs, err)
 		}
 	}
@@ -112,7 +119,7 @@ func measureRewrites(ctx context.Context, d Deps, c Config) error {
 // the run rows of the PRs its merged reverts name. A failure against one PR is
 // gathered rather than returned, so the rest of the listing is still measured
 // and the next poll retries what failed.
-func measureRepo(ctx context.Context, d Deps, m *measurement, repo string, prs []ClosedPR) error {
+func measureRepo(ctx context.Context, d Deps, m *measurement, repo string, prs []ClosedPR, truncated bool) error {
 	byNumber := make(map[int]ClosedPR, len(prs))
 	byTitle := make(map[string]int, len(prs))
 	for _, pr := range prs {
@@ -125,16 +132,23 @@ func measureRepo(ctx context.Context, d Deps, m *measurement, repo string, prs [
 	var errs []error
 	// Measurements land before any revert is flagged, so a measurement never
 	// clears a flag set earlier in the same poll.
-	for _, pr := range prs {
+	tailFresh := false
+	for i, pr := range prs {
 		if !pr.MergedAt.IsZero() && strings.HasPrefix(pr.Head, runner.BranchPrefix) {
+			before := len(m.fresh)
 			if err := measureMerged(ctx, d, m, repo, pr); err != nil {
 				errs = append(errs, err)
 			}
+			// A merge first measured on the last page may have older ones behind it.
+			tailFresh = tailFresh || (len(m.fresh) > before && i >= len(prs)-closedPRsPerPage)
 		}
+	}
+	if truncated && tailFresh {
+		errs = append(errs, fmt.Errorf("%s: %w with a merge first measured on its last page", repo, ErrClosedTruncated))
 	}
 	for _, pr := range prs {
 		if reverted := revertedPR(pr, repo, byTitle); reverted > 0 {
-			if err := flagReverted(ctx, d, repo, reverted, byNumber); err != nil {
+			if err := flagReverted(ctx, d, repo, pr, reverted, byNumber); err != nil {
 				errs = append(errs, err)
 			}
 		}
@@ -188,8 +202,9 @@ type measurement struct {
 	fresh       []freshMerge
 }
 
-// flagReverted marks the run row of the PR a merged revert names.
-func flagReverted(ctx context.Context, d Deps, repo string, reverted int, byNumber map[int]ClosedPR) error {
+// flagReverted marks the run row of the PR a merged revert names. The PR must be
+// one of repo's own, a run's, and have merged before the revert did.
+func flagReverted(ctx context.Context, d Deps, repo string, revert ClosedPR, reverted int, byNumber map[int]ClosedPR) error {
 	original, ok := byNumber[reverted]
 	if !ok {
 		var err error
@@ -198,8 +213,10 @@ func flagReverted(ctx context.Context, d Deps, repo string, reverted int, byNumb
 			return err
 		}
 	}
-	if original.MergedAt.IsZero() {
-		// A revert of a PR that never merged takes back nothing this product did.
+	if original.MergedAt.IsZero() || !original.MergedAt.Before(revert.MergedAt) ||
+		(original.Number != 0 && original.Number != reverted) || !strings.HasPrefix(original.Head, runner.BranchPrefix) {
+		// A revert of a PR that never merged, merged later, is not the one named or
+		// is not a run's takes back nothing this product did.
 		return nil
 	}
 	row, ok, err := d.Rewrites.RunByBranch(ctx, original.Head)

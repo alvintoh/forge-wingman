@@ -3,6 +3,8 @@ package dispatcher
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -334,13 +336,16 @@ func TestGitHubMeasuresARunsLinesFromTheFixtureCommits(t *testing.T) {
 		switch r.URL.Path {
 		case "/repos/octo/scratch/pulls/7/commits":
 			_, _ = io.WriteString(w, `[
-				{"sha":"aaaa","commit":{"author":{"name":"github-actions[bot]","email":"41898282+github-actions[bot]@users.noreply.github.com"}}},
-				{"sha":"bbbb","commit":{"author":{"name":"Alvin Toh","email":"alvin4292@gmail.com"}}}
+				{"sha":"aaaa","author":{"login":"github-actions[bot]"},"commit":{"author":{"name":"github-actions[bot]","email":"41898282+github-actions[bot]@users.noreply.github.com"}}},
+				{"sha":"bbbb","author":{"login":"alvintoh"},"commit":{"author":{"name":"github-actions[bot]","email":"41898282+github-actions[bot]@users.noreply.github.com"}}},
+				{"sha":"cccc","author":null,"commit":{"author":{"name":"github-actions[bot]","email":"41898282+github-actions[bot]@users.noreply.github.com"}}}
 			]`)
 		case "/repos/octo/scratch/commits/aaaa":
 			_, _ = io.WriteString(w, `{"stats":{"additions":120,"deletions":8,"total":128}}`)
 		case "/repos/octo/scratch/commits/bbbb":
 			_, _ = io.WriteString(w, `{"stats":{"additions":3,"deletions":1,"total":4}}`)
+		case "/repos/octo/scratch/commits/cccc":
+			_, _ = io.WriteString(w, `{"stats":{"additions":2,"deletions":0,"total":2}}`)
 		default:
 			t.Errorf("unexpected path %q", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -353,7 +358,7 @@ func TestGitHubMeasuresARunsLinesFromTheFixtureCommits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := RewriteOf(commits), (Rewrite{AgentLines: 128, OwnerLines: 4, UnlabelledLines: 4}); got != want {
+	if got, want := RewriteOf(commits), (Rewrite{AgentLines: 128, OwnerLines: 6, UnlabelledLines: 6}); got != want {
 		t.Fatalf("RewriteOf = %+v over %+v, want %+v", got, commits, want)
 	}
 }
@@ -434,5 +439,93 @@ func TestGitHubReadsOnePullRequestFromItsOwnReply(t *testing.T) {
 	}
 	if pr.Number != 7 || pr.Head != "wingman/FRG-1-9-1" || pr.MergedAt.IsZero() {
 		t.Fatalf("Pull = %+v, want the run's PR and its merge time", pr)
+	}
+}
+
+func TestGitHubFollowsTheCommitPagesAndFailsClosedAtTheCap(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/repos/octo/scratch/commits/") {
+			_, _ = io.WriteString(w, `{"stats":{"additions":1,"deletions":0}}`)
+			return
+		}
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		if page < 1 {
+			page = 1
+		}
+		w.Header().Set("Link", fmt.Sprintf(`<%s/repos/octo/scratch/pulls/7/commits?per_page=100&page=%d>; rel="next"`, srv.URL, page+1))
+		_, _ = fmt.Fprintf(w, `[{"sha":"s%d","author":{"login":"alvintoh"},"commit":{"author":{}}}]`, page)
+	}))
+	defer srv.Close()
+	commits, err := (GitHub{Endpoint: srv.URL, Token: "t", Client: srv.Client()}).Commits(context.Background(), "octo/scratch", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(commits) != maxListPages+1 || !commits[len(commits)-1].Unmeasured {
+		t.Fatalf("got %d commits, want %d pages read and an unmeasured commit marking the cut", len(commits), maxListPages)
+	}
+	if RewriteOf(commits).UnmeasuredCommits != 1 {
+		t.Fatal("want the cut to leave the PR unmeasured")
+	}
+}
+
+func TestGitHubReadsEveryClosedPageAndFlagsATruncatedListing(t *testing.T) {
+	var srv *httptest.Server
+	pages := 2
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		if page < 1 {
+			page = 1
+		}
+		if page < pages {
+			w.Header().Set("Link", fmt.Sprintf(`<%s/repos/octo/scratch/pulls?state=closed&page=%d>; rel="next", <%s/x>; rel="last"`, srv.URL, page+1, srv.URL))
+		}
+		_, _ = fmt.Fprintf(w, `[{"number":%d,"title":"t","body":"","merged_at":null,"head":{"ref":"b"}}]`, page)
+	}))
+	defer srv.Close()
+	g := GitHub{Endpoint: srv.URL, Token: "t", Client: srv.Client()}
+	prs, err := g.Closed(context.Background(), "octo/scratch")
+	if err != nil || len(prs) != 2 || prs[1].Number != 2 {
+		t.Fatalf("Closed = %+v, %v, want both pages read", prs, err)
+	}
+	pages = 1000
+	prs, err = g.Closed(context.Background(), "octo/scratch")
+	if !errors.Is(err, ErrClosedTruncated) || len(prs) != maxListPages {
+		t.Fatalf("Closed = %d PRs, %v, want the cap reported with the PRs read", len(prs), err)
+	}
+}
+
+func TestGitHubDoesNotFollowANextLinkToAnotherHost(t *testing.T) {
+	other := 0
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		other++
+	}))
+	defer elsewhere.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Link", "<"+elsewhere.URL+"/pulls?page=2>; rel=\"next\"")
+		_, _ = io.WriteString(w, `[]`)
+	}))
+	defer srv.Close()
+	if _, err := (GitHub{Endpoint: srv.URL, Token: "t", Client: srv.Client()}).Closed(context.Background(), "octo/scratch"); err == nil {
+		t.Fatal("want a next link off the API host refused")
+	}
+	if other != 0 {
+		t.Fatalf("the other host was asked %d times, want the token kept from it", other)
+	}
+}
+
+func TestGitHubFailsWhenALaterPageCannotBeRead(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") == "2" {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Link", fmt.Sprintf(`<%s/repos/octo/scratch/pulls?page=2>; rel="next"`, srv.URL))
+		_, _ = io.WriteString(w, `[]`)
+	}))
+	defer srv.Close()
+	if _, err := (GitHub{Endpoint: srv.URL, Token: "t", Client: srv.Client()}).Closed(context.Background(), "octo/scratch"); err == nil {
+		t.Fatal("want a page that cannot be read to fail the listing, not undercount it")
 	}
 }

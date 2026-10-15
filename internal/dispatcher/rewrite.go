@@ -84,8 +84,12 @@ func (r Rewrite) Rate() float64 {
 // Commit is one commit of a merged PR: who authored it, and how many lines it
 // changed.
 type Commit struct {
+	// Name and Email are the free text git recorded, which anyone can set.
 	Name  string
 	Email string
+	// Login is the account GitHub resolved the author to, empty when it resolved
+	// none; it is the only identity a commit is attributed by.
+	Login string
 	// Message is the full commit message, whose trailers mark what a rewrite is.
 	Message string
 	// Unmeasured is set when GitHub gave no line counts for the commit.
@@ -98,16 +102,15 @@ type Commit struct {
 func (c Commit) Lines() int64 { return c.Additions + c.Deletions }
 
 // RewriteOf sums commits into the lines the agent wrote and the lines the owner
-// changed: a commit is the agent's only when both halves of the runner's own
-// identity match it, since a name or an email alone is anyone's to set.
+// changed: a commit is the agent's only when GitHub resolved its author to the
+// runner's own login, since a name and an email are free text anyone can set.
 func RewriteOf(commits []Commit) Rewrite {
 	var r Rewrite
 	for _, c := range commits {
 		if c.Unmeasured {
 			r.UnmeasuredCommits++
 		}
-		if strings.EqualFold(c.Email, runner.CommitAuthorEmail) &&
-			strings.EqualFold(c.Name, runner.CommitAuthorName) {
+		if c.Login != "" && strings.EqualFold(c.Login, runner.CommitAuthorLogin) {
 			r.AgentLines += c.Lines()
 			continue
 		}

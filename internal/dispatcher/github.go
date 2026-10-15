@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -39,6 +40,9 @@ const (
 	// closedPRsPerPage is how many closed pull requests one rewrite-rate read
 	// lists, and how many commits of one pull request it reads.
 	closedPRsPerPage = 100
+	// maxListPages bounds how many pages a closed-PR or commit listing is
+	// followed for; a listing cut there is reported rather than undercounted.
+	maxListPages = 10
 )
 
 // GitHub starts the run workflow in one repository.
@@ -156,18 +160,69 @@ func (g GitHub) openPullHeads(ctx context.Context, endpoint, repo string) ([]str
 	return heads, nil
 }
 
-// Closed returns repo's closed pull requests, most recently updated first: the
-// window a merged PR is first measured in and a revert is seen in, both read
-// from the one listing.
+// ErrClosedTruncated is returned with the PRs read when the closed listing runs
+// past the page cap, so the caller can tell a window that may hide merges.
+var ErrClosedTruncated = errors.New("the closed pull request listing was cut at the page cap")
+
+// Closed returns repo's closed pull requests, most recently updated first, up to
+// maxListPages pages: the window a merged PR is first measured in and a revert is
+// seen in, both read from the one listing. A listing cut at the cap returns the
+// PRs read with ErrClosedTruncated.
 func (g GitHub) Closed(ctx context.Context, repo string) ([]ClosedPR, error) {
 	endpoint := fmt.Sprintf("%s/repos/%s/pulls?state=closed&sort=updated&direction=desc&per_page=%d",
 		g.endpoint(), repo, closedPRsPerPage)
-	res, err := g.do(ctx, http.MethodGet, endpoint, nil, fmt.Sprintf("list closed pull requests in %s", repo))
+	var out []ClosedPR
+	capped, err := g.paged(ctx, endpoint, fmt.Sprintf("list closed pull requests in %s", repo), func(body io.Reader) error {
+		page, err := decodeClosedPRs(body, repo)
+		out = append(out, page...)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = res.Body.Close() }()
-	return decodeClosedPRs(res.Body, repo)
+	if capped {
+		return out, ErrClosedTruncated
+	}
+	return out, nil
+}
+
+// paged reads endpoint and every page its Link header names next, up to
+// maxListPages, handing each body to each. It reports whether the cap cut the
+// listing off. A next link to another host is not followed, so the token goes
+// only where it was meant to.
+func (g GitHub) paged(ctx context.Context, endpoint, action string, each func(io.Reader) error) (capped bool, err error) {
+	for page := 1; endpoint != ""; page++ {
+		if page > maxListPages {
+			return true, nil
+		}
+		res, err := g.do(ctx, http.MethodGet, endpoint, nil, action)
+		if err != nil {
+			return false, err
+		}
+		next := nextLink(res.Header.Get("Link"))
+		err = each(res.Body)
+		_ = res.Body.Close()
+		if err != nil {
+			return false, err
+		}
+		if next != "" && !strings.HasPrefix(next, g.endpoint()+"/") {
+			return false, fmt.Errorf("%s: the next page is on another host", action)
+		}
+		endpoint = next
+	}
+	return false, nil
+}
+
+// nextLink is the rel="next" target of a Link header, or "".
+func nextLink(header string) string {
+	for _, part := range strings.Split(header, ",") {
+		target, rel, ok := strings.Cut(part, ";")
+		if !ok || !strings.Contains(rel, `rel="next"`) {
+			continue
+		}
+		return strings.Trim(strings.TrimSpace(target), "<>")
+	}
+	return ""
 }
 
 // Pull returns one pull request of repo, whatever its state.
@@ -239,45 +294,56 @@ func decodeClosedPRs(body io.Reader, repo string) ([]ClosedPR, error) {
 	return out, nil
 }
 
-// Commits returns the commits of pull request number, each with who authored it
-// and how many lines it changed. The listing carries no line counts, so each
-// commit is read once; a run's PR holds one or two.
+// Commits returns the commits of pull request number, each with who GitHub
+// resolves its author to and how many lines it changed. The listing carries no
+// line counts, so each commit is read once. A listing cut at the page cap ends in
+// an unmeasured commit, so the PR cannot earn a level on lines it did not see.
 func (g GitHub) Commits(ctx context.Context, repo string, number int) ([]Commit, error) {
 	endpoint := fmt.Sprintf("%s/repos/%s/pulls/%d/commits?per_page=%d",
 		g.endpoint(), repo, number, closedPRsPerPage)
-	res, err := g.do(ctx, http.MethodGet, endpoint, nil,
-		fmt.Sprintf("list the commits of %s#%d", repo, number))
+	var out []Commit
+	capped, err := g.paged(ctx, endpoint, fmt.Sprintf("list the commits of %s#%d", repo, number), func(body io.Reader) error {
+		var commits []struct {
+			SHA    string `json:"sha"`
+			Author *struct {
+				Login string `json:"login"`
+			} `json:"author"`
+			Commit struct {
+				Message string `json:"message"`
+				Author  struct {
+					Name  string `json:"name"`
+					Email string `json:"email"`
+				} `json:"author"`
+			} `json:"commit"`
+		}
+		if err := json.NewDecoder(io.LimitReader(body, maxPullsResponseBytes)).Decode(&commits); err != nil {
+			return fmt.Errorf("decoding the commits of %s#%d: %w", repo, number, err)
+		}
+		for _, c := range commits {
+			added, removed, measured, err := g.commitLines(ctx, repo, c.SHA)
+			if err != nil {
+				return err
+			}
+			commit := Commit{
+				Name:       c.Commit.Author.Name,
+				Email:      c.Commit.Author.Email,
+				Message:    c.Commit.Message,
+				Unmeasured: !measured,
+				Additions:  added,
+				Deletions:  removed,
+			}
+			if c.Author != nil {
+				commit.Login = c.Author.Login
+			}
+			out = append(out, commit)
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = res.Body.Close() }()
-	var commits []struct {
-		SHA    string `json:"sha"`
-		Commit struct {
-			Message string `json:"message"`
-			Author  struct {
-				Name  string `json:"name"`
-				Email string `json:"email"`
-			} `json:"author"`
-		} `json:"commit"`
-	}
-	if err := json.NewDecoder(io.LimitReader(res.Body, maxPullsResponseBytes)).Decode(&commits); err != nil {
-		return nil, fmt.Errorf("decoding the commits of %s#%d: %w", repo, number, err)
-	}
-	out := make([]Commit, 0, len(commits))
-	for _, c := range commits {
-		added, removed, measured, err := g.commitLines(ctx, repo, c.SHA)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, Commit{
-			Name:       c.Commit.Author.Name,
-			Email:      c.Commit.Author.Email,
-			Message:    c.Commit.Message,
-			Unmeasured: !measured,
-			Additions:  added,
-			Deletions:  removed,
-		})
+	if capped {
+		out = append(out, Commit{Unmeasured: true})
 	}
 	return out, nil
 }

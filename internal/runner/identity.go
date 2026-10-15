@@ -12,6 +12,9 @@ import (
 const (
 	CommitAuthorName  = "github-actions[bot]"
 	CommitAuthorEmail = "41898282+github-actions[bot]@users.noreply.github.com"
+	// CommitAuthorLogin is the account GitHub resolves that email to, the only
+	// identity the dispatcher attributes a commit's lines by.
+	CommitAuthorLogin = "github-actions[bot]"
 )
 
 // ErrIdentityMismatch reports a run acting for an account other than the configured one.

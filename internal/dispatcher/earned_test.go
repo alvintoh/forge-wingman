@@ -242,7 +242,7 @@ func TestAdvanceIgnoresAMergeThatCountsTowardNothing(t *testing.T) {
 func shadowMergeDeps(shadow *fakeShadow) (Deps, *fakeAutonomies) {
 	prs := &fakePullRequests{
 		closed:  map[string][]ClosedPR{scratch: {{Number: 7, Head: runBranch, MergedAt: mergedAt}}},
-		commits: map[int][]Commit{7: {{Name: runner.CommitAuthorName, Email: runner.CommitAuthorEmail, Additions: 100}}},
+		commits: map[int][]Commit{7: {{Login: runner.CommitAuthorLogin, Additions: 100}}},
 	}
 	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch}}, recent: samples(scratch, 10, 100, 2)}
 	deps, _ := rewriteDeps(prs, rows)
@@ -274,7 +274,7 @@ func TestShadowFailsClosedWhenItsStartIsUnknown(t *testing.T) {
 
 func TestUnmeasuredCommitWithholdsTheAdvanceButNotTheRate(t *testing.T) {
 	commits := []Commit{
-		{Name: runner.CommitAuthorName, Email: runner.CommitAuthorEmail, Additions: 100},
+		{Login: runner.CommitAuthorLogin, Additions: 100},
 		{Name: "the owner", Email: "owner@example.com", Unmeasured: true},
 	}
 	got := RewriteOf(commits)

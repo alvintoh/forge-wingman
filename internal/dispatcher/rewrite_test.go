@@ -14,21 +14,21 @@ func TestRewriteOfCountsTheRunnersCommitsForTheAgent(t *testing.T) {
 	}{
 		"the runner's pair": {
 			[]Commit{
-				{Name: runner.CommitAuthorName, Email: runner.CommitAuthorEmail, Additions: 10, Deletions: 2},
+				{Login: runner.CommitAuthorLogin, Additions: 10, Deletions: 2},
 				{Name: "the owner", Email: "owner@example.com", Additions: 3, Deletions: 1},
 			},
 			Rewrite{AgentLines: 12, OwnerLines: 4, UnlabelledLines: 4},
 		},
-		"the runner's email under another name": {
-			[]Commit{{Name: "some other name", Email: runner.CommitAuthorEmail, Additions: 10}},
+		"the bot's name and email on an owner's login": {
+			[]Commit{{Name: runner.CommitAuthorName, Email: runner.CommitAuthorEmail, Login: "the-owner", Additions: 10}},
 			Rewrite{OwnerLines: 10, UnlabelledLines: 10},
 		},
-		"the runner's name under another email": {
-			[]Commit{{Name: runner.CommitAuthorName, Email: "owner@example.com", Additions: 7}},
+		"the bot's name and email with no login": {
+			[]Commit{{Name: runner.CommitAuthorName, Email: runner.CommitAuthorEmail, Additions: 7}},
 			Rewrite{OwnerLines: 7, UnlabelledLines: 7},
 		},
-		"a pair differing only in case": {
-			[]Commit{{Name: "GitHub-Actions[bot]", Email: "41898282+GitHub-Actions[bot]@users.noreply.github.com", Additions: 5}},
+		"a login differing only in case": {
+			[]Commit{{Login: "GitHub-Actions[bot]", Additions: 5}},
 			Rewrite{AgentLines: 5},
 		},
 		"the owner alone": {
