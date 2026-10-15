@@ -528,6 +528,9 @@ type peakModel struct {
 	// Peak is the window the model's rate prices peak hours in, null for a model
 	// priced the same at every hour and for one the plan does not price.
 	Peak *peakWindow `json:"peak"`
+	// Priced is whether the plan has a rate card for the model at all, so the
+	// view tells a model priced the same at every hour from one it never prices.
+	Priced bool `json:"priced"`
 }
 
 type peakWindow struct {
@@ -553,8 +556,9 @@ func renderPeak(mode dispatcher.PeakMode, now time.Time) peakResponse {
 		Models: make([]peakModel, 0, len(models)),
 	}
 	for _, model := range models {
-		entry := peakModel{Model: model}
-		if rates, ok := providers.RatesFor(model); ok && rates.Peak != nil {
+		rates, priced := providers.RatesFor(model)
+		entry := peakModel{Model: model, Priced: priced}
+		if priced && rates.Peak != nil {
 			window := peakWindow{Multiplier: rates.Peak.Multiplier, Hours: make([]peakHour, 0, len(rates.Peak.Hours))}
 			for _, span := range rates.Peak.Hours {
 				window.Hours = append(window.Hours, peakHour{From: span.From, To: span.To})
@@ -567,10 +571,10 @@ func renderPeak(mode dispatcher.PeakMode, now time.Time) peakResponse {
 	return out
 }
 
-// holdingNow reports whether the mode is holding a run out of its peak window
-// right now: some model a run may use is inside its own window. It asks as a run
-// of no estimated minutes does, so it reports a window being open rather than a
-// run whose estimate would reach the next one, which no run here has.
+// holdingNow reports whether some model a run may use is inside its own peak
+// window right now. It asks as a run of no estimated minutes does, so it answers
+// the narrower window-open question: admission also holds a run whose estimate
+// reaches the next window, which this view does not read.
 func holdingNow(mode dispatcher.PeakMode, models []peakModel, now time.Time) bool {
 	for _, model := range models {
 		if dispatcher.PeakHeld(mode, model.Model, now, 0) {

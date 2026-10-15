@@ -325,9 +325,12 @@ type PeakModel = {
   // Null for a model priced the same at every hour, and for one its plan does
   // not price at all.
   peak: PeakWindow | null;
+  // Whether the plan prices the model at all, so the view tells a model priced
+  // the same at every hour from one it never prices.
+  priced: boolean;
 };
 
-// The peak endpoint's own shape; holding is whether a run is held right now.
+// The peak endpoint's own shape; holding is whether a peak window is open now.
 type PeakView = {
   mode: string;
   holding: boolean;
@@ -340,18 +343,21 @@ type PeakState = {
 };
 
 // The two modes a run waits out its model's peak-price hours under, as the
-// endpoint names them, and what each means for a run.
+// endpoint names them (internal/dispatcher/peak.go), so a rename there is a
+// compile error here rather than a control that silently posts neither.
+const PEAK_MODE = { offPeakOnly: "off-peak-only", always: "always" } as const;
+
 const modeOptions = [
-  { value: "off-peak-only", label: "Off-peak only", note: "a run waits out the window" },
-  { value: "always", label: "Always", note: "a run starts at any hour" },
+  { value: PEAK_MODE.offPeakOnly, label: "Off-peak only", note: "a run waits out the window" },
+  { value: PEAK_MODE.always, label: "Always", note: "a run starts at any hour" },
 ];
 
 // noPeakView is what the section holds before the view is read and after a read
 // that failed; it renders in neither state.
-const noPeakView: PeakView = { mode: "off-peak-only", holding: false, models: [] };
+const noPeakView: PeakView = { mode: PEAK_MODE.offPeakOnly, holding: false, models: [] };
 
-// Peak shows which models price peak hours and when, whether runs are being held
-// now, and the mode that decides it. The control is offered only where a
+// Peak shows which models price peak hours and when, whether a peak window is
+// open now, and the mode that decides it. The control is offered only where a
 // configured model prices peak hours: with none there is nothing to hold.
 export function Peak() {
   const [state, setState] = useState<PeakState>({ status: "loading", view: noPeakView });
@@ -463,8 +469,8 @@ export function Peak() {
               </fieldset>
               <p role="status" className="mt-2 text-body text-ink2">
                 {view.holding
-                  ? "A run is being held right now."
-                  : "No run is being held right now."}
+                  ? "A peak window is open right now."
+                  : "No peak window is open right now."}
               </p>
               {saveError && (
                 <p role="alert" className="mt-2 text-body text-stop">
@@ -506,7 +512,7 @@ export function Peak() {
                         {model.model}
                       </th>
                       <td className={cell} data-label="Peak pricing">
-                        {peakText(model.peak)}
+                        {peakText(model)}
                       </td>
                     </tr>
                   ))}
@@ -534,16 +540,17 @@ function isPeak(body: unknown): body is PeakView {
 }
 
 // peakText is a model's peak pricing as the view words it: the hours it covers
-// on weekdays (UTC) and what they cost, or the words for a model priced the same
-// at every hour. Hours are whole hours, printed as a clock reads them.
-function peakText(peak: PeakWindow | null): string {
-  if (peak === null) {
-    return "Flat: the same price at every hour";
+// on weekdays (UTC) and what they cost, the words for a model priced the same at
+// every hour, or the words for one the plan prices nowhere. Hours are whole
+// hours, printed as a clock reads them.
+function peakText(model: PeakModel): string {
+  if (model.peak === null) {
+    return model.priced ? "Flat: the same price at every hour" : "Not priced by the plan";
   }
-  const hours = peak.hours
+  const hours = model.peak.hours
     .map(({ from, to }) => [from, to].map((hour) => `${hour}:00`.padStart(5, "0")).join("–"))
     .join(", ");
-  return `${hours} UTC on weekdays, ×${peak.multiplier} the price`;
+  return `${hours} UTC on weekdays, ×${model.peak.multiplier} the price`;
 }
 
 type Evidence = {

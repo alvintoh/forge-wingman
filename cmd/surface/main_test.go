@@ -755,6 +755,10 @@ func TestAutonomyMarksEvidenceTheStoreHeldNoneOfAsNotRecorded(t *testing.T) {
 // peakModelID is the configured model whose rate card prices peak hours.
 const peakModelID = "command-code/deepseek/deepseek-v4.1-flash"
 
+// unpricedModelID is the configured model its plan holds no rate card for, so a
+// view tells it from a model priced the same at every hour.
+const unpricedModelID = "command-code/meta/muse-spark-1.3-contributor"
+
 // peakAt is a Monday inside that model's first window, 01:00-04:00 UTC on
 // weekdays, so a run admitted then waits under off-peak-only.
 func peakAt() time.Time { return time.Date(2026, 10, 12, 2, 0, 0, 0, time.UTC) }
@@ -808,11 +812,12 @@ func postPeak(t *testing.T, mux *http.ServeMux, contentType, body string) *httpt
 	return rec
 }
 
-// TestPeakShowsEveryModelsWindowAndWhetherRunsAreHeldNow asserts the view lists
-// every model a run may use with the window its rate prices peak hours in — the
-// peak-priced model's own window, and none for a flat-priced model — and reports
-// the mode holding a run at a moment inside that window (AC1, AC2).
-func TestPeakShowsEveryModelsWindowAndWhetherRunsAreHeldNow(t *testing.T) {
+// TestPeakShowsEveryModelsPricingAndWhetherAWindowIsOpen asserts the view lists
+// every model a run may use with the window its rate prices peak hours in and
+// whether the plan prices it at all — the peak-priced model's own window, and
+// none for a model priced flat or not at all, which differ — and reports a
+// window open at a moment inside it (AC1, AC2).
+func TestPeakShowsEveryModelsPricingAndWhetherAWindowIsOpen(t *testing.T) {
 	out := renderPeak(dispatcher.PeakOffPeakOnly, peakAt())
 	if out.Mode != string(dispatcher.PeakOffPeakOnly) || !out.Holding {
 		t.Fatalf("mode = %q, holding = %v, want off-peak-only and holding", out.Mode, out.Holding)
@@ -820,17 +825,29 @@ func TestPeakShowsEveryModelsWindowAndWhetherRunsAreHeldNow(t *testing.T) {
 	if want := providers.RunModels(); len(out.Models) != len(want) {
 		t.Fatalf("models = %+v, want the %d a run may use", out.Models, len(want))
 	}
-	modelled := make(map[string]*peakWindow, len(out.Models))
+	modelled := make(map[string]peakModel, len(out.Models))
 	for _, model := range out.Models {
-		modelled[model.Model] = model.Peak
+		modelled[model.Model] = model
 	}
 	want := []peakHour{{From: 1, To: 4}, {From: 6, To: 10}}
-	if window := modelled[peakModelID]; window == nil || window.Multiplier != 2 || !slices.Equal(window.Hours, want) {
+	if window := modelled[peakModelID].Peak; window == nil || window.Multiplier != 2 || !slices.Equal(window.Hours, want) {
 		t.Errorf("window of %s = %+v, want x2 in %v", peakModelID, window, want)
 	}
-	for model, window := range modelled {
-		if model != peakModelID && window != nil {
-			t.Errorf("%s carries a window, want a flat-priced model to carry none", model)
+	for name, model := range modelled {
+		if name == peakModelID {
+			if !model.Priced {
+				t.Errorf("%s is not priced, want the plan's rate card to price it", name)
+			}
+			continue
+		}
+		if model.Peak != nil {
+			t.Errorf("%s carries a window, want none for a model priced flat or not at all", name)
+		}
+		if name == unpricedModelID && model.Priced {
+			t.Errorf("%s is priced, want the plan to price it nowhere", name)
+		}
+		if name != unpricedModelID && !model.Priced {
+			t.Errorf("%s is not priced, want the plan to price it the same at every hour", name)
 		}
 	}
 }
@@ -843,10 +860,11 @@ func TestPeakReportsNoHoldWhileTheModeStartsRunsAtAnyHour(t *testing.T) {
 	}
 }
 
-// TestPeakServesTheStoredModeAndEveryModelsWindow asserts the endpoint serves
-// the stored mode, whether a run is held, and a window of its own keys per model
-// — the peak-priced one's, and null for the rest (AC1, AC2).
-func TestPeakServesTheStoredModeAndEveryModelsWindow(t *testing.T) {
+// TestPeakServesTheStoredModeAndEveryModelsPricing asserts the endpoint serves
+// the stored mode, whether a window is open, and its own keys per model — the
+// window the peak-priced one's rate states, null for the rest, and whether the
+// plan prices the model at all (AC1, AC2).
+func TestPeakServesTheStoredModeAndEveryModelsPricing(t *testing.T) {
 	rec := getPeak(t, &stubPeak{mode: dispatcher.PeakOffPeakOnly})
 	var body map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -868,7 +886,7 @@ func TestPeakServesTheStoredModeAndEveryModelsWindow(t *testing.T) {
 		if !ok {
 			t.Fatalf("model = %v, want an object", entry)
 		}
-		if got, want := slices.Sorted(maps.Keys(model)), []string{"model", "peak"}; !slices.Equal(got, want) {
+		if got, want := slices.Sorted(maps.Keys(model)), []string{"model", "peak", "priced"}; !slices.Equal(got, want) {
 			t.Errorf("model keys = %v, want %v", got, want)
 		}
 		switch model["model"] {
@@ -877,9 +895,22 @@ func TestPeakServesTheStoredModeAndEveryModelsWindow(t *testing.T) {
 			if !ok {
 				t.Fatalf("the peak-priced model's window = %v, want an object", model["peak"])
 			}
+			if got := model["priced"]; got != true {
+				t.Errorf("priced of %s = %v, want true", peakModelID, got)
+			}
+		case unpricedModelID:
+			if model["peak"] != nil {
+				t.Errorf("%v carries a window, want null for a model the plan prices nowhere", model["model"])
+			}
+			if got := model["priced"]; got != false {
+				t.Errorf("priced of %s = %v, want false", unpricedModelID, got)
+			}
 		default:
 			if model["peak"] != nil {
-				t.Errorf("%v carries a window, want null for a flat-priced model", model["model"])
+				t.Errorf("%v carries a window, want null for a model priced flat", model["model"])
+			}
+			if got := model["priced"]; got != true {
+				t.Errorf("priced of %v = %v, want true for a model priced flat", model["model"], got)
 			}
 		}
 	}
