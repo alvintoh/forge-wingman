@@ -51,6 +51,8 @@ type event struct {
 		// Tools are the calls this step's request made, each with the path it
 		// touched, so a step's record names what the agent did in it.
 		Tools []ToolUse `json:"tools,omitempty"`
+		// ContextTokens is what the step's request read: its input plus its cache reads.
+		ContextTokens int64 `json:"context_tokens,omitempty"`
 	} `json:"part"`
 }
 

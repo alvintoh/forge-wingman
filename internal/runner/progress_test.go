@@ -174,6 +174,18 @@ func TestProgressTapFailsOpenOnAnUnreadableStream(t *testing.T) {
 	}
 }
 
+// TestReadProgressRecordsTheStepsPeakContext asserts the round's peak lands on its step and the summary's peak is the largest step's.
+func TestReadProgressRecordsTheStepsPeakContext(t *testing.T) {
+	sum := Summary{PeakContextTokens: 5, Steps: []Step{{PeakContextTokens: 900}, {}}}
+	readProgress(strings.NewReader(`{"type":"step_finish","part":{"context_tokens":300,"tokens":{"input":1}}}`+"\n"), &sum)
+	if sum.Steps[1].PeakContextTokens != 300 || sum.Steps[0].PeakContextTokens != 900 {
+		t.Fatalf("step peaks = %d, %d, want 900 and 300", sum.Steps[0].PeakContextTokens, sum.Steps[1].PeakContextTokens)
+	}
+	if sum.PeakContextTokens != 900 {
+		t.Fatalf("summary peak = %d, want the largest step's", sum.PeakContextTokens)
+	}
+}
+
 // TestObserveKeepsDistinctReadsUpToTheCap asserts reads dedupe on append and stop at the cap.
 func TestObserveKeepsDistinctReadsUpToTheCap(t *testing.T) {
 	var p agentProgress

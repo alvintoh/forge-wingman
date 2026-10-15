@@ -355,5 +355,6 @@ func ompStep(m ompMessage) *event {
 	e.Part.Tokens.Cache.Write = m.Usage.CacheWrite
 	e.Part.Cost = m.Usage.Cost.Total
 	e.Part.Time = m.Timestamp
+	e.Part.ContextTokens = m.Usage.Input + m.Usage.CacheRead
 	return &e
 }

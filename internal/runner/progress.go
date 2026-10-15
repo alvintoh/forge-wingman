@@ -38,6 +38,12 @@ func readProgress(out io.ReadSeeker, sum *Summary) agentProgress {
 	}
 	sum.ReadFiles = mergePaths(sum.ReadFiles, p.reads)
 	sum.PeakContextTokens = max(sum.PeakContextTokens, p.peakContext)
+	if n := len(sum.Steps); n > 0 {
+		sum.Steps[n-1].PeakContextTokens = p.peakContext
+	}
+	for _, st := range sum.Steps {
+		sum.PeakContextTokens = max(sum.PeakContextTokens, st.PeakContextTokens)
+	}
 	return p
 }
 
@@ -147,7 +153,10 @@ func (p agentProgress) stalledDetail() string {
 	return fmt.Sprintf("no file change in %d steps (peak context %d tokens)", p.noProgress, p.peakContext)
 }
 
-// contextTokens is a request's fresh input plus its cache reads.
+// contextTokens is a request's context: the translated field, else its fresh input plus its cache reads.
 func contextTokens(e event) int64 {
+	if e.Part.ContextTokens != 0 {
+		return e.Part.ContextTokens
+	}
 	return e.Part.Tokens.Input + e.Part.Tokens.Cache.Read
 }

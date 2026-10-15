@@ -2911,6 +2911,36 @@ func TestEndedByOurStop(t *testing.T) {
 	}
 }
 
+// TestBuildCountsNoProgressPerRound pins that the count is per invocation by construction: two rounds each one step under the limit pass, a fix round at the limit stops.
+func TestBuildCountsNoProgressPerRound(t *testing.T) {
+	underLimit := readsOnlyEvents(DEFAULT_NO_PROGRESS_STEPS - 1)
+	run := func(t *testing.T, secondRound string) (*fakeAgent, BuildResult) {
+		agent := &fakeAgent{edit: edit("version.go", "package x\n"), eventsFn: func(call int) string {
+			if call == 1 {
+				return underLimit
+			}
+			return secondRound
+		}}
+		deps, _, _ := testDeps(validObjects(), agent)
+		deps.ReviewAgent = &fakeAgent{events: reviewEvent("the ticket also asks for a second file")}
+		res, err := Build(context.Background(), deps, testConfig(t, initRepo(t)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return agent, res
+	}
+
+	agent, res := run(t, underLimit)
+	if len(agent.prompts) != 2 || strings.Contains(res.LoopDetail, "no file change") {
+		t.Fatalf("rounds = %d, loop detail = %q, want both rounds to pass the guard", len(agent.prompts), res.LoopDetail)
+	}
+	// A fix round's stop surfaces as the review failure the run opens as a draft with.
+	_, res = run(t, readsOnlyEvents(DEFAULT_NO_PROGRESS_STEPS))
+	if !strings.Contains(res.LoopDetail, "no file change in") {
+		t.Fatalf("loop detail = %q, want the fix round stopped for no progress", res.LoopDetail)
+	}
+}
+
 // TestBuildDoesNotGuardThePlanPhase covers the plan pass: it never edits, so a
 // plan that reads its way through the repository is doing its job.
 func TestBuildDoesNotGuardThePlanPhase(t *testing.T) {

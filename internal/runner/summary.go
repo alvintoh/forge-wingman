@@ -80,6 +80,8 @@ type Step struct {
 	Tokens            Usage  `firestore:"tokens" json:"tokens"`
 	DurationMS        int64  `firestore:"duration_ms" json:"duration_ms"`
 	CompletionsObject string `firestore:"completions_object" json:"completions_object"`
+	// PeakContextTokens is the largest context one of this step's requests read.
+	PeakContextTokens int64 `firestore:"peak_context_tokens" json:"peak_context_tokens,omitempty"`
 	// At is when the step started. The step is priced per event time by
 	// Rates.At, but nothing of that time survives the events themselves, so
 	// the record job reads this back to tag the run's own time of use.
@@ -409,6 +411,9 @@ func (st Step) validate(attemptID string) error {
 	}
 	if err := st.Tokens.validate(); err != nil {
 		return err
+	}
+	if st.PeakContextTokens < 0 || st.PeakContextTokens > maxCount {
+		return fmt.Errorf("step peak context tokens %d is out of range", st.PeakContextTokens)
 	}
 	if st.CompletionsObject != completionsObject(attemptID, st.Phase, st.Round) {
 		return errors.New("completions object is not this run's")

@@ -100,6 +100,8 @@ func TestParseSummaryRejects(t *testing.T) {
 		{"an absolute read file", func(s *Summary) { s.ReadFiles = []string{"/etc/passwd"} }},
 		{"a read file through a parent segment", func(s *Summary) { s.ReadFiles = []string{"a/../b"} }},
 		{"a negative peak context", func(s *Summary) { s.PeakContextTokens = -1 }},
+		{"a negative step peak context", func(s *Summary) { s.Steps[0].PeakContextTokens = -1 }},
+		{"a step peak context over the ceiling", func(s *Summary) { s.Steps[0].PeakContextTokens = maxCount + 1 }},
 		{"a peak context over the ceiling", func(s *Summary) { s.PeakContextTokens = maxCount + 1 }},
 		{"a start time over a week old", func(s *Summary) { s.StartedAt = finalizeNow.Add(-8 * 24 * time.Hour) }},
 		{"another run's completions", func(s *Summary) { s.Steps[0].CompletionsObject = "completions/1-2-build-1.jsonl" }},

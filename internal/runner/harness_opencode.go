@@ -423,6 +423,7 @@ func translateOpencodeEvents(r io.Reader, dir string, stdout, stderr io.Writer) 
 			e.Part.Cost = ev.Part.Cost
 			e.Part.Time = ev.Timestamp
 			e.Part.Tools = tools
+			e.Part.ContextTokens = t.Input + t.Cache.Read
 			tools = nil
 			if err := enc.Encode(e); err != nil {
 				return err

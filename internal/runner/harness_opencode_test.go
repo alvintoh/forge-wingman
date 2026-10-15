@@ -541,6 +541,9 @@ func TestTranslateOpencodeEvents(t *testing.T) {
 	if len(steps[1].Part.Tools) != 0 {
 		t.Fatalf("second step's calls = %+v, want none", steps[1].Part.Tools)
 	}
+	if steps[0].Part.ContextTokens != 14 || steps[1].Part.ContextTokens != 1 {
+		t.Fatalf("context tokens = %d, %d, want input plus cache read: 14 and 1", steps[0].Part.ContextTokens, steps[1].Part.ContextTokens)
+	}
 	if strings.Contains(out, "tool output") || strings.Contains(out, "hi\\n") {
 		t.Errorf("the tool's own payload was translated:\n%s", out)
 	}
