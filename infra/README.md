@@ -133,11 +133,24 @@ Auto-merge is off until both are set:
 | Repository "Allow auto-merge" (`allow_auto_merge`) | on |
 | Autonomy level (`runner autonomy -level 4`) | 4 or more; a missing or unreadable level counts as 0 |
 
-The level is stored at `dispatch/autonomy`: `runner autonomy` prints it and what it
-allows, and `-level N` sets it for the next claim. Each run records the level it was
-claimed at, so a later change does not alter a run already claimed. Levels 4 and 5 are
-refused until their advance conditions in the PRD are measured, so auto-merge stays off
-for now.
+The level is stored at `dispatch/autonomy`: `runner autonomy` prints it, the trailing
+rewrite rate, and each level's advance condition with the numbers behind it, and
+`-level N` sets it for the next claim. Each run records the level it was claimed at, so
+a later change does not alter a run already claimed.
+
+The rate behind that condition is measured rather than trusted. Each poll reads the run
+PRs whose merges landed since the last one and writes onto each run row the lines the
+agent wrote and the lines the owner changed after it: a commit authored as the runner
+(`github-actions[bot]`) counts as the agent's, every other commit as the owner's. Level 4
+advances on level 3 held, a rate of 5% or less over the trailing 10 PRs, no failed gate
+and a recorded CD flag — `runner cd -repo <owner/name> -deploying`, stored at
+`dispatch/cd` — and level 5 on 20 sampled PRs with no revert. A level whose condition does
+not hold is refused with those numbers, at the CLI and again at the write.
+
+A level that auto-merges is dropped back to 3 by the same poll when any rollback
+condition holds: a reverted auto-merged PR in the sampled 20, a sampled rate over 10%, or
+a trailing-10 rate over the 20% hard ceiling. One Slack notice names the cause, and the
+drop is logged whatever the notice does.
 
 With both set, a run's S or M PR that has a recorded plan, is not in the review sample,
 edits nothing outside that plan, fails no check gate and is not a front-end change

@@ -1,0 +1,540 @@
+package dispatcher
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/alvintoh/forge-wingman/internal/runner"
+)
+
+// fakePullRequests is the pull-request reads the rewrite measurement makes, from
+// the fixtures a test names.
+type fakePullRequests struct {
+	closed      map[string][]ClosedPR
+	pulls       map[int]ClosedPR
+	commits     map[int][]Commit
+	closedErr   error
+	failClosed  string
+	keepOnErr   bool
+	pullErr     error
+	commitErr   error
+	pulled      []int
+	commitCalls []int
+}
+
+func (p *fakePullRequests) Closed(_ context.Context, repo string) ([]ClosedPR, error) {
+	if p.closedErr != nil && (p.failClosed == "" || p.failClosed == repo) {
+		if p.keepOnErr {
+			return p.closed[repo], p.closedErr
+		}
+		return nil, p.closedErr
+	}
+	return p.closed[repo], nil
+}
+
+func (p *fakePullRequests) Pull(_ context.Context, _ string, number int) (ClosedPR, error) {
+	if p.pullErr != nil {
+		return ClosedPR{}, p.pullErr
+	}
+	p.pulled = append(p.pulled, number)
+	return p.pulls[number], nil
+}
+
+func (p *fakePullRequests) Commits(_ context.Context, _ string, number int) ([]Commit, error) {
+	if p.commitErr != nil {
+		return nil, p.commitErr
+	}
+	p.commitCalls = append(p.commitCalls, number)
+	return p.commits[number], nil
+}
+
+// fakeRewrites is the run rows' measurement surface, from the rows a test seeds.
+type fakeRewrites struct {
+	rows        map[string]RunRow
+	recent      []Sample
+	recorded    map[string]Measured
+	reverted    []string
+	rowErr      error
+	recordErr   error
+	revertedErr error
+	recentErr   error
+}
+
+func (r *fakeRewrites) RunByBranch(_ context.Context, branch string) (RunRow, bool, error) {
+	if r.rowErr != nil {
+		return RunRow{}, false, r.rowErr
+	}
+	row, ok := r.rows[branch]
+	return row, ok, nil
+}
+
+func (r *fakeRewrites) Record(_ context.Context, id string, m Measured) error {
+	if r.recordErr != nil {
+		return r.recordErr
+	}
+	if r.recorded == nil {
+		r.recorded = map[string]Measured{}
+	}
+	r.recorded[id] = m
+	// The real Record clears a revert flag, so the fake does too.
+	kept := r.reverted[:0]
+	for _, rid := range r.reverted {
+		if rid != id {
+			kept = append(kept, rid)
+		}
+	}
+	r.reverted = kept
+	// The row carries the measurement once recorded, so a later pass over the
+	// same listing measures nothing.
+	for branch, row := range r.rows {
+		if row.RunID == id {
+			row.Measured = m.MergedAt
+			r.rows[branch] = row
+		}
+	}
+	return nil
+}
+
+func (r *fakeRewrites) FlagReverted(_ context.Context, id string) error {
+	if r.revertedErr != nil {
+		return r.revertedErr
+	}
+	r.reverted = append(r.reverted, id)
+	return nil
+}
+
+func (r *fakeRewrites) Recent(_ context.Context, limit int) ([]Sample, error) {
+	if r.recentErr != nil {
+		return nil, r.recentErr
+	}
+	if len(r.recent) > limit {
+		return r.recent[:limit], nil
+	}
+	return r.recent, nil
+}
+
+var (
+	// mergedAt is when the fixture PRs merged, and the clock the phase reads.
+	mergedAt = time.Date(2026, 10, 14, 3, 0, 0, 0, time.UTC)
+	// runBranch is the branch the fixture run pushed, its id and attempt last.
+	runBranch   = runner.BranchPrefix + "FRG-1-123-1"
+	runOnBranch = "123"
+	// oneRepo is the allowlist a measurement test dispatches into.
+	oneRepo = Config{Repos: []string{scratch}}
+)
+
+// rewriteDeps is the deps the measurement phase reads, with no notices raised
+// yet and the fake level 0, which rolls nothing back.
+func rewriteDeps(prs *fakePullRequests, rows *fakeRewrites) (Deps, *fakeNotices) {
+	notices := &fakeNotices{}
+	return Deps{
+		PullRequests: prs,
+		Rewrites:     rows,
+		Autonomies:   &fakeAutonomies{},
+		Earned:       freshEarned(5),
+		Shadow:       &fakeShadow{start: mergedAt.Add(-time.Hour)},
+		CDs:          fakeCDs{},
+		History:      &fakeHistory{},
+		Notices:      notices,
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Now:          func() time.Time { return mergedAt },
+	}, notices
+}
+
+func TestMeasureRecordsTheLinesOfAMergedPR(t *testing.T) {
+	prs := &fakePullRequests{
+		closed: map[string][]ClosedPR{scratch: {{Number: 7, Title: "a run's PR", Head: runBranch, MergedAt: mergedAt}}},
+		commits: map[int][]Commit{7: {
+			{Login: runner.CommitAuthorLogin, Additions: 10, Deletions: 2},
+			{Name: "the owner", Email: "owner@example.com", Additions: 3, Deletions: 1},
+		}},
+	}
+	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch}}}
+	deps, _ := rewriteDeps(prs, rows)
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	want := Measured{Rewrite: Rewrite{AgentLines: 12, OwnerLines: 4, UnlabelledLines: 4}, MergedAt: mergedAt, PR: 7}
+	if got := rows.recorded[runOnBranch]; got != want {
+		t.Fatalf("recorded %+v, want %+v", got, want)
+	}
+	// A later poll finds that merge already measured and asks GitHub for nothing
+	// more.
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	if len(prs.commitCalls) != 1 {
+		t.Fatalf("commitCalls = %v, want the merge measured once", prs.commitCalls)
+	}
+}
+
+func TestMeasureLeavesAPRThatClosedUnmergedAlone(t *testing.T) {
+	prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {{Number: 7, Head: runBranch}}}}
+	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch}}}
+	deps, _ := rewriteDeps(prs, rows)
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows.recorded) != 0 || len(prs.commitCalls) != 0 {
+		t.Fatalf("recorded %v from %v, want an unmerged PR untouched", rows.recorded, prs.commitCalls)
+	}
+}
+
+func TestMeasureWarnsOnAMergedRunBranchWithNoRunRow(t *testing.T) {
+	prs := &fakePullRequests{
+		closed: map[string][]ClosedPR{scratch: {{Number: 7, Head: runBranch, MergedAt: mergedAt}}},
+	}
+	rows := &fakeRewrites{}
+	deps, _ := rewriteDeps(prs, rows)
+	var logs bytes.Buffer
+	deps.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows.recorded) != 0 {
+		t.Fatalf("recorded %v, want nothing for a branch no run row holds", rows.recorded)
+	}
+	if !strings.Contains(logs.String(), "msg=mergedPRUnfound") {
+		t.Fatalf("log = %q, want mergedPRUnfound", logs.String())
+	}
+}
+
+func TestMeasureKeepsGoingWhenOneRepositoryCannotBeListed(t *testing.T) {
+	prs := &fakePullRequests{
+		closed:     map[string][]ClosedPR{"octo/other": {{Number: 7, Head: runBranch, MergedAt: mergedAt}}},
+		closedErr:  errFirestore,
+		failClosed: scratch,
+		commits:    map[int][]Commit{7: {{Login: runner.CommitAuthorLogin, Additions: 5}}},
+	}
+	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch}}}
+	deps, _ := rewriteDeps(prs, rows)
+	err := measureRewrites(context.Background(), deps, Config{Repos: []string{scratch, "octo/other"}})
+	if err == nil || !strings.Contains(err.Error(), scratch) {
+		t.Fatalf("err = %v, want the repository that could not be listed named", err)
+	}
+	if got := rows.recorded[runOnBranch]; got.AgentLines != 5 {
+		t.Fatalf("recorded %+v, want the other repository still measured", got)
+	}
+}
+
+func TestRevertFlagsTheRunRowItNames(t *testing.T) {
+	prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {
+		{Number: 7, Title: "a run's PR", Head: runBranch, MergedAt: mergedAt},
+		{Number: 9, Title: `Revert "a run's PR"`, Body: "Reverts octo/scratch#7\n", MergedAt: mergedAt.Add(time.Hour)},
+	}}}
+	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch}}}
+	deps, _ := rewriteDeps(prs, rows)
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows.reverted) != 1 || rows.reverted[0] != runOnBranch {
+		t.Fatalf("reverted = %v, want the run row the revert names", rows.reverted)
+	}
+	if len(prs.pulled) != 0 {
+		t.Fatalf("pulled = %v, want the listing's own entry used", prs.pulled)
+	}
+}
+
+func TestRevertTitledByHandFlagsThePRItQuotes(t *testing.T) {
+	prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {
+		{Number: 7, Title: "a run's PR", Head: runBranch, MergedAt: mergedAt},
+		{Number: 9, Title: `Revert "a run's PR"`, MergedAt: mergedAt.Add(time.Hour)},
+	}}}
+	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch}}}
+	deps, _ := rewriteDeps(prs, rows)
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows.reverted) != 1 || rows.reverted[0] != runOnBranch {
+		t.Fatalf("reverted = %v, want the run whose title the revert quotes", rows.reverted)
+	}
+}
+
+func TestRevertOfAPROutsideTheListingIsRead(t *testing.T) {
+	prs := &fakePullRequests{
+		closed: map[string][]ClosedPR{scratch: {
+			{Number: 9, Title: `Revert "a run's PR"`, Body: "Reverts octo/scratch#7", MergedAt: mergedAt.Add(time.Hour)},
+		}},
+		pulls: map[int]ClosedPR{7: {Number: 7, Head: runBranch, MergedAt: mergedAt}},
+	}
+	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch}}}
+	deps, _ := rewriteDeps(prs, rows)
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	if len(prs.pulled) != 1 || prs.pulled[0] != 7 || len(rows.reverted) != 1 {
+		t.Fatalf("pulled = %v, reverted = %v, want PR 7 read and its run flagged", prs.pulled, rows.reverted)
+	}
+}
+
+func TestRevertOfAPRWhenTheRevertNeverMerged(t *testing.T) {
+	prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {
+		{Number: 7, Title: "a run's PR", Head: runBranch, MergedAt: mergedAt},
+		{Number: 9, Title: `Revert "a run's PR"`, Body: "Reverts octo/scratch#7"},
+	}}}
+	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch}}}
+	deps, _ := rewriteDeps(prs, rows)
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows.reverted) != 0 {
+		t.Fatalf("reverted = %v, want a revert that never merged to flag nothing", rows.reverted)
+	}
+}
+
+func TestRollbackDropsTheLevelAndRaisesOneNotice(t *testing.T) {
+	rows := &fakeRewrites{recent: joined(samples(scratch, 19, 100, 0), []Sample{{
+		Repo:       scratch,
+		AutoMerged: true,
+		Reverted:   true,
+		PRURL:      "https://github.com/octo/scratch/pull/7",
+	}})}
+	deps, notices := rewriteDeps(&fakePullRequests{}, rows)
+	autonomies := &fakeAutonomies{level: 4}
+	deps.Autonomies = autonomies
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	if len(autonomies.set) != 1 || autonomies.set[0] != AutonomyRolledBack {
+		t.Fatalf("set = %v, want the level dropped to %d", autonomies.set, int(AutonomyRolledBack))
+	}
+	if len(notices.raised) != 1 {
+		t.Fatalf("raised = %+v, want one notice", notices.raised)
+	}
+	n := notices.raised[0]
+	if !strings.HasPrefix(n.ID, rollbackNoticeKey) || !strings.Contains(n.Class, string(RollbackReverted)) {
+		t.Fatalf("notice = %+v, want it keyed and classed as a reverted auto-merge", n)
+	}
+	if n.Link != "https://github.com/octo/scratch/pull/7" {
+		t.Fatalf("link = %q, want the reverted PR", n.Link)
+	}
+	// The drop took, so a later poll takes nothing back a second time.
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	if len(autonomies.set) != 1 || len(notices.raised) != 1 {
+		t.Fatalf("set = %v, raised = %+v, want one drop and one notice", autonomies.set, notices.raised)
+	}
+}
+
+func TestRollbackNoticeNamesTheRateItFiredOn(t *testing.T) {
+	// 50 owner lines of 100 agent lines over the trailing 10 is 50%, while the
+	// sampled window keeps the sampled rate at 4.5%.
+	rows := &fakeRewrites{recent: joined(samples(scratch, 10, 10, 5), samples(scratch, 10, 100, 0))}
+	deps, notices := rewriteDeps(&fakePullRequests{}, rows)
+	autonomies := &fakeAutonomies{level: 4}
+	deps.Autonomies = autonomies
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	if len(notices.raised) != 1 {
+		t.Fatalf("raised = %+v, want one notice", notices.raised)
+	}
+	n := notices.raised[0]
+	if !strings.Contains(n.Class, string(RollbackCeiling)) || !strings.Contains(n.Class, "50.0% over 10 PRs") {
+		t.Fatalf("notice = %+v, want it naming the ceiling and the rate", n)
+	}
+	if n.Link != "https://github.com/octo/scratch/actions" {
+		t.Fatalf("link = %q, want the repository's runs", n.Link)
+	}
+}
+
+func TestRollbackLeavesALevelWhoseNumbersHold(t *testing.T) {
+	rows := &fakeRewrites{recent: samples(scratch, 20, 100, 0)}
+	deps, notices := rewriteDeps(&fakePullRequests{}, rows)
+	autonomies := &fakeAutonomies{level: 4}
+	deps.Autonomies = autonomies
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(autonomies.set, AutonomyRolledBack) || len(notices.raised) != 0 {
+		t.Fatalf("set = %v, raised = %+v, want a level with nothing wrong left alone", autonomies.set, notices.raised)
+	}
+}
+
+func TestRollbackReportsAWindowItCannotRead(t *testing.T) {
+	rows := &fakeRewrites{recentErr: errFirestore}
+	deps, notices := rewriteDeps(&fakePullRequests{}, rows)
+	autonomies := &fakeAutonomies{level: 4}
+	deps.Autonomies = autonomies
+	if err := measureRewrites(context.Background(), deps, oneRepo); err == nil {
+		t.Fatal("want an unreadable window reported rather than read as no cause")
+	}
+	if len(autonomies.set) != 1 || autonomies.set[0] != AutonomyRolledBack || len(notices.raised) != 1 {
+		t.Fatalf("set = %v, raised = %+v, want the level dropped on evidence that cannot be read", autonomies.set, notices.raised)
+	}
+	if !strings.Contains(notices.raised[0].Class, string(RollbackUnreadable)) {
+		t.Fatalf("notice = %+v, want it naming the unreadable evidence", notices.raised[0])
+	}
+}
+
+func TestRollbackFailsClosedWhenTheClosedListingCannotBeRead(t *testing.T) {
+	for name, tt := range map[string]struct {
+		level Autonomy
+		want  int
+	}{
+		"auto-merging level":     {4, 1},
+		"non-auto-merging level": {3, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rows := &fakeRewrites{recent: samples(scratch, 20, 100, 0)}
+			deps, _ := rewriteDeps(&fakePullRequests{closedErr: errFirestore}, rows)
+			autonomies := &fakeAutonomies{level: tt.level}
+			deps.Autonomies = autonomies
+			if err := measureRewrites(context.Background(), deps, oneRepo); err == nil {
+				t.Fatal("want the unreadable listing reported")
+			}
+			if len(autonomies.set) != tt.want {
+				t.Fatalf("set = %v, want %d drops", autonomies.set, tt.want)
+			}
+		})
+	}
+}
+
+func TestRevertBodyWithCRLFFlagsTheRun(t *testing.T) {
+	prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {
+		{Number: 7, Title: "a run's PR", Head: runBranch, MergedAt: mergedAt},
+		{Number: 9, Title: "reverts by hand", Body: "Reverts octo/scratch#7\r\n\r\nextra\r\n", MergedAt: mergedAt.Add(time.Hour)},
+	}}}
+	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch}}}
+	deps, _ := rewriteDeps(prs, rows)
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows.reverted) != 1 {
+		t.Fatalf("reverted = %v, want a CRLF revert body read", rows.reverted)
+	}
+}
+
+func TestRevertListedBeforeItsOriginalStaysFlagged(t *testing.T) {
+	// Listings run most recently updated first, so the revert precedes the merge
+	// it takes back and the measurement must not clear its flag.
+	prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {
+		{Number: 9, Title: "reverts by hand", Body: "Reverts octo/scratch#7", MergedAt: mergedAt.Add(time.Hour)},
+		{Number: 7, Title: "a run's PR", Head: runBranch, MergedAt: mergedAt},
+	}}}
+	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch}}}
+	deps, _ := rewriteDeps(prs, rows)
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows.recorded) != 1 || len(rows.reverted) != 1 {
+		t.Fatalf("recorded = %v, reverted = %v, want the run measured and still flagged", rows.recorded, rows.reverted)
+	}
+}
+
+func TestRevertOfAPRThatNeverMergedFlagsNothing(t *testing.T) {
+	prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {
+		{Number: 7, Title: "a run's PR", Head: runBranch},
+		{Number: 9, Title: "reverts by hand", Body: "Reverts octo/scratch#7", MergedAt: mergedAt},
+	}}}
+	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch}}}
+	deps, _ := rewriteDeps(prs, rows)
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows.reverted) != 0 {
+		t.Fatalf("reverted = %v, want a revert of an unmerged PR to flag nothing", rows.reverted)
+	}
+}
+
+func TestRollbackLeavesBothRatesAtTheirLimits(t *testing.T) {
+	// Trailing 10 at exactly 20% and the sampled 20 at exactly 10%: neither
+	// limit is passed.
+	rows := &fakeRewrites{recent: joined(samples(scratch, 10, 100, 20), samples(scratch, 10, 100, 0))}
+	deps, notices := rewriteDeps(&fakePullRequests{}, rows)
+	autonomies := &fakeAutonomies{level: 4}
+	deps.Autonomies = autonomies
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(autonomies.set, AutonomyRolledBack) || len(notices.raised) != 0 {
+		t.Fatalf("set = %v, raised = %+v, want rates at their limits left alone", autonomies.set, notices.raised)
+	}
+}
+
+func TestRollbackReportsALevelItCannotDrop(t *testing.T) {
+	rows := &fakeRewrites{recent: joined(samples(scratch, 19, 100, 0), []Sample{sample(scratch, 100, 0, true, true)})}
+	deps, _ := rewriteDeps(&fakePullRequests{}, rows)
+	deps.Autonomies = &fakeAutonomies{level: 4, setErr: errFirestore}
+	if err := measureRewrites(context.Background(), deps, oneRepo); err == nil {
+		t.Fatal("want a drop that could not be written reported")
+	}
+}
+
+func TestRevertsThatNameNoRunPRFlagNothing(t *testing.T) {
+	for name, tt := range map[string]struct {
+		revert ClosedPR
+		pulls  map[int]ClosedPR
+	}{
+		"another repository's PR number": {
+			ClosedPR{Number: 9, Body: "Reverts octo/other#7", MergedAt: mergedAt.Add(time.Hour)},
+			map[int]ClosedPR{7: {Number: 7, Head: runBranch, MergedAt: mergedAt}},
+		},
+		"a PR that merged after the revert": {
+			ClosedPR{Number: 9, Body: "Reverts octo/scratch#7", MergedAt: mergedAt},
+			map[int]ClosedPR{7: {Number: 7, Head: runBranch, MergedAt: mergedAt.Add(time.Hour)}},
+		},
+		"a PR that is not a run's": {
+			ClosedPR{Number: 9, Body: "Reverts octo/scratch#7", MergedAt: mergedAt.Add(time.Hour)},
+			map[int]ClosedPR{7: {Number: 7, Head: "feature/by-hand", MergedAt: mergedAt}},
+		},
+		"another PR than the one named": {
+			ClosedPR{Number: 9, Body: "Reverts octo/scratch#7", MergedAt: mergedAt.Add(time.Hour)},
+			map[int]ClosedPR{7: {Number: 8, Head: runBranch, MergedAt: mergedAt}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {tt.revert}}, pulls: tt.pulls}
+			rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch}, "feature/by-hand": {RunID: "other"}}}
+			deps, _ := rewriteDeps(prs, rows)
+			if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+				t.Fatal(err)
+			}
+			if len(rows.reverted) != 0 {
+				t.Fatalf("reverted = %v, want the revert to flag no run", rows.reverted)
+			}
+		})
+	}
+}
+
+func TestTruncatedListingWithAFreshMergeOnItsLastPageFailsClosed(t *testing.T) {
+	prs := &fakePullRequests{
+		closed:    map[string][]ClosedPR{scratch: {{Number: 7, Head: runBranch, MergedAt: mergedAt}}},
+		commits:   map[int][]Commit{7: {{Login: "the-owner", Additions: 1}}},
+		closedErr: ErrClosedTruncated,
+		keepOnErr: true,
+	}
+	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch}}, recent: samples(scratch, 20, 100, 0)}
+	deps, _ := rewriteDeps(prs, rows)
+	autonomies := &fakeAutonomies{level: 4}
+	earned := &fakeEarned{}
+	deps.Autonomies, deps.Earned = autonomies, earned
+	if err := measureRewrites(context.Background(), deps, oneRepo); !errors.Is(err, ErrClosedTruncated) {
+		t.Fatalf("err = %v, want the truncation reported", err)
+	}
+	if len(autonomies.set) != 1 || autonomies.set[0] != AutonomyRolledBack || len(earned.stored) != 0 {
+		t.Fatalf("set = %v, stored = %+v, want level 4 dropped and nothing recomputed", autonomies.set, earned.stored)
+	}
+}
+
+func TestTruncatedListingWithNothingNewOnItsLastPageIsRead(t *testing.T) {
+	prs := &fakePullRequests{
+		closed:    map[string][]ClosedPR{scratch: {{Number: 7, Head: runBranch, MergedAt: mergedAt}}},
+		closedErr: ErrClosedTruncated,
+		keepOnErr: true,
+	}
+	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch, Measured: mergedAt}}, recent: samples(scratch, 20, 100, 0)}
+	deps, _ := rewriteDeps(prs, rows)
+	deps.Autonomies = &fakeAutonomies{level: 4}
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatalf("err = %v, want a capped listing whose last page is already measured to be fine", err)
+	}
+}

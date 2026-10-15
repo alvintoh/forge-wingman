@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -80,6 +81,56 @@ func TestAutonomyRefusesAStoredValueNamingNoLevel(t *testing.T) {
 				t.Fatalf("Level = %d, %v, want ErrUnknownAutonomy so the dispatcher counts it as 0", level, err)
 			}
 		})
+	}
+}
+
+func TestAutonomySetWritesALevelWhoseConditionsTheMeasuredRowsHold(t *testing.T) {
+	a, client := autonomiesOver(t)
+	ctx := context.Background()
+	// Ten merged PRs the owner rewrote a line of each, and the CD flag for the
+	// repository they merged into: the trailing rate is 1%.
+	cdDoc := client.Collection(dispatchCollection).Doc(cdDocID)
+	_, _ = cdDoc.Delete(ctx)
+	t.Cleanup(func() { _, _ = cdDoc.Delete(context.Background()) })
+	if err := NewCDs(client).Set(ctx, "octo/scratch", true, noticeAt); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC()
+	for i := range 10 {
+		id := fresh("autonomy-measured")
+		forget(t, client, id)
+		if _, err := client.Collection(runsCollection).Doc(id).Set(ctx, map[string]any{
+			repoField: "octo/scratch", autoMergeField: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		measured := dispatcher.Measured{
+			Rewrite:  dispatcher.Rewrite{AgentLines: 100, OwnerLines: 1},
+			MergedAt: at.Add(time.Duration(i) * time.Minute),
+		}
+		if err := NewRewrites(client).Record(ctx, id, measured); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Level 3 is set outright, and level 4 is earned on top of it.
+	if err := a.Set(ctx, 3, noticeAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Set(ctx, 4, noticeAt); err != nil {
+		t.Fatalf("Set(4) = %v, want a level whose every clause holds written", err)
+	}
+	if level, err := a.Level(ctx); err != nil || level != 4 {
+		t.Fatalf("level = %d, %v, want 4", level, err)
+	}
+	// The same rows without the recorded CD flag cannot carry it.
+	if _, err := cdDoc.Delete(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Set(ctx, 5, noticeAt); !errors.Is(err, dispatcher.ErrAutonomyNotEarned) {
+		t.Fatalf("Set(5) = %v, want a level with fewer than 20 sampled PRs refused", err)
+	}
+	if err := a.Set(ctx, 4, noticeAt); !errors.Is(err, dispatcher.ErrAutonomyNotEarned) || !strings.Contains(err.Error(), "octo/scratch") {
+		t.Fatalf("Set(4) = %v, want the refusal to name the repository with no CD flag", err)
 	}
 }
 

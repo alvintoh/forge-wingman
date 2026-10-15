@@ -92,6 +92,8 @@ export GITHUB_REPOSITORY_OWNER=<owner>  # the account the repository belongs to
 | `runner enable-provider -provider <name>` | admits a halted provider back to dispatch |
 | `runner reset-breaker` | clears the breaker a systemic stop tripped, admitting dispatch again |
 | `runner peak-mode [-mode off-peak-only\|always]` | prints the peak mode, or sets whether a run waits out its model's peak-price hours |
+| `runner autonomy [-level 0..5]` | prints the autonomy level, the trailing rewrite rate and each level's advance condition with the numbers behind it, recomputes and stores the earned-level snapshot, or sets the level for the next claim |
+| `runner cd -repo <owner/name> [-deploying]` | prints whether the repository is recorded as deploying on merge, or records the flag the level-4 condition requires |
 | `runner requeue -run-id <id>` | returns a stopped or abandoned run to the queue for another attempt |
 | `runner backfill-queued-at [-dry-run]` | stamps `queued_at` on the queued and planned runs written before the field existed |
 | `runner plan-define -provider <name> …` | records a provider plan's price, billing, limit behaviour, pages and harnesses |
@@ -100,11 +102,11 @@ export GITHUB_REPOSITORY_OWNER=<owner>  # the account the repository belongs to
 | `runner plan-reply -provider <name> …` | records a vendor reply and the verdict it leads to |
 | `runner plan-list` | prints every plan side by side, flagging the ones to look at |
 
-Read-only: `plan-list` only reads, and `peak-mode` without `-mode` and
-`backfill-queued-at -dry-run` write nothing, so they are safe to run against the
-store to look. Every other command above writes to it. All refuse an account that
-is not the repository's owner, which guards against the wrong account by mistake
-only: Firestore IAM decides who may write.
+Read-only: `plan-list` only reads, and `peak-mode` without `-mode`, `cd` without `-deploying` and `backfill-queued-at -dry-run` write nothing, so
+they are safe to run against the store to look. Every other command above writes to it, `autonomy` included: it recomputes and
+stores the earned-level snapshot even without `-level`.
+All refuse an account that is not the repository's owner, which guards against the wrong
+account by mistake only: Firestore IAM decides who may write.
 
 ## Shape
 

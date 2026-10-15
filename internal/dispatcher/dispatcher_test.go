@@ -327,7 +327,11 @@ func pollDeps(source Source, q *fakeQueue, w *fakeWorkflow) Deps {
 		Providers:  fakeProviders{},
 		Breaker:    fakeBreaker{},
 		PeakModes:  fakePeakModes{mode: PeakOffPeakOnly},
-		Autonomies: fakeAutonomies{},
+		Autonomies: &fakeAutonomies{},
+		Earned:     freshEarned(5),
+		Shadow:     &fakeShadow{start: time.Unix(1, 0)},
+		CDs:        fakeCDs{},
+		History:    &fakeHistory{},
 		OpenPRs:    fakeOpenPRs{},
 		Overrides:  LabelOverrides{},
 		ModelPlans: &fakeModelPlans{},
@@ -337,6 +341,10 @@ func pollDeps(source Source, q *fakeQueue, w *fakeWorkflow) Deps {
 		Decisions:  &fakeDecisions{},
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Now:        func() time.Time { return pollAt },
+		// The rewrite measurement reads GitHub and the run rows; a poll with no
+		// merged PR to see does nothing with either.
+		PullRequests: &fakePullRequests{},
+		Rewrites:     &fakeRewrites{},
 	}
 }
 
@@ -458,6 +466,9 @@ func TestPollNamesTheDependencyItWasNotGiven(t *testing.T) {
 		"Decisions":   func(d *Deps) { d.Decisions = nil },
 		"Logger":      func(d *Deps) { d.Logger = nil },
 		"Now":         func(d *Deps) { d.Now = nil },
+		// The rewrite measurement's own reads.
+		"PullRequests": func(d *Deps) { d.PullRequests = nil },
+		"Rewrites":     func(d *Deps) { d.Rewrites = nil },
 	}
 	for name, clear := range unset {
 		t.Run(name, func(t *testing.T) {

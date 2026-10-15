@@ -17,14 +17,16 @@ const (
 	levelField    = "level"
 )
 
-// Autonomies keeps the dispatch/autonomy document the owner sets and every poll reads.
+// Autonomies keeps the dispatch/autonomy document the owner sets and every poll
+// reads, beside the CD flag its conditions are checked against.
 type Autonomies struct {
 	client *firestore.Client
+	cds    *CDs
 }
 
 // NewAutonomies returns an Autonomies backed by client.
 func NewAutonomies(client *firestore.Client) *Autonomies {
-	return &Autonomies{client: client}
+	return &Autonomies{client: client, cds: NewCDs(client)}
 }
 
 func (a *Autonomies) doc() *firestore.DocumentRef {
@@ -41,22 +43,59 @@ func (a *Autonomies) Level(ctx context.Context) (dispatcher.Autonomy, error) {
 	if err != nil {
 		return 0, fmt.Errorf("reading the autonomy level: %w", err)
 	}
-	stored, ok := snap.Data()[levelField].(int64)
+	raw, present := snap.Data()[levelField]
+	if _, wasSet := snap.Data()[setAtField]; !present && !wasSet {
+		// The document also holds the earned snapshot, so it can exist before an
+		// owner has set a level; one that was set and lost its level is garbled.
+		return 0, nil
+	}
+	stored, ok := raw.(int64)
 	level := dispatcher.Autonomy(stored)
 	if !ok || !level.Valid() {
-		return 0, fmt.Errorf("reading the autonomy level: %w %v", dispatcher.ErrUnknownAutonomy, snap.Data()[levelField])
+		return 0, fmt.Errorf("reading the autonomy level: %w %v", dispatcher.ErrUnknownAutonomy, raw)
 	}
 	return level, nil
 }
 
 // Set stores level, effective from the next claim: an operator's runner
-// autonomy action. It refuses a level the owner may not set.
+// autonomy action. It refuses a level whose advance condition does not hold, and
+// the refusal carries the numbers it was measured against, so a level the CLI
+// would let through is still refused at the write.
 func (a *Autonomies) Set(ctx context.Context, level dispatcher.Autonomy, at time.Time) error {
-	if err := level.Settable(); err != nil {
+	if err := level.Known(); err != nil {
 		return fmt.Errorf("setting the autonomy level: %w", err)
 	}
-	if _, err := a.doc().Set(ctx, map[string]any{levelField: int64(level), setAtField: at}); err != nil {
+	// Only a level that auto-merges has a condition to read evidence for.
+	if level.AutoMerges() {
+		ev, err := a.Evidence(ctx)
+		if err != nil {
+			return fmt.Errorf("setting the autonomy level: %w", err)
+		}
+		if err := level.Settable(ev); err != nil {
+			return fmt.Errorf("setting the autonomy level: %w", err)
+		}
+	}
+	if _, err := a.doc().Set(ctx, map[string]any{levelField: int64(level), setAtField: at}, firestore.MergeAll); err != nil {
 		return fmt.Errorf("setting the autonomy level: %w", err)
 	}
 	return nil
+}
+
+// Evidence reads the level with everything its advance conditions are checked
+// against: the merged agent PRs' samples, newest first, and the CD flag recorded
+// for each repository they name.
+func (a *Autonomies) Evidence(ctx context.Context) (dispatcher.Evidence, error) {
+	level, err := a.Level(ctx)
+	if err != nil {
+		return dispatcher.Evidence{}, err
+	}
+	samples, err := recentSamples(ctx, a.client, dispatcher.SampledPRs)
+	if err != nil {
+		return dispatcher.Evidence{}, err
+	}
+	cd, err := a.cds.Recorded(ctx)
+	if err != nil {
+		return dispatcher.Evidence{}, err
+	}
+	return dispatcher.Evidence{Level: level, Trailing: samples, CD: cd}, nil
 }

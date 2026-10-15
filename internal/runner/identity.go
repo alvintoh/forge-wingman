@@ -7,10 +7,14 @@ import (
 )
 
 // The run's commit identity. run.yml's rebase step sets the same pair as its
-// committer, so the two must change together.
+// committer, so the two must change together, and the dispatcher reads the same
+// pair back off a merged PR to tell the agent's lines from the owner's.
 const (
-	commitAuthorName  = "github-actions[bot]"
-	commitAuthorEmail = "41898282+github-actions[bot]@users.noreply.github.com"
+	CommitAuthorName  = "github-actions[bot]"
+	CommitAuthorEmail = "41898282+github-actions[bot]@users.noreply.github.com"
+	// CommitAuthorLogin is the account GitHub resolves that email to, the only
+	// identity the dispatcher attributes a commit's lines by.
+	CommitAuthorLogin = "github-actions[bot]"
 )
 
 // ErrIdentityMismatch reports a run acting for an account other than the configured one.

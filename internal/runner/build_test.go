@@ -2326,9 +2326,9 @@ func TestRunWorkflowRebaseStepRunsOnAFreshRunner(t *testing.T) {
 		return m[1]
 	}
 	committerName, committerEmail := envValue("GIT_COMMITTER_NAME"), envValue("GIT_COMMITTER_EMAIL")
-	if committerName != commitAuthorName || committerEmail != commitAuthorEmail {
+	if committerName != CommitAuthorName || committerEmail != CommitAuthorEmail {
 		t.Errorf("rebase committer = %s <%s>, want the run's identity %s <%s>",
-			committerName, committerEmail, commitAuthorName, commitAuthorEmail)
+			committerName, committerEmail, CommitAuthorName, CommitAuthorEmail)
 	}
 	start := strings.Index(step, "git fetch --quiet origin main")
 	end := strings.LastIndex(step, "\n          fi\n")

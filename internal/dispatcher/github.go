@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/runner"
 )
@@ -35,6 +37,12 @@ const (
 	maxPullsPages = 5
 	// maxPullsResponseBytes bounds one page of the open-PR listing.
 	maxPullsResponseBytes = 4 << 20
+	// closedPRsPerPage is how many closed pull requests one rewrite-rate read
+	// lists, and how many commits of one pull request it reads.
+	closedPRsPerPage = 100
+	// maxListPages bounds how many pages a closed-PR or commit listing is
+	// followed for; a listing cut there is reported rather than undercounted.
+	maxListPages = 10
 )
 
 // GitHub starts the run workflow in one repository.
@@ -150,6 +158,219 @@ func (g GitHub) openPullHeads(ctx context.Context, endpoint, repo string) ([]str
 		heads[i] = p.Head.Ref
 	}
 	return heads, nil
+}
+
+// ErrClosedTruncated is returned with the PRs read when the closed listing runs
+// past the page cap, so the caller can tell a window that may hide merges.
+var ErrClosedTruncated = errors.New("the closed pull request listing was cut at the page cap")
+
+// Closed returns repo's closed pull requests, most recently updated first, up to
+// maxListPages pages: the window a merged PR is first measured in and a revert is
+// seen in, both read from the one listing. A listing cut at the cap returns the
+// PRs read with ErrClosedTruncated.
+func (g GitHub) Closed(ctx context.Context, repo string) ([]ClosedPR, error) {
+	endpoint := fmt.Sprintf("%s/repos/%s/pulls?state=closed&sort=updated&direction=desc&per_page=%d",
+		g.endpoint(), repo, closedPRsPerPage)
+	var out []ClosedPR
+	capped, err := g.paged(ctx, endpoint, fmt.Sprintf("list closed pull requests in %s", repo), func(body io.Reader) error {
+		page, err := decodeClosedPRs(body, repo)
+		out = append(out, page...)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if capped {
+		return out, ErrClosedTruncated
+	}
+	return out, nil
+}
+
+// paged reads endpoint and every page its Link header names next, up to
+// maxListPages, handing each body to each. It reports whether the cap cut the
+// listing off. A next link to another host is not followed, so the token goes
+// only where it was meant to.
+func (g GitHub) paged(ctx context.Context, endpoint, action string, each func(io.Reader) error) (capped bool, err error) {
+	for page := 1; endpoint != ""; page++ {
+		if page > maxListPages {
+			return true, nil
+		}
+		res, err := g.do(ctx, http.MethodGet, endpoint, nil, action)
+		if err != nil {
+			return false, err
+		}
+		next := nextLink(res.Header.Get("Link"))
+		err = each(res.Body)
+		_ = res.Body.Close()
+		if err != nil {
+			return false, err
+		}
+		if next != "" && !strings.HasPrefix(next, g.endpoint()+"/") {
+			return false, fmt.Errorf("%s: the next page is on another host", action)
+		}
+		endpoint = next
+	}
+	return false, nil
+}
+
+// nextLink is the rel="next" target of a Link header, or "".
+func nextLink(header string) string {
+	for _, part := range strings.Split(header, ",") {
+		target, rel, ok := strings.Cut(part, ";")
+		if !ok || !strings.Contains(rel, `rel="next"`) {
+			continue
+		}
+		return strings.Trim(strings.TrimSpace(target), "<>")
+	}
+	return ""
+}
+
+// Pull returns one pull request of repo, whatever its state.
+func (g GitHub) Pull(ctx context.Context, repo string, number int) (ClosedPR, error) {
+	endpoint := fmt.Sprintf("%s/repos/%s/pulls/%d", g.endpoint(), repo, number)
+	res, err := g.do(ctx, http.MethodGet, endpoint, nil, fmt.Sprintf("read pull request %s#%d", repo, number))
+	if err != nil {
+		return ClosedPR{}, err
+	}
+	defer func() { _ = res.Body.Close() }()
+	pulls, err := decodeClosedPRs(res.Body, repo)
+	if err != nil {
+		return ClosedPR{}, err
+	}
+	if len(pulls) == 0 {
+		return ClosedPR{}, fmt.Errorf("GitHub answered no pull request for %s#%d", repo, number)
+	}
+	return pulls[0], nil
+}
+
+// closedPR is one entry of a pull request listing or read, as the rewrite rate
+// needs it.
+type closedPR struct {
+	Number   int        `json:"number"`
+	Title    string     `json:"title"`
+	Body     string     `json:"body"`
+	MergedAt *time.Time `json:"merged_at"`
+	Head     struct {
+		Ref string `json:"ref"`
+	} `json:"head"`
+}
+
+// decodeClosedPRs reads a pull request reply — a listing, or one pull request
+// answered on its own — into the fields the rewrite rate is measured from. A
+// reply that is neither is an error rather than a zero-valued pull request, so a
+// shape GitHub changed is seen rather than measured over.
+func decodeClosedPRs(body io.Reader, repo string) ([]ClosedPR, error) {
+	raw, err := io.ReadAll(io.LimitReader(body, maxPullsResponseBytes))
+	if err != nil {
+		return nil, fmt.Errorf("reading the pull requests of %s: %w", repo, err)
+	}
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return nil, nil
+	}
+	var pulls []closedPR
+	switch trimmed[0] {
+	case '[':
+		if err := json.Unmarshal(trimmed, &pulls); err != nil {
+			return nil, fmt.Errorf("decoding the pull requests of %s: %w", repo, err)
+		}
+	case '{':
+		var one closedPR
+		if err := json.Unmarshal(trimmed, &one); err != nil {
+			return nil, fmt.Errorf("decoding the pull request of %s: %w", repo, err)
+		}
+		pulls = []closedPR{one}
+	default:
+		return nil, fmt.Errorf("decoding the pull requests of %s: the reply is neither a listing nor a pull request", repo)
+	}
+	out := make([]ClosedPR, 0, len(pulls))
+	for _, p := range pulls {
+		pr := ClosedPR{Number: p.Number, Title: p.Title, Body: p.Body, Head: p.Head.Ref}
+		if p.MergedAt != nil {
+			pr.MergedAt = *p.MergedAt
+		}
+		out = append(out, pr)
+	}
+	return out, nil
+}
+
+// Commits returns the commits of pull request number, each with who GitHub
+// resolves its author to and how many lines it changed. The listing carries no
+// line counts, so each commit is read once. A listing cut at the page cap ends in
+// an unmeasured commit, so the PR cannot earn a level on lines it did not see.
+func (g GitHub) Commits(ctx context.Context, repo string, number int) ([]Commit, error) {
+	endpoint := fmt.Sprintf("%s/repos/%s/pulls/%d/commits?per_page=%d",
+		g.endpoint(), repo, number, closedPRsPerPage)
+	var out []Commit
+	capped, err := g.paged(ctx, endpoint, fmt.Sprintf("list the commits of %s#%d", repo, number), func(body io.Reader) error {
+		var commits []struct {
+			SHA    string `json:"sha"`
+			Author *struct {
+				Login string `json:"login"`
+			} `json:"author"`
+			Commit struct {
+				Message string `json:"message"`
+				Author  struct {
+					Name  string `json:"name"`
+					Email string `json:"email"`
+				} `json:"author"`
+			} `json:"commit"`
+		}
+		if err := json.NewDecoder(io.LimitReader(body, maxPullsResponseBytes)).Decode(&commits); err != nil {
+			return fmt.Errorf("decoding the commits of %s#%d: %w", repo, number, err)
+		}
+		for _, c := range commits {
+			added, removed, measured, err := g.commitLines(ctx, repo, c.SHA)
+			if err != nil {
+				return err
+			}
+			commit := Commit{
+				Name:       c.Commit.Author.Name,
+				Email:      c.Commit.Author.Email,
+				Message:    c.Commit.Message,
+				Unmeasured: !measured,
+				Additions:  added,
+				Deletions:  removed,
+			}
+			if c.Author != nil {
+				commit.Login = c.Author.Login
+			}
+			out = append(out, commit)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if capped {
+		out = append(out, Commit{Unmeasured: true})
+	}
+	return out, nil
+}
+
+// commitLines reads one commit's own line counts. GitHub answers null for a
+// commit of more than 300 files, which is reported as unmeasured rather than as
+// no lines, so the PR cannot earn a level on a number it does not have.
+func (g GitHub) commitLines(ctx context.Context, repo, sha string) (added, removed int64, measured bool, err error) {
+	endpoint := fmt.Sprintf("%s/repos/%s/commits/%s", g.endpoint(), repo, url.PathEscape(sha))
+	res, err := g.do(ctx, http.MethodGet, endpoint, nil, fmt.Sprintf("read commit %s of %s", sha, repo))
+	if err != nil {
+		return 0, 0, false, err
+	}
+	defer func() { _ = res.Body.Close() }()
+	var body struct {
+		Stats *struct {
+			Additions int64 `json:"additions"`
+			Deletions int64 `json:"deletions"`
+		} `json:"stats"`
+	}
+	if err := json.NewDecoder(io.LimitReader(res.Body, maxPullsResponseBytes)).Decode(&body); err != nil {
+		return 0, 0, false, fmt.Errorf("decoding commit %s of %s: %w", sha, repo, err)
+	}
+	if body.Stats == nil {
+		return 0, 0, false, nil
+	}
+	return body.Stats.Additions, body.Stats.Deletions, true, nil
 }
 
 // do sends an authenticated GitHub API request and returns its response on

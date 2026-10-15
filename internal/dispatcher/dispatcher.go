@@ -182,7 +182,8 @@ type ModelPlans interface {
 // provider halt state it checks before claiming (AC4), the workflow it
 // dispatches, and where it reports.
 type Deps struct {
-	Source      Source
+	Source Source
+	// Delegatable lists the tickets the product may delegate to itself.
 	Delegatable Delegatable
 	Queue       Queue
 	Estimator   Estimator
@@ -192,9 +193,22 @@ type Deps struct {
 	PeakModes   PeakModes
 	Autonomies  Autonomies
 	OpenPRs     OpenPRCounter
-	Workflow    Workflow
-	Logger      *slog.Logger
-	Now         func() time.Time
+	// PullRequests reads the merged run PRs the rewrite rate is measured from,
+	// and Rewrites records each measurement on its run row and reads the samples
+	// the level's conditions are checked against.
+	PullRequests PullRequests
+	Rewrites     Rewrites
+	// Earned stores the level the measured PRs have earned, Shadow counts the
+	// merges since the shadow began, CDs reads the
+	// recorded CD flags it is computed with, and History records each change of
+	// the level.
+	Earned   EarnedSnapshots
+	Shadow   ShadowCounter
+	CDs      CDFlags
+	History  AutonomyHistory
+	Workflow Workflow
+	Logger   *slog.Logger
+	Now      func() time.Time
 	// Overrides yields the models a ticket names and ModelPlans is what they are
 	// checked against; both are required, as an unchecked model could spend per token.
 	Overrides  ModelOverrides
@@ -228,6 +242,12 @@ func (d Deps) missing() string {
 		{"PeakModes", d.PeakModes != nil},
 		{"Autonomies", d.Autonomies != nil},
 		{"OpenPRs", d.OpenPRs != nil},
+		{"PullRequests", d.PullRequests != nil},
+		{"Rewrites", d.Rewrites != nil},
+		{"Earned", d.Earned != nil},
+		{"Shadow", d.Shadow != nil},
+		{"CDs", d.CDs != nil},
+		{"History", d.History != nil},
 		{"Workflow", d.Workflow != nil},
 		{"Logger", d.Logger != nil},
 		{"Now", d.Now != nil},
@@ -364,7 +384,8 @@ type Result struct {
 
 // Poll admits every issue still delegated, then walks the queue in priority
 // order claiming every run Admit lets start, abandons the claims that outlived
-// their window, and posts the notices waiting, whatever the rest of the poll did.
+// their window, measures the merges that landed since the last poll, and posts
+// the notices waiting, whatever the rest of the poll did.
 // A ticket the queue already holds is left alone; a candidate a condition
 // withholds is deferred, not rejected, and reconsidered next poll; and a run
 // whose dispatch fails is released rather than left claimed, so the next
@@ -379,12 +400,15 @@ func Poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	sweepErr := sweepAbandoned(ctx, d)
 	LogPhase(d.Logger, "sweep", start, d.Now())
 	start = d.Now()
+	rewriteErr := measureRewrites(ctx, d, c)
+	LogPhase(d.Logger, "rewrite", start, d.Now())
+	start = d.Now()
 	decideErr := postDecisions(ctx, d, c)
 	LogPhase(d.Logger, "decisions", start, d.Now())
 	start = d.Now()
 	noticeErr := postNotices(ctx, d)
 	LogPhase(d.Logger, "notices", start, d.Now())
-	return res, errors.Join(err, sweepErr, decideErr, noticeErr)
+	return res, errors.Join(err, sweepErr, rewriteErr, decideErr, noticeErr)
 }
 
 // LogPhase logs how long one phase of a poll took, so a slow poll can be traced

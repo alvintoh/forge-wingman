@@ -277,6 +277,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 	if err != nil {
 		return err
 	}
+	autonomies := store.NewAutonomies(fsc)
 	// The same Linear client reads the tickets a poll admits and delegates the
 	// ones the product takes on itself.
 	tickets := dispatcher.Linear{Tokens: tokens, Delegate: c.delegate, Client: client}
@@ -290,7 +291,11 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		Providers:   store.NewProviders(fsc),
 		Breaker:     store.NewBreaker(fsc),
 		PeakModes:   store.NewPeakModes(fsc),
-		Autonomies:  store.NewAutonomies(fsc),
+		Autonomies:  autonomies,
+		Earned:      autonomies,
+		Shadow:      autonomies,
+		CDs:         store.NewCDs(fsc),
+		History:     store.NewAutonomyHistory(fsc),
 		Notices:     store.NewNotices(fsc),
 		OpenPoster:  slackPoster(secrets.Token, client),
 		Plans:       plans,
@@ -298,10 +303,14 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		Overrides:   dispatcher.LabelOverrides{},
 		Workflow:    gh,
 		OpenPRs:     gh,
-		Decisions:   queue,
-		Elicit:      webhook.Linear{Tokens: tokens},
-		Logger:      logger,
-		Now:         time.Now,
+		// The rewrite rate is measured from the same GitHub the dispatch uses,
+		// and recorded on the run rows the queue holds.
+		PullRequests: gh,
+		Rewrites:     store.NewRewrites(fsc),
+		Decisions:    queue,
+		Elicit:       webhook.Linear{Tokens: tokens},
+		Logger:       logger,
+		Now:          time.Now,
 	}, dispatcher.Config{Repos: c.repos, Budget: budgetConfig(runner.Provider(model)), Model: model, NextPlans: next, Limits: c.limits, Tuning: c.tuning, LastResortPlans: lastResortPlans(), TwoStage: c.twoStage, DecisionTimeout: c.decisionTimeout}); err != nil {
 		return err
 	}
