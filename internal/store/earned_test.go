@@ -29,7 +29,7 @@ func TestEarnedIsAbsentUntilStoredThenReadBackBesideTheLevel(t *testing.T) {
 	}
 	got, found, err := a.Earned(ctx)
 	if err != nil || !found || got.Level != 4 || !got.ComputedAt.Equal(at) || got.Stale ||
-		len(got.Numbers.PRs) != 2 || got.Numbers.PRs[1] != 8 || got.Numbers.Rate != 0.02 || got.Numbers.ReviewFoundLines != 1 {
+		len(got.Numbers.PRs) != 2 || got.Numbers.PRs[1] != 8 || got.Numbers.Rate != 0.02 || got.Numbers.ReviewFoundLines != 1 || got.Numbers.NotRecorded {
 		t.Fatalf("Earned = %+v, %v, %v, want %+v", got, found, err, want)
 	}
 	if level, err := a.Level(ctx); err != nil || level != 3 {
@@ -83,6 +83,32 @@ func TestEarnedWithUnreadableFieldsIsAnError(t *testing.T) {
 	}
 	if _, _, err := a.Earned(ctx); err == nil {
 		t.Fatal("want a snapshot that does not read back reported, so a caller fails closed")
+	}
+}
+
+func TestEarnedAndHistoryWithNoStoredEvidenceReadAsNotRecorded(t *testing.T) {
+	a, client := autonomiesOver(t)
+	ctx := context.Background()
+	h := NewAutonomyHistory(client)
+	clearHistory(t, h)
+	at := time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
+	if _, err := client.Collection(dispatchCollection).Doc(autonomyDocID).Set(ctx, map[string]any{
+		earnedField: int64(3), earnedEvidenceField: map[string]any{}, computedAtField: at,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.changes().NewDoc().Set(ctx, map[string]any{
+		historyFromField: int64(3), historyToField: int64(4), historyCauseField: "advance", historyAtField: at,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := a.Earned(ctx)
+	if err != nil || !found || !got.Numbers.NotRecorded {
+		t.Fatalf("Earned = %+v, %v, %v, want an empty evidence map read as not recorded", got, found, err)
+	}
+	changes, err := h.List(ctx, 10)
+	if err != nil || len(changes) != 1 || !changes[0].Numbers.NotRecorded {
+		t.Fatalf("List = %+v, %v, want a change with no evidence read as not recorded", changes, err)
 	}
 }
 

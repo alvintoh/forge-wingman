@@ -293,7 +293,8 @@ type Evidence = {
   // The rate as the endpoint prints it: a percentage, or the words for a rate
   // measured over none of the agent's lines at all.
   rate: string;
-  prs: number[];
+  // Null never comes from the endpoint; the view reads it as no PRs.
+  prs: number[] | null;
   agent_lines: number;
   owner_lines: number;
   review_found_lines: number;
@@ -301,6 +302,8 @@ type Evidence = {
   unlabelled_lines: number;
   reverts: number;
   unavailable: boolean;
+  // False when the stored record held no evidence, so the numbers are absent.
+  recorded: boolean;
 };
 
 type Earned = {
@@ -324,6 +327,8 @@ type AutonomyView = {
   allows: string;
   earned: Earned | null;
   history: LevelChange[];
+  // The cap the history reached, so older changes may exist; absent while whole.
+  history_cut_at?: number;
 };
 
 type AutonomyState = {
@@ -402,8 +407,8 @@ export function Autonomy() {
           ) : (
             <>
               <p className="mt-2 text-body text-ink2">Earned level {view.earned.level}.</p>
-              {view.earned.evidence.unavailable && (
-                <p className="mt-2 text-body text-defer">The evidence could not be read.</p>
+              {evidenceGap(view.earned.evidence) !== null && (
+                <p className="mt-2 text-body text-defer">{evidenceGap(view.earned.evidence)}</p>
               )}
               <div className="mt-4 overflow-x-auto">
                 <table className="w-full text-body">
@@ -423,6 +428,11 @@ export function Autonomy() {
             </>
           )}
           <h2 className="mt-8 text-head font-semibold text-ink">History</h2>
+          {view.history_cut_at !== undefined && view.history_cut_at > 0 && (
+            <p className="mt-2 text-body text-ink2">
+              {`Showing the latest ${view.history_cut_at} changes.`}
+            </p>
+          )}
           {view.history.length === 0 ? (
             <p className="mt-2 text-body text-ink2">No change is recorded.</p>
           ) : (
@@ -450,26 +460,56 @@ export function Autonomy() {
   );
 }
 
-// isAutonomy narrows the endpoint's answer to the one thing this view can check
-// about a document it did not build: that it carries a level and a history.
+// isAutonomy checks the top-level fields the view reads have their declared types.
 function isAutonomy(body: unknown): body is AutonomyView {
   if (typeof body !== "object" || body === null) {
     return false;
   }
-  return "level" in body && Array.isArray(body.history);
+  if (!("level" in body && "allows" in body && "earned" in body && "history" in body)) {
+    return false;
+  }
+  const earnedOk = body.earned === null || typeof body.earned === "object";
+  return (
+    typeof body.level === "number" &&
+    typeof body.allows === "string" &&
+    earnedOk &&
+    Array.isArray(body.history)
+  );
 }
 
-// levelNotes is what the view says about a level the PRs have not earned: a
-// stored level above the earned one runs at the earned one, and a snapshot that
-// is stale or missing lets nothing auto-merge until it is recomputed.
+// The levels the autonomy ladder spans, and the first at which a PR merges itself.
+const maxLevel = 5;
+const autoMergeLevel = 4;
+
+// levelNotes is what the view says about a level the PRs have not earned; a held
+// back merge is only worth saying at a stored level that would auto-merge.
 function levelNotes(view: AutonomyView): string[] {
   const notes: string[] = [];
+  const merges = view.level >= autoMergeLevel;
   if (view.earned === null) {
-    notes.push("No snapshot is stored: nothing auto-merges until one is computed.");
+    if (merges) {
+      notes.push("No snapshot is stored: nothing auto-merges until one is computed.");
+    }
+    return notes;
+  }
+  if (
+    !Number.isInteger(view.earned.level) ||
+    view.earned.level < 0 ||
+    view.earned.level > maxLevel
+  ) {
+    notes.push(
+      merges
+        ? "The snapshot names no level and is unusable: nothing auto-merges until it is recomputed."
+        : "The snapshot names no level and is unusable.",
+    );
     return notes;
   }
   if (view.earned.stale) {
-    notes.push("The snapshot is stale: nothing auto-merges until it is recomputed.");
+    notes.push(
+      merges
+        ? "The snapshot is stale: nothing auto-merges until it is recomputed."
+        : "The snapshot is stale.",
+    );
   }
   if (view.level > view.earned.level) {
     notes.push("The stored level is above the earned one, so the earned level runs.");
@@ -477,15 +517,30 @@ function levelNotes(view: AutonomyView): string[] {
   return notes;
 }
 
+// evidenceGap is why a piece of evidence has no numbers to show, null when it has.
+function evidenceGap(e: Evidence): string | null {
+  if (!e.recorded) {
+    return "Not recorded.";
+  }
+  if (e.unavailable) {
+    return "The evidence could not be read.";
+  }
+  return null;
+}
+
 // evidenceRows is the snapshot as the view's table lists it: when it was
-// computed, and the evidence it was computed from.
+// computed, and the evidence it was computed from when there is any.
 function evidenceRows(earned: Earned): { measure: string; value: string }[] {
   const e = earned.evidence;
-  const prs = e.prs.length === 0 ? "none" : e.prs.join(", ");
+  const rows = [{ measure: "Computed", value: new Date(earned.computed_at).toLocaleString() }];
+  if (evidenceGap(e) !== null) {
+    return rows;
+  }
+  const prs = e.prs ?? [];
   return [
-    { measure: "Computed", value: new Date(earned.computed_at).toLocaleString() },
+    ...rows,
     { measure: "Rewrite rate", value: e.rate },
-    { measure: "PRs", value: prs },
+    { measure: "PRs", value: prs.length === 0 ? "none" : prs.join(", ") },
     { measure: "Agent lines", value: String(e.agent_lines) },
     { measure: "Owner lines", value: String(e.owner_lines) },
     { measure: "Review-found lines", value: String(e.review_found_lines) },
@@ -495,12 +550,14 @@ function evidenceRows(earned: Earned): { measure: string; value: string }[] {
   ];
 }
 
-// evidenceLine is one change's evidence in a line: what it was measured on.
+// evidenceLine is one change's evidence in a line: what it was measured on, or
+// why it has none.
 function evidenceLine(e: Evidence): string {
-  if (e.unavailable) {
-    return "The evidence could not be read.";
+  const gap = evidenceGap(e);
+  if (gap !== null) {
+    return gap;
   }
-  return `${e.rate} over ${e.prs.length} PRs, ${e.owner_lines} owner lines`;
+  return `${e.rate} over ${(e.prs ?? []).length} PRs, ${e.owner_lines} owner lines`;
 }
 
 // changeKind is the word the history marks a change with: a drop is the one that

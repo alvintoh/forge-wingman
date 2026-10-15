@@ -173,7 +173,7 @@ func newMux(spa fs.FS, logger *slog.Logger, comparison ComparisonReader, provide
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(renderAutonomy(view))
+		_ = json.NewEncoder(w).Encode(renderAutonomy(view, autonomyHistoryShown))
 	})
 	mux.Handle("GET /api/", http.NotFoundHandler())
 	mux.Handle("GET /", spaHandler(spa))
@@ -343,6 +343,9 @@ type autonomyResponse struct {
 	Allows  string           `json:"allows"`
 	Earned  *earnedSnapshot  `json:"earned"`
 	History []autonomyChange `json:"history"`
+	// HistoryCutAt is the cap the history reached, so older changes may exist
+	// beyond it; absent while the list is whole.
+	HistoryCutAt int `json:"history_cut_at,omitempty"`
 }
 
 // earnedSnapshot is the earned level as last computed: the evidence behind it,
@@ -377,16 +380,22 @@ type evidence struct {
 	UnlabelledLines  int64  `json:"unlabelled_lines"`
 	Reverts          int    `json:"reverts"`
 	Unavailable      bool   `json:"unavailable"`
+	// Recorded is false when the stored record held no evidence, so the numbers
+	// are absent and not zero.
+	Recorded bool `json:"recorded"`
 }
 
 // renderAutonomy renders the store's view as JSON. The history is rendered
 // whether or not it holds anything, so the view reads an empty list rather than
 // a null; the earned snapshot is null while none is stored.
-func renderAutonomy(v store.AutonomyView) autonomyResponse {
+func renderAutonomy(v store.AutonomyView, limit int) autonomyResponse {
 	out := autonomyResponse{
 		Level:   int(v.Level),
 		Allows:  v.Level.Describe(),
 		History: make([]autonomyChange, 0, len(v.History)),
+	}
+	if len(v.History) >= limit {
+		out.HistoryCutAt = limit
 	}
 	if v.HasEarned {
 		out.Earned = &earnedSnapshot{
@@ -425,6 +434,7 @@ func renderEvidence(n dispatcher.Numbers) evidence {
 		UnlabelledLines:  n.UnlabelledLines,
 		Reverts:          n.Reverts,
 		Unavailable:      n.Unavailable,
+		Recorded:         !n.NotRecorded,
 	}
 }
 

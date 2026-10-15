@@ -435,9 +435,12 @@ func TestProvidersReportsAStoreItCannotRead(t *testing.T) {
 type stubAutonomy struct {
 	view store.AutonomyView
 	err  error
+	// limit is the history limit the last read asked for.
+	limit int
 }
 
-func (s *stubAutonomy) AutonomyView(context.Context, int) (store.AutonomyView, error) {
+func (s *stubAutonomy) AutonomyView(_ context.Context, limit int) (store.AutonomyView, error) {
+	s.limit = limit
 	if s.err != nil {
 		return store.AutonomyView{}, s.err
 	}
@@ -511,7 +514,7 @@ func TestAutonomyReportsTheLevelItsEvidenceAndItsHistory(t *testing.T) {
 		t.Fatalf("evidence = %v, want the numbers", earned["evidence"])
 	}
 	if got, want := slices.Sorted(maps.Keys(numbers)), []string{"agent_lines", "owner_change_lines", "owner_lines", "prs", "rate",
-		"reverts", "review_found_lines", "unavailable", "unlabelled_lines"}; !slices.Equal(got, want) {
+		"recorded", "reverts", "review_found_lines", "unavailable", "unlabelled_lines"}; !slices.Equal(got, want) {
 		t.Errorf("evidence keys = %v, want %v", got, want)
 	}
 	if got, want := numbers["rate"], "0.6%"; got != want {
@@ -684,5 +687,67 @@ func TestAutonomyReportsAStoreItCannotRead(t *testing.T) {
 	}
 	if !strings.Contains(log.String(), "autonomyNotRead") {
 		t.Fatalf("log = %q, want the failed read reported", log.String())
+	}
+}
+
+func getAutonomy(t *testing.T, reader *stubAutonomy) *httptest.ResponseRecorder {
+	t.Helper()
+	mux := newMux(fstest.MapFS{}, discardLogger(), nil, nil, reader)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/autonomy", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	return rec
+}
+
+// TestAutonomySerialisesAnEmptySnapshotsPRsAsAnEmptyList asserts evidence with no
+// PRs reads `"prs":[]` and never null, which would blank the view.
+func TestAutonomySerialisesAnEmptySnapshotsPRsAsAnEmptyList(t *testing.T) {
+	rec := getAutonomy(t, &stubAutonomy{view: store.AutonomyView{
+		Level: 3, HasEarned: true,
+		Earned: dispatcher.Earned{Level: 3, ComputedAt: time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC)},
+	}})
+	if !strings.Contains(rec.Body.String(), `"prs":[]`) || strings.Contains(rec.Body.String(), `"prs":null`) {
+		t.Fatalf("body = %s, want prs as an empty list", rec.Body.String())
+	}
+}
+
+// TestAutonomyAsksForTheCappedHistoryAndSaysWhenItIsCut asserts the reader is
+// asked for exactly the cap, and the answer says so only when the list reached it.
+func TestAutonomyAsksForTheCappedHistoryAndSaysWhenItIsCut(t *testing.T) {
+	full := make([]dispatcher.Change, autonomyHistoryShown)
+	for _, tt := range []struct {
+		name    string
+		history []dispatcher.Change
+		cutAt   string
+	}{
+		{"whole", full[:2], ``},
+		{"cut", full, `cut`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			reader := &stubAutonomy{view: store.AutonomyView{History: tt.history}}
+			rec := getAutonomy(t, reader)
+			if reader.limit != 50 {
+				t.Errorf("limit asked = %d, want 50", reader.limit)
+			}
+			if got := strings.Contains(rec.Body.String(), `"history_cut_at":50`); got != (tt.cutAt != "") {
+				t.Errorf("history_cut_at present = %v, want %v", got, tt.cutAt != "")
+			}
+		})
+	}
+}
+
+// TestAutonomyMarksEvidenceTheStoreHeldNoneOfAsNotRecorded asserts the endpoint
+// says the numbers are absent rather than leaving the view to read zeros.
+func TestAutonomyMarksEvidenceTheStoreHeldNoneOfAsNotRecorded(t *testing.T) {
+	rec := getAutonomy(t, &stubAutonomy{view: store.AutonomyView{
+		History: []dispatcher.Change{
+			{From: 3, To: 4, Numbers: dispatcher.Numbers{NotRecorded: true}},
+			{From: 4, To: 3, Numbers: dispatcher.Numbers{PRs: []int{1}}},
+		},
+	}})
+	if got := strings.Count(rec.Body.String(), `"recorded":false`); got != 1 {
+		t.Fatalf("body = %s, want exactly the first change not recorded", rec.Body.String())
 	}
 }

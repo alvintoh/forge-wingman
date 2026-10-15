@@ -133,7 +133,8 @@ func numbersMap(n dispatcher.Numbers) map[string]any {
 	}
 }
 
-// numbersFrom reads n back from its stored form; a field it lacks reads as zero.
+// numbersFrom reads n back from its stored form; a field it lacks reads as zero,
+// and a form with no rate at all, which every stored form carries, is NotRecorded.
 func numbersFrom(m map[string]any) dispatcher.Numbers {
 	i64 := func(k string) int64 { v, _ := m[k].(int64); return v }
 	n := dispatcher.Numbers{
@@ -141,7 +142,9 @@ func numbersFrom(m map[string]any) dispatcher.Numbers {
 		ReviewFoundLines: i64("review_found_lines"), OwnerChangeLines: i64("owner_change_lines"),
 		UnlabelledLines: i64("unlabelled_lines"), Reverts: int(i64("reverts")),
 	}
-	n.Rate, _ = m["rate"].(float64)
+	var hasRate bool
+	n.Rate, hasRate = m["rate"].(float64)
+	n.NotRecorded = !hasRate
 	n.Unavailable, _ = m["unavailable"].(bool)
 	if prs, ok := m["prs"].([]any); ok {
 		for _, pr := range prs {
