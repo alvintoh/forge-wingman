@@ -97,8 +97,8 @@ func TestObserveCountsEveryFileChangingTool(t *testing.T) {
 	}
 }
 
-// TestHarnessStreamsCountTheirFileChangingToolsAsProgress runs each harness's own tool names through its translator into the progress scan.
-func TestHarnessStreamsCountTheirFileChangingToolsAsProgress(t *testing.T) {
+// TestHarnessStreamCountsItsFileChangingToolsAsProgress runs the harness's own tool names through its translator into the progress scan.
+func TestHarnessStreamCountsItsFileChangingToolsAsProgress(t *testing.T) {
 	scan := func(t *testing.T, translated string) int {
 		t.Helper()
 		var sum Summary
@@ -117,20 +117,6 @@ func TestHarnessStreamsCountTheirFileChangingToolsAsProgress(t *testing.T) {
 		}
 		if got := scan(t, out.String()); got != 1 {
 			t.Errorf("omp %s: no-progress = %d, want 1 (only the step after the change)", tool, got)
-		}
-	}
-	for _, tool := range []string{"edit", "write", "patch", "multiedit", "apply_patch"} {
-		stream := strings.Join([]string{
-			`{"type":"tool_use","sessionID":"s","part":{"tool":"` + tool + `","state":{"status":"completed","input":{"filePath":"/repo/a.go"}}}}`,
-			`{"type":"step_finish","sessionID":"s","part":{"tokens":{"input":1}}}`,
-			`{"type":"step_finish","sessionID":"s","part":{"tokens":{"input":1}}}`,
-		}, "\n")
-		var out, errOut strings.Builder
-		if err := translateOpencodeEvents(strings.NewReader(stream), "/repo", &out, &errOut); err != nil {
-			t.Fatal(err)
-		}
-		if got := scan(t, out.String()); got != 1 {
-			t.Errorf("opencode %s: no-progress = %d, want 1", tool, got)
 		}
 	}
 }

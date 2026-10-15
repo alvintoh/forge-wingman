@@ -11,8 +11,6 @@ on:
       - tools/agent/check-image.sh
       - tools/omp/package.json
       - tools/omp/bun.lock
-      - tools/opencode/package.json
-      - tools/opencode/package-lock.json
       - .github/workflows/agent-image.yml
   pull_request:
     paths:
@@ -20,8 +18,6 @@ on:
       - tools/agent/check-image.sh
       - tools/omp/package.json
       - tools/omp/bun.lock
-      - tools/opencode/package.json
-      - tools/opencode/package-lock.json
       - .github/workflows/agent-image.yml
   workflow_dispatch:
 

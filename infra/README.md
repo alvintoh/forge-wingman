@@ -85,11 +85,11 @@ comma-separated provider/model. Unset, it reviews with
 `command-code/poolside/laguna-s-2.1-free`; a paid model is an edit of the variable.
 
 `WINGMAN_AGENT_IMAGE` is required by the build and plan stages and optional for the rest:
-an agent image pinned by digest that provides omp, opencode, git and sh. It runs those
+an agent image pinned by digest that provides omp, git and sh. It runs those
 stages' agent CLIs, and those of `pr-review`, `review-smoke` and `plan-smoke`, in a
 container of that image, which mounts only the worktree (an empty scratch directory for
-those three), the harness home and the git common directory; the build and plan stages run both CLIs' version commands in that
-container, over those mounts, before the first agent round, so an image missing either
+those three), the harness home and the git common directory; the build and plan stages run the CLI's version command in that
+container, over those mounts, before the first agent round, so an image missing the
 binary stops the run with stop reason `agent-container`. Unset, the build and plan stages
 refuse to start, and `pr-review`, `review-smoke` and `plan-smoke` run their agents on the
 runner.

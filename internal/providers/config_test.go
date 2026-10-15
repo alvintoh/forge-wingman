@@ -527,7 +527,7 @@ func TestDispatchOrderIsThePaidPlansThenTheLastResortPlansTheDispatcherWalks(t *
 }
 
 // TestEmbeddedGeminiIsAFreeTierPlan asserts the second plan is configuration
-// alone: its OpenAI-compatible base URL, its own key secret, its opencode
+// alone: its OpenAI-compatible base URL, its own key secret, its omp
 // harness and its free models priced $0, all read through the accessors the
 // runner and dispatcher use.
 func TestEmbeddedGeminiIsAFreeTierPlan(t *testing.T) {
