@@ -803,6 +803,42 @@ func TestPollFailsOnTheStore(t *testing.T) {
 // failed estimate must withhold only the one candidate it failed for, never
 // abort the whole claim walk — a lower-priority candidate whose own estimate
 // succeeds must still be considered and dispatched this poll.
+// countingEstimator counts every read the poll makes of the estimator, per
+// size, through a pointer so it survives the struct being copied into Deps.
+type countingEstimator struct {
+	fakeEstimator
+	builds, plans map[string]int
+}
+
+func (e countingEstimator) Estimate(ctx context.Context, size string) (Estimate, error) {
+	e.builds[size]++
+	return e.fakeEstimator.Estimate(ctx, size)
+}
+
+func (e countingEstimator) EstimatePlan(ctx context.Context, size string) (Estimate, error) {
+	e.plans[size]++
+	return e.fakeEstimator.EstimatePlan(ctx, size)
+}
+
+func TestPollEstimatesEachSizeOnceHoweverManyCandidatesHoldIt(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{
+		{RunID: "FRG-18", Repo: "octo/scratch", Size: "M", Priority: 1},
+		{RunID: "FRG-19", Repo: "octo/scratch", Size: "M", Priority: 2},
+		{RunID: "FRG-20", Repo: "octo/scratch", Size: "M", Priority: 3},
+	}}
+	est := countingEstimator{builds: map[string]int{}, plans: map[string]int{}}
+	deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	deps.Estimator = est
+	cfg := buildConfig
+	cfg.TwoStage = true
+	if _, err := Poll(context.Background(), deps, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if est.builds["M"] != 1 || est.plans["M"] != 1 {
+		t.Fatalf("three M candidates read the estimator %d times for the build and %d for the plan, want once each", est.builds["M"], est.plans["M"])
+	}
+}
+
 func TestPollSkipsACandidateWhoseEstimateFails(t *testing.T) {
 	q := &fakeQueue{candidates: []Candidate{
 		{RunID: "FRG-18", Size: "L", Priority: 1},
