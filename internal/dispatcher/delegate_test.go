@@ -70,7 +70,7 @@ func delegationDeps(level Autonomy, from []Issue, q *fakeQueue) (Deps, *fakeDele
 	var logs bytes.Buffer
 	deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
 	deps.Delegatable = delegatable
-	deps.Autonomies = fakeAutonomies{level: level}
+	deps.Autonomies = &fakeAutonomies{level: level}
 	deps.Logger = slog.New(slog.NewTextHandler(&logs, nil))
 	return deps, delegatable, &logs
 }

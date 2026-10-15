@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGitHubStartsTheRunWorkflowInTheTicketRepository(t *testing.T) {
@@ -325,5 +326,113 @@ func TestGitHubSendsNoStageForABuildStageClaim(t *testing.T) {
 	}
 	if len(inputs) != 2 || inputs["run_id"] != "FRG-18" || inputs["attempt"] != "0" {
 		t.Fatalf("inputs = %v, want the run id and attempt 0, no stage: run.yml's own default reads a missing stage as build", inputs)
+	}
+}
+
+func TestGitHubMeasuresARunsLinesFromTheFixtureCommits(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/octo/scratch/pulls/7/commits":
+			_, _ = io.WriteString(w, `[
+				{"sha":"aaaa","commit":{"author":{"name":"github-actions[bot]","email":"41898282+github-actions[bot]@users.noreply.github.com"}}},
+				{"sha":"bbbb","commit":{"author":{"name":"Alvin Toh","email":"alvin4292@gmail.com"}}}
+			]`)
+		case "/repos/octo/scratch/commits/aaaa":
+			_, _ = io.WriteString(w, `{"stats":{"additions":120,"deletions":8,"total":128}}`)
+		case "/repos/octo/scratch/commits/bbbb":
+			_, _ = io.WriteString(w, `{"stats":{"additions":3,"deletions":1,"total":4}}`)
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	commits, err := (GitHub{Endpoint: srv.URL, Token: "gh-token", Client: srv.Client()}).
+		Commits(context.Background(), "octo/scratch", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := RewriteOf(commits), (Rewrite{AgentLines: 128, OwnerLines: 4, UnlabelledLines: 4}); got != want {
+		t.Fatalf("RewriteOf = %+v over %+v, want %+v", got, commits, want)
+	}
+}
+
+func TestGitHubReadsACommitGitHubReportsNoStatsForAsNoLines(t *testing.T) {
+	// GitHub answers null stats for a commit of more than 300 files, which counts
+	// as no lines rather than withholding the measurement.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/octo/scratch/pulls/7/commits" {
+			_, _ = io.WriteString(w, `[{"sha":"aaaa","commit":{"author":{"name":"the runner","email":"runner@example.com"}}}]`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"stats":null,"files":[]}`)
+	}))
+	defer srv.Close()
+
+	commits, err := (GitHub{Endpoint: srv.URL, Token: "gh-token", Client: srv.Client()}).
+		Commits(context.Background(), "octo/scratch", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(commits) != 1 || commits[0].Lines() != 0 || !commits[0].Unmeasured {
+		t.Fatalf("commits = %+v, want one unmeasured commit of no lines", commits)
+	}
+}
+
+func TestGitHubListsTheClosedPullRequestsNewestFirst(t *testing.T) {
+	var query string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query = r.URL.RawQuery
+		_, _ = io.WriteString(w, `[
+			{"number":9,"title":"Revert \"feat(x): add a file\"","body":"Reverts octo/scratch#7",
+			 "merged_at":"2026-10-14T04:00:00Z","head":{"ref":"revert-7-wingman/FRG-1-9-1"}},
+			{"number":7,"title":"feat(x): add a file","body":"","merged_at":"2026-10-14T03:00:00Z",
+			 "head":{"ref":"wingman/FRG-1-9-1"}},
+			{"number":6,"title":"a PR nobody merged","body":"","merged_at":null,"head":{"ref":"wingman/FRG-1-8-1"}}
+		]`)
+	}))
+	defer srv.Close()
+
+	prs, err := (GitHub{Endpoint: srv.URL, Token: "gh-token", Client: srv.Client()}).
+		Closed(context.Background(), "octo/scratch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if query != "state=closed&sort=updated&direction=desc&per_page=100" {
+		t.Fatalf("query = %q, want the closed listing most recently updated first", query)
+	}
+	if len(prs) != 3 {
+		t.Fatalf("closed = %+v, want three", prs)
+	}
+	if got := prs[0]; got.Number != 9 || got.Head != "revert-7-wingman/FRG-1-9-1" ||
+		!got.MergedAt.Equal(time.Date(2026, 10, 14, 4, 0, 0, 0, time.UTC)) {
+		t.Fatalf("first = %+v, want the revert with its head and merge time", got)
+	}
+	if got := prs[1]; got.Title != "feat(x): add a file" || got.Head != "wingman/FRG-1-9-1" {
+		t.Fatalf("second = %+v, want the run's own PR", got)
+	}
+	if got := prs[2]; !got.MergedAt.IsZero() {
+		t.Fatalf("third = %+v, want a PR that closed unmerged to carry no merge time", got)
+	}
+}
+
+func TestGitHubReadsOnePullRequestFromItsOwnReply(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/octo/scratch/pulls/7" {
+			t.Errorf("path = %q, want the pull request", r.URL.Path)
+		}
+		_, _ = io.WriteString(w, `{"number":7,"title":"feat(x): add a file","body":"",
+			"merged_at":"2026-10-14T03:00:00Z","head":{"ref":"wingman/FRG-1-9-1"}}`)
+	}))
+	defer srv.Close()
+
+	pr, err := (GitHub{Endpoint: srv.URL, Token: "gh-token", Client: srv.Client()}).
+		Pull(context.Background(), "octo/scratch", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pr.Number != 7 || pr.Head != "wingman/FRG-1-9-1" || pr.MergedAt.IsZero() {
+		t.Fatalf("Pull = %+v, want the run's PR and its merge time", pr)
 	}
 }

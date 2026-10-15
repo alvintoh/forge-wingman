@@ -168,10 +168,10 @@ func runGit(ctx context.Context, bin, dir string, stdin io.Reader, args ...strin
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_GLOBAL=/dev/null",
 		"LANG=C",
-		"GIT_AUTHOR_NAME=" + commitAuthorName,
-		"GIT_AUTHOR_EMAIL=" + commitAuthorEmail,
-		"GIT_COMMITTER_NAME=" + commitAuthorName,
-		"GIT_COMMITTER_EMAIL=" + commitAuthorEmail,
+		"GIT_AUTHOR_NAME=" + CommitAuthorName,
+		"GIT_AUTHOR_EMAIL=" + CommitAuthorEmail,
+		"GIT_COMMITTER_NAME=" + CommitAuthorName,
+		"GIT_COMMITTER_EMAIL=" + CommitAuthorEmail,
 	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
