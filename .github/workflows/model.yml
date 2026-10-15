@@ -90,13 +90,14 @@ jobs:
       # The pre-PR loop (FR-28) runs the same four gates as run.yml's check job, in-job, first.
       - uses: ./.github/actions/golangci-lint
 
-      - name: Pull the checks image
-        run: docker pull "$CHECKS_IMAGE"
-
       # WINGMAN_AGENT_IMAGE is the agent image, pinned by digest. The build and plan stages
-      # refuse to start without it.
-      - name: Pull the agent image
-        run: docker pull "$AGENT_IMAGE"
+      # refuse to start without it. The two pulls overlap; a failed pull fails the step.
+      - name: Pull the checks and agent images
+        run: |
+          docker pull "$CHECKS_IMAGE" & checks=$!
+          docker pull "$AGENT_IMAGE" & agent=$!
+          wait "$checks"
+          wait "$agent"
         env:
           AGENT_IMAGE: ${{ vars.WINGMAN_AGENT_IMAGE }}
 
