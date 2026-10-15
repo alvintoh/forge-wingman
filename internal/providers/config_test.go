@@ -240,6 +240,35 @@ func TestEmbeddedGoatCarriesItsPlanFacts(t *testing.T) {
 	}
 }
 
+// trialModel is the model a build trial runs against the plan's own default.
+const trialModel = "command-code/xiaomi/mimo-v2.6-pro"
+
+// TestEmbeddedGoatPricesTheBuildTrialModel asserts the trial's MiMo model is
+// priced from the plan's own card, so a run of it is metered against the plan's
+// windows like any other paid model of the plan (AC3), and carries no peak hours
+// for a run to be held for (AC4).
+func TestEmbeddedGoatPricesTheBuildTrialModel(t *testing.T) {
+	rates, ok := RatesFor(trialModel)
+	if !ok {
+		t.Fatalf("RatesFor(%s) = no card, want the plan's own", trialModel)
+	}
+	if rates.Input != 0.435 || rates.Output != 0.87 || rates.CacheRead != 0.0036 {
+		t.Fatalf("rates = %+v, want $0.435 in, $0.87 out and $0.0036 a cache read per 1M", rates)
+	}
+	if got := rates.CostUSD(1_000_000, 0, 0, 0); got != 0.435 {
+		t.Errorf("a million input tokens cost %v, want $0.435", got)
+	}
+	if got := rates.CostUSD(0, 1_000_000, 0, 0); got != 0.87 {
+		t.Errorf("a million output tokens cost %v, want $0.87", got)
+	}
+	if got := rates.CostUSD(0, 0, 1_000_000, 0); got != 0.0036 {
+		t.Errorf("a million cache-read tokens cost %v, want $0.0036", got)
+	}
+	if rates.Peak != nil {
+		t.Fatalf("peak = %+v, want the model priced the same at every hour", rates.Peak)
+	}
+}
+
 // TestHarnessesReadsThePlansOrder asserts a plan's harness order reads back with
 // its default first, and is empty for a plan that is not configured, so the
 // router selects from configuration rather than the model prefix.

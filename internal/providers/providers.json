@@ -67,6 +67,12 @@
             ]
           }
         },
+        "command-code/xiaomi/mimo-v2.6-pro": {
+          "input_usd_per_mtok": 0.435,
+          "output_usd_per_mtok": 0.87,
+          "cache_read_usd_per_mtok": 0.0036,
+          "cache_write_usd_per_mtok": 0
+        },
         "command-code/poolside/laguna-s-2.1-free": {
           "input_usd_per_mtok": 0,
           "output_usd_per_mtok": 0,
