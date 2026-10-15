@@ -205,14 +205,21 @@ func isGoSource(name string) bool {
 	return strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go")
 }
 
-// breakGuard is src with the guard's condition replaced by false, so its body
-// never runs: for a body that leaves the block, that is src with the guard
-// deleted — the smallest change that disables it and leaves the rest of the file
-// as the tests were written against it.
+// breakGuard is src with the guard's condition made false, so its body never
+// runs: for a body that leaves the block, that is src with the guard deleted —
+// the smallest change that disables it and leaves the rest of the file as the
+// tests were written against it. The condition is kept behind `false &&` rather
+// than replaced: a variable only the condition reads (an init clause's, or `ok`
+// from a map lookup) would otherwise be declared and not used, the package would
+// not build, and the guard would read as covered.
+//
+// For example, `if n := len(s); n == 0 {` becomes `if n := len(s); false && (n == 0) {`.
 func breakGuard(src []byte, g guard) []byte {
-	out := make([]byte, 0, len(src)+len("false"))
+	out := make([]byte, 0, len(src)+len("false && ()"))
 	out = append(out, src[:g.cond[0]]...)
-	out = append(out, "false"...)
+	out = append(out, "false && ("...)
+	out = append(out, src[g.cond[0]:g.cond[1]]...)
+	out = append(out, ')')
 	return append(out, src[g.cond[1]:]...)
 }
 
@@ -243,13 +250,18 @@ func probeGuard(ctx context.Context, d BuildDeps, wt Worktree, sum *Summary, g g
 	}
 	tctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	failed, _, perr := d.PackageTests(tctx, wt.Dir, g.pkg)
+	failed, output, perr := d.PackageTests(tctx, wt.Dir, g.pkg)
 	switch {
 	case perr != nil:
 		d.Logger.Warn("guardProbeFailed", "file", g.file, "line", g.line, "reason", "runner")
 		return false, nil
 	case tctx.Err() != nil:
 		d.Logger.Warn("guardProbeFailed", "file", g.file, "line", g.line, "reason", "timeout")
+		return false, nil
+	case failed && strings.Contains(output, "[build failed]"):
+		// A break that does not build failed no test, so it proves nothing
+		// either way.
+		d.Logger.Warn("guardProbeFailed", "file", g.file, "line", g.line, "reason", "build")
 		return false, nil
 	}
 	return !failed, nil

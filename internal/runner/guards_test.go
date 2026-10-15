@@ -4,6 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"go/types"
 	"io"
 	"log/slog"
 	"os"
@@ -98,11 +102,37 @@ func TestBreakGuardReplacesOnlyTheCondition(t *testing.T) {
 		t.Fatalf("pkg = %q, want the go test pattern for the file's own package", guards[0].pkg)
 	}
 	broken := string(breakGuard([]byte(guardFile), guards[0]))
-	if !strings.Contains(broken, "if false {") {
-		t.Fatalf("broken guard = %q, want the condition replaced with false", broken)
+	if !strings.Contains(broken, "if false && (err != nil) {") {
+		t.Fatalf("broken guard = %q, want the condition made false behind false &&", broken)
 	}
-	if got := strings.Count(broken, "err != nil"); got != 1 {
-		t.Fatalf("broken guard = %q, has %d conditions left, want the other guard's one", broken, got)
+	if got := strings.Count(broken, "false &&"); got != 1 {
+		t.Fatalf("broken guard = %q, has %d broken conditions, want only the probed guard's", broken, got)
+	}
+}
+
+// TestBreakGuardStillCompiles covers the guards whose condition is the only
+// reader of a variable: replacing the condition outright would leave it
+// declared and not used, the package would not build, and the probe would read
+// that build failure as the guard being covered.
+func TestBreakGuardStillCompiles(t *testing.T) {
+	const src = "package x\n\nfunc f(s []int, m map[string]int) int {\n\tif n := len(s); n == 0 {\n\t\treturn -1\n\t}\n\tv, ok := m[\"a\"]\n\tif !ok {\n\t\treturn -2\n\t}\n\treturn v\n}\n"
+	guards, err := guardsIn("x.go", []byte(src), []int{4, 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(guards) != 2 {
+		t.Fatalf("guards = %+v, want the init-clause guard and the ok guard", guards)
+	}
+	for _, g := range guards {
+		broken := breakGuard([]byte(src), g)
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, "x.go", broken, 0)
+		if err != nil {
+			t.Fatalf("guard at %d: broken source does not parse: %v\n%s", g.line, err, broken)
+		}
+		if _, err := (&types.Config{}).Check("x", fset, []*ast.File{file}, nil); err != nil {
+			t.Fatalf("guard at %d: broken source does not compile: %v\n%s", g.line, err, broken)
+		}
 	}
 }
 
@@ -170,6 +200,29 @@ func TestGuardScanReportsAGuardNoTestCovers(t *testing.T) {
 	}
 	if string(got) != guardedFile {
 		t.Fatalf("extra.go = %q, want the file restored byte for byte", got)
+	}
+}
+
+// TestGuardScanLogsABreakThatDoesNotBuild covers the probe whose broken tree
+// fails to compile: no test ran, so it is neither a finding nor a covered
+// guard, and the log has to say why the guard went untested.
+func TestGuardScanLogsABreakThatDoesNotBuild(t *testing.T) {
+	w := guardWorktree(t, "", guardedFile)
+	var logs strings.Builder
+	deps, sum := guardDeps(func(context.Context, string, string) (bool, string, error) {
+		return true, "FAIL\t. [build failed]\n", nil
+	})
+	deps.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+
+	findings, err := scanGuards(context.Background(), deps, w, sum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("findings = %+v, want none from a probe that did not build", findings)
+	}
+	if !strings.Contains(logs.String(), "msg=guardProbeFailed") || !strings.Contains(logs.String(), "reason=build") {
+		t.Fatalf("logs = %q, want the guard logged as unprobed because the break did not build", logs.String())
 	}
 }
 
