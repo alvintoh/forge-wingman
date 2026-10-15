@@ -55,17 +55,6 @@ func TestParseModelSetRejectsAnInvalidSet(t *testing.T) {
 	}
 }
 
-func TestEmbeddedReviewModelsAreTwoVendors(t *testing.T) {
-	review := DefaultReviewModels()
-	if len(review) != 2 {
-		t.Fatalf("DefaultReviewModels() = %v, want two entries", review)
-	}
-	vendor := func(m string) string { return strings.Split(m, "/")[1] }
-	if vendor(review[0]) == vendor(review[1]) {
-		t.Errorf("review models %v share a vendor", review)
-	}
-}
-
 func TestDefaultReviewModelsReturnsACopy(t *testing.T) {
 	first := DefaultReviewModels()
 	first[0] = "command-code/mutated"

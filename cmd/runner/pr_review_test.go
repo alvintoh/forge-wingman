@@ -345,8 +345,8 @@ func TestPRReviewPostRefusesAMalformedSHA(t *testing.T) {
 
 func TestRunPRReviewWritesTheVerdict(t *testing.T) {
 	agent, _ := newSmokeAgent(map[string]smokeRun{
-		freeModel: func(context.Context, string, io.Writer, io.Writer) error { return errors.New("exit status 1") },
-		otherFree: reviewReply(tokensUsed, "x is missing"),
+		freeModel:   func(context.Context, string, io.Writer, io.Writer) error { return errors.New("exit status 1") },
+		pricedModel: reviewReply(tokensUsed, "x is missing"),
 	})
 	c := runner.PRReviewContext{PR: 7, HeadSHA: headSHA, Ticket: runner.Ticket{ID: "ABC-12", Title: "Add x", Body: "AC1"}, Diff: "+x"}
 	raw, err := json.Marshal(c)
@@ -358,11 +358,11 @@ func TestRunPRReviewWritesTheVerdict(t *testing.T) {
 	if err := os.WriteFile(contextPath, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := runPRReview(context.Background(), quietLogger(), agent, []string{freeModel, otherFree}, time.Minute, contextPath, out, summary, nil); err != nil {
+	if err := runPRReview(context.Background(), quietLogger(), agent, []string{freeModel, pricedModel}, time.Minute, contextPath, out, summary, nil); err != nil {
 		t.Fatal(err)
 	}
 	v, err := readVerdict(out)
-	if err != nil || v.Outcome != "findings" || v.Model != otherFree || len(v.Attempts) != 2 || v.Attempts[0].Outcome != "agent failed" {
+	if err != nil || v.Outcome != "findings" || v.Model != pricedModel || len(v.Attempts) != 2 || v.Attempts[0].Outcome != "agent failed" {
 		t.Fatalf("verdict = %+v, err = %v", v, err)
 	}
 	if got := readSummary(t, summary); !strings.Contains(got, "Wingman review: findings.") {

@@ -137,7 +137,7 @@ func TestParseConfigCountsAPlanWithAnythingPaidAsPaid(t *testing.T) {
 }
 
 func TestEmbeddedGoatFallsToItsOwnFreeModels(t *testing.T) {
-	want := []string{"command-code/inclusionai/ling-3.1-flash:free", "command-code/poolside/laguna-s-2.1-free"}
+	want := []string{"command-code/poolside/laguna-s-2.1-free"}
 	if got := LastResortModels("command-code"); !slices.Equal(got, want) {
 		t.Fatalf("LastResortModels(command-code) = %v, want %v", got, want)
 	}

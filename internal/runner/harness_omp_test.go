@@ -219,24 +219,17 @@ func TestOmpAgentResumesUnderOneHomeWithTheKeyInItsEnvironment(t *testing.T) {
 	}
 }
 
-// TestOmpAgentWritesThePlansOutputCap asserts the plan's per-model ceiling
-// reaches omp's own override file. omp asks its registry for the model's stated
-// maximum, and an API that caps lower rejects the request outright: ling 3.1
-// Flash answers 400 to max_tokens 64000 and 200 to 32768 (run 37881527153).
-func TestOmpAgentWritesThePlansOutputCap(t *testing.T) {
-	bin, _ := scriptedOmp(t, "normal")
-	home := t.TempDir()
-	agent := OmpHarness{Bin: bin, Key: "k", Home: home}.Agent(ProfileBuild, "command-code/inclusionai/ling-3.1-flash:free")
-	if err := agent.Run(context.Background(), t.TempDir(), "", "p", "", io.Discard, io.Discard); err != nil {
-		t.Fatal(err)
-	}
-	raw, err := os.ReadFile(filepath.Join(home, "agent", "models.yml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	const want = "providers:\n  commandcode:\n    modelOverrides:\n      \"inclusionai/ling-3.1-flash:free\":\n        maxTokens: 32768\n"
-	if string(raw) != want {
-		t.Fatalf("models.yml = %q, want %q", raw, want)
+// TestOmpModelsWritesThePlansOutputCap asserts the plan's per-model ceiling
+// reaches omp's own override file. Nothing in the embedded configuration
+// carries one since the model that needed it was retired, so the caps are
+// supplied here; omp asks its registry for the model's stated maximum, and an
+// API that caps lower rejects the request outright (ling 3.1 Flash answered 400
+// to max_tokens 64000 and 200 to 32768, run 37881527153).
+func TestOmpModelsWritesThePlansOutputCap(t *testing.T) {
+	got := ompModels("command-code", map[string]int{"command-code/poolside/laguna-s-2.1-free": 32768})
+	const want = "providers:\n  commandcode:\n    modelOverrides:\n      \"poolside/laguna-s-2.1-free\":\n        maxTokens: 32768\n"
+	if got != want {
+		t.Fatalf("ompModels = %q, want %q", got, want)
 	}
 }
 
@@ -247,7 +240,7 @@ func TestOmpModelsCapsOnlyThePlansOwnModels(t *testing.T) {
 	for name, caps := range map[string]map[string]int{
 		"no caps":           nil,
 		"another plan only": {"other/plan/model": 10},
-		"a bare model id":   {"ling-3.1-flash:free": 10},
+		"a bare model id":   {"poolside/laguna-s-2.1-free": 10},
 		"an empty model id": {"command-code/": 10},
 	} {
 		if got := ompModels("command-code", caps); got != "" {
@@ -523,28 +516,30 @@ func TestOmpAgentReachesTheGeminiPlan(t *testing.T) {
 	}
 }
 
-// TestOmpRunsTheFreeListsTailModelMeteredAtNothing covers ling 3.1 Flash, the
-// tail of GOAT's free list. It answers only when the request's output ceiling is
-// the 32768 its API caps at, which the plan's output_caps now supply; before
-// that, every run of it died at `exit status 1` (plan-smoke 37881527153, fixed
-// by 37884808729).
+// TestOmpRunsTheFreeListsTailModelMeteredAtNothing runs the free list's rung
+// through the harness and meters its transcript at $0, over the recording taken
+// from that same model (testdata/omp/laguna-s-2.1-free.ndjson, captured
+// 2026-10-08). ling 3.1 Flash, the rung before it, died at `exit status 1` here
+// until its 32768 output ceiling was configured (plan-smoke 37881527153, fixed
+// by 37884808729); its replacement candidate was dropped rather than capped —
+// ADR 0015 has the runs.
 func TestOmpRunsTheFreeListsTailModelMeteredAtNothing(t *testing.T) {
-	const model = "command-code/inclusionai/ling-3.1-flash:free"
-	bin, attempts := scriptedOmp(t, "ling-3.1-flash-free")
+	const model = "command-code/poolside/laguna-s-2.1-free"
+	bin, attempts := scriptedOmp(t, "laguna-s-2.1-free")
 	var out strings.Builder
 	h := OmpHarness{Bin: bin, Key: conformanceKey, Home: t.TempDir()}
 	if err := h.Agent(ProfileBuild, model).Run(context.Background(), t.TempDir(), "", "p", "", &out, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if got := attempts(); len(got) != 1 || !slices.Contains(got[0].args, "commandcode/inclusionai/ling-3.1-flash:free") {
+	if got := attempts(); len(got) != 1 || !slices.Contains(got[0].args, "commandcode/poolside/laguna-s-2.1-free") {
 		t.Fatalf("attempts = %+v, want one run naming the free model to omp's own provider", got)
 	}
 	u, err := meterUsage(strings.NewReader(out.String()), model, providers.RatesFor)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if u.Input != 59312 || u.Output != 31 || u.Cost != 0 {
-		t.Fatalf("usage = %+v, want the recorded 59312 in / 31 out at $0", u)
+	if u.Input != 7185 || u.Output != 107 || u.Cost != 0 {
+		t.Fatalf("usage = %+v, want the recorded 7185 in / 107 out at $0", u)
 	}
 }
 

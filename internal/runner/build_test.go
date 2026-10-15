@@ -1032,7 +1032,7 @@ func TestBuildAdvancesTheBuildOrderOnAllowanceExhaustion(t *testing.T) {
 	if _, err := Build(context.Background(), deps, c); err == nil {
 		t.Fatal("Build succeeded with every model's allowance exhausted")
 	}
-	want := []string{"command-code/deepseek/deepseek-v4.1-flash", "command-code/inclusionai/ling-3.1-flash:free"}
+	want := []string{"command-code/deepseek/deepseek-v4.1-flash", "command-code/poolside/laguna-s-2.1-free"}
 	if agent.calls != len(want) {
 		t.Fatalf("build agent ran %d times, want %d: an exhausted allowance moves to the fallback", agent.calls, len(want))
 	}
@@ -2061,7 +2061,7 @@ func TestTruncateKeepsValidUTF8(t *testing.T) {
 }
 
 func TestModelPatternAcceptsProviderIDs(t *testing.T) {
-	for _, model := range []string{"command-code/deepseek/deepseek-v4.1-flash", "openrouter/deepseek/deepseek-v4:free", "command-code/inclusionai/ling-3.1-flash:free"} {
+	for _, model := range []string{"command-code/deepseek/deepseek-v4.1-flash", "openrouter/deepseek/deepseek-v4:free", "command-code/poolside/laguna-s-2.1-free"} {
 		if !modelPattern.MatchString(model) {
 			t.Errorf("rejected %q", model)
 		}
