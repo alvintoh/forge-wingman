@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,6 +18,7 @@ import (
 
 	"cloud.google.com/go/firestore"
 
+	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 	"github.com/alvintoh/forge-wingman/internal/runner"
 	"github.com/alvintoh/forge-wingman/internal/store"
 	"github.com/alvintoh/forge-wingman/web"
@@ -48,12 +50,13 @@ func run(logger *slog.Logger) error {
 		port = "8080"
 	}
 
-	// The comparison and providers endpoints read past runs and the owner's
-	// plan records, so they need the store. A local run without
-	// GOOGLE_CLOUD_PROJECT has none and serves the SPA alone, answering those
-	// two endpoints with 503.
+	// The comparison, providers and autonomy endpoints read past runs, the
+	// owner's plan records and the level, so they need the store. A local run
+	// without GOOGLE_CLOUD_PROJECT has none and serves the SPA alone, answering
+	// those endpoints with 503.
 	var comparison ComparisonReader
 	var providerPlans ProviderPlansReader
+	var autonomy AutonomyReader
 	if project := os.Getenv("GOOGLE_CLOUD_PROJECT"); project != "" {
 		fsc, err := firestore.NewClient(context.Background(), project)
 		if err != nil {
@@ -62,11 +65,12 @@ func run(logger *slog.Logger) error {
 		defer func() { _ = fsc.Close() }()
 		comparison = store.NewRecords(fsc)
 		providerPlans = store.NewProviderPlans(fsc)
+		autonomy = store.NewAutonomies(fsc)
 	}
 
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           newMux(spa, logger, comparison, providerPlans),
+		Handler:           newMux(spa, logger, comparison, providerPlans, autonomy),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -105,11 +109,19 @@ type ProviderPlansReader interface {
 	Providers(ctx context.Context, at time.Time) ([]store.ProviderPlan, error)
 }
 
+// AutonomyReader reads what the autonomy view shows: the level the owner has
+// set, the earned snapshot behind it and the changes recorded, newest first. It
+// has no method that sets the level, which stays the runner autonomy command.
+type AutonomyReader interface {
+	AutonomyView(ctx context.Context, history int) (store.AutonomyView, error)
+}
+
 // newMux claims /api/ explicitly so an unknown endpoint 404s instead of
 // falling through to the SPA's index.html. A nil comparison serves every
-// endpoint but /api/comparison, and a nil providerPlans every endpoint but
-// /api/providers, each of which then has no store to read.
-func newMux(spa fs.FS, logger *slog.Logger, comparison ComparisonReader, providerPlans ProviderPlansReader) *http.ServeMux {
+// endpoint but /api/comparison, a nil providerPlans every endpoint but
+// /api/providers, and a nil autonomy every endpoint but /api/autonomy, each of
+// which then has no store to read.
+func newMux(spa fs.FS, logger *slog.Logger, comparison ComparisonReader, providerPlans ProviderPlansReader, autonomy AutonomyReader) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -148,6 +160,20 @@ func newMux(spa fs.FS, logger *slog.Logger, comparison ComparisonReader, provide
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(renderProviders(plans))
+	})
+	mux.HandleFunc("GET /api/autonomy", func(w http.ResponseWriter, r *http.Request) {
+		if autonomy == nil {
+			http.Error(w, "the autonomy view needs a store", http.StatusServiceUnavailable)
+			return
+		}
+		view, err := autonomy.AutonomyView(r.Context(), autonomyHistoryShown)
+		if err != nil {
+			logger.Error("autonomyNotRead", "err", err.Error())
+			http.Error(w, "reading the autonomy level", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(renderAutonomy(view))
 	})
 	mux.Handle("GET /api/", http.NotFoundHandler())
 	mux.Handle("GET /", spaHandler(spa))
@@ -300,6 +326,116 @@ func renderProviders(plans []store.ProviderPlan) providersResponse {
 		out.Plans = append(out.Plans, entry)
 	}
 	return out
+}
+
+// autonomyHistoryShown is how many level changes the autonomy view lists, newest
+// first. The history gains one document per change, so it is many times the
+// number of changes a level's own range can produce.
+const autonomyHistoryShown = 50
+
+// autonomyResponse is the autonomy endpoint's wire shape: the level the owner
+// has set and what it allows, the earned snapshot behind it, and the changes
+// recorded, newest first. It carries no ticket text and no credential — the
+// level is a number and the evidence is counts and PR numbers — and no field of
+// it sets the level, which stays the runner autonomy command's.
+type autonomyResponse struct {
+	Level   int              `json:"level"`
+	Allows  string           `json:"allows"`
+	Earned  *earnedSnapshot  `json:"earned"`
+	History []autonomyChange `json:"history"`
+}
+
+// earnedSnapshot is the earned level as last computed: the evidence behind it,
+// and the stale mark left by a recomputation that could not store one.
+type earnedSnapshot struct {
+	Level      int       `json:"level"`
+	Stale      bool      `json:"stale"`
+	ComputedAt time.Time `json:"computed_at"`
+	Evidence   evidence  `json:"evidence"`
+}
+
+// autonomyChange is one recorded change of the level: when it happened, the
+// levels it moved between, its cause and the evidence at that moment.
+type autonomyChange struct {
+	At       time.Time `json:"at"`
+	From     int       `json:"from"`
+	To       int       `json:"to"`
+	Cause    string    `json:"cause"`
+	Evidence evidence  `json:"evidence"`
+}
+
+// evidence is the rewrite rate's numbers: the rate, the PRs it covers and the
+// lines behind it, with the owner's lines split by the Rework label that marks
+// them.
+type evidence struct {
+	Rate             string `json:"rate"`
+	PRs              []int  `json:"prs"`
+	AgentLines       int64  `json:"agent_lines"`
+	OwnerLines       int64  `json:"owner_lines"`
+	ReviewFoundLines int64  `json:"review_found_lines"`
+	OwnerChangeLines int64  `json:"owner_change_lines"`
+	UnlabelledLines  int64  `json:"unlabelled_lines"`
+	Reverts          int    `json:"reverts"`
+	Unavailable      bool   `json:"unavailable"`
+}
+
+// renderAutonomy renders the store's view as JSON. The history is rendered
+// whether or not it holds anything, so the view reads an empty list rather than
+// a null; the earned snapshot is null while none is stored.
+func renderAutonomy(v store.AutonomyView) autonomyResponse {
+	out := autonomyResponse{
+		Level:   int(v.Level),
+		Allows:  v.Level.Describe(),
+		History: make([]autonomyChange, 0, len(v.History)),
+	}
+	if v.HasEarned {
+		out.Earned = &earnedSnapshot{
+			Level:      int(v.Earned.Level),
+			Stale:      v.Earned.Stale,
+			ComputedAt: v.Earned.ComputedAt,
+			Evidence:   renderEvidence(v.Earned.Numbers),
+		}
+	}
+	for _, c := range v.History {
+		out.History = append(out.History, autonomyChange{
+			At:       c.At,
+			From:     int(c.From),
+			To:       int(c.To),
+			Cause:    c.Cause,
+			Evidence: renderEvidence(c.Numbers),
+		})
+	}
+	return out
+}
+
+// renderEvidence renders the numbers a level was computed from, with the rate as
+// the view prints it.
+func renderEvidence(n dispatcher.Numbers) evidence {
+	prs := n.PRs
+	if prs == nil {
+		prs = []int{}
+	}
+	return evidence{
+		Rate:             rateText(n.Rate),
+		PRs:              prs,
+		AgentLines:       n.AgentLines,
+		OwnerLines:       n.OwnerLines,
+		ReviewFoundLines: n.ReviewFoundLines,
+		OwnerChangeLines: n.OwnerChangeLines,
+		UnlabelledLines:  n.UnlabelledLines,
+		Reverts:          n.Reverts,
+		Unavailable:      n.Unavailable,
+	}
+}
+
+// rateText is the rewrite rate as the endpoint prints it: a percentage, or the
+// words for a rate measured over none of the agent's lines at all, which is
+// +Inf and has no percentage to print.
+func rateText(rate float64) string {
+	if math.IsInf(rate, 1) {
+		return "no agent lines"
+	}
+	return fmt.Sprintf("%.1f%%", rate*100)
 }
 
 // spaHandler serves index.html for client-side routes, but 404s a missing path
