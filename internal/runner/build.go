@@ -643,7 +643,7 @@ func recordPhaseCache(sum *Summary, phase Phase, requests []Usage) {
 			cached += st.Tokens.CacheRead
 		}
 	}
-	c.CachedShare = cachedShare(fresh, cached)
+	c.CachedShare = CachedShare(fresh, cached)
 	sum.Cache[key] = c
 }
 

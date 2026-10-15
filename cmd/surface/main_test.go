@@ -161,10 +161,12 @@ func TestComparisonReportsEachModelAndProviderAndEveryDriftedRun(t *testing.T) {
 
 // TestComparisonReportsEachRunsPromptCacheShare asserts the statistics endpoint
 // prints, per run, the share of that run's input tokens its provider served from
-// cache (AC2).
+// cache and each phase's own figures, which the run view lists without asking
+// the store again (AC2).
 func TestComparisonReportsEachRunsPromptCacheShare(t *testing.T) {
 	reader := &stubComparison{cmp: store.Comparison{
-		Runs: []store.RunCache{{RunID: "run-1", Provider: "command-code", Model: "command-code/x", CachedShare: 0.75}},
+		Runs: []store.RunCache{{RunID: "run-1", Provider: "command-code", Model: "command-code/x", CachedShare: 0.75,
+			BuildCache: "90% first, 75% phase", PlanCache: "50% first, 25% phase"}},
 	}}
 	mux := newMux(fstest.MapFS{}, discardLogger(), reader, nil)
 
@@ -183,7 +185,7 @@ func TestComparisonReportsEachRunsPromptCacheShare(t *testing.T) {
 	if len(body.Runs) != 1 {
 		t.Fatalf("body = %s, want one run", rec.Body.String())
 	}
-	if got, want := slices.Sorted(maps.Keys(body.Runs[0])), []string{"cached_share", "model", "provider", "run_id"}; !slices.Equal(got, want) {
+	if got, want := slices.Sorted(maps.Keys(body.Runs[0])), []string{"build_cache", "cached_share", "model", "plan_cache", "provider", "run_id"}; !slices.Equal(got, want) {
 		t.Errorf("run keys = %v, want %v", got, want)
 	}
 	if got, want := body.Runs[0]["cached_share"], 0.75; got != want {
@@ -191,6 +193,64 @@ func TestComparisonReportsEachRunsPromptCacheShare(t *testing.T) {
 	}
 	if got, want := body.Runs[0]["run_id"], "run-1"; got != want {
 		t.Errorf("run id = %v, want %v", got, want)
+	}
+	if got, want := body.Runs[0]["build_cache"], "90% first, 75% phase"; got != want {
+		t.Errorf("build cache = %v, want %v", got, want)
+	}
+	if got, want := body.Runs[0]["plan_cache"], "50% first, 25% phase"; got != want {
+		t.Errorf("plan cache = %v, want %v", got, want)
+	}
+}
+
+// TestComparisonReportsTheWordForAPhaseThereIsNoShareOf asserts a phase reads as
+// none when the run made no request in it and as not recorded for a run recorded
+// before the figures were, so the run view never prints 0% for a share nobody
+// read (AC2, AC3).
+func TestComparisonReportsTheWordForAPhaseThereIsNoShareOf(t *testing.T) {
+	reader := &stubComparison{cmp: store.Comparison{Runs: []store.RunCache{
+		{RunID: "run-1", Provider: "command-code", Model: "command-code/x", CachedShare: 0.4,
+			BuildCache: "90% first, 25% phase", PlanCache: runner.PhaseCacheNone},
+		{RunID: "run-2", Provider: "command-code", Model: "command-code/x", CachedShare: 0.5,
+			BuildCache: runner.PhaseCacheNotRecorded, PlanCache: runner.PhaseCacheNotRecorded},
+	}}}
+	mux := newMux(fstest.MapFS{}, discardLogger(), reader, nil)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/comparison", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var body struct {
+		Runs []map[string]any `json:"runs"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Runs) != 2 {
+		t.Fatalf("body = %s, want two runs", rec.Body.String())
+	}
+	if got, want := body.Runs[0]["plan_cache"], runner.PhaseCacheNone; got != want {
+		t.Errorf("a phase the run made no request in = %v, want %v", got, want)
+	}
+	if got, want := body.Runs[1]["build_cache"], runner.PhaseCacheNotRecorded; got != want {
+		t.Errorf("a run recorded before the figures were = %v, want %v", got, want)
+	}
+}
+
+// TestComparisonWithNoSettledRunListsNone asserts a window no run settled in
+// answers with an empty list rather than a null, which the run view reads as no
+// run to show (AC4).
+func TestComparisonWithNoSettledRunListsNone(t *testing.T) {
+	mux := newMux(fstest.MapFS{}, discardLogger(), &stubComparison{}, nil)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/comparison", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got, want := rec.Body.String(), "{\"models\":[],\"providers\":[],\"runs\":[],\"drifted_runs\":[]}\n"; got != want {
+		t.Errorf("body = %q, want %q", got, want)
 	}
 }
 

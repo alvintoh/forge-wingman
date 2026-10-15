@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -23,6 +24,9 @@ type comparedRun struct {
 	// input and cacheRead are the run's own recorded input tokens: what it read
 	// fresh and what its provider served from cache.
 	input, cacheRead int64
+	// cache is the phase figures the record carries, absent for a run recorded
+	// before the phases' figures were recorded at all.
+	cache map[string]runner.PhaseCache
 	// noSteps writes the document with no step at all, which Finalize never
 	// produces (it settles only a run that reached an agent) and the
 	// comparison still has to read.
@@ -59,6 +63,7 @@ func comparedRecord(t *testing.T, client *firestore.Client, id string, c compare
 		}}
 		rec.Tokens = tokens
 	}
+	rec.Cache = c.cache
 	if _, err := client.Collection(runsCollection).Doc(id).Set(context.Background(), fields(rec)); err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +234,9 @@ func TestComparisonListsDriftedRunsNewestFirst(t *testing.T) {
 
 // TestComparisonReportsEachRunsPromptCacheShare asserts the comparison lists
 // every settled run that read input with the share of it the provider served
-// from cache, newest first, and leaves out a run that read none (AC2).
+// from cache, newest first, and leaves out a run that read none (AC2). Each run
+// also carries its build and plan phases' own figures as a view prints them, and
+// reads as never recorded for a run whose record holds none.
 func TestComparisonReportsEachRunsPromptCacheShare(t *testing.T) {
 	_, client := queue(t)
 	plan := fresh("cache")
@@ -240,7 +247,10 @@ func TestComparisonReportsEachRunsPromptCacheShare(t *testing.T) {
 	comparedRecord(t, client, warm, comparedRun{plan: plan, model: "command-code/x", settledAt: queueAt.Add(time.Minute),
 		input: 250, cacheRead: 750})
 	comparedRecord(t, client, hot, comparedRun{plan: plan, model: "command-code/x", settledAt: queueAt.Add(2 * time.Minute),
-		input: 10, cacheRead: 990})
+		input: 10, cacheRead: 990, cache: map[string]runner.PhaseCache{
+			string(runner.PhaseBuild): {FirstFresh: 10, FirstCached: 90, CachedShare: 0.75},
+			string(runner.PhasePlan):  {FirstFresh: 10, FirstCached: 10, CachedShare: 0.25},
+		}})
 	comparedRecord(t, client, none, comparedRun{plan: plan, model: "command-code/x", settledAt: queueAt.Add(3 * time.Minute)})
 
 	got, err := NewRecords(client).Comparison(context.Background(), queueAt.Add(-time.Hour))
@@ -248,12 +258,50 @@ func TestComparisonReportsEachRunsPromptCacheShare(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []RunCache{
-		{RunID: hot, Provider: plan, Model: "command-code/x", CachedShare: 0.99},
-		{RunID: warm, Provider: plan, Model: "command-code/x", CachedShare: 0.75},
-		{RunID: cold, Provider: plan, Model: "command-code/x", CachedShare: 0.04},
+		{RunID: hot, Provider: plan, Model: "command-code/x", CachedShare: 0.99,
+			BuildCache: "90% first, 75% phase", PlanCache: "50% first, 25% phase"},
+		{RunID: warm, Provider: plan, Model: "command-code/x", CachedShare: 0.75,
+			BuildCache: runner.PhaseCacheNotRecorded, PlanCache: runner.PhaseCacheNotRecorded},
+		{RunID: cold, Provider: plan, Model: "command-code/x", CachedShare: 0.04,
+			BuildCache: runner.PhaseCacheNotRecorded, PlanCache: runner.PhaseCacheNotRecorded},
 	}
 	if !slices.Equal(got.Runs, want) {
 		t.Fatalf("runs = %+v, want each run that read input, newest first, at %+v", got.Runs, want)
+	}
+}
+
+// TestPlanCachesSumsEachPlansTrailingRunsPerPhase asserts a plan's figures are
+// its trailing runs' own summed per phase — a phase's first-request tokens with
+// the rest, and its whole input read back from those runs' steps — that a plan
+// whose runs recorded no figure is left out, and that a window nothing settled
+// in reports no plan at all.
+func TestPlanCachesSumsEachPlansTrailingRunsPerPhase(t *testing.T) {
+	_, client := queue(t)
+	plan, quiet := fresh("plancache"), fresh("plancache-quiet")
+	hot, cold, bare := fresh("plancache-hot"), fresh("plancache-cold"), fresh("plancache-bare")
+	forget(t, client, hot, cold, bare)
+	build := map[string]runner.PhaseCache{string(runner.PhaseBuild): {FirstFresh: 10, FirstCached: 90}}
+	comparedRecord(t, client, hot, comparedRun{plan: plan, model: "command-code/x", settledAt: queueAt,
+		input: 10, cacheRead: 90, cache: build})
+	comparedRecord(t, client, cold, comparedRun{plan: plan, model: "command-code/x", settledAt: queueAt.Add(time.Minute),
+		input: 90, cacheRead: 10, cache: build})
+	comparedRecord(t, client, bare, comparedRun{plan: quiet, model: "command-code/x", settledAt: queueAt.Add(2 * time.Minute),
+		input: 10, cacheRead: 90})
+
+	got, err := NewRecords(client).PlanCaches(context.Background(), queueAt.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := PlanCache{string(runner.PhaseBuild): {FirstFresh: 20, FirstCached: 180, CachedShare: 0.5}}
+	if !maps.Equal(got[plan], want) {
+		t.Fatalf("plan cache = %+v, want %+v", got[plan], want)
+	}
+	if _, ok := got[quiet]; ok {
+		t.Fatalf("a plan whose runs recorded no figure got %+v", got[quiet])
+	}
+	empty, err := NewRecords(client).PlanCaches(context.Background(), queueAt.Add(24*time.Hour))
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("plan caches in a window nothing settled in = %+v, err %v", empty, err)
 	}
 }
 

@@ -55,7 +55,8 @@ type ProviderComparison struct {
 }
 
 // RunCache is one settled run's own prompt-cache share, read from the input and
-// cache-read tokens the record already holds (AC1, AC2).
+// cache-read tokens the record already holds, with each phase's own figures as a
+// view prints them.
 type RunCache struct {
 	RunID    string
 	Provider string
@@ -63,6 +64,11 @@ type RunCache struct {
 	// CachedShare is the share of the run's input tokens — fresh and cached
 	// together — that came from the provider's cache.
 	CachedShare float64
+	// BuildCache and PlanCache are the phase's own figures as a view prints
+	// them: the share of its first request and of its whole input, or the word
+	// that stands in for a share the run recorded none of.
+	BuildCache string
+	PlanCache  string
 }
 
 // DriftedRun is one recent run whose settled cost was flagged as sitting above
@@ -75,6 +81,11 @@ type DriftedRun struct {
 	// CostDrift is the flag as Finalize wrote it.
 	CostDrift string
 }
+
+// PlanCache is one plan's trailing runs' prompt-cache figures, keyed by phase:
+// the same figures one run of it records, summed over the runs that recorded
+// them. A phase none of them recorded is absent.
+type PlanCache map[string]runner.PhaseCache
 
 // ProviderTrailingCost implements runner.ProviderCostReader: the mean settled
 // cost of plan's own runs settled since since, and how many runs that mean
@@ -164,7 +175,9 @@ func (r *Records) Comparison(ctx context.Context, since time.Time) (Comparison, 
 		// out rather than printed as a cold one.
 		if rec.Tokens.Input+rec.Tokens.CacheRead > 0 {
 			runs = append(runs, RunCache{RunID: rec.RunID, Provider: rec.Plan, Model: model,
-				CachedShare: rec.CachedShare()})
+				CachedShare: rec.CachedShare(),
+				BuildCache:  runner.PhaseCacheCell(rec.Cache, runner.PhaseBuild),
+				PlanCache:   runner.PhaseCacheCell(rec.Cache, runner.PhasePlan)})
 		}
 	}
 	slices.Reverse(drifted)
@@ -187,6 +200,64 @@ func (r *Records) Comparison(ctx context.Context, since time.Time) (Comparison, 
 	slices.SortFunc(out.Models, func(a, b ModelComparison) int { return strings.Compare(a.Model, b.Model) })
 	slices.SortFunc(out.Providers, func(a, b ProviderComparison) int { return strings.Compare(a.Provider, b.Provider) })
 	return out, nil
+}
+
+// PlanCaches sums every settled run in the window into its plan's own
+// prompt-cache figures per phase, so a plan reads the way one run of it does but
+// covers every run that recorded the phase. Runs with no provider, and phases a
+// run recorded no figure for, are left out.
+func (r *Records) PlanCaches(ctx context.Context, since time.Time) (map[string]PlanCache, error) {
+	recs, err := r.settledSince(ctx, since)
+	if err != nil {
+		return nil, err
+	}
+	totals := map[string]map[string]*phaseTotal{}
+	for _, rec := range recs {
+		if rec.Plan == "" || len(rec.Cache) == 0 {
+			continue
+		}
+		byPhase := totals[rec.Plan]
+		if byPhase == nil {
+			byPhase = map[string]*phaseTotal{}
+			totals[rec.Plan] = byPhase
+		}
+		// The phase's whole input is summed from its steps, the way one run's
+		// figures are read from them, because the record keeps that share
+		// without the tokens behind it.
+		fresh, cached := map[string]int64{}, map[string]int64{}
+		for _, step := range rec.Steps {
+			phase := string(step.Phase)
+			fresh[phase] += step.Tokens.Input
+			cached[phase] += step.Tokens.CacheRead
+		}
+		for phase, c := range rec.Cache {
+			t := byPhase[phase]
+			if t == nil {
+				t = &phaseTotal{}
+				byPhase[phase] = t
+			}
+			t.firstFresh += c.FirstFresh
+			t.firstCached += c.FirstCached
+			t.fresh += fresh[phase]
+			t.cached += cached[phase]
+		}
+	}
+	out := map[string]PlanCache{}
+	for plan, byPhase := range totals {
+		cache := make(PlanCache, len(byPhase))
+		for phase, t := range byPhase {
+			cache[phase] = runner.PhaseCache{FirstFresh: t.firstFresh, FirstCached: t.firstCached,
+				CachedShare: runner.CachedShare(t.fresh, t.cached)}
+		}
+		out[plan] = cache
+	}
+	return out, nil
+}
+
+// phaseTotal is one plan phase's running token totals, before its share is taken.
+type phaseTotal struct {
+	firstFresh, firstCached int64
+	fresh, cached           int64
 }
 
 // modelTotal is one model's running totals, before the mean is taken.

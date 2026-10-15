@@ -70,6 +70,26 @@ func TestParseSummaryKeepsThePhasesCacheFigures(t *testing.T) {
 	}
 }
 
+// TestPhaseCacheCellPrintsThePhasesSharesOrTheWordForAMissingOne asserts a phase
+// reads as the share of its first request and of its whole input, as none for a
+// phase the run made no model request in, and as not recorded for a run whose
+// figures were never recorded at all, so a view never prints a share that was
+// never read.
+func TestPhaseCacheCellPrintsThePhasesSharesOrTheWordForAMissingOne(t *testing.T) {
+	cache := map[string]PhaseCache{
+		string(PhaseBuild): {FirstFresh: 10, FirstCached: 90, CachedShare: 0.75},
+	}
+	if got, want := PhaseCacheCell(cache, PhaseBuild), "90% first, 75% phase"; got != want {
+		t.Errorf("a phase the run recorded = %q, want %q", got, want)
+	}
+	if got, want := PhaseCacheCell(cache, PhasePlan), PhaseCacheNone; got != want {
+		t.Errorf("a phase the run made no request in = %q, want %q", got, want)
+	}
+	if got, want := PhaseCacheCell(nil, PhaseBuild), PhaseCacheNotRecorded; got != want {
+		t.Errorf("a run with no figures recorded = %q, want %q", got, want)
+	}
+}
+
 func TestParseSummaryRejects(t *testing.T) {
 	tests := []struct {
 		name   string
