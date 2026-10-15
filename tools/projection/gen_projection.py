@@ -41,6 +41,27 @@ BUILD_DROPS = (
 BUILD_DROP_BYTES = 39439          # measured 2026-10-14, after self-review left Code Review Scope
 BUILD_DROP_TOLERANCE = 6000       # a stack edit inside this is drift, not a defect
 
+# ---- the stack packs the build agent gets ----------------------------------
+# The repo's DECLARED stack, not the files a ticket touches: one fixed set for
+# every ticket keeps this prefix byte-identical across runs, which is what the
+# prompt cache share depends on.
+STACK_PACKS = (
+    "base/stacks/go.md",
+    "base/stacks/typescript.md",
+    "base/stacks/react.md",
+    "base/stacks/github-actions.md",
+    "base/stacks/gh.md",
+    "base/stacks/bun.md",
+    "base/stacks/tailwind.md",
+)
+# The packs' combined size AFTER the frontmatter strip and the dropped lines —
+# the bytes the build prompt actually grows by — so a stack edit that adds,
+# removes or rewrites a pack fails the generation instead of shipping a silently
+# different prompt. The assertion prints the size it measured, so a stack edit
+# that moves it pins the new figure in one line.
+STACK_PACK_BYTES = 112264         # measured 2026-10-15 against the rule stack at 7cbdab8
+STACK_PACK_TOLERANCE = 17000      # 15%, the proportion BUILD_DROP_TOLERANCE uses
+
 # ---- the projection must not send the agent OUT of its sandbox --------------
 # Dropped from EVERY projection, trimmed or not. The stack's closing section
 # describes the path-scoped rules as living in a config directory and instructs
@@ -57,6 +78,21 @@ ALWAYS_DROPS = (
 )
 
 PLAN_DROP_RULES = ("base/rules/code-comments.md",)  # only a writer needs these
+
+# ---- a pack must not send the agent OUT of its sandbox ---------------------
+# A pack is written for a machine with the owner's config and checkouts in
+# place, so it may name a path that exists only there. Inlined in a projection,
+# that line is an instruction the agent CANNOT follow — the harness refuses the
+# read, and the run can DIE on the refusal (ALWAYS_DROPS records what that cost
+# a run). Dropped per LINE, so the advice on the pack's other lines survives.
+# PACK_UNREACHABLE is the WIDER of the two nets: check()'s assertion runs over
+# the emitted text, where the base layer legitimately names the config directory
+# to say where its own rules live. Both cover a home checkout, so that fails the
+# generation whichever source it arrives in; a trip is fixed by widening the drop
+# here — never by editing the pack, whose copy belongs to the stack.
+PACK_UNREACHABLE = re.compile(r"~/\.claude/|~/dev/|/home/[^/\s]+/|/Users/[^/\s]+/")
+# Without the config directory: only a path the agent must READ is a defect.
+UNREACHABLE = re.compile(r"~/dev/|/home/[^/\s]+/|/Users/[^/\s]+/")
 
 # ---- FR-10 / FR-9 / trap 3 must SURVIVE the build trim ----------------------
 # The PRD names this as the probe's real risk: cutting the largest
@@ -107,6 +143,31 @@ def strip_sections(text, prefixes):
     return "".join(kept), dropped
 
 
+FRONTMATTER = re.compile(r"\A---\n.*?\n---\n", re.S)
+
+
+def strip_frontmatter(text):
+    """Drop a pack's leading YAML frontmatter, which addresses a tool, not a reader."""
+    return FRONTMATTER.sub("", text, count=1).lstrip("\n")
+
+
+def drop_unreachable(text):
+    """Without the lines naming a path the agent cannot reach, and how many went."""
+    kept, dropped = [], 0
+    for line in text.splitlines(keepends=True):
+        if PACK_UNREACHABLE.search(line):
+            dropped += 1
+            continue
+        kept.append(line)
+    return "".join(kept), dropped
+
+
+def pack_projection(root, rel):
+    """One pack as a projection carries it: frontmatter and unreachable lines off."""
+    text, _ = drop_unreachable(strip_frontmatter((root / rel).read_text()))
+    return text
+
+
 def build(root, *, trimmed):
     """Assemble one projection. Invariant rules FIRST, ticket LAST."""
     chunks = []
@@ -133,6 +194,16 @@ def build(root, *, trimmed):
         chunks.append((root / rel).read_text())
 
     if trimmed:
+        packs = [pack_projection(root, rel) for rel in STACK_PACKS]
+        total = sum(len(pack.encode()) for pack in packs)
+        low, high = (STACK_PACK_BYTES - STACK_PACK_TOLERANCE,
+                     STACK_PACK_BYTES + STACK_PACK_TOLERANCE)
+        assert low <= total <= high, (
+            "the stack packs no longer measure what STACK_PACK_BYTES records: a "
+            f"pack was probably added, removed or rewritten. measured={total}, "
+            f"recorded~{STACK_PACK_BYTES}±{STACK_PACK_TOLERANCE}. Set "
+            f"STACK_PACK_BYTES = {total} in tools/projection/gen_projection.py")
+        chunks.extend(packs)
         chunks.extend((root / rel).read_text() for rel in BUILD_ONLY_RULES)
         chunks.append(PROTOCOL)           # after the rules it governs
 
@@ -155,6 +226,9 @@ def check(root, name, text, *, trimmed):
         assert prefix not in text, f"{name}: {prefix} survived — see ALWAYS_DROPS"
     assert "~/.claude/rules/" not in text, \
         f"{name}: points the agent at a config path it cannot reach"
+    outside = UNREACHABLE.search(text)
+    assert outside is None, \
+        f"{name}: names a path outside the sandbox: {outside.group()!r} — see PACK_UNREACHABLE"
     tail = text.split(TICKET_SENTINEL)[1].strip()
     assert tail == "", f"{name}: content after the ticket breaks the cache prefix: {len(tail)} chars"
 
@@ -169,6 +243,13 @@ def check(root, name, text, *, trimmed):
         for rel in BUILD_ONLY_RULES:
             assert _own_heading(root, rel) in text, f"{name}: build projection lost {rel}"
             assert text.index(_own_heading(root, rel)) < text.index(PROTOCOL_HEADING), \
+                f"{name}: {rel} is not before the protocol"
+        # The packs are part of the invariant prefix, ahead of the protocol and
+        # the ticket, so every ticket's cacheable head is the same bytes.
+        for rel in STACK_PACKS:
+            pack = pack_projection(root, rel)
+            assert pack in text, f"{name}: build projection lost {rel}"
+            assert text.index(pack) < text.index(PROTOCOL_HEADING), \
                 f"{name}: {rel} is not before the protocol"
         # the protocol sits between the last rule and the ticket, whole
         for line in PROTOCOL.splitlines()[2:]:
@@ -190,6 +271,11 @@ def check(root, name, text, *, trimmed):
         assert h1 not in text, f"{name}: plan projection kept comment conventions"
         for rel in BUILD_ONLY_RULES:
             assert _own_heading(root, rel) not in text, f"{name}: plan projection kept {rel}"
+        # a pack is build-agent guidance; the plan agent plans, and a plan
+        # projection that grew the packs would change what the lane reads
+        for rel in STACK_PACKS:
+            assert pack_projection(root, rel) not in text, \
+                f"{name}: plan projection kept {rel}"
         # the protocol serves the unattended build agent only
         assert PROTOCOL_HEADING not in text, f"{name}: plan projection kept the protocol"
 
@@ -223,7 +309,11 @@ def main():
         (out / name).write_text(text)
         n = len(text.encode())
         print(f"  {name:22s} {n:7d} bytes  ~{n // 4:6d} tokens")
-    saved = len(full.encode()) - len(trim.encode())
+    packs = sum(len(pack_projection(root, rel).encode()) for rel in STACK_PACKS)
+    # The packs are added, not trimmed, so they are left out of what the trim saves.
+    saved = len(full.encode()) - len(trim.encode()) + packs
+    print(f"  {'the stack packs':22s} {packs:7d} bytes  ~{packs // 4:6d} tokens"
+          f"  (recorded {STACK_PACK_BYTES}±{STACK_PACK_TOLERANCE})")
     print(f"  the build trim removes {saved} bytes (~{saved // 4} tokens) "
           f"= {100 * saved / len(full.encode()):.1f}% of the plan projection")
 

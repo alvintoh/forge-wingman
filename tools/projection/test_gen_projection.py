@@ -14,7 +14,16 @@ MARKER = "RULETEXT"
 EMPLOYER_HEADING = f"## {MARKER} employer section"
 
 
-def write_stack(root, *, leak_employer=False):
+def pack_body(rel, size, extra=""):
+    """One synthetic pack: frontmatter, then a body padded to `size` bytes stripped."""
+    head = f"# {MARKER} {Path(rel).stem} pack\n\n"
+    filler = f"{MARKER} stack guidance\n"
+    body = head + extra
+    body += filler * max(0, (size - len(body)) // len(filler)) + "\n"
+    return f'---\npaths:\n  - "**/*.{Path(rel).stem}"\n---\n\n{body}'
+
+
+def write_stack(root, *, leak_employer=False, pack_scale=100, pack_line=None):
     per_section = gen.BUILD_DROP_BYTES // len(gen.BUILD_DROPS)
     drops = []
     for heading in gen.BUILD_DROPS:
@@ -31,6 +40,10 @@ def write_stack(root, *, leak_employer=False):
     }
     for rel in gen.RULE_FILES + gen.BUILD_ONLY_RULES:
         files[rel] = f"# {MARKER} {Path(rel).stem} rules\n\n{MARKER} rule body\n"
+    per_pack = gen.STACK_PACK_BYTES // len(gen.STACK_PACKS)
+    for rel in gen.STACK_PACKS:
+        extra = f"{pack_line}\n\n" if pack_line and rel == gen.STACK_PACKS[0] else ""
+        files[rel] = pack_body(rel, per_pack * pack_scale // 100, extra)
     for rel, text in files.items():
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -69,6 +82,89 @@ class GenProjectionTest(unittest.TestCase):
                                build.index(gen._own_heading(self.root, gen.RULE_FILES[-1])))
             self.assertLess(build.index(heading), build.index(gen.PROTOCOL_HEADING))
             self.assertNotIn(heading, plan)
+
+    def test_stack_packs_ride_in_the_build_projection_only(self):
+        write_stack(self.root)
+        result = run(self.root, self.out)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        build = (self.out / "projection-build.md").read_text()
+        plan = (self.out / "projection-plan.md").read_text()
+        for rel in gen.STACK_PACKS:
+            pack = gen.pack_projection(self.root, rel)
+            self.assertIn(pack, build)
+            # a pack addresses a reader, not a tool: its frontmatter is not shipped
+            self.assertNotIn("paths:", pack)
+            self.assertNotIn(f"# {MARKER} {Path(rel).stem} pack", plan)
+
+    def test_stack_packs_sit_between_the_rule_stack_and_the_protocol(self):
+        write_stack(self.root)
+        self.assertEqual(run(self.root, self.out).returncode, 0)
+        build = (self.out / "projection-build.md").read_text()
+        last_rule = gen._own_heading(self.root, gen.RULE_FILES[-1])
+        evidence = gen._own_heading(self.root, gen.BUILD_ONLY_RULES[0])
+        first_pack = f"# {MARKER} {Path(gen.STACK_PACKS[0]).stem} pack"
+        self.assertLess(build.index(last_rule), build.index(first_pack))
+        self.assertLess(build.index(first_pack), build.index(evidence))
+        self.assertLess(build.index(evidence), build.index(gen.PROTOCOL_HEADING))
+
+    def test_generation_fails_when_the_packs_drift_past_the_tolerance(self):
+        write_stack(self.root, pack_scale=50)
+        result = run(self.root, self.out)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("STACK_PACK_BYTES", result.stderr)
+        self.assertEqual(list(self.out.iterdir()), [])
+        self.assertNotIn(MARKER, result.stdout + result.stderr)
+
+    def test_generation_fails_when_the_packs_grow_past_the_tolerance(self):
+        write_stack(self.root, pack_scale=150)
+        result = run(self.root, self.out)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("STACK_PACK_BYTES", result.stderr)
+        self.assertEqual(list(self.out.iterdir()), [])
+
+    def test_check_rejects_build_text_missing_a_pack(self):
+        write_stack(self.root)
+        pack = gen.pack_projection(self.root, gen.STACK_PACKS[0])
+        text = gen.build(self.root, trimmed=True).replace(pack, "")
+        with self.assertRaises(AssertionError) as caught:
+            gen.check(self.root, "build", text, trimmed=True)
+        self.assertIn("build projection lost", str(caught.exception))
+
+    def test_check_rejects_a_pack_after_the_protocol(self):
+        write_stack(self.root)
+        pack = gen.pack_projection(self.root, gen.STACK_PACKS[0])
+        text = gen.build(self.root, trimmed=True).replace(pack, "").replace(
+            gen.TICKET_SENTINEL, f"{pack}\n\n{gen.TICKET_SENTINEL}")
+        with self.assertRaises(AssertionError) as caught:
+            gen.check(self.root, "build", text, trimmed=True)
+        self.assertIn("is not before the protocol", str(caught.exception))
+
+    def test_check_rejects_plan_text_carrying_a_pack(self):
+        write_stack(self.root)
+        pack = gen.pack_projection(self.root, gen.STACK_PACKS[0])
+        text = gen.build(self.root, trimmed=False).replace(
+            gen.TICKET_SENTINEL, f"{pack}\n\n{gen.TICKET_SENTINEL}")
+        with self.assertRaises(AssertionError) as caught:
+            gen.check(self.root, "plan", text, trimmed=False)
+        self.assertIn("plan projection kept", str(caught.exception))
+
+    def test_a_pack_line_naming_a_home_path_is_dropped_not_shipped(self):
+        write_stack(self.root, pack_line=f"read ~/dev/{MARKER}/base/CLAUDE.md for the rest")
+        result = run(self.root, self.out)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        build = (self.out / "projection-build.md").read_text()
+        self.assertNotIn("~/dev/", build)
+        self.assertNotIn(f"read ~/dev/{MARKER}", build)
+        # the drop costs the line, not the pack
+        self.assertIn(f"# {MARKER} {Path(gen.STACK_PACKS[0]).stem} pack", build)
+
+    def test_check_rejects_a_projection_naming_a_path_outside_the_sandbox(self):
+        write_stack(self.root)
+        text = gen.build(self.root, trimmed=True).replace(
+            gen.TICKET_SENTINEL, f"{MARKER} see /home/someone/tools\n\n{gen.TICKET_SENTINEL}")
+        with self.assertRaises(AssertionError) as caught:
+            gen.check(self.root, "build", text, trimmed=True)
+        self.assertIn("outside the sandbox", str(caught.exception))
 
     def test_two_runs_over_one_stack_are_byte_identical(self):
         write_stack(self.root)

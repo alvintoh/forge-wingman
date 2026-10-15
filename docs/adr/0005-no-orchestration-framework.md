@@ -77,7 +77,10 @@ invoked as a subprocess by the runner.
   rate — superseded, because rewrite rate cannot see an FR-9 violation; the FR-6
   dependency survives and is stronger, since admission needs per-run evidence. It
   also said ~53,500 tokens, which was the UNTRIMMED stack; the build projection
-  measures ~40,000. The decision this ADR records is unaffected either way.*
+  measures ~40,000 as of that date, and it has grown since — the stack packs now
+  ride in the build projection (`tools/projection/README.md`), so read that figure
+  as the 2026-09-22 shape of the stack rather than today's. The decision this ADR
+  records is unaffected either way.*
 - **Langfuse stays available and is not adopted.** It would be a second copy of data
   the product must hold anyway. It is OTEL-native, so Go can export to it later
   without a rewrite if tracing is ever wanted beyond the record.
