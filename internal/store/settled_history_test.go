@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -133,6 +134,43 @@ func TestTryClaimChecksACeilingAgainstThePollSnapshot(t *testing.T) {
 	}
 	if ok || binding != windowName {
 		t.Fatalf("ok = %v, binding = %q, want the window the settled run fills", ok, binding)
+	}
+}
+
+// A poll whose settled history cannot be read admits nothing: a claim that
+// swallowed the failure would sum every ceiling from an empty history and admit
+// a run as though nothing had been spent.
+func TestTryClaimFailsWhenThePollSnapshotCannotBeRead(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	run := queuedRun(fresh("history-unread"), 1)
+	forget(t, client, run.RunID)
+	resetLedger(t, client, 1)
+	if err := q.Enqueue(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	errUnread := errors.New("history refused")
+	facts := openFacts
+	facts.History = func() (dispatcher.SettledHistory, error) { return nil, errUnread }
+
+	ok, _, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, facts, dispatcher.Reservation{})
+	if !errors.Is(err, errUnread) || ok {
+		t.Fatalf("ok = %v, err = %v, want the unread history to fail the claim", ok, err)
+	}
+	if got := readRow(t, client, run.RunID)[stateField]; got != stateQueued {
+		t.Fatalf("state = %v, want %q: a claim that failed must leave the run queued", got, stateQueued)
+	}
+}
+
+// The snapshot is read from two scans, and a failure of either fails the read
+// rather than yielding the history of whichever scan succeeded.
+func TestSettledHistoryFailsWhenAScanCannotBeRead(t *testing.T) {
+	q, _ := queue(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	history, err := q.SettledHistory(ctx, queueAt.Add(-5*time.Hour))
+	if err == nil || history != nil {
+		t.Fatalf("history = %v, err = %v, want the failed scan to fail the read", history, err)
 	}
 }
 
