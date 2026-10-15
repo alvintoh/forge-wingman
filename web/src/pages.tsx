@@ -14,7 +14,9 @@ export function Inbox() {
     <>
       <h1>Inbox</h1>
       <nav aria-label="Views">
-        <Link to="/providers">Providers</Link>
+        <Link to="/providers" className="inline-flex min-h-11 min-w-11 items-center">
+          Providers
+        </Link>
       </nav>
     </>
   );

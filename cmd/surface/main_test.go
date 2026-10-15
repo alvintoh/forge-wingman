@@ -58,6 +58,21 @@ func TestMux(t *testing.T) {
 	}
 }
 
+func TestMuxServesAFontFileAsAFont(t *testing.T) {
+	spa := fstest.MapFS{
+		"index.html":                  {Data: []byte("<html>shell</html>")},
+		"fonts/IBMPlexSans-400.woff2": {Data: []byte("wOF2\x00\x01\x00\x00fontbytes")},
+	}
+	rec := httptest.NewRecorder()
+	newMux(spa, discardLogger(), nil, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/fonts/IBMPlexSans-400.woff2", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "font/woff2" {
+		t.Fatalf("content type = %q, want font/woff2", got)
+	}
+}
+
 func TestVersion(t *testing.T) {
 	mux := newMux(fstest.MapFS{}, discardLogger(), nil, nil)
 
