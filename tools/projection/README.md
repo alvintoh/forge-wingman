@@ -7,9 +7,15 @@ every human-in-the-loop section and appends a short protocol for resolving what
 the rules leave open. Every claim about the output is asserted against the
 emitted text, so a stack edit that breaks one fails the run rather than shipping
 a silently different prompt. The build projection also carries the
-`BUILD_ONLY_RULES` file (per-criterion evidence). `BUILD_DROP_BYTES` is measured
-against one shape of the stack, so a stack edit that moves a dropped section ships
-in the same rule-stack push as the pin bump below.
+`BUILD_ONLY_RULES` file (per-criterion evidence) and `STACK_PACKS`: the packs
+for this repo's declared stack (Go, GitHub Actions, gh, and its
+Vite/React/Tailwind/Bun web stack), the same set for every ticket so the
+cacheable prefix is identical across runs. A pack's frontmatter is stripped and
+any line naming a path the agent cannot reach is dropped, so the prompt stays
+self-contained. `BUILD_DROP_BYTES` and `STACK_PACK_BYTES` are each recorded
+against one shape of the stack, so a stack edit that moves either ships in the
+same rule-stack push as the pin bump below — the generator prints the size it
+measured, and the assertion reports it on a drift.
 
     python3 tools/projection/gen_projection.py <rule-stack-root> --out <dir>
 
