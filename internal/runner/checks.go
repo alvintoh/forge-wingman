@@ -153,12 +153,15 @@ func RunChecks(ctx context.Context, dir string, changed []string) (string, strin
 	return runWebSteps(ctx, dir, webSteps(false))
 }
 
+// lookPath finds a binary on PATH; a test replaces it to make bun missing.
+var lookPath = exec.LookPath
+
 // runWebSteps runs the web job's steps against dir's web directory with the
 // bun on PATH, the way the web job runs them in its own job with the working
 // directory set there. It reports the first failing step with its output, or an
 // error for a step that could not be run at all — bun missing among them.
 func runWebSteps(ctx context.Context, dir string, steps []webStep) (string, string, error) {
-	bun, err := exec.LookPath("bun")
+	bun, err := lookPath("bun")
 	if err != nil {
 		return "", "", fmt.Errorf("running %s: %w", steps[0].gate, err)
 	}
