@@ -85,10 +85,7 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      # Static, so the egress proxy container can run the binary it mounts.
-      - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
-        env:
-          CGO_ENABLED: "0"
+      - uses: ./.github/actions/runner-binary
 
       # The pre-PR loop (FR-28) runs the same four gates as run.yml's check job, in-job, first.
       - uses: ./.github/actions/golangci-lint

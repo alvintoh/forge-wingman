@@ -101,7 +101,18 @@ jobs:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
+      # Static, so the model job's egress proxy container can run the binary it mounts. Every
+      # later job downloads this build instead of compiling its own (.github/actions/runner-binary).
       - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
+        env:
+          CGO_ENABLED: "0"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runner
+          path: ${{ runner.temp }}/runner
+          if-no-files-found: error
+          retention-days: 1
 
       # A missing record or ticket fails here, before any model call; record says why.
       - id: read
@@ -165,18 +176,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: false
-
       - id: auth
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
-      - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
+      - uses: ./.github/actions/runner-binary
 
       # A plan stage that stopped wrote no artifact to download: the job below
       # ends its run rather than recording a plan.
@@ -295,18 +301,13 @@ jobs:
           # than its tip alone for that base to be there at all.
           fetch-depth: 0
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: false
-
       - id: auth
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
-      - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
+      - uses: ./.github/actions/runner-binary
 
       # Nothing on GitHub carries the branch yet — the pr job pushes it — so the
       # write set it produced is read from the bundle the model job uploaded.
@@ -491,18 +492,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: false
-
       - id: auth
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
-      - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
+      - uses: ./.github/actions/runner-binary
 
       # record exits 1 after writing the record of any run that did not succeed.
       - id: finalize

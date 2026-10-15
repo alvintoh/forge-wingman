@@ -1,0 +1,30 @@
+# Puts the runner binary at $RUNNER_TEMP/runner: the one run.yml's ticket job built and
+# uploaded, or, when that job never got that far, a build of this checkout. The build is
+# static, so the egress proxy container can run the binary it mounts.
+name: runner-binary
+description: Downloads the run's runner binary, building it here when the ticket job did not upload one.
+runs:
+  using: composite
+  steps:
+    - id: download
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      continue-on-error: true
+      with:
+        name: runner
+        path: ${{ runner.temp }}
+
+    - if: steps.download.outcome == 'success'
+      shell: bash
+      run: chmod +x "$RUNNER_TEMP/runner"
+
+    - if: steps.download.outcome != 'success'
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: go.mod
+        cache: false
+
+    - if: steps.download.outcome != 'success'
+      shell: bash
+      env:
+        CGO_ENABLED: "0"
+      run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
