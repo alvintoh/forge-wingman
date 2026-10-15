@@ -81,6 +81,8 @@ TS-only. The seam test, not performance, decides — see `profile.md`.
   `strings.ToValidUTF8`, then step back with `utf8.RuneStart`. *(Verified 2026-09-25 by
   marshalling a truncated value: a capped git stderr would have made forge-wingman's
   run record unwritable.)*
+- **Outbound vendor quota: `golang.org/x/time/rate` per process, a shared counter across replicas.** `rate.Limiter` is a concurrency-safe token bucket, but only inside one process (pkg.go.dev); behind several replicas the real ceiling is its rate times the replica count, so a vendor quota needs a shared counter (see `base/stacks/valkey.md`). Use `Wait` in a worker that may sleep, `Allow` or `Reserve` in a request path that must fail fast with a retry-after. Goroutines make this more necessary, not less: a loop of `go call()` fans out faster than any quota allows.
+- **Give every outbound call a context with a deadline (`context.WithTimeout`).** For a Google Cloud client prefer `gax.WithTimeout`, a total across retries (`gcp.md` Timeouts); a caller-side wrapper is only for an API that takes no context.
 
 ## Version policy — track current stable, pin it once
 
@@ -148,6 +150,7 @@ TS-only. The seam test, not performance, decides — see `profile.md`.
 ## Doc-comments (godoc)
 
 - A doc-comment is a complete sentence **starting with the identifier name** (`// OrderService coordinates …`). Document exported identifiers; reserve detail for non-obvious behavior.
+- **A worked example is an `ExampleXxx` function in a `_test.go` file with an `// Output:` comment.** `go test` compiles it, runs it and compares stdout to the comment, and godoc shows it beside the identifier (go.dev/blog/examples). Without `// Output:` it is compiled but not run.
 
 ## Tooling
 
@@ -273,6 +276,14 @@ Reusable recipes for reaching + operating a GCP dev environment (personal cloud;
 - **Fire the trigger, but take pass/fail from `describe` — never from the log stream.** `gcloud builds triggers run <TRIGGER> --region=<REGION> --branch=<BRANCH>` (also `--sha` / `--tag`); `gcloud builds log <BUILD> --region=<REGION> --stream`, documented as *"If a build is ongoing, stream the logs to stdout until the build completes"*; `gcloud builds describe <BUILD> --region=<REGION> --format='value(status)'` is the authoritative verdict. **Whether `--stream` exits non-zero on a FAILED build is not documented and is UNVERIFIED** — so a green exit from the stream proves nothing; read `describe`.
 - **Step order lives in `cloudbuild.yaml` as per-step `id` + `waitFor`, not in the trigger.** Google's build-config schema: *"Use the `waitFor` field in a build step to specify which steps must run before the build step is run. If no values are provided for `waitFor`, the build step waits for all prior build steps … to complete successfully."* So a build's real ordering is only readable from the file, never inferred from the trigger.
 
+## Timeouts (Google Cloud clients)
+
+- **Set the deadline on the call's context; Google's clients honour it.** gRPC sets none by default ("always explicitly set a realistic deadline"); an expired one ends the call with `DEADLINE_EXCEEDED`, and the server must stop its own spawned work (grpc.io/docs/guides/deadlines). In `gax-go/v2`, `WithTimeout` is ONE deadline shared by every retry attempt, `WithRetry` only sets the policy, and a deadline already on the context wins (pkg.go.dev/github.com/googleapis/gax-go/v2).
+
+## Cloud KMS (additional authenticated data)
+
+- **Bind the cached value's identity into the AAD.** Cloud KMS "will not decrypt ciphertext unless the same AAD value is used for both encryption and decryption", so use the cache key's identity (client id, scope) as the AAD and a ciphertext copied under another key fails to decrypt: Google's own confused-deputy example is a diary app using the user's identity as AAD. **AAD is not stored with the ciphertext, so rebuild it from the key at read time or you cannot decrypt, and Cloud Audit Logs do not log it (AWS's encryption context is logged, see `valkey.md`); still put nothing secret in it.** (docs.cloud.google.com/kms/docs/additional-authenticated-data)
+
 ## Gotcha
 
 - `gcloud` surface / API versions are point-in-time — re-verify against the live CLI, don't quote a remembered value
@@ -330,8 +341,10 @@ and forge-wingman's runner default (`omp.md`); opencode is the runner fallback (
 
 `GET https://api.commandcode.ai/provider/v1/models` (85 at this date). DeepSeek:
 `deepseek/deepseek-v4.1-flash`, `deepseek/deepseek-v4-flash`, `-fast` variants,
-`deepseek/deepseek-v4-pro`. Free ids exist (`poolside/laguna-s-2.1-free`, `inclusionai/ling-3.1-flash:free`,
-`stealth/space-bunny-alpha`); their quality and unattended-use terms are UNVERIFIED.
+`deepseek/deepseek-v4-pro`. Free ids exist (`poolside/laguna-s-2.1-free`, `inclusionai/ling-3.0-flash-sante:free`,
+`stealth/space-bunny-alpha`); their quality and unattended-use terms are UNVERIFIED. `inclusionai/ling-3.1-flash:free`
+is retired — the pricing page lists only the paid Ling 3.1 Flash (read 2026-10-15) — and each live free id allows 100
+requests a day per account, reset at midnight UTC.
 
 <!-- snapshot checked=2026-10-06 refresh="GET api.commandcode.ai/provider/v1/models; commandcode.ai/docs/resources/pricing-limits" -->
 **Prices (checked 2026-10-06, `commandcode.ai/docs/resources/pricing-limits`; per 1M: uncached
@@ -462,7 +475,7 @@ Model calls bill to the GOAT plan through its Provider API (`command-code.md`).
   id `commandcode` is omp's own and cannot be renamed.)*
 - **`~/.omp/agent/config.yml`** (owner's, re-read 2026-10-09): `modelRoles: {default:
   commandcode/deepseek/deepseek-v4.1-flash:high, plan/slow: …flash:max}`, `retry.fallbackChains:
-  {default: [commandcode/poolside/laguna-s-2.1-free, commandcode/inclusionai/ling-3.1-flash:free]}`, `startup: {checkUpdate: false}`,
+  {default: [commandcode/poolside/laguna-s-2.1-free, commandcode/inclusionai/ling-3.0-flash-sante:free]}`, `startup: {checkUpdate: false}`,
   `enabledProviders: [claude]`, `tools: {approvalMode: yolo}`, `advisor: {enabled: false}`,
   `symbolPreset: nerd` (`unicode` is the fallback where Nerd icons do not draw — the thinking level
   once showed as `~`), plus the look keys an onboarding agent would otherwise miss: `composer:
@@ -521,7 +534,8 @@ Model calls bill to the GOAT plan through its Provider API (`command-code.md`).
   or press Enter without `n` first. *(Mechanism read from the installed source 2026-10-09; the
   digit half verified live — `2` committed `green` with no Enter on a PATCHED bundle, WSL 2026-10-09.)*
 - **`patch-omp-ask.py` (poly-mind root) is the ONE patch for the `ask` dialog** — no radio
-  circle, one-Enter notes, a numbered `Other` you type into directly. Run it `--check` first; the
+  circle, one-Enter notes, a numbered `Other` you type into directly, and a visible cancel on the
+  Review-answers stage. Run it `--check` first; the
   steps and effects live in `/onboard-device` step 10. *(Updated 2026-10-09: replaces four
   per-feature scripts whose chained backups made restore order-dependent.)*
 - **The radio circle is gone from single-select rows** where the patch is applied: rows read `❯ 1. red`, as in Claude Code; multi-select keeps its checkboxes.
@@ -681,8 +695,19 @@ fallback only while it measures second. Measured on opencode 1.18.30.
 - `mcp` in `~/.config/opencode/opencode.json` repeats Claude Code's user-scope servers, which
   opencode does not read. Authorise a remote server with `opencode mcp auth <name>`; pass a secret
   with `{file:<600-mode path>}`, never inline.
-- **Zen free models run only inside opencode.** A direct `/zen/v1/chat/completions` call returns
-  `FreeTierError` with or without a key, so neither omp nor the runner can use them.
+- **Zen free models run only inside opencode, and the gate is key-independent.** A direct
+  `/zen/v1/chat/completions` call answers HTTP 403 `FreeTierError` ("OpenCode's free tier can
+  only be used from within OpenCode") with no key *and* with the user-agent spoofed to
+  `opencode/1.18.35`; a bogus key gives 401 `AuthError` instead, so the gate is not a
+  user-agent check. Neither omp nor the runner can use the free tier. (Probed 2026-10-10.)
+- **`GET https://opencode.ai/zen/v1/models` is public** — no key, and it runs ahead of the docs
+  page (87 models, 12 `-free` ids; re-check with `curl -s https://opencode.ai/zen/v1/models`).
+  **The endpoint family is per model, not per plan**: most on `/zen/v1/chat/completions`,
+  `muse-spark-1.3-contributor-free` on `/zen/v1/responses`, and `jev-1.13-free` on
+  `/zen/v1/systemone`, which is not a chat API at all. **The privacy terms are per model too** —
+  Exo/MiMo/Ling `-free` may train on free-period data, the Nemotron free endpoints are NVIDIA
+  trial terms (no confidential data), and Muse Spark Contributor trains Meta models on prompts
+  *and* completions — so record a per-model caveat set, not one plan-level posture.
 
 ## Read-only plan phase (verified 2026-10-08, 1.18.30)
 
@@ -731,7 +756,16 @@ Verified live 2026-10-08 (forge-wingman FRG-15, FRG-22). Re-run before quoting.
 - Fix: revoke the client-credentials token → authorize with `actor=app` → exchange the
   code (revoke that token if unused) → mint a new client-credentials token.
 - That workspace webhook signs with **its own** secret: copy the signing secret again
-  after authorizing; the earlier one fails every signature.
+  after authorizing; the earlier one fails every signature. A mismatch answers every
+  delivery 401, and the receiver reads the secret at start-up, so start a new revision
+  after copying it. (Verified 2026-10-08: 401 on `Linear-Webhook` deliveries until a
+  revision rolled out at 13:23, then 200.)
+- **Agent-session events and Issue updates are separate subscriptions on the webhook.**
+  With only agent sessions on, delegation wakes the receiver and a priority edit sends
+  nothing; tick Issues under data-change events, then edit a priority and read a 200
+  under Recent deliveries. (Verified 2026-10-14: after Issues was ticked, a priority edit
+  and its revert each delivered `POST 200` and the receiver logged `webhookReprioritized`;
+  before, no Issue event reached it.)
 - Acknowledge a `created` session within ~10 s with `agentActivityCreate`
   (`agentSessionId`, `content: {type: "thought", body}`), or it goes `stale`.
 - Deleting an app leaves its user as a deactivated record holding its handle;
