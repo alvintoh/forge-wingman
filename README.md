@@ -72,8 +72,10 @@ rate carries none is never held.
 Two modes decide it: `off-peak-only`, the default above, and `always`, which
 starts a run at any hour. `runner peak-mode` prints the mode and
 `runner peak-mode -mode always` sets it; `-mode off-peak-only` restores the
-default. The next poll reads it, so a switch needs no redeploy — see
-[Operate](#operate) for the command and the environment it needs.
+default. The surface's Peak hours view shows which models price peak hours and
+when, whether a run is being held now, and the same switch, so the mode need not
+be read from a terminal. The next poll reads it, so a switch needs no redeploy —
+see [Operate](#operate) for the command and the environment it needs.
 
 ## Operate
 

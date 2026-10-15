@@ -247,7 +247,8 @@ clears it. Each poll also posts the waiting systemic-failure notices to Slack
 A run whose model prices peak-hour rates waits for the window to pass, unless the
 owner switches it off: `runner peak-mode` prints the mode and `runner peak-mode -mode always`
 lets runs start at any hour (`-mode off-peak-only` restores the default), read by the
-next poll with no redeploy.
+next poll with no redeploy. The surface's Peak hours view shows the same thing and
+carries the same switch.
 
 Two identities, and no grant in common: the job reads the store, and the
 schedule can only start the job.

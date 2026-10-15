@@ -557,6 +557,23 @@ func TestParseConfigReadsThePaidPlanOrderAndModels(t *testing.T) {
 	}
 }
 
+// TestRunModelsListsEveryModelARunMayUseOnce asserts the models a run may use
+// are each plan's build, review and plan models and its free-tier ones, each
+// named once — the review model included, which its own plan's rate card does
+// not price.
+func TestRunModelsListsEveryModelARunMayUseOnce(t *testing.T) {
+	want := []string{
+		"command-code/deepseek/deepseek-v4.1-flash",
+		"command-code/meta/muse-spark-1.3-contributor",
+		"command-code/poolside/laguna-s-2.1-free",
+		"gemini/gemini-3.8-flash",
+		"gemini/gemini-3.5-flash-lite",
+	}
+	if got := RunModels(); !slices.Equal(got, want) {
+		t.Fatalf("RunModels() = %v, want %v", got, want)
+	}
+}
+
 func TestEmbeddedGoatIsTheOnlyPaidPlan(t *testing.T) {
 	if got := PaidPlans(); !slices.Equal(got, []string{"command-code"}) {
 		t.Fatalf("PaidPlans() = %v, want command-code alone", got)
