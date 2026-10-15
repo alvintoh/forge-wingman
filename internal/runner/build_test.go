@@ -3002,3 +3002,27 @@ func TestBuildDoesNotGuardThePlanPhase(t *testing.T) {
 		t.Fatalf("files read = %d, want the plan agent's own reads in the run's summary", len(sum.ReadFiles))
 	}
 }
+
+func TestPrePRLoopStopsWhenTheChangedPathsCannotBeListed(t *testing.T) {
+	agent := &fakeAgent{edit: func(dir string) error {
+		// An unborn HEAD leaves status working and breaks the diff against the base.
+		mustGit(t, dir, "symbolic-ref", "HEAD", "refs/heads/unborn")
+		return edit("version.go", "package x\n")(dir)
+	}}
+	deps, _, reported := testDeps(validObjects(), agent)
+	checked := false
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		checked = true
+		return "", "", nil
+	}
+
+	if _, err := Build(context.Background(), deps, testConfig(t, initRepo(t))); err == nil {
+		t.Fatal("Build = nil, want the stop")
+	}
+	if checked {
+		t.Fatal("the checks ran without the changed paths, which would skip the web steps")
+	}
+	if rec := reported.last(t); rec.Outcome != OutcomeInfraFailure || rec.StopReason != StopChecksRun {
+		t.Fatalf("record = %s/%s, want infra-failure/%s", rec.Outcome, rec.StopReason, StopChecksRun)
+	}
+}

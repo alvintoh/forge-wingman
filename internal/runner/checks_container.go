@@ -152,6 +152,14 @@ func (c ContainerChecks) Run(ctx context.Context, dir string, changed []string) 
 	return "", "", nil
 }
 
+// gateTimeout is the bound on one gate, and on the web dependency download.
+func (c ContainerChecks) gateTimeout() time.Duration {
+	if c.GateTimeout <= 0 {
+		return defaultGateTimeout
+	}
+	return c.GateTimeout
+}
+
 // downloadModules fills ModCache with dir's dependencies. A download that runs
 // and fails is not an error: the gates then fail on the same missing module,
 // with output the next round can act on.
@@ -172,16 +180,25 @@ func (c ContainerChecks) downloadModules(ctx context.Context, dir string) error 
 // an install runs the project's lifecycle scripts, which are the branch's code
 // and would otherwise run on the host rather than in the container every gate
 // runs in. A download that runs and fails is not an error: the web-install gate
-// then fails on the same problem, with output the next round can act on.
+// then fails on the same problem, with output the next round can act on. The
+// host install has network, so it is bounded like a gate; a hung one is an
+// error, since killing it leaves nothing for a gate to fail on.
 func (c ContainerChecks) downloadWebModules(ctx context.Context, dir string) error {
 	if err := os.MkdirAll(c.BunCache, 0o700); err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, c.Bun, "install", "--frozen-lockfile", "--ignore-scripts", "--cache-dir", c.BunCache)
+	timeout := c.gateTimeout()
+	ictx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ictx, c.Bun, "install", "--frozen-lockfile", "--ignore-scripts", "--cache-dir", c.BunCache)
 	cmd.Dir = filepath.Join(dir, webDir)
 	cmd.Env = checkCmdEnv()
 	var exitErr *exec.ExitError
-	if err := cmd.Run(); err != nil && !errors.As(err, &exitErr) {
+	err := cmd.Run()
+	switch {
+	case ictx.Err() != nil && ctx.Err() == nil:
+		return fmt.Errorf("bun install: stopped after %s: %w", timeout, ictx.Err())
+	case err != nil && !errors.As(err, &exitErr):
 		return fmt.Errorf("bun install: %w", err)
 	}
 	return nil
@@ -208,10 +225,7 @@ func (c ContainerChecks) runWebGate(ctx context.Context, dir, gate string, argv 
 // non-zero exit or a timeout as a failure of gate and docker or the container
 // failing to start as an error.
 func (c ContainerChecks) runContainer(ctx context.Context, gate string, build func(name string) hardenedRun) (stdout, stderr string, failed bool, err error) {
-	timeout := c.GateTimeout
-	if timeout <= 0 {
-		timeout = defaultGateTimeout
-	}
+	timeout := c.gateTimeout()
 	gctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 

@@ -596,3 +596,51 @@ func TestModelWorkflowRunsTheChecksInGoModsToolchainImage(t *testing.T) {
 		t.Error("model.yml does not build golangci-lint static, so the container cannot run it")
 	}
 }
+
+// hangingBun is a bun that never exits, as a registry that never answers.
+func hangingBun(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "bun")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexec sleep 30\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestContainerChecksStopAHungWebDependencyDownloadWithANamedError(t *testing.T) {
+	fakeDocker(t)
+	c := testContainerChecks(t)
+	c.Bun = hangingBun(t)
+	c.GateTimeout = time.Second
+
+	start := time.Now()
+	gate, _, err := c.Run(context.Background(), initWebModule(t), webTouched)
+	if err == nil || !strings.Contains(err.Error(), "bun install: stopped after 1s") {
+		t.Fatalf("Run = %q, %v, want a named error for the hung download", gate, err)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("Run took %s, want the hung download killed", elapsed)
+	}
+}
+
+func TestContainerChecksReportABunThatCannotStartAndLeaveAFailingInstallToItsGate(t *testing.T) {
+	t.Run("bun cannot start", func(t *testing.T) {
+		fakeDocker(t)
+		c := testContainerChecks(t)
+		c.Bun = filepath.Join(t.TempDir(), "missing-bun")
+
+		if _, _, err := c.Run(context.Background(), initWebModule(t), webTouched); err == nil || !strings.Contains(err.Error(), "bun install:") {
+			t.Fatalf("Run error = %v, want a bun install error", err)
+		}
+	})
+
+	t.Run("bun exits non-zero", func(t *testing.T) {
+		fakeDocker(t)
+		c := testContainerChecks(t)
+		bunFails(t, c.Bun, "--frozen-lockfile")
+
+		if err := c.downloadWebModules(context.Background(), initWebModule(t)); err != nil {
+			t.Fatalf("downloadWebModules = %v, want a failed install left to the web-install gate", err)
+		}
+	})
+}

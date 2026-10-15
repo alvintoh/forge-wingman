@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -230,5 +231,36 @@ func TestCheckEnvNamesExcludeTheModelJobsSecretsButKeepTheGoToolchain(t *testing
 		if !slices.Contains(got, kept) {
 			t.Fatalf("checkEnvNames dropped %s: %v", kept, got)
 		}
+	}
+}
+
+// pathWithout returns a directory holding only the Go gates' own binaries, so a
+// PATH of it has no bun.
+func pathWithout(t *testing.T) string {
+	t.Helper()
+	bin := t.TempDir()
+	names := []string{gofmtArgs[0]}
+	for _, g := range exitGates {
+		names = append(names, g.bin)
+	}
+	for _, name := range names {
+		found, err := exec.LookPath(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(found, filepath.Join(bin, name)); err != nil && !os.IsExist(err) {
+			t.Fatal(err)
+		}
+	}
+	return bin
+}
+
+func TestRunChecksFailsClosedWithoutBunForADiffThatTouchesWeb(t *testing.T) {
+	dir := initWebModule(t)
+	t.Setenv("PATH", pathWithout(t))
+
+	gate, _, err := RunChecks(context.Background(), dir, webTouched)
+	if err == nil || !strings.Contains(err.Error(), checkWebInstall) {
+		t.Fatalf("RunChecks = %q, %v, want an error naming %s", gate, err, checkWebInstall)
 	}
 }
