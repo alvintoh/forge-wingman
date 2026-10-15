@@ -143,17 +143,22 @@ func planReply(ctx context.Context, logger *slog.Logger, e env, args []string) e
 }
 
 // planList prints every plan side by side, flagging the ones to look at, with
-// each plan's harness pairs and their licences.
+// each plan's harness pairs and their licences and its trailing runs' cached
+// share per phase.
 func planList(ctx context.Context, _ *slog.Logger, e env, args []string) error {
 	if err := flag.NewFlagSet("plan-list", flag.ContinueOnError).Parse(args); err != nil {
 		return err
 	}
-	plans, closeStore, err := openPlans(ctx, e, "", false, nil)
+	fsc, closeStore, err := openStore(ctx, e, "", false, nil)
 	if err != nil {
 		return err
 	}
 	defer closeStore()
-	rows, err := plans.List(ctx)
+	rows, err := store.NewPlans(fsc).List(ctx)
+	if err != nil {
+		return err
+	}
+	caches, err := store.NewRecords(fsc).PlanCaches(ctx, time.Now().Add(-runner.TrailingWindow))
 	if err != nil {
 		return err
 	}
@@ -161,7 +166,18 @@ func planList(ctx context.Context, _ *slog.Logger, e env, args []string) error {
 	for i := range rows {
 		rows[i].Harnesses = harnessLines(rows[i].Plan.Definition.Harnesses, licences)
 	}
+	attachPlanCaches(rows, caches)
 	return providers.WriteTable(os.Stdout, rows)
+}
+
+// attachPlanCaches sets each row's phase cache cells from the figures of the
+// plan named by the row's provider.
+func attachPlanCaches(rows []providers.Listing, caches map[string]store.PlanCache) {
+	for i := range rows {
+		cache := caches[rows[i].Provider]
+		rows[i].BuildCache = runner.PhaseCacheCell(cache, runner.PhaseBuild)
+		rows[i].PlanCache = runner.PhaseCacheCell(cache, runner.PhasePlan)
+	}
 }
 
 // harnessLines renders a plan's pairs as the side-by-side view lists them:
@@ -246,10 +262,10 @@ func optInResolver(ctx context.Context, logger *slog.Logger, plans planReader, m
 	return func(plan, harness string) bool { return optedIn[plan][harness] }
 }
 
-// openPlans opens the plan store for an owner command: the account must be the
-// owner's, and a command naming a provider must name a valid one with valid
+// openStore opens the store's client for an owner command: the account must be
+// the owner's, and a command naming a provider must name a valid one with valid
 // input before Firestore is touched, so a refusal never reaches it.
-func openPlans(ctx context.Context, e env, provider string, named bool, inputErr error) (*store.Plans, func(), error) {
+func openStore(ctx context.Context, e env, provider string, named bool, inputErr error) (*firestore.Client, func(), error) {
 	if err := e.identity.CheckAccount(); err != nil {
 		return nil, nil, err
 	}
@@ -266,5 +282,14 @@ func openPlans(ctx context.Context, e env, provider string, named bool, inputErr
 	if err != nil {
 		return nil, nil, fmt.Errorf("firestore client: %w", err)
 	}
-	return store.NewPlans(fsc), func() { _ = fsc.Close() }, nil
+	return fsc, func() { _ = fsc.Close() }, nil
+}
+
+// openPlans opens the plan store for an owner command.
+func openPlans(ctx context.Context, e env, provider string, named bool, inputErr error) (*store.Plans, func(), error) {
+	fsc, closeStore, err := openStore(ctx, e, provider, named, inputErr)
+	if err != nil {
+		return nil, nil, err
+	}
+	return store.NewPlans(fsc), closeStore, nil
 }

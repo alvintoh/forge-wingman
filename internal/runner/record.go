@@ -610,7 +610,7 @@ func (r Record) Succeeded() bool {
 
 // CachedShare is the share of the run's own input tokens that came from the
 // provider's cache: zero for a run that read no input at all.
-func (r Record) CachedShare() float64 { return cachedShare(r.Tokens.Input, r.Tokens.CacheRead) }
+func (r Record) CachedShare() float64 { return CachedShare(r.Tokens.Input, r.Tokens.CacheRead) }
 
 // breakerStops are the systemic stops that halt every dispatch until an
 // operator resets the breaker. An exhausted allowance is one only once the

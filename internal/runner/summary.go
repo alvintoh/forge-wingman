@@ -101,13 +101,48 @@ type PhaseCache struct {
 	CachedShare float64 `firestore:"cached_share" json:"cached_share"`
 }
 
-// cachedShare is the share of a fresh + cached input total that came from the
+// CachedShare is the share of a fresh + cached input total that came from the
 // provider's cache, zero when nothing was read at all.
-func cachedShare(fresh, cached int64) float64 {
+func CachedShare(fresh, cached int64) float64 {
 	if total := fresh + cached; total > 0 {
 		return float64(cached) / float64(total)
 	}
 	return 0
+}
+
+const (
+	// PhaseCacheNone is what a view prints for a phase that made no model
+	// request.
+	PhaseCacheNone = "none"
+	// PhaseCacheNotRecorded is what a view prints when there is no share to
+	// print: "not recorded" means no cache map, "none" means no request in that
+	// phase, and a phase whose first request read no tokens reads as not recorded.
+	PhaseCacheNotRecorded = "not recorded"
+)
+
+// PhaseCacheCell renders phase's prompt-cache figures from cache — one run's own,
+// or a plan's trailing runs' — as a view prints them: the share of the phase's
+// first request and of its whole input that came from the provider's cache. A
+// phase the map holds no figures for reads PhaseCacheNone, and a map holding no
+// phase at all reads PhaseCacheNotRecorded, so a view never prints a share that
+// was never read.
+func PhaseCacheCell(cache map[string]PhaseCache, phase Phase) string {
+	c, ok := cache[string(phase)]
+	if !ok {
+		if len(cache) == 0 {
+			return PhaseCacheNotRecorded
+		}
+		return PhaseCacheNone
+	}
+	if c.FirstFresh+c.FirstCached == 0 {
+		return PhaseCacheNotRecorded
+	}
+	return fmt.Sprintf("%s first, %s phase", percentShare(CachedShare(c.FirstFresh, c.FirstCached)), percentShare(c.CachedShare))
+}
+
+// percentShare renders a 0-1 share as a whole percentage.
+func percentShare(share float64) string {
+	return fmt.Sprintf("%.0f%%", share*100)
 }
 
 type ending struct {

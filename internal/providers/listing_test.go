@@ -53,13 +53,13 @@ func TestWriteTableShowsAPlanWithNoVerdictAsUnconfirmedAndEmptyCellsAsDashes(t *
 	if len(lines) != 4 {
 		t.Fatalf("got %d lines:\n%s", len(lines), b.String())
 	}
-	if got := strings.Fields(lines[1]); strings.Join(got, " ") != "alpha $15.00 hard-stop - false unconfirmed - - -" {
+	if got := strings.Fields(lines[1]); strings.Join(got, " ") != "alpha $15.00 hard-stop - false unconfirmed - - - - -" {
 		t.Fatalf("alpha row = %q", lines[1])
 	}
-	if got := strings.Fields(lines[2]); strings.Join(got, " ") != "beta $30.00 can-spend-past per-token true restricted 2026-09-27 can-spend-past,outside-price-band -" {
+	if got := strings.Fields(lines[2]); strings.Join(got, " ") != "beta $30.00 can-spend-past per-token true restricted 2026-09-27 can-spend-past,outside-price-band - - -" {
 		t.Fatalf("beta row = %q", lines[2])
 	}
-	if got := strings.Fields(lines[3]); strings.Join(got, " ") != "gamma $15.00 hard-stop per-token false unconfirmed - - -" {
+	if got := strings.Fields(lines[3]); strings.Join(got, " ") != "gamma $15.00 hard-stop per-token false unconfirmed - - - - -" {
 		t.Fatalf("gamma row = %q", lines[3])
 	}
 }
@@ -84,5 +84,34 @@ func TestWriteTableShowsEachHarnessPairWithTheLicenceOfItsHarness(t *testing.T) 
 	want := "open-cli:model-a (open-source),vendor-cli:model-b (proprietary),unbuilt-cli:model-c"
 	if !strings.Contains(b.String(), want) {
 		t.Fatalf("the table does not show %q:\n%s", want, b.String())
+	}
+}
+
+// TestWriteTableShowsEachPhasesCachedShare asserts the side-by-side view prints
+// a plan's trailing runs' cached share per phase, in the columns beside the ones
+// it already shows, with the word in place of a share those runs recorded none
+// of.
+func TestWriteTableShowsEachPhasesCachedShare(t *testing.T) {
+	var b strings.Builder
+	def := Definition{MonthlyPrice: 15 * money.Dollar, LimitBehaviour: LimitHardStop}
+	recorded := Listing{Provider: "alpha", Plan: Plan{Definition: def},
+		BuildCache: "90% first, 75% phase", PlanCache: "50% first, 25% phase"}
+	unrecorded := Listing{Provider: "beta", Plan: Plan{Definition: def},
+		BuildCache: "not recorded", PlanCache: "none"}
+	if err := WriteTable(&b, []Listing{recorded, unrecorded}); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(b.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("got %d lines:\n%s", len(lines), b.String())
+	}
+	if got := strings.Join(strings.Fields(lines[0]), " "); got != "PROVIDER PRICE LIMIT BILLING OPTED-IN VERDICT FACTS FLAGS HARNESSES BUILD-CACHE PLAN-CACHE" {
+		t.Fatalf("header = %q", lines[0])
+	}
+	if got := strings.Join(strings.Fields(lines[1]), " "); got != "alpha $15.00 hard-stop - false unconfirmed - - - 90% first, 75% phase 50% first, 25% phase" {
+		t.Fatalf("alpha row = %q", lines[1])
+	}
+	if got := strings.Join(strings.Fields(lines[2]), " "); got != "beta $15.00 hard-stop - false unconfirmed - - - not recorded none" {
+		t.Fatalf("beta row = %q", lines[2])
 	}
 }

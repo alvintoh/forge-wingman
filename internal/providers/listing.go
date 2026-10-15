@@ -51,12 +51,17 @@ type Listing struct {
 	Plan      Plan
 	FactsDate string
 	Harnesses []HarnessLine
+	// BuildCache and PlanCache are each phase's own figures over the plan's
+	// trailing runs: the share of its first request and of its whole input, or
+	// the word that stands in for a share none of those runs recorded.
+	BuildCache string
+	PlanCache  string
 }
 
 // WriteTable writes the plans side by side, one row each.
 func WriteTable(w io.Writer, rows []Listing) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	if _, err := fmt.Fprintln(tw, "PROVIDER\tPRICE\tLIMIT\tBILLING\tOPTED-IN\tVERDICT\tFACTS\tFLAGS\tHARNESSES"); err != nil {
+	if _, err := fmt.Fprintln(tw, "PROVIDER\tPRICE\tLIMIT\tBILLING\tOPTED-IN\tVERDICT\tFACTS\tFLAGS\tHARNESSES\tBUILD-CACHE\tPLAN-CACHE"); err != nil {
 		return err
 	}
 	for _, r := range rows {
@@ -68,8 +73,8 @@ func WriteTable(w io.Writer, rows []Listing) error {
 		for _, f := range Flags(r.Plan.Definition) {
 			flags = append(flags, string(f))
 		}
-		if _, err := fmt.Fprintf(tw, "%s\t$%.2f\t%s\t%s\t%t\t%s\t%s\t%s\t%s\n", r.Provider, r.Plan.Definition.MonthlyPrice.USD(),
-			r.Plan.Definition.LimitBehaviour, orDash(string(r.Plan.Definition.Billing)), r.Plan.OptedIn, verdict, orDash(r.FactsDate), orDash(strings.Join(flags, ",")), orDash(harnessCell(r.Harnesses))); err != nil {
+		if _, err := fmt.Fprintf(tw, "%s\t$%.2f\t%s\t%s\t%t\t%s\t%s\t%s\t%s\t%s\t%s\n", r.Provider, r.Plan.Definition.MonthlyPrice.USD(),
+			r.Plan.Definition.LimitBehaviour, orDash(string(r.Plan.Definition.Billing)), r.Plan.OptedIn, verdict, orDash(r.FactsDate), orDash(strings.Join(flags, ",")), orDash(harnessCell(r.Harnesses)), orDash(r.BuildCache), orDash(r.PlanCache)); err != nil {
 			return err
 		}
 	}

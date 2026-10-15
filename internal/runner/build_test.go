@@ -338,7 +338,7 @@ func TestRecordPhaseCachePinsTheFirstRequestAndMovesTheShare(t *testing.T) {
 // TestCachedShareIsZeroWithoutInput asserts a run that read no input reports no
 // cached share rather than dividing by zero.
 func TestCachedShareIsZeroWithoutInput(t *testing.T) {
-	if got := cachedShare(0, 0); got != 0 {
+	if got := CachedShare(0, 0); got != 0 {
 		t.Fatalf("share = %v, want 0 for a run that read no input", got)
 	}
 }

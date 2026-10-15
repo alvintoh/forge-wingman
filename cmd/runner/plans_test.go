@@ -275,3 +275,23 @@ func TestOptInResolverReadsEachPlanOnceAndAdmitsNothingFromAnUnreadableOne(t *te
 		t.Fatal("opt-in did not follow the readable plan alone")
 	}
 }
+
+// TestAttachPlanCachesJoinsByProvider asserts each row reads the figures of the
+// plan its provider names, so a row never shows another plan's share.
+func TestAttachPlanCachesJoinsByProvider(t *testing.T) {
+	rows := []providers.Listing{{Provider: "alpha", Plan: providers.Plan{Definition: providers.Definition{Name: "beta"}}}, {Provider: "gamma"}}
+	caches := map[string]store.PlanCache{
+		"alpha": {string(runner.PhaseBuild): {FirstFresh: 10, FirstCached: 90, CachedShare: 0.75}},
+		"beta":  {string(runner.PhaseBuild): {FirstFresh: 90, FirstCached: 10, CachedShare: 0.1}},
+	}
+	attachPlanCaches(rows, caches)
+	if got, want := rows[0].BuildCache, "90% first, 75% phase"; got != want {
+		t.Errorf("row alpha build = %q, want %q", got, want)
+	}
+	if got, want := rows[0].PlanCache, runner.PhaseCacheNone; got != want {
+		t.Errorf("row alpha plan = %q, want %q", got, want)
+	}
+	if got, want := rows[1].BuildCache, runner.PhaseCacheNotRecorded; got != want {
+		t.Errorf("a provider with no figures = %q, want %q", got, want)
+	}
+}
