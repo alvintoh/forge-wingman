@@ -45,6 +45,7 @@ Reusable best practices for GitHub Actions. A scaffold step inlines these into a
 - Add the `deploy` job in the same workflow file; gate it with `needs: ci` and `if: github.ref == 'refs/heads/main'` — never deploy code that failed quality checks
 - Tag all built artifacts with `${{ github.sha }}` — never tag with `latest`; SHA tags make rollbacks deterministic and auditable
 - **A `workflow_run` chain filtered on `branches: [main]` does NOT cascade on a feature branch — every stage needs its own `workflow_dispatch`.** The filter tests the branch of the *upstream* run, so a multi-stage deploy chain (infra → serverless → app) that self-drives on `main` silently drives nothing on a branch, with no error anywhere: the first stage runs and the rest simply never trigger. Before assuming a chain is running, read each downstream workflow's own trigger block rather than the first one's. *(Verified in a 3-stage chain where only the manually-dispatched stages ever ran.)*
+- **A workflow and the binary it builds from the same commit are ONE deployable, so a new flag lands in the consumer first.** A step that passes `-flag "$X"` to a tool built from the run's own sha fails with `flag provided but not defined` on every run between the workflow change and the tool change, even when the value is empty. Order it **tool (flag defined, absent means legacy) → workflow (passes it) → whatever sends the value (a dispatcher or caller)**: the same expand-before-contract as a schema change. A new `workflow_dispatch` input must exist BEFORE its sender (an undeclared input answers 422), so it comes with the workflow step, never ahead of the tool. *(Established practice: expand/contract for rolling deploys. Verified 2026-10-14 on forge-wingman: `run.yml` was pushed ahead of the Go change that defined `-attempt`, and the one run in that window failed its `record` job with the flag undefined; its PR still opened.)*
 - **Read the whole trigger GRAPH, not one path through it.** More than one workflow can hang off the same upstream, so a remembered "A → B → C" sequence can be a path rather than the graph, and a hardcoded stage list silently drops a sibling. Derive order from `on.workflow_run.workflows:` (cross-workflow) and `needs:` (intra-workflow) edges.
 - Pin third-party actions to a full-length commit SHA (see *Supply chain*); a major-version tag (e.g. `actions/checkout@v4`) is the convenient tradeoff, least acceptable in a job that holds credentials
 
@@ -439,6 +440,14 @@ Reusable recipes for reaching + operating a GCP dev environment (personal cloud;
 - **Fire the trigger, but take pass/fail from `describe` — never from the log stream.** `gcloud builds triggers run <TRIGGER> --region=<REGION> --branch=<BRANCH>` (also `--sha` / `--tag`); `gcloud builds log <BUILD> --region=<REGION> --stream`, documented as *"If a build is ongoing, stream the logs to stdout until the build completes"*; `gcloud builds describe <BUILD> --region=<REGION> --format='value(status)'` is the authoritative verdict. **Whether `--stream` exits non-zero on a FAILED build is not documented and is UNVERIFIED** — so a green exit from the stream proves nothing; read `describe`.
 - **Step order lives in `cloudbuild.yaml` as per-step `id` + `waitFor`, not in the trigger.** Google's build-config schema: *"Use the `waitFor` field in a build step to specify which steps must run before the build step is run. If no values are provided for `waitFor`, the build step waits for all prior build steps … to complete successfully."* So a build's real ordering is only readable from the file, never inferred from the trigger.
 
+## Timeouts (Google Cloud clients)
+
+- **Set the deadline on the call's context; Google's clients honour it.** gRPC sets none by default ("always explicitly set a realistic deadline"); an expired one ends the call with `DEADLINE_EXCEEDED`, and the server must stop its own spawned work (grpc.io/docs/guides/deadlines). In `gax-go/v2`, `WithTimeout` is ONE deadline shared by every retry attempt, `WithRetry` only sets the policy, and a deadline already on the context wins (pkg.go.dev/github.com/googleapis/gax-go/v2).
+
+## Cloud KMS (additional authenticated data)
+
+- **Bind the cached value's identity into the AAD.** Cloud KMS "will not decrypt ciphertext unless the same AAD value is used for both encryption and decryption", so use the cache key's identity (client id, scope) as the AAD and a ciphertext copied under another key fails to decrypt: Google's own confused-deputy example is a diary app using the user's identity as AAD. **AAD is not stored with the ciphertext, so rebuild it from the key at read time or you cannot decrypt, and Cloud Audit Logs do not log it (AWS's encryption context is logged, see `valkey.md`); still put nothing secret in it.** (docs.cloud.google.com/kms/docs/additional-authenticated-data)
+
 ## Gotcha
 
 - `gcloud` surface / API versions are point-in-time — re-verify against the live CLI, don't quote a remembered value
@@ -501,7 +510,17 @@ Reusable best practices for OpenTofu (Terraform-compatible IaC, no BSL risk). A 
   real resource (or `state push` the errored file, only if it holds the resource);
   finish with a targeted plan that reports no changes. Never commit `errored.tfstate`.
   A targeted plan still needs every required
-  root variable, and placeholders suffice for resources that do not use them.
+  root variable, and placeholders suffice for resources that do not use them — but a
+  variable a resource DOES use must come from its own source of truth, never from the
+  live resource or a guess: a var whose default differs from the deployed value
+  reverts that attribute, and the plan hides it in a collapsed block (`- name = "X"` /
+  `+ name = "X"`, the value stated only once, as unchanged attributes hidden), so the
+  counts still read "1 to change" while a scope or an image is being cleared.
+  *(Verified 2026-10-11: applying a settings map to forge-wingman's dispatcher job
+  with hand-assembled vars, because three required vars have no default and `tofu`
+  demanded them; `linear_repositories` defaults to `[]` against a live
+  `alvintoh/forge-wingman`, so `WINGMAN_REPOS` went empty in a "1 to change" apply.
+  Caught on read-back, corrected within the minute, no execution overlapped it.)*
 - **Re-keying a resource (unkeyed → `for_each`) destroys and creates UNORDERED, so a
   binding other systems depend on rolls out as expand-contract in CONFIG, not a
   `-target` apply.** Add the new resource beside the old in one change, verify it
