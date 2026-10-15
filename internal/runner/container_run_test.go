@@ -16,7 +16,7 @@ import (
 func dockerRunsOfBothContainers(t *testing.T) (checks, agent []string) {
 	t.Helper()
 	logFile := fakeDocker(t)
-	if gate, out, err := testContainerChecks(t).Run(context.Background(), initModule(t)); err != nil || gate != "" {
+	if gate, out, err := testContainerChecks(t).Run(context.Background(), initModule(t), nil); err != nil || gate != "" {
 		t.Fatalf("checks Run = %q, %q, %v", gate, out, err)
 	}
 	checks = dockerCalls(t, logFile)[0]
@@ -126,7 +126,7 @@ func TestContainerChecksKillAGateWhenTheParentContextIsCancelled(t *testing.T) {
 	}()
 
 	start := time.Now()
-	_, _, _ = c.Run(ctx, dir)
+	_, _, _ = c.Run(ctx, dir, nil)
 	if elapsed := time.Since(start); elapsed > 10*time.Second {
 		t.Fatalf("Run took %s, want the hung gate killed", elapsed)
 	}

@@ -28,7 +28,14 @@ const (
 	containerModCache = "/gomodcache"
 	containerCache    = "/cache"
 	containerLinter   = "/usr/local/bin/golangci-lint"
+	containerBun      = "/usr/local/bin/bun"
+	containerBunCache = "/cache/bun"
+	containerWebDir   = containerWorkDir + "/" + webDir
 )
+
+// checksContainerPrefix begins every gate container's name, so a timed-out gate
+// can be killed by it.
+const checksContainerPrefix = "wingman-checks-"
 
 // dockerEnvNames are the variables the docker CLI itself runs under; none
 // reaches a container, which is given only the --env values its run names.
@@ -38,7 +45,9 @@ var dockerEnvNames = slices.Concat(checkEnvNames, []string{"DOCKER_"})
 // each in a fresh container with no network whose only mounts are the
 // worktree, a read-only module cache, a throwaway build cache, a read-only
 // linter binary and the read-only git common directory; its temporary
-// directory is the container's own memory.
+// directory is the container's own memory. When the run's diff touches webDir
+// it runs the web job's steps too, in containers of the same image that hold
+// the worktree, the host's bun and a bun cache warmed beforehand.
 type ContainerChecks struct {
 	// Image is the Go toolchain image, pinned by digest.
 	Image string
@@ -46,6 +55,15 @@ type ContainerChecks struct {
 	ModCache string
 	// Linter is the host golangci-lint binary; it must run in Image.
 	Linter string
+	// Bun is the host bun binary the web gates run, and it must run in Image
+	// too. The image cannot carry bun: it is the image go.mod's toolchain pins,
+	// named by the workflow this repository's App may not push to, so the web
+	// steps' interpreter is mounted as the linter is. bun needs nothing beyond
+	// glibc to run.
+	Bun string
+	// BunCache is the host bun cache the runner fills before each round, which
+	// the web gates' install resolves from: their containers have no network.
+	BunCache string
 	// GitCommonDir is the worktree's git common directory, mounted at its own
 	// path so the worktree's .git file resolves; resolve it before an agent runs.
 	GitCommonDir string
@@ -59,7 +77,11 @@ func (c ContainerChecks) Validate() error {
 	if err := checkPinnedImage("checks", c.Image); err != nil {
 		return err
 	}
-	for name, p := range map[string]string{"module cache": c.ModCache, "linter": c.Linter, "git common dir": c.GitCommonDir} {
+	paths := map[string]string{
+		"module cache": c.ModCache, "linter": c.Linter, "bun": c.Bun,
+		"bun cache": c.BunCache, "git common dir": c.GitCommonDir,
+	}
+	for name, p := range paths {
 		if err := checkMountPath("checks "+name, p); err != nil {
 			return err
 		}
@@ -68,18 +90,25 @@ func (c ContainerChecks) Validate() error {
 }
 
 // Run is a CheckRunner with RunChecks's contract. Before the gates it
-// downloads the module's dependencies into ModCache on the host, running no
-// repository code; inside, the module proxy is off, so a dependency the
-// download did not fetch fails a gate rather than reaching the network. A gate
-// that times out is killed and reported as failed; docker failing to start one
-// is an error.
-func (c ContainerChecks) Run(ctx context.Context, dir string) (string, string, error) {
+// downloads the module's dependencies into ModCache on the host, and — when
+// changed touches webDir — web's dependencies into BunCache, running no
+// repository code either way; inside, the module proxy is off and the web
+// install resolves from that cache, so a dependency neither download fetched
+// fails a gate rather than reaching the network. A gate that times out is
+// killed and reported as failed; docker failing to start one is an error.
+func (c ContainerChecks) Run(ctx context.Context, dir string, changed []string) (string, string, error) {
 	dir, err := filepath.Abs(dir)
 	if err != nil {
 		return "", "", err
 	}
 	if err := c.downloadModules(ctx, dir); err != nil {
 		return "", "", err
+	}
+	web := touchesWeb(changed)
+	if web {
+		if err := c.downloadWebModules(ctx, dir); err != nil {
+			return "", "", err
+		}
 	}
 	cache, err := os.MkdirTemp("", "wingman-checks-")
 	if err != nil {
@@ -108,7 +137,27 @@ func (c ContainerChecks) Run(ctx context.Context, dir string) (string, string, e
 			return g.gate, stdout + stderr, nil
 		}
 	}
+	if !web {
+		return "", "", nil
+	}
+	for _, s := range webSteps(true) {
+		stdout, stderr, failed, err := c.runWebGate(ctx, dir, s.gate, append([]string{containerBun}, s.args...)...)
+		if err != nil {
+			return "", "", err
+		}
+		if failed {
+			return s.gate, stdout + stderr, nil
+		}
+	}
 	return "", "", nil
+}
+
+// gateTimeout is the bound on one gate, and on the web dependency download.
+func (c ContainerChecks) gateTimeout() time.Duration {
+	if c.GateTimeout <= 0 {
+		return defaultGateTimeout
+	}
+	return c.GateTimeout
 }
 
 // downloadModules fills ModCache with dir's dependencies. A download that runs
@@ -126,23 +175,66 @@ func (c ContainerChecks) downloadModules(ctx context.Context, dir string) error 
 	return nil
 }
 
+// downloadWebModules fills BunCache with web's dependencies before the web
+// gates, installing where the web job's install does but with --ignore-scripts:
+// an install runs the project's lifecycle scripts, which are the branch's code
+// and would otherwise run on the host rather than in the container every gate
+// runs in. A download that runs and fails is not an error: the web-install gate
+// then fails on the same problem, with output the next round can act on. The
+// host install has network, so it is bounded like a gate; a hung one is an
+// error, since killing it leaves nothing for a gate to fail on.
+func (c ContainerChecks) downloadWebModules(ctx context.Context, dir string) error {
+	if err := os.MkdirAll(c.BunCache, 0o700); err != nil {
+		return err
+	}
+	timeout := c.gateTimeout()
+	ictx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ictx, c.Bun, "install", "--frozen-lockfile", "--ignore-scripts", "--cache-dir", c.BunCache)
+	cmd.Dir = filepath.Join(dir, webDir)
+	cmd.Env = checkCmdEnv()
+	var exitErr *exec.ExitError
+	err := cmd.Run()
+	switch {
+	case ictx.Err() != nil && ctx.Err() == nil:
+		return fmt.Errorf("bun install: stopped after %s: %w", timeout, ictx.Err())
+	case err != nil && !errors.As(err, &exitErr):
+		return fmt.Errorf("bun install: %w", err)
+	}
+	return nil
+}
+
 // runGate runs argv in a fresh container against dir, reporting whether it
 // exited non-zero or timed out. An exit of 125 to 127 is docker or the
 // container failing to start argv, which is an error, not a gate failure.
 func (c ContainerChecks) runGate(ctx context.Context, dir, cache, gate string, argv ...string) (stdout, stderr string, failed bool, err error) {
-	timeout := c.GateTimeout
-	if timeout <= 0 {
-		timeout = defaultGateTimeout
-	}
+	return c.runContainer(ctx, gate, func(name string) hardenedRun {
+		return c.gateRun(name, dir, cache, argv)
+	})
+}
+
+// runWebGate runs one of the web job's steps in a fresh container against dir,
+// reporting as runGate does.
+func (c ContainerChecks) runWebGate(ctx context.Context, dir, gate string, argv ...string) (stdout, stderr string, failed bool, err error) {
+	return c.runContainer(ctx, gate, func(name string) hardenedRun {
+		return c.webGateRun(name, dir, argv)
+	})
+}
+
+// runContainer runs one hardened gate container to completion, reporting a
+// non-zero exit or a timeout as a failure of gate and docker or the container
+// failing to start as an error.
+func (c ContainerChecks) runContainer(ctx context.Context, gate string, build func(name string) hardenedRun) (stdout, stderr string, failed bool, err error) {
+	timeout := c.gateTimeout()
 	gctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	name, err := containerName("wingman-checks-")
+	name, err := containerName(checksContainerPrefix)
 	if err != nil {
 		return "", "", false, err
 	}
 	var outBuf, errBuf bytes.Buffer
-	cmd := hardenedRunCommand(gctx, c.gateRun(name, dir, cache, argv))
+	cmd := hardenedRunCommand(gctx, build(name))
 	cmd.Stdout, cmd.Stderr = &outBuf, &errBuf
 	runErr := cmd.Run()
 
@@ -162,7 +254,7 @@ func (c ContainerChecks) runGate(ctx context.Context, dir, cache, gate string, a
 	}
 }
 
-// gateRun is the hardened container for one gate.
+// gateRun is the hardened container for one Go gate.
 func (c ContainerChecks) gateRun(name, dir, cache string, argv []string) hardenedRun {
 	return hardenedRun{
 		Name:    name,
@@ -184,6 +276,30 @@ func (c ContainerChecks) gateRun(name, dir, cache string, argv []string) hardene
 			"GOPROXY=off",
 			"GOFLAGS=-mod=readonly -buildvcs=false",
 			"GOTOOLCHAIN=local",
+		},
+		Image: c.Image,
+		Argv:  argv,
+	}
+}
+
+// webGateRun is the hardened container for one of the web job's steps: the
+// worktree, the host's bun mounted as the linter is, and the cache its install
+// resolves from, with webDir as the working directory. It mounts no Go cache
+// and no linter — a web step runs none of the repository's Go code.
+func (c ContainerChecks) webGateRun(name, dir string, argv []string) hardenedRun {
+	return hardenedRun{
+		Name:    name,
+		Network: "none",
+		Mounts: []string{
+			bindMount(dir, containerWorkDir, false),
+			bindMount(c.Bun, containerBun, true),
+			bindMount(c.BunCache, containerBunCache, false),
+		},
+		Workdir: containerWebDir,
+		Env: []string{
+			"TMPDIR=/tmp",
+			"HOME=/tmp",
+			"BUN_INSTALL_CACHE_DIR=" + containerBunCache,
 		},
 		Image: c.Image,
 		Argv:  argv,

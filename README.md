@@ -159,5 +159,13 @@ its own check:
 cd web && bun run lint && bun run fmt:check && bun run build
 ```
 
+A run's own pre-PR check gate runs those Go gates in the checks image and, when the
+run's diff touches `web/`, the frontend check after them, so a run's verdict fails
+wherever CI's `web` job would. The checks image is the image `go.mod`'s toolchain
+pins, and the workflow naming it is not one a run's App may change, so it carries no
+bun: the model job's bun — installed for its harnesses — is mounted into the web steps'
+containers, and the frozen-lockfile install resolves from the bun cache the runner
+fills beforehand, those containers having no network.
+
 Go's `go.mod` sets **`go 1.27`** (anything from 1.22 has the stdlib `ServeMux` routing the
 services use) and the **toolchain** that builds it; raise the toolchain deliberately.

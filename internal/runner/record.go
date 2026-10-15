@@ -117,8 +117,10 @@ const (
 	StopAgentNoProgress StopReason = "agent-no-progress"
 )
 
-// gates are the checks run.yml's check job — and RunChecks, in-job — run on
-// the branch, in order.
+// gates are the gates run.yml's check job runs on the branch, in order, and
+// what FailedGate admits. It runs the Go gates alone: the web job's steps
+// RunChecks runs when a run's diff touches webDir are the pre-PR loop's, ahead
+// of the CI that would report them.
 var gates = []string{checkGofmt, checkVet, checkLint, checkTest}
 
 // gateUnnamed is the failed gate of a check job that did not name one it runs.

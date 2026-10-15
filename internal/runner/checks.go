@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
 	"strings"
 )
 
-// checkGofmt, checkVet, checkLint and checkTest name RunChecks's four gates,
+// checkGofmt, checkVet, checkLint and checkTest name RunChecks's four Go gates,
 // in the order Makefile's check target runs them; gates in record.go is built
 // from these.
 const (
@@ -19,6 +21,55 @@ const (
 	checkLint  = "golangci-lint"
 	checkTest  = "test"
 )
+
+// checkWebInstall, checkWebLint, checkWebFmtCheck and checkWebBuild name the
+// web job's steps (ci.yml), in its order. RunChecks runs them after the Go
+// gates when the run's diff touches webDir, and names a failing one as it names
+// a Go gate. They are deliberately not in record.go's gates, which are the
+// gates run.yml's check job runs: that job runs the Go gates alone.
+const (
+	checkWebInstall  = "web-install"
+	checkWebLint     = "web-lint"
+	checkWebFmtCheck = "web-fmt-check"
+	checkWebBuild    = "web-build"
+)
+
+// webDir is the directory the repository's front end lives under. A run whose
+// diff touches it also runs the web job's steps, so the run's own verdict
+// covers everything that job would fail on.
+const webDir = "web"
+
+// webStep is one of the web job's steps: the gate a failure in it is reported
+// as, and the arguments bun runs for it with webDir as the working directory.
+type webStep struct {
+	gate string
+	args []string
+}
+
+// webSteps are the web job's steps in CI's order. offline makes the install
+// resolve and install from bun's cache alone, which the checks container needs
+// — it runs with no network — and which the host path, whose bun fetches over
+// the network CI's does, is not given.
+func webSteps(offline bool) []webStep {
+	install := []string{"install", "--frozen-lockfile"}
+	if offline {
+		install = append(install, "--offline")
+	}
+	return []webStep{
+		{checkWebInstall, install},
+		{checkWebLint, []string{"run", "lint"}},
+		{checkWebFmtCheck, []string{"run", "fmt:check"}},
+		{checkWebBuild, []string{"run", "build"}},
+	}
+}
+
+// touchesWeb reports whether any of the run's changed paths is webDir or sits
+// under it, which is when the web job's steps apply.
+func touchesWeb(changed []string) bool {
+	return slices.ContainsFunc(changed, func(p string) bool {
+		return p == webDir || strings.HasPrefix(p, webDir+"/")
+	})
+}
 
 // gofmtArgs is the gofmt gate's command line, run before exitGates.
 var gofmtArgs = []string{"gofmt", "-l", "."}
@@ -36,8 +87,8 @@ var exitGates = []struct {
 }
 
 // checkEnvNames are the variables a check gate's subprocess inherits: the Go
-// toolchain's and golangci-lint's own needs, deliberately not an agent's API
-// key or the workload-identity credentials model.yml's auth
+// toolchain's, golangci-lint's and bun's own needs, deliberately not an agent's
+// API key or the workload-identity credentials model.yml's auth
 // step exports. An allow-list, not an exclude-list, so a secret added to
 // that job later isn't carried in by default. TEMP/TMP/LocalAppData are
 // Windows' equivalents of TMPDIR/GOCACHE's own fallback path, needed for
@@ -51,31 +102,37 @@ var checkEnvNames = []string{
 // checkCmdEnv is the environment every RunChecks subprocess runs under. It
 // withholds what the job holds in its environment, not what it holds on disk:
 // the boundary for a credentials file and the network is ContainerChecks, whose
-// gates run in a container with no network that mounts the worktree, the module
-// and build caches and the linter, and none of the job's home, temp or workspace
-// directories.
+// gates run in a container with no network that mounts the worktree and the
+// caches and binaries that gate needs — the module and build caches and the
+// linter for a Go gate, the host's bun and its cache for a web step — and none
+// of the job's home, temp or workspace directories.
 func checkCmdEnv() []string {
 	return filterEnv(os.Environ(), checkEnvNames)
 }
 
-// CheckRunner runs the target repository's own quality gates against dir —
-// ContainerChecks.Run in production, RunChecks where no checks image is
-// configured, a fake in a test that exercises the pre-PR loop's wiring without
-// shelling out to a real Go toolchain.
-type CheckRunner func(ctx context.Context, dir string) (failedGate, output string, err error)
+// CheckRunner runs the target repository's own quality gates against dir,
+// whose changed paths are the run's diff against its base — ContainerChecks.Run
+// in production, RunChecks where no checks image is configured, a fake in a
+// test that exercises the pre-PR loop's wiring without shelling out to a real
+// Go toolchain.
+type CheckRunner func(ctx context.Context, dir string, changed []string) (failedGate, output string, err error)
 
 // RunChecks runs the repository's own quality gates against dir, in the same
-// order and with the same commands as Makefile's check target, stopping at
-// the first failure. It returns ("", "", nil) when every gate passes;
-// otherwise the failing gate's name — one of gates in record.go — and its
-// output. An error reports a gate that could not be run at all, never a gate
-// that ran and failed.
+// order and with the same commands as Makefile's check target and, when changed
+// touches webDir, ci.yml's web job after them, stopping at the first failure.
+// It returns ("", "", nil) when every gate passes; otherwise the failing gate's
+// name — one of gates in record.go, or one of the web gates — and its output.
+// An error reports a gate that could not be run at all, never a gate that ran
+// and failed.
 //
-// This in-job pass and run.yml's separate check job both run these same four
+// This in-job pass and run.yml's separate check job both run these same Go
 // gates: deliberately, not redundantly — this one gives the pre-PR loop
 // fast, cheap feedback to rebuild against, while the separate job (no
-// secrets, its own runner) stays the trusted, final gate before merge.
-func RunChecks(ctx context.Context, dir string) (string, string, error) {
+// secrets, its own runner) stays the trusted, final gate before merge. The web
+// job's steps are this pass's alone: run.yml's check job does not run them, so
+// a web failure caught here is one the PR's own CI would otherwise be the first
+// to report.
+func RunChecks(ctx context.Context, dir string, changed []string) (string, string, error) {
 	if failed, output, err := runGofmt(ctx, dir); err != nil {
 		return "", "", err
 	} else if failed {
@@ -88,6 +145,33 @@ func RunChecks(ctx context.Context, dir string) (string, string, error) {
 		}
 		if failed {
 			return g.gate, output, nil
+		}
+	}
+	if !touchesWeb(changed) {
+		return "", "", nil
+	}
+	return runWebSteps(ctx, dir, webSteps(false))
+}
+
+// lookPath finds a binary on PATH; a test replaces it to make bun missing.
+var lookPath = exec.LookPath
+
+// runWebSteps runs the web job's steps against dir's web directory with the
+// bun on PATH, the way the web job runs them in its own job with the working
+// directory set there. It reports the first failing step with its output, or an
+// error for a step that could not be run at all — bun missing among them.
+func runWebSteps(ctx context.Context, dir string, steps []webStep) (string, string, error) {
+	bun, err := lookPath("bun")
+	if err != nil {
+		return "", "", fmt.Errorf("running %s: %w", steps[0].gate, err)
+	}
+	for _, s := range steps {
+		output, failed, err := runGate(ctx, filepath.Join(dir, webDir), bun, s.args...)
+		if err != nil {
+			return "", "", fmt.Errorf("running %s: %w", s.gate, err)
+		}
+		if failed {
+			return s.gate, output, nil
 		}
 	}
 	return "", "", nil

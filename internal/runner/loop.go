@@ -173,7 +173,7 @@ func runCheckLoop(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, 
 
 	var lastGate, lastOutput string
 	for rebuildRound := 1; ; rebuildRound++ {
-		gate, output, cerr := timedChecks(ctx, d, sum, wt.Dir, round)
+		gate, output, cerr := timedChecks(ctx, d, sum, wt, round)
 		if cerr != nil {
 			return false, "", session, round, stopWith(OutcomeInfraFailure, StopChecksRun, cerr)
 		}
@@ -198,10 +198,16 @@ func runCheckLoop(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, 
 }
 
 // timedChecks runs d.Checks once against the build round's work, adding its
-// time to the run's checks duration and logging the round.
-func timedChecks(ctx context.Context, d BuildDeps, sum *Summary, dir string, round int) (gate, output string, err error) {
+// time to the run's checks duration and logging the round. The worktree's
+// changed paths travel with it, so a check that only applies to part of the
+// repository — the web job's steps — knows whether it applies to this run.
+func timedChecks(ctx context.Context, d BuildDeps, sum *Summary, wt Worktree, round int) (gate, output string, err error) {
+	changed, err := wt.PendingFiles(ctx)
+	if err != nil {
+		return "", "", err
+	}
 	start := d.Now()
-	gate, output, err = d.Checks(ctx, dir)
+	gate, output, err = d.Checks(ctx, wt.Dir, changed)
 	elapsed := d.Now().Sub(start).Milliseconds()
 	sum.DurationsMS[checksDuration] += elapsed
 	d.Logger.Info("checkRound", "round", round, "failedGate", gate, "durationMS", elapsed, "ran", err == nil)
@@ -293,7 +299,7 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 	}
 	msg.adopt(fixText, c.Ticket.ID)
 
-	gate, output, cerr := timedChecks(ctx, d, sum, wt.Dir, fixCall.Round)
+	gate, output, cerr := timedChecks(ctx, d, sum, wt, fixCall.Round)
 	if cerr != nil {
 		return false, "", stopWith(OutcomeInfraFailure, StopChecksRun, cerr)
 	}

@@ -74,7 +74,71 @@ func testContainerChecks(t *testing.T) ContainerChecks {
 	if err := os.WriteFile(linter, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	return ContainerChecks{Image: pinnedChecksImage(t), ModCache: t.TempDir(), Linter: linter, GitCommonDir: t.TempDir()}
+	return ContainerChecks{Image: pinnedChecksImage(t), ModCache: t.TempDir(), Linter: linter, GitCommonDir: t.TempDir(),
+		Bun: fakeBun(t, filepath.Join(t.TempDir(), "bun")), BunCache: t.TempDir()}
+}
+
+// fakeBun writes a bun script at path that logs each invocation — the path it
+// was run as, the working directory it ran in, then its arguments, one
+// \x1f-separated line per invocation — to bunLog(path), and that prints "boom",
+// exits 1 and logs nothing while bunFails has armed bunFail(path).
+//
+// A marker file rather than an environment variable, as fakeDocker uses: a gate
+// subprocess runs under checkCmdEnv's allow-list, which admits no variable a
+// test invents, and the docker CLI is allowed DOCKER_* alone.
+func fakeBun(t *testing.T, path string) string {
+	t.Helper()
+	script := `#!/bin/sh
+want=$(cat "` + bunFail(path) + `" 2>/dev/null)
+for a in "$@"; do
+	if [ -n "$want" ] && [ "$a" = "$want" ]; then echo boom; exit 1; fi
+done
+{ printf '%s\037' "$0" "$(pwd)" "$@"; printf '\n'; } >> "` + bunLog(path) + `"
+`
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// bunLog is where the bun script at path logs.
+func bunLog(path string) string { return path + ".log" }
+
+// bunFail is the marker the bun script at path reads its failing argument from.
+func bunFail(path string) string { return path + ".fail" }
+
+// bunFails arms the bun script at path to fail when one of its arguments is arg.
+func bunFails(t *testing.T, path, arg string) {
+	t.Helper()
+	if err := os.WriteFile(bunFail(path), []byte(arg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// bunCalls reads the log of the bun script at path back, one invocation's path,
+// working directory and arguments per entry.
+func bunCalls(t *testing.T, path string) [][]string {
+	t.Helper()
+	return dockerCalls(t, bunLog(path))
+}
+
+// webTouched is a run's changed paths for a diff that touches the front end.
+var webTouched = []string{"internal/runner/checks.go", webDir + "/src/app.tsx"}
+
+// initWebModule is a module whose web directory exists, as a diff that touches
+// web implies, so the bun install's working directory resolves. The path comes
+// back fully resolved, since a shell run in it reports the resolved path
+// (macOS's temporary directory sits behind a symlink).
+func initWebModule(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(initModule(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, webDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 // flagValues is every value args gives flag.
@@ -93,7 +157,7 @@ func TestContainerChecksRunEachGateInAContainerWithNoNetworkAndOnlyItsMounts(t *
 	c := testContainerChecks(t)
 	dir := initModule(t)
 
-	gate, output, err := c.Run(context.Background(), dir)
+	gate, output, err := c.Run(context.Background(), dir, nil)
 	if err != nil || gate != "" {
 		t.Fatalf("Run = %q, %q, %v, want a clean pass", gate, output, err)
 	}
@@ -174,7 +238,7 @@ func TestContainerChecksReportAFailingGateWithItsOutput(t *testing.T) {
 			for k, v := range tt.env {
 				t.Setenv(k, v)
 			}
-			gate, output, err := testContainerChecks(t).Run(context.Background(), initModule(t))
+			gate, output, err := testContainerChecks(t).Run(context.Background(), initModule(t), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -185,11 +249,167 @@ func TestContainerChecksReportAFailingGateWithItsOutput(t *testing.T) {
 	}
 }
 
+// TestContainerChecksRunTheWebStepsInFreshContainersOnlyWhenTheDiffTouchesWeb
+// is the run's own verdict covering ci.yml's web job: a diff that does not
+// touch web runs the Go gates alone and never the host's bun, and one that does
+// runs the web job's steps after them, each in a fresh container of the checks
+// image.
+func TestContainerChecksRunTheWebStepsInFreshContainersOnlyWhenTheDiffTouchesWeb(t *testing.T) {
+	t.Run("a diff that does not touch web", func(t *testing.T) {
+		logFile := fakeDocker(t)
+		c := testContainerChecks(t)
+
+		gate, output, err := c.Run(context.Background(), initWebModule(t), []string{"internal/runner/checks.go"})
+		if err != nil || gate != "" {
+			t.Fatalf("Run = %q, %q, %v, want a clean pass", gate, output, err)
+		}
+		want := []string{"gofmt -l .", "go vet ./...", "golangci-lint run", "go test -race -shuffle=on -cover ./..."}
+		if got := imageCommands(t, dockerCalls(t, logFile), c.Image); !slices.Equal(got, want) {
+			t.Fatalf("a diff that does not touch web ran %q, want the Go gates alone %q", got, want)
+		}
+		if _, err := os.Stat(bunLog(c.Bun)); !os.IsNotExist(err) {
+			t.Errorf("the host's bun ran for a diff that does not touch web: %v", err)
+		}
+	})
+
+	t.Run("a diff that touches web", func(t *testing.T) {
+		logFile := fakeDocker(t)
+		c := testContainerChecks(t)
+		dir := initWebModule(t)
+
+		gate, output, err := c.Run(context.Background(), dir, webTouched)
+		if err != nil || gate != "" {
+			t.Fatalf("Run = %q, %q, %v, want a clean pass", gate, output, err)
+		}
+		calls := dockerCalls(t, logFile)
+		if len(calls) != 8 {
+			t.Fatalf("docker ran %d containers, want the four Go gates then the four web steps: %v", len(calls), calls)
+		}
+		var commands []string
+		for _, args := range calls[4:] {
+			if args[0] != "run" || !slices.Contains(args, "--rm") || !slices.Contains(args, "--init") {
+				t.Fatalf("docker %v, want docker run --rm --init", args)
+			}
+			if got := flagValues(args, "--network"); !slices.Equal(got, []string{"none"}) {
+				t.Errorf("--network %v, want none", got)
+			}
+			wantMounts := []string{
+				"type=bind,src=" + dir + ",dst=/work",
+				"type=bind,src=" + c.Bun + ",dst=" + containerBun + ",readonly",
+				"type=bind,src=" + c.BunCache + ",dst=" + containerBunCache,
+			}
+			if got := flagValues(args, "--mount"); !slices.Equal(got, wantMounts) {
+				t.Errorf("mounts = %v, want only %v", got, wantMounts)
+			}
+			if got := flagValues(args, "--workdir"); !slices.Equal(got, []string{containerWebDir}) {
+				t.Errorf("--workdir %v, want %s", got, containerWebDir)
+			}
+			wantEnv := []string{"TMPDIR=/tmp", "HOME=/tmp", "BUN_INSTALL_CACHE_DIR=" + containerBunCache}
+			if got := flagValues(args, "--env"); !slices.Equal(got, wantEnv) {
+				t.Errorf("env = %v, want %v", got, wantEnv)
+			}
+			at := slices.Index(args, c.Image)
+			if at < 0 {
+				t.Fatalf("docker run %v does not name the configured image", args)
+			}
+			commands = append(commands, strings.Join(args[at+1:], " "))
+		}
+		want := []string{
+			containerBun + " install --frozen-lockfile --offline",
+			containerBun + " run lint",
+			containerBun + " run fmt:check",
+			containerBun + " run build",
+		}
+		if !slices.Equal(commands, want) {
+			t.Fatalf("the web steps ran %q, want %q", commands, want)
+		}
+
+		// The host filled the cache first, with an install that runs no
+		// repository code, where the web job's own install runs.
+		warm := bunCalls(t, c.Bun)
+		if len(warm) != 1 {
+			t.Fatalf("the host's bun ran %v, want one install", warm)
+		}
+		if got := warm[0][0]; got != c.Bun {
+			t.Errorf("the bun install ran as %q, want the binary it mounts %q", got, c.Bun)
+		}
+		if got := warm[0][1]; got != filepath.Join(dir, webDir) {
+			t.Errorf("the bun install ran in %q, want the web directory", got)
+		}
+		wantWarm := "install --frozen-lockfile --ignore-scripts --cache-dir " + c.BunCache
+		if got := strings.Join(warm[0][2:], " "); got != wantWarm {
+			t.Errorf("the host's bun ran %q, want %q", got, wantWarm)
+		}
+	})
+}
+
+// TestContainerChecksNameTheFailingWebStep holds the cases the check gate must
+// tell apart: each of the steps ci.yml's web job can fail at is named as
+// itself, a clean web change passes with the steps run to the end, and a diff
+// that does not touch web is left to the Go gates.
+func TestContainerChecksNameTheFailingWebStep(t *testing.T) {
+	tests := []struct {
+		name    string
+		changed []string
+		failOn  string
+		want    string
+	}{
+		{"an install failure", webTouched, "--frozen-lockfile", checkWebInstall},
+		{"a lint failure", webTouched, "lint", checkWebLint},
+		{"a fmt:check failure", webTouched, "fmt:check", checkWebFmtCheck},
+		{"a build failure", webTouched, "build", checkWebBuild},
+		{"a pass", webTouched, "", ""},
+		{"a diff with no web change", []string{"internal/runner/checks.go"}, "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logFile := fakeDocker(t)
+			if tt.failOn != "" {
+				t.Setenv("DOCKER_FAKE_FAIL", tt.failOn)
+			}
+			gate, output, err := testContainerChecks(t).Run(context.Background(), initWebModule(t), tt.changed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if gate != tt.want {
+				t.Fatalf("gate = %q, output = %q, want %q", gate, output, tt.want)
+			}
+			if tt.want != "" && output == "" {
+				t.Fatal("no output captured for the failing step")
+			}
+			// A clean web change reaches the last of the steps, so this case
+			// cannot pass with them skipped.
+			if !touchesWeb(tt.changed) || tt.want != "" {
+				return
+			}
+			calls := dockerCalls(t, logFile)
+			if last := calls[len(calls)-1]; !slices.Contains(last, "build") {
+				t.Fatalf("a clean web change ended at %v, want its build step", last)
+			}
+		})
+	}
+}
+
+// imageCommands is every docker invocation's argv after the image it names, the
+// command each container ran.
+func imageCommands(t *testing.T, calls [][]string, image string) []string {
+	t.Helper()
+	var commands []string
+	for _, args := range calls {
+		at := slices.Index(args, image)
+		if at < 0 {
+			t.Fatalf("docker run %v does not name the configured image", args)
+		}
+		commands = append(commands, strings.Join(args[at+1:], " "))
+	}
+	return commands
+}
+
 func TestContainerChecksTreatDockerFailingToStartAGateAsAnError(t *testing.T) {
 	fakeDocker(t)
 	t.Setenv("DOCKER_FAKE_FAIL", "vet")
 	t.Setenv("DOCKER_FAKE_CODE", "125")
-	if gate, _, err := testContainerChecks(t).Run(context.Background(), initModule(t)); err == nil {
+	if gate, _, err := testContainerChecks(t).Run(context.Background(), initModule(t), nil); err == nil {
 		t.Fatalf("Run reported gate %q, want an error for a container docker could not start", gate)
 	}
 }
@@ -201,7 +421,7 @@ func TestContainerChecksKillAGateThatTimesOutAndReportItFailed(t *testing.T) {
 	c.GateTimeout = time.Second
 
 	start := time.Now()
-	gate, output, err := c.Run(context.Background(), initModule(t))
+	gate, output, err := c.Run(context.Background(), initModule(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,12 +451,14 @@ func TestContainerChecksValidate(t *testing.T) {
 		{"a short digest", func(c *ContainerChecks) { c.Image = "golang@sha256:162be5" }, false},
 		{"a relative module cache", func(c *ContainerChecks) { c.ModCache = "modcache" }, false},
 		{"a linter path a mount cannot carry", func(c *ContainerChecks) { c.Linter = "/bin/a,b" }, false},
+		{"no bun", func(c *ContainerChecks) { c.Bun = "" }, false},
+		{"no bun cache", func(c *ContainerChecks) { c.BunCache = "" }, false},
 		{"no git common dir", func(c *ContainerChecks) { c.GitCommonDir = "" }, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c := ContainerChecks{Image: pinnedChecksImage(t), ModCache: "/modcache", Linter: "/bin/golangci-lint",
-				GitCommonDir: "/repo/.git"}
+				Bun: "/bin/bun", BunCache: "/buncache", GitCommonDir: "/repo/.git"}
 			tt.mutate(&c)
 			if err := c.Validate(); (err == nil) != tt.ok {
 				t.Fatalf("Validate() = %v, want ok = %v", err, tt.ok)
@@ -286,7 +508,7 @@ func TestProbe(t *testing.T) {
 	t.Fatal("probe done")
 }
 `)
-	gate, output, err := testContainerChecks(t).Run(context.Background(), dir)
+	gate, output, err := testContainerChecks(t).Run(context.Background(), dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +555,7 @@ func TestGit(t *testing.T) {
 `)
 	c := testContainerChecks(t)
 	c.GitCommonDir = wt.CommonDir
-	gate, output, err := c.Run(context.Background(), wt.Dir)
+	gate, output, err := c.Run(context.Background(), wt.Dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,4 +595,52 @@ func TestModelWorkflowRunsTheChecksInGoModsToolchainImage(t *testing.T) {
 	if !strings.Contains(yml, "golangci-lint@v2.13.2\n        env:\n          CGO_ENABLED: \"0\"\n") {
 		t.Error("model.yml does not build golangci-lint static, so the container cannot run it")
 	}
+}
+
+// hangingBun is a bun that never exits, as a registry that never answers.
+func hangingBun(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "bun")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexec sleep 30\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestContainerChecksStopAHungWebDependencyDownloadWithANamedError(t *testing.T) {
+	fakeDocker(t)
+	c := testContainerChecks(t)
+	c.Bun = hangingBun(t)
+	c.GateTimeout = time.Second
+
+	start := time.Now()
+	gate, _, err := c.Run(context.Background(), initWebModule(t), webTouched)
+	if err == nil || !strings.Contains(err.Error(), "bun install: stopped after 1s") {
+		t.Fatalf("Run = %q, %v, want a named error for the hung download", gate, err)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("Run took %s, want the hung download killed", elapsed)
+	}
+}
+
+func TestContainerChecksReportABunThatCannotStartAndLeaveAFailingInstallToItsGate(t *testing.T) {
+	t.Run("bun cannot start", func(t *testing.T) {
+		fakeDocker(t)
+		c := testContainerChecks(t)
+		c.Bun = filepath.Join(t.TempDir(), "missing-bun")
+
+		if _, _, err := c.Run(context.Background(), initWebModule(t), webTouched); err == nil || !strings.Contains(err.Error(), "bun install:") {
+			t.Fatalf("Run error = %v, want a bun install error", err)
+		}
+	})
+
+	t.Run("bun exits non-zero", func(t *testing.T) {
+		fakeDocker(t)
+		c := testContainerChecks(t)
+		bunFails(t, c.Bun, "--frozen-lockfile")
+
+		if err := c.downloadWebModules(context.Background(), initWebModule(t)); err != nil {
+			t.Fatalf("downloadWebModules = %v, want a failed install left to the web-install gate", err)
+		}
+	})
 }
