@@ -163,8 +163,9 @@ func (r *Records) Comparison(ctx context.Context, since time.Time) (Comparison, 
 			m.minutes += wallClockMinutes(rec)
 			// Only a run a merge has measured says anything about its model's
 			// rewrite rate: one still in the open has no lines to count and no
-			// measurement to cover.
-			if run.measured {
+			// measurement to cover, and one with commits GitHub gave no line
+			// counts for undercounts, as the trailing rate also treats it.
+			if run.measured && run.rewrite.UnmeasuredCommits == 0 {
 				m.lines.AgentLines += run.rewrite.AgentLines
 				m.lines.OwnerLines += run.rewrite.OwnerLines
 				m.rewriteSample++

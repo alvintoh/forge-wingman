@@ -44,6 +44,8 @@ type comparedRun struct {
 	// named no model is credited to the one its build step names.
 	stepPhase runner.Phase
 	stepModel string
+	// leadingSteps are written ahead of that step.
+	leadingSteps []runner.Step
 	// wallClock is how long the run took, an hour when unset.
 	wallClock time.Duration
 	// rewrite is the measurement a merge wrote onto the run's row, absent for
@@ -87,10 +89,10 @@ func comparedRecord(t *testing.T, client *firestore.Client, id string, c compare
 			model = c.model
 		}
 		tokens := runner.Usage{Input: c.input, CacheRead: c.cacheRead, Cost: c.cost.USD()}
-		rec.Steps = []runner.Step{{
+		rec.Steps = append(slices.Clone(c.leadingSteps), runner.Step{
 			Phase: phase, Round: 1, Model: model,
 			Tokens: tokens, At: started,
-		}}
+		})
 		rec.Tokens = tokens
 	}
 	rec.Cache = c.cache
@@ -284,6 +286,22 @@ func TestComparisonCreditsARunToTheModelItsBuildStepRanOn(t *testing.T) {
 	}
 }
 
+func TestComparisonSkipsABuildStepThatNamesNoModel(t *testing.T) {
+	_, client := queue(t)
+	plan, id := fresh("credit-blank"), fresh("credit-blank-run")
+	forget(t, client, id)
+	comparedRecord(t, client, id, comparedRun{plan: plan, settledAt: queueAt, stepModel: trialModel,
+		leadingSteps: []runner.Step{{Phase: runner.PhaseBuild, Round: 1, At: queueAt.Add(-time.Hour)}}})
+
+	got, err := NewRecords(client).Comparison(context.Background(), queueAt.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m, ok := findModel(got.Models, trialModel); !ok || m.Tickets != 1 {
+		t.Fatalf("models = %+v, want the run credited to the first build step that names a model", got.Models)
+	}
+}
+
 // TestComparisonReportsEachModelsWallClock asserts a model's row carries the mean
 // wall-clock minutes of its own runs, each read from the run's start to its
 // settlement (AC2).
@@ -330,6 +348,27 @@ func TestComparisonReportsEachModelsRewriteRate(t *testing.T) {
 	}
 	if m, ok := findModel(got.Models, openModel); !ok || m.RewriteRate != 0 || m.RewriteSample != 0 {
 		t.Fatalf("model = %+v (ok %v), want a run no merge measured to report no rate", m, ok)
+	}
+}
+
+func TestComparisonLeavesARunWithUnmeasuredCommitsOutOfTheRewriteRate(t *testing.T) {
+	_, client := queue(t)
+	plan, model := fresh("rate-gap"), fresh("rate-gap-model")
+	whole, partial := fresh("rate-gap-whole"), fresh("rate-gap-partial")
+	forget(t, client, whole, partial)
+	comparedRecord(t, client, whole, comparedRun{plan: plan, model: model, settledAt: queueAt,
+		rewrite: &dispatcher.Rewrite{AgentLines: 400, OwnerLines: 100}})
+	// GitHub gave no line counts for one of this PR's commits, so its lines
+	// undercount and it is no sample of the rate.
+	comparedRecord(t, client, partial, comparedRun{plan: plan, model: model, settledAt: queueAt.Add(time.Minute),
+		rewrite: &dispatcher.Rewrite{AgentLines: 10, OwnerLines: 90, UnmeasuredCommits: 1}})
+
+	got, err := NewRecords(client).Comparison(context.Background(), queueAt.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m, ok := findModel(got.Models, model); !ok || m.RewriteRate != 0.25 || m.RewriteSample != 1 {
+		t.Fatalf("model = %+v (ok %v), want only the fully measured run behind the rate", m, ok)
 	}
 }
 

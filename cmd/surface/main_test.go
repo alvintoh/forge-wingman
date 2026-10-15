@@ -1070,3 +1070,12 @@ func TestPeakReportsAStoreItCannotWrite(t *testing.T) {
 		t.Fatalf("log = %q, want the failed write reported", log.String())
 	}
 }
+
+func TestComparisonReportsAModelNoMergeMeasuredAsNotMeasured(t *testing.T) {
+	got := renderComparison(store.Comparison{
+		Models: []store.ModelComparison{{Model: "command-code/x", Tickets: 2, Passed: 2}},
+	})
+	if len(got.Models) != 1 || got.Models[0].RewriteRate != "not measured" {
+		t.Fatalf("models = %+v, want a model with no measured run reported as not measured, not 0.0%%", got.Models)
+	}
+}

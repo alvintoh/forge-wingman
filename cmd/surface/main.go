@@ -316,10 +316,16 @@ func renderComparison(c store.Comparison) comparisonResponse {
 		Drifted:   []driftedRun{},
 	}
 	for _, m := range c.Models {
+		// A model no merge has measured has a zero rate, which would print as a
+		// clean 0.0%.
+		rate := "not measured"
+		if m.RewriteSample > 0 {
+			rate = rateText(m.RewriteRate)
+		}
 		out.Models = append(out.Models, modelComparison{
 			Model: m.Model, Tickets: m.Tickets, Passed: m.Passed, RewriteSample: m.RewriteSample,
 			CostPerTicketUSD: m.CostPerTicket.USD(), MinutesPerTicket: m.MinutesPerTicket,
-			RewriteRate: rateText(m.RewriteRate),
+			RewriteRate: rate,
 		})
 	}
 	for _, p := range c.Providers {
