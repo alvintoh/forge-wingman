@@ -14,14 +14,20 @@ import (
 	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
+// estimateScanLimit bounds the size estimate's scan: a poll reads only the
+// latest settled runs of each size, so an estimate never grows with the whole
+// run history (AC6).
+const estimateScanLimit = 20
+
 // Estimates reads past runs' settled cost and duration to estimate an
-// unclaimed run's own (PRD Q4): the mean of every settled run of the
-// requested size, falling back to the first ever settled run — any size —
-// when none exist for that size yet. A brand new system with no settled runs
-// at all estimates zero, so its own first runs are what seeds every estimate
-// after them, rather than blocking on data that cannot exist yet. A run claimed
-// on a plan's free tier is left out: its $0 says nothing of what a paid run
-// costs, and averaging it in would under-reserve the paid windows.
+// unclaimed run's own (PRD Q4): the mean of the latest estimateScanLimit
+// settled runs of the requested size, falling back to the first ever settled
+// run — any size — when none exist for that size yet. A brand new system with
+// no settled runs at all estimates zero, so its own first runs are what seeds
+// every estimate after them, rather than blocking on data that cannot exist
+// yet. A run claimed on a plan's free tier is left out: its $0 says nothing of
+// what a paid run costs, and averaging it in would under-reserve the paid
+// windows.
 type Estimates struct {
 	client *firestore.Client
 }
@@ -54,12 +60,18 @@ func (e *Estimates) Estimate(ctx context.Context, size string) (dispatcher.Estim
 	return dispatcher.Estimate{ProviderCost: costSum / money.Micros(n), Minutes: minutesSum / n}, nil
 }
 
-// settledBySize is every settled run of size. A single equality filter on
-// size needs no composite index — Firestore auto-creates a single-field one —
-// so settlement is instead checked client-side; a personal project's run
-// count never justifies adding a composite index for it.
+// settledBySize is the latest estimateScanLimit settled runs of size, newest
+// first: the mean of the runs nearest the one being estimated, and a read that
+// does not grow with the size's whole history (AC6). The size equality with a
+// settled_at order needs the composite index infra/firestore.tf declares. A row
+// carrying no settlement is never returned by an ordered query, which is the
+// settlement check the scan would otherwise make in Go.
 func (e *Estimates) settledBySize(ctx context.Context, size string) ([]runner.Record, error) {
-	iter := e.client.Collection(runsCollection).Where(sizeField, "==", size).Documents(ctx)
+	iter := e.client.Collection(runsCollection).
+		Where(sizeField, "==", size).
+		OrderBy(settledAtField, firestore.Desc).
+		Limit(estimateScanLimit).
+		Documents(ctx)
 	defer iter.Stop()
 	var out []runner.Record
 	for {

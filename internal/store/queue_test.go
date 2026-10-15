@@ -400,10 +400,20 @@ func TestCandidatesLogsARowTheOrderedQueryCannotList(t *testing.T) {
 // document writes the queue commits.
 func countingQueue(t *testing.T, failCounts bool) (q *Queue, queries, counts, commits *atomic.Int64) {
 	t.Helper()
+	queries, counts, commits = new(atomic.Int64), new(atomic.Int64), new(atomic.Int64)
+	return NewQueue(countingClient(t, new(atomic.Int64), queries, counts, commits, failCounts)), queries, counts, commits
+}
+
+// countingClient returns a Firestore client over the emulator that counts the
+// documents its reads return (reads), its queries (queries), its aggregation
+// queries (counts) and the document writes it commits (commits); a set
+// failCounts refuses every aggregation query, so a test can prove a caller runs
+// without them.
+func countingClient(t *testing.T, reads, queries, counts, commits *atomic.Int64, failCounts bool) *firestore.Client {
+	t.Helper()
 	if os.Getenv("FIRESTORE_EMULATOR_HOST") == "" {
 		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
 	}
-	queries, counts, commits = new(atomic.Int64), new(atomic.Int64), new(atomic.Int64)
 	countCommits := func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 		if commit, ok := req.(*firestorepb.CommitRequest); ok {
 			commits.Add(int64(len(commit.Writes)))
@@ -420,7 +430,11 @@ func countingQueue(t *testing.T, failCounts bool) (q *Queue, queries, counts, co
 				return nil, status.Error(codes.PermissionDenied, "count refused")
 			}
 		}
-		return streamer(metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer owner"), desc, cc, method, opts...)
+		stream, err := streamer(metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer owner"), desc, cc, method, opts...)
+		if err != nil || !carriesDocuments(method) {
+			return stream, err
+		}
+		return &documentStream{ClientStream: stream, reads: reads}, nil
 	}
 	conn, err := grpc.NewClient(os.Getenv("FIRESTORE_EMULATOR_HOST"),
 		grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithChainStreamInterceptor(intercept), grpc.WithChainUnaryInterceptor(countCommits))
@@ -433,7 +447,37 @@ func countingQueue(t *testing.T, failCounts bool) (q *Queue, queries, counts, co
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = client.Close() })
-	return NewQueue(client), queries, counts, commits
+	return client
+}
+
+// carriesDocuments reports whether method's responses each carry one document
+// read: a query returns a row per document, and a batch read — which is what a
+// point read and a transaction's read use — returns the document asked for.
+func carriesDocuments(method string) bool {
+	return strings.HasSuffix(method, "/RunQuery") || strings.HasSuffix(method, "/BatchGetDocuments")
+}
+
+// documentStream counts the documents the responses of one read carry.
+type documentStream struct {
+	grpc.ClientStream
+	reads *atomic.Int64
+}
+
+func (s *documentStream) RecvMsg(m any) error {
+	if err := s.ClientStream.RecvMsg(m); err != nil {
+		return err
+	}
+	switch msg := m.(type) {
+	case *firestorepb.RunQueryResponse:
+		if msg.GetDocument() != nil {
+			s.reads.Add(1)
+		}
+	case *firestorepb.BatchGetDocumentsResponse:
+		if msg.GetFound() != nil {
+			s.reads.Add(1)
+		}
+	}
+	return nil
 }
 
 func TestCandidatesReadsOneOrderedQuery(t *testing.T) {

@@ -351,6 +351,9 @@ type Queue interface {
 	Sweeper
 	ClaimedRuns
 	EndedRuns
+	// SettledHistory reads the settled run history at or after since: the one
+	// read a poll's budget ceilings are summed from, whatever it walks (AC1).
+	SettledHistory(ctx context.Context, since time.Time) (SettledHistory, error)
 }
 
 // Workflow starts one run in its target repository.
@@ -421,6 +424,10 @@ func poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	// The level is read once, ahead of the delegation that spends its daily bar
 	// and the claims that record it, so one poll acts on one level throughout.
 	level := readAutonomy(ctx, d)
+	// One loader for the whole poll: the claim walk and the delegation share it,
+	// so the settled run history is read once whichever of them reaches for it
+	// first, and neither reads it at all unless something needs it (AC1, AC5).
+	history := newHistoryLoader(ctx, d.Queue, c.historySince(d.Now()))
 	start := d.Now()
 	issues, err := d.Source.Delegated(ctx)
 	if err != nil {
@@ -445,7 +452,7 @@ func poll(ctx context.Context, d Deps, c Config) (Result, error) {
 		links[issue.ID] = issue.URL
 	}
 	start = d.Now()
-	claims, claimErr := admitClaims(ctx, d, c, level, relations, links, &res)
+	claims, claimErr := admitClaims(ctx, d, c, level, relations, links, &res, history)
 	LogPhase(d.Logger, "claim", start, d.Now())
 	phaseErrs := []error{claimErr}
 	start = d.Now()
@@ -461,7 +468,7 @@ func poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	// and dispatch that already succeeded: the agent session it opens wakes the
 	// poll that admits the ticket within seconds.
 	start = d.Now()
-	phaseErrs = append(phaseErrs, autoDelegate(ctx, d, c, level, &res))
+	phaseErrs = append(phaseErrs, autoDelegate(ctx, d, c, level, &res, history))
 	LogPhase(d.Logger, "delegate", start, d.Now())
 	if err := errors.Join(phaseErrs...); err != nil {
 		return res, err
@@ -576,7 +583,14 @@ func claimStage(cand Candidate, twoStage bool) string {
 // on the configured free-tier plans, a private one only with the owner's private
 // opt-in. A candidate held for peak hours is no ceiling's, so it is neither
 // moved nor noticed.
-func admitClaims(ctx context.Context, d Deps, c Config, level Autonomy, relations map[string]Relations, links map[string]string, res *Result) ([]Claim, error) {
+//
+// The settled run history is read at most once for the whole walk, the first
+// time a candidate reaches its budget ceilings, and an estimate once per size
+// rather than once per candidate: a backlog costs the poll one read of the
+// history and one estimate of each size it holds, however many candidates are
+// queued (AC1), and a walk whose candidates a non-budget limit withholds reads
+// no history at all (AC5).
+func admitClaims(ctx context.Context, d Deps, c Config, level Autonomy, relations map[string]Relations, links map[string]string, res *Result, history HistoryLoader) ([]Claim, error) {
 	candidates, err := d.Queue.Candidates(ctx)
 	if err != nil {
 		return nil, err
@@ -588,6 +602,30 @@ func admitClaims(ctx context.Context, d Deps, c Config, level Autonomy, relation
 	if len(candidates) > 0 {
 		prs = countOpenPRs(ctx, d, c.Repos)
 		mode = readPeakMode(ctx, d)
+	}
+	// A size's estimate is the poll's, not the candidate's: one estimator read
+	// per size, however many candidates of that size the walk considers.
+	type sizeEstimate struct {
+		est Estimate
+		err error
+	}
+	estimated := map[string]sizeEstimate{}
+	estimateOf := func(size string) (Estimate, error) {
+		if v, ok := estimated[size]; ok {
+			return v.est, v.err
+		}
+		est, err := d.Estimator.Estimate(ctx, size)
+		estimated[size] = sizeEstimate{est: est, err: err}
+		return est, err
+	}
+	planned := map[string]sizeEstimate{}
+	planEstimateOf := func(size string) (Estimate, error) {
+		if v, ok := planned[size]; ok {
+			return v.est, v.err
+		}
+		est, err := d.Estimator.EstimatePlan(ctx, size)
+		planned[size] = sizeEstimate{est: est, err: err}
+		return est, err
 	}
 	// The halt, the verdict and the private opt-in are read lazily and once per
 	// plan, since a run that moves to another free tier is judged by that plan.
@@ -639,7 +677,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, level Autonomy, relation
 	noticed := map[string]bool{}
 	for _, cand := range candidates {
 		stage := claimStage(cand, c.TwoStage)
-		est, err := d.Estimator.Estimate(ctx, cand.Size)
+		est, err := estimateOf(cand.Size)
 		if err != nil {
 			// A failed estimate withholds only this candidate, not the whole
 			// walk: the next poll re-reads the same candidates in the same
@@ -653,7 +691,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, level Autonomy, relation
 		if stage == StagePlan {
 			// A plan stage's reservation is estimated from settled plan
 			// phases rather than from whole runs.
-			est, err = d.Estimator.EstimatePlan(ctx, cand.Size)
+			est, err = planEstimateOf(cand.Size)
 			if err != nil {
 				d.Logger.Info("planEstimateFailed", "run", cand.RunID, "size", cand.Size, "err", err.Error())
 				res.Deferrals = append(res.Deferrals, Deferral{RunID: cand.RunID, Ceiling: ConditionEstimateFailed, At: d.Now()})
@@ -672,7 +710,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, level Autonomy, relation
 			reservation.ProviderCost = 0
 		}
 		candPlan := runner.Provider(candModel)
-		facts := Facts{Limits: limits, Tuning: c.Tuning.OrDefault(), ProviderHalted: halted(candPlan), BreakerTripped: tripped,
+		facts := Facts{Limits: limits, Tuning: c.Tuning.OrDefault(), History: history, ProviderHalted: halted(candPlan), BreakerTripped: tripped,
 			OpenPRs: prs.count, OpenPRsKnown: prs.known, Relations: relations[cand.RunID], Model: candModel, LastResort: lastResort,
 			PeakHeld: PeakHeld(mode, candModel, d.Now(), est.Minutes), Autonomy: level}
 		claimVerdict := verdictOf(candPlan)
@@ -749,7 +787,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, level Autonomy, relation
 		d.Logger.Info("runDeferred", "run", cand.RunID, "ceiling", binding)
 		res.Deferrals = append(res.Deferrals, Deferral{RunID: cand.RunID, Ceiling: binding, At: d.Now()})
 		if !noticed[binding] {
-			noticed[binding] = noticeDeferral(ctx, d, budget, facts.Model, reservation, binding, links[cand.RunID])
+			noticed[binding] = noticeDeferral(ctx, d, budget, facts.Model, reservation, binding, links[cand.RunID], history)
 		}
 	}
 	if len(candidates) > 0 && len(res.Deferrals) == len(candidates) {
