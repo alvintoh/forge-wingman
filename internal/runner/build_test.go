@@ -2238,6 +2238,13 @@ func TestWorkflowsCarryThePlanModelsFromTheDefaultToTheRunner(t *testing.T) {
 			t.Errorf("%s: the review_models input defaults to %q, want %s", name, got, want)
 		}
 	}
+	// pr-review.yml takes its models from a repository variable that can be
+	// unset, so its own fallback has to stay a list the runner accepts — one
+	// naming the build model or a fallback of it is refused outright, and the
+	// review then posts "no verdict" without attempting a model.
+	if want := "${{ vars.WINGMAN_PR_REVIEW_MODELS || '" + strings.Join(DefaultReviewModels(), ",") + "' }}"; !strings.Contains(read("pr-review.yml"), want) {
+		t.Errorf("pr-review.yml: the MODELS fallback is not %q, so an unset WINGMAN_PR_REVIEW_MODELS would break every review", want)
+	}
 	if !strings.Contains(read("run.yml"), "plan_models: ${{ needs.ticket.outputs.override_plan_models || inputs.plan_models }}") {
 		t.Error("run.yml does not pass plan_models to model.yml")
 	}
