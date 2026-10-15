@@ -11,19 +11,50 @@ import (
 	"github.com/alvintoh/forge-wingman/internal/providers"
 )
 
+// reviewFindingsBlockInstruction ends every review prompt: the exact format the
+// agent's final message must end with, since nothing external defines a review
+// artifact format.
+const reviewFindingsBlockInstruction = "End your final response with a fenced code block named review-findings: " +
+	"leave it empty if the diff satisfies the ticket, or list every finding worth fixing, one per line, if it does not:\n\n" +
+	"```review-findings\n```"
+
 // reviewFindingsInstruction tells the review agent the exact format its
 // final message must end with, since nothing external defines a review
 // artifact format.
 const reviewFindingsInstruction = "Review the diff above against the ticket's acceptance criteria. Do not edit any " +
-	"files or run any shell commands: this phase is review only.\n\n" +
-	"End your final response with a fenced code block named review-findings: leave it empty if the diff " +
-	"satisfies the ticket, or list every finding worth fixing, one per line, if it does not:\n\n" +
-	"```review-findings\n```"
+	"files or run any shell commands: this phase is review only.\n\n" + reviewFindingsBlockInstruction
+
+// preOpenReviewInstruction is what the pre-open review pass asks for: the
+// checks an interactive walkthrough makes by reading around the change, which
+// the runner cannot make mechanically. It replaces reviewFindingsInstruction's
+// shell refusal — searching the repository is how these are answered — while
+// still forbidding edits, since a reviewer that changes what it reviews is
+// reviewing its own work.
+const preOpenReviewInstruction = "Review the diff above against the ticket's acceptance criteria, and the code " +
+	"around it. Do not edit any files; read and search the repository as much as you need.\n\n" +
+	"Besides the diff itself, report:\n\n" +
+	"- anything outside the diff the change leaves wrong: a caller that still assumes the old behaviour, a test " +
+	"name or doc that now describes something else, an assertion pinned to a value the change moved.\n" +
+	"- code the diff adds after an early return, where the return skips it for the cases the ticket is about.\n" +
+	"- every rule in force for this run — the conventions in your instructions — that the diff breaks.\n" +
+	"- every fail-closed path the diff adds that no test exercises.\n\n" +
+	reviewFindingsBlockInstruction
 
 // ReviewPrompt is the review pass's prompt: the branch's diff, the ticket,
 // then the review-findings format instruction.
 func ReviewPrompt(diff string, t Ticket) string {
-	return "## Diff under review\n\n```diff\n" + diff + "\n```\n\n## Ticket\n\n" + t.Text() + "\n\n" + reviewFindingsInstruction
+	return reviewPrompt(diff, t, reviewFindingsInstruction)
+}
+
+// PreOpenReviewPrompt is the pre-open review pass's prompt: ReviewPrompt's diff
+// and ticket, then the checks the pre-PR loop has to ask for rather than make.
+func PreOpenReviewPrompt(diff string, t Ticket) string {
+	return reviewPrompt(diff, t, preOpenReviewInstruction)
+}
+
+// reviewPrompt is the diff under review and the ticket, then instruction.
+func reviewPrompt(diff string, t Ticket, instruction string) string {
+	return "## Diff under review\n\n```diff\n" + diff + "\n```\n\n## Ticket\n\n" + t.Text() + "\n\n" + instruction
 }
 
 // errReviewFindings reports a review agent's final message that carries no

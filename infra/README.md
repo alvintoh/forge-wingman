@@ -358,10 +358,13 @@ tokens are cache reads, but a phase's *first* request varies with how warm that 
 | plan, started hours after the last run on that sha | 4% cached, 52k tokens fresh |
 
 A review pass (FR-28) starts a fresh session, so its first request is always
-cold — 10-16k tokens, every run. A phase's first-request fresh and cached tokens
-and the cached share of its whole input are written to the run record (`cache` in
-`runs/<identifier>`, from the build's `Summary.Cache`), and the statistics
-endpoint prints a run's own share per run (`runs` in `/api/comparison`).
+cold: it reads the projection's rules and the diff, and the rules prefix is the
+one the build request reads. The 10-16k tokens recorded here for a review's
+first request were measured before the pass carried those rules. A phase's
+first-request fresh and cached tokens and the cached share of its whole input are
+written to the run record (`cache` in `runs/<identifier>`, from the build's
+`Summary.Cache`), and the statistics endpoint prints a run's own share per run
+(`runs` in `/api/comparison`).
 
 **Why the plan stage runs cold: the gap between runs.** A cache stays warm only
 while something reads it, and a plan stage is the phase that most often starts a

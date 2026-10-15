@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 )
 
 // ErrPorcelain reports `git status --porcelain -z` output that does not parse.
@@ -189,20 +190,99 @@ const maxReviewDiffBytes = 200 << 10
 // otherwise omits an untracked path entirely, and Commit's later `git add
 // --all` stages its real content regardless of this marker.
 func (w Worktree) DiffPending(ctx context.Context) (string, error) {
-	untracked, err := w.git(ctx, "ls-files", "--others", "--exclude-standard", "-z")
-	if err != nil {
+	if err := w.intentToAdd(ctx); err != nil {
 		return "", err
-	}
-	if paths := splitNUL(untracked); len(paths) > 0 {
-		if _, err := w.git(ctx, append([]string{"add", "-N", "--"}, paths...)...); err != nil {
-			return "", err
-		}
 	}
 	out, err := w.git(ctx, "diff", w.Base)
 	if err != nil {
 		return "", err
 	}
 	return truncate(string(out), maxReviewDiffBytes), nil
+}
+
+// PendingAddedLines is the line numbers each changed file adds, as they stand
+// in that file, including the current working tree. Its keys are the files the
+// diff adds lines to: a file the branch only deletes is not one.
+func (w Worktree) PendingAddedLines(ctx context.Context) (map[string][]int, error) {
+	if err := w.intentToAdd(ctx); err != nil {
+		return nil, err
+	}
+	out, err := w.git(ctx, "diff", "--unified=0", "--no-color", w.Base)
+	if err != nil {
+		return nil, err
+	}
+	return parseAddedLines(string(out)), nil
+}
+
+// intentToAdd marks every untracked file intent-to-add, so a plain `git diff`
+// carries it: without the marker an untracked path is omitted entirely.
+func (w Worktree) intentToAdd(ctx context.Context) error {
+	untracked, err := w.git(ctx, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return err
+	}
+	paths := splitNUL(untracked)
+	if len(paths) == 0 {
+		return nil
+	}
+	_, err = w.git(ctx, append([]string{"add", "-N", "--"}, paths...)...)
+	return err
+}
+
+// parseAddedLines reads a unified diff for the lines it adds to each file. A
+// hunk header resets the file's new-side line counter, an added line records
+// where it landed and advances it, and a context line only advances it — so a
+// file with no added lines has no entry.
+func parseAddedLines(diff string) map[string][]int {
+	added := map[string][]int{}
+	file, line := "", 0
+	for _, l := range strings.Split(diff, "\n") {
+		switch {
+		case strings.HasPrefix(l, "+++ "):
+			file, line = diffPath(l), 0
+		case strings.HasPrefix(l, "@@"):
+			start, ok := hunkStart(l)
+			if !ok {
+				file, line = "", 0
+				continue
+			}
+			line = start
+		case file == "":
+		case strings.HasPrefix(l, "+"):
+			added[file] = append(added[file], line)
+			line++
+		case strings.HasPrefix(l, "-"):
+		case strings.HasPrefix(l, " "):
+			line++
+		}
+	}
+	return added
+}
+
+// diffPath is the path a `+++` line names, empty for /dev/null.
+func diffPath(l string) string {
+	p := strings.TrimSpace(strings.TrimPrefix(l, "+++ "))
+	if p == "/dev/null" {
+		return ""
+	}
+	return strings.TrimPrefix(p, "b/")
+}
+
+// hunkStart is the first line the hunk's new side covers, from `@@ -a,b +c,d @@`.
+func hunkStart(l string) (int, bool) {
+	_, after, ok := strings.Cut(l, "+")
+	if !ok {
+		return 0, false
+	}
+	end := strings.IndexAny(after, ", ")
+	if end < 0 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(after[:end])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // Bundle writes the branch's commits since the base to a git bundle at path,

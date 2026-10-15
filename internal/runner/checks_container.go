@@ -97,11 +97,8 @@ func (c ContainerChecks) Validate() error {
 // fails a gate rather than reaching the network. A gate that times out is
 // killed and reported as failed; docker failing to start one is an error.
 func (c ContainerChecks) Run(ctx context.Context, dir string, changed []string) (string, string, error) {
-	dir, err := filepath.Abs(dir)
+	dir, err := c.gateDir(ctx, dir)
 	if err != nil {
-		return "", "", err
-	}
-	if err := c.downloadModules(ctx, dir); err != nil {
 		return "", "", err
 	}
 	web := touchesWeb(changed)
@@ -110,16 +107,11 @@ func (c ContainerChecks) Run(ctx context.Context, dir string, changed []string) 
 			return "", "", err
 		}
 	}
-	cache, err := os.MkdirTemp("", "wingman-checks-")
+	cache, cleanup, err := gateCache()
 	if err != nil {
 		return "", "", err
 	}
-	defer func() { _ = os.RemoveAll(cache) }()
-	for _, sub := range []string{"go-build", "lint", "home"} {
-		if err := os.Mkdir(filepath.Join(cache, sub), 0o700); err != nil {
-			return "", "", err
-		}
-	}
+	defer cleanup()
 
 	stdout, stderr, failed, err := c.runGate(ctx, dir, cache, checkGofmt, gofmtArgs...)
 	if err != nil {
@@ -150,6 +142,64 @@ func (c ContainerChecks) Run(ctx context.Context, dir string, changed []string) 
 		}
 	}
 	return "", "", nil
+}
+
+// RunPackageTest runs one package's tests in a fresh container of the checks
+// image: Run's counterpart for the single-package probe the pre-PR loop's
+// guard scan makes. It is the same image, the same mounts and no network, so
+// the branch's tests run where the gates run them and not on the host; the
+// module cache is the one Run fills, and a container of its own means a probe
+// never answers from, or leaves anything in, another gate's build.
+//
+// Its caller bounds it: the probe's own context deadline is what stops one, so
+// a package whose tests do not finish never spends the run's whole budget.
+func (c ContainerChecks) RunPackageTest(ctx context.Context, dir, pkg string) (bool, string, error) {
+	dir, err := c.gateDir(ctx, dir)
+	if err != nil {
+		return false, "", err
+	}
+	cache, cleanup, err := gateCache()
+	if err != nil {
+		return false, "", err
+	}
+	defer cleanup()
+
+	stdout, stderr, failed, err := c.runGate(ctx, dir, cache, pkg, "go", "test", pkg)
+	if err != nil {
+		return false, "", err
+	}
+	return failed, stdout + stderr, nil
+}
+
+// gateDir prepares dir for one gate run: absolute, with the module cache
+// filled. A download that runs and fails is not an error there — the gate then
+// fails on the same missing module, with output the next round can act on.
+func (c ContainerChecks) gateDir(ctx context.Context, dir string) (string, error) {
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	if err := c.downloadModules(ctx, dir); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+// gateCache makes the throwaway cache one gate run writes to — its compiled
+// packages, its lint cache and its home — and returns it with the function
+// that removes it.
+func gateCache() (string, func(), error) {
+	cache, err := os.MkdirTemp("", "wingman-checks-")
+	if err != nil {
+		return "", nil, err
+	}
+	for _, sub := range []string{"go-build", "lint", "home"} {
+		if err := os.Mkdir(filepath.Join(cache, sub), 0o700); err != nil {
+			_ = os.RemoveAll(cache)
+			return "", nil, err
+		}
+	}
+	return cache, func() { _ = os.RemoveAll(cache) }, nil
 }
 
 // gateTimeout is the bound on one gate, and on the web dependency download.

@@ -169,5 +169,11 @@ bun: the model job's bun — installed for its harnesses — is mounted into the
 containers, and the frozen-lockfile install resolves from the bun cache the runner
 fills beforehand, those containers having no network.
 
+Once those gates pass, the pre-PR loop probes the guards the diff adds before it
+reviews anything: it replaces each added guard's condition with `false` and runs that
+package's tests in the same image, so a guard no test covers becomes a finding the fix
+round has to answer. At most five guards are probed per scan, one at a time, and each
+file is restored before the next.
+
 Go's `go.mod` sets **`go 1.27`** (anything from 1.22 has the stdlib `ServeMux` routing the
 services use) and the **toolchain** that builds it; raise the toolchain deliberately.
