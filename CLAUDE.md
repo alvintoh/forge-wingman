@@ -57,6 +57,13 @@ this file as project memory, so both rules below reach the run.
   of it for a retry in the same change: `git worktree prune` then `add -B`, never
   `-b`. *(Judgment call. Verified 2026-10-06 on FRG-50.)*
 
+- **A guard added in review that the ticket does not state goes into the ticket's acceptance
+  criteria in the same change.** The Wingman review judges the code against the ticket text, so an
+  unstated guard is flagged as scope the ticket never asked for; label the edit `Updated (<date>)`
+  or `Added (<date>)` in the ticket. *(Judgment call. Verified 2026-10-15 on FRG-125: a state
+  guard and an admission hold added after a mutation review were flagged until AC2 and a new AC6
+  named them.)*
+
 ## Walk agent-built changes in auto mode
 
 When reviewing a change an agent built in this repo, run `/changes-walkthrough` in
@@ -73,8 +80,8 @@ stays one tap away.
 A PR held for the owner as a front-end change (`cmd/surface/`, `web/`) is walked in this order:
 the owner finalizes the design, and may change it, so ask "is the design final?" before any
 sweep; then `/fe-sweep` on the final design; then `/pr-review`; then, after its fix commits,
-capture the s, m, l, xl Chromium shots of each state the PR touches at the final head (s is the
-current iPhone Pro Max, Playwright's `iPhone 17 Pro Max`, 440x763 at scale 3; then 768, 1024, 1280) and attach them to the PR body as one table. An edit after capture invalidates
+`/fe-evidence` captures the s, m, l, xl Chromium shots of each state the PR touches at the final head (s is the
+current iPhone Pro Max, Playwright's `iPhone 17 Pro Max`, 440x763 at scale 3; then 768x1024, 1024x768, 1280x800; every band at its full viewport, uncropped unless the state is one modal or card) and attach them to the PR body as one table. An edit after capture invalidates
 the shots, so the capture is the last step before merge. This is the product's own flow for the
 repositories it builds in.
 
