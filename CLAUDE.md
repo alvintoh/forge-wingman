@@ -45,7 +45,7 @@ Propose the raise with that evidence; never raise it on throughput alone.
 ## Tickets the runner will build
 
 The runner reads only a ticket's title and description, and its build agent reads
-this file as project memory, so both rules below reach the run.
+this file as project memory, so the rules below reach the run.
 
 - **State invariants, not just mechanisms.** When a ticket gives some calls a thing
   and not others, first name the state those calls share: a review fix round resumes
@@ -63,6 +63,12 @@ this file as project memory, so both rules below reach the run.
   or `Added (<date>)` in the ticket. *(Judgment call. Verified 2026-10-15 on FRG-125: a state
   guard and an admission hold added after a mutation review were flagged until AC2 and a new AC6
   named them.)*
+
+- **A plan for an agent-lane ticket goes into the description, never a comment.** The run's
+  `ticket.json` comes from Linear's description (`internal/dispatcher/linear.go`) and comments are
+  never fetched, so a plan posted as a comment shapes nothing — write it into the description, and
+  delegate by setting Linear's `delegate` to the agent id the job acts for (`LINEAR_DELEGATE` on
+  `forge-wingman-dispatcher`). *(Judgment call. Verified 2026-10-15 on FRG-135.)*
 
 ## Fixing a runner PR: add commits, never rewrite the agent's
 
