@@ -23,6 +23,18 @@ type Issue struct {
 	Body     string
 	Priority int
 	Labels   []string
+	// UUID is Linear's own id for the issue, which the mutation that delegates
+	// one names.
+	UUID string
+	// DelegatedTo is the id of the agent the issue is delegated to, empty when
+	// none: Open reads it, and a ticket that names one is never delegated again.
+	DelegatedTo string
+	// StateType is the Linear state type of the issue's workflow state, empty
+	// when the reply did not carry it.
+	StateType string
+	// Milestone is the project milestone the issue belongs to, zero when it has
+	// none.
+	Milestone Milestone
 	// BlockedBy and Blocks are the ids of the issues Linear relates to this
 	// one as blocking it and as blocked by it.
 	BlockedBy []string
@@ -31,6 +43,13 @@ type Issue struct {
 	// state type but completed or canceled, or one the reply did not carry,
 	// which counts as open.
 	BlockedByOpen []string
+}
+
+// Milestone is the Linear project milestone an issue belongs to.
+type Milestone struct {
+	ID string
+	// SortOrder is Linear's own milestone order: a smaller value is earlier.
+	SortOrder float64
 }
 
 // Refusal is why a delegated ticket was not admitted to the queue.
@@ -158,23 +177,24 @@ type ModelPlans interface {
 	Plan(ctx context.Context, provider string) (plan providers.Plan, ok bool, err error)
 }
 
-// Deps are the tickets a poll reads, the queue it writes, the estimator and
-// repository visibility it checks a claim's budget against, the provider
-// halt state it checks before claiming (AC4), the workflow it dispatches,
-// and where it reports.
+// Deps are the tickets a poll reads and delegates, the queue it writes, the
+// estimator and repository visibility it checks a claim's budget against, the
+// provider halt state it checks before claiming (AC4), the workflow it
+// dispatches, and where it reports.
 type Deps struct {
-	Source     Source
-	Queue      Queue
-	Estimator  Estimator
-	Visibility RepoVisibility
-	Providers  ProviderHalts
-	Breaker    Breaker
-	PeakModes  PeakModes
-	Autonomies Autonomies
-	OpenPRs    OpenPRCounter
-	Workflow   Workflow
-	Logger     *slog.Logger
-	Now        func() time.Time
+	Source      Source
+	Delegatable Delegatable
+	Queue       Queue
+	Estimator   Estimator
+	Visibility  RepoVisibility
+	Providers   ProviderHalts
+	Breaker     Breaker
+	PeakModes   PeakModes
+	Autonomies  Autonomies
+	OpenPRs     OpenPRCounter
+	Workflow    Workflow
+	Logger      *slog.Logger
+	Now         func() time.Time
 	// Overrides yields the models a ticket names and ModelPlans is what they are
 	// checked against; both are required, as an unchecked model could spend per token.
 	Overrides  ModelOverrides
@@ -199,6 +219,7 @@ func (d Deps) missing() string {
 		set  bool
 	}{
 		{"Source", d.Source != nil},
+		{"Delegatable", d.Delegatable != nil},
 		{"Queue", d.Queue != nil},
 		{"Estimator", d.Estimator != nil},
 		{"Visibility", d.Visibility != nil},
@@ -234,6 +255,17 @@ type OpenPRCounter interface {
 // token reads as that agent.
 type Source interface {
 	Delegated(ctx context.Context) ([]Issue, error)
+}
+
+// Delegatable reads the open tickets the product may take on itself and
+// delegates one to the configured agent.
+type Delegatable interface {
+	// Open returns every open issue, with the delegate and milestone a poll
+	// needs to choose the next ticket to delegate itself.
+	Open(ctx context.Context) ([]Issue, error)
+	// DelegateIssue sets the issue's delegate to that agent, and reports whether
+	// Linear took it.
+	DelegateIssue(ctx context.Context, issueID string) error
 }
 
 // Enqueuer writes a run record and queues it, failing with ErrAlreadyQueued
@@ -276,6 +308,18 @@ type Rejector interface {
 	Reject(ctx context.Context, r Rejection) error
 }
 
+// ClaimedRuns counts the runs claimed since a moment: the runs a level's daily
+// bar is spent from.
+type ClaimedRuns interface {
+	ClaimedSince(ctx context.Context, since time.Time) (int, error)
+}
+
+// EndedRuns reports whether a ticket's run has already ended, so that only the
+// owner's own `runner requeue` takes that ticket further.
+type EndedRuns interface {
+	NeedsRequeue(ctx context.Context, ticketID string) (bool, error)
+}
+
 // Queue is the run store as a poll uses it.
 type Queue interface {
 	Enqueuer
@@ -285,6 +329,8 @@ type Queue interface {
 	Rejector
 	Spender
 	Sweeper
+	ClaimedRuns
+	EndedRuns
 }
 
 // Workflow starts one run in its target repository.
@@ -311,6 +357,9 @@ type Result struct {
 	Deferrals []Deferral
 	// Dispatched is the id of every run this poll claimed and started.
 	Dispatched []string
+	// Delegated is the id of every ticket this poll delegated to the agent
+	// itself, in the order it delegated them.
+	Delegated []string
 }
 
 // Poll admits every issue still delegated, then walks the queue in priority
@@ -319,7 +368,8 @@ type Result struct {
 // A ticket the queue already holds is left alone; a candidate a condition
 // withholds is deferred, not rejected, and reconsidered next poll; and a run
 // whose dispatch fails is released rather than left claimed, so the next
-// poll considers it again.
+// poll considers it again. The tickets the product delegates to itself are
+// taken on at the end of the poll.
 func Poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	if name := d.missing(); name != "" {
 		return Result{}, fmt.Errorf("dispatcher dependency %s is not set", name)
@@ -344,6 +394,9 @@ func LogPhase(logger *slog.Logger, phase string, start, end time.Time) {
 }
 
 func poll(ctx context.Context, d Deps, c Config) (Result, error) {
+	// The level is read once, ahead of the delegation that spends its daily bar
+	// and the claims that record it, so one poll acts on one level throughout.
+	level := readAutonomy(ctx, d)
 	start := d.Now()
 	issues, err := d.Source.Delegated(ctx)
 	if err != nil {
@@ -368,23 +421,30 @@ func poll(ctx context.Context, d Deps, c Config) (Result, error) {
 		links[issue.ID] = issue.URL
 	}
 	start = d.Now()
-	claims, claimErr := admitClaims(ctx, d, c, relations, links, &res)
+	claims, claimErr := admitClaims(ctx, d, c, level, relations, links, &res)
 	LogPhase(d.Logger, "claim", start, d.Now())
-	dispatchErrs := []error{claimErr}
+	phaseErrs := []error{claimErr}
 	start = d.Now()
 	for _, claim := range claims {
 		if err := dispatch(ctx, d, claim); err != nil {
-			dispatchErrs = append(dispatchErrs, err)
+			phaseErrs = append(phaseErrs, err)
 			continue
 		}
 		res.Dispatched = append(res.Dispatched, claim.RunID)
 	}
 	LogPhase(d.Logger, "dispatch", start, d.Now())
-	if err := errors.Join(dispatchErrs...); err != nil {
+	// The delegation runs last, so a failure on it cannot withhold the admission
+	// and dispatch that already succeeded: the agent session it opens wakes the
+	// poll that admits the ticket within seconds.
+	start = d.Now()
+	phaseErrs = append(phaseErrs, autoDelegate(ctx, d, c, level, &res))
+	LogPhase(d.Logger, "delegate", start, d.Now())
+	if err := errors.Join(phaseErrs...); err != nil {
 		return res, err
 	}
 	d.Logger.Info("pollComplete", "seen", res.Seen, "enqueued", len(res.Enqueued),
-		"rejected", len(res.Rejections), "deferred", len(res.Deferrals), "dispatched", len(res.Dispatched))
+		"rejected", len(res.Rejections), "deferred", len(res.Deferrals), "dispatched", len(res.Dispatched),
+		"delegated", len(res.Delegated))
 	return res, nil
 }
 
@@ -482,33 +542,28 @@ func claimStage(cand Candidate, twoStage bool) string {
 // the condition that bound it.
 //
 // On an error it returns the claims already booked beside it, so the caller can
-// dispatch or release them. The breaker is read once ahead of the walk; the
-// provider halt and the verdict are keyed off each candidate's own plan, and the
-// open-PR count across the allowlist once, when anything is queued. A breaker
+// dispatch or release them. The level is the poll's own, read once before this
+// walk as the breaker is; the provider halt and the verdict are keyed off each
+// candidate's own plan, and the open-PR count across the allowlist once, when
+// anything is queued. A breaker
 // that cannot be read holds the walk as a tripped one would, and a budget
 // ceiling raises at most one notice. A candidate the plan's own window or cap
 // withholds is retried on the next paid plans in order, and once every one binds
 // on the configured free-tier plans, a private one only with the owner's private
 // opt-in. A candidate held for peak hours is no ceiling's, so it is neither
 // moved nor noticed.
-func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Relations, links map[string]string, res *Result) ([]Claim, error) {
+func admitClaims(ctx context.Context, d Deps, c Config, level Autonomy, relations map[string]Relations, links map[string]string, res *Result) ([]Claim, error) {
 	candidates, err := d.Queue.Candidates(ctx)
 	if err != nil {
 		return nil, err
 	}
-	tripped, err := d.Breaker.Tripped(ctx)
-	if err != nil {
-		d.Logger.Warn("breakerCheckFailed", "err", err.Error())
-		tripped = true
-	}
+	tripped := breakerTripped(ctx, d)
 	limits := c.Limits.orDefault()
 	var prs openPRCount
 	var mode PeakMode
-	var autonomy Autonomy
 	if len(candidates) > 0 {
 		prs = countOpenPRs(ctx, d, c.Repos)
 		mode = readPeakMode(ctx, d)
-		autonomy = readAutonomy(ctx, d)
 	}
 	// The halt, the verdict and the private opt-in are read lazily and once per
 	// plan, since a run that moves to another free tier is judged by that plan.
@@ -517,11 +572,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		if v, ok := halts[plan]; ok {
 			return v
 		}
-		v, err := d.Providers.Halted(ctx, plan)
-		if err != nil {
-			d.Logger.Info("providerHaltCheckFailed", "provider", plan, "err", err.Error())
-			v = false
-		}
+		v := providerHalted(ctx, d, plan)
 		halts[plan] = v
 		return v
 	}
@@ -599,7 +650,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		candPlan := runner.Provider(candModel)
 		facts := Facts{Limits: limits, Tuning: c.Tuning.OrDefault(), ProviderHalted: halted(candPlan), BreakerTripped: tripped,
 			OpenPRs: prs.count, OpenPRsKnown: prs.known, Relations: relations[cand.RunID], Model: candModel, LastResort: lastResort,
-			PeakHeld: peakHeld(mode, candModel, d.Now(), est.Minutes), Autonomy: autonomy}
+			PeakHeld: peakHeld(mode, candModel, d.Now(), est.Minutes), Autonomy: level}
 		claimVerdict := verdictOf(candPlan)
 		ok, binding, err := d.Queue.TryClaim(ctx, cand.RunID, d.Now(), budget, facts, reservation)
 		if err != nil {
@@ -681,6 +732,28 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		d.Logger.Info("everyCandidateDeferred", "candidates", len(candidates))
 	}
 	return claims, nil
+}
+
+// breakerTripped reads the breaker the way admission does: one that cannot be
+// read holds as a tripped one would.
+func breakerTripped(ctx context.Context, d Deps) bool {
+	tripped, err := d.Breaker.Tripped(ctx)
+	if err != nil {
+		d.Logger.Warn("breakerCheckFailed", "err", err.Error())
+		return true
+	}
+	return tripped
+}
+
+// providerHalted reads plan's halt the way admission does: a read that fails
+// is logged and reads as not halted.
+func providerHalted(ctx context.Context, d Deps, plan string) bool {
+	v, err := d.Providers.Halted(ctx, plan)
+	if err != nil {
+		d.Logger.Info("providerHaltCheckFailed", "provider", plan, "err", err.Error())
+		return false
+	}
+	return v
 }
 
 // buildTier is the budget, build model and free-tier models a build-stage claim

@@ -219,7 +219,12 @@ repository, the large-run cap, blocking relations and the open-PR review limit
 each withhold a run until a later poll. A run the plan's own allowance window or
 model cap would withhold starts on the plan's free models instead, a private
 repository's only after `runner plan-optin -private`. A dispatch GitHub refuses
-releases its claim, so the next poll takes it again.
+releases its claim, so the next poll takes it again. At autonomy level 1 or above
+the poll also delegates the next eligible ticket itself — the earliest milestone
+that still has open tickets, by priority — while today's claimed runs are below
+the level's bar (1, 3, 5, 5 and 10 a day at levels 1 to 5) and the review WIP
+limit has room; `runner autonomy` sets the level, and a ticket delegated this way
+is admitted by the poll its own agent session wakes.
 
 A systemic stop — a missing key, an identity mismatch, an exhausted allowance —
 trips the breaker, and every poll admits nothing until `runner reset-breaker`
@@ -308,6 +313,13 @@ otherwise, in `dispatch/rejected-<identifier>`:
 |---|---|---|
 | `size:` | `S`, `M`, `L` | refused `no-size`; `XL` is refused `size-above-ceiling` |
 | `repo:` | `owner/name`, allowlisted | refused `no-repository` or `repository-not-allowlisted` |
+
+At autonomy level 1 or above the dispatcher also delegates the next eligible ticket
+itself. That read wants more of the ticket: a `[BE]`, `[FE]` or `[SLICE]` lane, the
+two labels above, no `.github/workflows/` path in its description, no `wingman:hold`
+label — create that label in Linear to park work, it stops only the delegation, not a
+ticket already delegated — and no run row that has already ended, which needs
+`runner requeue`.
 
 Sizes are hand-set labels: nothing infers a size from the issue's own estimate.
 

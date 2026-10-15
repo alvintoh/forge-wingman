@@ -207,6 +207,17 @@ One Go binary entrypoint (`cmd/dispatcher`). Per poll:
    records when it was posted, so the question is neither dropped nor repeated, and
    the dispatcher is its one decider (`adr/0013`) — the poll both posts and matches.
 
+10. **Delegate the queue's next ticket itself, at autonomy level 1 or above** (FRG-125).
+    The poll delegates the next eligible ticket to the app while today's claimed runs are
+    below the level's daily bar (1, 3, 5, 5 and 10 runs a day at levels 1 to 5) and the
+    review WIP limit has room. Eligible means an open ticket in the earliest milestone that
+    still has open tickets, ordered by Linear priority: a `[BE]`, `[FE]` or `[SLICE]` title,
+    a `repo:` label on the runner's allowlist and a `size:` label, no `.github/workflows/`
+    path in its body, no `wingman:hold` label, and no run row that has ended (that needs
+    `runner requeue`). A ticket with an open blocker is delegated, since the dispatcher
+    holds it anyway. It runs last in the poll, and the agent session a delegation opens
+    wakes the poll that admits it. Level 0 delegates nothing.
+
 **Why a Job and not a service:** nothing calls it over HTTP. It is started by the schedule or by the webhook's run request (`adr/0013`), and the public endpoint lives in the webhook service, not here.
 
 ### Webhook — Cloud Run service, public, signature-verified

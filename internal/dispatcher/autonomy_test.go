@@ -51,6 +51,22 @@ func TestAutonomyLevels(t *testing.T) {
 	}
 }
 
+// TestAutonomyDelegationBarsAreThePrdNumbers is AC1: the runs a day each level
+// lets the product delegate to itself, and none at level 0 or a level that does
+// not exist.
+func TestAutonomyDelegationBarsAreThePrdNumbers(t *testing.T) {
+	for level, want := range map[Autonomy]int{0: 0, 1: 1, 2: 3, 3: 5, 4: 5, 5: 10} {
+		if got := level.Delegates(); got != want {
+			t.Errorf("Autonomy(%d).Delegates() = %d, want %d", level, got, want)
+		}
+	}
+	for _, level := range []Autonomy{-1, 6} {
+		if got := level.Delegates(); got != 0 {
+			t.Errorf("Autonomy(%d).Delegates() = %d, want none for a level that does not exist", level, got)
+		}
+	}
+}
+
 func TestAutonomyRefusalNamesTheAdvanceCondition(t *testing.T) {
 	for level, want := range map[Autonomy]string{
 		4: "level 4 needs level 3 held, a rewrite rate of 5% or less over 10 PRs, zero gate misses, and CD on the target repository",

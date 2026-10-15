@@ -198,6 +198,191 @@ func TestLinearReadsWhetherABlockerIsDone(t *testing.T) {
 	}
 }
 
+// queryServer answers each request with the next reply, recording every request's
+// query, variables and token.
+func queryServer(t *testing.T, replies ...map[string]any) (*httptest.Server, *[]queryCall) {
+	t.Helper()
+	var seen []queryCall
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decoding the request: %v", err)
+		}
+		seen = append(seen, queryCall{query: req.Query, variables: req.Variables, auth: r.Header.Get("Authorization")})
+		reply := replies[0]
+		if len(replies) > 1 {
+			replies = replies[1:]
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(reply); err != nil {
+			t.Errorf("encoding the reply: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &seen
+}
+
+// queryCall is one request a Linear client made.
+type queryCall struct {
+	query     string
+	variables map[string]any
+	auth      string
+}
+
+// openReply is one page of the open issues query's reply.
+func openReply(viewer string, hasNext bool, cursor string, nodes ...map[string]any) map[string]any {
+	return map[string]any{"data": map[string]any{
+		"viewer": map[string]any{"id": viewer},
+		"issues": map[string]any{
+			"nodes":    nodes,
+			"pageInfo": map[string]any{"hasNextPage": hasNext, "endCursor": cursor},
+		},
+	}}
+}
+
+// openNode is one issue as the open query's reply carries it: a milestone and a
+// delegate only where the test gives it one.
+func openNode(id, uuid, milestone string, sortOrder float64, delegate string) map[string]any {
+	node := map[string]any{
+		"id":          uuid,
+		"identifier":  id,
+		"url":         "https://linear.app/w/issue/" + id,
+		"title":       "[BE] add " + id,
+		"description": "Add it.",
+		"priority":    2,
+		"state":       map[string]any{"type": "unstarted"},
+		"labels":      map[string]any{"nodes": []map[string]any{{"name": "size:M"}, {"name": "repo:octo/scratch"}}},
+	}
+	if milestone != "" {
+		node["projectMilestone"] = map[string]any{"id": milestone, "sortOrder": sortOrder}
+	}
+	if delegate != "" {
+		node["delegate"] = map[string]any{"id": delegate}
+	}
+	return node
+}
+
+// delegateReply is what the delegate mutation answers.
+func delegateReply(success bool, delegate string) map[string]any {
+	issue := map[string]any{}
+	if delegate != "" {
+		issue["delegate"] = map[string]any{"id": delegate}
+	}
+	return map[string]any{"data": map[string]any{
+		"issueUpdate": map[string]any{"success": success, "issue": issue},
+	}}
+}
+
+// TestLinearReadsEveryOpenIssuePageWithWhatDelegatingNeeds: the open read carries
+// the node id the delegation names, the milestone that orders the queue, and the
+// delegate that marks a ticket already taken.
+func TestLinearReadsEveryOpenIssuePageWithWhatDelegatingNeeds(t *testing.T) {
+	srv, seen := queryServer(t,
+		openReply("agent-1", true, "cursor-1", openNode("FRG-20", "uuid-20", "phase-1", 1, "agent-1")),
+		openReply("agent-1", false, "", openNode("FRG-21", "uuid-21", "phase-2", 2, "")))
+	issues, err := Linear{Endpoint: linearURL(srv), Tokens: fixedToken("linear-token"), Delegate: "agent-1",
+		Client: srv.Client()}.Open(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(issues) != 2 {
+		t.Fatalf("issues = %+v, want both pages", issues)
+	}
+	if first := issues[0]; first.ID != "FRG-20" || first.UUID != "uuid-20" || first.DelegatedTo != "agent-1" || first.StateType != "unstarted" ||
+		first.Milestone != (Milestone{ID: "phase-1", SortOrder: 1}) {
+		t.Fatalf("issue = %+v, want the id, the milestone and the delegate read", first)
+	}
+	if second := issues[1]; second.UUID != "uuid-21" || second.DelegatedTo != "" ||
+		second.Milestone != (Milestone{ID: "phase-2", SortOrder: 2}) || len(second.Labels) != 2 {
+		t.Fatalf("issue = %+v, want a ticket with no delegate read as free", second)
+	}
+	if len(*seen) != 2 || (*seen)[0].variables["after"] != nil || (*seen)[1].variables["after"] != "cursor-1" {
+		t.Fatalf("pages asked with %v", *seen)
+	}
+	for _, field := range []string{"projectMilestone {", "state {", "sortOrder", "delegate {", "$first: Int"} {
+		if !strings.Contains((*seen)[0].query, field) {
+			t.Errorf("the open query does not ask for %s: %s", field, (*seen)[0].query)
+		}
+	}
+}
+
+func TestLinearOpenRefusesATokenReadingAsAnotherAgent(t *testing.T) {
+	srv, _ := queryServer(t, openReply("agent-2", false, ""))
+	_, err := Linear{Endpoint: linearURL(srv), Tokens: fixedToken("linear-token"), Delegate: "agent-1",
+		Client: srv.Client()}.Open(context.Background())
+	if !errors.Is(err, ErrDelegateMismatch) {
+		t.Fatalf("err = %v, want a delegate mismatch", err)
+	}
+}
+
+// TestLinearDelegatesAnIssueToTheAgentItActsFor is the write: the mutation
+// names the issue's own Linear id, not its identifier, and the configured
+// delegate.
+func TestLinearDelegatesAnIssueToTheAgentItActsFor(t *testing.T) {
+	srv, seen := queryServer(t, delegateReply(true, "agent-1"))
+	err := Linear{Endpoint: linearURL(srv), Tokens: fixedToken("linear-token"), Delegate: "agent-1",
+		Client: srv.Client()}.DelegateIssue(context.Background(), "uuid-20")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(*seen) != 1 || (*seen)[0].auth != "Bearer linear-token" {
+		t.Fatalf("requests = %+v, want one carrying the poll's token", *seen)
+	}
+	if got := (*seen)[0].variables; got["id"] != "uuid-20" || got["delegate"] != "agent-1" {
+		t.Fatalf("variables = %v, want the issue's own id and the agent", got)
+	}
+	for _, field := range []string{"issueUpdate(", "delegateId: $delegate", "$delegate: String!", "success", "delegate {"} {
+		if !strings.Contains((*seen)[0].query, field) {
+			t.Errorf("the mutation does not carry %s: %s", field, (*seen)[0].query)
+		}
+	}
+}
+
+// TestLinearRefusesADelegationLinearDidNotTake: a reply that delegated the issue
+// to some other agent is not a delegation the dispatcher may count.
+func TestLinearRefusesADelegationLinearDidNotTake(t *testing.T) {
+	srv, _ := queryServer(t, delegateReply(true, "agent-2"))
+	err := Linear{Endpoint: linearURL(srv), Tokens: fixedToken("linear-token"), Delegate: "agent-1",
+		Client: srv.Client()}.DelegateIssue(context.Background(), "uuid-20")
+	if err == nil || !strings.Contains(err.Error(), "did not report it delegated to agent-1") {
+		t.Fatalf("err = %v, want the reply read back before the delegation is reported", err)
+	}
+}
+
+// TestLinearRefusesADelegationReplyThatNamesNoDelegate: a reply that says success
+// without a delegate, or a delegate without success, is not a delegation.
+func TestLinearRefusesADelegationReplyThatNamesNoDelegate(t *testing.T) {
+	for name, reply := range map[string]map[string]any{
+		"success with a null delegate": delegateReply(true, ""),
+		"no success":                   delegateReply(false, "agent-1"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv, _ := queryServer(t, reply)
+			err := Linear{Endpoint: linearURL(srv), Tokens: fixedToken("linear-token"), Delegate: "agent-1",
+				Client: srv.Client()}.DelegateIssue(context.Background(), "uuid-20")
+			if err == nil || !strings.Contains(err.Error(), "did not report it delegated") {
+				t.Fatalf("err = %v, want the delegation refused", err)
+			}
+		})
+	}
+}
+
+// TestLinearReportsTheDelegationLinearRefused: a GraphQL refusal is the query's
+// own failure, and it names the issue it was asked to delegate.
+func TestLinearReportsTheDelegationLinearRefused(t *testing.T) {
+	srv, _ := queryServer(t, map[string]any{"errors": []map[string]any{
+		{"message": "Cannot query field \"delegateId\" on type \"IssueUpdateInput\""},
+	}})
+	err := Linear{Endpoint: linearURL(srv), Tokens: fixedToken("linear-token"), Delegate: "agent-1",
+		Client: srv.Client()}.DelegateIssue(context.Background(), "uuid-20")
+	if err == nil || !strings.Contains(err.Error(), "delegateId") || !strings.Contains(err.Error(), "uuid-20") {
+		t.Fatalf("err = %v, want Linear's own refusal beside the issue", err)
+	}
+}
+
 // fixedToken is a token that is never refreshed.
 type fixedToken string
 
