@@ -90,12 +90,8 @@ jobs:
         env:
           CGO_ENABLED: "0"
 
-      # The version is ci.yml's golangci-lint-action version, and run.yml's check
-      # job's — the pre-PR loop (FR-28) runs the same four gates in-job, first.
-      # Static, so the checks container can run the binary it mounts.
-      - run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
-        env:
-          CGO_ENABLED: "0"
+      # The pre-PR loop (FR-28) runs the same four gates as run.yml's check job, in-job, first.
+      - uses: ./.github/actions/golangci-lint
 
       - name: Pull the checks image
         run: docker pull "$CHECKS_IMAGE"
