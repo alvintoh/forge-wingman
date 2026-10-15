@@ -159,6 +159,10 @@ type LastResort struct {
 	Models []string
 	// MeasuredOn is the yyyy-mm-dd date the order was measured, or unmeasuredOn.
 	MeasuredOn string
+	// SmokeRuns is the plan-smoke run id recorded for each free model, keyed by
+	// the model's full id. A free id without one is not configured
+	// (CheckFreeIDs).
+	SmokeRuns map[string]int64
 }
 
 const unmeasuredOn = "unmeasured"
@@ -235,8 +239,9 @@ type modelsDoc struct {
 }
 
 type lastResortDoc struct {
-	Models     []string `json:"models"`
-	MeasuredOn string   `json:"measured_on"`
+	Models     []string         `json:"models"`
+	MeasuredOn string           `json:"measured_on"`
+	SmokeRuns  map[string]int64 `json:"smoke_runs"`
 }
 
 // harnessDoc is a plan's harness order as providers.json writes it: the default
@@ -340,7 +345,7 @@ func parseConfig(b []byte) (Config, error) {
 			}
 		}
 		if p.LastResort != nil {
-			provider.LastResort = LastResort{Models: p.LastResort.Models, MeasuredOn: p.LastResort.MeasuredOn}
+			provider.LastResort = LastResort{Models: p.LastResort.Models, MeasuredOn: p.LastResort.MeasuredOn, SmokeRuns: p.LastResort.SmokeRuns}
 			if provider.LastResort.Models == nil {
 				provider.LastResort.Models = []string{}
 			}
@@ -407,7 +412,7 @@ func (c Config) validate() error {
 				return fmt.Errorf("provider %s model %s cap has no limit", name, model)
 			}
 		}
-		if err := checkLastResort(name, p); err != nil {
+		if err := c.checkLastResort(name, p); err != nil {
 			return err
 		}
 		for model, r := range p.Rates {
@@ -502,8 +507,9 @@ func checkPaidModels(provider string, m Models) error {
 
 // checkLastResort reports whether a plan's free tier is usable: when present,
 // one or more distinct models of the plan's own, each priced $0 and none
-// carrying a model cap, and a measured date or unmeasuredOn.
-func checkLastResort(provider string, p Provider) error {
+// carrying a model cap, a measured date or unmeasuredOn, a recorded smoke run
+// for every free id it names, and a smoke run only for a model on the rung.
+func (c Config) checkLastResort(provider string, p Provider) error {
 	lr := p.LastResort
 	if lr.Models == nil {
 		return nil
@@ -513,6 +519,14 @@ func checkLastResort(provider string, p Provider) error {
 	}
 	if _, err := time.Parse(dateLayout, lr.MeasuredOn); err != nil && lr.MeasuredOn != unmeasuredOn {
 		return fmt.Errorf("provider %s last resort measured_on %q is not a yyyy-mm-dd date or %q", provider, lr.MeasuredOn, unmeasuredOn)
+	}
+	for model, run := range lr.SmokeRuns {
+		switch {
+		case !slices.Contains(lr.Models, model):
+			return fmt.Errorf("provider %s records a smoke run for %s, not a last-resort model", provider, model)
+		case run <= 0:
+			return fmt.Errorf("provider %s last-resort model %s has a smoke run that is not a run id", provider, model)
+		}
 	}
 	seen := map[string]bool{}
 	for _, model := range lr.Models {
@@ -530,7 +544,59 @@ func checkLastResort(provider string, p Provider) error {
 		}
 		seen[model] = true
 	}
+	if err := c.checkFreeIDs(lr.Models); err != nil {
+		return fmt.Errorf("provider %s: %w", provider, err)
+	}
 	return nil
+}
+
+// CheckFreeIDs reports whether every free id among models records the run of
+// the plan-smoke dispatch that proved it serves a run: a vendor's listing names
+// a free id whether or not it can serve one, so the smoke is what decides.
+// ModelSet.Validate reads it for models.json's models; providers.json's own
+// validation reads the same rule for each plan's free rung.
+//
+// A free id is a model whose own name carries a vendor's free marker, or one a
+// plan that bills runs at $0 on its free rung — a free alternative to a model
+// the plan charges for. A free-only plan's models are its whole inventory
+// rather than a rung to fall to, so they are not free ids.
+func CheckFreeIDs(models []string) error { return embeddedConfig.checkFreeIDs(models) }
+
+// checkFreeIDs is CheckFreeIDs against c, so a configuration is checked against
+// itself rather than against the embedded one while it is still being built.
+func (c Config) checkFreeIDs(models []string) error {
+	for _, model := range models {
+		if c.freeID(model) && c.freeSmokeRun(model) == 0 {
+			return fmt.Errorf("free model %s has no recorded plan-smoke run", model)
+		}
+	}
+	return nil
+}
+
+// freeID reports whether model is a free id c requires a smoke run for.
+func (c Config) freeID(model string) bool {
+	if hasFreeMarker(model) {
+		return true
+	}
+	p, ok := c.Providers[planOf(model)]
+	return ok && !p.freeOnly() && slices.Contains(p.LastResort.Models, model)
+}
+
+// freeSmokeRun is the plan-smoke run id c records for model, 0 when none is.
+func (c Config) freeSmokeRun(model string) int64 {
+	return c.Providers[planOf(model)].LastResort.SmokeRuns[model]
+}
+
+// hasFreeMarker reports whether model's own name marks it free: the ":free"
+// suffix a vendor's listing uses, or the "-free" a model name carries.
+func hasFreeMarker(model string) bool {
+	return strings.HasSuffix(model, ":free") || strings.HasSuffix(model, "-free")
+}
+
+// planOf is the plan prefix of model, empty for an id carrying no prefix.
+func planOf(model string) string {
+	plan, _, _ := strings.Cut(model, "/")
+	return plan
 }
 
 // checkPeak reports whether a surcharge is usable: a multiplier of at least 1

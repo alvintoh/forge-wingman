@@ -91,7 +91,10 @@
         "models": [
           "command-code/poolside/laguna-s-2.1-free"
         ],
-        "measured_on": "unmeasured"
+        "measured_on": "unmeasured",
+        "smoke_runs": {
+          "command-code/poolside/laguna-s-2.1-free": 38702659143
+        }
       }
     },
     "gemini": {
