@@ -273,8 +273,8 @@ func TestEmbeddedGoatPricesTheBuildTrialModel(t *testing.T) {
 // its default first, and is empty for a plan that is not configured, so the
 // router selects from configuration rather than the model prefix.
 func TestHarnessesReadsThePlansOrder(t *testing.T) {
-	if got := Harnesses("command-code"); !slices.Equal(got, []string{"omp", "opencode"}) {
-		t.Fatalf("Harnesses(command-code) = %v, want omp then the opencode fallback", got)
+	if got := Harnesses("command-code"); !slices.Equal(got, []string{"omp"}) {
+		t.Fatalf("Harnesses(command-code) = %v, want omp alone", got)
 	}
 	if got := Harnesses("nobody"); got != nil {
 		t.Fatalf("Harnesses(nobody) = %v, want none", got)

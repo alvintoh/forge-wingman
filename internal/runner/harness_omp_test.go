@@ -457,6 +457,7 @@ func TestWorkflowsInstallThePinnedOmp(t *testing.T) {
 			"bun install --frozen-lockfile --cwd tools/omp",
 			"tools/omp/node_modules/.bin",
 			`jq -r '.dependencies["@oh-my-pi/pi-coding-agent"]' tools/omp/package.json`,
+			"COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}",
 		} {
 			if !strings.Contains(yml, want) {
 				t.Errorf("%s has no %q", name, want)

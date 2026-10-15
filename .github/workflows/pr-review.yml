@@ -109,17 +109,6 @@ jobs:
           echo "$GITHUB_WORKSPACE/tools/omp/node_modules/.bin" >> "$GITHUB_PATH"
           test "$(tools/omp/node_modules/.bin/omp --version)" = "omp/$(jq -r '.dependencies["@oh-my-pi/pi-coding-agent"]' tools/omp/package.json)"
 
-      # The Node version is model.yml's; opencode's is tools/opencode's lockfile.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
-
-      - name: Install opencode
-        run: |
-          npm ci --prefix tools/opencode --no-audit --no-fund
-          echo "$GITHUB_WORKSPACE/tools/opencode/node_modules/.bin" >> "$GITHUB_PATH"
-          test "$(tools/opencode/node_modules/.bin/opencode --version)" = "$(jq -r '.dependencies["opencode-ai"]' tools/opencode/package.json)"
-
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: pr-review-context
