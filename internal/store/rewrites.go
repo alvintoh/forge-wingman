@@ -134,13 +134,23 @@ func sample(row map[string]any) dispatcher.Sample {
 	if at, ok := row[rewriteMergedAtField].(time.Time); ok {
 		s.MergedAt = at
 	}
-	s.AgentLines, _ = row[rewriteAgentLinesField].(int64)
-	s.OwnerLines, _ = row[rewriteOwnerLinesField].(int64)
-	s.ReviewFoundLines, _ = row[rewriteReviewFoundField].(int64)
-	s.OwnerChangeLines, _ = row[rewriteOwnerChangeField].(int64)
-	s.UnlabelledLines, _ = row[rewriteUnlabelledField].(int64)
-	s.UnmeasuredCommits, _ = row[rewriteUnmeasuredField].(int64)
+	s.Rewrite, _ = rewriteOf(row)
 	pr, _ := row[prNumberField].(int64)
 	s.PR = int(pr)
 	return s
+}
+
+// rewriteOf reads the rewrite measurement a run row carries, and whether a merge
+// has written one: the field the measurement keeps its merge time in is what
+// tells a measured row from one no merge has reached.
+func rewriteOf(row map[string]any) (dispatcher.Rewrite, bool) {
+	var r dispatcher.Rewrite
+	r.AgentLines, _ = row[rewriteAgentLinesField].(int64)
+	r.OwnerLines, _ = row[rewriteOwnerLinesField].(int64)
+	r.ReviewFoundLines, _ = row[rewriteReviewFoundField].(int64)
+	r.OwnerChangeLines, _ = row[rewriteOwnerChangeField].(int64)
+	r.UnlabelledLines, _ = row[rewriteUnlabelledField].(int64)
+	r.UnmeasuredCommits, _ = row[rewriteUnmeasuredField].(int64)
+	_, measured := row[rewriteMergedAtField].(time.Time)
+	return r, measured
 }

@@ -106,7 +106,8 @@ func (s *stubComparison) Comparison(_ context.Context, since time.Time) (store.C
 
 func TestComparisonReportsEachModelAndProviderAndEveryDriftedRun(t *testing.T) {
 	reader := &stubComparison{cmp: store.Comparison{
-		Models: []store.ModelComparison{{Model: "command-code/x", Tickets: 4, Passed: 3, CostPerTicket: 150_000}},
+		Models: []store.ModelComparison{{Model: "command-code/x", Tickets: 4, Passed: 3, CostPerTicket: 150_000,
+			MinutesPerTicket: 42.5, RewriteRate: 0.276, RewriteSample: 3}},
 		Providers: []store.ProviderComparison{{Provider: "command-code", TrailingCostPerTicket: 125_000, Sample: 6,
 			PeakTickets: 2, PeakCost: 400_000, OffPeakTickets: 4, OffPeakCost: 300_000}},
 		Drifted: []store.DriftedRun{{RunID: "run-1", Provider: "command-code", Model: "command-code/x",
@@ -131,7 +132,7 @@ func TestComparisonReportsEachModelAndProviderAndEveryDriftedRun(t *testing.T) {
 	if len(body.Models) != 1 || len(body.Providers) != 1 || len(body.Drifted) != 1 {
 		t.Fatalf("body = %s, want one model, one provider and one drifted run", rec.Body.String())
 	}
-	if got, want := slices.Sorted(maps.Keys(body.Models[0])), []string{"cost_per_ticket_usd", "model", "passed", "tickets"}; !slices.Equal(got, want) {
+	if got, want := slices.Sorted(maps.Keys(body.Models[0])), []string{"cost_per_ticket_usd", "minutes_per_ticket", "model", "passed", "rewrite_rate", "rewrite_sample", "tickets"}; !slices.Equal(got, want) {
 		t.Errorf("model keys = %v, want %v", got, want)
 	}
 	if got, want := body.Models[0]["model"], "command-code/x"; got != want {
@@ -139,6 +140,15 @@ func TestComparisonReportsEachModelAndProviderAndEveryDriftedRun(t *testing.T) {
 	}
 	if got, want := body.Models[0]["cost_per_ticket_usd"], 0.15; got != want {
 		t.Errorf("cost per ticket = %v, want %v", got, want)
+	}
+	if got, want := body.Models[0]["minutes_per_ticket"], 42.5; got != want {
+		t.Errorf("minutes per ticket = %v, want %v", got, want)
+	}
+	if got, want := body.Models[0]["rewrite_rate"], "27.6%"; got != want {
+		t.Errorf("rewrite rate = %v, want %v", got, want)
+	}
+	if got, want := body.Models[0]["rewrite_sample"], 3.0; got != want {
+		t.Errorf("rewrite sample = %v, want %v", got, want)
 	}
 	if got, want := body.Providers[0]["trailing_cost_per_ticket_usd"], 0.125; got != want {
 		t.Errorf("trailing cost per ticket = %v, want %v", got, want)
@@ -1058,5 +1068,14 @@ func TestPeakReportsAStoreItCannotWrite(t *testing.T) {
 	}
 	if !strings.Contains(log.String(), "peakModeNotSet") {
 		t.Fatalf("log = %q, want the failed write reported", log.String())
+	}
+}
+
+func TestComparisonReportsAModelNoMergeMeasuredAsNotMeasured(t *testing.T) {
+	got := renderComparison(store.Comparison{
+		Models: []store.ModelComparison{{Model: "command-code/x", Tickets: 2, Passed: 2}},
+	})
+	if len(got.Models) != 1 || got.Models[0].RewriteRate != "not measured" {
+		t.Fatalf("models = %+v, want a model with no measured run reported as not measured, not 0.0%%", got.Models)
 	}
 }

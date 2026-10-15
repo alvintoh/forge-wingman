@@ -261,6 +261,14 @@ type modelComparison struct {
 	Tickets          int     `json:"tickets"`
 	Passed           int     `json:"passed"`
 	CostPerTicketUSD float64 `json:"cost_per_ticket_usd"`
+	// MinutesPerTicket is the mean wall-clock minutes of those runs, from the
+	// build's start to the run's settlement.
+	MinutesPerTicket float64 `json:"minutes_per_ticket"`
+	// RewriteRate is the model's rewrite rate as the view prints it — a
+	// percentage, or the words for a rate measured over none of the agent's
+	// lines — and RewriteSample how many of its runs a merge measured.
+	RewriteRate   string `json:"rewrite_rate"`
+	RewriteSample int    `json:"rewrite_sample"`
 }
 
 type providerComparison struct {
@@ -308,9 +316,16 @@ func renderComparison(c store.Comparison) comparisonResponse {
 		Drifted:   []driftedRun{},
 	}
 	for _, m := range c.Models {
+		// A model no merge has measured has a zero rate, which would print as a
+		// clean 0.0%.
+		rate := "not measured"
+		if m.RewriteSample > 0 {
+			rate = rateText(m.RewriteRate)
+		}
 		out.Models = append(out.Models, modelComparison{
-			Model: m.Model, Tickets: m.Tickets, Passed: m.Passed,
-			CostPerTicketUSD: m.CostPerTicket.USD(),
+			Model: m.Model, Tickets: m.Tickets, Passed: m.Passed, RewriteSample: m.RewriteSample,
+			CostPerTicketUSD: m.CostPerTicket.USD(), MinutesPerTicket: m.MinutesPerTicket,
+			RewriteRate: rate,
 		})
 	}
 	for _, p := range c.Providers {

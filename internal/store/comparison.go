@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"time"
 
 	"google.golang.org/api/iterator"
 
+	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 	"github.com/alvintoh/forge-wingman/internal/money"
 	"github.com/alvintoh/forge-wingman/internal/runner"
 )
@@ -26,7 +28,8 @@ type Comparison struct {
 }
 
 // ModelComparison is one build model's own record over the window: the tickets
-// it built, how many of those landed, and the mean provider cost of each.
+// it built, how many of those landed, the mean provider cost and wall-clock time
+// of each, and the rewrite rate measured over the ones a merge has reached.
 type ModelComparison struct {
 	Model string
 	// Tickets is how many settled runs built on this model, Passed how many
@@ -34,6 +37,15 @@ type ModelComparison struct {
 	Tickets       int
 	Passed        int
 	CostPerTicket money.Micros
+	// MinutesPerTicket is the mean wall-clock minutes of the runs built on
+	// this model, from the build's start to the run's settlement.
+	MinutesPerTicket float64
+	// RewriteRate is the rewrite rate of those runs: the owner's lines over
+	// the agent's, +Inf when they measured none of the agent's lines at all.
+	// A model no merge has measured reports zero.
+	RewriteRate float64
+	// RewriteSample is how many of the model's runs carry a measurement.
+	RewriteSample int
 }
 
 // ProviderComparison is one provider's own record over the window. Its
@@ -93,13 +105,14 @@ type PlanCache map[string]runner.PhaseCache
 // are left out, so a run is compared against its provider's history and never
 // against itself.
 func (r *Records) ProviderTrailingCost(ctx context.Context, plan string, since time.Time, excludeRunID string) (money.Micros, int, error) {
-	recs, err := r.settledSince(ctx, since)
+	settled, err := r.settledSince(ctx, since)
 	if err != nil {
 		return 0, 0, err
 	}
 	var sum money.Micros
 	sample := 0
-	for _, rec := range recs {
+	for _, run := range settled {
+		rec := run.Record
 		if !countsForTrailingCost(rec, plan, excludeRunID) {
 			continue
 		}
@@ -116,23 +129,24 @@ func (r *Records) ProviderTrailingCost(ctx context.Context, plan string, since t
 // per-provider records, lists each run that read input with the share of it the
 // provider served from cache, and lists the runs that were flagged as cost drift.
 func (r *Records) Comparison(ctx context.Context, since time.Time) (Comparison, error) {
-	recs, err := r.settledSince(ctx, since)
+	settled, err := r.settledSince(ctx, since)
 	if err != nil {
 		return Comparison{}, err
 	}
 	// Oldest first, so the drifted runs can be listed newest first.
-	slices.SortFunc(recs, func(a, b runner.Record) int { return a.SettledAt.Compare(b.SettledAt) })
+	slices.SortFunc(settled, func(a, b settledRun) int { return a.SettledAt.Compare(b.SettledAt) })
 
 	models := map[string]*modelTotal{}
 	providers := map[string]*providerTotal{}
 	var runs []RunCache
 	var drifted []DriftedRun
-	for _, rec := range recs {
+	for _, run := range settled {
+		rec := run.Record
 		if len(rec.Steps) == 0 {
 			continue
 		}
-		model := rec.RunModels().Build
-		// A record written before the labels existed carries no model to
+		model := creditedModel(rec)
+		// A record with no build step and no label carries no model to
 		// credit, so it is left out of the model totals rather than reported
 		// under an empty name.
 		if model != "" {
@@ -146,6 +160,16 @@ func (r *Records) Comparison(ctx context.Context, since time.Time) (Comparison, 
 				m.passed++
 			}
 			m.cost += rec.SettledProviderCostMicros
+			m.minutes += wallClockMinutes(rec)
+			// Only a run a merge has measured says anything about its model's
+			// rewrite rate: one still in the open has no lines to count and no
+			// measurement to cover, and one with commits GitHub gave no line
+			// counts for undercounts, as the trailing rate also treats it.
+			if run.measured && run.rewrite.UnmeasuredCommits == 0 {
+				m.lines.AgentLines += run.rewrite.AgentLines
+				m.lines.OwnerLines += run.rewrite.OwnerLines
+				m.rewriteSample++
+			}
 		}
 
 		if countsForProviderSpend(rec) {
@@ -187,7 +211,8 @@ func (r *Records) Comparison(ctx context.Context, since time.Time) (Comparison, 
 	for model, m := range models {
 		out.Models = append(out.Models, ModelComparison{
 			Model: model, Tickets: m.tickets, Passed: m.passed,
-			CostPerTicket: m.cost / money.Micros(m.tickets),
+			CostPerTicket: m.cost / money.Micros(m.tickets), MinutesPerTicket: m.minutes / float64(m.tickets),
+			RewriteRate: m.lines.Rate(), RewriteSample: m.rewriteSample,
 		})
 	}
 	for provider, p := range providers {
@@ -207,12 +232,13 @@ func (r *Records) Comparison(ctx context.Context, since time.Time) (Comparison, 
 // covers every run that recorded the phase. Runs with no provider, and phases a
 // run recorded no figure for, are left out.
 func (r *Records) PlanCaches(ctx context.Context, since time.Time) (map[string]PlanCache, error) {
-	recs, err := r.settledSince(ctx, since)
+	settled, err := r.settledSince(ctx, since)
 	if err != nil {
 		return nil, err
 	}
 	totals := map[string]map[string]*phaseTotal{}
-	for _, rec := range recs {
+	for _, run := range settled {
+		rec := run.Record
 		if rec.Plan == "" || len(rec.Cache) == 0 { // a run with no plan has no row to join to
 			continue
 		}
@@ -264,6 +290,43 @@ type phaseTotal struct {
 type modelTotal struct {
 	tickets, passed int
 	cost            money.Micros
+	minutes         float64
+	// lines is the measured lines of the model's own runs a merge has
+	// measured, and rewriteSample how many of them carry one.
+	lines dispatcher.Rewrite
+	// rewriteSample is how many of the model's runs carry a measurement.
+	rewriteSample int
+}
+
+// creditedModel is the model a run is credited to: the one model its build-phase
+// steps ran on, so a run whose ticket named none is still credited to the model
+// that built it. A run whose build moved to another model part way, a fallback
+// among them, is credited to neither, since its lines are no one model's. A
+// record with no build step at all (a run that stopped before its build) falls
+// back to the label the ticket named, empty when it named none.
+func creditedModel(rec runner.Record) string {
+	built := ""
+	for _, step := range rec.Steps {
+		if step.Phase != runner.PhaseBuild || step.Model == "" {
+			continue
+		}
+		if built != "" && step.Model != built {
+			return ""
+		}
+		built = step.Model
+	}
+	if built != "" {
+		return built
+	}
+	return rec.RunModels().Build
+}
+
+// wallClockMinutes is how long a run took, from its start to its settlement. The
+// start comes from the build's own host, which the summary's validation lets sit
+// slightly ahead of the settling clock, so a run that settles at once counts
+// zero rather than backwards.
+func wallClockMinutes(rec runner.Record) float64 {
+	return math.Max(0, rec.SettledAt.Sub(rec.StartedAt).Minutes())
 }
 
 // providerTotal is one provider's running totals, before the mean is taken.
@@ -286,16 +349,28 @@ func countsForTrailingCost(rec runner.Record, plan, excludeRunID string) bool {
 	return rec.Plan == plan && rec.RunID != excludeRunID && countsForProviderSpend(rec) && len(rec.Steps) > 0
 }
 
+// settledRun is one settled run's record beside the rewrite measurement the
+// dispatcher writes onto the same row, which the record itself does not carry.
+type settledRun struct {
+	runner.Record
+	// rewrite is the run's measured lines, which it has none of until a merge
+	// has reached it: measured is false then.
+	rewrite dispatcher.Rewrite
+	// measured is whether a merge has written a measurement onto the row.
+	measured bool
+}
+
 // settledSince is every run that has settled at or after since, in the order
-// the store returns them. A single range filter on settled_at needs no
-// composite index — Firestore auto-creates a single-field one — so the rest of
-// each run's eligibility is checked by the caller; a personal project's run
-// count never justifies adding a composite index for it, and a full-window
-// rescan is the accepted cost (see Queue.settledSince).
-func (r *Records) settledSince(ctx context.Context, since time.Time) ([]runner.Record, error) {
+// the store returns them, each with the rewrite measurement its own row carries.
+// A single range filter on settled_at needs no composite index — Firestore
+// auto-creates a single-field one — so the rest of each run's eligibility is
+// checked by the caller; a personal project's run count never justifies adding a
+// composite index for it, and a full-window rescan is the accepted cost (see
+// Queue.settledSince).
+func (r *Records) settledSince(ctx context.Context, since time.Time) ([]settledRun, error) {
 	iter := r.client.Collection(runsCollection).Where(settledAtField, ">=", since).Documents(ctx)
 	defer iter.Stop()
-	var out []runner.Record
+	var out []settledRun
 	for {
 		snap, err := iter.Next()
 		if errors.Is(err, iterator.Done) {
@@ -304,11 +379,16 @@ func (r *Records) settledSince(ctx context.Context, since time.Time) ([]runner.R
 		if err != nil {
 			return nil, fmt.Errorf("reading runs settled since %s: %w", since.UTC().Format(time.RFC3339), err)
 		}
+		// The measurement sits beside the record on the row rather than among
+		// the fields the record job rebuilds, so the row is read as a map for
+		// it and into the record the callers take.
+		data := snap.Data()
 		var rec runner.Record
 		if err := snap.DataTo(&rec); err != nil {
 			return nil, fmt.Errorf("decoding run %s: %w", snap.Ref.ID, err)
 		}
-		out = append(out, rec)
+		rewrite, measured := rewriteOf(data)
+		out = append(out, settledRun{Record: rec, rewrite: rewrite, measured: measured})
 	}
 	return out, nil
 }

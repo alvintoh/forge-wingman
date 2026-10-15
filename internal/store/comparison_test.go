@@ -10,8 +10,16 @@ import (
 
 	"cloud.google.com/go/firestore"
 
+	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 	"github.com/alvintoh/forge-wingman/internal/money"
 	"github.com/alvintoh/forge-wingman/internal/runner"
+)
+
+// The two models a build trial compares. A run whose ticket names neither is
+// credited to the one its own build step records.
+const (
+	defaultModel = "command-code/deepseek/deepseek-v4.1-flash"
+	trialModel   = "command-code/xiaomi/mimo-v2.6-pro"
 )
 
 // comparedRun is a settled run as the comparison reads it.
@@ -31,6 +39,18 @@ type comparedRun struct {
 	// produces (it settles only a run that reached an agent) and the
 	// comparison still has to read.
 	noSteps bool
+	// stepPhase and stepModel are the phase and the model the run's one step
+	// records, the build on the run's own label when unset: a run whose ticket
+	// named no model is credited to the one its build step names.
+	stepPhase runner.Phase
+	stepModel string
+	// leadingSteps are written ahead of that step.
+	leadingSteps []runner.Step
+	// wallClock is how long the run took, an hour when unset.
+	wallClock time.Duration
+	// rewrite is the measurement a merge wrote onto the run's row, absent for
+	// a run no merge has reached.
+	rewrite *dispatcher.Rewrite
 }
 
 // comparedRecord writes id as the run Finalize would leave it, with the
@@ -39,11 +59,15 @@ func comparedRecord(t *testing.T, client *firestore.Client, id string, c compare
 	t.Helper()
 	tk := runner.Ticket{ID: id, Title: "feat(x): add a file", Size: "S", Body: "Add a file."}
 	// A run that has not settled yet has no time of its own, and a zero one
-	// would fall below Firestore's own range once the step's hour is taken off
-	// it.
-	started := queueAt.Add(-time.Hour)
+	// would fall below Firestore's own range once the step's own span is taken
+	// off it.
+	wall := c.wallClock
+	if wall == 0 {
+		wall = time.Hour
+	}
+	started := queueAt.Add(-wall)
 	if !c.settledAt.IsZero() {
-		started = c.settledAt.Add(-time.Hour)
+		started = c.settledAt.Add(-wall)
 	}
 	rec := runner.NewRecord(id, tk, started)
 	rec.Plan = c.plan
@@ -56,16 +80,32 @@ func comparedRecord(t *testing.T, client *firestore.Client, id string, c compare
 	rec.TimeOfUse = c.timeOfUse
 	rec.CostDrift = c.costDrift
 	if !c.noSteps {
+		phase := c.stepPhase
+		if phase == "" {
+			phase = runner.PhaseBuild
+		}
+		model := c.stepModel
+		if model == "" {
+			model = c.model
+		}
 		tokens := runner.Usage{Input: c.input, CacheRead: c.cacheRead, Cost: c.cost.USD()}
-		rec.Steps = []runner.Step{{
-			Phase: runner.PhaseBuild, Round: 1, Model: c.model,
+		rec.Steps = append(slices.Clone(c.leadingSteps), runner.Step{
+			Phase: phase, Round: 1, Model: model,
 			Tokens: tokens, At: started,
-		}}
+		})
 		rec.Tokens = tokens
 	}
 	rec.Cache = c.cache
 	if _, err := client.Collection(runsCollection).Doc(id).Set(context.Background(), fields(rec)); err != nil {
 		t.Fatal(err)
+	}
+	if c.rewrite != nil {
+		// Through the writer the dispatcher measures with, so the comparison
+		// reads the row the product actually leaves.
+		if err := NewRewrites(client).Record(context.Background(), id,
+			dispatcher.Measured{Rewrite: *c.rewrite, MergedAt: c.settledAt, PR: 1}); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -192,9 +232,9 @@ func TestComparisonLeavesOutARunThatReachedNoAgent(t *testing.T) {
 	}
 }
 
-// TestComparisonReportsNoEmptyName: a document written before the run carried
-// labels has no model to credit and no provider to bill, so it appears under
-// neither rather than under an empty name.
+// TestComparisonReportsNoEmptyName: a document that names no model at all — no
+// label on the run and no model on a build step — has no model to credit and no
+// provider to bill, so it appears under neither rather than under an empty name.
 func TestComparisonReportsNoEmptyName(t *testing.T) {
 	_, client := queue(t)
 	bare := fresh("bare")
@@ -210,6 +250,144 @@ func TestComparisonReportsNoEmptyName(t *testing.T) {
 	}
 	if p, ok := findProvider(got.Providers, ""); ok {
 		t.Fatalf("reported a provider with no name: %+v", p)
+	}
+}
+
+// TestComparisonCreditsARunToTheModelItsBuildStepRanOn asserts a run is credited
+// to the model its own build step ran on, so a run whose ticket named no model
+// still reaches the model table, and a record with no build step falls back to
+// the label the ticket named (AC1).
+func TestComparisonCreditsARunToTheModelItsBuildStepRanOn(t *testing.T) {
+	_, client := queue(t)
+	plan := fresh("credit")
+	named, stale, stopped := fresh("credit-named"), fresh("credit-stale"), fresh("credit-stopped")
+	forget(t, client, named, stale, stopped)
+	// What a default-model run looks like: the ticket named no model, and the
+	// step names the one that built it.
+	comparedRecord(t, client, named, comparedRun{plan: plan, settledAt: queueAt,
+		cost: money.Dollar, stepModel: trialModel})
+	// A ticket whose label does not name what built its run.
+	comparedRecord(t, client, stale, comparedRun{plan: plan, model: defaultModel, settledAt: queueAt.Add(time.Minute),
+		cost: money.Dollar, stepModel: trialModel})
+	// A record that stopped before its build has no build step to credit, so
+	// its label is all the comparison has.
+	comparedRecord(t, client, stopped, comparedRun{plan: plan, model: defaultModel, settledAt: queueAt.Add(2 * time.Minute),
+		cost: money.Dollar, stepPhase: runner.PhasePlan, stepModel: trialModel})
+
+	got, err := NewRecords(client).Comparison(context.Background(), queueAt.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m, ok := findModel(got.Models, trialModel); !ok || m.Tickets != 2 {
+		t.Fatalf("models = %+v, want the two runs whose build step ran on %s", got.Models, trialModel)
+	}
+	if m, ok := findModel(got.Models, defaultModel); !ok || m.Tickets != 1 {
+		t.Fatalf("models = %+v, want the run with no build step credited to its label", got.Models)
+	}
+}
+
+func TestComparisonSkipsABuildStepThatNamesNoModel(t *testing.T) {
+	_, client := queue(t)
+	plan, id := fresh("credit-blank"), fresh("credit-blank-run")
+	forget(t, client, id)
+	comparedRecord(t, client, id, comparedRun{plan: plan, settledAt: queueAt, stepModel: trialModel,
+		leadingSteps: []runner.Step{{Phase: runner.PhaseBuild, Round: 1, At: queueAt.Add(-time.Hour)}}})
+
+	got, err := NewRecords(client).Comparison(context.Background(), queueAt.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m, ok := findModel(got.Models, trialModel); !ok || m.Tickets != 1 {
+		t.Fatalf("models = %+v, want the run credited to the first build step that names a model", got.Models)
+	}
+}
+
+func TestComparisonCreditsNoModelForABuildThatSwitchedModel(t *testing.T) {
+	_, client := queue(t)
+	plan, fallback, id := fresh("credit-switch"), fresh("credit-switch-fallback"), fresh("credit-switch-run")
+	forget(t, client, id)
+	// The trial model's build failed over to a fallback, which finished it.
+	comparedRecord(t, client, id, comparedRun{plan: plan, settledAt: queueAt, stepModel: fallback,
+		leadingSteps: []runner.Step{{Phase: runner.PhaseBuild, Round: 1, Model: trialModel, At: queueAt.Add(-time.Hour)}}})
+
+	got, err := NewRecords(client).Comparison(context.Background(), queueAt.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, model := range []string{trialModel, fallback} {
+		if m, ok := findModel(got.Models, model); ok {
+			t.Fatalf("model %s = %+v, want a build that switched model credited to neither", model, m)
+		}
+	}
+}
+
+// TestComparisonReportsEachModelsWallClock asserts a model's row carries the mean
+// wall-clock minutes of its own runs, each read from the run's start to its
+// settlement (AC2).
+func TestComparisonReportsEachModelsWallClock(t *testing.T) {
+	_, client := queue(t)
+	plan, model := fresh("clock"), fresh("clock-model")
+	quick, slow := fresh("clock-quick"), fresh("clock-slow")
+	forget(t, client, quick, slow)
+	comparedRecord(t, client, quick, comparedRun{plan: plan, model: model, settledAt: queueAt, wallClock: 20 * time.Minute})
+	comparedRecord(t, client, slow, comparedRun{plan: plan, model: model, settledAt: queueAt.Add(time.Minute), wallClock: 70 * time.Minute})
+
+	got, err := NewRecords(client).Comparison(context.Background(), queueAt.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m, ok := findModel(got.Models, model); !ok || m.MinutesPerTicket != 45 {
+		t.Fatalf("model = %+v (ok %v), want the mean of a 20 and a 70 minute run", m, ok)
+	}
+}
+
+// TestComparisonReportsEachModelsRewriteRate asserts a model's row carries the
+// rewrite rate of the runs a merge has measured, and reads as no measurement at
+// all for a model no merge has reached (AC5).
+func TestComparisonReportsEachModelsRewriteRate(t *testing.T) {
+	_, client := queue(t)
+	plan := fresh("rate")
+	model, openModel := fresh("rate-model"), fresh("rate-open-model")
+	first, second, open := fresh("rate-first"), fresh("rate-second"), fresh("rate-open")
+	forget(t, client, first, second, open)
+	comparedRecord(t, client, first, comparedRun{plan: plan, model: model, settledAt: queueAt,
+		rewrite: &dispatcher.Rewrite{AgentLines: 400, OwnerLines: 100}})
+	comparedRecord(t, client, second, comparedRun{plan: plan, model: model, settledAt: queueAt.Add(time.Minute),
+		rewrite: &dispatcher.Rewrite{AgentLines: 100, OwnerLines: 50}})
+	// A run no merge has reached has no lines behind it, so it is no sample of
+	// its model's rate.
+	comparedRecord(t, client, open, comparedRun{plan: plan, model: openModel, settledAt: queueAt.Add(2 * time.Minute)})
+
+	got, err := NewRecords(client).Comparison(context.Background(), queueAt.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m, ok := findModel(got.Models, model); !ok || m.RewriteRate != 0.3 || m.RewriteSample != 2 {
+		t.Fatalf("model = %+v (ok %v), want 150 owner lines over 500 agent lines across two runs", m, ok)
+	}
+	if m, ok := findModel(got.Models, openModel); !ok || m.RewriteRate != 0 || m.RewriteSample != 0 {
+		t.Fatalf("model = %+v (ok %v), want a run no merge measured to report no rate", m, ok)
+	}
+}
+
+func TestComparisonLeavesARunWithUnmeasuredCommitsOutOfTheRewriteRate(t *testing.T) {
+	_, client := queue(t)
+	plan, model := fresh("rate-gap"), fresh("rate-gap-model")
+	whole, partial := fresh("rate-gap-whole"), fresh("rate-gap-partial")
+	forget(t, client, whole, partial)
+	comparedRecord(t, client, whole, comparedRun{plan: plan, model: model, settledAt: queueAt,
+		rewrite: &dispatcher.Rewrite{AgentLines: 400, OwnerLines: 100}})
+	// GitHub gave no line counts for one of this PR's commits, so its lines
+	// undercount and it is no sample of the rate.
+	comparedRecord(t, client, partial, comparedRun{plan: plan, model: model, settledAt: queueAt.Add(time.Minute),
+		rewrite: &dispatcher.Rewrite{AgentLines: 10, OwnerLines: 90, UnmeasuredCommits: 1}})
+
+	got, err := NewRecords(client).Comparison(context.Background(), queueAt.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m, ok := findModel(got.Models, model); !ok || m.RewriteRate != 0.25 || m.RewriteSample != 1 {
+		t.Fatalf("model = %+v (ok %v), want only the fully measured run behind the rate", m, ok)
 	}
 }
 
