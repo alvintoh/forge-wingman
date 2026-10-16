@@ -1,9 +1,13 @@
 package store
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"maps"
+	"reflect"
 	"slices"
 	"sync"
 	"testing"
@@ -454,6 +458,239 @@ func TestAnAbandonedRunRequeuedAndAbandonedAgainRaisesANewNotice(t *testing.T) {
 	for _, nid := range []string{first, second} {
 		if _, err := NewNotices(client).doc(nid).Get(ctx); err != nil {
 			t.Fatalf("notice %s: %v, want one raised per abandonment", nid, err)
+		}
+	}
+}
+
+// reservedAt is a reservation claimed at sweepClaimedAt for stage.
+func reservedAt(stage string) reservationEntry {
+	return reservationEntry{ProviderCostMicros: money.Dollar, RunnerMinutes: 3, Stage: stage, ClaimedAt: sweepClaimedAt}
+}
+
+func holds(t *testing.T, client *firestore.Client, key string) bool {
+	t.Helper()
+	_, ok := readLedgerDoc(t, client).Reservations[key]
+	return ok
+}
+
+func TestSweepDropsAnExpiredReservationWhoseRowHasSettled(t *testing.T) {
+	q, client := queue(t)
+	for name, row := range map[string]map[string]any{
+		"an outcome":        {stateField: stateClaimed, outcomeField: "pr-opened"},
+		"a stop reason":     {stateField: stateClaimed, stopReasonField: "x"},
+		"a row not claimed": {stateField: stateQueued},
+		"no row":            nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			id := fresh("release-settled")
+			key := id + "#a0"
+			seedLedger(t, client, 1, map[string]reservationEntry{key: reservedAt(dispatcher.StageBuild)})
+			if row != nil {
+				seedRow(t, client, id, row)
+			}
+			if _, err := q.SweepAbandoned(context.Background(), sweepClaimedAt.Add(3*time.Hour), sweepWindows); err != nil {
+				t.Fatal(err)
+			}
+			if holds(t, client, key) {
+				t.Fatal("the reservation of a settled row was kept")
+			}
+			if row != nil && !reflect.DeepEqual(readRow(t, client, id), row) {
+				t.Fatalf("row = %v, want it left as it was", readRow(t, client, id))
+			}
+		})
+	}
+}
+
+func TestSweepKeepsAReservationInsideItsWindowWhateverItsRowSays(t *testing.T) {
+	q, client := queue(t)
+	id := fresh("release-young")
+	key := id + "#a1"
+	seedLedger(t, client, 1, map[string]reservationEntry{key: reservedAt(dispatcher.StageBuild)})
+	seedRow(t, client, id, map[string]any{stateField: stateClaimed, outcomeField: "pr-opened"})
+	if _, err := q.SweepAbandoned(context.Background(), sweepClaimedAt.Add(sweepWindows.Build), sweepWindows); err != nil {
+		t.Fatal(err)
+	}
+	if !holds(t, client, key) {
+		t.Fatal("a reservation exactly as old as its window was dropped")
+	}
+}
+
+func TestSweepReleasesByTheEntrysOwnStageWindow(t *testing.T) {
+	q, client := queue(t)
+	plan, build := fresh("release-plan"), fresh("release-build")
+	planKey, buildKey := plan+"#a0"+planKeySuffix, build+"#a0"
+	seedLedger(t, client, 2, map[string]reservationEntry{
+		planKey:  reservedAt(dispatcher.StagePlan),
+		buildKey: reservedAt(dispatcher.StageBuild),
+	})
+	for _, id := range []string{plan, build} {
+		seedRow(t, client, id, map[string]any{stateField: stateClaimed, outcomeField: "pr-opened"})
+	}
+	if _, err := q.SweepAbandoned(context.Background(), sweepClaimedAt.Add(90*time.Minute), sweepWindows); err != nil {
+		t.Fatal(err)
+	}
+	if holds(t, client, planKey) {
+		t.Fatal("the plan-stage reservation past the plan window was kept")
+	}
+	if !holds(t, client, buildKey) {
+		t.Fatal("the build-stage reservation inside the build window was dropped")
+	}
+}
+
+func TestReleaseIfSettledRechecksTheLedgerBeforeDropping(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	id := fresh("release-recheck")
+	key := id + "#a0"
+	seedRow(t, client, id, map[string]any{stateField: stateClaimed, outcomeField: "pr-opened"})
+	seedLedger(t, client, 1, map[string]reservationEntry{key: reservedAt(dispatcher.StageBuild)})
+
+	if released, err := q.releaseIfSettled(ctx, id+"#a9", sweepClaimedAt.Add(3*time.Hour), sweepWindows); err != nil || released {
+		t.Fatalf("a key the ledger no longer holds = %v, %v, want nothing released", released, err)
+	}
+	if released, err := q.releaseIfSettled(ctx, key, sweepClaimedAt.Add(time.Hour), sweepWindows); err != nil || released {
+		t.Fatalf("a reservation inside its window = %v, %v, want it kept", released, err)
+	}
+	if !holds(t, client, key) {
+		t.Fatal("the recheck dropped a reservation that is not past its window")
+	}
+	if released, err := q.releaseIfSettled(ctx, key, sweepClaimedAt.Add(3*time.Hour), sweepWindows); err != nil || !released {
+		t.Fatalf("an expired reservation of a settled row = %v, %v, want it released", released, err)
+	}
+}
+
+func TestReleaseLeavesAReservationWhoseClaimedRowHasNoOutcome(t *testing.T) {
+	q, client := queue(t)
+	var logged bytes.Buffer
+	q = q.WithLogger(slog.New(slog.NewJSONHandler(&logged, nil)))
+	id := fresh("release-unsettled")
+	key := id + "#a0"
+	seedLedger(t, client, 1, map[string]reservationEntry{key: reservedAt(dispatcher.StageBuild)})
+	seedRow(t, client, id, map[string]any{stateField: stateClaimed, claimedAtField: sweepClaimedAt})
+	if err := q.releaseSettledReservations(context.Background(), sweepClaimedAt.Add(3*time.Hour), sweepWindows); err != nil {
+		t.Fatal(err)
+	}
+	if !holds(t, client, key) {
+		t.Fatal("a reservation whose claimed row recorded nothing was dropped")
+	}
+	if logged.Len() != 0 {
+		t.Fatalf("logged %q for a reservation that was kept", logged.String())
+	}
+}
+
+func TestReleaseLogsEachReservationItDropsOnceWithItsRunAndKey(t *testing.T) {
+	q, client := queue(t)
+	var logged bytes.Buffer
+	q = q.WithLogger(slog.New(slog.NewJSONHandler(&logged, nil)))
+	id := fresh("release-log")
+	key := id + "#a0"
+	seedLedger(t, client, 1, map[string]reservationEntry{key: reservedAt(dispatcher.StageBuild)})
+	seedRow(t, client, id, map[string]any{stateField: stateClaimed, outcomeField: "pr-opened"})
+	if err := q.releaseSettledReservations(context.Background(), sweepClaimedAt.Add(3*time.Hour), sweepWindows); err != nil {
+		t.Fatal(err)
+	}
+	var rec struct {
+		Level string `json:"level"`
+		Msg   string `json:"msg"`
+		Run   string `json:"run"`
+		Key   string `json:"key"`
+	}
+	if err := json.NewDecoder(&logged).Decode(&rec); err != nil {
+		t.Fatalf("no log record: %v", err)
+	}
+	if rec.Msg != "reservationReleased" || rec.Level != "INFO" || rec.Run != id || rec.Key != key {
+		t.Fatalf("log = %+v, want reservationReleased at INFO naming run %s and key %s", rec, id, key)
+	}
+	if err := json.NewDecoder(&logged).Decode(&rec); err == nil {
+		t.Fatalf("a second record was logged: %+v", rec)
+	}
+	if err := q.releaseSettledReservations(context.Background(), sweepClaimedAt.Add(3*time.Hour), sweepWindows); err != nil || logged.Len() != 0 {
+		t.Fatalf("a second sweep logged %q (err %v), want nothing for a key already dropped", logged.String(), err)
+	}
+}
+
+func TestReleaseFailsWhenTheLedgerCannotBeListed(t *testing.T) {
+	q, _ := queue(t)
+	if err := q.releaseSettledReservations(cancelledContext(), sweepClaimedAt.Add(3*time.Hour), sweepWindows); err == nil {
+		t.Fatal("a failed ledger listing was reported as nothing to release")
+	}
+}
+
+func TestReleaseReportsAKeyItCannotCheckAndStillReleasesTheRest(t *testing.T) {
+	q, client := queue(t)
+	t.Cleanup(func() { resetLedger(t, client, 1) })
+	id := fresh("release-rest")
+	good := id + "#a0"
+	seedRow(t, client, id, map[string]any{stateField: stateClaimed, outcomeField: "pr-opened"})
+	seedLedger(t, client, 2, map[string]reservationEntry{
+		"bad/id#a0": reservedAt(dispatcher.StageBuild),
+		good:        reservedAt(dispatcher.StageBuild),
+	})
+	if err := q.releaseSettledReservations(context.Background(), sweepClaimedAt.Add(3*time.Hour), sweepWindows); err == nil {
+		t.Fatal("a key whose row could not be read was not reported")
+	}
+	if holds(t, client, good) {
+		t.Fatal("a failure on one key stopped the release of the next")
+	}
+}
+
+func TestReleaseKeepsAReservationWithNoClaimTime(t *testing.T) {
+	q, client := queue(t)
+	id := fresh("release-untimed")
+	key := id + "#a0"
+	untimed := reservedAt(dispatcher.StageBuild)
+	untimed.ClaimedAt = time.Time{}
+	seedLedger(t, client, 1, map[string]reservationEntry{key: untimed})
+	seedRow(t, client, id, map[string]any{stateField: stateClaimed, outcomeField: "pr-opened"})
+	if err := q.releaseSettledReservations(context.Background(), sweepClaimedAt.Add(3*time.Hour), sweepWindows); err != nil {
+		t.Fatal(err)
+	}
+	if !holds(t, client, key) {
+		t.Fatal("a reservation whose age is unknown was dropped")
+	}
+}
+
+func TestReleaseDropsAReservationOfAnEarlierAttemptButKeepsTheCurrentOnes(t *testing.T) {
+	q, client := queue(t)
+	id := fresh("release-attempt")
+	older, current := reservedAt(dispatcher.StageBuild), reservedAt(dispatcher.StageBuild)
+	older.Attempt, current.Attempt = 0, 1
+	olderKey, currentKey := reservationKey(id, 0, dispatcher.StageBuild), reservationKey(id, 1, dispatcher.StageBuild)
+	seedLedger(t, client, 2, map[string]reservationEntry{olderKey: older, currentKey: current})
+	seedRow(t, client, id, map[string]any{stateField: stateClaimed, claimedAtField: sweepClaimedAt, attemptField: int64(1)})
+	if err := q.releaseSettledReservations(context.Background(), sweepClaimedAt.Add(3*time.Hour), sweepWindows); err != nil {
+		t.Fatal(err)
+	}
+	if holds(t, client, olderKey) {
+		t.Fatal("the reservation of an earlier attempt was kept once the row moved on")
+	}
+	if !holds(t, client, currentKey) {
+		t.Fatal("the current attempt's reservation on a claimed row with no outcome was dropped")
+	}
+}
+
+func TestReservationRunIDInvertsReservationKey(t *testing.T) {
+	for _, stage := range []string{dispatcher.StageBuild, dispatcher.StagePlan} {
+		for _, attempt := range []int{0, 1, 12} {
+			if got := reservationRunID(reservationKey("FRG-147", attempt, stage)); got != "FRG-147" {
+				t.Errorf("reservationRunID(%q) = %q, want FRG-147", reservationKey("FRG-147", attempt, stage), got)
+			}
+		}
+		if got := reservationRunID(legacyReservationKey("FRG-147", stage)); got != "FRG-147" {
+			t.Errorf("reservationRunID(%q) = %q, want FRG-147", legacyReservationKey("FRG-147", stage), got)
+		}
+	}
+}
+
+func TestReservationRunIDStripsTheAttemptAndPlanSuffixes(t *testing.T) {
+	for key, want := range map[string]string{
+		"FRG-147#a0":      "FRG-147",
+		"FRG-147#a2#plan": "FRG-147",
+		"FRG-147":         "FRG-147",
+		"FRG-147#plan":    "FRG-147",
+	} {
+		if got := reservationRunID(key); got != want {
+			t.Errorf("reservationRunID(%q) = %q, want %q", key, got, want)
 		}
 	}
 }

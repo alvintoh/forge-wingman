@@ -128,14 +128,14 @@ func TestEveryReservationOperationUsesTheClaimsAttemptKey(t *testing.T) {
 			op: func(q *Queue, id string) error { _, err := q.Requeue(ctx, id, queueAt); return err }},
 		{name: "RequeueAfterConflict", stage: dispatcher.StageBuild, prep: markStopped,
 			op: func(q *Queue, id string) error { _, err := q.RequeueAfterConflict(ctx, id, queueAt, 5); return err }},
-		{name: "sweep build", stage: dispatcher.StageBuild,
+		{name: "abandon build", stage: dispatcher.StageBuild,
 			op: func(q *Queue, id string) error {
-				_, err := q.SweepAbandoned(ctx, sweepClaimedAt.Add(3*time.Hour), sweepWindows)
+				_, _, err := q.abandon(ctx, id, sweepClaimedAt.Add(3*time.Hour), sweepWindows)
 				return err
 			}},
-		{name: "sweep plan", stage: dispatcher.StagePlan,
+		{name: "abandon plan", stage: dispatcher.StagePlan,
 			op: func(q *Queue, id string) error {
-				_, err := q.SweepAbandoned(ctx, sweepClaimedAt.Add(90*time.Minute), sweepWindows)
+				_, _, err := q.abandon(ctx, id, sweepClaimedAt.Add(90*time.Minute), sweepWindows)
 				return err
 			}},
 		{name: "Settle", stage: dispatcher.StageBuild,

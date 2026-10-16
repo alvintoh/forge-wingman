@@ -25,13 +25,15 @@ const abandonedNoOutcome = "no-outcome-past-window"
 //
 // The dropped reservation has no settled cost, so the budget can under-count
 // what an abandoned run spent. A failure on one run does not stop the rest.
+//
+// It then drops every reservation past its window whose run row has settled.
 func (q *Queue) SweepAbandoned(ctx context.Context, now time.Time, w dispatcher.AbandonWindows) ([]dispatcher.Abandoned, error) {
 	ids, err := q.staleClaims(ctx, now, w)
-	if err != nil {
-		return nil, err
-	}
 	var out []dispatcher.Abandoned
 	var errs []error
+	if err != nil {
+		errs = append(errs, err)
+	}
 	for _, id := range ids {
 		a, swept, err := q.abandon(ctx, id, now, w)
 		if err != nil {
@@ -42,6 +44,7 @@ func (q *Queue) SweepAbandoned(ctx context.Context, now time.Time, w dispatcher.
 			out = append(out, a)
 		}
 	}
+	errs = append(errs, q.releaseSettledReservations(ctx, now, w))
 	return out, errors.Join(errs...)
 }
 
@@ -101,11 +104,7 @@ func (q *Queue) abandon(ctx context.Context, runID string, now time.Time, w disp
 		}
 		attempt := rowAttempt(row)
 		_, entry, _ := ledger.reservation(runID, attempt)
-		window := w.Build
-		if entry.Stage == dispatcher.StagePlan {
-			window = w.Plan
-		}
-		if !claimedAt.Before(now.Add(-window)) {
+		if !claimedAt.Before(now.Add(-w.For(entry.Stage))) {
 			return nil
 		}
 		found := dispatcher.Abandoned{
@@ -139,4 +138,82 @@ func (q *Queue) abandon(ctx context.Context, runID string, now time.Time, w disp
 		return dispatcher.Abandoned{}, false, fmt.Errorf("abandoning run %s: %w", runID, err)
 	}
 	return out, swept, nil
+}
+
+// reservationExpired reports whether entry was claimed before its stage's window.
+func reservationExpired(entry reservationEntry, now time.Time, w dispatcher.AbandonWindows) bool {
+	return !entry.ClaimedAt.IsZero() && entry.ClaimedAt.Before(now.Add(-w.For(entry.Stage)))
+}
+
+// releaseSettledReservations drops each reservation past its window whose run
+// row has settled. A failure on one key does not stop the rest.
+func (q *Queue) releaseSettledReservations(ctx context.Context, now time.Time, w dispatcher.AbandonWindows) error {
+	var keys []string
+	err := q.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		keys = nil
+		ledger, err := q.readLedger(tx, q.ledgerRef())
+		if err != nil {
+			return err
+		}
+		for key, entry := range ledger.Reservations {
+			if reservationExpired(entry, now, w) {
+				keys = append(keys, key)
+			}
+		}
+		return nil
+	}, firestore.ReadOnly)
+	if err != nil {
+		return fmt.Errorf("listing expired reservations: %w", err)
+	}
+	var errs []error
+	for _, key := range keys {
+		released, err := q.releaseIfSettled(ctx, key, now, w)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if released {
+			q.logger.InfoContext(ctx, "reservationReleased", "run", reservationRunID(key), "key", key)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// releaseIfSettled drops the reservation under key when, in one transaction, it
+// is still past its window and its run row is missing, no longer claimed, carries
+// an outcome or a stop reason, or has moved on to a later attempt.
+func (q *Queue) releaseIfSettled(ctx context.Context, key string, now time.Time, w dispatcher.AbandonWindows) (bool, error) {
+	ledgerRef := q.ledgerRef()
+	rowRef := q.client.Collection(runsCollection).Doc(reservationRunID(key))
+	var released bool
+	err := q.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		released = false
+		ledger, err := q.readLedger(tx, ledgerRef)
+		if err != nil {
+			return err
+		}
+		entry, held := ledger.Reservations[key]
+		if !held || !reservationExpired(entry, now, w) {
+			return nil
+		}
+		snap, err := tx.Get(rowRef)
+		settled := status.Code(err) == codes.NotFound
+		if err != nil && !settled {
+			return err
+		}
+		if !settled {
+			row := snap.Data()
+			settled = str(row, stateField) != stateClaimed || str(row, outcomeField) != "" || str(row, stopReasonField) != "" ||
+				entry.Attempt < rowAttempt(row)
+		}
+		if !settled {
+			return nil
+		}
+		released = true
+		return tx.Update(ledgerRef, []firestore.Update{{FieldPath: firestore.FieldPath{"reservations", key}, Value: firestore.Delete}})
+	})
+	if err != nil {
+		return false, fmt.Errorf("releasing reservation %s: %w", key, err)
+	}
+	return released, nil
 }
