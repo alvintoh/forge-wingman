@@ -702,7 +702,9 @@ func reservedTotals(doc ledgerDoc) dispatcher.Totals {
 // ceilings holds is withheld without reading it at all (AC5). It reports
 // (false, "", nil) when another poll already claimed the row, and
 // (false, <binding>, nil) when a condition withholds it, which it also records
-// on the row.
+// on the row. A row still in a dispatchable state that already records an
+// outcome or a stop reason has ended without a claim: it is settled to claimed
+// and logged instead of claimed for a build, and books no reservation.
 //
 // The reservation is booked under the key of the row's attempt, a plan-stage
 // one beside the build's, so the build stage can claim the run while its plan
@@ -714,8 +716,10 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 	var binding string
 	var claimed bool
 	var overlaps []string
+	var settledRow bool
+	var endedOutcome string
 	err := q.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
-		binding, claimed, overlaps = "", false, nil
+		binding, claimed, overlaps, settledRow, endedOutcome = "", false, nil, false, ""
 		row, err := tx.Get(rowRef)
 		if status.Code(err) == codes.NotFound {
 			return nil
@@ -727,6 +731,19 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 		state, _ := data[stateField].(string)
 		if state != stateQueued && state != statePlanned {
 			return nil
+		}
+		// A row in a dispatchable state that has already ended was left there
+		// by a run that recorded its own result without a claim — a manual
+		// dispatch — so claiming it would rebuild finished work. Settle it to
+		// the state a finished run sits in, clear its wait, and leave the ledger
+		// alone.
+		if hasEnded(data) {
+			settledRow, endedOutcome = true, str(data, outcomeField)
+			return tx.Update(rowRef, []firestore.Update{
+				{Path: stateField, Value: stateClaimed},
+				{Path: updatedAtField, Value: at},
+				{Path: waitingOnField, Value: firestore.Delete},
+			})
 		}
 
 		ledger, err := q.readLedger(tx, ledgerRef)
@@ -829,6 +846,9 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 	})
 	if err != nil {
 		return false, "", fmt.Errorf("claiming run %s: %w", runID, err)
+	}
+	if settledRow {
+		q.logger.Warn("queuedRowSettled", "run", runID, "outcome", endedOutcome)
 	}
 	if claimed && len(overlaps) > 0 {
 		q.logger.Info("admittedOverlapping", "run", runID, "overlaps", overlaps)
@@ -1238,14 +1258,15 @@ var (
 	ErrRunAbandoned    = errors.New("run was abandoned and needs an operator's requeue")
 )
 
-// Requeue returns a run that has ended — stopped, abandoned, or a claim with a
-// recorded outcome — to the queue, for an operator asking that its ticket be
-// attempted again: the row returns to planned when its plan still stands and queued
-// otherwise, with its claim, wait and outcome fields cleared and its ledger
-// reservations dropped, and records the attempt it was put back as.
+// Requeue returns a run that has ended — stopped, abandoned, or carrying a
+// recorded outcome, whether a claim or a manual run left it — to the queue, for
+// an operator asking that its ticket be attempted again: the row returns to
+// planned when its plan still stands and queued otherwise, with its claim, wait
+// and outcome fields cleared and its ledger reservations dropped, and records
+// the attempt it was put back as.
 //
-// It refuses a run that is already dispatchable, parked on a decision, or still
-// running, so a retry is never anything but the operator's own action.
+// It refuses a run that is still to be dispatched, parked on a decision, or
+// still running, so a retry is never anything but the operator's own action.
 func (q *Queue) Requeue(ctx context.Context, runID string, at time.Time) (RequeueResult, error) {
 	return q.requeue(ctx, runID, at, func(row map[string]any, _ int) (string, []firestore.Update, error) {
 		state, err := requeueState(row)
@@ -1399,19 +1420,33 @@ func (q *Queue) requeue(ctx context.Context, runID string, at time.Time,
 	return result, nil
 }
 
+// hasEnded reports whether row carries an outcome or a stop reason — what a
+// finished run records — which is how a row left in a dispatchable state is
+// told from one that has not run yet. It reads the run's own result rather than
+// settled's record stamp, so a claim and a requeue agree on which rows ended.
+func hasEnded(row map[string]any) bool {
+	return str(row, outcomeField) != "" || str(row, stopReasonField) != ""
+}
+
 // requeueState is the state a requeue of row returns the run to, or the refusal
 // that reports why it will not: a settled plan (a recorded write set and the
 // plan stage's own stamp) sends the run to planned, the way a released
 // build-stage claim returns there, and every other run returns to queued.
+//
+// A queued or planned row still to be dispatched is refused; one that has ended
+// without a claim is requeued instead, so a manual run's result never strands
+// its row.
 func requeueState(row map[string]any) (string, error) {
 	state := str(row, stateField)
 	switch state {
 	case stateQueued, statePlanned:
-		return "", ErrRunDispatchable
+		if !hasEnded(row) {
+			return "", ErrRunDispatchable
+		}
 	case stateWaiting:
 		return "", ErrRunWaiting
 	case stateClaimed:
-		if str(row, outcomeField) == "" && str(row, stopReasonField) == "" {
+		if !hasEnded(row) {
 			return "", ErrRunInFlight
 		}
 	case stateStopped, stateAbandoned:
@@ -1432,7 +1467,7 @@ func planStamped(row map[string]any) bool {
 }
 
 // NeedsRequeue reports whether ticketID has a run that has ended — stopped,
-// abandoned, or a claim with a recorded outcome — so that only an operator's
+// abandoned, or carrying a recorded outcome — so that only an operator's
 // own Requeue takes the ticket further, never another delegation. A
 // ticket with no run row at all has not ended.
 func (q *Queue) NeedsRequeue(ctx context.Context, ticketID string) (bool, error) {

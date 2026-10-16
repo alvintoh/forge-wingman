@@ -320,9 +320,11 @@ type Reprioritizer interface {
 // whose dispatch never reached GitHub.
 //
 // TryClaim reports (true, "", nil) once runID is claimed and its reservation
-// booked; (false, "", nil) when another poll already claimed the row first —
-// not an admission matter, so nothing is deferred; and (false, <binding>, nil)
-// when Admit withholds it, naming the first condition that does.
+// booked; (false, "", nil) when another poll already claimed the row first, or
+// when the row was found to have ended without a claim and is settled to
+// claimed instead — neither is an admission matter, so nothing is deferred; and
+// (false, <binding>, nil) when Admit withholds it, naming the first condition
+// that does.
 type Claimer interface {
 	TryClaim(ctx context.Context, runID string, at time.Time, cfg BudgetConfig, facts Facts, res Reservation) (ok bool, binding string, err error)
 	Release(ctx context.Context, runID string, at time.Time) error
