@@ -380,6 +380,14 @@ type fakeElicitor struct {
 type elicitCall struct {
 	sessionID string
 	decision  runner.Decision
+	taken     string
+}
+
+func (e *fakeElicitor) ElicitProvisional(_ context.Context, sessionID string, d runner.Decision, taken string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.calls = append(e.calls, elicitCall{sessionID: sessionID, decision: d, taken: taken})
+	return e.err
 }
 
 func (e *fakeElicitor) Elicit(_ context.Context, sessionID string, d runner.Decision) error {
@@ -391,13 +399,16 @@ func (e *fakeElicitor) Elicit(_ context.Context, sessionID string, d runner.Deci
 
 // fakeDecisions is the store's decision surface as a poll uses it.
 type fakeDecisions struct {
-	waiting    []WaitingRun
-	waitingErr error
-	answerErr  error
-	postedErr  error
-	stopErr    error
-	sessions   map[string]string
-	sessionErr error
+	waiting              []WaitingRun
+	provisional          []ProvisionalRun
+	waitingErr           error
+	provisionalErr       error
+	provisionalPostedErr error
+	answerErr            error
+	postedErr            error
+	stopErr              error
+	sessions             map[string]string
+	sessionErr           error
 
 	answered []answerCall
 	posted   []postedCall
@@ -458,6 +469,19 @@ func (d *fakeDecisions) drop(runID string) {
 		}
 	}
 	d.waiting = kept
+}
+
+func (d *fakeDecisions) ProvisionalUnposted(context.Context) ([]ProvisionalRun, error) {
+	return d.provisional, d.provisionalErr
+}
+
+func (d *fakeDecisions) PostedProvisional(_ context.Context, runID, sessionID string, at time.Time) error {
+	if d.provisionalPostedErr != nil {
+		return d.provisionalPostedErr
+	}
+	d.posted = append(d.posted, postedCall{runID: runID, sessionID: sessionID, at: at})
+	d.provisional = nil
+	return nil
 }
 
 func (d *fakeDecisions) Session(_ context.Context, ticketID string) (string, error) {

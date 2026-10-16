@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"slices"
@@ -255,5 +256,20 @@ func TestTheFirstPaidPlansModelsAreTheDefaultModels(t *testing.T) {
 	m := providers.PlanModels(providers.PaidPlans()[0])
 	if m.Build != runner.DefaultModel() || !slices.Equal(m.Plan, []string{runner.DefaultPlanModel()}) || m.Review != runner.DefaultReviewModels()[0] {
 		t.Fatalf("plan models %+v differ from models.json's defaults", m)
+	}
+}
+
+func TestLoadConfigReadsTheDecisionMode(t *testing.T) {
+	for raw, want := range map[string]runner.DecisionMode{"": runner.DecisionGuided, "guided": runner.DecisionGuided, " autopilot ": runner.DecisionAutopilot} {
+		c, err := loadConfig(configEnv(map[string]string{"WINGMAN_DECISIONS": raw}))
+		if err != nil || c.decisionMode != want {
+			t.Errorf("WINGMAN_DECISIONS=%q: mode = %q, err = %v, want %q", raw, c.decisionMode, err, want)
+		}
+	}
+}
+
+func TestLoadConfigRefusesAnUnknownDecisionMode(t *testing.T) {
+	if _, err := loadConfig(configEnv(map[string]string{"WINGMAN_DECISIONS": "auto"})); !errors.Is(err, runner.ErrUnknownDecisionMode) {
+		t.Fatalf("err = %v, want ErrUnknownDecisionMode", err)
 	}
 }

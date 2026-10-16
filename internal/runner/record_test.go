@@ -610,6 +610,21 @@ func TestFinalizeCarriesTheAutonomyLevelTheRunWasClaimedAt(t *testing.T) {
 	}
 }
 
+func TestFinalizeCarriesTheDecisionModeTheRunWasClaimedWith(t *testing.T) {
+	store := seeded(t)
+	rec := store[testRunID]
+	rec.DecisionMode = DecisionAutopilot
+	store[testRunID] = rec
+	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: "",
+		RunResult: "failure", PRResult: "skipped"}
+	if _, err := Finalize(context.Background(), store, &fakeLedger{}, nil, in, finalizeNow); err != nil {
+		t.Fatal(err)
+	}
+	if got := store[testRunID].DecisionMode; got != "autopilot" {
+		t.Fatalf("decision mode = %q, want autopilot carried through finalize", got)
+	}
+}
+
 func TestFinalizeRecordsTheSampleAndTheAutoMergeRequest(t *testing.T) {
 	for _, tt := range []struct {
 		runID              string

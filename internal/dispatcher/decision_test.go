@@ -82,6 +82,20 @@ func TestPollResumesOnAMatchingReply(t *testing.T) {
 	}
 }
 
+func TestPollAnswersAWaitingRunWhenTheProvisionalReadFails(t *testing.T) {
+	dec := &fakeDecisions{
+		waiting:        []WaitingRun{waitingRun(pollAt, pollAt.Add(-time.Hour), "reuse", pollAt.Add(-time.Minute))},
+		provisionalErr: errors.New("query refused"),
+	}
+	_, err := Poll(context.Background(), decisionDeps(dec, &fakeElicitor{}, &fakeNotices{}), decisionConfig)
+	if err == nil {
+		t.Fatal("the failed provisional read was not reported")
+	}
+	if len(dec.answered) != 1 || dec.answered[0].answer != "Reuse the existing flag" {
+		t.Fatalf("answered = %+v, want the waiting run still answered", dec.answered)
+	}
+}
+
 // TestPollReasksAfterAnUnmatchedReply covers AC4: free text matching no option
 // gets the same options again, and nothing is guessed.
 func TestPollReasksAfterAnUnmatchedReply(t *testing.T) {
@@ -204,5 +218,75 @@ func TestPollMeasuresTheDeadlineFromALatePost(t *testing.T) {
 	}
 	if len(dec.stopped) != 0 {
 		t.Fatalf("stopped a run whose question was posted an hour ago: %+v", dec.stopped)
+	}
+}
+
+func TestPollPostsAProvisionalDecisionOnceNamingTheOptionTaken(t *testing.T) {
+	dec := &fakeDecisions{
+		provisional: []ProvisionalRun{{RunID: "FRG-71", Decision: decisionFixture, Taken: "Reuse the existing flag", Index: 1}},
+		sessions:    map[string]string{"FRG-71": "session-1"},
+	}
+	el := &fakeElicitor{}
+	if _, err := Poll(context.Background(), decisionDeps(dec, el, &fakeNotices{}), decisionConfig); err != nil {
+		t.Fatal(err)
+	}
+	if len(el.calls) != 1 || el.calls[0].taken != "Reuse the existing flag" || el.calls[0].sessionID != "session-1" {
+		t.Fatalf("elicit calls = %+v", el.calls)
+	}
+	if len(dec.posted) != 1 || dec.posted[0].runID != "FRG-71" {
+		t.Fatalf("posted = %+v", dec.posted)
+	}
+	if len(dec.answered) != 0 || len(dec.stopped) != 0 {
+		t.Fatalf("answered %+v, stopped %+v", dec.answered, dec.stopped)
+	}
+}
+
+func TestPollReportsAFailedSessionReadForAProvisionalDecision(t *testing.T) {
+	dec := &fakeDecisions{
+		provisional: []ProvisionalRun{{RunID: "FRG-71", Decision: decisionFixture, Taken: "Reuse the existing flag", Index: 1}},
+		sessionErr:  errors.New("session lookup refused"),
+	}
+	el := &fakeElicitor{}
+	if _, err := Poll(context.Background(), decisionDeps(dec, el, &fakeNotices{}), decisionConfig); err == nil {
+		t.Fatal("the failed session read was not reported")
+	}
+	if len(el.calls) != 0 || len(dec.posted) != 0 {
+		t.Fatalf("posted after a failed session read: elicit %+v, posted %+v", el.calls, dec.posted)
+	}
+}
+
+func TestPollLeavesAProvisionalDecisionUnpostedWhenTheElicitFails(t *testing.T) {
+	dec := &fakeDecisions{
+		provisional: []ProvisionalRun{{RunID: "FRG-71", Decision: decisionFixture, Taken: "Reuse the existing flag", Index: 1}},
+		sessions:    map[string]string{"FRG-71": "session-1"},
+	}
+	el := &fakeElicitor{err: errors.New("linear refused")}
+	if _, err := Poll(context.Background(), decisionDeps(dec, el, &fakeNotices{}), decisionConfig); err != nil {
+		t.Fatalf("a refused post is retried next poll, not an error: %v", err)
+	}
+	if len(dec.posted) != 0 {
+		t.Fatalf("stamped a decision whose post was refused: %+v", dec.posted)
+	}
+}
+
+func TestPollReportsAProvisionalDecisionItCouldNotStampPosted(t *testing.T) {
+	dec := &fakeDecisions{
+		provisional:          []ProvisionalRun{{RunID: "FRG-71", Decision: decisionFixture, Taken: "Reuse the existing flag", Index: 1}},
+		sessions:             map[string]string{"FRG-71": "session-1"},
+		provisionalPostedErr: errors.New("write refused"),
+	}
+	if _, err := Poll(context.Background(), decisionDeps(dec, &fakeElicitor{}, &fakeNotices{}), decisionConfig); err == nil {
+		t.Fatal("the failed stamp was not reported")
+	}
+}
+
+func TestPollLeavesAProvisionalDecisionUnpostedWithoutASession(t *testing.T) {
+	dec := &fakeDecisions{provisional: []ProvisionalRun{{RunID: "FRG-71", Decision: decisionFixture, Taken: "Reuse the existing flag", Index: 1}}}
+	el := &fakeElicitor{}
+	if _, err := Poll(context.Background(), decisionDeps(dec, el, &fakeNotices{}), decisionConfig); err != nil {
+		t.Fatal(err)
+	}
+	if len(el.calls) != 0 || len(dec.posted) != 0 {
+		t.Fatalf("posted with no session: elicit %+v, posted %+v", el.calls, dec.posted)
 	}
 }

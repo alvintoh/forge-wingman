@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cloud.google.com/go/firestore"
 	"context"
 	"errors"
 	"flag"
@@ -107,7 +108,8 @@ func planStage(ctx context.Context, logger *slog.Logger, e env, args []string) e
 //
 // A plan that asked the owner a decision takes the other branch: the run is
 // suspended onto that decision, holding no runner and no reservation, and the
-// dispatcher is woken to post the question in the run's agent session.
+// dispatcher is woken to post the question in the run's agent session. An
+// auto-pilot run takes the recommended option instead and returns to the queue.
 //
 // A plan stage that ended any other way wrote no artifact to record, so the run
 // is stopped here: no other job would release the reservation it holds.
@@ -175,7 +177,12 @@ func recordPlanStage(ctx context.Context, logger *slog.Logger, e env, args []str
 		if err := validRunURL(*runURL); err != nil {
 			return err
 		}
-		if err := queue.Suspend(ctx, *runID, *plan.Decision, *runURL, time.Now()); err != nil {
+		if takesRecommendation(ctx, logger, fsc, queue, *runID) {
+			err = queue.TakeRecommendation(ctx, *runID, *plan.Decision, *runURL, time.Now())
+		} else {
+			err = queue.Suspend(ctx, *runID, *plan.Decision, *runURL, time.Now())
+		}
+		if err != nil {
 			return err
 		}
 	default:
@@ -227,6 +234,22 @@ func stopPlanStage(ctx context.Context, logger *slog.Logger, queue *store.Queue,
 // shape run.yml passes, and what the waiting notice links to. An https URL that
 // is not an actions run is refused: it would be stored and carried into the
 // notice as a link that goes nowhere useful.
+// takesRecommendation reports whether the run's next decision is settled by
+// auto-pilot. An unreadable record or decision history falls back to asking the owner.
+func takesRecommendation(ctx context.Context, logger *slog.Logger, fsc *firestore.Client, queue *store.Queue, runID string) bool {
+	rec, err := store.NewRecords(fsc).GetRecord(ctx, runID)
+	if err != nil {
+		logger.Warn("decisionModeUnread", "run", runID, "err", err.Error())
+		return false
+	}
+	answered, err := queue.Decisions(ctx, runID)
+	if err != nil {
+		logger.Warn("decisionsUnread", "run", runID, "err", err.Error())
+		return false
+	}
+	return rec.DecisionMode.TakesRecommendation(len(answered))
+}
+
 func validRunURL(s string) error {
 	u, err := url.Parse(s)
 	if err != nil || u.Scheme != "https" || u.Host == "" || !strings.Contains(u.Path, "/actions/runs/") {

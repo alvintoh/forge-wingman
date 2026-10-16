@@ -48,6 +48,48 @@ type DecisionOption struct {
 	Cost  string `json:"cost" firestore:"cost"`
 }
 
+// DecisionMode is how a run's plan decisions are settled.
+type DecisionMode string
+
+const (
+	// DecisionGuided parks the run until the owner answers.
+	DecisionGuided DecisionMode = "guided"
+	// DecisionAutopilot takes the recommended option and lets the run continue.
+	DecisionAutopilot DecisionMode = "autopilot"
+)
+
+// DefaultMaxAutopilotDecisions is how many answered decisions a run may hold
+// before auto-pilot stops taking the recommendation and asks the owner.
+const DefaultMaxAutopilotDecisions = 3
+
+// TakesRecommendation reports whether a run in mode m, holding answered
+// decisions already, settles its next decision with the recommended option.
+func (m DecisionMode) TakesRecommendation(answered int) bool {
+	return m == DecisionAutopilot && answered < DefaultMaxAutopilotDecisions
+}
+
+// ErrUnknownDecisionMode is a decision mode that is neither guided nor autopilot.
+var ErrUnknownDecisionMode = errors.New("unknown decision mode")
+
+// ParseDecisionMode reads a mode setting, taking guided for an empty one.
+func ParseDecisionMode(raw string) (DecisionMode, error) {
+	switch m := DecisionMode(strings.ToLower(strings.TrimSpace(raw))); m {
+	case "", DecisionGuided:
+		return DecisionGuided, nil
+	case DecisionAutopilot:
+		return m, nil
+	}
+	return "", fmt.Errorf("%w %q: want %s or %s", ErrUnknownDecisionMode, raw, DecisionGuided, DecisionAutopilot)
+}
+
+// Provisional is a decision an auto-pilot run settled with the recommended option.
+type Provisional struct {
+	Question  string
+	Choice    string
+	Cost      string
+	Confirmed bool
+}
+
 // Answer is a decision the owner settled and the option they chose, carried to
 // the resumed plan's prompt.
 type Answer struct {

@@ -187,6 +187,24 @@ func TestElicitAsksASelectionActivity(t *testing.T) {
 	}
 }
 
+func TestElicitProvisionalNamesTheOptionTaken(t *testing.T) {
+	srv, got := linearServer(t, 200, `{"data":{"agentActivityCreate":{"success":true}}}`)
+	d := runner.Decision{Question: "Which flag?", Options: []runner.DecisionOption{
+		{Label: "Reuse the flag", Value: "reuse", Cost: "no new config"},
+		{Label: "Add a flag", Value: "new", Cost: "one more env var"},
+	}}
+	if err := (Linear{Endpoint: srv.URL, Tokens: heldToken("token-1")}).ElicitProvisional(context.Background(), "session-1", d, "Reuse the flag"); err != nil {
+		t.Fatal(err)
+	}
+	input := (*got)["variables"].(map[string]any)["input"].(map[string]any)
+	if body := input["content"].(map[string]any)["body"]; body != `Auto-pilot took "Reuse the flag" for: Which flag?` {
+		t.Errorf("body = %q", body)
+	}
+	if input["signal"] != "select" {
+		t.Errorf("signal = %v", input["signal"])
+	}
+}
+
 func TestElicitReportsNoSuccess(t *testing.T) {
 	srv, _ := linearServer(t, 200, `{"data":{"agentActivityCreate":{"success":false}}}`)
 	err := (Linear{Endpoint: srv.URL, Tokens: heldToken("token-1")}).Elicit(context.Background(), "session-1",

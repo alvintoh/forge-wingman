@@ -48,6 +48,17 @@ func (l Linear) Acknowledge(ctx context.Context, sessionID string) error {
 // the options in order, the recommended first, each carrying its cost. The
 // owner may still answer in free text, which the dispatcher matches leniently.
 func (l Linear) Elicit(ctx context.Context, sessionID string, d runner.Decision) error {
+	return l.elicit(ctx, sessionID, d, elicitationBody(d))
+}
+
+// ElicitProvisional posts a decision auto-pilot already settled as the same
+// selection activity, its body naming the option taken.
+func (l Linear) ElicitProvisional(ctx context.Context, sessionID string, d runner.Decision, taken string) error {
+	body := "Auto-pilot took \"" + taken + "\" for: " + elicitationBody(d)
+	return l.elicit(ctx, sessionID, d, body)
+}
+
+func (l Linear) elicit(ctx context.Context, sessionID string, d runner.Decision, body string) error {
 	var data struct {
 		AgentActivityCreate struct {
 			Success bool `json:"success"`
@@ -66,7 +77,7 @@ func (l Linear) Elicit(ctx context.Context, sessionID string, d runner.Decision)
 		"signalMetadata": map[string]any{"options": options},
 		"content": map[string]any{
 			"type": "elicitation",
-			"body": elicitationBody(d),
+			"body": body,
 		},
 	}
 	err := linear.DoRefreshing(ctx, l.Tokens, func(token string) error {
