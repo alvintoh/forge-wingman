@@ -13,6 +13,10 @@ import (
 type Autonomy int
 
 const (
+	// AutonomyRequeues is the lowest level at which the dispatcher requeues a
+	// run stopped on a known transient fault on its own. At level 0 the owner
+	// drives every retry, so nothing is requeued automatically.
+	AutonomyRequeues Autonomy = 1
 	// AutonomyAutoMerge is the lowest level at which an eligible PR may merge
 	// itself.
 	AutonomyAutoMerge Autonomy = 4
@@ -84,6 +88,10 @@ func (a Autonomy) Describe() string {
 // AutoMerges reports whether a lets an eligible PR merge itself.
 func (a Autonomy) AutoMerges() bool { return a.Valid() && a >= AutonomyAutoMerge }
 
+// Requeues reports whether a lets the dispatcher requeue a run that stopped on
+// a known transient fault without the owner.
+func (a Autonomy) Requeues() bool { return a.Valid() && a >= AutonomyRequeues }
+
 // Delegates is the runs a day a lets the product delegate to itself: 1, 3, 5, 5
 // and 10 at levels 1 to 5, and none at level 0, which delegates nothing.
 func (a Autonomy) Delegates() int {
@@ -144,8 +152,8 @@ func (a Autonomy) Advance(ev Evidence) []Condition {
 			allMeasured(ev.Window(SampledPRs), SampledPRs),
 			zeroReverts(ev.Window(SampledPRs), SampledPRs),
 		}
-	case AutonomyRolledBack:
-		// Level 3 is set outright, like every level below it.
+	case AutonomyRequeues, AutonomyRolledBack:
+		// Levels 1 and 3 are set outright, like every level below them.
 		return nil
 	}
 	return nil

@@ -186,16 +186,26 @@ One Go binary entrypoint (`cmd/dispatcher`). Per poll:
    holds — budget reservations, size, interference, the review WIP limit, platform
    caps, the circuit breaker — up to N in flight. A run that waits records the
    *binding* condition.
-6. **Claim** each admitted run with a Firestore transaction over the run row and
+6. **Requeue a run stopped on a transient fault** (FRG-132). A run's stop carries a
+   class when its recorded detail names one of a closed list of transient
+   signatures — a Go module proxy or checksum read, a network timeout, a lost runner.
+   An abandoned claim carries none: it is as likely cancelled by the owner as lost. At autonomy level 1 or
+   above the poll returns such a run to the queue for up to two more attempts, each
+   recorded with its class, ahead of the claim walk so the retry can be claimed by the
+   same poll. The requeue only returns the run to the queue: the claim that follows is
+   admitted like any other, so the ceilings, the review WIP limit and the breaker hold
+   it. A stop with no matching class is never requeued on its own, and a run that has
+   used its attempts stays stopped with a notice.
+7. **Claim** each admitted run with a Firestore transaction over the run row and
    `dispatch/ledger`: claim only if still `queued` and the reservation still fits,
    so no two polls dispatch the same run or overbook a window. "No document
    returned" means another poll won.
-7. **Dispatch** by `workflow_dispatch` against the target repository.
-8. **Notify** per FR-23 — link-only, and only for the five recurring classes
+8. **Dispatch** by `workflow_dispatch` against the target repository.
+9. **Notify** per FR-23 — link-only, and only for the five recurring classes
    (FR-11, FR-12, FR-18, NFR-1, FR-26's infrastructure stop). The same classes trip
    FR-27's circuit breaker, so no further run is admitted until a manual reset —
    except FR-26's infrastructure stop, which counts toward the provider halt instead.
-9. **Ask the owner, at the poll's end** (FR-33). A run whose plan raised a decision it
+10. **Ask the owner, at the poll's end** (FR-33). A run whose plan raised a decision it
    may not take alone parks in the `waiting` state — holding no runner and no
    reservation — while the poll posts that decision into the run's Linear agent
    session as one selection activity: at most four options, the recommended first,
@@ -207,13 +217,14 @@ One Go binary entrypoint (`cmd/dispatcher`). Per poll:
    records when it was posted, so the question is neither dropped nor repeated, and
    the dispatcher is its one decider (`adr/0013`) — the poll both posts and matches.
 
-10. **Delegate the queue's next ticket itself, at autonomy level 1 or above** (FRG-125).
+11. **Delegate the queue's next ticket itself, at autonomy level 1 or above** (FRG-125).
     The poll delegates the next eligible ticket to the app while today's claimed runs are
     below the level's daily bar (1, 3, 5, 5 and 10 runs a day at levels 1 to 5) and the
     review WIP limit has room. Eligible means an open ticket in the earliest milestone that
     still has open tickets, ordered by Linear priority: a `[BE]`, `[FE]` or `[SLICE]` title,
     a `repo:` label on the runner's allowlist and a `size:` label, no `.github/workflows/`
-    path in its body, no `wingman:hold` label, and no run row that has ended (that needs
+    path in its body, no `wingman:hold` label, and no run row that has ended (step 6
+    requeues a transient stop itself; every other ended run needs an operator's
     `runner requeue`). A ticket with an open blocker is delegated, since the dispatcher
     holds it anyway. It runs last in the poll, and the agent session a delegation opens
     wakes the poll that admits it. Level 0 delegates nothing.

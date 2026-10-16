@@ -357,6 +357,7 @@ type Queue interface {
 	StuckReader
 	ClaimedRuns
 	EndedRuns
+	TransientRequeuer
 	// SettledHistory reads the settled run history at or after since: the one
 	// read a poll's budget ceilings are summed from, whatever it walks (AC1).
 	SettledHistory(ctx context.Context, since time.Time) (SettledHistory, error)
@@ -394,8 +395,9 @@ type Result struct {
 	issues []Issue
 }
 
-// Poll admits every issue still delegated, then walks the queue in priority
-// order claiming every run Admit lets start, abandons the claims that outlived
+// Poll admits every issue still delegated, then returns the runs that stopped
+// on a known transient fault to the queue and walks it in priority order
+// claiming every run Admit lets start, abandons the claims that outlived
 // their window, measures the merges that landed since the last poll, raises a
 // notice for each run stuck past its limit, and posts the notices waiting,
 // whatever the rest of the poll did.
@@ -464,10 +466,16 @@ func poll(ctx context.Context, d Deps, c Config) (Result, error) {
 		}
 		links[issue.ID] = issue.URL
 	}
+	// A run that stopped on a known transient fault returns to the queue ahead
+	// of the claim walk, so the retry it earns is claimed by this same poll
+	// rather than waiting for the next one.
+	start = d.Now()
+	requeueErr := requeueStopped(ctx, d, level)
+	LogPhase(d.Logger, "requeue", start, d.Now())
 	start = d.Now()
 	claims, claimErr := admitClaims(ctx, d, c, level, relations, links, &res, history)
 	LogPhase(d.Logger, "claim", start, d.Now())
-	phaseErrs := []error{claimErr}
+	phaseErrs := []error{requeueErr, claimErr}
 	start = d.Now()
 	for _, claim := range claims {
 		if err := dispatch(ctx, d, claim); err != nil {

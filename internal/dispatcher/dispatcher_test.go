@@ -97,6 +97,14 @@ type fakeQueue struct {
 	requeues   map[string]bool
 	requeueErr error
 
+	// transientStops is what the transient listing reports and transientErr its
+	// failure; requeued records each automatic requeue, and requeueTransientErr
+	// fails one.
+	transientStops      []TransientStop
+	transientErr        error
+	requeued            []TransientStop
+	requeueTransientErr error
+
 	// reprioritized records each rank the poll refreshed, by run id.
 	reprioritized map[string]int
 	priorityErr   error
@@ -166,6 +174,26 @@ func (q *fakeQueue) NeedsRequeue(_ context.Context, ticketID string) (bool, erro
 		return false, q.requeueErr
 	}
 	return q.requeues[ticketID], nil
+}
+
+func (q *fakeQueue) TransientStops(context.Context) ([]TransientStop, error) {
+	return q.transientStops, q.transientErr
+}
+
+// RequeueTransient records the requeue and reports the run's requeue count, the
+// way the store reports how many automatic requeues the run has had.
+func (q *fakeQueue) RequeueTransient(_ context.Context, runID string, _ time.Time, class runner.TransientClass, _ int) (int, error) {
+	if q.requeueTransientErr != nil {
+		return 0, q.requeueTransientErr
+	}
+	q.requeued = append(q.requeued, TransientStop{RunID: runID, Class: class})
+	requeues := 0
+	for _, r := range q.requeued {
+		if r.RunID == runID {
+			requeues++
+		}
+	}
+	return requeues, nil
 }
 
 func (q *fakeQueue) UpdateQueuedPriority(_ context.Context, runID string, rank int) (bool, error) {
