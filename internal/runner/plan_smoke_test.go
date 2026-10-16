@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -22,7 +23,7 @@ func TestPlanSmokeReportsWhetherTheRestrictedAgentWasRefused(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			res, err := PlanSmoke(context.Background(), tt.agent, "p/m", t.TempDir())
+			res, err := PlanSmoke(context.Background(), tt.agent, "p/m", t.TempDir(), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -35,7 +36,7 @@ func TestPlanSmokeReportsWhetherTheRestrictedAgentWasRefused(t *testing.T) {
 
 func TestPlanSmokeRunsTheScriptedBinaryUnderThePlanProfileOnTheGivenModel(t *testing.T) {
 	bin, attempts := scriptedCLIAgent(t, "", "command-code/given")
-	res, err := PlanSmoke(context.Background(), scriptedAgent(t, bin, ProfilePlan, "command-code/ignored"), "command-code/given", t.TempDir())
+	res, err := PlanSmoke(context.Background(), scriptedAgent(t, bin, ProfilePlan, "command-code/ignored"), "command-code/given", t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,14 +47,40 @@ func TestPlanSmokeRunsTheScriptedBinaryUnderThePlanProfileOnTheGivenModel(t *tes
 }
 
 func TestPlanSmokeFailsWhenTheAgentRunFails(t *testing.T) {
-	_, err := PlanSmoke(context.Background(), &fakeAgent{err: errors.New("exit status 1")}, "p/m", t.TempDir())
+	_, err := PlanSmoke(context.Background(), &fakeAgent{err: errors.New("exit status 1")}, "p/m", t.TempDir(), nil)
 	if err == nil {
 		t.Fatal("a failed agent run was reported as a result")
 	}
 }
 
+func TestPlanSmokeRedactsSecretsFromAFailedRun(t *testing.T) {
+	stderr := "OVERSIZE " + strings.Repeat("chatty ", 200) + "auth failed for key sk-live-123\n"
+	agent := &fakeAgent{stderr: stderr, err: errors.New("exit status 1")}
+	_, err := PlanSmoke(context.Background(), agent, "p/m", t.TempDir(), []string{"sk-live-123"})
+	if err == nil {
+		t.Fatal("a failed agent run was reported as a result")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "sk-live-123") || !strings.Contains(msg, "auth failed for key [redacted]") ||
+		!strings.Contains(msg, "exit status 1") {
+		t.Fatalf("err = %q", msg)
+	}
+	if strings.Contains(msg, "OVERSIZE") {
+		t.Fatalf("the reported stderr tail is not cut to a fixed length: %q", msg)
+	}
+}
+
+func TestPlanSmokeReportsATimeout(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 0)
+	defer cancel()
+	_, err := PlanSmoke(ctx, &fakeAgent{err: errors.New("signal: killed")}, "p/m", t.TempDir(), nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want a deadline", err)
+	}
+}
+
 func TestPlanSmokeFailsWhenTheDirectoryCannotBeWritten(t *testing.T) {
-	if _, err := PlanSmoke(context.Background(), &fakeAgent{}, "p/m", filepath.Join(t.TempDir(), "absent")); err == nil {
+	if _, err := PlanSmoke(context.Background(), &fakeAgent{}, "p/m", filepath.Join(t.TempDir(), "absent"), nil); err == nil {
 		t.Fatal("PlanSmoke wrote a fixture into a missing directory")
 	}
 }
@@ -65,7 +92,7 @@ func TestPlanSmokeClearsAnEarlierRunsEffects(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	res, err := PlanSmoke(context.Background(), &fakeAgent{}, "p/m", dir)
+	res, err := PlanSmoke(context.Background(), &fakeAgent{}, "p/m", dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

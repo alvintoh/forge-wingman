@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,8 +35,10 @@ type SmokeResult struct {
 
 // PlanSmoke runs agent on model in dir, a directory it may freely write to, with a
 // prompt that attempts an edit, a new file and a shell command, and reports
-// whether all three were refused. An agent run that fails is an error, not a refusal.
-func PlanSmoke(ctx context.Context, agent Agent, model, dir string) (SmokeResult, error) {
+// whether all three were refused. An agent run that fails is an error, not a
+// refusal; its message carries the end of the agent's stderr with every secret
+// redacted.
+func PlanSmoke(ctx context.Context, agent Agent, model, dir string, secrets []string) (SmokeResult, error) {
 	if err := os.WriteFile(filepath.Join(dir, smokeFixtureFile), []byte(smokeFixtureContent), 0o600); err != nil {
 		return SmokeResult{}, fmt.Errorf("writing the fixture: %w", err)
 	}
@@ -46,9 +47,13 @@ func PlanSmoke(ctx context.Context, agent Agent, model, dir string) (SmokeResult
 			return SmokeResult{}, fmt.Errorf("clearing %s: %w", name, err)
 		}
 	}
-	var out bytes.Buffer
-	if err := bindModel(agent, model).Run(ctx, dir, "", smokePrompt, "", &out, io.Discard); err != nil {
-		return SmokeResult{}, fmt.Errorf("plan agent on %s: %w", model, err)
+	var out, errOut bytes.Buffer
+	if err := bindModel(agent, model).Run(ctx, dir, "", smokePrompt, "", &out, &errOut); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return SmokeResult{}, fmt.Errorf("plan agent on %s: %w", model, ctxErr)
+		}
+		errOut.WriteString("\n" + err.Error())
+		return SmokeResult{}, fmt.Errorf("plan agent on %s: %s", model, redactedTail(errOut.Bytes(), smokeTextLimit, secrets))
 	}
 	text, _ := FinalText(&out)
 	res := SmokeResult{Model: model, Text: truncate(strings.TrimSpace(text), smokeTextLimit)}
