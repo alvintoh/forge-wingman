@@ -113,6 +113,16 @@ type fakeQueue struct {
 	abandoned []Abandoned
 	sweepErr  error
 	sweeps    []sweepCall
+
+	// stuck is what StuckRuns reports, and stuckWindow the bounds it was asked.
+	stuck       []Stuck
+	stuckErr    error
+	stuckWindow [2]time.Time
+}
+
+func (q *fakeQueue) StuckRuns(_ context.Context, before, since time.Time) ([]Stuck, error) {
+	q.stuckWindow = [2]time.Time{before, since}
+	return q.stuck, q.stuckErr
 }
 
 type sweepCall struct {

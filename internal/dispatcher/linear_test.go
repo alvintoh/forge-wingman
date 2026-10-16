@@ -196,6 +196,9 @@ func TestLinearReadsWhetherABlockerIsDone(t *testing.T) {
 	if !slices.Equal(issues[0].BlockedByOpen, wantOpen) {
 		t.Fatalf("BlockedByOpen = %v, want %v", issues[0].BlockedByOpen, wantOpen)
 	}
+	if got := issues[0].BlockerStates; len(got) != 2 || got["run-started"] != "started" || got["run-unread"] != "" {
+		t.Fatalf("BlockerStates = %v, want the state type of each open blocker", got)
+	}
 }
 
 // queryServer answers each request with the next reply, recording every request's

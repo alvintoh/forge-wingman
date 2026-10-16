@@ -27,15 +27,22 @@ const (
 // Notice is one systemic-failure notice: what failed, and the link that
 // leads to it. ID names it in the store, so it is raised at most once.
 type Notice struct {
-	ID    string
-	Class string
-	Link  string
+	ID     string
+	Class  string
+	Detail string
+	Link   string
 }
 
-// Text is the notice as posted: its class and link, never anything the run or
-// its ticket wrote.
+// Text is the notice as posted: its class, detail and link, never anything the
+// run or its ticket wrote.
 func (n Notice) Text() string {
-	return strings.TrimSpace(n.Class + " " + n.Link)
+	var parts []string
+	for _, part := range []string{n.Class, n.Detail, n.Link} {
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 // Notices keeps the notices waiting to be posted.

@@ -98,6 +98,30 @@ func TestNoticeIsRaisedOnceAndClaimedByOnePoll(t *testing.T) {
 	}
 }
 
+func TestNoticeDetailRoundTripsThroughRaiseAndClaim(t *testing.T) {
+	id := fresh("ABC-34")
+	n, _ := noticesOver(t, id)
+	ctx := context.Background()
+	notice := dispatcher.Notice{ID: id, Class: "stuck:run-1", Detail: "stopped (agent-exit); requeue with: runner requeue -run-id run-1", Link: "https://linear.app/t/issue/ABC-34"}
+	if err := n.Raise(ctx, notice, noticeAt); err != nil {
+		t.Fatal(err)
+	}
+	got, err := n.Claim(ctx, noticeAt, noticeAt.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if i := slices.IndexFunc(got, func(c dispatcher.Notice) bool { return c.ID == id }); i < 0 || got[i] != notice {
+		t.Fatalf("claimed %+v, want %+v", got, notice)
+	}
+	again, err := n.Claim(ctx, noticeAt.Add(time.Hour), noticeAt.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if i := slices.IndexFunc(again, func(c dispatcher.Notice) bool { return c.ID == id }); i < 0 || again[i] != notice {
+		t.Fatalf("a stale claim returned %+v, want %+v", again, notice)
+	}
+}
+
 func TestAStaleClaimIsTakenAgain(t *testing.T) {
 	id := fresh("ABC-31")
 	n, _ := noticesOver(t, id)

@@ -22,6 +22,7 @@ const (
 
 	classField       = "class"
 	linkField        = "link"
+	detailField      = "detail"
 	noticeStateField = "notice_state"
 	raisedAtField    = "raised_at"
 	postedAtField    = "posted_at"
@@ -116,6 +117,7 @@ func noticeData(notice dispatcher.Notice, at time.Time) map[string]any {
 	return map[string]any{
 		classField:       notice.Class,
 		linkField:        notice.Link,
+		detailField:      notice.Detail,
 		noticeStateField: noticePending,
 		raisedAtField:    at,
 	}
@@ -147,7 +149,8 @@ func (n *Notices) Claim(ctx context.Context, at, staleBefore time.Time) ([]dispa
 			}
 			class, _ := data[classField].(string)
 			link, _ := data[linkField].(string)
-			claimed = append(claimed, dispatcher.Notice{ID: strings.TrimPrefix(snap.Ref.ID, noticePrefix), Class: class, Link: link})
+			detail, _ := data[detailField].(string)
+			claimed = append(claimed, dispatcher.Notice{ID: strings.TrimPrefix(snap.Ref.ID, noticePrefix), Class: class, Detail: detail, Link: link})
 		}
 		return nil
 	})
