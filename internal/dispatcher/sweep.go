@@ -29,6 +29,14 @@ type AbandonWindows struct {
 	Build time.Duration
 }
 
+// For is the window of a claim at stage.
+func (w AbandonWindows) For(stage string) time.Duration {
+	if stage == StagePlan {
+		return w.Plan
+	}
+	return w.Build
+}
+
 // Abandoned is a claim the sweep flipped: a run whose dispatch reached GitHub
 // and never reported back.
 type Abandoned struct {
@@ -43,7 +51,8 @@ type Abandoned struct {
 // Sweeper flips claims that outlived their stage's window to abandoned,
 // dropping their ledger reservations, and reports each one it flipped. A claim
 // whose run recorded an outcome is left alone, and a run already flipped is not
-// reported again.
+// reported again. It also drops, without flipping any row, every reservation
+// past its window whose run row has settled.
 type Sweeper interface {
 	SweepAbandoned(ctx context.Context, now time.Time, w AbandonWindows) ([]Abandoned, error)
 }

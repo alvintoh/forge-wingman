@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"cloud.google.com/go/firestore"
@@ -160,10 +161,20 @@ var candidateStates = []string{stateQueued, statePlanned}
 // times, and the build-stage claim must find the run's own key free.
 const planKeySuffix = "#plan"
 
+// attemptKeyMarker joins a run id and its claim's attempt in a ledger key.
+const attemptKeyMarker = "#a"
+
 // reservationKey is the ledger key of runID's claim at attempt: every claim
 // books under it, so one attempt's settle never reaches another's entry.
 func reservationKey(runID string, attempt int, stage string) string {
-	return stageKey(runID+"#a"+strconv.Itoa(attempt), stage)
+	return stageKey(runID+attemptKeyMarker+strconv.Itoa(attempt), stage)
+}
+
+// reservationRunID is the run a ledger key belongs to, whether it is attempt-keyed or legacy.
+func reservationRunID(key string) string {
+	runID, _ := strings.CutSuffix(key, planKeySuffix)
+	runID, _, _ = strings.Cut(runID, attemptKeyMarker)
+	return runID
 }
 
 // legacyReservationKey is the key a claim booked under before attempts were
