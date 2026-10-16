@@ -56,6 +56,18 @@ naming one stops before the build starts, and a build that edits one anyway stop
 before the push as `stopped/workflow-change`, naming the files; its commit is kept
 in the run's bundle artifact.
 
+A run that stops on a known transient infrastructure fault — a read the Go module
+proxy could not serve, a network timeout, or a runner lost mid-job — is requeued by
+the dispatcher itself, up to two attempts, at autonomy level 1 or above. The runner
+reads the class off the failing step's own log and records it on the run, and the
+sweep records the one fault that leaves no log, a lost runner; each automatic attempt
+is recorded with the class it was made for. The requeue only returns the run to the
+queue, so the budget ceilings, the review WIP limit and the circuit breaker hold it
+exactly as they hold a first attempt. Any other stop — an agent timeout, a failing
+gate, a plan the agent could not produce — is never requeued on its own, and neither
+is a run that has used its two attempts: it stays as it stopped, with a notice naming
+the run and the command that takes it further by hand.
+
 The dispatcher looks for new tickets as soon as one is delegated: Linear's webhook
 reaches `cmd/webhook`, which starts a poll at once; Cloud Run takes about 2 minutes to
 start the job's container, and the poll itself takes a few seconds. Cloud Scheduler also wakes

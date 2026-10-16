@@ -101,6 +101,16 @@ const (
 	stopDetailField   = "stop_detail"
 	buildOutcomeField = "build_outcome"
 
+	// transientField is Record's own transient-fault class, which the runner
+	// records from the failing step's log and a requeue clears: a run between
+	// attempts carries none.
+	transientField = "transient"
+	// transientRequeuesField is the automatic requeues a run has already had,
+	// each recording the class it was made for and when. It sits outside the
+	// record because Finalize rebuilds the record whole, and clearing it on a
+	// requeue would lose the count the limit is read from.
+	transientRequeuesField = "transient_requeues"
+
 	// sizeField and privateField are Record's own fields (runner.Record),
 	// read here to build a Candidate without a second query. modelLabelsField is
 	// read for the build model a ticket named, which selects its per-model cap.
@@ -196,6 +206,13 @@ func stageKey(base, stage string) string {
 func rowAttempt(row map[string]any) int {
 	n, _ := row[attemptField].(int64)
 	return int(n)
+}
+
+// transientRequeues is the automatic requeues a run has already had, in order,
+// each recording the class it was made for and when.
+func transientRequeues(row map[string]any) []any {
+	list, _ := row[transientRequeuesField].([]any)
+	return list
 }
 
 // Queue admits runs to the store's queue and claims them off it.
@@ -1266,6 +1283,67 @@ func (q *Queue) RequeueAfterConflict(ctx context.Context, runID string, at time.
 	})
 }
 
+// TransientStops lists every run that ended carrying a transient fault class,
+// which is what a poll requeues on. It reads the classes one at a time: they
+// are a closed list, so the queries are too, and a row carrying anything else
+// is never listed.
+func (q *Queue) TransientStops(ctx context.Context) ([]dispatcher.TransientStop, error) {
+	var out []dispatcher.TransientStop
+	for _, class := range runner.TransientClasses() {
+		iter := q.client.Collection(runsCollection).Where(transientField, "==", string(class)).Documents(ctx)
+		for {
+			snap, err := iter.Next()
+			if errors.Is(err, iterator.Done) {
+				break
+			}
+			if err != nil {
+				iter.Stop()
+				return nil, fmt.Errorf("listing the runs stopped on %s: %w", class, err)
+			}
+			row := snap.Data()
+			out = append(out, dispatcher.TransientStop{
+				RunID:    snap.Ref.ID,
+				Ticket:   str(row, ticketIDField),
+				Repo:     str(row, repoField),
+				Class:    class,
+				Attempts: len(transientRequeues(row)),
+			})
+		}
+		iter.Stop()
+	}
+	return out, nil
+}
+
+// RequeueTransient returns a run that stopped on a transient fault to the queue
+// as its next attempt, recording the class the requeue was made for and
+// reporting how many automatic requeues the run has now had. It refuses the
+// runs Requeue refuses — a run still in flight among them — and one that has
+// already used max automatic requeues, with ErrRetriesExhausted.
+//
+// It returns the run to the queue and nothing more: the claim that follows it
+// is admitted like any other, so a budget ceiling, the review WIP limit or a
+// tripped breaker holds a retry exactly as it holds a first attempt.
+func (q *Queue) RequeueTransient(ctx context.Context, runID string, at time.Time, class runner.TransientClass, max int) (int, error) {
+	var attempt int
+	_, err := q.requeue(ctx, runID, at, func(row map[string]any, _ int) (string, []firestore.Update, error) {
+		state, err := requeueState(row)
+		if err != nil {
+			return "", nil, err
+		}
+		history := transientRequeues(row)
+		if len(history) >= max {
+			return "", nil, ErrRetriesExhausted
+		}
+		attempt = len(history) + 1
+		next := append(slices.Clone(history), map[string]any{"class": string(class), "at": at})
+		return state, []firestore.Update{{Path: transientRequeuesField, Value: next}}, nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("requeueing run %s after a transient fault: %w", runID, err)
+	}
+	return attempt, nil
+}
+
 // requeue is the transaction Requeue and RequeueAfterConflict share: decide
 // names the state the run returns to, given the row and the attempt it would be
 // put back as, with any fields to write beside the common ones, or the refusal.
@@ -1301,6 +1379,7 @@ func (q *Queue) requeue(ctx context.Context, runID string, at time.Time,
 			{Path: buildOutcomeField, Value: firestore.Delete},
 			{Path: stopReasonField, Value: firestore.Delete},
 			{Path: stopDetailField, Value: firestore.Delete},
+			{Path: transientField, Value: firestore.Delete},
 			{Path: retriedAtField, Value: at},
 			{Path: abandonedReasonField, Value: firestore.Delete},
 			{Path: abandonedAtField, Value: firestore.Delete},

@@ -200,7 +200,11 @@ type Record struct {
 	Outcome                   Outcome          `firestore:"outcome"`
 	StopReason                StopReason       `firestore:"stop_reason"`
 	StopDetail                string           `firestore:"stop_detail"`
-	FailedGate                string           `firestore:"failed_gate"`
+	// Transient is the class of the transient infrastructure fault the run
+	// stopped on, empty when it stopped on none — which is what the dispatcher
+	// requeues a stopped run on, and what keeps every other stop waiting.
+	Transient  TransientClass `firestore:"transient"`
+	FailedGate string         `firestore:"failed_gate"`
 	// PriorSettledProviderCostMicros and PriorSettledRunnerMinutes are what the
 	// run's earlier attempts settled, already counted in the settled totals above.
 	PriorSettledProviderCostMicros money.Micros `firestore:"prior_settled_provider_cost_micros"`
@@ -487,6 +491,13 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, reader Prov
 				rec.Outcome, rec.StopReason = OutcomeInfraFailure, reason
 			}
 		}
+	}
+	// The failing step's own words name a known transient fault when the run
+	// stopped on one, which is what the dispatcher requeues on. Only a stopped
+	// run is classified: a run that reached its PR carries the fault that did
+	// not stop it, and holding it against the run would requeue a delivered PR.
+	if !rec.Succeeded() {
+		rec.Transient = ClassifyTransient(rec.StopDetail + "\n" + rec.LoopDetail)
 	}
 	rec.JobResults["run"] = in.RunResult
 	rec.JobResults["pr"] = in.PRResult
