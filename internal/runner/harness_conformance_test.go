@@ -91,7 +91,7 @@ func runHarnessConformance(t *testing.T, hc harnessCase) {
 
 	t.Run("a read-only profile refuses an edit, a new file and shell", func(t *testing.T) {
 		h, runs, _ := hc.New(t, "readonly")
-		res, err := PlanSmoke(context.Background(), h.Agent(ProfilePlan, hc.Model), hc.Model, t.TempDir())
+		res, err := PlanSmoke(context.Background(), h.Agent(ProfilePlan, hc.Model), hc.Model, t.TempDir(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}

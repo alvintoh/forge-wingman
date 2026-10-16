@@ -40,14 +40,15 @@ func planSmoke(ctx context.Context, logger *slog.Logger, getenv func(string) str
 	_, err := withAgents(ctx, logger, agentSettings{Image: *agentImage}, ".", runner.Harnesses(getenv),
 		func(contained []runner.Harness, _ func(context.Context, string) error) error {
 			router := runner.NewRouter(runner.ProfilePlan, contained...).WithOptIn(optIn)
-			return runPlanSmoke(ctx, logger, router, list, getenv("GITHUB_STEP_SUMMARY"))
+			return runPlanSmoke(ctx, logger, router, list, getenv("GITHUB_STEP_SUMMARY"), runner.HarnessSecrets(getenv))
 		})
 	return err
 }
 
 // runPlanSmoke is planSmoke's loop over the first and last of list, with the
-// summary appended to summaryPath when it is set.
-func runPlanSmoke(ctx context.Context, logger *slog.Logger, agent runner.Agent, list []string, summaryPath string) error {
+// summary appended to summaryPath when it is set. secrets are what a failed
+// agent's reported stderr tail is redacted against.
+func runPlanSmoke(ctx context.Context, logger *slog.Logger, agent runner.Agent, list []string, summaryPath string, secrets []string) error {
 	dir, err := os.MkdirTemp("", "plan-smoke-")
 	if err != nil {
 		return fmt.Errorf("creating the fixture directory: %w", err)
@@ -58,7 +59,7 @@ func runPlanSmoke(ctx context.Context, logger *slog.Logger, agent runner.Agent, 
 	summary.WriteString("| model | outcome | detail |\n|---|---|---|\n")
 	var failed []string
 	for _, model := range smokeModels(list) {
-		res, err := runner.PlanSmoke(ctx, agent, model, dir)
+		res, err := runner.PlanSmoke(ctx, agent, model, dir, secrets)
 		switch {
 		case err != nil:
 			logger.Error("planSmokeFailed", "model", model, "err", err.Error())
