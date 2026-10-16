@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -211,12 +212,12 @@ func TestAdmitReportsTheEarlierOfTwoConditionsThatWithhold(t *testing.T) {
 	}
 }
 
-// TestAdmitSharesARepositoryBetweenKnownDisjointWriteSets is AC4, AC5 and AC7:
-// two runs in one repository whose plans name different files are admitted
-// together, while either side's unknown write set keeps the interim
-// one-run-per-repository rule. The plan stage's agent writes nothing, so a
+// TestAdmitSharesARepositoryBetweenKnownWriteSets checks that two runs in one
+// repository whose plans are both recorded are admitted together whether or not
+// their files intersect, while either side's unknown write set keeps the
+// interim one-run-per-repository rule. The plan stage's agent writes nothing, so a
 // plan-stage run collides with no candidate on either side of the test.
-func TestAdmitSharesARepositoryBetweenKnownDisjointWriteSets(t *testing.T) {
+func TestAdmitSharesARepositoryBetweenKnownWriteSets(t *testing.T) {
 	planned := func(files ...string) Subject {
 		return Subject{Ticket: "run-9", Repo: "octo/scratch", Size: "M", Stage: StageBuild, Files: files}
 	}
@@ -230,10 +231,10 @@ func TestAdmitSharesARepositoryBetweenKnownDisjointWriteSets(t *testing.T) {
 			[]InFlight{{Ticket: "run-1", Repo: "octo/scratch", Size: "M", Stage: StageBuild, Files: []string{"c.go"}}},
 			true,
 		},
-		"an intersecting write set holds the later run": {
+		"intersecting write sets share the repository": {
 			planned("a.go", "b.go"),
 			[]InFlight{{Ticket: "run-1", Repo: "octo/scratch", Size: "M", Stage: StageBuild, Files: []string{"b.go", "z.go"}}},
-			false,
+			true,
 		},
 		"a candidate with no plan holds the interim rule": {
 			Subject{Ticket: "run-9", Repo: "octo/scratch", Size: "M", Stage: StageBuild},
@@ -276,6 +277,39 @@ func TestAdmitSharesARepositoryBetweenKnownDisjointWriteSets(t *testing.T) {
 			}
 			if !ok && binding != ConditionRepoBusy {
 				t.Fatalf("binding = %q, want %s", binding, ConditionRepoBusy)
+			}
+		})
+	}
+}
+
+func TestOverlappingRunsNamesTheRunsWhoseWriteSetsIntersect(t *testing.T) {
+	candidate := Subject{Ticket: "run-9", Repo: "octo/scratch", Size: "M", Stage: StageBuild, Files: []string{"a.go", "b.go"}}
+	for name, tt := range map[string]struct {
+		inFlight []InFlight
+		want     []string
+	}{
+		"an intersecting run is named": {
+			[]InFlight{
+				{Ticket: "run-1", Repo: "octo/scratch", Stage: StageBuild, Files: []string{"b.go", "z.go"}},
+				{Ticket: "run-2", Repo: "octo/scratch", Stage: StageBuild, Files: []string{"c.go"}},
+			},
+			[]string{"run-1"},
+		},
+		"disjoint sets name nothing": {
+			[]InFlight{{Ticket: "run-1", Repo: "octo/scratch", Stage: StageBuild, Files: []string{"c.go"}}},
+			nil,
+		},
+		"a run in another repository is not named": {
+			[]InFlight{{Ticket: "run-1", Repo: "octo/other", Stage: StageBuild, Files: []string{"a.go"}}},
+			nil,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			in := admittable()
+			in.Candidate = candidate
+			in.InFlight = tt.inFlight
+			if got := OverlappingRuns(in); !slices.Equal(got, tt.want) {
+				t.Fatalf("OverlappingRuns = %v, want %v", got, tt.want)
 			}
 		})
 	}

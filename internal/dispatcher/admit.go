@@ -181,9 +181,9 @@ type AdmitInput struct {
 // a blocking relation to it in either direction.
 //
 // The one-run-per-repository condition holds a candidate back only where an
-// in-flight run in its repository writes what the candidate may also write:
-// runs with known, disjoint write sets share the repository, and a run whose
-// write set is unknown holds it as the interim rule always did.
+// in-flight run in its repository has an unknown write set, or the candidate
+// does: runs whose write sets are both known share the repository whether or
+// not the sets intersect, and the runner requeues a run whose merge conflicts.
 //
 // When the open-PR count could not be read, a candidate is admitted only if
 // nothing is in flight.
@@ -246,15 +246,28 @@ func countSize(runs []InFlight, size string) int {
 // nothing: its agent holds edit and shell denied. An unknown write set — no
 // plan recorded, which is every run before two-stage dispatch — collides with
 // any candidate, which is the interim one-run-per-repository rule; two known
-// sets collide where they intersect.
+// sets never collide.
 func writeSetsCollide(f InFlight, c Subject) bool {
 	if f.Stage == StagePlan || c.Stage == StagePlan {
 		return false
 	}
-	if len(f.Files) == 0 || len(c.Files) == 0 {
-		return true
+	return len(f.Files) == 0 || len(c.Files) == 0
+}
+
+// OverlappingRuns names the tickets of the in-flight runs in the candidate's
+// repository whose known write set shares a path with the candidate's. It does
+// no IO.
+func OverlappingRuns(in AdmitInput) []string {
+	var tickets []string
+	for _, f := range in.InFlight {
+		if f.Repo != in.Candidate.Repo {
+			continue
+		}
+		if slices.ContainsFunc(f.Files, func(name string) bool { return slices.Contains(in.Candidate.Files, name) }) {
+			tickets = append(tickets, f.Ticket)
+		}
 	}
-	return slices.ContainsFunc(f.Files, func(name string) bool { return slices.Contains(c.Files, name) })
+	return tickets
 }
 
 // blocked reports a blocker of the candidate: a blocked-by issue Linear still
