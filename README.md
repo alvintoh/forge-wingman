@@ -59,9 +59,9 @@ in the run's bundle artifact.
 A run that stops on a known transient infrastructure fault — a read the Go module
 proxy could not serve, a network timeout, or a runner lost mid-job — is requeued by
 the dispatcher itself, up to two attempts, at autonomy level 1 or above. The runner
-reads the class off the failing step's own log and records it on the run, and the
-sweep records the one fault that leaves no log, a lost runner; each automatic attempt
-is recorded with the class it was made for. The requeue only returns the run to the
+records the class when the stop's recorded detail names one of those faults; each
+automatic attempt is recorded with the class it was made for. A claim the sweep
+abandons is never classed: it is as likely cancelled by the owner as lost. The requeue only returns the run to the
 queue, so the budget ceilings, the review WIP limit and the circuit breaker hold it
 exactly as they hold a first attempt. Any other stop — an agent timeout, a failing
 gate, a plan the agent could not produce — is never requeued on its own, and neither

@@ -12,7 +12,6 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
-	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
 // abandonedNoOutcome is the reason a claim is abandoned: its run reported no
@@ -124,10 +123,6 @@ func (q *Queue) abandon(ctx context.Context, runID string, now time.Time, w disp
 			{Path: updatedAtField, Value: now},
 			{Path: abandonedReasonField, Value: abandonedNoOutcome},
 			{Path: abandonedAtField, Value: now},
-			// A claim that reported nothing is a lost runner: the fault left no
-			// log for a runner job to read, so the class the dispatcher requeues
-			// on is recorded here, where the fault is detected.
-			{Path: transientField, Value: string(runner.TransientLostRunner)},
 		}); err != nil {
 			return err
 		}

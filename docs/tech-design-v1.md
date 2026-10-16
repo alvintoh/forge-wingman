@@ -187,10 +187,9 @@ One Go binary entrypoint (`cmd/dispatcher`). Per poll:
    caps, the circuit breaker — up to N in flight. A run that waits records the
    *binding* condition.
 6. **Requeue a run stopped on a transient fault** (FRG-132). A run's stop carries a
-   class when the failing step's own log names one of a closed list of transient
-   signatures — a Go module proxy or checksum read, a network timeout, a lost runner —
-   or when the claim itself was abandoned, which is that lost runner: the fault left no
-   log, so the sweep records its class where it detects it. At autonomy level 1 or
+   class when its recorded detail names one of a closed list of transient
+   signatures — a Go module proxy or checksum read, a network timeout, a lost runner.
+   An abandoned claim carries none: it is as likely cancelled by the owner as lost. At autonomy level 1 or
    above the poll returns such a run to the queue for up to two more attempts, each
    recorded with its class, ahead of the claim walk so the retry can be claimed by the
    same poll. The requeue only returns the run to the queue: the claim that follows is

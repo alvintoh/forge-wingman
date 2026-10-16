@@ -150,42 +150,30 @@ func TestTransientStopsListsOnlyTheRunsCarryingAClass(t *testing.T) {
 	}
 }
 
-// TestALostRunnerIsRequeuedAfterTheSweepClassesIt is the lost-runner path end
-// to end, which has no step log to scan: the sweep records the class a claim
-// that reported nothing is detected as, and the requeue accepts the abandoned
-// row it left.
-func TestALostRunnerIsRequeuedAfterTheSweepClassesIt(t *testing.T) {
+// TestAnAbandonedClaimIsNotClassedTransient holds an abandoned claim out of the
+// automatic requeue: a claim that reported nothing is as likely cancelled by
+// the owner as lost, so only a stop whose log names a fault carries a class.
+func TestAnAbandonedClaimIsNotClassedTransient(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
 	id := fresh("transient-swept")
 	resetLedger(t, client, 3)
 	claimAt(t, q, client, id, dispatcher.StageBuild)
-	abandonedAt := sweepClaimedAt.Add(3 * time.Hour)
-	if _, err := q.SweepAbandoned(ctx, abandonedAt, sweepWindows); err != nil {
+	if _, err := q.SweepAbandoned(ctx, sweepClaimedAt.Add(3*time.Hour), sweepWindows); err != nil {
 		t.Fatal(err)
 	}
 	row := readRow(t, client, id)
-	if row[stateField] != stateAbandoned || row[transientField] != string(runner.TransientLostRunner) {
-		t.Fatalf("abandoned row = state %v, transient %v; want %s classed %s",
-			row[stateField], row[transientField], stateAbandoned, runner.TransientLostRunner)
+	if v := row[transientField]; row[stateField] != stateAbandoned || (v != nil && v != "") {
+		t.Fatalf("abandoned row = state %v, transient %v; want %s with no class", row[stateField], v, stateAbandoned)
 	}
-
 	stops, err := q.TransientStops(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	byRun := map[string]dispatcher.TransientStop{}
 	for _, s := range stops {
-		byRun[s.RunID] = s
-	}
-	if s, ok := byRun[id]; !ok || s.Class != runner.TransientLostRunner {
-		t.Fatalf("stops = %+v, want the abandoned run listed for %s", stops, runner.TransientLostRunner)
-	}
-	if _, err := q.RequeueTransient(ctx, id, abandonedAt.Add(time.Minute), runner.TransientLostRunner, 2); err != nil {
-		t.Fatal(err)
-	}
-	if st := readRow(t, client, id)[stateField]; st != stateQueued {
-		t.Fatalf("state = %v, want the lost run back in %s", st, stateQueued)
+		if s.RunID == id {
+			t.Fatalf("stops = %+v, want the abandoned run left out", stops)
+		}
 	}
 }
 
