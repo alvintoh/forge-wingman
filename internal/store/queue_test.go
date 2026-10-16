@@ -2092,10 +2092,14 @@ func TestPlannedListsTheRunsAWriteSetIsKnownFor(t *testing.T) {
 	}
 }
 
-func TestTryClaimAdmitsTwoRunsInOneRepositoryWithDisjointWriteSets(t *testing.T) {
+// claimBoth enqueues two runs in one repository, records second's plan, then
+// claims first's build writing firstFiles and second's writing secondFiles, and
+// returns what second's claim logged.
+func claimBoth(t *testing.T, prefix string, firstFiles, secondFiles []string) (first, second dispatcher.Queued, logged string) {
+	t.Helper()
 	q, client := queue(t)
 	ctx := context.Background()
-	first, second := queuedRun(fresh("queue-disjoint-a"), 1), queuedRun(fresh("queue-disjoint-b"), 2)
+	first, second = queuedRun(fresh(prefix+"-a"), 1), queuedRun(fresh(prefix+"-b"), 2)
 	forget(t, client, first.RunID, second.RunID)
 	resetLedger(t, client, 2)
 	for _, run := range []dispatcher.Queued{first, second} {
@@ -2103,44 +2107,44 @@ func TestTryClaimAdmitsTwoRunsInOneRepositoryWithDisjointWriteSets(t *testing.T)
 			t.Fatal(err)
 		}
 	}
-	// The plan stage records each run's write set on its row before its build
-	// is claimed, the way record-plan-stage does.
-	if err := NewRecords(client).WritePlan(ctx, second.RunID, runner.PlanRecord{Files: []string{"b.go"}}); err != nil {
+	// The plan stage records the write set on the row before its build is
+	// claimed, the way record-plan-stage does.
+	if err := NewRecords(client).WritePlan(ctx, second.RunID, runner.PlanRecord{Files: secondFiles}); err != nil {
 		t.Fatal(err)
 	}
 	if ok, _, err := q.TryClaim(ctx, first.RunID, queueAt, generousBudget, openFacts,
-		dispatcher.Reservation{ProviderCost: money.Dollar, Stage: dispatcher.StageBuild, Files: []string{"a.go"}}); err != nil || !ok {
+		dispatcher.Reservation{ProviderCost: money.Dollar, Stage: dispatcher.StageBuild, Files: firstFiles}); err != nil || !ok {
 		t.Fatalf("first claim: ok %v, err %v", ok, err)
 	}
-	ok, binding, err := q.TryClaim(ctx, second.RunID, queueAt, generousBudget, openFacts,
-		dispatcher.Reservation{ProviderCost: money.Dollar, Stage: dispatcher.StageBuild, Files: []string{"b.go"}})
+	var buf bytes.Buffer
+	ok, binding, err := q.WithLogger(slog.New(slog.NewJSONHandler(&buf, nil))).TryClaim(ctx, second.RunID, queueAt, generousBudget, openFacts,
+		dispatcher.Reservation{ProviderCost: money.Dollar, Stage: dispatcher.StageBuild, Files: secondFiles})
 	if err != nil || !ok {
-		t.Fatalf("second claim: ok %v, binding %q, err %v, want the disjoint write sets admitted together", ok, binding, err)
+		t.Fatalf("second claim: ok %v, binding %q, err %v, want both runs admitted together", ok, binding, err)
+	}
+	return first, second, buf.String()
+}
+
+func TestTryClaimAdmitsTwoRunsInOneRepositoryWithDisjointWriteSets(t *testing.T) {
+	_, _, logged := claimBoth(t, "queue-disjoint", []string{"a.go"}, []string{"b.go"})
+	if strings.Contains(logged, "admittedOverlapping") {
+		t.Fatalf("log = %q, want no overlap logged for disjoint write sets", logged)
 	}
 }
 
-func TestTryClaimHoldsTheLaterOfTwoRunsWhoseWriteSetsOverlap(t *testing.T) {
-	q, client := queue(t)
-	ctx := context.Background()
-	first, second := queuedRun(fresh("queue-overlap-a"), 1), queuedRun(fresh("queue-overlap-b"), 2)
-	forget(t, client, first.RunID, second.RunID)
-	resetLedger(t, client, 2)
-	for _, run := range []dispatcher.Queued{first, second} {
-		if err := q.Enqueue(ctx, run); err != nil {
-			t.Fatal(err)
-		}
+func TestTryClaimAdmitsAndLogsTwoRunsWhoseWriteSetsOverlap(t *testing.T) {
+	first, second, logged := claimBoth(t, "queue-overlap", []string{"a.go"}, []string{"a.go", "b.go"})
+	var line struct {
+		Level    string   `json:"level"`
+		Msg      string   `json:"msg"`
+		Run      string   `json:"run"`
+		Overlaps []string `json:"overlaps"`
 	}
-	if err := NewRecords(client).WritePlan(ctx, second.RunID, runner.PlanRecord{Files: []string{"a.go"}}); err != nil {
-		t.Fatal(err)
+	if err := json.Unmarshal([]byte(logged), &line); err != nil {
+		t.Fatalf("log = %q: %v", logged, err)
 	}
-	if ok, _, err := q.TryClaim(ctx, first.RunID, queueAt, generousBudget, openFacts,
-		dispatcher.Reservation{ProviderCost: money.Dollar, Stage: dispatcher.StageBuild, Files: []string{"a.go"}}); err != nil || !ok {
-		t.Fatalf("first claim: ok %v, err %v", ok, err)
-	}
-	ok, binding, err := q.TryClaim(ctx, second.RunID, queueAt, generousBudget, openFacts,
-		dispatcher.Reservation{ProviderCost: money.Dollar, Stage: dispatcher.StageBuild, Files: []string{"a.go"}})
-	if err != nil || ok || binding != dispatcher.ConditionRepoBusy {
-		t.Fatalf("second claim: ok %v, binding %q, err %v, want it held on repo-busy", ok, binding, err)
+	if line.Level != "INFO" || line.Msg != "admittedOverlapping" || line.Run != second.RunID || !slices.Equal(line.Overlaps, []string{first.RunID}) {
+		t.Fatalf("logged %+v, want INFO admittedOverlapping run %s overlaps [%s]", line, second.RunID, first.RunID)
 	}
 }
 
