@@ -215,6 +215,8 @@ type Record struct {
 	AutoMerge bool `firestore:"auto_merge"`
 	// Autonomy is the owner's autonomy level when the run was claimed, 0 for a run claimed before it was recorded.
 	Autonomy int `firestore:"autonomy"`
+	// DecisionMode is how the run's plan decisions were settled when it was claimed, empty for a run claimed before it was recorded.
+	DecisionMode DecisionMode `firestore:"decision_mode"`
 	// CommitSubject is the subject the build committed with, and the PR's title.
 	CommitSubject string `firestore:"commit_subject"`
 	// CommitBody is the commit message after its subject.
@@ -455,6 +457,7 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, reader Prov
 	rec.PriorSettledProviderCostMicros, rec.PriorSettledRunnerMinutes = existing.PriorSettledProviderCostMicros, existing.PriorSettledRunnerMinutes
 	rec.MovedFrom, rec.PlanModels = existing.MovedFrom, existing.PlanModels
 	rec.Autonomy = existing.Autonomy
+	rec.DecisionMode = existing.DecisionMode
 	identityErr := in.Identity.CheckAccount()
 	sum, err := ParseSummary(in.Summary, in.AttemptID, t, now)
 	switch {

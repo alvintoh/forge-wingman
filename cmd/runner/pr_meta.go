@@ -84,6 +84,11 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		logger.Warn("plannedRunsUnread", "run", *runID, "err", err.Error())
 		planned, unreadPlanned = nil, true
 	}
+	provisional, err := store.NewQueue(fsc).ProvisionalDecisions(ctx, *runID)
+	unreadProvisional := err != nil
+	if unreadProvisional {
+		logger.Warn("provisionalDecisionsUnread", "run", *runID, "err", err.Error())
+	}
 	sum := buildSummary(logger, *summary, buildAttempt(logger, *attemptID, e), rec.Ticket(), time.Now())
 	changed, err := runner.Bundle{Path: *bundle, Repo: workRepo, Branch: *branch, Base: mainRef,
 		RunID: e.runID}.ChangedFiles(ctx)
@@ -91,12 +96,14 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		logger.Warn("changedFilesUnread", "run", *runID, "err", err.Error())
 	}
 	check := prCheck{
-		Planned:   planRecorded(plan),
-		Changed:   changed,
-		Unread:    err != nil || unreadPlanned,
-		OutOfPlan: outOfPlan(plan, changed),
-		Overlap:   planOverlap(rec.Ticket().Size, *repository, changed, planned),
-		FrontEnd:  frontEnd(logger, rec.Ticket().FrontEnd, *repository, *frontEndPaths, changed),
+		Planned:           planRecorded(plan),
+		Changed:           changed,
+		Unread:            err != nil || unreadPlanned,
+		OutOfPlan:         outOfPlan(plan, changed),
+		Overlap:           planOverlap(rec.Ticket().Size, *repository, changed, planned),
+		FrontEnd:          frontEnd(logger, rec.Ticket().FrontEnd, *repository, *frontEndPaths, changed),
+		Provisional:       provisional,
+		ProvisionalUnread: unreadProvisional,
 	}
 	// A workflow file in the write set is refused from the write set the
 	// branch carries — the run's own App cannot push one — and falls back to
@@ -147,6 +154,16 @@ type prCheck struct {
 	// Unread is set when the branch's changes could not be read, which leaves
 	// the write set unknown rather than empty.
 	Unread bool
+	// Provisional are the decisions auto-pilot settled on the run, confirmed or not.
+	Provisional []runner.Provisional
+	// ProvisionalUnread is set when they could not be read, which leaves them unknown rather than none.
+	ProvisionalUnread bool
+}
+
+// unconfirmed reports whether auto-pilot took an option the owner has not confirmed,
+// or the decisions could not be read.
+func (c prCheck) unconfirmed() bool {
+	return c.ProvisionalUnread || slices.ContainsFunc(c.Provisional, func(p runner.Provisional) bool { return !p.Confirmed })
 }
 
 // clear reports whether nothing about the run's write set holds the PR back.
@@ -253,10 +270,11 @@ func draftPR(sum runner.Summary, check prCheck) bool {
 // ownerAttention reports whether the run's PR must wait for the owner rather
 // than merge itself (FR-5, FR-17): a draft, sized L, in the review sample,
 // touching a workflow, failing a check gate, changing front-end code, or having
-// no recorded plan, which hold the PR without making it a draft.
+// no recorded plan, or holding a provisional decision the owner has not
+// confirmed, which hold the PR without making it a draft.
 func ownerAttention(runID string, t runner.Ticket, sum runner.Summary, failedGate string, check prCheck) bool {
 	return draftPR(sum, check) || (t.Size != "S" && t.Size != "M") || runner.Sampled(runID) ||
-		sum.StopReason == runner.StopWorkflowChange || failedGate != "" || len(check.FrontEnd) > 0 || !check.Planned
+		sum.StopReason == runner.StopWorkflowChange || failedGate != "" || len(check.FrontEnd) > 0 || !check.Planned || check.unconfirmed()
 }
 
 // autoMerge reports whether the run's PR is marked eligible for auto-merge,
@@ -302,7 +320,7 @@ func buildSummary(logger *slog.Logger, raw, attemptID string, t runner.Ticket, n
 // report is part of the body whether or not they kept it a draft.
 func renderPR(tmpl string, rec runner.Record, sum runner.Summary, failedGate, runURL, loopDetail string, check prCheck) (title, body string, err error) {
 	t := rec.Ticket()
-	body, err = runner.PRBody(tmpl, t, sum.PRSummary, failedGate, runURL, loopDetail, check.Overlap, check.OutOfPlan, check.Unread, check.FrontEnd, !check.Planned, sum.ReviewFindings)
+	body, err = runner.PRBody(tmpl, t, sum.PRSummary, failedGate, runURL, loopDetail, check.Overlap, check.OutOfPlan, check.Unread, check.FrontEnd, !check.Planned, sum.ReviewFindings, check.Provisional)
 	if err != nil {
 		return "", "", err
 	}

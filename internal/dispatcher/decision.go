@@ -32,6 +32,17 @@ type WaitingRun struct {
 	Index int
 }
 
+// ProvisionalRun is a run holding a decision auto-pilot settled whose question
+// has not been posted.
+type ProvisionalRun struct {
+	RunID    string
+	Decision runner.Decision
+	// Taken is the label of the option auto-pilot took.
+	Taken string
+	// Index is the decision's position on the row, 1-based.
+	Index int
+}
+
 // Decisions is the store's decision surface as a poll reads and writes it.
 type Decisions interface {
 	// Waiting lists the runs parked on a decision.
@@ -44,11 +55,17 @@ type Decisions interface {
 	StopWaiting(ctx context.Context, runID string, d runner.Decision, at time.Time) error
 	// Session reads the Linear agent session a ticket's delegation marked.
 	Session(ctx context.Context, ticketID string) (string, error)
+	// ProvisionalUnposted lists the runs holding a provisional decision not yet posted.
+	ProvisionalUnposted(ctx context.Context) ([]ProvisionalRun, error)
+	// PostedProvisional stamps a run's first unposted provisional decision as asked in a session.
+	PostedProvisional(ctx context.Context, runID, sessionID string, at time.Time) error
 }
 
 // Elicitor asks the owner a decision in a run's Linear agent session.
 type Elicitor interface {
 	Elicit(ctx context.Context, sessionID string, d runner.Decision) error
+	// ElicitProvisional posts a decision auto-pilot already settled, naming the option taken.
+	ElicitProvisional(ctx context.Context, sessionID string, d runner.Decision, taken string) error
 }
 
 // decisionTimeout is c's configured wait, or the default when unset.
@@ -61,20 +78,27 @@ func (c Config) decisionTimeout() time.Duration {
 
 // postDecisions settles every run parked on a decision: the post that asks it,
 // the answer that resumes the run, the re-ask of a reply matching no option,
-// and the deadline that stops it. It runs at the poll's end, before the
-// notices, so a stop it raises this poll is notified in the same poll.
+// and the deadline that stops it, then posts each provisional decision once. It
+// runs at the poll's end, before the notices, so a stop it raises this poll is
+// notified in the same poll.
 func postDecisions(ctx context.Context, d Deps, c Config) error {
 	waiting, err := d.Decisions.Waiting(ctx)
 	if err != nil {
 		return err
 	}
-	if len(waiting) == 0 {
-		return nil
-	}
 	at := d.Now()
 	var errs []error
 	for _, w := range waiting {
 		if err := decide(ctx, d, c, w, at); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	provisional, err := d.Decisions.ProvisionalUnposted(ctx)
+	if err != nil {
+		return errors.Join(append(errs, err)...)
+	}
+	for _, p := range provisional {
+		if err := postProvisional(ctx, d, p, at); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -142,6 +166,28 @@ func postDecision(ctx context.Context, d Deps, w WaitingRun, at time.Time) error
 		return err
 	}
 	d.Logger.Info("decisionPosted", "run", w.RunID, "options", len(w.Decision.Options))
+	return nil
+}
+
+// postProvisional posts a provisional decision in the run's agent session, once.
+// A missing session or a refused post leaves it unposted for the next poll.
+func postProvisional(ctx context.Context, d Deps, p ProvisionalRun, at time.Time) error {
+	session, err := d.Decisions.Session(ctx, p.RunID)
+	if err != nil {
+		return err
+	}
+	if session == "" {
+		d.Logger.Warn("decisionSessionMissing", "run", p.RunID)
+		return nil
+	}
+	if err := d.Elicit.ElicitProvisional(ctx, session, p.Decision, p.Taken); err != nil {
+		d.Logger.Warn("decisionElicitFailed", "run", p.RunID, "err", err.Error())
+		return nil
+	}
+	if err := d.Decisions.PostedProvisional(ctx, p.RunID, session, at); err != nil {
+		return err
+	}
+	d.Logger.Info("decisionPosted", "run", p.RunID, "options", len(p.Decision.Options), "provisional", true)
 	return nil
 }
 

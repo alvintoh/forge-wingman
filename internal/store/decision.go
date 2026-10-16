@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -35,7 +36,15 @@ type decisionEntry struct {
 	Answer    string          `firestore:"answer"`
 	Reply     string          `firestore:"reply"`
 	RepliedAt time.Time       `firestore:"replied_at"`
+	// Provisional is set when auto-pilot took the recommended option rather than the owner choosing it.
+	Provisional bool `firestore:"provisional"`
+	// ConfirmedAt is when the owner confirmed the option auto-pilot took; zero until then.
+	ConfirmedAt time.Time `firestore:"confirmed_at"`
 }
+
+// provisionalUnpostedField marks a run holding a provisional decision whose
+// question has not been posted, so a poll finds it without scanning every run.
+const provisionalUnpostedField = "provisional_unposted"
 
 // decisionsRow is the row fields the decision surface reads: the decisions
 // themselves, the state and outcome that decide whether a run still waits, the
@@ -65,9 +74,44 @@ func lastUnanswered(entries []decisionEntry) int {
 // drops the ledger reservation the run holds — the plan stage's own key among
 // them — so a waiting run holds neither a runner nor a reservation.
 func (q *Queue) Suspend(ctx context.Context, runID string, d runner.Decision, runURL string, at time.Time) error {
+	err := q.settleDecision(ctx, runID, runURL, at, func(row *decisionsRow) []firestore.Update {
+		row.Decisions = append(row.Decisions, decisionEntry{Decision: d, AskedAt: at})
+		return []firestore.Update{{Path: stateField, Value: stateWaiting}}
+	})
+	if err != nil {
+		return fmt.Errorf("suspending run %s: %w", runID, err)
+	}
+	return nil
+}
+
+// TakeRecommendation settles runID's decision d with its first option, recorded
+// as provisional, and returns the row to queued, so the next poll claims the run
+// again and its plan resumes carrying the answer. The plan's spend settles and
+// its reservation drops as Suspend's do.
+func (q *Queue) TakeRecommendation(ctx context.Context, runID string, d runner.Decision, runURL string, at time.Time) error {
+	if len(d.Options) == 0 {
+		return fmt.Errorf("taking the recommendation for run %s: the decision has no options", runID)
+	}
+	err := q.settleDecision(ctx, runID, runURL, at, func(row *decisionsRow) []firestore.Update {
+		row.Decisions = append(row.Decisions, decisionEntry{Decision: d, AskedAt: at, Answer: d.Options[0].Label, Provisional: true})
+		return []firestore.Update{
+			{Path: stateField, Value: stateQueued},
+			{Path: provisionalUnpostedField, Value: true},
+		}
+	})
+	if err != nil {
+		return fmt.Errorf("taking the recommendation for run %s: %w", runID, err)
+	}
+	return nil
+}
+
+// settleDecision is the transaction Suspend and TakeRecommendation share: apply
+// records the decision and names the state the row moves to, and the row's claim,
+// deferral and plan reservation are released with the plan's spend settled.
+func (q *Queue) settleDecision(ctx context.Context, runID, runURL string, at time.Time, apply func(*decisionsRow) []firestore.Update) error {
 	rowRef := q.client.Collection(runsCollection).Doc(runID)
 	ledgerRef := q.ledgerRef()
-	err := q.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+	return q.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		snap, err := tx.Get(rowRef)
 		if err != nil {
 			return err
@@ -76,19 +120,18 @@ func (q *Queue) Suspend(ctx context.Context, runID string, d runner.Decision, ru
 		if err := snap.DataTo(&row); err != nil {
 			return err
 		}
-		row.Decisions = append(row.Decisions, decisionEntry{Decision: d, AskedAt: at})
+		moved := apply(&row)
 		ledger, err := q.readLedger(tx, ledgerRef)
 		if err != nil {
 			return err
 		}
-		updates := []firestore.Update{
-			{Path: stateField, Value: stateWaiting},
-			{Path: decisionsField, Value: row.Decisions},
-			{Path: runURLField, Value: runURL},
-			{Path: updatedAtField, Value: at},
-			{Path: claimedAtField, Value: firestore.Delete},
-			{Path: waitingOnField, Value: firestore.Delete},
-		}
+		updates := append(moved,
+			firestore.Update{Path: decisionsField, Value: row.Decisions},
+			firestore.Update{Path: runURLField, Value: runURL},
+			firestore.Update{Path: updatedAtField, Value: at},
+			firestore.Update{Path: claimedAtField, Value: firestore.Delete},
+			firestore.Update{Path: waitingOnField, Value: firestore.Delete},
+		)
 		var ledgerUpdates []firestore.Update
 		if key, entry, has := ledger.reservation(runID, rowAttempt(snap.Data())); has {
 			spend, ledgerU := planSettle(key, entry, planRow{
@@ -110,10 +153,6 @@ func (q *Queue) Suspend(ctx context.Context, runID string, d runner.Decision, ru
 		}
 		return tx.Update(ledgerRef, ledgerUpdates)
 	})
-	if err != nil {
-		return fmt.Errorf("suspending run %s: %w", runID, err)
-	}
-	return nil
 }
 
 // Reply records the owner's reply text on runID's last unanswered decision and
@@ -289,6 +328,108 @@ func (q *Queue) Waiting(ctx context.Context) ([]dispatcher.WaitingRun, error) {
 			RunURL:    row.RunURL,
 			Index:     i + 1,
 		})
+	}
+	return out, nil
+}
+
+// ProvisionalUnposted lists the runs holding a provisional decision whose
+// question has not been posted, each with its first such decision. The scan is
+// bounded like Waiting's.
+func (q *Queue) ProvisionalUnposted(ctx context.Context) ([]dispatcher.ProvisionalRun, error) {
+	iter := q.client.Collection(runsCollection).
+		Where(provisionalUnpostedField, "==", true).
+		Limit(waitingScanLimit).
+		Documents(ctx)
+	defer iter.Stop()
+	var out []dispatcher.ProvisionalRun
+	for {
+		snap, err := iter.Next()
+		if errors.Is(err, iterator.Done) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("listing provisional decisions: %w", err)
+		}
+		var row decisionsRow
+		if err := snap.DataTo(&row); err != nil {
+			return nil, fmt.Errorf("decoding run %s's decisions: %w", snap.Ref.ID, err)
+		}
+		i := firstUnpostedProvisional(row.Decisions)
+		if i < 0 || row.Outcome != "" {
+			continue
+		}
+		e := row.Decisions[i]
+		out = append(out, dispatcher.ProvisionalRun{RunID: snap.Ref.ID, Decision: e.Decision, Taken: e.Answer, Index: i + 1})
+	}
+	return out, nil
+}
+
+// firstUnpostedProvisional is the index of the first provisional decision not
+// yet posted, or -1 when there is none.
+func firstUnpostedProvisional(entries []decisionEntry) int {
+	return slices.IndexFunc(entries, func(e decisionEntry) bool { return e.Provisional && e.PostedAt.IsZero() })
+}
+
+// PostedProvisional stamps runID's first unposted provisional decision as asked
+// in sessionID, and clears the run's mark once none remains. A run with none is
+// a no-op.
+func (q *Queue) PostedProvisional(ctx context.Context, runID, sessionID string, at time.Time) error {
+	rowRef := q.client.Collection(runsCollection).Doc(runID)
+	err := q.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		snap, err := tx.Get(rowRef)
+		if status.Code(err) == codes.NotFound {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		var row decisionsRow
+		if err := snap.DataTo(&row); err != nil {
+			return err
+		}
+		i := firstUnpostedProvisional(row.Decisions)
+		if i < 0 {
+			return nil
+		}
+		row.Decisions[i].SessionID = sessionID
+		row.Decisions[i].PostedAt = at
+		updates := []firestore.Update{{Path: decisionsField, Value: row.Decisions}}
+		if firstUnpostedProvisional(row.Decisions) < 0 {
+			updates = append(updates, firestore.Update{Path: provisionalUnpostedField, Value: firestore.Delete})
+		}
+		return tx.Update(rowRef, updates)
+	})
+	if err != nil {
+		return fmt.Errorf("marking run %s's provisional decision posted: %w", runID, err)
+	}
+	return nil
+}
+
+// ProvisionalDecisions reads the decisions auto-pilot settled on runID, in the
+// order the plan asked them, with the option taken and whether the owner has
+// confirmed it.
+func (q *Queue) ProvisionalDecisions(ctx context.Context, runID string) ([]runner.Provisional, error) {
+	snap, err := q.client.Collection(runsCollection).Doc(runID).Get(ctx)
+	if status.Code(err) == codes.NotFound {
+		return nil, fmt.Errorf("%s: %w", runID, runner.ErrRecordNotFound)
+	}
+	if err != nil {
+		return nil, err
+	}
+	var row decisionsRow
+	if err := snap.DataTo(&row); err != nil {
+		return nil, fmt.Errorf("decoding run %s's decisions: %w", runID, err)
+	}
+	var out []runner.Provisional
+	for _, e := range row.Decisions {
+		if !e.Provisional {
+			continue
+		}
+		p := runner.Provisional{Question: e.Decision.Question, Choice: e.Answer, Confirmed: !e.ConfirmedAt.IsZero()}
+		if i := slices.IndexFunc(e.Decision.Options, func(o runner.DecisionOption) bool { return o.Label == e.Answer }); i >= 0 {
+			p.Cost = e.Decision.Options[i].Cost
+		}
+		out = append(out, p)
 	}
 	return out, nil
 }

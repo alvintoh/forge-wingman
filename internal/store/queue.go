@@ -82,6 +82,10 @@ const (
 	// claimed at, absent until that claim.
 	autonomyField = "autonomy"
 
+	// decisionModeField is how the run's plan decisions are settled, recorded at
+	// the attempt's first claim like autonomyField.
+	decisionModeField = "decision_mode"
+
 	// decisionsField is the list of decisions a run has parked on, written
 	// outside runner.Record so Finalize's whole-field rebuild cannot clobber it.
 	// stateWaitingField is the pause that accompanies it.
@@ -222,6 +226,7 @@ func (q *Queue) Enqueue(ctx context.Context, run dispatcher.Queued) error {
 	rec.UpdatedAt = run.At
 	data := fields(rec)
 	delete(data, autonomyField)
+	delete(data, decisionModeField)
 	data[stateField] = stateQueued
 	data[priorityField] = run.Priority
 	data[queuedAtField] = run.At
@@ -767,6 +772,9 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 		if _, recorded := data[autonomyField]; !recorded {
 			updates = append(updates, firestore.Update{Path: autonomyField, Value: int64(facts.Autonomy)})
 		}
+		if _, recorded := data[decisionModeField]; !recorded {
+			updates = append(updates, firestore.Update{Path: decisionModeField, Value: string(facts.DecisionMode)})
+		}
 		if res.Stage != dispatcher.StageBuild {
 			var lastResortModels, movedFrom, planModels any = firestore.Delete, firestore.Delete, firestore.Delete
 			if facts.LastResort != nil {
@@ -1283,6 +1291,7 @@ func (q *Queue) requeue(ctx context.Context, runID string, at time.Time,
 			{Path: queuedAtField, Value: at},
 			{Path: attemptField, Value: attempt},
 			{Path: autonomyField, Value: firestore.Delete},
+			{Path: decisionModeField, Value: firestore.Delete},
 		}, extra...)); err != nil {
 			return err
 		}

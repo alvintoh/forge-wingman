@@ -111,6 +111,8 @@ type config struct {
 	// decisionTimeout is how long a run waits on an owner decision; zero takes
 	// the code default.
 	decisionTimeout time.Duration
+	// decisionMode is whether a plan's decisions wait for the owner or take the recommended option.
+	decisionMode runner.DecisionMode
 }
 
 func loadConfig(getenv func(string) string) (config, error) {
@@ -145,6 +147,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 			return config{}, fmt.Errorf("WINGMAN_DECISION_TIMEOUT = %q is not a positive duration", raw)
 		}
 		c.decisionTimeout = d
+	}
+	if c.decisionMode, err = runner.ParseDecisionMode(getenv("WINGMAN_DECISIONS")); err != nil {
+		return config{}, fmt.Errorf("WINGMAN_DECISIONS: %w", err)
 	}
 	return c, nil
 }
@@ -311,7 +316,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		Elicit:       webhook.Linear{Tokens: tokens},
 		Logger:       logger,
 		Now:          time.Now,
-	}, dispatcher.Config{Repos: c.repos, Budget: budgetConfig(runner.Provider(model)), Model: model, NextPlans: next, Limits: c.limits, Tuning: c.tuning, LastResortPlans: lastResortPlans(), TwoStage: c.twoStage, DecisionTimeout: c.decisionTimeout}); err != nil {
+	}, dispatcher.Config{Repos: c.repos, Budget: budgetConfig(runner.Provider(model)), Model: model, NextPlans: next, Limits: c.limits, Tuning: c.tuning, LastResortPlans: lastResortPlans(), TwoStage: c.twoStage, DecisionTimeout: c.decisionTimeout, DecisionMode: c.decisionMode}); err != nil {
 		return err
 	}
 	return nil

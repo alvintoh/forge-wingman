@@ -336,3 +336,7 @@ func (pollPoster) Post(context.Context, dispatcher.Notice) error { return nil }
 type pollElicit struct{}
 
 func (pollElicit) Elicit(context.Context, string, runner.Decision) error { return nil }
+
+func (pollElicit) ElicitProvisional(context.Context, string, runner.Decision, string) error {
+	return nil
+}

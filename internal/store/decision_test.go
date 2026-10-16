@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"cloud.google.com/go/firestore"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
+	"github.com/alvintoh/forge-wingman/internal/money"
 	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
@@ -379,5 +381,297 @@ func TestAStoppedWaitTakesNoReplyAndNoAnswer(t *testing.T) {
 		if w.RunID == id {
 			t.Fatalf("a stopped wait is still listed: %+v", w)
 		}
+	}
+}
+
+// runningPlan enqueues a run holding a plan reservation, as a plan stage in flight does.
+func runningPlan(t *testing.T, q *Queue, client *firestore.Client) string {
+	t.Helper()
+	id := fresh("decision-auto")
+	forget(t, client, id)
+	if err := q.Enqueue(context.Background(), queuedRun(id, 2)); err != nil {
+		t.Fatal(err)
+	}
+	seedLedger(t, client, 1, map[string]reservationEntry{
+		reservationKey(id, 0, dispatcher.StagePlan): {Stage: dispatcher.StagePlan, ProviderCostMicros: 5, RunnerMinutes: 2, ClaimedAt: queueAt},
+	})
+	return id
+}
+
+func TestTakeRecommendationAnswersWithTheFirstOptionAndRequeues(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	id := runningPlan(t, q, client)
+	if err := q.TakeRecommendation(ctx, id, storeDecision, "https://github.com/o/r/actions/runs/7", queueAt); err != nil {
+		t.Fatal(err)
+	}
+	row := readDecisions(t, client, id)
+	if row.State != stateQueued || row.Outcome != "" {
+		t.Fatalf("state = %q, outcome = %q, want queued", row.State, row.Outcome)
+	}
+	if len(row.Decisions) != 1 || row.Decisions[0].Answer != "Reuse the existing flag" || !row.Decisions[0].Provisional || !row.Decisions[0].ConfirmedAt.IsZero() {
+		t.Fatalf("decisions = %+v", row.Decisions)
+	}
+	if row.PlanSpendMicros != 5 || row.PlanSpendMinutes != 2 {
+		t.Fatalf("plan spend = %d/%d, want 5/2", row.PlanSpendMicros, row.PlanSpendMinutes)
+	}
+	if _, has := readLedgerDoc(t, client).Reservations[reservationKey(id, 0, dispatcher.StagePlan)]; has {
+		t.Fatal("the run still holds its plan reservation")
+	}
+	answers, err := q.Decisions(ctx, id)
+	if err != nil || len(answers) != 1 || answers[0].Choice != "Reuse the existing flag" {
+		t.Fatalf("answers = %+v, %v", answers, err)
+	}
+	waiting, err := q.Waiting(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range waiting {
+		if w.RunID == id {
+			t.Fatalf("an auto-pilot run is waiting: %+v", w)
+		}
+	}
+}
+
+func TestSuspendRecordsNothingProvisional(t *testing.T) {
+	q, client := queue(t)
+	id := parkedRun(t, q, client)
+	row := readDecisions(t, client, id)
+	if row.Decisions[0].Provisional || row.Decisions[0].Answer != "" {
+		t.Fatalf("a guided decision = %+v, want it unanswered and not provisional", row.Decisions[0])
+	}
+	unposted, err := q.ProvisionalUnposted(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range unposted {
+		if p.RunID == id {
+			t.Fatalf("a guided run is listed as provisional: %+v", p)
+		}
+	}
+}
+
+func TestTakeRecommendationRefusesADecisionWithNoOptions(t *testing.T) {
+	q, client := queue(t)
+	id := runningPlan(t, q, client)
+	if err := q.TakeRecommendation(context.Background(), id, runner.Decision{Question: "Q?"}, "https://github.com/o/r/actions/runs/7", queueAt); err == nil {
+		t.Fatal("took a recommendation from a decision with no options")
+	}
+}
+
+func TestProvisionalUnpostedSkipsARunThatHasFinished(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	id := runningPlan(t, q, client)
+	if err := q.TakeRecommendation(ctx, id, storeDecision, "https://github.com/o/r/actions/runs/7", queueAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Collection(runsCollection).Doc(id).Update(ctx, []firestore.Update{{Path: outcomeField, Value: "agent-failed"}}); err != nil {
+		t.Fatal(err)
+	}
+	runs, err := q.ProvisionalUnposted(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range runs {
+		if r.RunID == id {
+			t.Fatalf("a finished run is listed for a post: %+v", r)
+		}
+	}
+}
+
+func TestProvisionalDecisionIsPostedOnce(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	id := runningPlan(t, q, client)
+	if err := q.TakeRecommendation(ctx, id, storeDecision, "https://github.com/o/r/actions/runs/7", queueAt); err != nil {
+		t.Fatal(err)
+	}
+	listed := func() *dispatcher.ProvisionalRun {
+		runs, err := q.ProvisionalUnposted(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range runs {
+			if r.RunID == id {
+				return &r
+			}
+		}
+		return nil
+	}
+	if p := listed(); p == nil || p.Taken != "Reuse the existing flag" || p.Index != 1 || p.Decision.Question != storeDecision.Question {
+		t.Fatalf("listed = %+v", p)
+	}
+	if err := q.PostedProvisional(ctx, id, "session-1", queueAt.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if p := listed(); p != nil {
+		t.Fatalf("a posted provisional decision is still listed: %+v", p)
+	}
+	if row := readDecisions(t, client, id); row.Decisions[0].SessionID != "session-1" || !row.Decisions[0].PostedAt.Equal(queueAt.Add(time.Minute)) {
+		t.Fatalf("decision = %+v", row.Decisions[0])
+	}
+}
+
+func TestProvisionalDecisionsReadTheOptionTakenAndItsConfirmation(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	id := runningPlan(t, q, client)
+	if err := q.TakeRecommendation(ctx, id, storeDecision, "https://github.com/o/r/actions/runs/7", queueAt); err != nil {
+		t.Fatal(err)
+	}
+	got, err := q.ProvisionalDecisions(ctx, id)
+	want := []runner.Provisional{{Question: "Which flag should the run use?", Choice: "Reuse the existing flag", Cost: "no new config"}}
+	if err != nil || !slices.Equal(got, want) {
+		t.Fatalf("provisional = %+v, %v, want %+v", got, err, want)
+	}
+	if _, err := q.ProvisionalDecisions(ctx, "no-such-run"); !errors.Is(err, runner.ErrRecordNotFound) {
+		t.Fatalf("err = %v, want ErrRecordNotFound", err)
+	}
+}
+
+func TestTryClaimRecordsTheDecisionModeOnce(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	run := queuedRun(fresh("queue-mode"), 1)
+	forget(t, client, run.RunID)
+	resetLedger(t, client, 2)
+	if err := q.Enqueue(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	facts := openFacts
+	facts.DecisionMode = runner.DecisionAutopilot
+	if ok, _, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, facts, dispatcher.Reservation{ProviderCost: money.Dollar, Stage: dispatcher.StagePlan}); err != nil || !ok {
+		t.Fatalf("claim = %v, %v", ok, err)
+	}
+	snap, err := client.Collection(runsCollection).Doc(run.RunID).Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := snap.Data()[decisionModeField]; got != "autopilot" {
+		t.Fatalf("decision_mode = %v, want autopilot", got)
+	}
+	if _, err := client.Collection(runsCollection).Doc(run.RunID).Update(ctx, []firestore.Update{{Path: stateField, Value: statePlanned}}); err != nil {
+		t.Fatal(err)
+	}
+	guided := openFacts
+	guided.DecisionMode = runner.DecisionGuided
+	if ok, _, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, guided, dispatcher.Reservation{ProviderCost: money.Dollar, Stage: dispatcher.StageBuild}); err != nil || !ok {
+		t.Fatalf("second claim = %v, %v", ok, err)
+	}
+	if got := readRow(t, client, run.RunID)[decisionModeField]; got != "autopilot" {
+		t.Fatalf("decision_mode = %v after a later claim, want the first claim's autopilot kept", got)
+	}
+}
+
+func TestSuspendAndTakeRecommendationFailOnAMissingRun(t *testing.T) {
+	q, _ := queue(t)
+	ctx := context.Background()
+	if err := q.Suspend(ctx, "no-such-run", storeDecision, "https://github.com/o/r/actions/runs/7", queueAt); err == nil {
+		t.Fatal("Suspend succeeded on a run that does not exist")
+	}
+	if err := q.TakeRecommendation(ctx, "no-such-run", storeDecision, "https://github.com/o/r/actions/runs/7", queueAt); err == nil {
+		t.Fatal("TakeRecommendation succeeded on a run that does not exist")
+	}
+}
+
+func cancelledContext() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx
+}
+
+func TestProvisionalUnpostedFailsWhenTheScanCannotBeReadOrDecoded(t *testing.T) {
+	q, client := queue(t)
+	if _, err := q.ProvisionalUnposted(cancelledContext()); err == nil {
+		t.Fatal("a cancelled scan was reported as empty")
+	}
+	seedRow(t, client, fresh("decision-corrupt"), map[string]any{decisionsField: "not a list", provisionalUnpostedField: true})
+	if _, err := q.ProvisionalUnposted(context.Background()); err == nil {
+		t.Fatal("a row whose decisions cannot be decoded was skipped")
+	}
+}
+
+func TestPostedProvisionalIsANoOpWhereThereIsNothingToStamp(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	if err := q.PostedProvisional(ctx, "no-such-run", "session-1", queueAt); err != nil {
+		t.Fatalf("a missing run = %v, want a no-op", err)
+	}
+	id := parkedRun(t, q, client)
+	if err := q.PostedProvisional(ctx, id, "session-1", queueAt); err != nil {
+		t.Fatal(err)
+	}
+	if got := readDecisions(t, client, id).Decisions[0]; got.SessionID != "" || !got.PostedAt.IsZero() {
+		t.Fatalf("a guided decision was stamped as posted: %+v", got)
+	}
+}
+
+func TestPostedProvisionalFailsWhenTheRowCannotBeReadOrDecoded(t *testing.T) {
+	q, client := queue(t)
+	id := runningPlan(t, q, client)
+	if err := q.TakeRecommendation(context.Background(), id, storeDecision, "https://github.com/o/r/actions/runs/7", queueAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.PostedProvisional(cancelledContext(), id, "session-1", queueAt); err == nil {
+		t.Fatal("a cancelled stamp was reported as done")
+	}
+	bad := fresh("decision-corrupt-posted")
+	seedRow(t, client, bad, map[string]any{decisionsField: "not a list", provisionalUnpostedField: true})
+	if err := q.PostedProvisional(context.Background(), bad, "session-1", queueAt); err == nil {
+		t.Fatal("a row whose decisions cannot be decoded was stamped")
+	}
+}
+
+func TestProvisionalMarkStaysUntilEveryProvisionalDecisionIsPosted(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	id := runningPlan(t, q, client)
+	for range 2 {
+		if err := q.TakeRecommendation(ctx, id, storeDecision, "https://github.com/o/r/actions/runs/7", queueAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := q.PostedProvisional(ctx, id, "session-1", queueAt); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRow(t, client, id)[provisionalUnpostedField]; got != true {
+		t.Fatalf("provisional_unposted = %v after the first of two posts, want it kept", got)
+	}
+	if err := q.PostedProvisional(ctx, id, "session-1", queueAt.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := readRow(t, client, id)[provisionalUnpostedField]; has {
+		t.Fatal("provisional_unposted still set after every decision was posted")
+	}
+}
+
+func TestProvisionalDecisionsReadsOnlyTheProvisionalOnesAndToleratesAnUnlistedAnswer(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	id := fresh("decision-mixed")
+	seedRow(t, client, id, map[string]any{decisionsField: []decisionEntry{
+		{Decision: storeDecision, Answer: storeDecision.Options[1].Label},
+		{Decision: storeDecision, Answer: "An option the plan no longer lists", Provisional: true},
+	}})
+	got, err := q.ProvisionalDecisions(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []runner.Provisional{{Question: storeDecision.Question, Choice: "An option the plan no longer lists"}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("provisional = %+v, want only the provisional decision, with no cost for an unlisted answer: %+v", got, want)
+	}
+}
+
+func TestProvisionalDecisionsFailsWhenTheRowCannotBeReadOrDecoded(t *testing.T) {
+	q, client := queue(t)
+	if _, err := q.ProvisionalDecisions(cancelledContext(), "any-run"); err == nil || errors.Is(err, runner.ErrRecordNotFound) {
+		t.Fatalf("a cancelled read = %v, want an error that is not a missing record", err)
+	}
+	bad := fresh("decision-corrupt-read")
+	seedRow(t, client, bad, map[string]any{decisionsField: "not a list"})
+	if _, err := q.ProvisionalDecisions(context.Background(), bad); err == nil {
+		t.Fatal("a row whose decisions cannot be decoded was read as empty")
 	}
 }

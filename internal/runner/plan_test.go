@@ -322,3 +322,35 @@ func TestParsePlanStageCarriesADecision(t *testing.T) {
 		t.Fatalf("plan %+v, err %v", got, err)
 	}
 }
+
+func TestAutopilotTakesTheRecommendationOnlyUnderItsCap(t *testing.T) {
+	for name, tc := range map[string]struct {
+		mode     DecisionMode
+		answered int
+		want     bool
+	}{
+		"auto-pilot with none answered":   {DecisionAutopilot, 0, true},
+		"auto-pilot one short of the cap": {DecisionAutopilot, 2, true},
+		"auto-pilot at the cap":           {DecisionAutopilot, 3, false},
+		"auto-pilot past the cap":         {DecisionAutopilot, 4, false},
+		"guided with none answered":       {DecisionGuided, 0, false},
+		"an unset mode":                   {"", 0, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := tc.mode.TakesRecommendation(tc.answered); got != tc.want {
+				t.Fatalf("TakesRecommendation(%d) = %v, want %v", tc.answered, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseDecisionMode(t *testing.T) {
+	for raw, want := range map[string]DecisionMode{"": DecisionGuided, " Guided ": DecisionGuided, "autopilot": DecisionAutopilot} {
+		if got, err := ParseDecisionMode(raw); err != nil || got != want {
+			t.Errorf("ParseDecisionMode(%q) = %q, %v, want %q", raw, got, err, want)
+		}
+	}
+	if _, err := ParseDecisionMode("auto"); !errors.Is(err, ErrUnknownDecisionMode) {
+		t.Fatalf("err = %v, want ErrUnknownDecisionMode", err)
+	}
+}

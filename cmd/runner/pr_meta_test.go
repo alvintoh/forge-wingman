@@ -60,19 +60,22 @@ func TestAutoMerge(t *testing.T) {
 		check                   prCheck
 		want                    bool
 	}{
-		"a ready M run requests it":            {unsampled, "M", "", nil, prCheck{Planned: true}, true},
-		"an unplanned S run does not":          {unsampled, "S", "", nil, prCheck{}, false},
-		"a run with no recorded plan does not": {unsampled, "M", "", nil, prCheck{}, false},
-		"an L run does not":                    {unsampled, "L", "", nil, prCheck{Planned: true}, false},
-		"a sampled run does not":               {sampled, "M", "", nil, prCheck{Planned: true}, false},
-		"a draft does not":                     {unsampled, "M", "", func(s *runner.Summary) { s.Ready = false }, prCheck{Planned: true}, false},
-		"an out-of-plan edit does not":         {unsampled, "M", "", nil, prCheck{Planned: true, OutOfPlan: []string{"x.go"}}, false},
-		"a concurrent run's plan does not":     {unsampled, "S", "", nil, prCheck{Planned: true, Overlap: "M-2"}, false},
-		"an unread bundle does not":            {unsampled, "M", "", nil, prCheck{Planned: true, Unread: true}, false},
-		"front-end paths do not":               {unsampled, "M", "", nil, prCheck{Planned: true, FrontEnd: []string{"web/"}}, false},
-		"the front-end label does not":         {unsampled, "S", "", nil, prCheck{Planned: true, FrontEnd: []string{"area:fe"}}, false},
-		"a workflow change does not":           {unsampled, "M", "", func(s *runner.Summary) { s.StopReason = runner.StopWorkflowChange }, prCheck{Planned: true}, false},
-		"a failed check gate does not":         {unsampled, "M", "test", nil, prCheck{Planned: true}, false},
+		"a ready M run requests it":                    {unsampled, "M", "", nil, prCheck{Planned: true}, true},
+		"an unplanned S run does not":                  {unsampled, "S", "", nil, prCheck{}, false},
+		"a run with no recorded plan does not":         {unsampled, "M", "", nil, prCheck{}, false},
+		"an L run does not":                            {unsampled, "L", "", nil, prCheck{Planned: true}, false},
+		"a sampled run does not":                       {sampled, "M", "", nil, prCheck{Planned: true}, false},
+		"a draft does not":                             {unsampled, "M", "", func(s *runner.Summary) { s.Ready = false }, prCheck{Planned: true}, false},
+		"an out-of-plan edit does not":                 {unsampled, "M", "", nil, prCheck{Planned: true, OutOfPlan: []string{"x.go"}}, false},
+		"a concurrent run's plan does not":             {unsampled, "S", "", nil, prCheck{Planned: true, Overlap: "M-2"}, false},
+		"an unread bundle does not":                    {unsampled, "M", "", nil, prCheck{Planned: true, Unread: true}, false},
+		"front-end paths do not":                       {unsampled, "M", "", nil, prCheck{Planned: true, FrontEnd: []string{"web/"}}, false},
+		"the front-end label does not":                 {unsampled, "S", "", nil, prCheck{Planned: true, FrontEnd: []string{"area:fe"}}, false},
+		"a workflow change does not":                   {unsampled, "M", "", func(s *runner.Summary) { s.StopReason = runner.StopWorkflowChange }, prCheck{Planned: true}, false},
+		"a failed check gate does not":                 {unsampled, "M", "test", nil, prCheck{Planned: true}, false},
+		"an unconfirmed provisional decision does not": {unsampled, "M", "", nil, prCheck{Planned: true, Provisional: []runner.Provisional{{Question: "Q?", Choice: "A"}}}, false},
+		"unreadable provisional decisions do not":      {unsampled, "M", "", nil, prCheck{Planned: true, ProvisionalUnread: true}, false},
+		"a confirmed provisional decision does":        {unsampled, "M", "", nil, prCheck{Planned: true, Provisional: []runner.Provisional{{Question: "Q?", Choice: "A", Confirmed: true}}}, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			sum := runner.Summary{Outcome: runner.OutcomeBuilt, Ready: true}

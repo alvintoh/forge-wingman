@@ -139,6 +139,8 @@ type Config struct {
 	// DecisionTimeout is how long a run waits on an owner decision before it is
 	// stopped as waiting-on-owner. Zero takes the default.
 	DecisionTimeout time.Duration
+	// DecisionMode is how a plan's decisions are settled. Empty takes guided.
+	DecisionMode runner.DecisionMode
 }
 
 // PaidPlan is a paid plan a run may move to: the ceilings it is admitted
@@ -712,7 +714,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, level Autonomy, relation
 		candPlan := runner.Provider(candModel)
 		facts := Facts{Limits: limits, Tuning: c.Tuning.OrDefault(), History: history, ProviderHalted: halted(candPlan), BreakerTripped: tripped,
 			OpenPRs: prs.count, OpenPRsKnown: prs.known, Relations: relations[cand.RunID], Model: candModel, LastResort: lastResort,
-			PeakHeld: PeakHeld(mode, candModel, d.Now(), est.Minutes), Autonomy: level}
+			PeakHeld: PeakHeld(mode, candModel, d.Now(), est.Minutes), Autonomy: level, DecisionMode: c.DecisionMode}
 		claimVerdict := verdictOf(candPlan)
 		ok, binding, err := d.Queue.TryClaim(ctx, cand.RunID, d.Now(), budget, facts, reservation)
 		if err != nil {
