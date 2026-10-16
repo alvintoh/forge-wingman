@@ -43,6 +43,9 @@ type Issue struct {
 	// state type but completed or canceled, or one the reply did not carry,
 	// which counts as open.
 	BlockedByOpen []string
+	// BlockerStates maps each BlockedByOpen id to its Linear state type, empty
+	// when the reply did not carry one.
+	BlockerStates map[string]string
 }
 
 // Milestone is the Linear project milestone an issue belongs to.
@@ -351,6 +354,7 @@ type Queue interface {
 	Rejector
 	Spender
 	Sweeper
+	StuckReader
 	ClaimedRuns
 	EndedRuns
 	// SettledHistory reads the settled run history at or after since: the one
@@ -385,12 +389,16 @@ type Result struct {
 	// Delegated is the id of every ticket this poll delegated to the agent
 	// itself, in the order it delegated them.
 	Delegated []string
+
+	// issues is what the poll read from Linear, kept for the stuck check.
+	issues []Issue
 }
 
 // Poll admits every issue still delegated, then walks the queue in priority
 // order claiming every run Admit lets start, abandons the claims that outlived
-// their window, measures the merges that landed since the last poll, and posts
-// the notices waiting, whatever the rest of the poll did.
+// their window, measures the merges that landed since the last poll, raises a
+// notice for each run stuck past its limit, and posts the notices waiting,
+// whatever the rest of the poll did.
 // A ticket the queue already holds is left alone; a candidate a condition
 // withholds is deferred, not rejected, and reconsidered next poll; and a run
 // whose dispatch fails is released rather than left claimed, so the next
@@ -411,9 +419,12 @@ func Poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	decideErr := postDecisions(ctx, d, c)
 	LogPhase(d.Logger, "decisions", start, d.Now())
 	start = d.Now()
+	stuckErr := noticeStuck(ctx, d, res.issues)
+	LogPhase(d.Logger, "stuck", start, d.Now())
+	start = d.Now()
 	noticeErr := postNotices(ctx, d)
 	LogPhase(d.Logger, "notices", start, d.Now())
-	return res, errors.Join(err, sweepErr, rewriteErr, decideErr, noticeErr)
+	return res, errors.Join(err, sweepErr, rewriteErr, decideErr, stuckErr, noticeErr)
 }
 
 // LogPhase logs how long one phase of a poll took, so a slow poll can be traced
@@ -436,7 +447,7 @@ func poll(ctx context.Context, d Deps, c Config) (Result, error) {
 		return Result{}, err
 	}
 	LogPhase(d.Logger, "delegated", start, d.Now())
-	res := Result{Seen: len(issues)}
+	res := Result{Seen: len(issues), issues: issues}
 	start = d.Now()
 	for _, issue := range issues {
 		admitErr := admit(ctx, d, c, issue, &res)

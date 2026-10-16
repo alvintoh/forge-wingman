@@ -339,6 +339,10 @@ func (n linearIssue) issue() Issue {
 			issue.BlockedBy = append(issue.BlockedBy, rel.Issue.Identifier)
 			if blockerOpen(rel.Issue.State.Type) {
 				issue.BlockedByOpen = append(issue.BlockedByOpen, rel.Issue.Identifier)
+				if issue.BlockerStates == nil {
+					issue.BlockerStates = map[string]string{}
+				}
+				issue.BlockerStates[rel.Issue.Identifier] = rel.Issue.State.Type
 			}
 		}
 	}
