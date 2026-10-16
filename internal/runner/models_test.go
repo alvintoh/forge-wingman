@@ -86,11 +86,10 @@ func TestDefaultModelProviderHasConfiguredWindows(t *testing.T) {
 }
 
 // TestTheFreeRungAndTheReviewListAreEachOneModel asserts the state adr/0015
-// records, so it cannot drift silently: one model on the free rung (FRG-66's
-// "a withdrawn free model falls to the next" has no next, and the walk skips a
-// rung that cannot staff both the build and its review) and one on the review
-// list (FRG-67's second review vendor is unheld). A second entry on either is
-// deliberate, and updates adr/0015 with this test.
+// records, so it cannot drift silently: one model on the free rung, which the
+// free-tier walk skips because one model cannot staff both the build and its
+// review, and one on the review list, so a single vendor. A second entry on
+// either is deliberate, and updates adr/0015 with this test.
 func TestTheFreeRungAndTheReviewListAreEachOneModel(t *testing.T) {
 	if rung := providers.LastResortModels("command-code"); len(rung) != 1 {
 		t.Fatalf("command-code's free rung names %d models (%v), want one: adr/0015 states the free tier is one rung", len(rung), rung)
