@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"slices"
@@ -57,22 +58,53 @@ func (p *fakePullRequests) Commits(_ context.Context, _ string, number int) ([]C
 
 // fakeRewrites is the run rows' measurement surface, from the rows a test seeds.
 type fakeRewrites struct {
-	rows        map[string]RunRow
+	// rows is keyed by branch: the row's own, and the ones its other attempts
+	// pushed.
+	rows map[string]RunRow
+	// prs is keyed by the PR a row opened, or the one a supersede of it
+	// replaced.
+	prs         map[int]RunRow
 	recent      []Sample
 	recorded    map[string]Measured
 	reverted    []string
+	marked      map[string]bool
 	rowErr      error
 	recordErr   error
 	revertedErr error
 	recentErr   error
+	markErr     error
 }
 
-func (r *fakeRewrites) RunByBranch(_ context.Context, branch string) (RunRow, bool, error) {
+func (r *fakeRewrites) RunForMerged(_ context.Context, _ string, pr ClosedPR) (RunRow, bool, error) {
 	if r.rowErr != nil {
 		return RunRow{}, false, r.rowErr
 	}
-	row, ok := r.rows[branch]
-	return row, ok, nil
+	if pr.Head != "" {
+		if row, ok := r.rows[pr.Head]; ok {
+			return row, true, nil
+		}
+	}
+	if row, ok := r.prs[pr.Number]; ok && pr.Number != 0 {
+		return row, true, nil
+	}
+	return RunRow{}, false, nil
+}
+
+// MarkUnfound keeps one marker per repository and PR, as the store does, and
+// reports only the first poll to write it.
+func (r *fakeRewrites) MarkUnfound(_ context.Context, repo string, number int, _ time.Time) (bool, error) {
+	if r.markErr != nil {
+		return false, r.markErr
+	}
+	if r.marked == nil {
+		r.marked = map[string]bool{}
+	}
+	key := fmt.Sprintf("%s#%d", repo, number)
+	if r.marked[key] {
+		return false, nil
+	}
+	r.marked[key] = true
+	return true, nil
 }
 
 func (r *fakeRewrites) Record(_ context.Context, id string, m Measured) error {
@@ -97,6 +129,12 @@ func (r *fakeRewrites) Record(_ context.Context, id string, m Measured) error {
 		if row.RunID == id {
 			row.Measured = m.MergedAt
 			r.rows[branch] = row
+		}
+	}
+	for number, row := range r.prs {
+		if row.RunID == id {
+			row.Measured = m.MergedAt
+			r.prs[number] = row
 		}
 	}
 	return nil
@@ -192,22 +230,49 @@ func TestMeasureLeavesAPRThatClosedUnmergedAlone(t *testing.T) {
 	}
 }
 
-func TestMeasureWarnsOnAMergedRunBranchWithNoRunRow(t *testing.T) {
+// A merged PR whose branch no run row holds is measured on the row that names it
+// as the PR it opened, which is the row its own branch no longer names.
+func TestMeasureMatchesAMergedPRByThePRItNames(t *testing.T) {
+	url := "https://github.com/octo/scratch/pull/7"
 	prs := &fakePullRequests{
-		closed: map[string][]ClosedPR{scratch: {{Number: 7, Head: runBranch, MergedAt: mergedAt}}},
+		closed: map[string][]ClosedPR{scratch: {
+			{Number: 7, Title: "a run's PR", Head: "wingman/FRG-1-456-2", URL: url, MergedAt: mergedAt},
+		}},
+		commits: map[int][]Commit{7: {{Login: runner.CommitAuthorLogin, Additions: 8}}},
+	}
+	rows := &fakeRewrites{prs: map[int]RunRow{7: {RunID: runOnBranch}}}
+	deps, _ := rewriteDeps(prs, rows)
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	if got := rows.recorded[runOnBranch]; got.PR != 7 || got.AgentLines != 8 {
+		t.Fatalf("recorded %+v, want the merge measured on the row that names it", got)
+	}
+	if len(rows.marked) != 0 {
+		t.Fatalf("marked = %v, want a matched merge reported unfound by nothing", rows.marked)
+	}
+}
+
+func TestMeasureReportsAMergedPRWithNoRunRowOnce(t *testing.T) {
+	prs := &fakePullRequests{
+		closed: map[string][]ClosedPR{scratch: {
+			{Number: 7, Head: runBranch, URL: "https://github.com/octo/scratch/pull/7", MergedAt: mergedAt},
+		}},
 	}
 	rows := &fakeRewrites{}
 	deps, _ := rewriteDeps(prs, rows)
 	var logs bytes.Buffer
 	deps.Logger = slog.New(slog.NewTextHandler(&logs, nil))
-	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
-		t.Fatal(err)
+	for range 2 {
+		if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if len(rows.recorded) != 0 {
-		t.Fatalf("recorded %v, want nothing for a branch no run row holds", rows.recorded)
+		t.Fatalf("recorded %v, want nothing for a PR no run row holds", rows.recorded)
 	}
-	if !strings.Contains(logs.String(), "msg=mergedPRUnfound") {
-		t.Fatalf("log = %q, want mergedPRUnfound", logs.String())
+	if n := strings.Count(logs.String(), "msg=mergedPRUnfound"); n != 1 {
+		t.Fatalf("log = %q, want the gap reported by one of two polls", logs.String())
 	}
 }
 
@@ -276,6 +341,27 @@ func TestRevertOfAPROutsideTheListingIsRead(t *testing.T) {
 	}
 	if len(prs.pulled) != 1 || prs.pulled[0] != 7 || len(rows.reverted) != 1 {
 		t.Fatalf("pulled = %v, reverted = %v, want PR 7 read and its run flagged", prs.pulled, rows.reverted)
+	}
+}
+
+// A revert of a PR the run's own branch no longer names still flags that run.
+func TestRevertFlagsTheRunThePRItNamesBelongsTo(t *testing.T) {
+	prs := &fakePullRequests{
+		closed: map[string][]ClosedPR{scratch: {
+			{Number: 9, Title: `Revert "a run's PR"`, Body: "Reverts octo/scratch#7", MergedAt: mergedAt.Add(time.Hour)},
+		}},
+		pulls: map[int]ClosedPR{7: {
+			Number: 7, Head: "wingman/FRG-1-456-2",
+			URL: "https://github.com/octo/scratch/pull/7", MergedAt: mergedAt,
+		}},
+	}
+	rows := &fakeRewrites{prs: map[int]RunRow{7: {RunID: runOnBranch}}}
+	deps, _ := rewriteDeps(prs, rows)
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows.reverted) != 1 || rows.reverted[0] != runOnBranch {
+		t.Fatalf("reverted = %v, want the run the reverted PR names", rows.reverted)
 	}
 }
 

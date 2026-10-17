@@ -257,8 +257,11 @@ func (pollPullRequests) Commits(context.Context, string, int) ([]dispatcher.Comm
 // pollRewrites records nothing and reads no sample.
 type pollRewrites struct{}
 
-func (pollRewrites) RunByBranch(context.Context, string) (dispatcher.RunRow, bool, error) {
+func (pollRewrites) RunForMerged(context.Context, string, dispatcher.ClosedPR) (dispatcher.RunRow, bool, error) {
 	return dispatcher.RunRow{}, false, nil
+}
+func (pollRewrites) MarkUnfound(context.Context, string, int, time.Time) (bool, error) {
+	return false, nil
 }
 func (pollRewrites) Record(context.Context, string, dispatcher.Measured) error {
 	return nil

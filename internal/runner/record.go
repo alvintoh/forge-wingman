@@ -196,6 +196,7 @@ type Record struct {
 	EditedFiles               []string         `firestore:"edited_files"`
 	DiffLines                 DiffLines        `firestore:"diff_lines"`
 	Branch                    string           `firestore:"branch"`
+	Branches                  []string         `firestore:"branches"`
 	BuildOutcome              Outcome          `firestore:"build_outcome"`
 	Outcome                   Outcome          `firestore:"outcome"`
 	StopReason                StopReason       `firestore:"stop_reason"`
@@ -497,6 +498,10 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, reader Prov
 			}
 		}
 	}
+	// Every attempt's branch is kept, this attempt's among them: the row's own
+	// branch names only the latest attempt, and a merged PR is matched to its run
+	// by the branch of whichever attempt opened it.
+	rec.Branches = branchesWith(existing.Branches, rec.Branch)
 	// The failing step's own words name a known transient fault when the run
 	// stopped on one, which is what the dispatcher requeues on. The stop detail
 	// and loop detail are summaries; the failing job's own log is read as well
@@ -560,6 +565,16 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, reader Prov
 		return rec, fmt.Errorf("settling run %s (rerun this job to retry — PutRecord and Settle are both idempotent): %w", in.RunID, err)
 	}
 	return rec, nil
+}
+
+// branchesWith returns branches with branch added, in the order the attempts
+// ran. A branch the list already holds is not added again, and an empty one is
+// nothing to add: a run that ended before its build pushed none.
+func branchesWith(branches []string, branch string) []string {
+	if branch == "" || slices.Contains(branches, branch) {
+		return branches
+	}
+	return append(branches, branch)
 }
 
 // timeOfUse is the run's own time-of-use bucket: "peak" when any of its steps
