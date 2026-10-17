@@ -1,6 +1,9 @@
 package runner
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // TransientClass names a known transient infrastructure fault: one that says
 // nothing about the ticket, so a rerun is worth an attempt where a real
@@ -36,6 +39,18 @@ var transientSignatures = []transientSignature{
 	{TransientModuleProxy, []string{"proxy.golang.org", "sum.golang.org"}},
 	{TransientNetwork, []string{"i/o timeout", "connection timed out", "tls handshake timeout", "connection reset by peer", "temporary failure in name resolution", "could not resolve host", "no such host", "network is unreachable", "unexpected eof"}},
 	{TransientLostRunner, []string{"the runner has received a shutdown signal", "lost communication with the server"}},
+}
+
+// jobLogStops are the stops that mean a job failed for reasons outside the
+// code: setup, the worktree, the PR job, or a job that ended with no readable
+// summary. Only for these is the failing job's own log read; every other
+// stop is classified from its recorded detail alone.
+var jobLogStops = []StopReason{StopSetup, StopWorktree, StopPRJob, StopNoBuildRecord, StopSummaryUnreadable}
+
+// ReadsJobLog reports whether a run that stopped on reason is classified from
+// the failing job's own log as well as its recorded detail.
+func ReadsJobLog(reason StopReason) bool {
+	return slices.Contains(jobLogStops, reason)
 }
 
 // ClassifyTransient is the class of the transient fault stepLog names, or ""
