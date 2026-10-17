@@ -485,6 +485,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      actions: read
     env:
       RUN_ID: ${{ inputs.run_id }}
       ATTEMPT: ${{ inputs.attempt }}
@@ -519,6 +520,7 @@ jobs:
         env:
           GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}
           SUMMARY: ${{ needs.model.outputs.summary }}
+          GH_TOKEN: ${{ github.token }}
         run: >-
           "$RUNNER_TEMP/runner" record
           -run-id "$RUN_ID" -attempt-id "$ATTEMPT_ID" -summary "$SUMMARY" -pr-url "$PR_URL"
