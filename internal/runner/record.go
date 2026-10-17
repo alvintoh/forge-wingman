@@ -423,7 +423,12 @@ type FinalizeInput struct {
 	AutoMerge bool
 	// CheckReport is the check job's failed_gate output, or empty when it did not run.
 	CheckReport string
-	RunURL      string
+	// FailedJobLog is the failing jobs' own log tails, read by the record job:
+	// a run's stop detail and loop detail are summaries, and the words that name
+	// the transient fault are in the log the job itself printed. Empty when the
+	// workflow handed the record job no token to read them with.
+	FailedJobLog string
+	RunURL       string
 	// Attempt is the attempt the dispatcher claimed this run at, nil when the dispatch carried none.
 	Attempt *int
 }
@@ -493,11 +498,13 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, reader Prov
 		}
 	}
 	// The failing step's own words name a known transient fault when the run
-	// stopped on one, which is what the dispatcher requeues on. Only a stopped
-	// run is classified: a run that reached its PR carries the fault that did
-	// not stop it, and holding it against the run would requeue a delivered PR.
+	// stopped on one, which is what the dispatcher requeues on. The stop detail
+	// and loop detail are summaries, so the failing job's own log is read
+	// alongside them. Only a stopped run is classified: a run that reached its
+	// PR carries the fault that did not stop it, and holding it against the run
+	// would requeue a delivered PR.
 	if !rec.Succeeded() {
-		rec.Transient = ClassifyTransient(rec.StopDetail + "\n" + rec.LoopDetail)
+		rec.Transient = ClassifyTransient(rec.StopDetail + "\n" + rec.LoopDetail + "\n" + in.FailedJobLog)
 	}
 	rec.JobResults["run"] = in.RunResult
 	rec.JobResults["pr"] = in.PRResult

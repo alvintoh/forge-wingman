@@ -196,7 +196,7 @@ func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(st
 	case "pr-meta":
 		return prMeta(ctx, logger, e, args[1:])
 	case "record":
-		return record(ctx, logger, e, args[1:])
+		return record(ctx, logger, getenv, e, args[1:])
 	case "enable-provider":
 		return enableProvider(ctx, logger, e, args[1:])
 	case "reset-breaker":
@@ -601,7 +601,7 @@ func runRecord(ctx context.Context, logger *slog.Logger, r runner.RecordReader, 
 	return rec, nil
 }
 
-func record(ctx context.Context, logger *slog.Logger, e env, args []string) error {
+func record(ctx context.Context, logger *slog.Logger, getenv func(string) string, e env, args []string) error {
 	fs := flag.NewFlagSet("record", flag.ContinueOnError)
 	runID := fs.String("run-id", "", "run record to finalize")
 	attemptID := fs.String("attempt-id", e.attemptID, "workflow attempt the build ran in")
@@ -650,6 +650,7 @@ func record(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		PRStopReason:      *prStopReason,
 		PRDuration:        time.Duration(*prSeconds) * time.Second,
 		CheckReport:       *checkReport,
+		FailedJobLog:      failedJobLogForRun(ctx, logger, getenv),
 		RunURL:            *runURL,
 		AutoMerge:         *autoMerge,
 		Attempt:           attempt,

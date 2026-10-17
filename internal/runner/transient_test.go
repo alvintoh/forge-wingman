@@ -2,7 +2,9 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -114,6 +116,20 @@ func TestFinalizeRecordsTheClassTheFailingStepNames(t *testing.T) {
 			TransientModuleProxy,
 		},
 		{
+			"a failing job's own log names the fault the summary only links to",
+			Summary{Outcome: OutcomeInfraFailure, StopReason: StopChecksRun, Phase: PhaseBuild, Branch: branch,
+				StopDetail: "checks: job failed, see https://github.com/o/r/actions/runs/7/job/3"},
+			FinalizeInput{FailedJobLog: proxyReadLog},
+			TransientModuleProxy,
+		},
+		{
+			"a failing job's own log names a fault the list does not carry",
+			Summary{Outcome: OutcomeAgentFailed, StopReason: StopAgentTimeout, Phase: PhaseBuild, Branch: branch,
+				StopDetail: "agent exceeded 50m0s", Steps: step},
+			FinalizeInput{FailedJobLog: "error: cannot find module './src/missing'"},
+			"",
+		},
+		{
 			"an agent timeout is left to the owner",
 			Summary{Outcome: OutcomeAgentFailed, StopReason: StopAgentTimeout, Phase: PhaseBuild, Branch: branch, StopDetail: "agent exceeded 50m0s", Steps: step},
 			FinalizeInput{},
@@ -128,7 +144,7 @@ func TestFinalizeRecordsTheClassTheFailingStepNames(t *testing.T) {
 		{
 			"a run that delivered its PR is never classified",
 			Summary{Outcome: OutcomeBuilt, Phase: PhaseCommit, Branch: branch, Steps: step, LoopDetail: gaveUp},
-			FinalizeInput{PRURL: "https://github.com/o/r/pull/1", RunResult: "success", PRResult: "success"},
+			FinalizeInput{PRURL: "https://github.com/o/r/pull/1", RunResult: "success", PRResult: "success", FailedJobLog: proxyReadLog},
 			"",
 		},
 	} {
@@ -145,5 +161,32 @@ func TestFinalizeRecordsTheClassTheFailingStepNames(t *testing.T) {
 				t.Fatalf("the stored record carries class %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestFinalizeStoresTheClassTheFailingJobsLogNamesAndNotItsText is the record's
+// half of the rule that a run row keeps the class alone: the words read to
+// classify a stop are never written into the record.
+func TestFinalizeStoresTheClassTheFailingJobsLogNamesAndNotItsText(t *testing.T) {
+	store := seeded(t)
+	in := FinalizeInput{
+		Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", RunResult: "failure", PRResult: "skipped",
+		Summary: encoded(t, Summary{Outcome: OutcomeInfraFailure, StopReason: StopChecksRun, Phase: PhaseBuild,
+			Branch:     BranchName(testTicket.BranchSegment(), "1-1"),
+			StopDetail: "checks: job failed, see https://github.com/o/r/actions/runs/7/job/3"}),
+		FailedJobLog: proxyReadLog,
+	}
+	if _, err := Finalize(context.Background(), store, &fakeLedger{}, nil, in, finalizeNow); err != nil {
+		t.Fatal(err)
+	}
+	if got := store[testRunID].Transient; got != TransientModuleProxy {
+		t.Fatalf("the stored record carries class %q, want %q", got, TransientModuleProxy)
+	}
+	row, err := json.Marshal(store[testRunID])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(row), proxyReadLog) {
+		t.Fatalf("the stored record carries the failing job's own log: %s", row)
 	}
 }
