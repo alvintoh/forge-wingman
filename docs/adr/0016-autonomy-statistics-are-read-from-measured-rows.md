@@ -13,15 +13,23 @@ The Autonomy page shows the rewrite rate over windows of 10/5/1 PRs, per PR, by 
 
 - One query: measured rows newest first, capped at 200 (`internal/store/rewrites.go:99`). Windows, strip, by-model, by-size, per-repo and trend are computed from that result in memory; a page view is one query, ≤200 document reads.
 - The measured row carries repo, size and the plan, build and review model, written when it is measured (FRG-157), so no figure joins another document. Models of past plan-staged PRs are backfilled once, gated.
+- The query projects only the fields a figure reads, plus `steps` for the build and review models. Measured 2026-10-17 on 55 run documents: a full read was 850 KB, five fields 30 KB; `ticket_body` (23%) and `steps` (21%) carry the most bytes, so the page's cost is payload, not row count.
 - Rates stay pooled lines, never a mean of rates; the pure functions are the single definition and the page computes nothing.
 
 ## Alternatives
 
-- **Stored rollup** written when a PR is measured: a second source of truth to keep in step with the rows, and nothing here is slow enough to need it. Rejected for now.
+Researched 2026-10-17 against the cloud already in use (GCP, native-first); Google's pricing was read, the vendor comparisons were not treated as evidence.
+
+| # | Option | Why not now |
+|---|--------|-------------|
+| 1 | Firestore server-side aggregations | count, sum and avg only, billed per 1,000 index entries read; no group-by, median or p90, which the figures need |
+| 2 | Stored rollup written when a PR is measured | a second source of truth to keep in step with the rows; nothing is slow enough to need it |
+| 3 | BigQuery through the Firestore export extension (GCP-native) | **the revisit path**: realtime, incremental mirror of `runs`, SQL for median, p90 and group-by; runs a function per write and bills storage and queries separately (billing not verified here, read Google's pricing before adopting) |
+| 4 | ClickHouse or another OLAP service | a second always-on service for 34 rows; vendor sources put its crossover at about 1 million to 100 million rows, and most are written by sellers |
 
 ## Revisit when
 
-Measured rows pass the 200 cap, or page views per day exceed PRs measured per day by a wide margin. Both thresholds are a judgment call, not established practice; the read-model pattern itself (CQRS) is.
+Measured rows pass the 200 cap, a projected page view is measurably slow on Cloud Run, or the owner wants history beyond the cap or ad-hoc queries; the next step is option 3 behind the same read function, so the page does not change. Both thresholds are a judgment call, not established practice; the read-model pattern itself (CQRS) is.
 
 ## Consequences
 
