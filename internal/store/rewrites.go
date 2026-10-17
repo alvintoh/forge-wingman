@@ -54,11 +54,13 @@ func NewRewrites(client *firestore.Client) *Rewrites {
 // RunForMerged returns the run row the merged PR pr belongs to, or false when no
 // row does: a branch no run pushed, or a row removed since.
 //
-// The PR names its run four ways: the row's own branch, the branches its earlier
-// attempts pushed, the PR it opened, and the PR a supersede of it replaced. Each
-// read names one field, which Firestore indexes by itself, and the superseded
-// read settles the repository here, since a number names a pull request of every
-// repository.
+// The PR names its run five ways: the row's own branch, the branches its earlier
+// attempts pushed, the page of the PR it opened, the number of that PR, and the
+// number of the PR a supersede of it replaced. Each read names one field, which
+// Firestore indexes by itself. A branch carries the run's GitHub id and a page
+// carries its repository, so neither can name another repository's run; a number
+// names a pull request of every repository, so those reads settle the repository
+// here.
 func (r *Rewrites) RunForMerged(ctx context.Context, repo string, pr dispatcher.ClosedPR) (dispatcher.RunRow, bool, error) {
 	coll := r.client.Collection(runsCollection)
 	var queries []firestore.Query
@@ -81,13 +83,15 @@ func (r *Rewrites) RunForMerged(ctx context.Context, repo string, pr dispatcher.
 		}
 	}
 	if pr.Number != 0 {
-		snaps, err := coll.Where(supersededPRField, "==", int64(pr.Number)).Documents(ctx).GetAll()
-		if err != nil {
-			return dispatcher.RunRow{}, false, fmt.Errorf("reading the run of merged %s#%d: %w", repo, pr.Number, err)
-		}
-		for _, snap := range snaps {
-			if str(snap.Data(), repoField) == repo {
-				return runRow(snap), true, nil
+		for _, field := range []string{prNumberField, supersededPRField} {
+			snaps, err := coll.Where(field, "==", int64(pr.Number)).Documents(ctx).GetAll()
+			if err != nil {
+				return dispatcher.RunRow{}, false, fmt.Errorf("reading the run of merged %s#%d: %w", repo, pr.Number, err)
+			}
+			for _, snap := range snaps {
+				if str(snap.Data(), repoField) == repo {
+					return runRow(snap), true, nil
+				}
 			}
 		}
 	}

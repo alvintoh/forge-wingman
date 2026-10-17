@@ -148,6 +148,26 @@ func TestRewritesFindsTheRunRowByThePRItSuperseded(t *testing.T) {
 	}
 }
 
+// A row a merge already measured names its PR by number alone, and that number is
+// read in the repository it was read for.
+func TestRewritesFindsTheRunRowByThePRNumberItHolds(t *testing.T) {
+	_, client := queue(t)
+	ctx := context.Background()
+	run, elsewhere := fresh("rewrites-number"), fresh("rewrites-number-other")
+	seedRow(t, client, run, map[string]any{repoField: "octo/scratch", prNumberField: int64(unclaimedPR + 2)})
+	seedRow(t, client, elsewhere, map[string]any{repoField: "octo/other", prNumberField: int64(unclaimedPR + 3)})
+	r := NewRewrites(client)
+	row, ok, err := r.RunForMerged(ctx, "octo/scratch",
+		dispatcher.ClosedPR{Number: unclaimedPR + 2, Head: "wingman/rewrites-number-3-1"})
+	if err != nil || !ok || row.RunID != run {
+		t.Fatalf("RunForMerged by a PR number = %+v, %v, %v, want %s", row, ok, err, run)
+	}
+	if row, ok, err := r.RunForMerged(ctx, "octo/scratch",
+		dispatcher.ClosedPR{Number: unclaimedPR + 3, Head: "wingman/rewrites-number-3-1"}); err != nil || ok {
+		t.Fatalf("RunForMerged on another repository's PR number = %+v, %v, %v, want it absent", row, ok, err)
+	}
+}
+
 // A pull request no run row holds is reported by the poll that first finds it:
 // every poll after reads the same absence.
 func TestMarkUnfoundReportsTheFirstPollAlone(t *testing.T) {
