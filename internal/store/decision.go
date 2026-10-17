@@ -608,14 +608,17 @@ func (q *Queue) Supersede(ctx context.Context, runID string, index int, repliedA
 		cost, _ := row[settledProviderCostField].(int64)
 		minutes, _ := row[settledRunnerMinutesField].(int64)
 		// The plan stood on the option the owner rejected, so it is made again.
-		return stateQueued, []firestore.Update{
+		updates := []firestore.Update{
 			{Path: decisionsField, Value: decisions},
-			{Path: provisionalRepliedField, Value: firestore.Delete},
 			{Path: supersededAttemptField, Value: attempt - 1},
 			{Path: supersededPRField, Value: pr},
 			{Path: priorSettledCostField, Value: cost},
 			{Path: priorSettledMinutesField, Value: minutes},
-		}, nil
+		}
+		if !holdsUnhandledReply(decisions) {
+			updates = append(updates, firestore.Update{Path: provisionalRepliedField, Value: firestore.Delete})
+		}
+		return stateQueued, updates, nil
 	})
 	if errors.Is(err, errStaleReply) {
 		return nil
@@ -624,6 +627,21 @@ func (q *Queue) Supersede(ctx context.Context, runID string, index int, repliedA
 		return fmt.Errorf("superseding run %s: %w", runID, err)
 	}
 	return nil
+}
+
+// holdsUnhandledReply reports whether any decision still provisional holds an
+// owner reply not yet handled, which keeps the run's replied mark.
+func holdsUnhandledReply(decisions []any) bool {
+	for _, d := range decisions {
+		e, _ := d.(map[string]any)
+		provisional, _ := e["provisional"].(bool)
+		confirmed, _ := e["confirmed_at"].(time.Time)
+		replied, _ := e["replied_at"].(time.Time)
+		if provisional && confirmed.IsZero() && !replied.IsZero() {
+			return true
+		}
+	}
+	return false
 }
 
 // errStaleReply reports a supersede of a reply the owner has since replaced.

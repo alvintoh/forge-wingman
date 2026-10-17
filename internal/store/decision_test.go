@@ -1096,6 +1096,35 @@ func TestSupersedeRefusesAnAbandonedRunAndAWaitingOneAsUnusable(t *testing.T) {
 	}
 }
 
+func TestSupersedeKeepsTheRepliedMarkWhileAnotherDecisionHoldsAnUnhandledReply(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	first, second := queueAt.Add(2*time.Minute), queueAt.Add(4*time.Minute)
+	for name, tt := range map[string]struct {
+		firstReplied time.Time
+		wantMarked   bool
+	}{
+		"another decision still holds a reply": {first, true},
+		"no other decision holds a reply":      {time.Time{}, false},
+	} {
+		id := fresh("decision-marker")
+		seedRow(t, client, id, map[string]any{
+			stateField: stateStopped, outcomeField: string(runner.OutcomeBuilt), provisionalRepliedField: true,
+			prURLField: "https://github.com/o/r/pull/141",
+			decisionsField: []decisionEntry{
+				{Decision: storeDecision, SessionID: "session-1", PostedAt: queueAt, Answer: storeDecision.Options[0].Label, Provisional: true, Reply: "new", RepliedAt: tt.firstReplied},
+				{Decision: storeDecision, SessionID: "session-1", PostedAt: queueAt, Answer: storeDecision.Options[0].Label, Provisional: true, Reply: "new", RepliedAt: second},
+			},
+		})
+		if err := q.Supersede(ctx, id, 2, second, "Add a new flag", queueAt.Add(5*time.Minute)); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if marked, _ := readRow(t, client, id)[provisionalRepliedField].(bool); marked != tt.wantMarked {
+			t.Fatalf("%s: marker = %v, want %v", name, marked, tt.wantMarked)
+		}
+	}
+}
+
 func TestSupersedeAndConfirmLeaveAReplyTheOwnerHasSinceReplaced(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
