@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -84,7 +85,7 @@ func TestAutoMerge(t *testing.T) {
 			}
 			tk := prRecord.Ticket()
 			tk.Size = tt.size
-			if got := autoMerge(dispatcher.AutonomyAutoMerge, tt.runID, tk, sum, tt.failedGate, tt.check); got != tt.want {
+			if got := autoMerge(true, dispatcher.AutonomyAutoMerge, tt.runID, tk, sum, tt.failedGate, tt.check); got != tt.want {
 				t.Fatalf("autoMerge = %v, want %v", got, tt.want)
 			}
 		})
@@ -97,11 +98,42 @@ func TestAutoMergeNeedsALevelThatAllowsIt(t *testing.T) {
 	held.Size = "L"
 	for level, allows := range map[dispatcher.Autonomy]bool{-1: false, 0: false, 1: false, 2: false, 3: false, 4: true, 5: true, 6: false} {
 		t.Run(strconv.Itoa(int(level)), func(t *testing.T) {
-			if got := autoMerge(level, "run-abc-12", clear, sum, "", prCheck{Planned: true}); got != allows {
+			if got := autoMerge(true, level, "run-abc-12", clear, sum, "", prCheck{Planned: true}); got != allows {
 				t.Errorf("a clear run: autoMerge = %v, want %v", got, allows)
 			}
-			if autoMerge(level, "run-abc-12", held, sum, "", prCheck{Planned: true}) {
+			if autoMerge(true, level, "run-abc-12", held, sum, "", prCheck{Planned: true}) {
 				t.Error("a run needing the owner: autoMerge = true, want false at every level")
+			}
+		})
+	}
+}
+
+func TestAutoMergeNeedsTheOwnersSwitchOn(t *testing.T) {
+	sum := runner.Summary{Outcome: runner.OutcomeBuilt, Ready: true}
+	clear := prRecord.Ticket()
+	if autoMerge(false, dispatcher.AutonomyAutoMerge, "run-abc-12", clear, sum, "", prCheck{Planned: true}) {
+		t.Error("switch off: autoMerge = true, want false for a run the rule would otherwise make eligible")
+	}
+	if !autoMerge(true, dispatcher.AutonomyAutoMerge, "run-abc-12", clear, sum, "", prCheck{Planned: true}) {
+		t.Error("switch on: autoMerge = false, want true")
+	}
+}
+
+func TestAutoMergeSwitchOnHoldsWhenTheSwitchCannotBeRead(t *testing.T) {
+	for name, tt := range map[string]struct {
+		store    *fakeAutoMergeSwitchStore
+		want     bool
+		wantWarn bool
+	}{
+		"on":         {&fakeAutoMergeSwitchStore{enabled: true}, true, false},
+		"off":        {&fakeAutoMergeSwitchStore{}, false, false},
+		"unreadable": {&fakeAutoMergeSwitchStore{enabled: true, readErr: errors.New("firestore is unreachable")}, false, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var logs strings.Builder
+			got := autoMergeSwitchOn(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), "run-abc-12", tt.store)
+			if got != tt.want || strings.Contains(logs.String(), "msg=autoMergeSwitchUnread") != tt.wantWarn {
+				t.Fatalf("on = %v, log %q, want on = %v and warned = %v", got, logs.String(), tt.want, tt.wantWarn)
 			}
 		})
 	}

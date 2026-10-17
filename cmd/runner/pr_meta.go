@@ -126,7 +126,8 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		return err
 	}
 	draft := draftPR(sum, check)
-	merge := autoMerge(dispatcher.Autonomy(rec.Autonomy), *runID, rec.Ticket(), sum, runner.FailedGate(*checkReport), check)
+	switchOn := autoMergeSwitchOn(ctx, logger, *runID, store.NewAutoMergeSwitches(fsc))
+	merge := autoMerge(switchOn, dispatcher.Autonomy(rec.Autonomy), *runID, rec.Ticket(), sum, runner.FailedGate(*checkReport), check)
 	logger.Info("autoMergeDecided", "run", *runID, "autoMerge", merge, "autonomy", rec.Autonomy, "sampled", runner.Sampled(*runID),
 		"draft", draft, "frontEnd", len(check.FrontEnd), "changed", len(check.Changed), "outOfPlan", len(check.OutOfPlan), "overlap", check.Overlap, "planned", check.Planned)
 	if err := writeOutputs(e.output, map[string]string{
@@ -292,11 +293,23 @@ func ownerAttention(runID string, t runner.Ticket, sum runner.Summary, failedGat
 		sum.StopReason == runner.StopWorkflowChange || failedGate != "" || len(check.FrontEnd) > 0 || !check.Planned || check.unconfirmed()
 }
 
+// autoMergeSwitchOn reads the owner's switch once. A switch that cannot be read
+// holds auto-merge off.
+func autoMergeSwitchOn(ctx context.Context, logger *slog.Logger, runID string, s autoMergeSwitchStore) bool {
+	on, err := s.Enabled(ctx)
+	if err != nil {
+		logger.Warn("autoMergeSwitchUnread", "run", runID, "err", err.Error())
+		return false
+	}
+	return on
+}
+
 // autoMerge reports whether the run's PR is marked eligible for auto-merge,
-// which pr-review.yml requests once its review is clean: the autonomy level the
-// run was claimed at allows it and nothing in the run needs the owner.
-func autoMerge(level dispatcher.Autonomy, runID string, t runner.Ticket, sum runner.Summary, failedGate string, check prCheck) bool {
-	return level.AutoMerges() && !ownerAttention(runID, t, sum, failedGate, check)
+// which pr-review.yml requests once its review is clean: the owner's switch is
+// on, the autonomy level the run was claimed at allows it and nothing in the
+// run needs the owner.
+func autoMerge(switchOn bool, level dispatcher.Autonomy, runID string, t runner.Ticket, sum runner.Summary, failedGate string, check prCheck) bool {
+	return switchOn && level.AutoMerges() && !ownerAttention(runID, t, sum, failedGate, check)
 }
 
 // refuseWorkflowPush fails a build whose write set touches a workflow file, so
