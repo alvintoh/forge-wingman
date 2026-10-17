@@ -26,6 +26,8 @@ type ClosedPR struct {
 	Body   string
 	// Head is the PR's head branch, the run's own branch for a run's PR.
 	Head string
+	// URL is the PR's own page, the value the run recorded when it opened it.
+	URL string
 	// MergedAt is when the PR merged, zero for one that closed unmerged.
 	MergedAt time.Time
 }
@@ -45,8 +47,12 @@ type PullRequests interface {
 // Rewrites records each merged agent PR's measured lines on its run row and
 // reads the samples a level's conditions are checked against.
 type Rewrites interface {
-	// RunByBranch returns the run row a PR's head branch belongs to.
-	RunByBranch(ctx context.Context, branch string) (RunRow, bool, error)
+	// RunForMerged returns the run row merged PR pr belongs to, whichever
+	// attempt opened it.
+	RunForMerged(ctx context.Context, repo string, pr ClosedPR) (RunRow, bool, error)
+	// MarkUnfound records that merged PR number of repo names no run row,
+	// reporting whether this is the first poll to record it.
+	MarkUnfound(ctx context.Context, repo string, number int, at time.Time) (bool, error)
 	// Record writes m onto run id's row.
 	Record(ctx context.Context, id string, m Measured) error
 	// FlagReverted flags run id's row as one a merged revert names.
@@ -159,15 +165,14 @@ func measureRepo(ctx context.Context, d Deps, m *measurement, repo string, prs [
 // measureMerged records pr's measured lines on its run row, unless the row
 // already carries the measurement of that same merge.
 func measureMerged(ctx context.Context, d Deps, m *measurement, repo string, pr ClosedPR) error {
-	row, ok, err := d.Rewrites.RunByBranch(ctx, pr.Head)
+	row, ok, err := d.Rewrites.RunForMerged(ctx, repo, pr)
 	if err != nil {
 		return err
 	}
 	if !ok {
-		// A run's branch with no run row is not this product's PR: a branch
+		// A merged PR no run row names is not this product's PR: a branch
 		// pushed by hand, or a row removed since.
-		d.Logger.Warn("mergedPRUnfound", "repo", repo, "pr", pr.Number, "branch", pr.Head)
-		return nil
+		return reportUnfoundPR(ctx, d, "mergedPRUnfound", repo, pr.Number, pr.Head)
 	}
 	if row.Measured.Equal(pr.MergedAt) {
 		return nil
@@ -200,6 +205,22 @@ func measureMerged(ctx context.Context, d Deps, m *measurement, repo string, pr 
 	return nil
 }
 
+// reportUnfoundPR reports a pull request that no run row names, and returns
+// whether this poll is the first to report it: such a PR keeps naming no run, and
+// every poll that reads the listing finds it again. token names the read
+// that found it, since a merge and a revert of one pull request are two reads of
+// a row that is not there, and the first of them to run reports it.
+func reportUnfoundPR(ctx context.Context, d Deps, token, repo string, number int, head string) error {
+	fresh, err := d.Rewrites.MarkUnfound(ctx, repo, number, d.Now())
+	if err != nil {
+		return err
+	}
+	if fresh {
+		d.Logger.Warn(token, "repo", repo, "pr", number, "branch", head)
+	}
+	return nil
+}
+
 // measurement is what one poll's measuring gathers: when the shadow began and
 // the merges newly measured.
 type measurement struct {
@@ -224,13 +245,12 @@ func flagReverted(ctx context.Context, d Deps, repo string, revert ClosedPR, rev
 		// is not a run's takes back nothing this product did.
 		return nil
 	}
-	row, ok, err := d.Rewrites.RunByBranch(ctx, original.Head)
+	row, ok, err := d.Rewrites.RunForMerged(ctx, repo, original)
 	if err != nil {
 		return err
 	}
 	if !ok {
-		d.Logger.Warn("revertedPRUnfound", "repo", repo, "pr", reverted, "branch", original.Head)
-		return nil
+		return reportUnfoundPR(ctx, d, "revertedPRUnfound", repo, reverted, original.Head)
 	}
 	if err := d.Rewrites.FlagReverted(ctx, row.RunID); err != nil {
 		return err

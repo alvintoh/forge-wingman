@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"cloud.google.com/go/firestore"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
+	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
 // mergeAt is the merge a rewrite test measures, after noticeAt so a row written
@@ -49,6 +51,11 @@ func TestRewritesRecordsTheMeasurementOnTheRunRow(t *testing.T) {
 	}
 }
 
+// unclaimedPR is a pull request number no run row in the suite names, so a read
+// by number or by URL reaches the row this test seeded alone: the emulator
+// outlives a run, so a query cannot be scoped to one test's rows.
+const unclaimedPR = 907_707_001
+
 func TestRewritesFindsTheRunRowByBranch(t *testing.T) {
 	_, client := queue(t)
 	ctx := context.Background()
@@ -59,12 +66,129 @@ func TestRewritesFindsTheRunRowByBranch(t *testing.T) {
 	if err := r.Record(ctx, run, dispatcher.Measured{MergedAt: mergeAt}); err != nil {
 		t.Fatal(err)
 	}
-	row, ok, err := r.RunByBranch(ctx, branch)
+	row, ok, err := r.RunForMerged(ctx, "octo/scratch", dispatcher.ClosedPR{
+		Number: 7, Head: branch, URL: "https://github.com/octo/scratch/pull/7",
+	})
 	if err != nil || !ok || row.RunID != run || !row.Measured.Equal(mergeAt) {
-		t.Fatalf("RunByBranch(%q) = %+v, %v, %v, want %s measured at %v", branch, row, ok, err, run, mergeAt)
+		t.Fatalf("RunForMerged by branch = %+v, %v, %v, want %s measured at %v", row, ok, err, run, mergeAt)
 	}
-	if row, ok, err := r.RunByBranch(ctx, "wingman/rewrites-none-1"); err != nil || ok {
-		t.Fatalf("RunByBranch of an unknown branch = %+v, %v, %v, want it absent", row, ok, err)
+	url := fmt.Sprintf("https://github.com/octo/scratch/pull/%d", unclaimedPR)
+	if row, ok, err := r.RunForMerged(ctx, "octo/scratch",
+		dispatcher.ClosedPR{Number: unclaimedPR, Head: "wingman/rewrites-none-1", URL: url}); err != nil || ok {
+		t.Fatalf("RunForMerged of a PR no row names = %+v, %v, %v, want it absent", row, ok, err)
+	}
+}
+
+// A run's recorded branches are the field a merge is matched on, so the record
+// job's own field name and this store's read of it are one name: a rename of
+// either has to fail here.
+func TestRewritesFindsTheRunRowByTheBranchesItsRecordCarries(t *testing.T) {
+	_, client := queue(t)
+	ctx := context.Background()
+	run := fresh("rewrites-recorded")
+	forget(t, client, run)
+	branch := "wingman/rewrites-recorded-1-1"
+	if err := NewRecords(client).PutRecord(ctx, run, runner.Record{RunID: run, Branches: []string{branch}}); err != nil {
+		t.Fatal(err)
+	}
+	row, ok, err := NewRewrites(client).RunForMerged(ctx, "octo/scratch",
+		dispatcher.ClosedPR{Number: unclaimedPR, Head: branch})
+	if err != nil || !ok || row.RunID != run {
+		t.Fatalf("RunForMerged on a recorded branch = %+v, %v, %v, want %s", row, ok, err, run)
+	}
+}
+
+// A merge whose branch an earlier attempt pushed is measured on the run that
+// attempted it: the row's own branch names a later attempt.
+func TestRewritesFindsTheRunRowByAnEarlierAttemptsBranch(t *testing.T) {
+	_, client := queue(t)
+	ctx := context.Background()
+	run := fresh("rewrites-attempts")
+	earlier, later := "wingman/rewrites-attempts-1-1", "wingman/rewrites-attempts-2-1"
+	seedRow(t, client, run, map[string]any{branchField: later, branchesField: []string{earlier, later}})
+	row, ok, err := NewRewrites(client).RunForMerged(ctx, "octo/scratch",
+		dispatcher.ClosedPR{Number: unclaimedPR, Head: earlier})
+	if err != nil || !ok || row.RunID != run {
+		t.Fatalf("RunForMerged by an earlier attempt's branch = %+v, %v, %v, want %s", row, ok, err, run)
+	}
+}
+
+// A merge from a pull request whose branch the row no longer carries is measured
+// on the run that opened it, read from the row's own pr_url.
+func TestRewritesFindsTheRunRowByThePROpened(t *testing.T) {
+	_, client := queue(t)
+	ctx := context.Background()
+	run := fresh("rewrites-opened")
+	url := fmt.Sprintf("https://github.com/octo/scratch/pull/%d", unclaimedPR)
+	seedRow(t, client, run, map[string]any{branchField: "wingman/rewrites-opened-2-1", prURLField: url})
+	row, ok, err := NewRewrites(client).RunForMerged(ctx, "octo/scratch",
+		dispatcher.ClosedPR{Number: unclaimedPR, Head: "wingman/rewrites-opened-1-1", URL: url})
+	if err != nil || !ok || row.RunID != run {
+		t.Fatalf("RunForMerged by the PR a row opened = %+v, %v, %v, want %s", row, ok, err, run)
+	}
+}
+
+// A merge of the pull request a supersede replaced is measured on the run that
+// replaced it, and a number is read in the repository it was read for.
+func TestRewritesFindsTheRunRowByThePRItSuperseded(t *testing.T) {
+	_, client := queue(t)
+	ctx := context.Background()
+	run, elsewhere := fresh("rewrites-superseded"), fresh("rewrites-superseded-other")
+	seedRow(t, client, run, map[string]any{repoField: "octo/scratch", supersededPRField: int64(unclaimedPR)})
+	seedRow(t, client, elsewhere, map[string]any{repoField: "octo/other", supersededPRField: int64(unclaimedPR + 1)})
+	r := NewRewrites(client)
+	row, ok, err := r.RunForMerged(ctx, "octo/scratch",
+		dispatcher.ClosedPR{Number: unclaimedPR, Head: "wingman/rewrites-superseded-2-1"})
+	if err != nil || !ok || row.RunID != run {
+		t.Fatalf("RunForMerged by a superseded PR = %+v, %v, %v, want %s", row, ok, err, run)
+	}
+	if row, ok, err := r.RunForMerged(ctx, "octo/scratch",
+		dispatcher.ClosedPR{Number: unclaimedPR + 1, Head: "wingman/rewrites-superseded-2-1"}); err != nil || ok {
+		t.Fatalf("RunForMerged on another repository's PR = %+v, %v, %v, want it absent", row, ok, err)
+	}
+}
+
+// A row a merge already measured names its PR by number alone, and that number is
+// read in the repository it was read for.
+func TestRewritesFindsTheRunRowByThePRNumberItHolds(t *testing.T) {
+	_, client := queue(t)
+	ctx := context.Background()
+	run, elsewhere := fresh("rewrites-number"), fresh("rewrites-number-other")
+	seedRow(t, client, run, map[string]any{repoField: "octo/scratch", prNumberField: int64(unclaimedPR + 2)})
+	seedRow(t, client, elsewhere, map[string]any{repoField: "octo/other", prNumberField: int64(unclaimedPR + 3)})
+	r := NewRewrites(client)
+	row, ok, err := r.RunForMerged(ctx, "octo/scratch",
+		dispatcher.ClosedPR{Number: unclaimedPR + 2, Head: "wingman/rewrites-number-3-1"})
+	if err != nil || !ok || row.RunID != run {
+		t.Fatalf("RunForMerged by a PR number = %+v, %v, %v, want %s", row, ok, err, run)
+	}
+	if row, ok, err := r.RunForMerged(ctx, "octo/scratch",
+		dispatcher.ClosedPR{Number: unclaimedPR + 3, Head: "wingman/rewrites-number-3-1"}); err != nil || ok {
+		t.Fatalf("RunForMerged on another repository's PR number = %+v, %v, %v, want it absent", row, ok, err)
+	}
+}
+
+// A pull request no run row holds is reported by the poll that first finds it:
+// every poll after reads the same absence.
+func TestMarkUnfoundReportsTheFirstPollAlone(t *testing.T) {
+	_, client := queue(t)
+	ctx := context.Background()
+	repo, other := fresh("rewrites-unfound"), fresh("rewrites-unfound-other")
+	t.Cleanup(func() {
+		ctx := context.Background()
+		for _, name := range []string{repo, other} {
+			_, _ = client.Collection(dispatchCollection).Doc(unfoundDocID(name, unclaimedPR)).Delete(ctx)
+		}
+	})
+	r := NewRewrites(client)
+	if first, err := r.MarkUnfound(ctx, repo, unclaimedPR, mergeAt); err != nil || !first {
+		t.Fatalf("MarkUnfound = %v, %v, want the first poll to report it", first, err)
+	}
+	if first, err := r.MarkUnfound(ctx, repo, unclaimedPR, mergeAt.Add(time.Minute)); err != nil || first {
+		t.Fatalf("MarkUnfound again = %v, %v, want a later poll silent", first, err)
+	}
+	if first, err := r.MarkUnfound(ctx, other, unclaimedPR, mergeAt); err != nil || !first {
+		t.Fatalf("MarkUnfound for another repository = %v, %v, want its own marker", first, err)
 	}
 }
 

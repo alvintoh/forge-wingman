@@ -266,6 +266,7 @@ type closedPR struct {
 	Number   int        `json:"number"`
 	Title    string     `json:"title"`
 	Body     string     `json:"body"`
+	URL      string     `json:"html_url"`
 	MergedAt *time.Time `json:"merged_at"`
 	Head     struct {
 		Ref string `json:"ref"`
@@ -302,7 +303,7 @@ func decodeClosedPRs(body io.Reader, repo string) ([]ClosedPR, error) {
 	}
 	out := make([]ClosedPR, 0, len(pulls))
 	for _, p := range pulls {
-		pr := ClosedPR{Number: p.Number, Title: p.Title, Body: p.Body, Head: p.Head.Ref}
+		pr := ClosedPR{Number: p.Number, Title: p.Title, Body: p.Body, Head: p.Head.Ref, URL: p.URL}
 		if p.MergedAt != nil {
 			pr.MergedAt = *p.MergedAt
 		}

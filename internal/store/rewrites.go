@@ -11,6 +11,8 @@ import (
 
 	"cloud.google.com/go/firestore"
 	"google.golang.org/api/iterator"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 )
@@ -32,6 +34,7 @@ const (
 	rewriteMergedAtField    = "rewrite_merged_at"
 	rewriteRevertedField    = "rewrite_reverted"
 	branchField             = "branch"
+	branchesField           = "branches"
 	autoMergeField          = "auto_merge"
 	failedGateField         = "failed_gate"
 	prURLField              = "pr_url"
@@ -48,21 +51,97 @@ func NewRewrites(client *firestore.Client) *Rewrites {
 	return &Rewrites{client: client}
 }
 
-// RunByBranch returns the run row a PR's head branch belongs to, or false when
-// no row carries that branch: a branch no run pushed, or a row removed since.
-func (r *Rewrites) RunByBranch(ctx context.Context, branch string) (dispatcher.RunRow, bool, error) {
-	snaps, err := r.client.Collection(runsCollection).Where(branchField, "==", branch).Limit(1).Documents(ctx).GetAll()
-	if err != nil {
-		return dispatcher.RunRow{}, false, fmt.Errorf("reading the run on branch %s: %w", branch, err)
+// RunForMerged returns the run row the merged PR pr belongs to, or false when no
+// row does: a branch no run pushed, or a row removed since.
+//
+// The PR names its run five ways: the row's own branch, the branches its earlier
+// attempts pushed, the page of the PR it opened, the number of that PR, and the
+// number of the PR a supersede of it replaced. Each read names one field, which
+// Firestore indexes by itself. A branch carries the run's GitHub id and a page
+// carries its repository, so neither can name another repository's run; a number
+// names a pull request of every repository, so those reads settle the repository
+// here.
+func (r *Rewrites) RunForMerged(ctx context.Context, repo string, pr dispatcher.ClosedPR) (dispatcher.RunRow, bool, error) {
+	coll := r.client.Collection(runsCollection)
+	var queries []firestore.Query
+	if pr.Head != "" {
+		queries = append(queries,
+			coll.Where(branchField, "==", pr.Head),
+			coll.Where(branchesField, "array-contains", pr.Head),
+		)
 	}
-	if len(snaps) == 0 {
-		return dispatcher.RunRow{}, false, nil
+	if pr.URL != "" {
+		queries = append(queries, coll.Where(prURLField, "==", pr.URL))
 	}
-	row := dispatcher.RunRow{RunID: snaps[0].Ref.ID}
-	if at, ok := snaps[0].Data()[rewriteMergedAtField].(time.Time); ok {
+	for _, q := range queries {
+		snaps, err := q.Limit(1).Documents(ctx).GetAll()
+		if err != nil {
+			return dispatcher.RunRow{}, false, fmt.Errorf("reading the run of merged %s#%d: %w", repo, pr.Number, err)
+		}
+		if len(snaps) > 0 {
+			return runRow(snaps[0]), true, nil
+		}
+	}
+	if pr.Number != 0 {
+		for _, field := range []string{prNumberField, supersededPRField} {
+			snaps, err := coll.Where(field, "==", int64(pr.Number)).Documents(ctx).GetAll()
+			if err != nil {
+				return dispatcher.RunRow{}, false, fmt.Errorf("reading the run of merged %s#%d: %w", repo, pr.Number, err)
+			}
+			for _, snap := range snaps {
+				if str(snap.Data(), repoField) == repo {
+					return runRow(snap), true, nil
+				}
+			}
+		}
+	}
+	return dispatcher.RunRow{}, false, nil
+}
+
+// runRow reads the row a query matched: what it is called, and when a merge last
+// measured it.
+func runRow(snap *firestore.DocumentSnapshot) dispatcher.RunRow {
+	row := dispatcher.RunRow{RunID: snap.Ref.ID}
+	if at, ok := snap.Data()[rewriteMergedAtField].(time.Time); ok {
 		row.Measured = at
 	}
-	return row, true, nil
+	return row
+}
+
+// The marker a merged PR with no run row is reported under, and when the poll
+// that found it did.
+const (
+	unfoundPrefix  = "unfound-"
+	unfoundAtField = "unfound_at"
+)
+
+// MarkUnfound records that merged PR number of repo has no run row, reporting
+// whether this poll is the first to record it: a PR with no row at all keeps
+// having none, and every poll that reads the listing finds it again.
+func (r *Rewrites) MarkUnfound(ctx context.Context, repo string, number int, at time.Time) (bool, error) {
+	doc := r.client.Collection(dispatchCollection).Doc(unfoundDocID(repo, number))
+	fresh := false
+	err := r.client.RunTransaction(ctx, func(_ context.Context, tx *firestore.Transaction) error {
+		fresh = false
+		if _, err := tx.Get(doc); err == nil {
+			return nil
+		} else if status.Code(err) != codes.NotFound {
+			return err
+		}
+		fresh = true
+		return tx.Set(doc, map[string]any{unfoundAtField: at})
+	})
+	if err != nil {
+		return false, fmt.Errorf("marking %s#%d as having no run: %w", repo, number, err)
+	}
+	return fresh, nil
+}
+
+// unfoundDocID names the marker of one repository's unfound pull request: a
+// document id cannot carry the slash in a repository's own name, and a
+// repository's name cannot carry the # it is joined with.
+func unfoundDocID(repo string, number int) string {
+	return fmt.Sprintf("%s%s#%d", unfoundPrefix, strings.ReplaceAll(repo, "/", "#"), number)
 }
 
 // Record writes m onto run id's row, clearing any revert a previous merge of the

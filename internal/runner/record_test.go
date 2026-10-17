@@ -470,6 +470,54 @@ func TestFinalizeAddsWhatEarlierAttemptsSettledToTheSettledTotals(t *testing.T) 
 	}
 }
 
+// Every attempt's branch is kept on the row, so a merged PR is matched to its
+// run by the branch of whichever attempt opened it: the row's own branch names
+// only the latest one.
+func TestFinalizeKeepsEveryAttemptsBranch(t *testing.T) {
+	store := seeded(t)
+	first := BranchName(testTicket.BranchSegment(), "1-1")
+	second := BranchName(testTicket.BranchSegment(), "2-1")
+	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1",
+		Summary: encoded(t, Summary{Outcome: OutcomeBuilt}), RunResult: "success", PRResult: "success",
+		PRURL: "https://github.com/o/r/pull/1"}
+	if _, err := Finalize(context.Background(), store, &fakeLedger{}, nil, in, finalizeNow); err != nil {
+		t.Fatal(err)
+	}
+	if got := store[testRunID].Branches; !slices.Equal(got, []string{first}) {
+		t.Fatalf("branches = %v, want the first attempt's %v", got, first)
+	}
+	sum := Summary{
+		Outcome: OutcomeBuilt, Phase: PhaseCommit, Branch: second,
+		Steps: []Step{{Phase: PhaseBuild, Round: 1, Model: "command-code/x",
+			CompletionsObject: completionsObject("2-1", PhaseBuild, 1), At: finalizeNow.Add(-30 * time.Minute)}},
+	}
+	in = FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "2-1",
+		Summary: encoded(t, sum), RunResult: "success", PRResult: "success",
+		PRURL: "https://github.com/o/r/pull/2"}
+	for range 2 {
+		// Finalized twice: a rerun of the same attempt adds its branch once.
+		if _, err := Finalize(context.Background(), store, &fakeLedger{}, nil, in, finalizeNow); err != nil {
+			t.Fatal(err)
+		}
+		got := store[testRunID]
+		if !slices.Equal(got.Branches, []string{first, second}) {
+			t.Fatalf("branches = %v, want both attempts' %v and %v", got.Branches, first, second)
+		}
+		if got.Branch != second {
+			t.Fatalf("branch = %q, want the latest attempt's %q", got.Branch, second)
+		}
+	}
+	// An attempt that pushed no branch of its own keeps the ones the row holds.
+	in = FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "3-1",
+		SummaryUnreadable: true, RunResult: "failure"}
+	if _, err := Finalize(context.Background(), store, &fakeLedger{}, nil, in, finalizeNow); err != nil {
+		t.Fatal(err)
+	}
+	if got := store[testRunID].Branches; !slices.Equal(got, []string{first, second}) {
+		t.Fatalf("branches = %v, want a stopped attempt to keep the branches the row holds", got)
+	}
+}
+
 func TestFinalizeKeepsEarlierAttemptsSpendInTheWindowsWhenTheRetryNeverReachedAnAgent(t *testing.T) {
 	for name, tt := range map[string]struct {
 		cost    money.Micros

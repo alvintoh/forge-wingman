@@ -420,6 +420,7 @@ func TestGitHubListsTheClosedPullRequestsNewestFirst(t *testing.T) {
 			{"number":9,"title":"Revert \"feat(x): add a file\"","body":"Reverts octo/scratch#7",
 			 "merged_at":"2026-10-14T04:00:00Z","head":{"ref":"revert-7-wingman/FRG-1-9-1"}},
 			{"number":7,"title":"feat(x): add a file","body":"","merged_at":"2026-10-14T03:00:00Z",
+			 "html_url":"https://github.com/octo/scratch/pull/7",
 			 "head":{"ref":"wingman/FRG-1-9-1"}},
 			{"number":6,"title":"a PR nobody merged","body":"","merged_at":null,"head":{"ref":"wingman/FRG-1-8-1"}}
 		]`)
@@ -441,8 +442,9 @@ func TestGitHubListsTheClosedPullRequestsNewestFirst(t *testing.T) {
 		!got.MergedAt.Equal(time.Date(2026, 10, 14, 4, 0, 0, 0, time.UTC)) {
 		t.Fatalf("first = %+v, want the revert with its head and merge time", got)
 	}
-	if got := prs[1]; got.Title != "feat(x): add a file" || got.Head != "wingman/FRG-1-9-1" {
-		t.Fatalf("second = %+v, want the run's own PR", got)
+	if got := prs[1]; got.Title != "feat(x): add a file" || got.Head != "wingman/FRG-1-9-1" ||
+		got.URL != "https://github.com/octo/scratch/pull/7" {
+		t.Fatalf("second = %+v, want the run's own PR with its page", got)
 	}
 	if got := prs[2]; !got.MergedAt.IsZero() {
 		t.Fatalf("third = %+v, want a PR that closed unmerged to carry no merge time", got)
