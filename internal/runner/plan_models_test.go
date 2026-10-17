@@ -109,3 +109,17 @@ func TestBuildPlanPhaseWalksTheModelListOnTheRealAgent(t *testing.T) {
 		})
 	}
 }
+
+func TestPlanModelIsTheLastPlanStepsModelAndIgnoresOtherPhases(t *testing.T) {
+	sum := Summary{Steps: []Step{
+		{Phase: PhasePlan, Model: "command-code/a"},
+		{Phase: PhasePlan, Model: "command-code/b"},
+		{Phase: PhaseBuild, Model: "command-code/c"},
+	}}
+	if got := planModel(sum); got != "command-code/b" {
+		t.Fatalf("plan model = %q, want the last plan step's, not a later phase's", got)
+	}
+	if got := planModel(Summary{Steps: []Step{{Phase: PhaseBuild, Model: "command-code/c"}}}); got != "" {
+		t.Fatalf("plan model = %q, want none for a summary with no plan step", got)
+	}
+}
