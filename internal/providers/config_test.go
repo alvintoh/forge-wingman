@@ -68,7 +68,7 @@ func TestParseConfigRejectsAnInvalidConfig(t *testing.T) {
 		"a last-resort model of another plan": {configWith(providerFacts + `,"last_resort":{"models":["other/free"],"measured_on":"unmeasured"}`),
 			"last-resort model \"other/free\", not a p model"},
 		"a last-resort model listed twice": {configWith(providerFacts + `,"rates":` + freeRates("p/free") +
-			`,"last_resort":{"models":["p/free","p/free"],"measured_on":"unmeasured"}`), "twice"},
+			`,"last_resort":{"models":["p/free","p/free"],"measured_on":"2026-10-08"}`), "twice"},
 		"a capped last-resort model": {configWith(providerFacts + `,"model_caps":{"p/free":5},"rates":` + freeRates("p/free") +
 			`,"last_resort":{"models":["p/free"],"measured_on":"unmeasured"}`), "has a model cap"},
 		"an unpriced last-resort model": {configWith(providerFacts + `,"last_resort":{"models":["p/free"],"measured_on":"unmeasured"}`),
@@ -79,6 +79,8 @@ func TestParseConfigRejectsAnInvalidConfig(t *testing.T) {
 			`,"last_resort":{"models":["p/free"],"measured_on":"unmeasured"}`), "not priced $0"},
 		"a last resort measured on no date": {configWith(providerFacts + `,"rates":` + freeRates("p/free") +
 			`,"last_resort":{"models":["p/free"],"measured_on":"soon"}`), "not a yyyy-mm-dd date"},
+		"an undated two-model last resort": {configWith(providerFacts + `,"rates":` + freeRates("p/free", "p/other") +
+			`,"last_resort":{"models":["p/free","p/other"],"measured_on":"unmeasured","smoke_runs":{"p/free":1,"p/other":2}}`), "needs a measured_on date"},
 		"a last resort naming no models": {configWith(providerFacts + `,"last_resort":{"measured_on":"unmeasured"}`), "no models"},
 		"a free rung with no smoke run": {configWith(providerFacts + paidRates +
 			`,"last_resort":{"models":["p/free"],"measured_on":"unmeasured"}`), "no recorded plan-smoke run"},
@@ -114,7 +116,7 @@ func freeRates(models ...string) string {
 func TestParseConfigReadsALastResortBesideThePaidModels(t *testing.T) {
 	cfg, err := parseConfig([]byte(configWith(providerFacts +
 		`,"windows":[{"name":"p-5h","hours":5,"limit_usd":14}],"rates":{"p/paid":{"input_usd_per_mtok":1},"p/a":{},"p/b":{}}` +
-		`,"last_resort":{"models":["p/b","p/a"],"measured_on":"unmeasured","smoke_runs":{"p/a":7,"p/b":8}}`)))
+		`,"last_resort":{"models":["p/b","p/a"],"measured_on":"2026-10-08","smoke_runs":{"p/a":7,"p/b":8}}`)))
 	if err != nil {
 		t.Fatal(err)
 	}

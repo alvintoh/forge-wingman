@@ -520,6 +520,9 @@ func (c Config) checkLastResort(provider string, p Provider) error {
 	if _, err := time.Parse(dateLayout, lr.MeasuredOn); err != nil && lr.MeasuredOn != unmeasuredOn {
 		return fmt.Errorf("provider %s last resort measured_on %q is not a yyyy-mm-dd date or %q", provider, lr.MeasuredOn, unmeasuredOn)
 	}
+	if len(lr.Models) >= 2 && lr.MeasuredOn == unmeasuredOn {
+		return fmt.Errorf("provider %s last resort of %d models needs a measured_on date: its order is the decision", provider, len(lr.Models))
+	}
 	for model, run := range lr.SmokeRuns {
 		switch {
 		case !slices.Contains(lr.Models, model):
