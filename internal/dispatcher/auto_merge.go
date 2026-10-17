@@ -1,6 +1,9 @@
 package dispatcher
 
-import "fmt"
+import (
+	"fmt"
+	"math"
+)
 
 // The reasons an AutoMergeDecision gives, stable so a log can be counted by them.
 const (
@@ -38,9 +41,10 @@ func (d AutoMergeDecision) Evaluated() bool {
 	return d.Reason != AutoMergeReasonSwitchOff && d.Reason != AutoMergeReasonEvidenceUnread
 }
 
-// RateText is the rate as a percentage, or "no agent lines" where none exists.
+// RateText is the rate as a percentage, or "no agent lines" where none exists,
+// whichever reason the decision stopped on.
 func (d AutoMergeDecision) RateText() string {
-	if d.Reason == AutoMergeReasonNoAgentLines {
+	if d.Reason == AutoMergeReasonNoAgentLines || math.IsInf(d.Rate, 0) {
 		return "no agent lines"
 	}
 	return fmt.Sprintf("%.1f%%", d.Rate*100)

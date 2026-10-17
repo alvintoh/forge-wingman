@@ -46,10 +46,11 @@ func TestAutoMergeDecisionLogsOnlyWhatWasMeasured(t *testing.T) {
 		evaluated bool
 		rate      string
 	}{
-		"a rate":         {AutoMergeDecision{Reason: AutoMergeReasonRateAboveBar, Rate: 0.1234}, true, "12.3%"},
-		"no agent lines": {AutoMergeDecision{Reason: AutoMergeReasonNoAgentLines, Rate: math.Inf(1)}, true, "no agent lines"},
-		"the switch off": {AutoMergeDecision{Reason: AutoMergeReasonSwitchOff}, false, "0.0%"},
-		"unreadable":     {AutoMergeDecision{Reason: AutoMergeReasonEvidenceUnread}, false, "0.0%"},
+		"a rate":                           {AutoMergeDecision{Reason: AutoMergeReasonRateAboveBar, Rate: 0.1234}, true, "12.3%"},
+		"no agent lines":                   {AutoMergeDecision{Reason: AutoMergeReasonNoAgentLines, Rate: math.Inf(1)}, true, "no agent lines"},
+		"too few measured, no agent lines": {AutoMergeDecision{Reason: AutoMergeReasonTooFewMeasured, Rate: math.Inf(1)}, true, "no agent lines"},
+		"the switch off":                   {AutoMergeDecision{Reason: AutoMergeReasonSwitchOff}, false, "0.0%"},
+		"unreadable":                       {AutoMergeDecision{Reason: AutoMergeReasonEvidenceUnread}, false, "0.0%"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := tt.d.Evaluated(); got != tt.evaluated {
