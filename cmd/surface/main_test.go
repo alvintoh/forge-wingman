@@ -826,6 +826,7 @@ func TestAutonomyReportsTheRewriteFiguresThePageDraws(t *testing.T) {
 	reader := &stubAutonomy{view: store.AutonomyView{Measured: []dispatcher.Sample{
 		{Run: "run-2", Repo: "octo/scratch", Size: "M", PR: 143, MergedAt: at,
 			PRURL:   "https://github.com/octo/scratch/pull/143",
+			Title:   "feat(runner): FRG-143 add the widget",
 			Rewrite: dispatcher.Rewrite{AgentLines: 100, OwnerLines: 50}},
 		{Run: "run-1", Repo: "octo/other", Size: "S", PR: 142, MergedAt: at.Add(-time.Hour),
 			Rewrite: dispatcher.Rewrite{AgentLines: 10, OwnerLines: 10}},
@@ -895,17 +896,18 @@ func TestAutonomyReportsTheRewriteFiguresThePageDraws(t *testing.T) {
 	if !ok {
 		t.Fatalf("newest PR = %v, want an object", prs[0])
 	}
-	if got, want := slices.Sorted(maps.Keys(newest)), []string{"agent_lines", "merged_at", "owner_lines", "pr", "pr_url", "rate", "repo", "run", "size"}; !slices.Equal(got, want) {
+	if got, want := slices.Sorted(maps.Keys(newest)), []string{"agent_lines", "merged_at", "owner_lines", "pr", "pr_url", "rate", "repo", "run", "size", "title"}; !slices.Equal(got, want) {
 		t.Errorf("PR keys = %v, want %v", got, want)
 	}
 	if newest["run"] != "run-2" || newest["repo"] != "octo/scratch" || newest["size"] != "M" ||
 		newest["pr"] != 143.0 || newest["agent_lines"] != 100.0 || newest["owner_lines"] != 50.0 ||
 		newest["rate"] != "50.0%" || newest["merged_at"] != "2026-10-15T09:00:00Z" ||
+		newest["title"] != "feat(runner): FRG-143 add the widget" ||
 		newest["pr_url"] != "https://github.com/octo/scratch/pull/143" {
-		t.Errorf("newest PR = %v, want its run, repository, size, lines, own rate and merge", newest)
+		t.Errorf("newest PR = %v, want its run, repository, size, title, lines, own rate and merge", newest)
 	}
-	if oldest, ok := prs[2].(map[string]any); !ok || oldest["rate"] != "no agent lines" {
-		t.Errorf("oldest PR = %v, want the words for a PR with no agent lines", prs[2])
+	if oldest, ok := prs[2].(map[string]any); !ok || oldest["rate"] != "no agent lines" || oldest["title"] != "" {
+		t.Errorf("oldest PR = %v, want a PR with no agent lines and the empty title a row measured before titles reads as", prs[2])
 	}
 
 	sizes, ok := rewrite["by_size"].([]any)

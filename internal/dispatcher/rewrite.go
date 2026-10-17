@@ -130,11 +130,13 @@ func RewriteOf(commits []Commit) Rewrite {
 }
 
 // Measured is one merged agent PR's measurement as it is written onto its run
-// row: the lines it measured, and when the PR merged.
+// row: the lines it measured, the PR's own title and number, and when the PR
+// merged.
 type Measured struct {
 	Rewrite
 	MergedAt time.Time
 	PR       int
+	Title    string
 }
 
 // Numbers is the evidence a level is computed from and a change is recorded
@@ -197,6 +199,9 @@ type Sample struct {
 	MergedAt time.Time
 	// PR is the PR's number in Repo, 0 for a row measured before it was kept.
 	PR int
+	// Title is the PR's own title as its row holds it, empty for a row measured
+	// before it was kept.
+	Title string
 	Rewrite
 	// AutoMerged is whether the run's PR merged itself, recorded on the run row
 	// when the claim was made.

@@ -582,6 +582,7 @@ type rewritePR struct {
 	Run        string    `json:"run"`
 	Repo       string    `json:"repo"`
 	Size       string    `json:"size"`
+	Title      string    `json:"title"`
 	AgentLines int64     `json:"agent_lines"`
 	OwnerLines int64     `json:"owner_lines"`
 	Rate       string    `json:"rate"`
@@ -663,6 +664,7 @@ func renderPRs(samples []dispatcher.Sample) []rewritePR {
 			Run:        s.Run,
 			Repo:       s.Repo,
 			Size:       dispatcher.SizeBucket(s.Size),
+			Title:      s.Title,
 			AgentLines: s.AgentLines,
 			OwnerLines: s.OwnerLines,
 			Rate:       linesRateText(s.AgentLines, s.Rate()),

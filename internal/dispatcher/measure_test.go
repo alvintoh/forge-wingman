@@ -161,7 +161,12 @@ func TestMeasureRecordsTheLinesOfAMergedPR(t *testing.T) {
 	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
 		t.Fatal(err)
 	}
-	want := Measured{Rewrite: Rewrite{AgentLines: 12, OwnerLines: 4, UnlabelledLines: 4}, MergedAt: mergedAt, PR: 7}
+	want := Measured{
+		Rewrite:  Rewrite{AgentLines: 12, OwnerLines: 4, UnlabelledLines: 4},
+		MergedAt: mergedAt,
+		PR:       7,
+		Title:    "a run's PR",
+	}
 	if got := rows.recorded[runOnBranch]; got != want {
 		t.Fatalf("recorded %+v, want %+v", got, want)
 	}

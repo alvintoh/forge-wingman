@@ -176,7 +176,12 @@ func measureMerged(ctx context.Context, d Deps, m *measurement, repo string, pr 
 	if err != nil {
 		return err
 	}
-	measured := Measured{Rewrite: RewriteOf(commits), MergedAt: pr.MergedAt, PR: pr.Number}
+	measured := Measured{
+		Rewrite:  RewriteOf(commits),
+		MergedAt: pr.MergedAt,
+		PR:       pr.Number,
+		Title:    pr.Title,
+	}
 	if err := d.Rewrites.Record(ctx, row.RunID, measured); err != nil {
 		return err
 	}
