@@ -9,13 +9,17 @@ The PRD's autonomy ladder has six levels, two rewrite-rate bars (5% to advance, 
 
 ## Decision
 
-**Auto-merge is on when the trailing-10 rewrite rate over ten measured PRs is 10% or less and no auto-merged PR has been reverted; otherwise it is off.**
+**Auto-merge is on when the trailing-10 rewrite rate over ten measured PRs is 10% or less and none of them is an auto-merge that was reverted; otherwise it is off.**
 
 - **Per-PR eligibility is unchanged:** size S and M only (FR-16), a front-end change is held, a PR in the 20% sample is held (FR-17).
 - **An owner switch, on by default.** Turning it off makes every PR manual whatever the rate. It lives in Firestore beside the peak-mode setting and is set by a command (`runner auto-merge`) and by a "..." button beside the status in the inbox and the Autonomy page that opens a small settings modal: an on/off switch with the rate shown, applied by SAVE and discarded by BACK, so a change needs no redeploy. The page shows two separate facts in words: the switch state (the owner's setting) and the rate line (whether the rate allows auto-merge); the effective state needs both. Setting it from the page is a write from the surface to that one Firestore document, so the surface's service account gets write access to it and nothing else. No document means on; a switch that cannot be read holds (off) and logs.
 - **Retired:** levels 0 to 5, the 5% bar, the 20% ceiling, the "delivery step exists" and gate-miss clauses.
 - **Replaced by plain settings:** the daily run cap is one configured number (`WINGMAN_DAILY_RUNS`, default 5); transient requeue and self-delegation are always on.
 - **The rate is the measure.** A rate above 10% turns auto-merge off by itself, and the 10% is the same bar as the Phase 3 exit gate.
+
+## Known limitation and revisit trigger
+
+An auto-merged PR carries no owner edits, so once auto-merge is on those PRs read as a 0% rewrite and dilute the rate; a drop in review quality is then seen later than it would be. The row's `auto_merge` field means the PR was labelled eligible, not that the bot merged it, so it cannot be used to leave them out. **Revisit when the first PRs auto-merge:** record who merged each PR at measurement (GitHub's single-PR `merged_by`), leave bot merges out of the rate, and read the 20% sample (FR-17) as the unbiased check. Shipping the simple rule first is deliberate: the owner wants it in production and tuned from data.
 
 ## Alternatives
 
