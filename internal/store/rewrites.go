@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"cloud.google.com/go/firestore"
 	"google.golang.org/api/iterator"
@@ -24,6 +27,7 @@ const (
 	rewriteOwnerChangeField = "rewrite_owner_change_lines"
 	rewriteUnlabelledField  = "rewrite_unlabelled_lines"
 	prNumberField           = "pr_number"
+	prTitleField            = "pr_title"
 	rewriteUnmeasuredField  = "rewrite_unmeasured_commits"
 	rewriteMergedAtField    = "rewrite_merged_at"
 	rewriteRevertedField    = "rewrite_reverted"
@@ -72,6 +76,7 @@ func (r *Rewrites) Record(ctx context.Context, id string, m dispatcher.Measured)
 		rewriteUnlabelledField:  m.UnlabelledLines,
 		rewriteUnmeasuredField:  m.UnmeasuredCommits,
 		prNumberField:           int64(m.PR),
+		prTitleField:            titleText(m.Title),
 		rewriteMergedAtField:    m.MergedAt,
 		rewriteRevertedField:    false,
 	}, firestore.MergeAll)
@@ -129,6 +134,7 @@ func sample(id string, row map[string]any) dispatcher.Sample {
 		Size:       str(row, sizeField),
 		Repo:       str(row, repoField),
 		PRURL:      str(row, prURLField),
+		Title:      str(row, prTitleField),
 		AutoMerged: autoMerged,
 		Reverted:   reverted,
 		GateMiss:   str(row, failedGateField) != "",
@@ -155,4 +161,26 @@ func rewriteOf(row map[string]any) (dispatcher.Rewrite, bool) {
 	r.UnmeasuredCommits, _ = row[rewriteUnmeasuredField].(int64)
 	_, measured := row[rewriteMergedAtField].(time.Time)
 	return r, measured
+}
+
+// prTitleLimit is the most bytes of a PR's title a run row stores.
+const prTitleLimit = 200
+
+// titleText returns a PR's title as a run row stores it: on one line and within
+// prTitleLimit bytes, so a page draws no break and never a partial character.
+func titleText(title string) string {
+	line := strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, title)
+	if len(line) <= prTitleLimit {
+		return line
+	}
+	n := prTitleLimit
+	for n > 0 && !utf8.RuneStart(line[n]) {
+		n--
+	}
+	return line[:n]
 }

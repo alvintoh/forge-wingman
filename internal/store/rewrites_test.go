@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -116,5 +117,66 @@ func TestRecentReturnsTheMeasuredMergesNewestFirst(t *testing.T) {
 	}
 	if one, err := r.Recent(ctx, 1); err != nil || len(one) != 1 || one[0].AgentLines != 102 {
 		t.Fatalf("Recent(1) = %+v, %v, want the newest merge alone", one, err)
+	}
+}
+
+// A newly measured PR's title is written on its run row as pr_title, on one
+// line.
+func TestRewritesRecordsThePRTitleOnTheRunRow(t *testing.T) {
+	_, client := queue(t)
+	ctx := context.Background()
+	run := fresh("rewrites-title")
+	forget(t, client, run)
+	if err := NewRewrites(client).Record(ctx, run,
+		dispatcher.Measured{MergedAt: mergeAt, PR: 7, Title: "FRG-1 add a\nwidget"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRow(t, client, run)[prTitleField]; got != "FRG-1 add a widget" {
+		t.Fatalf("pr_title = %v, want the PR's title on one line", got)
+	}
+}
+
+// The title a row holds is read with the rest of the measurement, and a row
+// measured before the title was kept reads as an empty one.
+func TestSampleReadsThePRTitleOffTheRow(t *testing.T) {
+	row := map[string]any{prTitleField: "feat(runner): FRG-1 add the widget"}
+	if got, want := sample("run-1", row).Title, "feat(runner): FRG-1 add the widget"; got != want {
+		t.Fatalf("title = %q, want %q", got, want)
+	}
+	// A row measured before this change carries the measurement and no title.
+	before := map[string]any{rewriteMergedAtField: mergeAt, rewriteAgentLinesField: int64(3)}
+	if got := sample("run-old", before).Title; got != "" {
+		t.Fatalf("title = %q, want a row with no pr_title read as empty", got)
+	}
+}
+
+// titleText keeps a title on one line and within the limit, cutting a longer
+// one back to a character boundary.
+func TestTitleTextKeepsATitleToOneLineWithinTheLimit(t *testing.T) {
+	limit := strings.Repeat("x", prTitleLimit)
+	// 67 three-byte characters are 201 bytes, so a cut at the 200th byte splits
+	// one: the stored title stops at the 66 that fill 198.
+	euro := strings.Repeat("€", 67)
+	// 50 four-byte characters are exactly the limit, so a cut one byte further
+	// lands on a boundary and keeps all 50.
+	emoji := strings.Repeat("🙂", 50)
+	for _, tt := range []struct {
+		name  string
+		title string
+		want  string
+	}{
+		{"a plain title is kept", "FRG-1 add the widget", "FRG-1 add the widget"},
+		{"a newline becomes a space", "FRG-1 add a\nwidget", "FRG-1 add a widget"},
+		{"a carriage return becomes a space", "FRG-1 a\rb", "FRG-1 a b"},
+		{"a tab becomes a space", "FRG-1\ta b", "FRG-1 a b"},
+		{"a NUL becomes a space", "FRG-1 a\x00b", "FRG-1 a b"},
+		{"a title of the limit is kept whole", limit, limit},
+		{"a title over the limit is cut to it", limit + "x", limit},
+		{"a cut steps back to the character boundary", euro, strings.Repeat("€", 66)},
+		{"a cut landing on a boundary keeps it whole", emoji + "x", emoji},
+	} {
+		if got := titleText(tt.title); got != tt.want {
+			t.Errorf("%s: titleText(%q) = %q, want %q", tt.name, tt.title, got, tt.want)
+		}
 	}
 }
