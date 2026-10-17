@@ -3,11 +3,19 @@ package store
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"cloud.google.com/go/firestore"
+	"cloud.google.com/go/firestore/apiv1/firestorepb"
+	"google.golang.org/api/option"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 	"github.com/alvintoh/forge-wingman/internal/money"
@@ -262,8 +270,110 @@ func TestAutonomyViewReadsTheLevelTheSnapshotAndTheHistoryNewestFirst(t *testing
 	}
 }
 
+// TestAutonomyViewReadsTheMeasuredMergesNewestFirst asserts the surface's read
+// carries the merged PRs a page draws its rewrite figures from, newest merge
+// first, each naming the run it was measured on, its repository and its size
+// (AC3, AC5).
+func TestAutonomyViewReadsTheMeasuredMergesNewestFirst(t *testing.T) {
+	a, client := autonomiesOver(t)
+	ctx := context.Background()
+	oldest, newest := fresh("view-measured-oldest"), fresh("view-measured-newest")
+	forget(t, client, oldest, newest)
+	r := NewRewrites(client)
+	// The merges are this run's own, so rows an earlier run left in the shared
+	// emulator sort behind them.
+	at := time.Now().UTC()
+	for i, id := range []string{oldest, newest} {
+		if err := r.Record(ctx, id, dispatcher.Measured{
+			Rewrite:  dispatcher.Rewrite{AgentLines: int64(100 + i), OwnerLines: 1},
+			MergedAt: at.Add(time.Duration(i) * time.Minute),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The older row carries the fields the sample reads beside the measurement.
+	if _, err := client.Collection(runsCollection).Doc(oldest).Set(ctx, map[string]any{
+		repoField: "octo/scratch", sizeField: "M",
+	}, firestore.MergeAll); err != nil {
+		t.Fatal(err)
+	}
+
+	view, err := a.AutonomyView(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Measured) < 2 {
+		t.Fatalf("Measured = %+v, want the two merges just recorded", view.Measured)
+	}
+	newestRow, oldestRow := view.Measured[0], view.Measured[1]
+	if newestRow.Run != newest || oldestRow.Run != oldest {
+		t.Fatalf("Measured = %+v, want the newest merge first", view.Measured)
+	}
+	if oldestRow.Repo != "octo/scratch" || oldestRow.Size != "M" || oldestRow.AgentLines != 100 {
+		t.Fatalf("oldest = %+v, want its repository, size and measurement read with it", oldestRow)
+	}
+	if newestRow.Repo != "" || newestRow.Size != "" || newestRow.AgentLines != 101 {
+		t.Fatalf("newest = %+v, want only the fields that row carries", newestRow)
+	}
+}
+
+// TestAutonomyViewReportsAMeasuredReadItCannotMake asserts a view whose measured
+// merges cannot be read is an error, rather than a view of empty figures a page
+// would draw as nothing measured (AC3).
+func TestAutonomyViewReportsAMeasuredReadItCannotMake(t *testing.T) {
+	_, err := measuredUnreadable(t).AutonomyView(context.Background(), 1)
+	if err == nil || !strings.Contains(err.Error(), "listing the measured runs") {
+		t.Fatalf("AutonomyView err = %v, want the measured read reported", err)
+	}
+}
+
+// measuredUnreadable returns Autonomies over a client that refuses the query the
+// measured merges are read with, while its point reads and the history query go
+// through, so a test drives the view's own handling of that read alone.
+func measuredUnreadable(t *testing.T) *Autonomies {
+	t.Helper()
+	if os.Getenv("FIRESTORE_EMULATOR_HOST") == "" {
+		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
+	}
+	intercept := func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+		stream, err := streamer(metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer owner"), desc, cc, method, opts...)
+		if err != nil || !strings.HasSuffix(method, "/RunQuery") {
+			return stream, err
+		}
+		return &refusingRuns{ClientStream: stream}, nil
+	}
+	conn, err := grpc.NewClient(os.Getenv("FIRESTORE_EMULATOR_HOST"),
+		grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithChainStreamInterceptor(intercept))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	client, err := firestore.NewClient(context.Background(), "forge-wingman-test", option.WithGRPCConn(conn))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	return NewAutonomies(client)
+}
+
+// refusingRuns refuses each query over the runs, sending every other query on.
+type refusingRuns struct {
+	grpc.ClientStream
+}
+
+func (s *refusingRuns) SendMsg(m any) error {
+	if req, ok := m.(*firestorepb.RunQueryRequest); ok {
+		if from := req.GetStructuredQuery().GetFrom(); len(from) > 0 && from[0].GetCollectionId() == runsCollection {
+			return status.Error(codes.PermissionDenied, "the runs are unreadable")
+		}
+	}
+	return s.ClientStream.SendMsg(m)
+}
+
 // TestAutonomyViewWithoutADocumentOrHistoryReadsEmpty covers the surface's first
-// load: no level set, no snapshot stored and no change recorded (AC6).
+// load: no level set, no snapshot stored, no change recorded and no merge
+// measured — a measured row left behind reads here rather than passing unnoticed
+// (AC6).
 func TestAutonomyViewWithoutADocumentOrHistoryReadsEmpty(t *testing.T) {
 	a, client := autonomiesOver(t)
 	clearHistory(t, NewAutonomyHistory(client))
@@ -271,7 +381,7 @@ func TestAutonomyViewWithoutADocumentOrHistoryReadsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view.Level != 0 || view.HasEarned || len(view.History) != 0 {
-		t.Fatalf("view = %+v, want no level, no snapshot and no change", view)
+	if view.Level != 0 || view.HasEarned || len(view.History) != 0 || len(view.Measured) != 0 {
+		t.Fatalf("view = %+v, want no level, no snapshot, no change and no measured merge", view)
 	}
 }

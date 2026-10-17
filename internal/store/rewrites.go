@@ -114,17 +114,19 @@ func recentSamples(ctx context.Context, client *firestore.Client, limit int) ([]
 		if err != nil {
 			return nil, fmt.Errorf("listing the measured runs: %w", err)
 		}
-		out = append(out, sample(snap.Data()))
+		out = append(out, sample(snap.Ref.ID, snap.Data()))
 	}
 	return out, nil
 }
 
-// sample reads one measured row as a condition sample. A field a row does not
-// carry reads as its zero, which withholds a level rather than granting one.
-func sample(row map[string]any) dispatcher.Sample {
+// sample reads one measured row, id, as a condition sample. A field a row does
+// not carry reads as its zero, which withholds a level rather than granting one.
+func sample(id string, row map[string]any) dispatcher.Sample {
 	autoMerged, _ := row[autoMergeField].(bool)
 	reverted, _ := row[rewriteRevertedField].(bool)
 	s := dispatcher.Sample{
+		Run:        id,
+		Size:       str(row, sizeField),
 		Repo:       str(row, repoField),
 		PRURL:      str(row, prURLField),
 		AutoMerged: autoMerged,

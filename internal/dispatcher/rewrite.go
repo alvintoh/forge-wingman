@@ -184,6 +184,11 @@ type RunRow struct {
 
 // Sample is one merged agent PR as the level's conditions read it.
 type Sample struct {
+	// Run is the id of the run row the PR was measured on.
+	Run string
+	// Size is the T-shirt size the ticket was built at, empty for a row that
+	// names none.
+	Size string
 	// Repo is the repository the PR merged into.
 	Repo string
 	// PRURL is the PR's own page, empty for a row that recorded none.
@@ -291,4 +296,247 @@ func Repos(samples []Sample) []string {
 	}
 	sort.Strings(repos)
 	return repos
+}
+
+// The windows the autonomy view draws as tiles and the length of its series.
+const (
+	// ShortPRs is the shorter window drawn beside the trailing one, showing how
+	// much the last few merges moved the rate.
+	ShortPRs = 5
+	// SeriesPoints is how many points the rolling series carries, the newest
+	// ones while the measured history is longer.
+	SeriesPoints = 25
+)
+
+// RateWindow is one trailing window of merged PRs as a view draws it: the PRs
+// it covers, the number of them it was asked for, and the rate pooled over their
+// lines.
+type RateWindow struct {
+	// PRs are the numbers of the PRs the window covers, newest first.
+	PRs []int
+	// Asked is how many PRs the window asked for, which PRs may fall short of:
+	// a short window holds a rate over fewer merges than it was read over.
+	Asked int
+	// Lines are the pooled measured lines of the PRs it covers.
+	Lines Rewrite
+	// Rate is Lines' rate: the owner's lines over the agent's, pooled rather
+	// than a mean of the PRs' own rates.
+	Rate float64
+}
+
+// WindowRate is the trailing n merged PRs of samples, newest first. A window of
+// no PRs holds none, so a caller asking for none measures nothing.
+func WindowRate(samples []Sample, n int) RateWindow {
+	if n < 0 {
+		n = 0
+	}
+	covered := samples
+	if n < len(covered) {
+		covered = covered[:n]
+	}
+	w := RateWindow{Asked: n, Lines: Lines(covered)}
+	w.Rate = w.Lines.Rate()
+	for _, s := range covered {
+		w.PRs = append(w.PRs, s.PR)
+	}
+	return w
+}
+
+// Tiles is the windows a view draws, widest first: the level's own trailing
+// window, the last few merges, and the last merge alone.
+func Tiles(samples []Sample) []RateWindow {
+	return []RateWindow{
+		WindowRate(samples, TrailingPRs),
+		WindowRate(samples, ShortPRs),
+		WindowRate(samples, 1),
+	}
+}
+
+// SeriesPoint is one point of the rolling rate: the merge the window ends at and
+// the rate pooled over that window.
+type SeriesPoint struct {
+	// PR and MergedAt are the merge the window ends at, the newest PR in it.
+	PR       int
+	MergedAt time.Time
+	Rate     float64
+}
+
+// RollingSeries is the rolling trailing-n rate over the merged PRs in samples:
+// one point per PR that has n measured PRs up to and including it, each the rate
+// pooled over those n, oldest first and at most points of them — the newest,
+// since a view draws the latest stretch of a long history.
+func RollingSeries(samples []Sample, n, points int) []SeriesPoint {
+	if n <= 0 || len(samples) < n {
+		return nil
+	}
+	// samples are newest first, so the oldest PR with n measured PRs up to and
+	// including it is the nth from the end, and each earlier index is the same
+	// window one merge later.
+	var out []SeriesPoint
+	for i := len(samples) - n; i >= 0; i-- {
+		out = append(out, SeriesPoint{
+			PR:       samples[i].PR,
+			MergedAt: samples[i].MergedAt,
+			Rate:     Lines(samples[i : i+n]).Rate(),
+		})
+	}
+	if points < 0 {
+		points = 0
+	}
+	if len(out) > points {
+		out = out[len(out)-points:]
+	}
+	return out
+}
+
+// The T-shirt sizes the queue admits, and the bucket for a measured PR naming
+// none of them.
+const (
+	SizeSmall   = "S"
+	SizeMedium  = "M"
+	SizeLarge   = "L"
+	SizeUnsized = "unsized"
+)
+
+// MinPRsPerSize is how many measured PRs a size needs before its rates are
+// reported: below it a row carries its count alone, since a rate over a handful
+// of PRs says more about which ones merged than about the size.
+const MinPRsPerSize = 10
+
+// SizeRow is one size's rewrite figures: how many measured PRs it holds and,
+// once it holds enough, the rate pooled over them with the spread of their own
+// rates.
+type SizeRow struct {
+	// Size is the T-shirt size, or SizeUnsized for the PRs naming none.
+	Size string
+	// PRs is how many measured PRs the size holds.
+	PRs int
+	// Rated is whether the size holds MinPRsPerSize PRs, the count its rates
+	// need: a rate of zero is a real measurement, so Rated is what tells a size
+	// with no rates from one measured clean.
+	Rated bool
+	// Spread is whether any of the size's PRs has a rate of its own to rank: a PR
+	// the agent wrote no lines in has none, so a size whose PRs are all +Inf
+	// carries its pooled rate with no Median or P90 behind it.
+	Spread bool
+	// Rate is the pooled owner lines over the pooled agent lines.
+	Rate float64
+	// Median and P90 are the size's per-PR rates, nearest rank, over the PRs the
+	// agent wrote lines in.
+	Median float64
+	P90    float64
+}
+
+// SizeBucket is the size row a PR built at size belongs to: the ladder's own
+// size, or SizeUnsized for any other text.
+func SizeBucket(size string) string {
+	switch size {
+	case SizeSmall, SizeMedium, SizeLarge:
+		return size
+	}
+	return SizeUnsized
+}
+
+// BySize splits samples by the size they were built at, always the S, M, L and
+// unsized rows in that order, so a view draws the same table whatever merged. A
+// size the ladder does not name is counted with the unsized ones.
+func BySize(samples []Sample) []SizeRow {
+	rows := []SizeRow{{Size: SizeSmall}, {Size: SizeMedium}, {Size: SizeLarge}, {Size: SizeUnsized}}
+	buckets := map[string]int{SizeSmall: 0, SizeMedium: 1, SizeLarge: 2, SizeUnsized: 3}
+	grouped := make([][]Sample, len(rows))
+	for _, s := range samples {
+		at := buckets[SizeBucket(s.Size)]
+		grouped[at] = append(grouped[at], s)
+	}
+	for i, group := range grouped {
+		rows[i].PRs = len(group)
+		if len(group) < MinPRsPerSize {
+			continue
+		}
+		rows[i].Rated = true
+		rows[i].Rate = Lines(group).Rate()
+		if rates := measuredRates(group); len(rates) > 0 {
+			rows[i].Spread = true
+			rows[i].Median = medianOf(rates)
+			rows[i].P90 = nearestRank(rates, 0.9)
+		}
+	}
+	return rows
+}
+
+// measuredRates is the per-PR rates of samples sorted ascending, with the PRs
+// the agent wrote no lines in left out: that rate is +Inf and has no place in a
+// median or a percentile, though the PR still counts.
+func measuredRates(samples []Sample) []float64 {
+	var rates []float64
+	for _, s := range samples {
+		if s.AgentLines <= 0 {
+			continue
+		}
+		rates = append(rates, s.Rate())
+	}
+	sort.Float64s(rates)
+	return rates
+}
+
+// medianOf is the middle of the sorted rates: the one middle value of an odd
+// count, the mean of the two middle ones of an even count.
+func medianOf(sorted []float64) float64 {
+	n := len(sorted)
+	if n%2 == 1 {
+		return sorted[n/2]
+	}
+	return (sorted[n/2-1] + sorted[n/2]) / 2
+}
+
+// nearestRank is the sorted rates' nearest-rank percentile: the value at rank
+// ceil(p*n), so a rate is picked rather than interpolated between two.
+func nearestRank(sorted []float64, p float64) float64 {
+	return sorted[int(math.Ceil(p*float64(len(sorted))))-1]
+}
+
+// RepoUnattributed is the entry the measured PRs naming no repository are
+// reported under.
+const RepoUnattributed = "unattributed"
+
+// RepoRow is one repository's rewrite figures: the same tiles and series the
+// whole set carries, over its own measured PRs.
+type RepoRow struct {
+	// Repo is the repository, or RepoUnattributed for the PRs naming none.
+	Repo string
+	// Tiles are the repository's own windows, and Series its own rolling rate.
+	Tiles  []RateWindow
+	Series []SeriesPoint
+}
+
+// ByRepo splits samples by the repository they merged into: the repositories
+// sorted, and the PRs naming none in a RepoUnattributed entry after them.
+func ByRepo(samples []Sample) []RepoRow {
+	grouped := map[string][]Sample{}
+	for _, s := range samples {
+		grouped[s.Repo] = append(grouped[s.Repo], s)
+	}
+	names := make([]string, 0, len(grouped))
+	for name := range grouped {
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	if len(grouped[""]) > 0 {
+		names = append(names, "")
+	}
+	rows := make([]RepoRow, 0, len(names))
+	for _, name := range names {
+		row := RepoRow{
+			Repo:   name,
+			Tiles:  Tiles(grouped[name]),
+			Series: RollingSeries(grouped[name], TrailingPRs, SeriesPoints),
+		}
+		if name == "" {
+			row.Repo = RepoUnattributed
+		}
+		rows = append(rows, row)
+	}
+	return rows
 }

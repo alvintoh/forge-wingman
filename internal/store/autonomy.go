@@ -102,19 +102,29 @@ func (a *Autonomies) Evidence(ctx context.Context) (dispatcher.Evidence, error) 
 	return dispatcher.Evidence{Level: level, Trailing: samples, CD: cd}, nil
 }
 
+// measuredShown is how many measured merges the autonomy view reads, newest
+// first: enough for the tiles, the rolling series and the split by size and
+// repository a page draws.
+const measuredShown = 200
+
 // AutonomyView is the surface's read of the level: the one the owner set, the
-// snapshot the measured PRs last earned, and the changes recorded since, newest
-// first.
+// snapshot the measured PRs last earned, the changes recorded since and the
+// measured merges themselves, newest first.
 type AutonomyView struct {
 	Level dispatcher.Autonomy
 	// Earned is the earned snapshot, and HasEarned is false while none is stored.
 	Earned    dispatcher.Earned
 	HasEarned bool
 	History   []dispatcher.Change
+	// Measured is every measured merged PR, newest merge first, which the view
+	// draws its rewrite figures from. It is shorter than measuredShown while
+	// fewer merges have been measured.
+	Measured []dispatcher.Sample
 }
 
-// AutonomyView reads the stored level, the earned snapshot beside it and up to
-// history changes, newest first.
+// AutonomyView reads the stored level, the earned snapshot beside it, up to
+// history changes and the measured merges, newest first. Any read that fails is
+// an error, so no caller draws a section from a store it could not read.
 func (a *Autonomies) AutonomyView(ctx context.Context, history int) (AutonomyView, error) {
 	level, err := a.Level(ctx)
 	if err != nil {
@@ -128,5 +138,9 @@ func (a *Autonomies) AutonomyView(ctx context.Context, history int) (AutonomyVie
 	if err != nil {
 		return AutonomyView{}, err
 	}
-	return AutonomyView{Level: level, Earned: earned, HasEarned: found, History: changes}, nil
+	measured, err := recentSamples(ctx, a.client, measuredShown)
+	if err != nil {
+		return AutonomyView{}, err
+	}
+	return AutonomyView{Level: level, Earned: earned, HasEarned: found, History: changes, Measured: measured}, nil
 }
