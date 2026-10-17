@@ -296,6 +296,7 @@ jobs:
       branch_segment: ${{ steps.meta.outputs.branch_segment }}
       body: ${{ steps.meta.outputs.body }}
       auto_merge: ${{ steps.meta.outputs.auto_merge }}
+      superseded_pr: ${{ steps.meta.outputs.superseded_pr }}
       # draft is the PR's own draft decision (FR-5), which the pr job opens it
       # with: the pre-PR loop's, an edit outside the run's plan, or a
       # concurrent run's plan these files touch.
@@ -454,6 +455,18 @@ jobs:
           echo "url=${url}" >> "$GITHUB_OUTPUT"
           echo "duration_s=$(( $(date +%s) - STARTED ))" >> "$GITHUB_OUTPUT"
 
+      - name: Close the superseded PR
+        if: needs.pr-meta.outputs.superseded_pr != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          OLD: ${{ needs.pr-meta.outputs.superseded_pr }}
+          NEW: ${{ steps.open.outputs.url }}
+        run: |
+          if [ "$(gh pr view "$OLD" --json state --jq .state)" = OPEN ]; then
+            gh pr close "$OLD" --comment "Superseded by $NEW: the owner chose a different option."
+          fi
+
       # The label only marks the PR eligible: pr-review.yml requests auto-merge once its
       # review of the PR is clean. A failed label leaves the PR for the owner.
       - id: eligible
@@ -485,6 +498,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      actions: read
     env:
       RUN_ID: ${{ inputs.run_id }}
       ATTEMPT: ${{ inputs.attempt }}
@@ -519,6 +533,7 @@ jobs:
         env:
           GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}
           SUMMARY: ${{ needs.model.outputs.summary }}
+          GH_TOKEN: ${{ github.token }}
         run: >-
           "$RUNNER_TEMP/runner" record
           -run-id "$RUN_ID" -attempt-id "$ATTEMPT_ID" -summary "$SUMMARY" -pr-url "$PR_URL"
