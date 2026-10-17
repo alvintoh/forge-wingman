@@ -207,7 +207,7 @@ func measureMerged(ctx context.Context, d Deps, m *measurement, repo string, pr 
 
 // reportUnfoundPR reports a pull request that no run row names, and returns
 // whether this poll is the first to report it: such a PR keeps naming no run, and
-// the poll that reads the listing runs again every minute. token names the read
+// every poll that reads the listing finds it again. token names the read
 // that found it, since a merge and a revert of one pull request are two reads of
 // a row that is not there, and the first of them to run reports it.
 func reportUnfoundPR(ctx context.Context, d Deps, token, repo string, number int, head string) error {

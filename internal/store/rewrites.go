@@ -113,7 +113,7 @@ const (
 
 // MarkUnfound records that merged PR number of repo has no run row, reporting
 // whether this poll is the first to record it: a PR with no row at all keeps
-// having none, and the poll that reads the listing runs again every minute.
+// having none, and every poll that reads the listing finds it again.
 func (r *Rewrites) MarkUnfound(ctx context.Context, repo string, number int, at time.Time) (bool, error) {
 	doc := r.client.Collection(dispatchCollection).Doc(unfoundDocID(repo, number))
 	fresh := false

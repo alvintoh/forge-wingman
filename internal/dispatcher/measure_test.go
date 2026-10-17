@@ -263,16 +263,16 @@ func TestMeasureReportsAMergedPRWithNoRunRowOnce(t *testing.T) {
 	deps, _ := rewriteDeps(prs, rows)
 	var logs bytes.Buffer
 	deps.Logger = slog.New(slog.NewTextHandler(&logs, nil))
-	for range 2 {
+	for poll := 1; poll <= 2; poll++ {
 		if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
 			t.Fatal(err)
+		}
+		if n := strings.Count(logs.String(), "msg=mergedPRUnfound"); n != 1 {
+			t.Fatalf("after poll %d the log = %q, want the gap reported once, by the first poll", poll, logs.String())
 		}
 	}
 	if len(rows.recorded) != 0 {
 		t.Fatalf("recorded %v, want nothing for a PR no run row holds", rows.recorded)
-	}
-	if n := strings.Count(logs.String(), "msg=mergedPRUnfound"); n != 1 {
-		t.Fatalf("log = %q, want the gap reported by one of two polls", logs.String())
 	}
 }
 
