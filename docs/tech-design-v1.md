@@ -379,6 +379,8 @@ FR-8 and FR-11 bind whoever acts, so they apply. FR-7, FR-9 and FR-10 gate the
 *agent* from reaching a person, guessing, and choosing — and the operator is the
 person, doing the choosing they opened the surface to do.
 
+**The Autonomy statistics are computed at read time from one capped query of measured rows, with repo, size and models written onto the row when it is measured; no rollup until the revisit triggers in `adr/0016` fire.**
+
 ### AI — TWO seams, and they are not the same shape
 
 ⚠️ **This section previously said opencode "is the whole AI layer". It is not.**

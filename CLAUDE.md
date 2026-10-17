@@ -100,8 +100,14 @@ current iPhone Pro Max, Playwright's `iPhone 17 Pro Max`, 440x763 at scale 3; th
 the shots, so the capture is the last step before merge. This is the product's own flow for the
 repositories it builds in.
 
+Before merging any PR that changed a document the vault also holds (`docs/`), run
+`/sync-docs forge-wingman` from forge-vault. The vault is the source and the repo's copies
+drift: on 2026-10-17 four documents differed after runner PRs edited their repo copies. A
+drawing is synced at its own end, by forge-vault's `/proto-draw`.
+
 *(Judgment call, owner's instruction 2026-10-15, superseding 2026-10-13's "sweep first, review
-second"; no authority prescribes the order.)*
+second"; no authority prescribes the order. The `/sync-docs` step is the owner's instruction of
+2026-10-17.)*
 
 ## Merging PRs for the owner
 
