@@ -8,11 +8,11 @@ import (
 
 // PlanStage runs the plan phase alone, for the plan-stage dispatch: it
 // checks the model job's identity and the ticket, runs the plan agent with
-// edit and shell denied, and returns the files the plan names and the commit
-// the plan was made against. It writes nothing to the repository and reports
-// no summary: the model job's identity cannot reach a run record, so the
-// trusted record-plan-stage job re-checks this result before any record
-// write.
+// edit and shell denied, and returns the files the plan names, the commit the
+// plan was made against and the model it ran on. It writes nothing to the
+// repository and reports no summary: the model job's identity cannot reach a
+// run record, so the trusted record-plan-stage job re-checks this result
+// before any record write.
 //
 // When d.AgentProbe is set the agent runs in a worktree of its own, probed
 // first, so a container never mounts the checkout, which holds the auth step's
@@ -71,5 +71,17 @@ func PlanStage(ctx context.Context, d BuildDeps, c BuildConfig) (PlanStageResult
 	if err != nil {
 		return PlanStageResult{}, err
 	}
-	return PlanStageResult{Files: files, BaseSHA: base, Decision: decision}, nil
+	return PlanStageResult{Files: files, BaseSHA: base, Model: planModel(sum), Decision: decision}, nil
+}
+
+// planModel names the model the plan phase's agent ran on: the model of its
+// last step, which is the main plan model unless a backup took over, and empty
+// when the phase recorded no step.
+func planModel(sum Summary) string {
+	for i := len(sum.Steps) - 1; i >= 0; i-- {
+		if sum.Steps[i].Phase == PhasePlan {
+			return sum.Steps[i].Model
+		}
+	}
+	return ""
 }

@@ -149,6 +149,13 @@ func TestPlanStageResultCheck(t *testing.T) {
 		ok   bool
 	}{
 		{"a usable plan", PlanStageResult{Files: []string{"a.go", "a_test.go"}, BaseSHA: sha}, nil, true},
+		{"a plan with the model it ran on", PlanStageResult{Files: []string{"a.go"}, BaseSHA: sha, Model: "command-code/x"}, nil, true},
+		{"a model at the length limit", PlanStageResult{Files: []string{"a.go"}, BaseSHA: sha,
+			Model: "p/" + strings.Repeat("a", maxPlanModelBytes-2)}, nil, true},
+		{"a model past the length limit", PlanStageResult{Files: []string{"a.go"}, BaseSHA: sha,
+			Model: "p/" + strings.Repeat("a", maxPlanModelBytes-1)}, errPlanModel, false},
+		{"a model with a newline", PlanStageResult{Files: []string{"a.go"}, BaseSHA: sha, Model: "command-code/x\ncommand-code/y"}, errPlanModel, false},
+		{"a model that is not provider/model", PlanStageResult{Files: []string{"a.go"}, BaseSHA: sha, Model: "command-code/deepseek flash"}, errPlanModel, false},
 		{"no files", PlanStageResult{BaseSHA: sha}, errPlanFiles, false},
 		{"an absolute path", PlanStageResult{Files: []string{"/etc/passwd"}, BaseSHA: sha}, errPlanFiles, false},
 		{"a path outside the repository", PlanStageResult{Files: []string{"../x.go"}, BaseSHA: sha}, errPlanFiles, false},
@@ -174,12 +181,12 @@ func TestPlanStageResultCheck(t *testing.T) {
 
 func TestParsePlanStageRejectsUnknownFieldsAndTrailingData(t *testing.T) {
 	sha := strings.Repeat("a", 40)
-	good, err := EncodePlanStage(PlanStageResult{Files: []string{"a.go"}, BaseSHA: sha})
+	good, err := EncodePlanStage(PlanStageResult{Files: []string{"a.go"}, BaseSHA: sha, Model: "command-code/x"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	got, err := ParsePlanStage(good)
-	if err != nil || !slices.Equal(got.Files, []string{"a.go"}) || got.BaseSHA != sha {
+	if err != nil || !slices.Equal(got.Files, []string{"a.go"}) || got.BaseSHA != sha || got.Model != "command-code/x" {
 		t.Fatalf("plan %+v, err %v", got, err)
 	}
 	for name, raw := range map[string]string{

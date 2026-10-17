@@ -945,6 +945,61 @@ func TestRecordPlanStageStopsARunWithNoRecordablePlan(t *testing.T) {
 	}
 }
 
+// TestRecordPlanStageRecordsTheModelThePlanRanOn drives the trusted half to the
+// plan write: the artifact's model reaches the row as plan_model, and an
+// artifact carrying none records the plan with that field empty. The call goes
+// on to wake the dispatcher, which needs Cloud Run credentials a test has none
+// of, so only the recorded row is asserted.
+func TestRecordPlanStageRecordsTheModelThePlanRanOn(t *testing.T) {
+	if os.Getenv("FIRESTORE_EMULATOR_HOST") == "" {
+		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
+	}
+	ctx := context.Background()
+	client, err := firestore.NewClient(ctx, "forge-wingman-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	e := env{identity: runner.Identity{Account: "octo", Owner: "octo"}, project: "forge-wingman-test"}
+	for name, tc := range map[string]struct{ model, want string }{
+		"a plan with a model":  {"command-code/deepseek/deepseek-v4.1-flash", "command-code/deepseek/deepseek-v4.1-flash"},
+		"a plan with no model": {"", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			runID := "plan-model-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+			ref := client.Collection("runs").Doc(runID)
+			t.Cleanup(func() { _, _ = ref.Delete(context.Background()) })
+			raw, err := runner.EncodePlanStage(runner.PlanStageResult{
+				Files: []string{"internal/runner/plan.go"}, BaseSHA: strings.Repeat("a", 40), Model: tc.model,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "plan.json")
+			if err := os.WriteFile(path, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// The plan is recorded before the wake, which cannot reach a
+			// dispatcher from here.
+			_ = recordPlanStage(ctx, logger, e, []string{
+				"-run-id", runID, "-plan-file", path,
+				"-dispatcher-uri", "https://example.test", "-plan-stage-result", jobSuccess,
+			})
+			snap, err := ref.Get(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := snap.Data()["plan_model"]; got != tc.want {
+				t.Fatalf("plan_model = %v, want %q", got, tc.want)
+			}
+			if files, _ := snap.Data()["plan_files"].([]any); len(files) == 0 {
+				t.Fatalf("plan_files = %v, want the plan recorded", snap.Data()["plan_files"])
+			}
+		})
+	}
+}
+
 func TestRecordPlanStageRefusesAMismatchedIdentity(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	e := env{identity: runner.Identity{Account: "work-account", Owner: "octo"}}
