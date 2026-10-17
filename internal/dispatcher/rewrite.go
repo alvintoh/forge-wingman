@@ -425,18 +425,25 @@ type SizeRow struct {
 	P90    float64
 }
 
+// SizeBucket is the size row a PR built at size belongs to: the ladder's own
+// size, or SizeUnsized for any other text.
+func SizeBucket(size string) string {
+	switch size {
+	case SizeSmall, SizeMedium, SizeLarge:
+		return size
+	}
+	return SizeUnsized
+}
+
 // BySize splits samples by the size they were built at, always the S, M, L and
 // unsized rows in that order, so a view draws the same table whatever merged. A
 // size the ladder does not name is counted with the unsized ones.
 func BySize(samples []Sample) []SizeRow {
 	rows := []SizeRow{{Size: SizeSmall}, {Size: SizeMedium}, {Size: SizeLarge}, {Size: SizeUnsized}}
-	buckets := map[string]int{SizeSmall: 0, SizeMedium: 1, SizeLarge: 2}
+	buckets := map[string]int{SizeSmall: 0, SizeMedium: 1, SizeLarge: 2, SizeUnsized: 3}
 	grouped := make([][]Sample, len(rows))
 	for _, s := range samples {
-		at, ok := buckets[s.Size]
-		if !ok {
-			at = len(rows) - 1
-		}
+		at := buckets[SizeBucket(s.Size)]
 		grouped[at] = append(grouped[at], s)
 	}
 	for i, group := range grouped {
@@ -473,30 +480,17 @@ func measuredRates(samples []Sample) []float64 {
 // medianOf is the middle of the sorted rates: the one middle value of an odd
 // count, the mean of the two middle ones of an even count.
 func medianOf(sorted []float64) float64 {
-	switch n := len(sorted); {
-	case n == 0:
-		return 0
-	case n%2 == 1:
+	n := len(sorted)
+	if n%2 == 1 {
 		return sorted[n/2]
-	default:
-		return (sorted[n/2-1] + sorted[n/2]) / 2
 	}
+	return (sorted[n/2-1] + sorted[n/2]) / 2
 }
 
 // nearestRank is the sorted rates' nearest-rank percentile: the value at rank
 // ceil(p*n), so a rate is picked rather than interpolated between two.
 func nearestRank(sorted []float64, p float64) float64 {
-	if len(sorted) == 0 {
-		return 0
-	}
-	rank := int(math.Ceil(p * float64(len(sorted))))
-	if rank < 1 {
-		rank = 1
-	}
-	if rank > len(sorted) {
-		rank = len(sorted)
-	}
-	return sorted[rank-1]
+	return sorted[int(math.Ceil(p*float64(len(sorted))))-1]
 }
 
 // RepoUnattributed is the entry the measured PRs naming no repository are

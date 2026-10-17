@@ -268,6 +268,26 @@ func TestBySizeGroupsTheSizesAndTheirRates(t *testing.T) {
 	}
 }
 
+func TestBySizeTakesTheMiddleRateOfAnOddCount(t *testing.T) {
+	var samples []Sample
+	// Eleven S PRs of eight agent lines, owner lines 0 … 10: the middle rate is
+	// the sixth, 5/8, and the p90 is the tenth, 9/8.
+	for owner := range int64(11) {
+		samples = append(samples, Sample{Size: SizeSmall, Rewrite: Rewrite{AgentLines: 8, OwnerLines: owner}})
+	}
+	if s := BySize(samples)[0]; s.Median != 0.625 || s.P90 != 1.125 {
+		t.Fatalf("S = %+v, want a 62.5%% median and a 112.5%% p90", s)
+	}
+}
+
+func TestSizeBucketFoldsAnythingButTheLadderIntoUnsized(t *testing.T) {
+	for size, want := range map[string]string{"S": SizeSmall, "M": SizeMedium, "L": SizeLarge, "": SizeUnsized, "XL": SizeUnsized, "s": SizeUnsized} {
+		if got := SizeBucket(size); got != want {
+			t.Errorf("SizeBucket(%q) = %q, want %q", size, got, want)
+		}
+	}
+}
+
 // TestBySizeReadsNoSpreadForASizeTheAgentWroteNothingIn asserts a rated size
 // whose measured PRs all have +Inf rates carries its count and the rate pooled
 // over it, with no spread of its own for a median or a p90 to rank (AC4).

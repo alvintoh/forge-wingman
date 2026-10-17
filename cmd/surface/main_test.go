@@ -1008,6 +1008,57 @@ func TestAutonomyReportsTheRollingRateOverTheMerges(t *testing.T) {
 // TestAutonomyCapsThePRListAtTheTrailingWindow asserts the list of PRs stops at
 // the ten merges the tiles are read over, newest first, so a page lists the same
 // window the rate is pooled over (AC3).
+func TestAutonomyPrintsNoAgentLinesForAnEmptyWindowAndAPRWithNoLines(t *testing.T) {
+	empty := getAutonomy(t, &stubAutonomy{})
+	if strings.Contains(empty.Body.String(), `"rate":"0.0%"`) {
+		t.Fatalf("body = %s, want no measured zero over no merges", empty.Body.String())
+	}
+	var body struct {
+		Rewrite map[string][]map[string]any `json:"rewrite"`
+	}
+	if err := json.Unmarshal(empty.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	tiles := body.Rewrite["tiles"]
+	if len(tiles) == 0 {
+		t.Fatal("tiles empty, want the windows")
+	}
+	for _, tile := range tiles {
+		if tile["rate"] != "no agent lines" {
+			t.Errorf("empty tile = %v, want the words for no agent lines", tile)
+		}
+	}
+
+	rec := getAutonomy(t, &stubAutonomy{view: store.AutonomyView{Measured: []dispatcher.Sample{{PR: 7}}}})
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if pr := body.Rewrite["prs"][0]; pr["rate"] != "no agent lines" {
+		t.Errorf("PR with no lines = %v, want the words for no agent lines", pr)
+	}
+}
+
+func TestAutonomyFoldsAPRsSizeIntoTheBucketBySizeUses(t *testing.T) {
+	measured := []dispatcher.Sample{
+		{PR: 4, Size: "XL", Rewrite: dispatcher.Rewrite{AgentLines: 1}},
+		{PR: 3, Size: "s", Rewrite: dispatcher.Rewrite{AgentLines: 1}},
+		{PR: 2, Size: "", Rewrite: dispatcher.Rewrite{AgentLines: 1}},
+		{PR: 1, Size: "L", Rewrite: dispatcher.Rewrite{AgentLines: 1}},
+	}
+	rec := getAutonomy(t, &stubAutonomy{view: store.AutonomyView{Measured: measured}})
+	var body struct {
+		Rewrite map[string][]map[string]any `json:"rewrite"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []string{"unsized", "unsized", "unsized", "L"} {
+		if got := body.Rewrite["prs"][i]["size"]; got != want {
+			t.Errorf("prs[%d].size = %v, want %s", i, got, want)
+		}
+	}
+}
+
 func TestAutonomyCapsThePRListAtTheTrailingWindow(t *testing.T) {
 	at := time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC)
 	measured := make([]dispatcher.Sample, 0, dispatcher.TrailingPRs+1)
