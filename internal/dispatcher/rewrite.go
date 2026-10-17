@@ -25,6 +25,8 @@ const (
 	RollbackRate = 0.10
 	// CeilingRate is the hard ceiling no trailing rate may pass.
 	CeilingRate = 0.20
+	// AutoMergeRate is the trailing rate auto-merge is on at or under.
+	AutoMergeRate = 0.10
 )
 
 // Rewrite is one merged agent PR's measured lines: what the agent wrote, and

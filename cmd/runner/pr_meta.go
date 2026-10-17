@@ -127,9 +127,10 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	}
 	draft := draftPR(sum, check)
 	switchOn := autoMergeSwitchOn(ctx, logger, *runID, store.NewAutoMergeSwitches(fsc))
-	merge := autoMerge(switchOn, dispatcher.Autonomy(rec.Autonomy), *runID, rec.Ticket(), sum, runner.FailedGate(*checkReport), check)
-	logger.Info("autoMergeDecided", "run", *runID, "autoMerge", merge, "autonomy", rec.Autonomy, "sampled", runner.Sampled(*runID),
-		"draft", draft, "frontEnd", len(check.FrontEnd), "changed", len(check.Changed), "outOfPlan", len(check.OutOfPlan), "overlap", check.Overlap, "planned", check.Planned)
+	rule := autoMergeRule(ctx, logger, *runID, store.NewRewrites(fsc), switchOn)
+	merge := autoMerge(rule.On, *runID, rec.Ticket(), sum, runner.FailedGate(*checkReport), check)
+	logger.Info("autoMergeDecided", append(ruleAttrs(rule), "run", *runID, "autoMerge", merge, "autonomy", rec.Autonomy, "sampled", runner.Sampled(*runID),
+		"draft", draft, "frontEnd", len(check.FrontEnd), "changed", len(check.Changed), "outOfPlan", len(check.OutOfPlan), "overlap", check.Overlap, "planned", check.Planned)...)
 	if err := writeOutputs(e.output, map[string]string{
 		"title":          title,
 		"branch_segment": rec.Ticket().BranchSegment(),
@@ -304,12 +305,40 @@ func autoMergeSwitchOn(ctx context.Context, logger *slog.Logger, runID string, s
 	return on
 }
 
+// recentRewrites is the store of measured PRs the auto-merge rule reads.
+type recentRewrites interface {
+	Recent(ctx context.Context, limit int) ([]dispatcher.Sample, error)
+}
+
+// autoMergeRule decides whether the rule is on. A switch that is off returns
+// before the evidence is read; evidence that cannot be read holds auto-merge off.
+func autoMergeRule(ctx context.Context, logger *slog.Logger, runID string, r recentRewrites, switchOn bool) dispatcher.AutoMergeDecision {
+	if !switchOn {
+		return dispatcher.AutoMergeDecision{Reason: dispatcher.AutoMergeReasonSwitchOff}
+	}
+	trailing, err := r.Recent(ctx, dispatcher.TrailingPRs)
+	if err != nil {
+		logger.Warn("autoMergeEvidenceUnread", "run", runID, "err", err.Error())
+		return dispatcher.AutoMergeDecision{Reason: dispatcher.AutoMergeReasonEvidenceUnread}
+	}
+	return dispatcher.AutoMergeOn(dispatcher.Evidence{Trailing: trailing})
+}
+
+// ruleAttrs are the decision's log attributes: the reason always, and the
+// numbers only where the decision was made on evidence.
+func ruleAttrs(d dispatcher.AutoMergeDecision) []any {
+	attrs := []any{"reason", d.Reason}
+	if d.Evaluated() {
+		attrs = append(attrs, "rate", d.RateText(), "measured", d.PRs, "reverted", d.Reverted)
+	}
+	return attrs
+}
+
 // autoMerge reports whether the run's PR is marked eligible for auto-merge,
-// which pr-review.yml requests once its review is clean: the owner's switch is
-// on, the autonomy level the run was claimed at allows it and nothing in the
-// run needs the owner.
-func autoMerge(switchOn bool, level dispatcher.Autonomy, runID string, t runner.Ticket, sum runner.Summary, failedGate string, check prCheck) bool {
-	return switchOn && level.AutoMerges() && !ownerAttention(runID, t, sum, failedGate, check)
+// which pr-review.yml requests once its review is clean: the auto-merge rule is
+// on and nothing in the run needs the owner.
+func autoMerge(ruleOn bool, runID string, t runner.Ticket, sum runner.Summary, failedGate string, check prCheck) bool {
+	return ruleOn && !ownerAttention(runID, t, sum, failedGate, check)
 }
 
 // refuseWorkflowPush fails a build whose write set touches a workflow file, so
