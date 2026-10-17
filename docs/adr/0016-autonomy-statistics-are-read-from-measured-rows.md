@@ -29,7 +29,15 @@ Researched 2026-10-17 against the cloud already in use (GCP, native-first); Goog
 
 ## Revisit when
 
-Measured rows pass the 200 cap, a projected page view is measurably slow on Cloud Run, or the owner wants history beyond the cap or ad-hoc queries; the next step is option 3 behind the same read function, so the page does not change. Both thresholds are a judgment call, not established practice; the read-model pattern itself (CQRS) is.
+A projected page view is measurably slow on Cloud Run, measured rows pass the 200 cap, or the owner wants history beyond the cap or ad-hoc queries. The ladder, cheapest first:
+
+| # | Step | Why this order |
+|---|------|----------------|
+| 1 | `Cache-Control: private, max-age` on `/api/autonomy`, with one read in flight at a time | the figures change only when a PR is measured, a few times a day, so a minute-old answer is harmless; an in-process cache would be cold after every scale-to-zero, so the header does the work (HTTP caching, RFC 9111; the max-age value is a judgment call) |
+| 2 | a rollup document written when a PR is measured | the stored cache, rejected above until step 1 is measured to be too slow |
+| 3 | BigQuery through the Firestore export, behind the same read function | history beyond the cap or ad-hoc queries; the page does not change |
+
+Measure before adding a step: a cache adds staleness and invalidation rules the read does not have today.
 
 ## Consequences
 
