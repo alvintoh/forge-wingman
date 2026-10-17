@@ -12,6 +12,45 @@ const (
 	ordinaryFailStderr = "Error: the model returned malformed output"
 )
 
+// TestPlanStageCarriesTheModelThePlanRanOn asserts the artifact the record job
+// re-checks names the model the plan agent actually ran on: the main plan model
+// when it answers, and the backup that took over when it does not.
+func TestPlanStageCarriesTheModelThePlanRanOn(t *testing.T) {
+	list := []string{"command-code/a", "command-code/b"}
+	tests := []struct {
+		name    string
+		stderr  string
+		okModel string
+		want    string
+	}{
+		{"the main model answers", "", list[0], list[0]},
+		{"a backup answers", unavailableStderr, list[1], list[1]},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bin, _ := scriptedCLIAgent(t, tt.stderr, tt.okModel)
+			objects := validObjects()
+			objects["projections/"+testSHA+"/"+planProjectionFile] = []byte("# Plan rules\n\n" + ticketSentinel)
+			deps, _, _ := testDeps(objects, nil)
+			deps.PlanAgent = scriptedAgent(t, bin, ProfilePlan, "command-code/ignored")
+			c := testConfig(t, initRepo(t))
+			c.Ticket.Size = "M"
+			c.PlanModels = list
+
+			res, err := PlanStage(context.Background(), deps, c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Model != tt.want {
+				t.Fatalf("plan model = %q, want %q", res.Model, tt.want)
+			}
+			if len(res.Files) == 0 {
+				t.Fatal("the plan named no files")
+			}
+		})
+	}
+}
+
 func TestBuildPlanPhaseWalksTheModelListOnTheRealAgent(t *testing.T) {
 	list := []string{"command-code/a", "command-code/b", "command-code/c"}
 	tests := []struct {

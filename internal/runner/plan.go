@@ -54,6 +54,13 @@ func PlanPrompt(projection string, t Ticket, guided bool) (rules, prompt string,
 // plan-files block.
 var errPlanFiles = errors.New("plan agent's response carries no valid plan-files list")
 
+// errPlanModel reports a plan artifact whose model is not one provider/model id.
+var errPlanModel = errors.New("plan model is not a provider/model id")
+
+// maxPlanModelBytes bounds the model a plan artifact carries: one provider/model
+// id, with room to spare over the longest a plan is configured with.
+const maxPlanModelBytes = 120
+
 var planFilesBlock = regexp.MustCompile("(?s)```plan-files\\s*\\n(.*?)```")
 
 // planDecisionBlock is the fenced block a guided plan ends with when it asks
@@ -150,21 +157,23 @@ func workflowChange(files []string) error {
 }
 
 // PlanStageResult is the plan stage's output for the trusted record job: the
-// repository-relative files the plan names and the commit the plan was made
-// against, or — when the plan asked the owner a decision instead — that
-// decision. It travels as an artifact, since the model job's identity cannot
-// write the run record.
+// repository-relative files the plan names, the commit the plan was made
+// against and the model the plan ran on, or — when the plan asked the owner a
+// decision instead — that decision. It travels as an artifact, since the model
+// job's identity cannot write the run record.
 type PlanStageResult struct {
 	Files    []string  `json:"files"`
 	BaseSHA  string    `json:"base_sha"`
+	Model    string    `json:"model,omitempty"`
 	Decision *Decision `json:"decision,omitempty"`
 }
 
 // Check reports whether r is a usable plan stage result read back from the
 // model job: either at least one file, each repository-relative and none under
-// .github/workflows/, or one bounded decision — never both — and a commit sha
-// for the base. The model job is untrusted, so the trusted record job re-checks
-// its plan here before any record write.
+// .github/workflows/, or one bounded decision — never both — a commit sha for
+// the base, and one provider/model id for the model when it names one. The
+// model job is untrusted, so the trusted record job re-checks its plan here
+// before any record write.
 func (r PlanStageResult) Check() error {
 	switch {
 	case r.Decision != nil && len(r.Files) > 0:
@@ -187,6 +196,9 @@ func (r PlanStageResult) Check() error {
 	}
 	if !shaPattern.MatchString(r.BaseSHA) {
 		return fmt.Errorf("plan base %q is not a commit sha", truncate(r.BaseSHA, logErrorLimit))
+	}
+	if r.Model != "" && (!ValidModel(r.Model) || len(r.Model) > maxPlanModelBytes) {
+		return fmt.Errorf("%w: %q is not one provider/model id", errPlanModel, truncate(r.Model, logErrorLimit))
 	}
 	return nil
 }
@@ -224,5 +236,6 @@ func ParsePlanStage(raw []byte) (PlanStageResult, error) {
 type PlanRecord struct {
 	Files     []string  `firestore:"plan_files"`
 	BaseSHA   string    `firestore:"plan_base_sha"`
+	Model     string    `firestore:"plan_model"`
 	SettledAt time.Time `firestore:"plan_settled_at"`
 }

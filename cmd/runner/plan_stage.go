@@ -189,6 +189,7 @@ func recordPlanStage(ctx context.Context, logger *slog.Logger, e env, args []str
 		if err := store.NewRecords(fsc).WritePlan(ctx, *runID, runner.PlanRecord{
 			Files:     plan.Files,
 			BaseSHA:   plan.BaseSHA,
+			Model:     plan.Model,
 			SettledAt: time.Now(),
 		}); err != nil {
 			return err

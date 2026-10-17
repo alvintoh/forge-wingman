@@ -42,7 +42,7 @@ func TestFieldsNamesEveryRecordFieldByItsFirestoreTag(t *testing.T) {
 // row shape: WritePlan writes exactly the fields fields() finds, so a
 // mistagged or optioned field would silently not reach the record.
 func TestFieldsNamesEveryPlanRecordFieldByItsFirestoreTag(t *testing.T) {
-	got := fields(runner.PlanRecord{Files: []string{"a.go"}, BaseSHA: "abc"})
+	got := fields(runner.PlanRecord{Files: []string{"a.go"}, BaseSHA: "abc", Model: "command-code/x"})
 	typ := reflect.TypeFor[runner.PlanRecord]()
 	if len(got) != typ.NumField() {
 		t.Fatalf("%d fields, want %d", len(got), typ.NumField())
@@ -58,6 +58,9 @@ func TestFieldsNamesEveryPlanRecordFieldByItsFirestoreTag(t *testing.T) {
 	}
 	if _, ok := got["plan_files"]; !ok {
 		t.Error("the plan's files are not written as plan_files")
+	}
+	if got["plan_model"] != "command-code/x" {
+		t.Errorf("the plan's model is not written as plan_model: %v", got["plan_model"])
 	}
 }
 
