@@ -41,7 +41,14 @@ type ProvisionalRun struct {
 	Taken string
 	// Index is the decision's position on the row, 1-based.
 	Index int
+	// Reply is the owner's reply to the posted decision, empty when none has arrived.
+	Reply     string
+	RepliedAt time.Time
 }
+
+// ErrRunNotEnded is what a supersede returns for a run that is still to run or
+// in flight, which a later poll retries.
+var ErrRunNotEnded = errors.New("run has not ended")
 
 // Decisions is the store's decision surface as a poll reads and writes it.
 type Decisions interface {
@@ -59,6 +66,14 @@ type Decisions interface {
 	ProvisionalUnposted(ctx context.Context) ([]ProvisionalRun, error)
 	// PostedProvisional stamps a run's first unposted provisional decision as asked in a session.
 	PostedProvisional(ctx context.Context, runID, sessionID string, at time.Time) error
+	// ProvisionalReplied lists the runs whose provisional decision the owner replied to and has not confirmed.
+	ProvisionalReplied(ctx context.Context) ([]ProvisionalRun, error)
+	// ConfirmProvisional stamps a provisional decision as confirmed by the owner.
+	ConfirmProvisional(ctx context.Context, runID string, index int, at time.Time) error
+	// ClearProvisionalReply drops a run's replied mark when the reply read at repliedAt is still the latest.
+	ClearProvisionalReply(ctx context.Context, runID string, repliedAt time.Time) error
+	// Supersede answers a provisional decision with the owner's choice and queues the run again.
+	Supersede(ctx context.Context, runID string, index int, answer string, at time.Time) error
 }
 
 // Elicitor asks the owner a decision in a run's Linear agent session.
@@ -95,10 +110,19 @@ func postDecisions(ctx context.Context, d Deps, c Config) error {
 	}
 	provisional, err := d.Decisions.ProvisionalUnposted(ctx)
 	if err != nil {
-		return errors.Join(append(errs, err)...)
+		errs = append(errs, err)
 	}
 	for _, p := range provisional {
 		if err := postProvisional(ctx, d, p, at); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	replied, err := d.Decisions.ProvisionalReplied(ctx)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	for _, p := range replied {
+		if err := decideProvisional(ctx, d, p, at); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -188,6 +212,34 @@ func postProvisional(ctx context.Context, d Deps, p ProvisionalRun, at time.Time
 		return err
 	}
 	d.Logger.Info("decisionPosted", "run", p.RunID, "options", len(p.Decision.Options), "provisional", true)
+	return nil
+}
+
+// decideProvisional settles the owner's reply to a provisional decision: the
+// option auto-pilot took confirms it and starts nothing, another option
+// supersedes the run, and a reply naming no option is logged once and left as is. A run still
+// in flight keeps its reply for the next poll.
+func decideProvisional(ctx context.Context, d Deps, p ProvisionalRun, at time.Time) error {
+	opt, ok := p.Decision.Match(p.Reply)
+	if !ok {
+		d.Logger.Info("provisionalReplyUnmatched", "run", p.RunID)
+		return d.Decisions.ClearProvisionalReply(ctx, p.RunID, p.RepliedAt)
+	}
+	if opt.Label == p.Taken {
+		if err := d.Decisions.ConfirmProvisional(ctx, p.RunID, p.Index, at); err != nil {
+			return err
+		}
+		d.Logger.Info("provisionalConfirmed", "run", p.RunID, "choice", opt.Value)
+		return nil
+	}
+	if err := d.Decisions.Supersede(ctx, p.RunID, p.Index, opt.Label, at); err != nil {
+		if errors.Is(err, ErrRunNotEnded) {
+			d.Logger.Info("provisionalSupersedeDeferred", "run", p.RunID)
+			return nil
+		}
+		return err
+	}
+	d.Logger.Info("provisionalSuperseded", "run", p.RunID, "choice", opt.Value)
 	return nil
 }
 

@@ -89,6 +89,10 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	if unreadProvisional {
 		logger.Warn("provisionalDecisionsUnread", "run", *runID, "err", err.Error())
 	}
+	superseded, err := store.NewQueue(fsc).SupersededPR(ctx, *runID)
+	if err != nil {
+		logger.Warn("supersededPRUnread", "run", *runID, "err", err.Error())
+	}
 	sum := buildSummary(logger, *summary, buildAttempt(logger, *attemptID, e), rec.Ticket(), time.Now())
 	changed, err := runner.Bundle{Path: *bundle, Repo: workRepo, Branch: *branch, Base: mainRef,
 		RunID: e.runID}.ChangedFiles(ctx)
@@ -104,6 +108,7 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		FrontEnd:          frontEnd(logger, rec.Ticket().FrontEnd, *repository, *frontEndPaths, changed),
 		Provisional:       provisional,
 		ProvisionalUnread: unreadProvisional,
+		Supersedes:        superseded,
 	}
 	// A workflow file in the write set is refused from the write set the
 	// branch carries — the run's own App cannot push one — and falls back to
@@ -129,10 +134,19 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		"branch_segment": rec.Ticket().BranchSegment(),
 		"auto_merge":     strconv.FormatBool(merge),
 		"draft":          strconv.FormatBool(draft),
+		"superseded_pr":  supersededOutput(check.Supersedes),
 	}); err != nil {
 		return err
 	}
 	return writeMultilineOutput(e.output, "body", body)
+}
+
+// supersededOutput is the step output naming the superseded PR, empty when none.
+func supersededOutput(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strconv.Itoa(n)
 }
 
 // prCheck is what pr-meta establishes about a run's write set beyond what its
@@ -158,6 +172,8 @@ type prCheck struct {
 	Provisional []runner.Provisional
 	// ProvisionalUnread is set when they could not be read, which leaves them unknown rather than none.
 	ProvisionalUnread bool
+	// Supersedes is the number of the PR the owner's choice replaced, zero when none.
+	Supersedes int
 }
 
 // unconfirmed reports whether auto-pilot took an option the owner has not confirmed,
@@ -319,7 +335,7 @@ func buildSummary(logger *slog.Logger, raw, attemptID string, t runner.Ticket, n
 // report is part of the body whether or not they kept it a draft.
 func renderPR(tmpl string, rec runner.Record, sum runner.Summary, failedGate, runURL, loopDetail string, check prCheck) (title, body string, err error) {
 	t := rec.Ticket()
-	body, err = runner.PRBody(tmpl, t, sum.PRSummary, failedGate, runURL, loopDetail, check.Overlap, check.OutOfPlan, check.Unread, check.FrontEnd, !check.Planned, sum.ReviewFindings, check.Provisional)
+	body, err = runner.PRBody(tmpl, t, sum.PRSummary, failedGate, runURL, loopDetail, check.Overlap, check.OutOfPlan, check.Unread, check.FrontEnd, !check.Planned, sum.ReviewFindings, check.Provisional, check.Supersedes)
 	if err != nil {
 		return "", "", err
 	}

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -45,6 +47,17 @@ type decisionEntry struct {
 // provisionalUnpostedField marks a run holding a provisional decision whose
 // question has not been posted, so a poll finds it without scanning every run.
 const provisionalUnpostedField = "provisional_unposted"
+
+// provisionalRepliedField marks a run whose provisional decision has an owner
+// reply not yet handled, so a poll finds it without scanning every run.
+const provisionalRepliedField = "provisional_replied"
+
+// The fields a supersede records on the run row, outside runner.Record so
+// Finalize leaves them: the PR the superseded attempt opened, and the attempt.
+const (
+	supersededPRField      = "superseded_pr"
+	supersededAttemptField = "superseded_attempt"
+)
 
 // decisionsRow is the row fields the decision surface reads: the decisions
 // themselves, the state and outcome that decide whether a run still waits, the
@@ -155,11 +168,13 @@ func (q *Queue) settleDecision(ctx context.Context, runID, runURL string, at tim
 	})
 }
 
-// Reply records the owner's reply text on runID's last unanswered decision and
-// reports whether it recorded one. It records nothing when the run waits on no
-// decision, or when the decision's session no longer matches the session the
-// reply arrived on — the staleness correlator, so a redelivery and a message on
-// an unrelated session are both no-ops.
+// Reply records the owner's reply text and reports whether it recorded one. On
+// a waiting run it lands on the last unanswered decision; on any other run it
+// lands on the last decision when auto-pilot took it, it was posted and the
+// owner has not confirmed it, and the run is marked so a poll finds the reply.
+// It records nothing when the decision's session no longer matches the session
+// the reply arrived on — the staleness correlator, so a redelivery and a
+// message on an unrelated session are both no-ops.
 func (q *Queue) Reply(ctx context.Context, runID, sessionID, text string, at time.Time) (bool, error) {
 	// An empty message carries no answer. Recorded, it would read as a reply
 	// matching no option, and the run would ask the owner again for nothing.
@@ -182,21 +197,39 @@ func (q *Queue) Reply(ctx context.Context, runID, sessionID, text string, at tim
 			return err
 		}
 		i := lastUnanswered(row.Decisions)
-		if row.State != stateWaiting || row.Outcome != "" || i < 0 {
-			return nil
+		provisional := row.State != stateWaiting
+		switch {
+		case provisional:
+			i = unconfirmedPosted(row.Decisions)
+		case row.Outcome != "":
+			i = -1
 		}
-		if row.Decisions[i].SessionID != sessionID {
+		if i < 0 || row.Decisions[i].SessionID != sessionID {
 			return nil
 		}
 		row.Decisions[i].Reply = text
 		row.Decisions[i].RepliedAt = at
+		updates := []firestore.Update{{Path: decisionsField, Value: row.Decisions}}
+		if provisional {
+			updates = append(updates, firestore.Update{Path: provisionalRepliedField, Value: true})
+		}
 		recorded = true
-		return tx.Update(rowRef, []firestore.Update{{Path: decisionsField, Value: row.Decisions}})
+		return tx.Update(rowRef, updates)
 	})
 	if err != nil {
 		return false, fmt.Errorf("recording a reply for run %s: %w", runID, err)
 	}
 	return recorded, nil
+}
+
+// unconfirmedPosted is the index of the last decision when auto-pilot took it,
+// it has been posted and the owner has not confirmed it, or -1.
+func unconfirmedPosted(entries []decisionEntry) int {
+	i := len(entries) - 1
+	if i < 0 || !entries[i].Provisional || entries[i].PostedAt.IsZero() || !entries[i].ConfirmedAt.IsZero() {
+		return -1
+	}
+	return i
 }
 
 // Answer writes the owner's chosen option onto runID's last unanswered decision
@@ -403,6 +436,196 @@ func (q *Queue) PostedProvisional(ctx context.Context, runID, sessionID string, 
 		return fmt.Errorf("marking run %s's provisional decision posted: %w", runID, err)
 	}
 	return nil
+}
+
+// repliedProvisional is the index of the last provisional decision the owner
+// replied to after it was posted and has not confirmed, or -1.
+func repliedProvisional(entries []decisionEntry) int {
+	for i := len(entries) - 1; i >= 0; i-- {
+		e := entries[i]
+		if e.Provisional && e.ConfirmedAt.IsZero() && e.RepliedAt.After(e.PostedAt) {
+			return i
+		}
+	}
+	return -1
+}
+
+// ProvisionalReplied lists the runs whose provisional decision the owner has
+// replied to and not yet confirmed, each with its reply. The scan is bounded
+// like Waiting's; it reads and changes no run's state.
+func (q *Queue) ProvisionalReplied(ctx context.Context) ([]dispatcher.ProvisionalRun, error) {
+	iter := q.client.Collection(runsCollection).
+		Where(provisionalRepliedField, "==", true).
+		Limit(waitingScanLimit).
+		Documents(ctx)
+	defer iter.Stop()
+	var out []dispatcher.ProvisionalRun
+	for {
+		snap, err := iter.Next()
+		if errors.Is(err, iterator.Done) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("listing replied provisional decisions: %w", err)
+		}
+		var row decisionsRow
+		if err := snap.DataTo(&row); err != nil {
+			return nil, fmt.Errorf("decoding run %s's decisions: %w", snap.Ref.ID, err)
+		}
+		i := repliedProvisional(row.Decisions)
+		if i < 0 {
+			continue
+		}
+		e := row.Decisions[i]
+		out = append(out, dispatcher.ProvisionalRun{
+			RunID: snap.Ref.ID, Decision: e.Decision, Taken: e.Answer, Index: i + 1,
+			Reply: e.Reply, RepliedAt: e.RepliedAt,
+		})
+	}
+	return out, nil
+}
+
+// ConfirmProvisional stamps the index'th decision (1-based) on runID as
+// confirmed by the owner at, and clears the run's replied mark once no reply
+// remains to handle. A decision that is absent, not provisional or already
+// confirmed is a no-op; the run's state is never touched.
+func (q *Queue) ConfirmProvisional(ctx context.Context, runID string, index int, at time.Time) error {
+	rowRef := q.client.Collection(runsCollection).Doc(runID)
+	err := q.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		snap, err := tx.Get(rowRef)
+		if status.Code(err) == codes.NotFound {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		var row decisionsRow
+		if err := snap.DataTo(&row); err != nil {
+			return err
+		}
+		i := index - 1
+		if i < 0 || i >= len(row.Decisions) || !row.Decisions[i].Provisional || !row.Decisions[i].ConfirmedAt.IsZero() {
+			return nil
+		}
+		row.Decisions[i].ConfirmedAt = at
+		updates := []firestore.Update{{Path: decisionsField, Value: row.Decisions}}
+		if repliedProvisional(row.Decisions) < 0 {
+			updates = append(updates, firestore.Update{Path: provisionalRepliedField, Value: firestore.Delete})
+		}
+		return tx.Update(rowRef, updates)
+	})
+	if err != nil {
+		return fmt.Errorf("confirming run %s's provisional decision: %w", runID, err)
+	}
+	return nil
+}
+
+// ClearProvisionalReply drops runID's replied mark when the reply the poll read
+// at repliedAt is still the latest, so an unmatched reply is logged once and a
+// newer reply that landed since keeps its mark. The decision keeps its reply.
+func (q *Queue) ClearProvisionalReply(ctx context.Context, runID string, repliedAt time.Time) error {
+	rowRef := q.client.Collection(runsCollection).Doc(runID)
+	err := q.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		snap, err := tx.Get(rowRef)
+		if status.Code(err) == codes.NotFound {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		var row decisionsRow
+		if err := snap.DataTo(&row); err != nil {
+			return err
+		}
+		i := repliedProvisional(row.Decisions)
+		if i < 0 || !row.Decisions[i].RepliedAt.Equal(repliedAt) {
+			return nil
+		}
+		return tx.Update(rowRef, []firestore.Update{{Path: provisionalRepliedField, Value: firestore.Delete}})
+	})
+	if err != nil {
+		return fmt.Errorf("clearing run %s's provisional reply: %w", runID, err)
+	}
+	return nil
+}
+
+// Supersede answers the index'th decision (1-based) on runID with the owner's
+// chosen label and queues the run as its next attempt, so a fresh plan carries
+// the answer. The decision stops being provisional, the row records the PR and
+// attempt it replaces and carries that attempt's settled spend forward as
+// RequeueAfterConflict does, and the run's reservations drop as Requeue's do.
+//
+// It refuses what Requeue refuses; a run still to run or in flight returns an
+// error wrapping dispatcher.ErrRunNotEnded, left for a later poll.
+func (q *Queue) Supersede(ctx context.Context, runID string, index int, answer string, at time.Time) error {
+	_, err := q.requeue(ctx, runID, at, func(row map[string]any, attempt int) (string, []firestore.Update, error) {
+		if _, err := requeueState(row); err != nil {
+			if errors.Is(err, ErrRunInFlight) || errors.Is(err, ErrRunDispatchable) {
+				return "", nil, fmt.Errorf("%w: %w", dispatcher.ErrRunNotEnded, err)
+			}
+			return "", nil, err
+		}
+		list, _ := row[decisionsField].([]any)
+		i := index - 1
+		if i < 0 || i >= len(list) {
+			return "", nil, fmt.Errorf("run has no decision %d", index)
+		}
+		entry, _ := list[i].(map[string]any)
+		if provisional, _ := entry["provisional"].(bool); !provisional {
+			return "", nil, fmt.Errorf("decision %d is not provisional", index)
+		}
+		decisions := slices.Clone(list)
+		settled := maps.Clone(entry)
+		settled["answer"] = answer
+		settled["provisional"] = false
+		decisions[i] = settled
+		var pr any = firestore.Delete
+		if n := pullNumber(str(row, prURLField)); n > 0 {
+			pr = n
+		}
+		cost, _ := row[settledProviderCostField].(int64)
+		minutes, _ := row[settledRunnerMinutesField].(int64)
+		// The plan stood on the option the owner rejected, so it is made again.
+		return stateQueued, []firestore.Update{
+			{Path: decisionsField, Value: decisions},
+			{Path: provisionalRepliedField, Value: firestore.Delete},
+			{Path: supersededAttemptField, Value: attempt - 1},
+			{Path: supersededPRField, Value: pr},
+			{Path: priorSettledCostField, Value: cost},
+			{Path: priorSettledMinutesField, Value: minutes},
+		}, nil
+	})
+	if err != nil {
+		return fmt.Errorf("superseding run %s: %w", runID, err)
+	}
+	return nil
+}
+
+// pullNumber is the number in a pull request URL, or zero when url names none.
+func pullNumber(url string) int {
+	_, num, found := strings.Cut(url, "/pull/")
+	if !found {
+		return 0
+	}
+	n, err := strconv.Atoi(num)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// SupersededPR reads the number of the PR a supersede of runID replaces, zero
+// when the run records none.
+func (q *Queue) SupersededPR(ctx context.Context, runID string) (int, error) {
+	snap, err := q.client.Collection(runsCollection).Doc(runID).Get(ctx)
+	if status.Code(err) == codes.NotFound {
+		return 0, fmt.Errorf("%s: %w", runID, runner.ErrRecordNotFound)
+	}
+	if err != nil {
+		return 0, err
+	}
+	n, _ := snap.Data()[supersededPRField].(int64)
+	return int(n), nil
 }
 
 // ProvisionalDecisions reads the decisions auto-pilot settled on runID, in the

@@ -442,15 +442,23 @@ type fakeDecisions struct {
 	waitingErr           error
 	provisionalErr       error
 	provisionalPostedErr error
+	replied              []ProvisionalRun
+	repliedErr           error
+	confirmErr           error
+	clearErr             error
+	supersedeErr         error
 	answerErr            error
 	postedErr            error
 	stopErr              error
 	sessions             map[string]string
 	sessionErr           error
 
-	answered []answerCall
-	posted   []postedCall
-	stopped  []stopCall
+	answered   []answerCall
+	posted     []postedCall
+	stopped    []stopCall
+	confirmed  []string
+	cleared    []string
+	superseded []answerCall
 }
 
 type answerCall struct {
@@ -519,6 +527,34 @@ func (d *fakeDecisions) PostedProvisional(_ context.Context, runID, sessionID st
 	}
 	d.posted = append(d.posted, postedCall{runID: runID, sessionID: sessionID, at: at})
 	d.provisional = nil
+	return nil
+}
+
+func (d *fakeDecisions) ProvisionalReplied(context.Context) ([]ProvisionalRun, error) {
+	return d.replied, d.repliedErr
+}
+
+func (d *fakeDecisions) ConfirmProvisional(_ context.Context, runID string, _ int, _ time.Time) error {
+	if d.confirmErr != nil {
+		return d.confirmErr
+	}
+	d.confirmed = append(d.confirmed, runID)
+	return nil
+}
+
+func (d *fakeDecisions) ClearProvisionalReply(_ context.Context, runID string, _ time.Time) error {
+	if d.clearErr != nil {
+		return d.clearErr
+	}
+	d.cleared = append(d.cleared, runID)
+	return nil
+}
+
+func (d *fakeDecisions) Supersede(_ context.Context, runID string, _ int, answer string, at time.Time) error {
+	if d.supersedeErr != nil {
+		return d.supersedeErr
+	}
+	d.superseded = append(d.superseded, answerCall{runID: runID, answer: answer, at: at})
 	return nil
 }
 
