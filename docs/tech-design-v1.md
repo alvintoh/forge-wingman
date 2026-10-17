@@ -187,8 +187,9 @@ One Go binary entrypoint (`cmd/dispatcher`). Per poll:
    caps, the circuit breaker — up to N in flight. A run that waits records the
    *binding* condition.
 6. **Requeue a run stopped on a transient fault** (FRG-132). A run's stop carries a
-   class when the failed job's own log tail — which the runner reads at record time — or
-   its recorded detail names one of a closed list of transient signatures — a Go module
+   class when its recorded detail — or, for a stop that means a job failed outside the code
+   (setup, the worktree, the PR job, no readable summary), the failed job's own log tail,
+   which the runner reads at record time — names one of a closed list of transient signatures — a Go module
    proxy or checksum read, a network timeout, a lost runner.
    An abandoned claim carries none: it is as likely cancelled by the owner as lost. At autonomy level 1 or
    above the poll returns such a run to the queue for up to two more attempts, each

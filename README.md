@@ -59,8 +59,9 @@ in the run's bundle artifact.
 A run that stops on a known transient infrastructure fault — a read the Go module
 proxy could not serve, a network timeout, or a runner lost mid-job — is requeued by
 the dispatcher itself, up to two attempts, at autonomy level 1 or above. The runner
-reads the failed job's own log tail and records the class when its words — or the
-stop's recorded detail — name one of those faults; each automatic attempt is
+records the class when the stop's recorded detail names one of those faults, and for
+a stop that means a job failed outside the code (setup, the worktree, the PR job, or
+no readable summary) it reads the failed job's own log tail as well; each automatic attempt is
 recorded with the class it was made for. A claim the sweep
 abandons is never classed: it is as likely cancelled by the owner as lost. The requeue only returns the run to the
 queue, so the budget ceilings, the review WIP limit and the circuit breaker hold it

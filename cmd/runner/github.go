@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
@@ -149,6 +151,11 @@ func (g pullRequests) call(ctx context.Context, method, path, accept string, bod
 	}
 	res, err := client.Do(req)
 	if err != nil {
+		// A *url.Error carries the URL it failed on, and a followed redirect's is
+		// a signed one.
+		if urlErr := (*url.Error)(nil); errors.As(err, &urlErr) {
+			err = urlErr.Err
+		}
 		return fmt.Errorf("%s %s: %w", method, path, err)
 	}
 	defer func() { _ = res.Body.Close() }()

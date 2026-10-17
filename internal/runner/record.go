@@ -499,12 +499,18 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, reader Prov
 	}
 	// The failing step's own words name a known transient fault when the run
 	// stopped on one, which is what the dispatcher requeues on. The stop detail
-	// and loop detail are summaries, so the failing job's own log is read
-	// alongside them. Only a stopped run is classified: a run that reached its
-	// PR carries the fault that did not stop it, and holding it against the run
-	// would requeue a delivered PR.
+	// and loop detail are summaries; the failing job's own log is read as well
+	// only for a stop that means a job failed outside the code, so a log that
+	// merely quotes a marker never classifies an agent or gate failure. Only a
+	// stopped run is classified: a run that reached its PR carries the fault
+	// that did not stop it, and holding it against the run would requeue a
+	// delivered PR.
 	if !rec.Succeeded() {
-		rec.Transient = ClassifyTransient(rec.StopDetail + "\n" + rec.LoopDetail + "\n" + in.FailedJobLog)
+		words := rec.StopDetail + "\n" + rec.LoopDetail
+		if ReadsJobLog(rec.StopReason) {
+			words += "\n" + in.FailedJobLog
+		}
+		rec.Transient = ClassifyTransient(words)
 	}
 	rec.JobResults["run"] = in.RunResult
 	rec.JobResults["pr"] = in.PRResult

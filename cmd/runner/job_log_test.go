@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -233,5 +235,32 @@ func TestFailedJobLogForRunLeavesAnUnreadableLogEmpty(t *testing.T) {
 	}
 	if got := failedJobLogForRun(context.Background(), quietLogger(), f.start(t)); got != "" {
 		t.Fatalf("log = %q, want an unreadable log left empty", got)
+	}
+}
+
+func TestFailedJobLogForRunNeverLogsTheSignedLogURL(t *testing.T) {
+	const signed = "sig=SECRET-SIGNATURE"
+	dead := httptest.NewServer(http.NotFoundHandler())
+	deadURL := dead.URL
+	dead.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/jobs") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"jobs": []map[string]any{apiJob(11, "check ABC-1", "failure")}})
+			return
+		}
+		http.Redirect(w, r, deadURL+"/signed?"+signed, http.StatusFound)
+	}))
+	t.Cleanup(srv.Close)
+	env := map[string]string{"GITHUB_API_URL": srv.URL, "GH_TOKEN": "gh-token", "GITHUB_REPOSITORY": "o/r", "GITHUB_RUN_ID": "7"}
+	var out bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&out, nil))
+	if got := failedJobLogForRun(context.Background(), logger, func(k string) string { return env[k] }); got != "" {
+		t.Fatalf("log = %q, want nothing read through a dead redirect", got)
+	}
+	if !strings.Contains(out.String(), "failedJobLogUnread") {
+		t.Fatalf("the failure was not reported: %q", out.String())
+	}
+	if strings.Contains(out.String(), "SECRET-SIGNATURE") || strings.Contains(out.String(), deadURL) {
+		t.Fatalf("the logged reason carries the redirect URL: %s", out.String())
 	}
 }
