@@ -174,6 +174,8 @@ type Candidate struct {
 	PlanFiles []string
 	// Attempt is how many times the run has been requeued, which its claim books under.
 	Attempt int
+	// SupersededPR is the number of the PR the owner's choice replaced, zero for a run that replaces none.
+	SupersededPR int
 }
 
 // Deferral is a queued run's claim withheld this poll by a budget ceiling or an

@@ -239,6 +239,8 @@ type pollOpenPRs struct{ count int }
 
 func (p pollOpenPRs) OpenAgentPRs(context.Context, string) (int, error) { return p.count, nil }
 
+func (p pollOpenPRs) PullOpen(context.Context, string, int) (bool, error) { return false, nil }
+
 // pollPullRequests reports no closed pull request, so no merge is measured.
 type pollPullRequests struct{}
 

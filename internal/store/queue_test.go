@@ -295,6 +295,32 @@ func ownOrder(t *testing.T, q *Queue, ids ...string) []string {
 	return order
 }
 
+func TestCandidatesCarryThePRARunSupersedes(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	id, plain := fresh("superseding"), fresh("plain")
+	forget(t, client, id, plain)
+	for _, rid := range []string{id, plain} {
+		if err := q.Enqueue(ctx, queuedRun(rid, 1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := client.Collection(runsCollection).Doc(id).Update(ctx, []firestore.Update{{Path: supersededPRField, Value: int64(141)}}); err != nil {
+		t.Fatal(err)
+	}
+	cands, err := q.Candidates(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	for _, c := range cands {
+		got[c.RunID] = c.SupersededPR
+	}
+	if got[id] != 141 || got[plain] != 0 {
+		t.Fatalf("superseded PRs = %v, want 141 for the superseding run and none for the other", got)
+	}
+}
+
 func TestCandidatesBreaksAPriorityTieByQueuedAt(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()

@@ -138,6 +138,23 @@ func (g GitHub) OpenAgentPRs(ctx context.Context, repo string) (int, error) {
 	return 0, fmt.Errorf("%s may hold more than %d open pull requests", repo, maxPullsPages*pullsPerPage)
 }
 
+// PullOpen reports whether pull request number in repo is open.
+func (g GitHub) PullOpen(ctx context.Context, repo string, number int) (bool, error) {
+	endpoint := fmt.Sprintf("%s/repos/%s/pulls/%d", g.endpoint(), repo, number)
+	res, err := g.do(ctx, http.MethodGet, endpoint, nil, fmt.Sprintf("read pull request %d in %s", number, repo))
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = res.Body.Close() }()
+	var body struct {
+		State string `json:"state"`
+	}
+	if err := json.NewDecoder(io.LimitReader(res.Body, maxRepoResponseBytes)).Decode(&body); err != nil {
+		return false, fmt.Errorf("decoding pull request %d of %s: %w", number, repo, err)
+	}
+	return body.State == "open", nil
+}
+
 // openPullHeads is the head branch of every PR on one page of the listing.
 func (g GitHub) openPullHeads(ctx context.Context, endpoint, repo string) ([]string, error) {
 	res, err := g.do(ctx, http.MethodGet, endpoint, nil, fmt.Sprintf("list open pull requests in %s", repo))

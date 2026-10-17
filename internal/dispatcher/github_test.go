@@ -168,6 +168,33 @@ func TestGitHubReportsARefusalCountingPullRequests(t *testing.T) {
 	}
 }
 
+func TestGitHubPullOpenReadsThePullRequestState(t *testing.T) {
+	for state, want := range map[string]bool{"open": true, "closed": false} {
+		var path string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			path = r.URL.Path
+			_, _ = io.WriteString(w, `{"state":"`+state+`"}`)
+		}))
+		open, err := (GitHub{Endpoint: srv.URL, Token: "gh-token", Client: srv.Client()}).
+			PullOpen(context.Background(), "octo/scratch", 140)
+		srv.Close()
+		if err != nil || open != want || path != "/repos/octo/scratch/pulls/140" {
+			t.Fatalf("state %q: open %v, path %q, err %v, want open %v", state, open, path, err, want)
+		}
+	}
+}
+
+func TestGitHubPullOpenReportsARefusal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	if open, err := (GitHub{Endpoint: srv.URL, Token: "gh-token", Client: srv.Client()}).
+		PullOpen(context.Background(), "octo/scratch", 140); err == nil || open {
+		t.Fatalf("open %v, err %v, want the refusal reported and the PR not read as open", open, err)
+	}
+}
+
 func TestRunWorkflowSerialisesRunsByRunID(t *testing.T) {
 	yml, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "run.yml"))
 	if err != nil {
