@@ -274,6 +274,8 @@ func (d Deps) missing() string {
 // admission limits.
 type OpenPRCounter interface {
 	OpenAgentPRs(ctx context.Context, repo string) (int, error)
+	// PullOpen reports whether pull request number in repo is still open.
+	PullOpen(ctx context.Context, repo string, number int) (bool, error)
 }
 
 // Source yields the issues delegated to the configured agent, and proves the
@@ -734,7 +736,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, level Autonomy, relation
 		}
 		candPlan := runner.Provider(candModel)
 		facts := Facts{Limits: limits, Tuning: c.Tuning.OrDefault(), History: history, ProviderHalted: halted(candPlan), BreakerTripped: tripped,
-			OpenPRs: prs.count, OpenPRsKnown: prs.known, Relations: relations[cand.RunID], Model: candModel, LastResort: lastResort,
+			OpenPRs: reviewWIPFor(ctx, d, cand, prs), OpenPRsKnown: prs.known, Relations: relations[cand.RunID], Model: candModel, LastResort: lastResort,
 			PeakHeld: PeakHeld(mode, candModel, d.Now(), est.Minutes), Autonomy: level, DecisionMode: c.DecisionMode}
 		claimVerdict := verdictOf(candPlan)
 		ok, binding, err := d.Queue.TryClaim(ctx, cand.RunID, d.Now(), budget, facts, reservation)
@@ -929,6 +931,26 @@ func countOpenPRs(ctx context.Context, d Deps, repos []string) openPRCount {
 		total += n
 	}
 	return openPRCount{count: total, known: true}
+}
+
+// reviewWIPFor is the open agent PR count a candidate is admitted against. The
+// PR a run supersedes is its own predecessor and closes when the replacement
+// opens its PR, so while it is open it does not hold the replacement back. A
+// state that cannot be read leaves the count whole, which holds the run, and a
+// count of zero (none open, or not known) has nothing to take it from.
+func reviewWIPFor(ctx context.Context, d Deps, cand Candidate, prs openPRCount) int {
+	if cand.SupersededPR <= 0 || prs.count == 0 {
+		return prs.count
+	}
+	open, err := d.OpenPRs.PullOpen(ctx, cand.Repo, cand.SupersededPR)
+	if err != nil {
+		d.Logger.Info("supersededPRStateUnread", "run", cand.RunID, "pr", cand.SupersededPR, "err", err.Error())
+		return prs.count
+	}
+	if open {
+		return prs.count - 1
+	}
+	return prs.count
 }
 
 // dispatch starts the claimed run, returning it to the queue if GitHub refused

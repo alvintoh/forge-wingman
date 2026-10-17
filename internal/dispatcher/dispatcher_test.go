@@ -367,6 +367,18 @@ type fakeOpenPRs struct {
 	err      error
 	failOnly string
 	calls    map[string]int
+	// pullOpen is the state PullOpen reports per PR number, and pullErr is what it fails with.
+	pullOpen map[int]bool
+	pullErr  error
+	// pullCalls collects the PR numbers PullOpen was asked about.
+	pullCalls *[]int
+}
+
+func (p fakeOpenPRs) PullOpen(_ context.Context, _ string, number int) (bool, error) {
+	if p.pullCalls != nil {
+		*p.pullCalls = append(*p.pullCalls, number)
+	}
+	return p.pullOpen[number], p.pullErr
 }
 
 func (p fakeOpenPRs) OpenAgentPRs(_ context.Context, repo string) (int, error) {
@@ -442,15 +454,23 @@ type fakeDecisions struct {
 	waitingErr           error
 	provisionalErr       error
 	provisionalPostedErr error
+	replied              []ProvisionalRun
+	repliedErr           error
+	confirmErr           error
+	clearErr             error
+	supersedeErr         error
 	answerErr            error
 	postedErr            error
 	stopErr              error
 	sessions             map[string]string
 	sessionErr           error
 
-	answered []answerCall
-	posted   []postedCall
-	stopped  []stopCall
+	answered   []answerCall
+	posted     []postedCall
+	stopped    []stopCall
+	confirmed  []string
+	cleared    []string
+	superseded []answerCall
 }
 
 type answerCall struct {
@@ -519,6 +539,34 @@ func (d *fakeDecisions) PostedProvisional(_ context.Context, runID, sessionID st
 	}
 	d.posted = append(d.posted, postedCall{runID: runID, sessionID: sessionID, at: at})
 	d.provisional = nil
+	return nil
+}
+
+func (d *fakeDecisions) ProvisionalReplied(context.Context) ([]ProvisionalRun, error) {
+	return d.replied, d.repliedErr
+}
+
+func (d *fakeDecisions) ConfirmProvisional(_ context.Context, runID string, _ int, _, _ time.Time) error {
+	if d.confirmErr != nil {
+		return d.confirmErr
+	}
+	d.confirmed = append(d.confirmed, runID)
+	return nil
+}
+
+func (d *fakeDecisions) ClearProvisionalReply(_ context.Context, runID string, _ time.Time) error {
+	if d.clearErr != nil {
+		return d.clearErr
+	}
+	d.cleared = append(d.cleared, runID)
+	return nil
+}
+
+func (d *fakeDecisions) Supersede(_ context.Context, runID string, _ int, _ time.Time, answer string, at time.Time) error {
+	if d.supersedeErr != nil {
+		return d.supersedeErr
+	}
+	d.superseded = append(d.superseded, answerCall{runID: runID, answer: answer, at: at})
 	return nil
 }
 
@@ -1047,6 +1095,67 @@ func TestPollCountsOpenPRsAcrossTheAllowlistOnce(t *testing.T) {
 		if got := claim.facts; got.OpenPRs != 7 || !got.OpenPRsKnown {
 			t.Fatalf("claim %d facts = %+v, want every allowlisted repository's PRs counted", i, got)
 		}
+	}
+}
+
+func TestPollDoesNotCountTheOpenPRARunSupersedesAgainstItsReplacement(t *testing.T) {
+	for name, tt := range map[string]struct {
+		pullOpen map[int]bool
+		pullErr  error
+		want     int
+	}{
+		"the superseded PR is open":        {pullOpen: map[int]bool{140: true}, want: 2},
+		"the superseded PR already closed": {pullOpen: map[int]bool{140: false}, want: 3},
+		"the superseded PR cannot be read": {pullErr: errFirestore, want: 3},
+	} {
+		t.Run(name, func(t *testing.T) {
+			q := &fakeQueue{candidates: []Candidate{
+				{RunID: "run-a", Repo: "octo/a", Priority: 1, SupersededPR: 140},
+				{RunID: "run-b", Repo: "octo/a", Priority: 2},
+			}}
+			deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+			var asked []int
+			deps.OpenPRs = fakeOpenPRs{open: map[string]int{"octo/a": 3}, pullOpen: tt.pullOpen, pullErr: tt.pullErr, pullCalls: &asked}
+			if _, err := Poll(context.Background(), deps, Config{Repos: []string{"octo/a"}}); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(asked, []int{140}) {
+				t.Fatalf("PullOpen asked about %v, want only the superseded PR", asked)
+			}
+			if len(q.tryClaims) != 2 {
+				t.Fatalf("claims = %d, want both candidates asked", len(q.tryClaims))
+			}
+			if got := q.tryClaims[0].facts.OpenPRs; got != tt.want {
+				t.Fatalf("the replacement was admitted against %d open PRs, want %d", got, tt.want)
+			}
+			if got := q.tryClaims[1].facts.OpenPRs; got != 3 {
+				t.Fatalf("a run replacing nothing was admitted against %d open PRs, want all 3", got)
+			}
+		})
+	}
+}
+
+func TestPollNeverCountsBelowZeroForASupersedingRun(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{{RunID: "run-a", Repo: "octo/a", Priority: 1, SupersededPR: 140}}}
+	deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	deps.OpenPRs = fakeOpenPRs{open: map[string]int{"octo/a": 0}, pullOpen: map[int]bool{140: true}}
+	if _, err := Poll(context.Background(), deps, Config{Repos: []string{"octo/a"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := q.tryClaims[0].facts.OpenPRs; got != 0 {
+		t.Fatalf("open PRs = %d, want 0 when the listing shows none", got)
+	}
+}
+
+func TestPollLeavesAnUnknownOpenPRCountAloneForASupersedingRun(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{{RunID: "run-a", Repo: "octo/a", Priority: 1, SupersededPR: 140}}}
+	deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	deps.OpenPRs = fakeOpenPRs{err: errFirestore, pullOpen: map[int]bool{140: true}}
+	if _, err := Poll(context.Background(), deps, Config{Repos: []string{"octo/a"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := q.tryClaims[0].facts; got.OpenPRsKnown || got.OpenPRs != 0 {
+		t.Fatalf("facts = %+v, want the unknown count left as it was", got)
 	}
 }
 

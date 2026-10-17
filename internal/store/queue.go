@@ -472,6 +472,9 @@ func (q *Queue) Candidates(ctx context.Context) ([]dispatcher.Candidate, error) 
 			Plan:        str(data, planField),
 			Attempt:     rowAttempt(data),
 		}
+		if n, _ := data[supersededPRField].(int64); n > 0 {
+			cand.SupersededPR = int(n)
+		}
 		if last, _ := data[lastResortField].(bool); last {
 			labels := labelsOf(data, lastResortModelsField)
 			cand.LastResort = &labels

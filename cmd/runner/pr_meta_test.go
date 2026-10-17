@@ -445,3 +445,12 @@ func TestPRBodyNamesWhatHeldAFrontEndChange(t *testing.T) {
 		t.Fatalf("body = %q, want the front-end marks named", body)
 	}
 }
+
+func TestSupersededOutputIsEmptyUnlessAPRIsReplaced(t *testing.T) {
+	if got := supersededOutput(141); got != "141" {
+		t.Fatalf("supersededOutput(141) = %q, want 141", got)
+	}
+	if got := supersededOutput(0); got != "" {
+		t.Fatalf("supersededOutput(0) = %q, want empty", got)
+	}
+}

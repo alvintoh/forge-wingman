@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -288,5 +289,86 @@ func TestPollLeavesAProvisionalDecisionUnpostedWithoutASession(t *testing.T) {
 	}
 	if len(el.calls) != 0 || len(dec.posted) != 0 {
 		t.Fatalf("posted with no session: elicit %+v, posted %+v", el.calls, dec.posted)
+	}
+}
+
+// repliedRun is a run whose provisional decision took the first option and
+// carries reply.
+func repliedRun(reply string) ProvisionalRun {
+	return ProvisionalRun{RunID: "run-71", Decision: decisionFixture, Taken: "Reuse the existing flag", Index: 1, Reply: reply, RepliedAt: pollAt}
+}
+
+func TestPollConfirmsAProvisionalDecisionWhenTheReplyNamesTheOptionTaken(t *testing.T) {
+	dec := &fakeDecisions{replied: []ProvisionalRun{repliedRun("reuse")}}
+	if _, err := Poll(context.Background(), decisionDeps(dec, &fakeElicitor{}, &fakeNotices{}), decisionConfig); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(dec.confirmed, []string{"run-71"}) || len(dec.superseded) != 0 {
+		t.Fatalf("confirmed %v, superseded %+v", dec.confirmed, dec.superseded)
+	}
+}
+
+func TestPollSupersedesAProvisionalDecisionWhenTheReplyNamesAnotherOption(t *testing.T) {
+	dec := &fakeDecisions{replied: []ProvisionalRun{repliedRun("Add a new flag")}}
+	if _, err := Poll(context.Background(), decisionDeps(dec, &fakeElicitor{}, &fakeNotices{}), decisionConfig); err != nil {
+		t.Fatal(err)
+	}
+	if len(dec.superseded) != 1 || dec.superseded[0].answer != "Add a new flag" || len(dec.confirmed) != 0 {
+		t.Fatalf("superseded %+v, confirmed %v", dec.superseded, dec.confirmed)
+	}
+}
+
+func TestPollChangesNothingForAProvisionalReplyMatchingNoOption(t *testing.T) {
+	dec := &fakeDecisions{replied: []ProvisionalRun{repliedRun("hmm, not sure")}}
+	if _, err := Poll(context.Background(), decisionDeps(dec, &fakeElicitor{}, &fakeNotices{}), decisionConfig); err != nil {
+		t.Fatalf("an unmatched reply is not an error: %v", err)
+	}
+	if len(dec.confirmed) != 0 || len(dec.superseded) != 0 {
+		t.Fatalf("acted on an unmatched reply: confirmed %v, superseded %+v", dec.confirmed, dec.superseded)
+	}
+	if !slices.Equal(dec.cleared, []string{"run-71"}) {
+		t.Fatalf("cleared %v, want the unmatched reply cleared once so the next poll stays quiet", dec.cleared)
+	}
+}
+
+func TestPollRetriesASupersedeOfARunStillInFlightNextPoll(t *testing.T) {
+	dec := &fakeDecisions{replied: []ProvisionalRun{repliedRun("new")}, supersedeErr: fmt.Errorf("superseding: %w", ErrRunNotEnded)}
+	if _, err := Poll(context.Background(), decisionDeps(dec, &fakeElicitor{}, &fakeNotices{}), decisionConfig); err != nil {
+		t.Fatalf("a run in flight is retried, not an error: %v", err)
+	}
+	if len(dec.confirmed) != 0 {
+		t.Fatalf("confirmed %v", dec.confirmed)
+	}
+}
+
+func TestPollClearsAReplyThatCanNeverBeActedOn(t *testing.T) {
+	dec := &fakeDecisions{replied: []ProvisionalRun{repliedRun("new")}, supersedeErr: fmt.Errorf("superseding: %w", ErrReplyUnusable)}
+	if _, err := Poll(context.Background(), decisionDeps(dec, &fakeElicitor{}, &fakeNotices{}), decisionConfig); err != nil {
+		t.Fatalf("an unusable reply is cleared, not an error that fails every poll: %v", err)
+	}
+	if !slices.Equal(dec.cleared, []string{"run-71"}) {
+		t.Fatalf("cleared %v, want the unusable reply's mark cleared", dec.cleared)
+	}
+}
+
+func TestPollReportsAFailedSupersedeAndAFailedConfirm(t *testing.T) {
+	for name, dec := range map[string]*fakeDecisions{
+		"supersede": {replied: []ProvisionalRun{repliedRun("new")}, supersedeErr: errors.New("write refused")},
+		"confirm":   {replied: []ProvisionalRun{repliedRun("reuse")}, confirmErr: errors.New("write refused")},
+		"list":      {repliedErr: errors.New("query refused")},
+	} {
+		if _, err := Poll(context.Background(), decisionDeps(dec, &fakeElicitor{}, &fakeNotices{}), decisionConfig); err == nil {
+			t.Fatalf("%s: the failure was not reported", name)
+		}
+	}
+}
+
+func TestPollLeavesAGuidedRunsReplyToTheWaitingPath(t *testing.T) {
+	dec := &fakeDecisions{waiting: []WaitingRun{waitingRun(pollAt, pollAt.Add(-time.Hour), "new", pollAt.Add(-time.Minute))}}
+	if _, err := Poll(context.Background(), decisionDeps(dec, &fakeElicitor{}, &fakeNotices{}), decisionConfig); err != nil {
+		t.Fatal(err)
+	}
+	if len(dec.answered) != 1 || dec.answered[0].answer != "Add a new flag" || len(dec.confirmed) != 0 || len(dec.superseded) != 0 {
+		t.Fatalf("answered %+v, confirmed %v, superseded %+v", dec.answered, dec.confirmed, dec.superseded)
 	}
 }
