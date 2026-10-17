@@ -782,6 +782,148 @@ func TestTryClaimAdmitsARunThatFitsAndBooksItsReservation(t *testing.T) {
 	}
 }
 
+// TestTryClaimSettlesARowThatEndedWithoutAClaim asserts a row a finished
+// manual run left in a dispatchable state is settled, not rebuilt: the run
+// reported its own outcome, so no poll claims it and no reservation is booked.
+func TestTryClaimSettlesARowThatEndedWithoutAClaim(t *testing.T) {
+	for _, state := range []string{stateQueued, statePlanned} {
+		t.Run(state, func(t *testing.T) {
+			q, client := queue(t)
+			var logged bytes.Buffer
+			q = q.WithLogger(slog.New(slog.NewJSONHandler(&logged, nil)))
+			ctx := context.Background()
+			run := queuedRun(fresh("queue-claim-settled"), 1)
+			forget(t, client, run.RunID)
+			resetLedger(t, client, 1)
+			if err := q.Enqueue(ctx, run); err != nil {
+				t.Fatal(err)
+			}
+			// The manual run recorded its own outcome and touched no state, so
+			// the row sits in a dispatchable state carrying a PR.
+			if _, err := client.Collection(runsCollection).Doc(run.RunID).Update(ctx, []firestore.Update{
+				{Path: stateField, Value: state},
+				{Path: outcomeField, Value: string(runner.OutcomePROpened)},
+				{Path: prURLField, Value: "https://github.com/octo/scratch/pull/159"},
+				{Path: waitingOnField, Value: "5h"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			ok, binding, err := q.TryClaim(ctx, run.RunID, queueAt.Add(time.Minute), generousBudget, openFacts,
+				dispatcher.Reservation{ProviderCost: money.Dollar})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ok || binding != "" {
+				t.Fatalf("ok = %v, binding = %q, want the ended row settled rather than claimed", ok, binding)
+			}
+			data := readRow(t, client, run.RunID)
+			if data[stateField] != stateClaimed {
+				t.Fatalf("state = %v, want the row settled to %s", data[stateField], stateClaimed)
+			}
+			if data[outcomeField] != string(runner.OutcomePROpened) {
+				t.Fatalf("outcome = %v, want the recorded one left intact", data[outcomeField])
+			}
+			if held, present := data[waitingOnField]; present {
+				t.Fatalf("waiting_on = %v survived the settle", held)
+			}
+			if at, _ := data[updatedAtField].(time.Time); !at.Equal(queueAt.Add(time.Minute)) {
+				t.Fatalf("updated_at = %v, want the settle's own time", at)
+			}
+			if res := readLedgerDoc(t, client).Reservations; len(res) != 0 {
+				t.Fatalf("reservations = %v, want none booked for a settled row", res)
+			}
+			if _, claimed := data[claimedAtField]; claimed {
+				t.Fatalf("claimed_at = %v, want a settled row to carry no claim of its own", data[claimedAtField])
+			}
+			var rec struct {
+				Level   string `json:"level"`
+				Msg     string `json:"msg"`
+				Run     string `json:"run"`
+				Outcome string `json:"outcome"`
+			}
+			if err := json.NewDecoder(&logged).Decode(&rec); err != nil {
+				t.Fatalf("no log record: %v", err)
+			}
+			if rec.Msg != "queuedRowSettled" || rec.Run != run.RunID || rec.Outcome != string(runner.OutcomePROpened) {
+				t.Fatalf("log = %+v, want queuedRowSettled naming the run and its outcome", rec)
+			}
+			if rec.Level != "WARN" {
+				t.Fatalf("log level = %q, want WARN for a row settled without a claim", rec.Level)
+			}
+		})
+	}
+}
+
+// TestTryClaimSettlesARowThatOnlyRecordsAStopReason asserts the guard reads the
+// same ended test a requeue does: a stop reason alone, with no outcome, is
+// enough to settle a row rather than rebuild it.
+func TestTryClaimSettlesARowThatOnlyRecordsAStopReason(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	run := queuedRun(fresh("queue-claim-stop-only"), 1)
+	forget(t, client, run.RunID)
+	resetLedger(t, client, 1)
+	if err := q.Enqueue(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Collection(runsCollection).Doc(run.RunID).Update(ctx, []firestore.Update{
+		{Path: stopReasonField, Value: string(runner.StopRebaseConflict)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ok, binding, err := q.TryClaim(ctx, run.RunID, queueAt.Add(time.Minute), generousBudget, openFacts,
+		dispatcher.Reservation{ProviderCost: money.Dollar})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok || binding != "" {
+		t.Fatalf("ok = %v, binding = %q, want the ended row settled rather than claimed", ok, binding)
+	}
+	if data := readRow(t, client, run.RunID); data[stateField] != stateClaimed {
+		t.Fatalf("state = %v, want the row settled to %s", data[stateField], stateClaimed)
+	}
+	if res := readLedgerDoc(t, client).Reservations; len(res) != 0 {
+		t.Fatalf("reservations = %v, want none booked for a settled row", res)
+	}
+}
+
+// TestTryClaimClaimsARowAnOperatorRequeued asserts the settle leaves the row
+// itself alone: once a requeue has cleared the outcome, the row is claimed as
+// any other queued one is.
+func TestTryClaimClaimsARowAnOperatorRequeued(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	run := queuedRun(fresh("queue-claim-requeued"), 1)
+	forget(t, client, run.RunID)
+	resetLedger(t, client, 1)
+	if err := q.Enqueue(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Collection(runsCollection).Doc(run.RunID).Update(ctx, []firestore.Update{
+		{Path: outcomeField, Value: string(runner.OutcomeAgentFailed)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := q.Requeue(ctx, run.RunID, queueAt.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != stateQueued {
+		t.Fatalf("requeue state = %q, want %s", got.State, stateQueued)
+	}
+	ok, binding, err := q.TryClaim(ctx, run.RunID, queueAt.Add(2*time.Minute), generousBudget, openFacts,
+		dispatcher.Reservation{ProviderCost: money.Dollar})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || binding != "" {
+		t.Fatalf("ok = %v, binding = %q, want the requeued run claimed", ok, binding)
+	}
+	if data := readRow(t, client, run.RunID); data[stateField] != stateClaimed {
+		t.Fatalf("state = %v, want %s", data[stateField], stateClaimed)
+	}
+}
+
 func TestTryClaimDefersARunTheProviderWindowWouldBreach(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
@@ -2208,6 +2350,17 @@ func TestRequeueStateDecidesFromTheRowAlone(t *testing.T) {
 	}{
 		{"queued is dispatchable", map[string]any{stateField: stateQueued}, "", ErrRunDispatchable},
 		{"planned is dispatchable", map[string]any{stateField: statePlanned}, "", ErrRunDispatchable},
+		{"a queued row carrying an outcome has ended",
+			map[string]any{stateField: stateQueued, outcomeField: string(runner.OutcomePROpened)}, stateQueued, nil},
+		{"a planned row carrying an outcome has ended",
+			map[string]any{stateField: statePlanned, outcomeField: string(runner.OutcomeBuilt)}, stateQueued, nil},
+		{"a queued row carrying a stop reason has ended",
+			map[string]any{stateField: stateQueued, stopReasonField: string(runner.StopRebaseConflict)}, stateQueued, nil},
+		{"a planned row carrying a stop reason has ended",
+			map[string]any{stateField: statePlanned, stopReasonField: string(runner.StopRebaseConflict)}, stateQueued, nil},
+		{"a settled plan alone leaves a queued row dispatchable",
+			map[string]any{stateField: stateQueued, planFilesField: []any{"a.go"}, planSettledAtField: queueAt},
+			"", ErrRunDispatchable},
 		{"waiting is parked", map[string]any{stateField: stateWaiting}, "", ErrRunWaiting},
 		{"claimed with no outcome is in flight",
 			map[string]any{stateField: stateClaimed, claimedAtField: queueAt}, "", ErrRunInFlight},
@@ -2480,6 +2633,50 @@ func TestRequeueAfterConflictReturnsTheRunToQueuedWhateverItsPlan(t *testing.T) 
 	}
 }
 
+// TestRequeueAfterConflictReturnsAQueuedRowThatEnded asserts a row a manual run
+// left queued with its outcome can be put back for its build, rather than being
+// refused as one still to be dispatched.
+func TestRequeueAfterConflictReturnsAQueuedRowThatEnded(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	run := queuedRun(fresh("queue-conflict-queued-ended"), 1)
+	forget(t, client, run.RunID)
+	if err := q.Enqueue(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Collection(runsCollection).Doc(run.RunID).Update(ctx, []firestore.Update{
+		{Path: outcomeField, Value: string(runner.OutcomeInfraFailure)},
+		{Path: stopReasonField, Value: string(runner.StopRebaseConflict)},
+		{Path: settledProviderCostField, Value: int64(250_000)},
+		{Path: settledRunnerMinutesField, Value: int64(4)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := q.RequeueAfterConflict(ctx, run.RunID, queueAt.Add(time.Minute), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != stateQueued || got.Attempt != 1 {
+		t.Fatalf("result = %+v, want the run back in %s as attempt 1", got, stateQueued)
+	}
+	data := readRow(t, client, run.RunID)
+	if data[stateField] != stateQueued {
+		t.Fatalf("stored state = %v, want %s", data[stateField], stateQueued)
+	}
+	for _, field := range []string{outcomeField, stopReasonField} {
+		if v, ok := data[field]; ok {
+			t.Errorf("field %s survived the requeue: %v", field, v)
+		}
+	}
+	if data[priorSettledCostField] != int64(250_000) || data[priorSettledMinutesField] != int64(4) {
+		t.Fatalf("prior settled = %v micros, %v minutes, want the ended attempt's own spend carried",
+			data[priorSettledCostField], data[priorSettledMinutesField])
+	}
+	if !listed(t, q, ctx, run.RunID) {
+		t.Fatalf("requeued run %s is not a candidate", run.RunID)
+	}
+}
+
 func TestRequeueAfterConflictCarriesTheRowsWholeSettledTotal(t *testing.T) {
 	q, client := queue(t)
 	id := fresh("queue-conflict-total")
@@ -2648,11 +2845,12 @@ func TestNeedsRequeueReportsTheRowsOnlyAnOperatorReturns(t *testing.T) {
 	ctx := context.Background()
 	spare, queuedRunID := fresh("queue-needs-spare"), fresh("queue-needs-queued")
 	stopped, inFlight, ended := fresh("queue-needs-stopped"), fresh("queue-needs-inflight"), fresh("queue-needs-ended")
-	forget(t, client, spare, queuedRunID, stopped, inFlight, ended)
+	leftQueued, leftPlanned := fresh("queue-needs-left-queued"), fresh("queue-needs-left-planned")
+	forget(t, client, spare, queuedRunID, stopped, inFlight, ended, leftQueued, leftPlanned)
 	resetLedger(t, client, 5)
 	// Each run needs its own repository: admission holds a second run back while
 	// one is in flight in the same repository with an unknown write set.
-	for _, id := range []string{queuedRunID, stopped, inFlight, ended} {
+	for _, id := range []string{queuedRunID, stopped, inFlight, ended, leftQueued, leftPlanned} {
 		run := queuedRun(id, 1)
 		run.Repo = "octo/" + id
 		if err := q.Enqueue(ctx, run); err != nil {
@@ -2671,6 +2869,18 @@ func TestNeedsRequeueReportsTheRowsOnlyAnOperatorReturns(t *testing.T) {
 		[]firestore.Update{{Path: outcomeField, Value: runner.OutcomeBuilt}}); err != nil {
 		t.Fatal(err)
 	}
+	// A manual run's own result, recorded on a row the dispatcher had only
+	// enqueued: the row stays where it was and carries the outcome.
+	if _, err := client.Collection(runsCollection).Doc(leftQueued).Update(ctx,
+		[]firestore.Update{{Path: outcomeField, Value: runner.OutcomePROpened}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Collection(runsCollection).Doc(leftPlanned).Update(ctx, []firestore.Update{
+		{Path: stateField, Value: statePlanned},
+		{Path: outcomeField, Value: runner.OutcomePROpened},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	for name, tt := range map[string]struct {
 		id   string
 		want bool
@@ -2680,6 +2890,8 @@ func TestNeedsRequeueReportsTheRowsOnlyAnOperatorReturns(t *testing.T) {
 		"a run still in flight":           {id: inFlight},
 		"a run that stopped":              {id: stopped, want: true},
 		"a claim with a recorded outcome": {id: ended, want: true},
+		"a queued row with an outcome":    {id: leftQueued, want: true},
+		"a planned row with an outcome":   {id: leftPlanned, want: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := q.NeedsRequeue(ctx, tt.id)
