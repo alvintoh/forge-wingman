@@ -341,6 +341,16 @@ func TestPollRetriesASupersedeOfARunStillInFlightNextPoll(t *testing.T) {
 	}
 }
 
+func TestPollClearsAReplyThatCanNeverBeActedOn(t *testing.T) {
+	dec := &fakeDecisions{replied: []ProvisionalRun{repliedRun("new")}, supersedeErr: fmt.Errorf("superseding: %w", ErrReplyUnusable)}
+	if _, err := Poll(context.Background(), decisionDeps(dec, &fakeElicitor{}, &fakeNotices{}), decisionConfig); err != nil {
+		t.Fatalf("an unusable reply is cleared, not an error that fails every poll: %v", err)
+	}
+	if !slices.Equal(dec.cleared, []string{"run-71"}) {
+		t.Fatalf("cleared %v, want the unusable reply's mark cleared", dec.cleared)
+	}
+}
+
 func TestPollReportsAFailedSupersedeAndAFailedConfirm(t *testing.T) {
 	for name, dec := range map[string]*fakeDecisions{
 		"supersede": {replied: []ProvisionalRun{repliedRun("new")}, supersedeErr: errors.New("write refused")},

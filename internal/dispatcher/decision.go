@@ -50,6 +50,10 @@ type ProvisionalRun struct {
 // in flight, which a later poll retries.
 var ErrRunNotEnded = errors.New("run has not ended")
 
+// ErrReplyUnusable is what a supersede returns for a reply that can never be
+// acted on, so the poll clears it instead of failing on it again.
+var ErrReplyUnusable = errors.New("the reply cannot be acted on")
+
 // Decisions is the store's decision surface as a poll reads and writes it.
 type Decisions interface {
 	// Waiting lists the runs parked on a decision.
@@ -69,11 +73,11 @@ type Decisions interface {
 	// ProvisionalReplied lists the runs whose provisional decision the owner replied to and has not confirmed.
 	ProvisionalReplied(ctx context.Context) ([]ProvisionalRun, error)
 	// ConfirmProvisional stamps a provisional decision as confirmed by the owner.
-	ConfirmProvisional(ctx context.Context, runID string, index int, at time.Time) error
+	ConfirmProvisional(ctx context.Context, runID string, index int, repliedAt, at time.Time) error
 	// ClearProvisionalReply drops a run's replied mark when the reply read at repliedAt is still the latest.
 	ClearProvisionalReply(ctx context.Context, runID string, repliedAt time.Time) error
 	// Supersede answers a provisional decision with the owner's choice and queues the run again.
-	Supersede(ctx context.Context, runID string, index int, answer string, at time.Time) error
+	Supersede(ctx context.Context, runID string, index int, repliedAt time.Time, answer string, at time.Time) error
 }
 
 // Elicitor asks the owner a decision in a run's Linear agent session.
@@ -226,16 +230,20 @@ func decideProvisional(ctx context.Context, d Deps, p ProvisionalRun, at time.Ti
 		return d.Decisions.ClearProvisionalReply(ctx, p.RunID, p.RepliedAt)
 	}
 	if opt.Label == p.Taken {
-		if err := d.Decisions.ConfirmProvisional(ctx, p.RunID, p.Index, at); err != nil {
+		if err := d.Decisions.ConfirmProvisional(ctx, p.RunID, p.Index, p.RepliedAt, at); err != nil {
 			return err
 		}
 		d.Logger.Info("provisionalConfirmed", "run", p.RunID, "choice", opt.Value)
 		return nil
 	}
-	if err := d.Decisions.Supersede(ctx, p.RunID, p.Index, opt.Label, at); err != nil {
-		if errors.Is(err, ErrRunNotEnded) {
-			d.Logger.Info("provisionalSupersedeDeferred", "run", p.RunID)
+	if err := d.Decisions.Supersede(ctx, p.RunID, p.Index, p.RepliedAt, opt.Label, at); err != nil {
+		switch {
+		case errors.Is(err, ErrRunNotEnded):
+			d.Logger.Debug("provisionalSupersedeDeferred", "run", p.RunID)
 			return nil
+		case errors.Is(err, ErrReplyUnusable):
+			d.Logger.Info("provisionalReplyUnusable", "run", p.RunID)
+			return d.Decisions.ClearProvisionalReply(ctx, p.RunID, p.RepliedAt)
 		}
 		return err
 	}

@@ -534,7 +534,7 @@ func (d *fakeDecisions) ProvisionalReplied(context.Context) ([]ProvisionalRun, e
 	return d.replied, d.repliedErr
 }
 
-func (d *fakeDecisions) ConfirmProvisional(_ context.Context, runID string, _ int, _ time.Time) error {
+func (d *fakeDecisions) ConfirmProvisional(_ context.Context, runID string, _ int, _, _ time.Time) error {
 	if d.confirmErr != nil {
 		return d.confirmErr
 	}
@@ -550,7 +550,7 @@ func (d *fakeDecisions) ClearProvisionalReply(_ context.Context, runID string, _
 	return nil
 }
 
-func (d *fakeDecisions) Supersede(_ context.Context, runID string, _ int, answer string, at time.Time) error {
+func (d *fakeDecisions) Supersede(_ context.Context, runID string, _ int, _ time.Time, answer string, at time.Time) error {
 	if d.supersedeErr != nil {
 		return d.supersedeErr
 	}

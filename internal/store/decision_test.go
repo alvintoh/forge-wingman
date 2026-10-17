@@ -676,6 +676,16 @@ func TestProvisionalDecisionsFailsWhenTheRowCannotBeReadOrDecoded(t *testing.T) 
 	}
 }
 
+// repliedAtOf is when the owner replied to the index'th decision (1-based) on id, zero when it has none.
+func repliedAtOf(t *testing.T, client *firestore.Client, id string, index int) time.Time {
+	t.Helper()
+	row := readDecisions(t, client, id)
+	if index < 1 || index > len(row.Decisions) {
+		return time.Time{}
+	}
+	return row.Decisions[index-1].RepliedAt
+}
+
 // postedProvisionalRun is an auto-pilot run whose provisional decision has been posted in session-1.
 func postedProvisionalRun(t *testing.T, q *Queue, client *firestore.Client) string {
 	t.Helper()
@@ -736,7 +746,7 @@ func TestReplyDropsWhatAProvisionalDecisionCannotTake(t *testing.T) {
 	if recorded, err := q.Reply(ctx, unposted, "", "new", queueAt); err != nil || recorded {
 		t.Fatalf("a reply to a decision never posted recorded: %v, %v", recorded, err)
 	}
-	if err := q.ConfirmProvisional(ctx, id, 1, queueAt.Add(3*time.Minute)); err != nil {
+	if err := q.ConfirmProvisional(ctx, id, 1, repliedAtOf(t, client, id, 1), queueAt.Add(3*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if recorded, err := q.Reply(ctx, id, "session-1", "new", queueAt.Add(4*time.Minute)); err != nil || recorded {
@@ -784,7 +794,7 @@ func TestProvisionalRepliedListsExactlyTheRepliedUnconfirmedOnes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := q.ConfirmProvisional(ctx, confirmed, 1, queueAt.Add(3*time.Minute)); err != nil {
+	if err := q.ConfirmProvisional(ctx, confirmed, 1, repliedAtOf(t, client, confirmed, 1), queueAt.Add(3*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	got, err := q.ProvisionalReplied(ctx)
@@ -813,7 +823,7 @@ func TestConfirmProvisionalStampsTheDecisionAndLeavesTheRunAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := readDecisions(t, client, id)
-	if err := q.ConfirmProvisional(ctx, id, 1, queueAt.Add(3*time.Minute)); err != nil {
+	if err := q.ConfirmProvisional(ctx, id, 1, repliedAtOf(t, client, id, 1), queueAt.Add(3*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	row := readDecisions(t, client, id)
@@ -828,16 +838,16 @@ func TestConfirmProvisionalStampsTheDecisionAndLeavesTheRunAlone(t *testing.T) {
 		t.Fatalf("provisional = %+v, %v", got, err)
 	}
 	// Confirming again, or a decision that is not there, changes nothing.
-	if err := q.ConfirmProvisional(ctx, id, 1, queueAt.Add(9*time.Minute)); err != nil {
+	if err := q.ConfirmProvisional(ctx, id, 1, repliedAtOf(t, client, id, 1), queueAt.Add(9*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.ConfirmProvisional(ctx, id, 5, queueAt.Add(9*time.Minute)); err != nil {
+	if err := q.ConfirmProvisional(ctx, id, 5, repliedAtOf(t, client, id, 5), queueAt.Add(9*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if again := readDecisions(t, client, id); !again.Decisions[0].ConfirmedAt.Equal(queueAt.Add(3 * time.Minute)) {
 		t.Fatalf("confirmed_at = %v, want the first confirmation kept", again.Decisions[0].ConfirmedAt)
 	}
-	if err := q.ConfirmProvisional(ctx, "no-such-run", 1, queueAt); err != nil {
+	if err := q.ConfirmProvisional(ctx, "no-such-run", 1, time.Time{}, queueAt); err != nil {
 		t.Fatalf("a missing run is a no-op: %v", err)
 	}
 }
@@ -851,7 +861,7 @@ func TestSupersedeQueuesAnEndedRunWithTheOwnersAnswer(t *testing.T) {
 	}
 	endRun(t, client, id, "https://github.com/o/r/pull/141")
 	at := queueAt.Add(5 * time.Minute)
-	if err := q.Supersede(ctx, id, 1, "Add a new flag", at); err != nil {
+	if err := q.Supersede(ctx, id, 1, repliedAtOf(t, client, id, 1), "Add a new flag", at); err != nil {
 		t.Fatal(err)
 	}
 	data := readRow(t, client, id)
@@ -934,7 +944,7 @@ func TestSupersedeCarriesTheEndedAttemptsSpendForward(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.Supersede(ctx, id, 1, "Add a new flag", queueAt.Add(5*time.Minute)); err != nil {
+	if err := q.Supersede(ctx, id, 1, repliedAtOf(t, client, id, 1), "Add a new flag", queueAt.Add(5*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	data := readRow(t, client, id)
@@ -951,7 +961,7 @@ func TestSupersedeOfARunThatOpenedNoPRRecordsNone(t *testing.T) {
 	if _, err := client.Collection(runsCollection).Doc(id).Update(ctx, []firestore.Update{{Path: supersededPRField, Value: int64(7)}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.Supersede(ctx, id, 1, "Add a new flag", queueAt.Add(5*time.Minute)); err != nil {
+	if err := q.Supersede(ctx, id, 1, repliedAtOf(t, client, id, 1), "Add a new flag", queueAt.Add(5*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if n, err := q.SupersededPR(ctx, id); err != nil || n != 0 {
@@ -963,13 +973,13 @@ func TestSupersedeRefusesARunThatHasNotEnded(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
 	id := postedProvisionalRun(t, q, client)
-	if err := q.Supersede(ctx, id, 1, "Add a new flag", queueAt); !errors.Is(err, dispatcher.ErrRunNotEnded) || !errors.Is(err, ErrRunDispatchable) {
+	if err := q.Supersede(ctx, id, 1, repliedAtOf(t, client, id, 1), "Add a new flag", queueAt); !errors.Is(err, dispatcher.ErrRunNotEnded) || !errors.Is(err, ErrRunDispatchable) {
 		t.Fatalf("a still-dispatchable run: err = %v", err)
 	}
 	if _, err := client.Collection(runsCollection).Doc(id).Update(ctx, []firestore.Update{{Path: stateField, Value: stateClaimed}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.Supersede(ctx, id, 1, "Add a new flag", queueAt); !errors.Is(err, dispatcher.ErrRunNotEnded) || !errors.Is(err, ErrRunInFlight) {
+	if err := q.Supersede(ctx, id, 1, repliedAtOf(t, client, id, 1), "Add a new flag", queueAt); !errors.Is(err, dispatcher.ErrRunNotEnded) || !errors.Is(err, ErrRunInFlight) {
 		t.Fatalf("a run in flight: err = %v", err)
 	}
 	row := readDecisions(t, client, id)
@@ -983,18 +993,18 @@ func TestSupersedeRefusesADecisionThatIsNotProvisionalOrNotThere(t *testing.T) {
 	ctx := context.Background()
 	id := postedProvisionalRun(t, q, client)
 	endRun(t, client, id, "https://github.com/o/r/pull/141")
-	if err := q.Supersede(ctx, id, 2, "Add a new flag", queueAt); err == nil {
-		t.Fatal("superseded a decision that is not on the row")
+	if err := q.Supersede(ctx, id, 2, repliedAtOf(t, client, id, 2), "Add a new flag", queueAt); !errors.Is(err, dispatcher.ErrReplyUnusable) {
+		t.Fatalf("a decision not on the row: err = %v, want an unusable reply", err)
 	}
-	if err := q.Supersede(ctx, id, 0, "Add a new flag", queueAt); err == nil {
+	if err := q.Supersede(ctx, id, 0, repliedAtOf(t, client, id, 0), "Add a new flag", queueAt); err == nil {
 		t.Fatal("superseded decision 0")
 	}
-	if err := q.Supersede(ctx, id, 1, "Add a new flag", queueAt); err != nil {
+	if err := q.Supersede(ctx, id, 1, repliedAtOf(t, client, id, 1), "Add a new flag", queueAt); err != nil {
 		t.Fatal(err)
 	}
 	endRun(t, client, id, "https://github.com/o/r/pull/142")
-	if err := q.Supersede(ctx, id, 1, "Reuse the existing flag", queueAt); err == nil {
-		t.Fatal("superseded a decision the owner already settled")
+	if err := q.Supersede(ctx, id, 1, repliedAtOf(t, client, id, 1), "Reuse the existing flag", queueAt); !errors.Is(err, dispatcher.ErrReplyUnusable) {
+		t.Fatalf("a settled decision: err = %v, want an unusable reply", err)
 	}
 }
 
@@ -1012,7 +1022,7 @@ func TestPullNumberReadsThePullRequestURL(t *testing.T) {
 	}
 }
 
-func TestProvisionalRepliedSkipsAReplyThatPredatesThePost(t *testing.T) {
+func TestProvisionalRepliedListsAReplyWhateverTheClocksSay(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
 	id := postedProvisionalRun(t, q, client)
@@ -1025,8 +1035,92 @@ func TestProvisionalRepliedSkipsAReplyThatPredatesThePost(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := q.ProvisionalReplied(ctx)
+	if err != nil || !slices.ContainsFunc(got, func(p dispatcher.ProvisionalRun) bool { return p.RunID == id }) {
+		t.Fatalf("a reply stamped before the post by a skewed clock is not listed: %+v, %v", got, err)
+	}
+}
+
+func TestProvisionalRepliedSkipsAMarkedRunWithNoReply(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	id := postedProvisionalRun(t, q, client)
+	if _, err := client.Collection(runsCollection).Doc(id).Update(ctx, []firestore.Update{
+		{Path: provisionalRepliedField, Value: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := q.ProvisionalReplied(ctx)
 	if err != nil || slices.ContainsFunc(got, func(p dispatcher.ProvisionalRun) bool { return p.RunID == id }) {
-		t.Fatalf("a reply older than the post is listed: %+v, %v", got, err)
+		t.Fatalf("a run with no reply is listed: %+v, %v", got, err)
+	}
+}
+
+func TestReplyLandsOnTheNewestPostedDecisionNotAnUnpostedOne(t *testing.T) {
+	q, client := queue(t)
+	id := fresh("decision-two")
+	seedRow(t, client, id, map[string]any{
+		stateField: stateStopped, outcomeField: string(runner.OutcomeBuilt),
+		decisionsField: []decisionEntry{
+			{Decision: storeDecision, SessionID: "session-1", PostedAt: queueAt, Answer: storeDecision.Options[0].Label, Provisional: true},
+			{Decision: storeDecision, Answer: storeDecision.Options[0].Label, Provisional: true},
+		},
+	})
+	if recorded, err := q.Reply(context.Background(), id, "session-1", "new", queueAt.Add(time.Minute)); err != nil || !recorded {
+		t.Fatalf("a reply to the posted question was dropped: %v, %v", recorded, err)
+	}
+	row := readDecisions(t, client, id)
+	if row.Decisions[0].Reply != "new" || row.Decisions[1].Reply != "" {
+		t.Fatalf("replies = %q and %q, want the posted decision's only", row.Decisions[0].Reply, row.Decisions[1].Reply)
+	}
+}
+
+func TestSupersedeRefusesAnAbandonedRunAndAWaitingOneAsUnusable(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	for name, state := range map[string]string{"abandoned": stateAbandoned, "waiting": stateWaiting} {
+		id := postedProvisionalRun(t, q, client)
+		if _, err := q.Reply(ctx, id, "session-1", "new", queueAt.Add(2*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		endRun(t, client, id, "https://github.com/o/r/pull/141")
+		if _, err := client.Collection(runsCollection).Doc(id).Update(ctx, []firestore.Update{{Path: stateField, Value: state}}); err != nil {
+			t.Fatal(err)
+		}
+		err := q.Supersede(ctx, id, 1, repliedAtOf(t, client, id, 1), "Add a new flag", queueAt.Add(5*time.Minute))
+		if !errors.Is(err, dispatcher.ErrReplyUnusable) {
+			t.Fatalf("%s run: err = %v, want an unusable reply", name, err)
+		}
+		if data := readRow(t, client, id); data[stateField] != state || data[attemptField] != nil && data[attemptField] != int64(0) {
+			t.Fatalf("%s run: state %v, attempt %v, want it left as it was", name, data[stateField], data[attemptField])
+		}
+	}
+}
+
+func TestSupersedeAndConfirmLeaveAReplyTheOwnerHasSinceReplaced(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	id := postedProvisionalRun(t, q, client)
+	first := queueAt.Add(2 * time.Minute)
+	if _, err := q.Reply(ctx, id, "session-1", "new", first); err != nil {
+		t.Fatal(err)
+	}
+	endRun(t, client, id, "https://github.com/o/r/pull/141")
+	if _, err := q.Reply(ctx, id, "session-1", "reuse", queueAt.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Supersede(ctx, id, 1, first, "Add a new flag", queueAt.Add(5*time.Minute)); err != nil {
+		t.Fatalf("a stale supersede is a no-op, got %v", err)
+	}
+	if err := q.ConfirmProvisional(ctx, id, 1, first, queueAt.Add(5*time.Minute)); err != nil {
+		t.Fatalf("a stale confirm is a no-op, got %v", err)
+	}
+	data := readRow(t, client, id)
+	row := readDecisions(t, client, id)
+	if data[stateField] != stateStopped || !row.Decisions[0].Provisional || !row.Decisions[0].ConfirmedAt.IsZero() {
+		t.Fatalf("a stale reply acted: state %v, decision %+v", data[stateField], row.Decisions[0])
+	}
+	if marked, _ := data[provisionalRepliedField].(bool); !marked {
+		t.Fatal("the newer reply lost its mark")
 	}
 }
 
@@ -1040,7 +1134,7 @@ func TestConfirmProvisionalLeavesAGuidedDecisionAndClearsTheRepliedMark(t *testi
 	if err := q.Answer(ctx, guided, "Add a new flag", queueAt.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.ConfirmProvisional(ctx, guided, 1, queueAt.Add(2*time.Minute)); err != nil {
+	if err := q.ConfirmProvisional(ctx, guided, 1, repliedAtOf(t, client, guided, 1), queueAt.Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if row := readDecisions(t, client, guided); !row.Decisions[0].ConfirmedAt.IsZero() {
@@ -1050,7 +1144,7 @@ func TestConfirmProvisionalLeavesAGuidedDecisionAndClearsTheRepliedMark(t *testi
 	if _, err := q.Reply(ctx, id, "session-1", "reuse", queueAt.Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.ConfirmProvisional(ctx, id, 1, queueAt.Add(3*time.Minute)); err != nil {
+	if err := q.ConfirmProvisional(ctx, id, 1, repliedAtOf(t, client, id, 1), queueAt.Add(3*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if _, marked := readRow(t, client, id)[provisionalRepliedField]; marked {
