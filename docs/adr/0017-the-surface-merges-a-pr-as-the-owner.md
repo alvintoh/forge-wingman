@@ -5,7 +5,7 @@
 
 ## Context
 
-FR-20 lists "act on the resulting pull request" as a later phase and says the surface's GitHub credential is read-only until then. The inbox now needs **MERGE PR** as its main action for every PR that will not merge itself: a front-end change, size L, a PR selected into the 20% sample, any PR while auto-merge is off (it turns on at a trailing-10 rewrite rate of 5% or less and the other conditions of PRD level 4).
+FR-20 lists "act on the resulting pull request" as a later phase and says the surface's GitHub credential is read-only until then. The inbox now needs **MERGE PR** as its main action for every PR that will not merge itself: a front-end change, size L, a PR selected into the 20% sample, any PR while auto-merge is off (it is on at a trailing-10 rewrite rate of 10% or less and no reverted auto-merged PR, and the owner has not switched it off: `adr/0018`).
 
 ## Decision
 
