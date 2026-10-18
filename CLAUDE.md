@@ -97,10 +97,12 @@ stays one tap away.
 
 A PR held for the owner as a front-end change (`cmd/surface/`, `web/`) is walked in this order:
 the owner finalizes the design, and may change it, so ask "is the design final?" before any
-sweep; then `/fe-sweep` on the final design; then `/pr-review`; then, after its fix commits,
-`/fe-evidence` captures the s, m, l, xl Chromium shots of each state the PR touches at the final head (s is the
-current iPhone Pro Max, Playwright's `iPhone 17 Pro Max`, 440x763 at scale 3; then 768x1024, 1024x768, 1280x800; every band at its full viewport, uncropped unless the state is one modal or card) and attach them to the PR body as one table. An edit after capture invalidates
-the shots, so the capture is the last step before merge. This is the product's own flow for the
+sweep; then `/fe-sweep` on the final design; then `/fe-evidence`, which captures the s, m, l, xl
+Chromium shots of each state the PR touches at that head (s is the current iPhone Pro Max,
+Playwright's `iPhone 17 Pro Max`, 440x763 at scale 3; then 768x1024, 1024x768, 1280x800; every band
+at its full viewport, uncropped unless the state is one modal or card) and attaches them to the PR
+body as one table; then `/pr-review` last, since its fix commits are the only remaining edit and a
+fix that changes rendering means re-capturing. This is the product's own flow for the
 repositories it builds in.
 
 Before merging any PR that changed a document the vault also holds (`docs/`), run
@@ -109,8 +111,8 @@ drift: on 2026-10-17 four documents differed after runner PRs edited their repo 
 drawing is synced at its own end, by forge-vault's `/proto-draw`.
 
 *(Judgment call, owner's instruction 2026-10-15, superseding 2026-10-13's "sweep first, review
-second"; no authority prescribes the order. The `/sync-docs` step is the owner's instruction of
-2026-10-17.)*
+second" and the same day's "review before evidence"; no authority prescribes the order. The
+`/sync-docs` step is the owner's instruction of 2026-10-17.)*
 
 ## Merging PRs for the owner
 
