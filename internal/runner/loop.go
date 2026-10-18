@@ -464,7 +464,8 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 	recheckTimeout, inBudget := roundTimeout(c.AgentTimeout, reviewStarted, d.Now(), nfr1ReviewBudget)
 	if !inBudget {
 		sum.ReviewFindings = capFindings(resolveFindings(pending, nil, fixRound, false))
-		return false, detailParts("findings addressed by a fix round, not re-reviewed: "+findings, checksDetail), nil
+		return false, detailParts("findings addressed by a fix round, not re-reviewed: "+
+			findings+" ("+stageBudgetSpent("review", nfr1ReviewBudget)+")", checksDetail), nil
 	}
 	remaining, err := reviewPass(ctx, d, c, wt, sum, models, 2, rules, recheckTimeout, reviewStarted, nfr1ReviewBudget)
 	if err != nil {

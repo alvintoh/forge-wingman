@@ -1495,6 +1495,9 @@ func TestPrePRLoopLabelsFindingsNotReReviewedWhenTheBudgetIsSpent(t *testing.T) 
 	if strings.Contains(rec.LoopDetail, "review findings open") {
 		t.Fatalf("loop detail = %q, must not call the findings open when they were not re-reviewed", rec.LoopDetail)
 	}
+	if !strings.Contains(rec.LoopDetail, "the review stage's 25-minute budget was spent") {
+		t.Fatalf("loop detail = %q, want it to name the budget that ran out", rec.LoopDetail)
+	}
 }
 
 // TestPrePRLoopDrivesAFixRoundFromAGuardNoTestCovers is the mechanical half of
