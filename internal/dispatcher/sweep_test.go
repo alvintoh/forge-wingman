@@ -10,8 +10,8 @@ import (
 
 // The sums of timeout-minutes across each stage's workflow chain in run.yml.
 const (
-	buildChainTimeout = 130 * time.Minute
-	planChainTimeout  = 80 * time.Minute
+	buildChainTimeout = 160 * time.Minute
+	planChainTimeout  = 110 * time.Minute
 )
 
 func TestAbandonWindowsOutlastTheWholeWorkflowChain(t *testing.T) {

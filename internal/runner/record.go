@@ -89,6 +89,9 @@ const (
 	// run at all — never a gate that ran and failed, which does not stop the
 	// build; see RunChecks.
 	StopChecksRun StopReason = "checks-run"
+	// StopRunBudget reports a stage whose own share of NFR-1's run-duration
+	// cap was already spent, so it started no round.
+	StopRunBudget StopReason = "run-budget"
 	// StopReviewInvalid reports a review pass (FR-28) whose final message
 	// carries no valid review-findings block.
 	StopReviewInvalid StopReason = "review-invalid"

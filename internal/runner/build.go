@@ -457,9 +457,12 @@ func runPlanPhase(ctx context.Context, d BuildDeps, c BuildConfig, dir string, s
 	if err != nil {
 		return nil, nil, stopWith(OutcomeStopped, StopProjectionInvalid, err)
 	}
-	call := agentCall{Phase: PhasePlan, Round: 1, Model: c.PlanModels[0], Rules: planRules,
-		Timeout: roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now())}
-	text, _, _, err := runAgentInOrder(ctx, d, c, call, c.PlanModels, d.PlanAgent, dir, planPrompt, sum)
+	timeout, inBudget := roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now(), nfr1BuildBudget)
+	if !inBudget {
+		return nil, nil, stopWith(OutcomeStopped, StopRunBudget, errors.New(stageBudgetSpent("build", nfr1BuildBudget)))
+	}
+	call := agentCall{Phase: PhasePlan, Round: 1, Model: c.PlanModels[0], Rules: planRules, Timeout: timeout}
+	text, _, _, err := runAgentInOrder(ctx, d, c, call, c.PlanModels, d.PlanAgent, dir, planPrompt, sum, sum.StartedAt, nfr1BuildBudget)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -728,17 +731,24 @@ func validateModelList(label string, models []string) error {
 // Once the order is exhausted it stops the build with the last failure's own
 // classification: OutcomeInfraFailure/StopModelUnavailable, or
 // OutcomeBudgetStop/StopAllowanceExhausted. That is deliberately not a path
-// FR-13's (unimplemented) escalation could hook into. A later attempt's
-// deadline is recomputed from the time then left, so earlier attempts cannot
-// stretch the phase past the run cap.
-func runAgentInOrder(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, models []string, agent Agent, dir, prompt string, sum *Summary) (text, session string, round int, err error) {
+// FR-13's (unimplemented) escalation could hook into. started and budget are
+// the stage that owns the call's budget, so a later attempt's deadline is
+// recomputed from the time then left in that stage: earlier attempts cannot
+// stretch the stage past its own budget, and a substitution the stage no
+// longer leaves time for is not attempted at all.
+func runAgentInOrder(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, models []string, agent Agent, dir, prompt string, sum *Summary, started time.Time, budget time.Duration) (text, session string, round int, err error) {
 	round = call.Round
 	var lastErr *StopError
 	for i, model := range models {
 		attempt := call
 		attempt.Model, attempt.Round = model, round
 		if i > 0 {
-			attempt.Timeout = roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now())
+			timeout, inBudget := roundTimeout(c.AgentTimeout, started, d.Now(), budget)
+			if !inBudget {
+				d.Logger.Info("modelSubstitutionSkipped", "phase", string(call.Phase), "reason", "budget")
+				break
+			}
+			attempt.Timeout = timeout
 		}
 		text, session, err = runAgent(ctx, d, c, attempt, bindModel(agent, model), dir, prompt, sum)
 		if err == nil {

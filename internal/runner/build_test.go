@@ -1470,7 +1470,7 @@ func TestPrePRLoopLabelsFindingsNotReReviewedWhenTheBudgetIsSpent(t *testing.T) 
 	deps.Checks = func(context.Context, string, []string) (string, string, error) {
 		checkCalls++
 		if checkCalls == 2 {
-			clock = started.Add(checkLoopBudget + time.Minute)
+			clock = started.Add(nfr1ReviewBudget + time.Minute)
 		}
 		return "", "", nil
 	}
@@ -1618,12 +1618,16 @@ func TestPrePRLoopRecordsFindingsAsOpenWhenNoFixRoundRan(t *testing.T) {
 	clock := started
 	deps.Now = func() time.Time { return clock }
 	deps.PackageTests = func(context.Context, string, string) (bool, string, error) {
-		// The probe spends what the run had left, and every test passes: the
-		// guard is uncovered, so the run opens with one finding it never acted on.
-		clock = started.Add(checkLoopBudget + time.Minute)
+		// Every test passes with the guard broken, so the guard is uncovered:
+		// the run opens with one finding it never acted on.
 		return false, "", nil
 	}
-	review := &fakeAgent{events: reviewEvent("")}
+	review := &fakeAgent{events: reviewEvent(""), edit: func(string) error {
+		// The review pass spends the whole review budget, so nothing is left
+		// for the fix round the guard's finding would otherwise get.
+		clock = started.Add(nfr1ReviewBudget + time.Minute)
+		return nil
+	}}
 	deps.ReviewAgent = review
 	c := testConfig(t, initRepo(t))
 
@@ -1679,6 +1683,111 @@ func TestReviewAdvancesTheReviewOrderOnAllowanceExhaustion(t *testing.T) {
 	models := stepModels(reported.last(t), PhaseReview)
 	if !slices.Equal(models, c.ReviewModels) {
 		t.Fatalf("review ran on %v, want the ordered list %v", models, c.ReviewModels)
+	}
+}
+
+// TestReviewSubstitutionIsClampedByTheReviewBudget is the review stage's half
+// of the substitution gate: a review model that fails as allowance-exhausted
+// steps to its backup on the review's own budget. The build stage has already
+// spent its 60 minutes where the review begins, so a substitution clamped by
+// the build stage would be refused outright, and one clamped by the build
+// stage's remaining time would run the backup past the review's 25 minutes.
+func TestReviewSubstitutionIsClampedByTheReviewBudget(t *testing.T) {
+	buildAgent := &fakeAgent{edit: edit("version.go", "package x\n")}
+	deps, _, _ := testDeps(validObjects(), buildAgent)
+	started := time.Now()
+	clock := started
+	deps.Now = func() time.Time { return clock }
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		// The build stage's budget is spent by the time the review begins; the
+		// review's own 25 minutes are untouched.
+		clock = started.Add(nfr1BuildBudget + time.Minute)
+		return "", "", nil
+	}
+	review := &fakeAgent{
+		events: reviewEvent(""),
+		errFn: func(call int) error {
+			if call == 1 {
+				return errors.New("exit status 1")
+			}
+			return nil
+		},
+		stderrFn: func(call int) string {
+			if call == 1 {
+				return allowanceStderr
+			}
+			return ""
+		},
+	}
+	deps.ReviewAgent = review
+	c := testConfig(t, initRepo(t))
+	c.ReviewModels = []string{"p/r1", "p/r2"}
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if review.calls != 2 {
+		t.Fatalf("review agent ran %d times, want 2: an exhausted allowance steps to the backup on the review's own budget", review.calls)
+	}
+	if got := time.Until(review.deadlines[1]); got < nfr1ReviewBudget-2*time.Second || got > nfr1ReviewBudget+2*time.Second {
+		t.Fatalf("the backup is bounded by %s, want the review's own budget %s, not what the build stage had left", got, nfr1ReviewBudget)
+	}
+}
+
+// TestFixRoundSubstitutionIsClampedByTheReviewBudget is the fix round's half of
+// the substitution gate: the round resumes the build agent's session under the
+// review's budget, so a build model that fails there as allowance-exhausted
+// steps to its backup within the review's own 25 minutes even though the build
+// stage's 60 have gone.
+func TestFixRoundSubstitutionIsClampedByTheReviewBudget(t *testing.T) {
+	const finding = "version.go:1 the change is wrong"
+	fallbacks := fallbackModels(DefaultModel())
+	if len(fallbacks) == 0 {
+		t.Fatal("models.json names no build fallbacks for this test to cover")
+	}
+	buildAgent := &fakeAgent{
+		edit: edit("version.go", "package x\n"),
+		errFn: func(call int) error {
+			if call == 2 {
+				return errors.New("exit status 1")
+			}
+			return nil
+		},
+		stderrFn: func(call int) string {
+			if call == 2 {
+				return allowanceStderr
+			}
+			return ""
+		},
+	}
+	deps, _, _ := testDeps(validObjects(), buildAgent)
+	started := time.Now()
+	clock := started
+	deps.Now = func() time.Time { return clock }
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		// The build stage's budget is spent by the time the review begins; the
+		// fix round runs on the review's own 25 minutes.
+		clock = started.Add(nfr1BuildBudget + time.Minute)
+		return "", "", nil
+	}
+	review := &fakeAgent{eventsFn: func(call int) string {
+		if call == 1 {
+			return reviewEvent(finding)
+		}
+		return reviewEvent("")
+	}}
+	deps.ReviewAgent = review
+	c := testConfig(t, initRepo(t))
+	c.Model = DefaultModel()
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if buildAgent.calls != 3 {
+		t.Fatalf("build agent ran %d times, want 3: the fix round's exhausted allowance steps to its backup on the review's own budget", buildAgent.calls)
+	}
+	if got := time.Until(buildAgent.deadlines[2]); got < nfr1ReviewBudget-2*time.Second || got > nfr1ReviewBudget+2*time.Second {
+		t.Fatalf("the fix round's backup is bounded by %s, want the review's own budget %s, not what the build stage had left", got, nfr1ReviewBudget)
 	}
 }
 
@@ -1990,20 +2099,17 @@ func TestRedactedTail(t *testing.T) {
 	}
 }
 
-func TestPrePRLoopStopsWithinNFR1Budget(t *testing.T) {
+func TestPrePRLoopStopsWithinTheBuildStageBudget(t *testing.T) {
 	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
 	deps, _, reported := testDeps(validObjects(), agent)
-	deps.Checks = func(context.Context, string, []string) (string, string, error) {
-		return checkTest, "still failing", nil
-	}
 	started := time.Now()
-	first := true
-	deps.Now = func() time.Time {
-		if first {
-			first = false
-			return started
-		}
-		return started.Add(checkLoopBudget + time.Minute)
+	clock := started
+	deps.Now = func() time.Time { return clock }
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		// The first round's checks spend the whole build budget, so the loop
+		// stops with the checks still failing rather than rebuilding.
+		clock = started.Add(nfr1BuildBudget + time.Minute)
+		return checkTest, "still failing", nil
 	}
 	c := testConfig(t, initRepo(t))
 
@@ -2017,10 +2123,125 @@ func TestPrePRLoopStopsWithinNFR1Budget(t *testing.T) {
 	if rec.Ready {
 		t.Fatal("ready = true, want false")
 	}
+	if !strings.Contains(rec.LoopDetail, checkTest) {
+		t.Fatalf("loop detail = %q, want it to name the failing gate", rec.LoopDetail)
+	}
 	for _, st := range rec.Steps {
 		if st.Phase == PhaseReview {
-			t.Fatalf("the review ran despite the run-duration budget being spent: %+v", rec.Steps)
+			t.Fatalf("the review ran though the checks never passed: %+v", rec.Steps)
 		}
+	}
+}
+
+// TestPrePRLoopStartsNoRoundOnceTheBuildBudgetIsSpent is the boundary the build
+// stage's budget is measured on: spent before the first round, it starts none —
+// and, matching the plan phase's own gate, stops the run with the build stage's
+// budget reason rather than letting it commit an untouched worktree as a
+// no-changes success.
+func TestPrePRLoopStartsNoRoundOnceTheBuildBudgetIsSpent(t *testing.T) {
+	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
+	deps, _, reported := testDeps(validObjects(), agent)
+	deps.Now = fakeClockElapsed(time.Now(), nfr1BuildBudget)
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err == nil {
+		t.Fatal("Build succeeded though the build stage's budget was spent")
+	}
+	if agent.calls != 0 {
+		t.Fatalf("build agent ran %d times, want none: the build stage's budget was spent", agent.calls)
+	}
+	rec := reported.last(t)
+	if rec.Outcome != OutcomeStopped || rec.StopReason != StopRunBudget || rec.Phase != PhaseBuild {
+		t.Fatalf("record = %s/%s at %q, want the build-stage run-budget stop", rec.Outcome, rec.StopReason, rec.Phase)
+	}
+	if rec.Outcome == OutcomeNoChanges || rec.Outcome == OutcomePROpened {
+		t.Fatalf("outcome %s counts as a success; a spent build budget must record a failure", rec.Outcome)
+	}
+	if !strings.Contains(rec.StopDetail, "the build stage's 60-minute budget was spent") {
+		t.Fatalf("stop detail = %q, want it to name the build stage's budget", rec.StopDetail)
+	}
+}
+
+// TestReviewKeepsItsOwnBudgetOnceTheBuildStageSpentItsOwn is the case the stage
+// split exists for: the check loop spends the whole build budget, and the review
+// still runs its pass, fix round and re-review on its own budget, measured from
+// where it begins.
+func TestReviewKeepsItsOwnBudgetOnceTheBuildStageSpentItsOwn(t *testing.T) {
+	const finding = "version.go:1 the change is wrong"
+	buildAgent := &fakeAgent{edit: edit("version.go", "package x\n")}
+	deps, _, reported := testDeps(validObjects(), buildAgent)
+	started := time.Now()
+	clock := started
+	deps.Now = func() time.Time { return clock }
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		// The round's checks pass, with the build stage's budget already spent
+		// by the time the review begins.
+		clock = started.Add(nfr1BuildBudget + time.Minute)
+		return "", "", nil
+	}
+	review := &fakeAgent{eventsFn: func(call int) string {
+		if call == 1 {
+			return reviewEvent(finding)
+		}
+		return reviewEvent("")
+	}}
+	deps.ReviewAgent = review
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if len(review.deadlines) == 0 {
+		t.Fatal("the review ran no pass")
+	}
+	if got := time.Until(review.deadlines[0]); got < nfr1ReviewBudget-2*time.Second || got > nfr1ReviewBudget+2*time.Second {
+		t.Fatalf("the review pass is bounded by %s, want the review's own budget %s, not the %s default", got, nfr1ReviewBudget, defaultAgentTimeout)
+	}
+	if buildAgent.calls != 2 {
+		t.Fatalf("build agent ran %d times, want the build round and the fix round", buildAgent.calls)
+	}
+	if review.calls != 2 {
+		t.Fatalf("review agent ran %d times, want the pass and the re-review", review.calls)
+	}
+	rec := reported.last(t)
+	if !rec.Ready {
+		t.Fatalf("ready = false (%q), want the review to have run clean within its own budget", rec.LoopDetail)
+	}
+}
+
+// TestReviewDraftsWhenItsOwnBudgetIsSpent covers the review cut short by its own
+// budget: nothing was done about the findings, so they stay open and the detail
+// names the stage that ran out, which the PR turns into a draft.
+func TestReviewDraftsWhenItsOwnBudgetIsSpent(t *testing.T) {
+	const finding = "version.go:1 the change is wrong"
+	buildAgent := &fakeAgent{edit: edit("version.go", "package x\n")}
+	deps, _, reported := testDeps(validObjects(), buildAgent)
+	started := time.Now()
+	clock := started
+	deps.Now = func() time.Time { return clock }
+	review := &fakeAgent{events: reviewEvent(finding), edit: func(string) error {
+		// The pass spends the whole review budget before the fix round.
+		clock = started.Add(nfr1ReviewBudget + time.Minute)
+		return nil
+	}}
+	deps.ReviewAgent = review
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if buildAgent.calls != 1 {
+		t.Fatalf("build agent ran %d times, want the build round alone: no review budget was left for a fix round", buildAgent.calls)
+	}
+	rec := reported.last(t)
+	if rec.Ready {
+		t.Fatal("ready = true, want false: the fix round never ran")
+	}
+	if !strings.Contains(rec.LoopDetail, "the review stage's 25-minute budget was spent") {
+		t.Fatalf("loop detail = %q, want it to name the review stage's budget", rec.LoopDetail)
+	}
+	if !strings.Contains(rec.LoopDetail, finding) {
+		t.Fatalf("loop detail = %q, want it to carry the finding", rec.LoopDetail)
 	}
 }
 
@@ -2040,8 +2261,8 @@ func fakeClockElapsed(started time.Time, elapsed time.Duration) func() time.Time
 }
 
 // assertBoundedByRemainingBudget asserts a call's deadline reflects what
-// remained of checkLoopBudget after elapsed had already passed, not the full
-// defaultAgentTimeout — the regression for round 1 and the plan phase both
+// remained of the build stage's budget after elapsed had already passed, not the
+// full defaultAgentTimeout — the regression for round 1 and the plan phase both
 // having ignored NFR-1's budget entirely.
 func assertBoundedByRemainingBudget(t *testing.T, deadline time.Time, elapsed time.Duration) {
 	t.Helper()
@@ -2049,7 +2270,7 @@ func assertBoundedByRemainingBudget(t *testing.T, deadline time.Time, elapsed ti
 		t.Fatal("the call recorded no deadline")
 	}
 	got := time.Until(deadline)
-	want := checkLoopBudget - elapsed
+	want := nfr1BuildBudget - elapsed
 	if diff := got - want; diff < -2*time.Second || diff > 2*time.Second {
 		t.Fatalf("timeout = %s, want ~%s (the remaining NFR-1 budget, not the full %s default)", got, want, defaultAgentTimeout)
 	}
@@ -2090,6 +2311,32 @@ func TestBuildBoundsThePlanPhaseCallToTheRemainingNFR1Budget(t *testing.T) {
 		t.Fatal("the plan phase recorded no deadline")
 	}
 	assertBoundedByRemainingBudget(t, planAgent.deadlines[0], elapsed)
+}
+
+// TestBuildStartsNoPlanRoundOnceTheBuildBudgetIsSpent is AC6 at the plan phase:
+// the build stage's budget is spent before the plan call, so the plan agent
+// never runs — rather than running with the full default timeout.
+func TestBuildStartsNoPlanRoundOnceTheBuildBudgetIsSpent(t *testing.T) {
+	planAgent := &fakeAgent{events: planEvent("```plan-files\nversion.go\n```")}
+	objects := validObjects()
+	objects["projections/"+testSHA+"/"+planProjectionFile] = []byte("# Plan rules\n\n" + ticketSentinel)
+	deps, _, reported := testDeps(objects, &fakeAgent{edit: edit("version.go", "package x\n")})
+	deps.PlanAgent = planAgent
+	deps.Now = fakeClockElapsed(time.Now(), nfr1BuildBudget)
+	c := testConfig(t, initRepo(t))
+	c.Ticket.Size = "M"
+
+	_, err := Build(context.Background(), deps, c)
+	if err == nil {
+		t.Fatal("Build succeeded though the plan phase had no budget")
+	}
+	if planAgent.calls != 0 {
+		t.Fatalf("plan agent ran %d times, want none: the build stage's budget was spent", planAgent.calls)
+	}
+	rec := reported.last(t)
+	if rec.Outcome != OutcomeStopped || rec.StopReason != StopRunBudget {
+		t.Fatalf("record = %s/%s, want the run-budget stop", rec.Outcome, rec.StopReason)
+	}
 }
 
 // TestPrePRLoopWarnsWhenARoundPastTheFirstReportsNoSessionID is the
@@ -2360,6 +2607,39 @@ func TestRunWorkflowChecksTheBranchPattern(t *testing.T) {
 	if n := strings.Count(string(yml), `[[ "$BRANCH" =~ `+branchPattern); n != 2 {
 		t.Fatalf("run.yml checks the branch pattern %d times, want 2 (check and pr)", n)
 	}
+}
+
+// TestTheModelWorkflowCapsTheBuildAtNFR1RunCap holds the job that runs a build to
+// the cap the runner enforces itself. They are the same number by construction:
+// a job that kills the run earlier loses the review the runner still had budget
+// for, and one that allows longer lets the runner overrun its own cap.
+func TestTheModelWorkflowCapsTheBuildAtNFR1RunCap(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "model.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := buildJobTimeout(t, string(raw)); got != nfr1RunCap {
+		t.Fatalf("model.yml's build job allows %s, want the runner's own cap %s", got, nfr1RunCap)
+	}
+}
+
+// buildJobTimeout is the timeout-minutes of a model.yml's build job.
+func buildJobTimeout(t *testing.T, yml string) time.Duration {
+	t.Helper()
+	i := strings.Index(yml, "\n  build:\n")
+	if i < 0 {
+		t.Fatal("model.yml declares no build job")
+	}
+	j := strings.Index(yml[i:], "timeout-minutes: ")
+	if j < 0 {
+		t.Fatal("model.yml's build job declares no timeout-minutes")
+	}
+	line, _, _ := strings.Cut(yml[i+j+len("timeout-minutes: "):], "\n")
+	n, err := strconv.Atoi(strings.TrimSpace(line))
+	if err != nil {
+		t.Fatalf("model.yml's build job timeout-minutes %q is not a whole number of minutes", line)
+	}
+	return time.Duration(n) * time.Minute
 }
 
 // inputDefault is the first default declared after a workflow input's name, or

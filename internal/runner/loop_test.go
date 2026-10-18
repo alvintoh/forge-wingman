@@ -33,3 +33,12 @@ func TestReviewRowsCallsAFindingFixedWhenTheReReviewIsClean(t *testing.T) {
 		t.Fatalf("rows = %+v, want %+v", got, want)
 	}
 }
+
+// TestTheStageBudgetsAndTheReserveTotalTheRunCap keeps NFR-1's cap and the three
+// shares drawn from it from drifting apart: the reserve is what the two stages
+// must leave, so any change to one of them has to account for the others.
+func TestTheStageBudgetsAndTheReserveTotalTheRunCap(t *testing.T) {
+	if got := nfr1BuildBudget + nfr1ReviewBudget + nfr1CommitReserve; got != nfr1RunCap {
+		t.Fatalf("the build, review and commit shares total %s, want the run cap %s", got, nfr1RunCap)
+	}
+}

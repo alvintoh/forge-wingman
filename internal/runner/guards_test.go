@@ -181,7 +181,7 @@ func TestGuardScanReportsAGuardNoTestCovers(t *testing.T) {
 		return false, "", nil // every test passes: nothing covers the guard
 	})
 
-	findings, err := scanGuards(context.Background(), deps, w, sum)
+	findings, err := scanGuards(context.Background(), deps, w, sum.StartedAt, nfr1BuildBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestGuardScanLogsABreakThatDoesNotBuild(t *testing.T) {
 	})
 	deps.Logger = slog.New(slog.NewTextHandler(&logs, nil))
 
-	findings, err := scanGuards(context.Background(), deps, w, sum)
+	findings, err := scanGuards(context.Background(), deps, w, sum.StartedAt, nfr1BuildBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func TestGuardScanRestoresTheFileWhateverTheProbeAnswers(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			w := guardWorktree(t, "", guardedFile)
 			deps, sum := guardDeps(tt.tests)
-			findings, err := scanGuards(context.Background(), deps, w, sum)
+			findings, err := scanGuards(context.Background(), deps, w, sum.StartedAt, nfr1BuildBudget)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -279,7 +279,7 @@ func TestGuardScanProbesAtMostItsCap(t *testing.T) {
 		return true, "", nil
 	})
 
-	findings, err := scanGuards(context.Background(), deps, w, sum)
+	findings, err := scanGuards(context.Background(), deps, w, sum.StartedAt, nfr1BuildBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,9 +298,9 @@ func TestGuardScanProbesNothingOnceTheBudgetIsSpent(t *testing.T) {
 		calls++
 		return false, "", nil
 	})
-	sum.StartedAt = time.Now().Add(-checkLoopBudget - time.Minute)
+	sum.StartedAt = time.Now().Add(-nfr1BuildBudget - time.Minute)
 
-	findings, err := scanGuards(context.Background(), deps, w, sum)
+	findings, err := scanGuards(context.Background(), deps, w, sum.StartedAt, nfr1BuildBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +323,7 @@ func TestGuardScanReadsOnlyAddedLinesAndSourceFiles(t *testing.T) {
 		return false, "", nil
 	})
 
-	findings, err := scanGuards(context.Background(), deps, w, sum)
+	findings, err := scanGuards(context.Background(), deps, w, sum.StartedAt, nfr1BuildBudget)
 	if err != nil {
 		t.Fatal(err)
 	}

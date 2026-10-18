@@ -110,8 +110,8 @@ repository, 4 vCPU / 16 GB on a public one, with a 6-hour job ceiling against
 - ⚠️ **The binding limit is coupled to the least certain number in the product.**
   Run duration is assumed ~30 minutes and has **never been measured** — it is on the
   open list — yet it is the divisor in every figure above. NFR-1's own per-run cap is
-  **60 minutes**, at which the free tier is **33 runs**. Measure it before trusting
-  any of this.
+  **90 minutes**, at which the free tier is **22 runs**. Measure it before trusting
+  any of this. *(Updated 2026-10-18, FRG-173: this said 60 minutes and 33 runs.)*
 
 - ⚠️ **Run VOLUME is unresolved and is deliberately recorded as a range.** This
   record and `prd-v1`'s constraints say ~100 runs/month; `adr/0004` says ~300. They

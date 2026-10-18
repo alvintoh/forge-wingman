@@ -57,9 +57,10 @@ func guardFinding(g guard) string {
 // package's tests still pass: a guard no test covers, which the walkthrough
 // finds by breaking it rather than by naming it. Every probe runs through
 // d.PackageTests, in the checks container, so no repository code runs on the
-// host that the checks themselves keep off it. A scan with no package-test
-// runner, or one with no budget left, probes nothing.
-func scanGuards(ctx context.Context, d BuildDeps, wt Worktree, sum *Summary) ([]pendingFinding, error) {
+// host that the checks themselves keep off it. The scan is charged to the stage
+// that owns it — started and budget — so a scan with no package-test runner, or
+// one whose stage has spent its budget, probes nothing.
+func scanGuards(ctx context.Context, d BuildDeps, wt Worktree, started time.Time, budget time.Duration) ([]pendingFinding, error) {
 	if d.PackageTests == nil {
 		return nil, nil
 	}
@@ -74,11 +75,12 @@ func scanGuards(ctx context.Context, d BuildDeps, wt Worktree, sum *Summary) ([]
 	}
 	var findings []pendingFinding
 	for i, g := range guards {
-		if !withinBudget(sum.StartedAt, d.Now()) {
+		now := d.Now()
+		if !withinBudget(started, now, budget) {
 			d.Logger.Info("guardsUntested", "count", len(guards)-i, "reason", "budget")
 			break
 		}
-		uncovered, err := probeGuard(ctx, d, wt, sum, g)
+		uncovered, err := probeGuard(ctx, d, wt, g, budget-now.Sub(started))
 		if err != nil {
 			return nil, stopWith(OutcomeInfraFailure, StopChecksRun, err)
 		}
@@ -225,10 +227,12 @@ func breakGuard(src []byte, g guard) []byte {
 
 // probeGuard breaks g in the worktree, runs its package's tests, and restores
 // the file — always, even on error: a probe that left the mutation behind would
-// corrupt the run. It reports whether the guard is uncovered: true when every
-// test still passed with it broken, which is the finding, and false when
-// breaking it failed a test or when the probe could not run at all.
-func probeGuard(ctx context.Context, d BuildDeps, wt Worktree, sum *Summary, g guard) (uncovered bool, err error) {
+// corrupt the run. left is what the owning stage's budget had left when the scan
+// reached this guard, so the probe can never outlast that stage's own budget. It
+// reports whether the guard is uncovered: true when every test still passed with
+// it broken, which is the finding, and false when breaking it failed a test or
+// when the probe could not run at all.
+func probeGuard(ctx context.Context, d BuildDeps, wt Worktree, g guard, left time.Duration) (uncovered bool, err error) {
 	name := filepath.Join(wt.Dir, g.file)
 	src, err := os.ReadFile(name)
 	if err != nil {
@@ -245,8 +249,8 @@ func probeGuard(ctx context.Context, d BuildDeps, wt Worktree, sum *Summary, g g
 	}()
 
 	timeout := guardProbeTimeout
-	if remaining := checkLoopBudget - d.Now().Sub(sum.StartedAt); remaining < timeout {
-		timeout = remaining
+	if left < timeout {
+		timeout = left
 	}
 	tctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
