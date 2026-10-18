@@ -153,7 +153,7 @@ and through opencode the same day.)*
 
 ## Concurrency and parallel work
 
-**Five in flight is the ceiling, and it is not a quota.** Issue up to five
+**Five in flight is this repository's ceiling, and it is not a quota.** Issue up to five
 independent tool calls or subagent spawns at once rather than waiting on each, and
 when one finishes start the next without being asked. Serialising independent work
 is a defect to fix, not a safe default. Idle only on a real dependency (a result
