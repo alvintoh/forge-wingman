@@ -109,7 +109,7 @@ func (q *Queue) abandon(ctx context.Context, runID string, now time.Time, w disp
 		}
 		found := dispatcher.Abandoned{
 			RunID: runID, Ticket: str(row, ticketIDField), Repo: str(row, repoField),
-			Stage: entry.Stage, Attempt: attempt,
+			Stage: entry.Stage, Attempt: attempt, TicketState: str(row, ticketStateField),
 		}
 		notice := found.Notice()
 		noticeRef := NewNotices(q.client).doc(notice.ID)
@@ -123,6 +123,7 @@ func (q *Queue) abandon(ctx context.Context, runID string, now time.Time, w disp
 			{Path: updatedAtField, Value: now},
 			{Path: abandonedReasonField, Value: abandonedNoOutcome},
 			{Path: abandonedAtField, Value: now},
+			{Path: ticketStateField, Value: firestore.Delete},
 		}); err != nil {
 			return err
 		}

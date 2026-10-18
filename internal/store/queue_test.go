@@ -950,6 +950,40 @@ func TestTryClaimClaimsARowAnOperatorRequeued(t *testing.T) {
 	}
 }
 
+// TestRecordTicketStateTravelsOutWithTheRequeueAndIsCleared: the state a claim
+// recorded on the row is what its requeue reports, so the caller can put the
+// ticket back, and a run the queue holds again carries none.
+func TestRecordTicketStateTravelsOutWithTheRequeueAndIsCleared(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	id := fresh("queue-ticket-state")
+	forget(t, client, id)
+	if err := q.Enqueue(ctx, queuedRun(id, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.RecordTicketState(ctx, id, "state-todo"); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRow(t, client, id)[ticketStateField]; got != "state-todo" {
+		t.Fatalf("ticket_state = %v, want the state the claim recorded", got)
+	}
+	if _, err := client.Collection(runsCollection).Doc(id).Update(ctx, []firestore.Update{
+		{Path: outcomeField, Value: string(runner.OutcomeAgentFailed)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := q.Requeue(ctx, id, queueAt.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TicketState != "state-todo" {
+		t.Fatalf("requeue reports %q, want the state the claim recorded", got.TicketState)
+	}
+	if held := readRow(t, client, id)[ticketStateField]; held != nil {
+		t.Fatalf("the ticket state survived the requeue: %v", held)
+	}
+}
+
 func TestTryClaimDefersARunTheProviderWindowWouldBreach(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()

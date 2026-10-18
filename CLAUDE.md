@@ -28,10 +28,13 @@ just flip which option is recommended.
 At most **5 tickets in progress in the interactive lane** (you supervise, in
 this directory or a worktree you drive) and **5 in the agentic lane**. Before
 `/spec-plan` starts another interactive ticket, count the owner's In Progress
-tickets in Linear; at 5, finish or park one first. The agentic 5 is the
-dispatcher's `ReviewWIP` (open agent PRs, `internal/dispatcher/admit.go:53`),
-so a run can still start beside four open PRs. The live value is the
-`WINGMAN_REVIEW_WIP` key in `dispatcher_settings`; the code default is 3.
+tickets in Linear that are **not delegated to the runner**: a run's ticket shows
+In Progress from the claim that starts it, and the agentic lane already bounds it
+through the dispatcher's review WIP. At 5, finish or park one first. The agentic
+5 is the dispatcher's `ReviewWIP` (open agent PRs,
+`internal/dispatcher/admit.go:53`), so a run can still start beside four open
+PRs. The live value is the `WINGMAN_REVIEW_WIP` key in `dispatcher_settings`;
+the code default is 3.
 
 **The agentic limit started at 3 as a trial and was raised to 5 (set
 2026-10-12)** (a judgment call: the owner preferred a high start and will

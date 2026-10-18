@@ -93,6 +93,29 @@ func TestSweepAbandonsAClaimOlderThanItsWindowAndDropsItsReservation(t *testing.
 	}
 }
 
+// TestSweepReportsTheStateTheClaimRecordedAndClearsIt: the state a claim
+// recorded travels out with the abandoned run, for the poll that puts the
+// ticket back, and the row holds none once the sweep has reported it.
+func TestSweepReportsTheStateTheClaimRecordedAndClearsIt(t *testing.T) {
+	q, client := queue(t)
+	id := fresh("sweep-ticket-state")
+	resetLedger(t, client, 1)
+	claimAt(t, q, client, id, dispatcher.StageBuild)
+	if err := q.RecordTicketState(context.Background(), id, "state-todo"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := q.SweepAbandoned(context.Background(), sweepClaimedAt.Add(3*time.Hour), sweepWindows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if i := slices.IndexFunc(got, func(a dispatcher.Abandoned) bool { return a.RunID == id }); i < 0 || got[i].TicketState != "state-todo" {
+		t.Fatalf("abandoned = %+v, want run %s reporting the state its claim recorded", got, id)
+	}
+	if held := readRow(t, client, id)[ticketStateField]; held != nil {
+		t.Fatalf("the ticket state survived the abandon: %v", held)
+	}
+}
+
 func TestSweepLeavesAClaimInsideItsWindow(t *testing.T) {
 	q, client := queue(t)
 	id := fresh("sweep-inside")

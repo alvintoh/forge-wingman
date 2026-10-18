@@ -190,14 +190,17 @@ type Deps struct {
 	Source Source
 	// Delegatable lists the tickets the product may delegate to itself.
 	Delegatable Delegatable
-	Queue       Queue
-	Estimator   Estimator
-	Visibility  RepoVisibility
-	Providers   ProviderHalts
-	Breaker     Breaker
-	PeakModes   PeakModes
-	Autonomies  Autonomies
-	OpenPRs     OpenPRCounter
+	// TicketStates is Linear as a claim uses it: a claimed ticket is moved In
+	// Progress, and an undone claim puts it back where it was.
+	TicketStates TicketStates
+	Queue        Queue
+	Estimator    Estimator
+	Visibility   RepoVisibility
+	Providers    ProviderHalts
+	Breaker      Breaker
+	PeakModes    PeakModes
+	Autonomies   Autonomies
+	OpenPRs      OpenPRCounter
 	// PullRequests reads the merged run PRs the rewrite rate is measured from,
 	// and Rewrites records each measurement on its run row and reads the samples
 	// the level's conditions are checked against.
@@ -239,6 +242,7 @@ func (d Deps) missing() string {
 	}{
 		{"Source", d.Source != nil},
 		{"Delegatable", d.Delegatable != nil},
+		{"TicketStates", d.TicketStates != nil},
 		{"Queue", d.Queue != nil},
 		{"Estimator", d.Estimator != nil},
 		{"Visibility", d.Visibility != nil},
@@ -304,6 +308,17 @@ type Enqueuer interface {
 	Exists(ctx context.Context, runID string) (bool, error)
 }
 
+// TicketStates is Linear as a claim uses it: the ticket a claimed run builds
+// shows In Progress while the run holds it, and shows what it showed before the
+// claim once that claim is undone.
+type TicketStates interface {
+	// StartTicket sets the ticket In Progress and reports the state it held
+	// before, empty when the claim moved none.
+	StartTicket(ctx context.Context, ticketID string) (string, error)
+	// RestoreTicket returns the ticket to the state it held before its claim.
+	RestoreTicket(ctx context.Context, ticketID, stateID string) error
+}
+
 // Candidater lists queued runs a poll may claim, in Linear priority order
 // (adr/0003).
 type Candidater interface {
@@ -343,6 +358,12 @@ type ClaimedRuns interface {
 	ClaimedSince(ctx context.Context, since time.Time) (int, error)
 }
 
+// TicketStateRecorder records the state a claimed ticket held, which the claim's
+// own undo restores it to.
+type TicketStateRecorder interface {
+	RecordTicketState(ctx context.Context, runID, stateID string) error
+}
+
 // EndedRuns reports whether a ticket's run has already ended, so that only the
 // owner's own `runner requeue` takes that ticket further.
 type EndedRuns interface {
@@ -360,6 +381,7 @@ type Queue interface {
 	Sweeper
 	StuckReader
 	ClaimedRuns
+	TicketStateRecorder
 	EndedRuns
 	TransientRequeuer
 	// SettledHistory reads the settled run history at or after since: the one
@@ -482,6 +504,7 @@ func poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	phaseErrs := []error{requeueErr, claimErr}
 	start = d.Now()
 	for _, claim := range claims {
+		startTicket(ctx, d, claim)
 		if err := dispatch(ctx, d, claim); err != nil {
 			phaseErrs = append(phaseErrs, err)
 			continue
@@ -951,6 +974,36 @@ func reviewWIPFor(ctx context.Context, d Deps, cand Candidate, prs openPRCount) 
 		return prs.count - 1
 	}
 	return prs.count
+}
+
+// startTicket moves a claimed run's ticket In Progress and records the state the
+// ticket held before the claim, which a requeue or an abandon restores it to. A
+// failed Linear write is logged here, once, with the reason, and never fails the
+// poll or withholds the dispatch: the board's state is not worth a run's start.
+func startTicket(ctx context.Context, d Deps, claim Claim) {
+	prior, err := d.TicketStates.StartTicket(ctx, claim.RunID)
+	if err != nil {
+		d.Logger.Warn("ticketStateNotSet", "run", claim.RunID, "err", err.Error())
+		return
+	}
+	if prior == "" {
+		return
+	}
+	if err := d.Queue.RecordTicketState(ctx, claim.RunID, prior); err != nil {
+		d.Logger.Warn("ticketStateNotRecorded", "run", claim.RunID, "err", err.Error())
+	}
+}
+
+// restoreTicket puts a requeued or abandoned ticket back to the state it held
+// before its claim. A Linear write that fails is logged here, once, with the
+// reason, and never withholds the requeue or the abandon.
+func restoreTicket(ctx context.Context, d Deps, ticketID, stateID string) {
+	if stateID == "" {
+		return
+	}
+	if err := d.TicketStates.RestoreTicket(ctx, ticketID, stateID); err != nil {
+		d.Logger.Warn("ticketStateNotRestored", "ticket", ticketID, "err", err.Error())
+	}
 }
 
 // dispatch starts the claimed run, returning it to the queue if GitHub refused

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
+	"strings"
 
 	"github.com/alvintoh/forge-wingman/internal/linear"
 )
@@ -28,6 +30,11 @@ const doneStateTypes = `"` + stateTypeCompleted + `", "` + stateTypeCanceled + `
 // issues than one workspace's delegated to a single agent, so the pages are
 // walked rather than the first one taken as all of them.
 const linearPage = 50
+
+// inProgressStateName is the name of the state a claim moves a ticket into. The
+// state's id is read from the ticket's own team, so a team's workflow decides
+// it; the name is the one Linear's default workflows give that state.
+const inProgressStateName = "In Progress"
 
 // delegatedQuery reads the token's own identity beside the issues delegated to
 // it, so a poll cannot act for an agent other than the configured one. An issue
@@ -136,6 +143,46 @@ const delegateMutation = `mutation DelegateIssue($id: String!, $delegate: String
   }
 }`
 
+// ticketStateQuery reads one ticket's own id, its state, the manual order a
+// state change rewrites, and its team's workflow states — the last so the In
+// Progress state's id is resolved per team rather than carried as a constant.
+const ticketStateQuery = `query TicketState($id: String!) {
+  issue(id: $id) {
+    id
+    state {
+      id
+      name
+      type
+    }
+    sortOrder
+    team {
+      states {
+        nodes {
+          id
+          name
+          type
+        }
+      }
+    }
+  }
+}`
+
+// setTicketStateMutation moves one ticket to a state, writing its manual order
+// back in the same update since a state change rewrites it. The reply carries
+// the state and the order read back, so the move is only counted where the
+// ticket is found where it was put.
+const setTicketStateMutation = `mutation SetTicketState($id: String!, $state: String!, $order: Float!) {
+  issueUpdate(id: $id, input: { stateId: $state, sortOrder: $order }) {
+    success
+    issue {
+      state {
+        id
+      }
+      sortOrder
+    }
+  }
+}`
+
 // Linear reads the issues delegated to one Linear agent, and delegates the ones
 // the product takes on itself.
 type Linear struct {
@@ -148,10 +195,27 @@ type Linear struct {
 	Page     int
 }
 
-// linearState is the part of a related issue's state a blocking relation reads:
-// its type tells a blocker still open from a finished one.
+// linearState is one issue's workflow state: the type tells a blocker still
+// open from a finished one, and the id and name are what a claim's move reads —
+// the id it names a team's state by, and the name it resolves that state with.
 type linearState struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 	Type string `json:"type"`
+}
+
+// linearTicket is one ticket as the state query carries it: Linear's own id for
+// it, which the move names, the state it holds, the manual order a state change
+// rewrites, and its team's workflow states.
+type linearTicket struct {
+	ID        string      `json:"id"`
+	State     linearState `json:"state"`
+	SortOrder float64     `json:"sortOrder"`
+	Team      struct {
+		States struct {
+			Nodes []linearState `json:"nodes"`
+		} `json:"states"`
+	} `json:"team"`
 }
 
 // linearMilestone is the project milestone a reply carries for one issue.
@@ -305,6 +369,103 @@ func (l Linear) DelegateIssue(ctx context.Context, issueID string) error {
 	delegate := resp.Data.IssueUpdate.Issue.Delegate
 	if !resp.Data.IssueUpdate.Success || delegate == nil || delegate.ID != l.Delegate {
 		return fmt.Errorf("delegating %s: Linear did not report it delegated to %s", issueID, l.Delegate)
+	}
+	return nil
+}
+
+// StartTicket sets a claimed ticket's state In Progress and reports the state
+// it held before, which an undone claim restores the ticket to. Only a ticket
+// nobody has begun is moved: one already started — In Review among them, which
+// Linear's own pull-request automation sets — finished or canceled is left
+// where it is. An empty report says the claim moved nothing, so a requeue or an
+// abandon has nothing of its own to undo.
+func (l Linear) StartTicket(ctx context.Context, ticketID string) (string, error) {
+	ticket, err := l.ticketState(ctx, ticketID)
+	if err != nil {
+		return "", err
+	}
+	target, ok := inProgressState(ticket.Team.States.Nodes)
+	if !ok || ticket.State.ID == target.ID || !slices.Contains(unstartedStates, ticket.State.Type) {
+		return "", nil
+	}
+	if err := l.setTicketState(ctx, ticket.ID, target.ID, ticket.SortOrder); err != nil {
+		return "", err
+	}
+	return ticket.State.ID, nil
+}
+
+// RestoreTicket returns a claimed ticket to stateID, the state it held before
+// the claim, writing its manual order back as StartTicket does. A ticket that
+// has left the In Progress state its claim set — whether Linear's own
+// pull-request automation moved it or the owner did — is left where it is.
+func (l Linear) RestoreTicket(ctx context.Context, ticketID, stateID string) error {
+	if stateID == "" {
+		return nil
+	}
+	ticket, err := l.ticketState(ctx, ticketID)
+	if err != nil {
+		return err
+	}
+	if current, ok := inProgressState(ticket.Team.States.Nodes); !ok || ticket.State.ID != current.ID {
+		return nil
+	}
+	return l.setTicketState(ctx, ticket.ID, stateID, ticket.SortOrder)
+}
+
+// inProgressState is the team's In Progress state: the one named so, since a
+// team's own states are the only authority on which id that is.
+func inProgressState(states []linearState) (linearState, bool) {
+	for _, state := range states {
+		if strings.EqualFold(strings.TrimSpace(state.Name), inProgressStateName) {
+			return state, true
+		}
+	}
+	return linearState{}, false
+}
+
+// ticketState reads the ticket's own id, its state, its manual order and its
+// team's workflow states.
+func (l Linear) ticketState(ctx context.Context, ticketID string) (linearTicket, error) {
+	var resp struct {
+		Data struct {
+			Issue *linearTicket `json:"issue"`
+		} `json:"data"`
+	}
+	if err := l.request(ctx, ticketStateQuery, map[string]string{"id": ticketID}, &resp.Data); err != nil {
+		return linearTicket{}, fmt.Errorf("reading the state of %s: %w", ticketID, err)
+	}
+	if resp.Data.Issue == nil {
+		return linearTicket{}, fmt.Errorf("reading the state of %s: Linear has no such ticket", ticketID)
+	}
+	return *resp.Data.Issue, nil
+}
+
+// setTicketState moves the ticket to stateID, writing order back with it, and
+// fails unless Linear reports the ticket in that state, at that order.
+func (l Linear) setTicketState(ctx context.Context, issueID, stateID string, order float64) error {
+	var resp struct {
+		Data struct {
+			IssueUpdate struct {
+				Success bool `json:"success"`
+				Issue   struct {
+					State     linearState `json:"state"`
+					SortOrder float64     `json:"sortOrder"`
+				} `json:"issue"`
+			} `json:"issueUpdate"`
+		} `json:"data"`
+	}
+	variables := struct {
+		ID    string  `json:"id"`
+		State string  `json:"state"`
+		Order float64 `json:"order"`
+	}{ID: issueID, State: stateID, Order: order}
+	if err := l.request(ctx, setTicketStateMutation, variables, &resp.Data); err != nil {
+		return fmt.Errorf("moving %s to state %s: %w", issueID, stateID, err)
+	}
+	update := resp.Data.IssueUpdate
+	if !update.Success || update.Issue.State.ID != stateID || update.Issue.SortOrder != order {
+		return fmt.Errorf("moving %s to state %s: Linear reported %s at order %v, want %s at %v",
+			issueID, stateID, update.Issue.State.ID, update.Issue.SortOrder, stateID, order)
 	}
 	return nil
 }

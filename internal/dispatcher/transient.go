@@ -36,10 +36,17 @@ type TransientRequeuer interface {
 	// TransientStops lists every ended run carrying a transient class.
 	TransientStops(ctx context.Context) ([]TransientStop, error)
 	// RequeueTransient returns runID to the queue as the next attempt for
-	// class, recording the attempt, and reports how many automatic requeues it
-	// has now had. It refuses a run that has not ended, and one that has used
-	// every one of max attempts.
-	RequeueTransient(ctx context.Context, runID string, at time.Time, class runner.TransientClass, max int) (int, error)
+	// class, recording the attempt. It refuses a run that has not ended, and
+	// one that has used every one of max attempts.
+	RequeueTransient(ctx context.Context, runID string, at time.Time, class runner.TransientClass, max int) (TransientRequeue, error)
+}
+
+// TransientRequeue is what a transient requeue did: the attempt the run is on
+// now, and the Linear state its ticket held before the claim, empty when the
+// claim moved none, which the requeue puts the ticket back to.
+type TransientRequeue struct {
+	Attempt     int
+	TicketState string
 }
 
 // requeueStopped returns every run that stopped on a known transient fault to
@@ -67,12 +74,15 @@ func requeueStopped(ctx context.Context, d Deps) error {
 			}
 			continue
 		}
-		attempt, err := d.Queue.RequeueTransient(ctx, s.RunID, d.Now(), s.Class, DefaultTransientRequeues)
+		res, err := d.Queue.RequeueTransient(ctx, s.RunID, d.Now(), s.Class, DefaultTransientRequeues)
 		if err != nil {
 			errs = append(errs, err)
 			continue
 		}
-		d.Logger.Warn("runRequeued", "run", s.RunID, "ticket", s.Ticket, "class", string(s.Class), "requeues", attempt)
+		d.Logger.Warn("runRequeued", "run", s.RunID, "ticket", s.Ticket, "class", string(s.Class), "requeues", res.Attempt)
+		// The ticket goes back to where it stood before the claim with the run:
+		// the queue holds the work again, so nothing is in progress.
+		restoreTicket(ctx, d, s.Ticket, res.TicketState)
 	}
 	return errors.Join(errs...)
 }

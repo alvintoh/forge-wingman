@@ -87,12 +87,21 @@ func pollHistory(t *testing.T, q *Queue, n int, size string) {
 	}
 }
 
+// pollTicketStates is a claim's Linear writes here: they record nothing, because
+// every assertion in this file counts reads.
+type pollTicketStates struct{}
+
+func (pollTicketStates) StartTicket(context.Context, string) (string, error) { return "", nil }
+
+func (pollTicketStates) RestoreTicket(context.Context, string, string) error { return nil }
+
 // pollReadDeps is a poll over the store's queue and estimator, with every other
 // dependency stubbed: the reads it makes are the queue's own.
 func pollReadDeps(q *Queue, openPRs int) dispatcher.Deps {
 	return dispatcher.Deps{
 		Source:       pollSource{},
 		Delegatable:  pollDelegatable{},
+		TicketStates: pollTicketStates{},
 		Queue:        q,
 		Estimator:    NewEstimates(q.client),
 		Visibility:   pollVisibility{},

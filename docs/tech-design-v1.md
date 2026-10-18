@@ -187,21 +187,30 @@ One Go binary entrypoint (`cmd/dispatcher`). Per poll:
    caps, the circuit breaker — up to N in flight. A run that waits records the
    *binding* condition.
 6. **Requeue a run stopped on a transient fault** (FRG-132). A run's stop carries a
-   class when its recorded detail — or, for a stop that means a job failed outside the code
-   (setup, the worktree, the PR job, no readable summary), the failed job's own log tail,
-   which the runner reads at record time — names one of a closed list of transient signatures — a Go module
-   proxy or checksum read, a network timeout, a lost runner.
+   class when its recorded detail — or, for a stop that means a job failed outside the
+   code (setup, the worktree, the PR job, no readable summary), the failed job's own log
+   tail, which the runner reads at record time — names one of a closed list of transient
+   signatures — a Go module proxy or checksum read, a network timeout, a lost runner.
    An abandoned claim carries none: it is as likely cancelled by the owner as lost. At autonomy level 1 or
    above the poll returns such a run to the queue for up to two more attempts, each
    recorded with its class, ahead of the claim walk so the retry can be claimed by the
    same poll. The requeue only returns the run to the queue: the claim that follows is
    admitted like any other, so the ceilings, the review WIP limit and the breaker hold
    it. A stop with no matching class is never requeued on its own, and a run that has
-   used its attempts stays stopped with a notice.
+   used its attempts stays stopped with a notice. A requeue or an abandon puts the
+   ticket back to the state it held before the claim — the dispatcher's own
+   requeue in the poll, and an operator's `runner requeue` — so a ticket is In
+   Progress only while a run holds it.
 7. **Claim** each admitted run with a Firestore transaction over the run row and
    `dispatch/ledger`: claim only if still `queued` and the reservation still fits,
    so no two polls dispatch the same run or overbook a window. "No document
-   returned" means another poll won.
+   returned" means another poll won. The claim then moves the run's ticket In
+   Progress, under the state id its own team's workflow names — a ticket already
+   started (In Review among them), finished or canceled is left where it is —
+   writing back the manual order a state change rewrites and reading both back,
+   and records the state the ticket held before the claim on the run row. A
+   Linear write that fails is logged, with the reason, and never withholds the
+   run's start.
 8. **Dispatch** by `workflow_dispatch` against the target repository.
 9. **Notify** per FR-23 — link-only, and only for the five recurring classes
    (FR-11, FR-12, FR-18, NFR-1, FR-26's infrastructure stop). The same classes trip
@@ -566,7 +575,7 @@ It is the only diagram in this product that names technology.
 | # | Item | Blocks |
 |---|---|---|
 | 1 | **Superseded (2026-09-23):** the probe ran — series 8 verdict in `three-trap-probe-v1.md`; its two protocol lines are not yet in the projection. ~~FR-19's three-trap probe has not been run; the trimmed projection is unproven~~ | Phase 2's first ticket |
-| 2 | **Updated (2026-09-25): first full run measured** — one size-S ticket (no plan phase): build 4m13s, whole run 7m06s, ~8 billed runner minutes (each job rounds up to the minute), so ~250 runs/month fit a private target's free 2,000. One sample: close at ≥10 runs per size, with p90 for the per-run cap and the mean for minute budgets. ~~probe cells ran **0.9–8.1 min, median 5.5**, so the ~30 min figure is falsified — but a full plan-build-PR run is still unmeasured, and it decides whether level 2 is free or metered. Run duration is assumed at ~30 min and has never been measured~~ | nothing; FR-6 records it and NFR-4 says measure before tuning |
+| 2 | **Updated (2026-09-25): first full run measured** — one size-S ticket (no plan phase): build 4m13s, whole run 7m06s, ~8 billed runner minutes (each job rounds up to the minute), so ~250 runs/month fit a private target's free 2,000. One sample: close at ≥10 runs per size, with p90 for the per-run cap and the mean for minute budgets. ~~probe cells ran **0.9–8.1 min, median 5.5**, so the ~30 min figure is falsified — but a full plan-build-PR run is still unmeasured, and it decides whether level 2 is free or metered. Run duration is assumed at ~30 min and has never been measured~~ **Updated (2026-10-17): closed for S and M** — the sum of each run's recorded phase durations on its last attempt (S n = 17, M n = 18; L has 3, so it stays open): **S mean 18.1 min, p90 32.3 min; M mean 46.7 min, p90 57.9 min**. These are phase sums, not wall clock or billed minutes (each job rounds up), so the per-run cap should read the p90 and the minute budget the mean once billed minutes are recorded per size. | nothing; FR-6 records it and NFR-4 says measure before tuning |
 | 3 | FR-20's PR actions need a scoped GitHub credential for the operator; the scope set is enumerated but not created | the retry-and-act phase only |
 | 4 | **The decision seam's provider is admissible but unproven.** Jev fits FR-15's shape exactly and NFR-2 no longer bars it, but it has not been scored against the held-out set and it is six days old | nothing at level 0 — FR-15's deterministic signals run first and free, and the classifier decides only the remainder |
 | 5 | **Updated (2026-10-07):** the cost source is per harness adapter. omp's own figure is wrong (it charged peak rates off-peak), so its runs are priced from tokens × the plan's rates (`adr/0015`, FRG-57), as the opencode fallback's must be (FRG-65); the retired Command Code CLI adapter is removed after FRG-65. **Added (2026-10-05):** a Command Code run records a provider cost of 0, so FR-22's GOAT windows and NFR-1's per-run cost cap meter nothing until FRG-47 fills the cost from the CLI transcript's `costUsd` — the record then numbered `adr/0015` | enforcement of FR-22 and NFR-1's cost cap |

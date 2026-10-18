@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -32,6 +33,41 @@ func (s fakeSource) Delegated(context.Context) ([]Issue, error) {
 		return nil, s.err
 	}
 	return s.issues, nil
+}
+
+// fakeTicketStates is Linear as a claim uses it: prior is the state each ticket
+// held before the claim moved it, empty for one already where the claim would
+// put it, and the moves each way are recorded.
+type fakeTicketStates struct {
+	prior map[string]string
+	// started and restored name the tickets moved each way, in order.
+	started  []string
+	restored []restoreCall
+	// startErr and restoreErr fail the write they belong to.
+	startErr   error
+	restoreErr error
+}
+
+func (s *fakeTicketStates) StartTicket(_ context.Context, ticketID string) (string, error) {
+	if s.startErr != nil {
+		return "", s.startErr
+	}
+	s.started = append(s.started, ticketID)
+	return s.prior[ticketID], nil
+}
+
+func (s *fakeTicketStates) RestoreTicket(_ context.Context, ticketID, stateID string) error {
+	if s.restoreErr != nil {
+		return s.restoreErr
+	}
+	s.restored = append(s.restored, restoreCall{ticket: ticketID, state: stateID})
+	return nil
+}
+
+// restoreCall is one ticket a poll put back, and the state it put it in.
+type restoreCall struct {
+	ticket string
+	state  string
 }
 
 // tryClaimCall is one TryClaim invocation a test can inspect: what run it was
@@ -104,6 +140,11 @@ type fakeQueue struct {
 	transientErr        error
 	requeued            []TransientStop
 	requeueTransientErr error
+
+	// ticketStates is the Linear state each claimed run's ticket held before its
+	// claim, as RecordTicketState wrote it; ticketStateErr fails that write.
+	ticketStates   map[string]string
+	ticketStateErr error
 
 	// reprioritized records each rank the poll refreshed, by run id.
 	reprioritized map[string]int
@@ -180,11 +221,12 @@ func (q *fakeQueue) TransientStops(context.Context) ([]TransientStop, error) {
 	return q.transientStops, q.transientErr
 }
 
-// RequeueTransient records the requeue and reports the run's requeue count, the
-// way the store reports how many automatic requeues the run has had.
-func (q *fakeQueue) RequeueTransient(_ context.Context, runID string, _ time.Time, class runner.TransientClass, _ int) (int, error) {
+// RequeueTransient records the requeue and reports the attempt the run is on,
+// with the state its ticket held before the claim, which the store's own
+// requeue clears from the row and reports with it.
+func (q *fakeQueue) RequeueTransient(_ context.Context, runID string, _ time.Time, class runner.TransientClass, _ int) (TransientRequeue, error) {
 	if q.requeueTransientErr != nil {
-		return 0, q.requeueTransientErr
+		return TransientRequeue{}, q.requeueTransientErr
 	}
 	q.requeued = append(q.requeued, TransientStop{RunID: runID, Class: class})
 	requeues := 0
@@ -193,7 +235,22 @@ func (q *fakeQueue) RequeueTransient(_ context.Context, runID string, _ time.Tim
 			requeues++
 		}
 	}
-	return requeues, nil
+	state := q.ticketStates[runID]
+	delete(q.ticketStates, runID)
+	return TransientRequeue{Attempt: requeues, TicketState: state}, nil
+}
+
+// RecordTicketState records the state the run's ticket held before its claim,
+// which a requeue or an abandon reports back.
+func (q *fakeQueue) RecordTicketState(_ context.Context, runID, stateID string) error {
+	if q.ticketStateErr != nil {
+		return q.ticketStateErr
+	}
+	if q.ticketStates == nil {
+		q.ticketStates = map[string]string{}
+	}
+	q.ticketStates[runID] = stateID
+	return nil
 }
 
 func (q *fakeQueue) UpdateQueuedPriority(_ context.Context, runID string, rank int) (bool, error) {
@@ -394,25 +451,26 @@ func (p fakeOpenPRs) OpenAgentPRs(_ context.Context, repo string) (int, error) {
 func pollDeps(source Source, q *fakeQueue, w *fakeWorkflow) Deps {
 	return Deps{
 		Source: source, Delegatable: &fakeDelegatable{}, Queue: q, Workflow: w,
-		Estimator:  fakeEstimator{},
-		Visibility: fakeVisibility{},
-		Providers:  fakeProviders{},
-		Breaker:    fakeBreaker{},
-		PeakModes:  fakePeakModes{mode: PeakOffPeakOnly},
-		Autonomies: &fakeAutonomies{},
-		Earned:     freshEarned(5),
-		Shadow:     &fakeShadow{start: time.Unix(1, 0)},
-		CDs:        fakeCDs{},
-		History:    &fakeHistory{},
-		OpenPRs:    fakeOpenPRs{},
-		Overrides:  LabelOverrides{},
-		ModelPlans: &fakeModelPlans{},
-		Notices:    &fakeNotices{},
-		OpenPoster: func(context.Context) (Poster, error) { return &fakePoster{}, nil },
-		Elicit:     &fakeElicitor{},
-		Decisions:  &fakeDecisions{},
-		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Now:        func() time.Time { return pollAt },
+		TicketStates: &fakeTicketStates{},
+		Estimator:    fakeEstimator{},
+		Visibility:   fakeVisibility{},
+		Providers:    fakeProviders{},
+		Breaker:      fakeBreaker{},
+		PeakModes:    fakePeakModes{mode: PeakOffPeakOnly},
+		Autonomies:   &fakeAutonomies{},
+		Earned:       freshEarned(5),
+		Shadow:       &fakeShadow{start: time.Unix(1, 0)},
+		CDs:          fakeCDs{},
+		History:      &fakeHistory{},
+		OpenPRs:      fakeOpenPRs{},
+		Overrides:    LabelOverrides{},
+		ModelPlans:   &fakeModelPlans{},
+		Notices:      &fakeNotices{},
+		OpenPoster:   func(context.Context) (Poster, error) { return &fakePoster{}, nil },
+		Elicit:       &fakeElicitor{},
+		Decisions:    &fakeDecisions{},
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Now:          func() time.Time { return pollAt },
 		// The rewrite measurement reads GitHub and the run rows; a poll with no
 		// merged PR to see does nothing with either.
 		PullRequests: &fakePullRequests{},
@@ -1760,5 +1818,66 @@ func TestPollDefersABuildStageRatherThanMovingItToTheFreeTier(t *testing.T) {
 	}
 	if len(q.tryClaims) != 1 || len(res.Deferrals) != 1 || res.Deferrals[0].Ceiling != "p-5h" {
 		t.Fatalf("claims %d, deferrals %+v, want one claim deferred on the plan window", len(q.tryClaims), res.Deferrals)
+	}
+}
+
+// TestPollMovesTheClaimedTicketInProgress: the ticket a claimed run is building
+// shows In Progress from the claim, and the state it held before it is recorded
+// on the run, which a requeue or an abandon puts it back to.
+func TestPollMovesTheClaimedTicketInProgress(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{{RunID: "FRG-18", Repo: "octo/scratch", Size: "M"}}}
+	tickets := &fakeTicketStates{prior: map[string]string{"FRG-18": "state-todo"}}
+	deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	deps.TicketStates = tickets
+	res, err := Poll(context.Background(), deps, buildConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(tickets.started, []string{"FRG-18"}) {
+		t.Fatalf("started = %v, want the claimed ticket moved In Progress", tickets.started)
+	}
+	if got := q.ticketStates["FRG-18"]; got != "state-todo" {
+		t.Fatalf("recorded state = %q, want the state the ticket held before the claim", got)
+	}
+	if len(res.Dispatched) != 1 || res.Dispatched[0] != "FRG-18" {
+		t.Fatalf("dispatched %q, want the claimed run", res.Dispatched)
+	}
+}
+
+// TestPollRecordsNoStateForATicketTheClaimDidNotMove: a ticket the claim left
+// where it was — already In Progress, In Review, Done or Canceled — leaves the
+// run nothing to put back.
+func TestPollRecordsNoStateForATicketTheClaimDidNotMove(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{{RunID: "FRG-18", Repo: "octo/scratch", Size: "M"}}}
+	deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	deps.TicketStates = &fakeTicketStates{}
+	if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.ticketStates) != 0 {
+		t.Fatalf("recorded %v, want nothing for a ticket no claim moved", q.ticketStates)
+	}
+}
+
+// TestPollDispatchesDespiteAFailedTicketMove: a failed Linear write is logged
+// once, with the reason as its own field, and never withholds the run's start.
+func TestPollDispatchesDespiteAFailedTicketMove(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{{RunID: "FRG-18", Repo: "octo/scratch", Size: "M"}}}
+	w := &fakeWorkflow{}
+	var logs bytes.Buffer
+	deps := pollDeps(fakeSource{}, q, w)
+	deps.TicketStates = &fakeTicketStates{startErr: errors.New("linear said no")}
+	deps.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.claims) != 1 {
+		t.Fatalf("dispatches = %+v, want the run started anyway", w.claims)
+	}
+	if got := strings.Count(logs.String(), "msg=ticketStateNotSet"); got != 1 {
+		t.Fatalf("log = %q, want one ticketStateNotSet", logs.String())
+	}
+	if !strings.Contains(logs.String(), `err="linear said no"`) {
+		t.Fatalf("log = %q, want the reason as its own field", logs.String())
 	}
 }
