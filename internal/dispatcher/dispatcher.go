@@ -474,7 +474,7 @@ func poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	// of the claim walk, so the retry it earns is claimed by this same poll
 	// rather than waiting for the next one.
 	start = d.Now()
-	requeueErr := requeueStopped(ctx, d, level)
+	requeueErr := requeueStopped(ctx, d)
 	LogPhase(d.Logger, "requeue", start, d.Now())
 	start = d.Now()
 	claims, claimErr := admitClaims(ctx, d, c, level, relations, links, &res, history)

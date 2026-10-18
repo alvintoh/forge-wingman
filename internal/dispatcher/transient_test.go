@@ -42,14 +42,19 @@ func TestPollRequeuesARunThatStoppedOnAListedFault(t *testing.T) {
 	}
 }
 
-func TestPollRequeuesNothingAtLevelZero(t *testing.T) {
+func TestPollRequeuesARunWithNoLevelSet(t *testing.T) {
 	q := &fakeQueue{transientStops: []TransientStop{{RunID: "FRG-9", Class: runner.TransientModuleProxy}}}
+	notices := &fakeNotices{}
 	d := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	d.Notices = notices
 	if _, err := Poll(context.Background(), d, buildConfig); err != nil {
 		t.Fatal(err)
 	}
-	if len(q.requeued) != 0 {
-		t.Fatalf("requeued %+v at level 0, want every retry left to the owner", q.requeued)
+	if len(q.requeued) != 1 || q.requeued[0].RunID != "FRG-9" {
+		t.Fatalf("requeued = %+v, want the stopped run returned with no level set", q.requeued)
+	}
+	if len(notices.raised) != 0 {
+		t.Fatalf("raised %+v, want no notice while the run has an attempt left", notices.raised)
 	}
 }
 
@@ -75,7 +80,6 @@ func TestPollLeavesARunThatHasUsedEveryAutomaticRequeue(t *testing.T) {
 	q := &fakeQueue{transientStops: []TransientStop{stop}}
 	notices := &fakeNotices{}
 	d := pollDeps(fakeSource{}, q, &fakeWorkflow{})
-	d.Autonomies = &fakeAutonomies{level: AutonomyRequeues}
 	d.Notices = notices
 	if _, err := Poll(context.Background(), d, buildConfig); err != nil {
 		t.Fatal(err)
