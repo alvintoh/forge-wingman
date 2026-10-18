@@ -44,15 +44,11 @@ type TransientRequeuer interface {
 
 // requeueStopped returns every run that stopped on a known transient fault to
 // the queue, up to DefaultTransientRequeues times each, and raises a notice for
-// one that has used them all, so it waits for the owner. A level that may act
-// on nothing requeues nothing (AC6), and a requeue only returns the run to the
-// queue: the claim that follows it is admitted like any other, so the budget
-// ceilings, the review WIP limit and the breaker hold it exactly as they hold a
-// run's first attempt (AC5).
-func requeueStopped(ctx context.Context, d Deps, level Autonomy) error {
-	if !level.Requeues() {
-		return nil
-	}
+// one that has used them all, so it waits for the owner. A requeue only returns
+// the run to the queue: the claim that follows it is admitted like any other,
+// so the budget ceilings, the review WIP limit and the breaker hold it exactly
+// as they hold a run's first attempt.
+func requeueStopped(ctx context.Context, d Deps) error {
 	stops, err := d.Queue.TransientStops(ctx)
 	if err != nil {
 		return err
