@@ -9,13 +9,13 @@ import (
 // The windows after which a claim that has reported nothing is abandoned. Each
 // must exceed the sum of timeout-minutes across that stage's whole workflow
 // chain in run.yml, never just the model job's, or the sweep abandons a run
-// still live in check or pr. Build: ticket 10 + model 60 + check 30 + pr-meta 10
-// + pr 10 + record 10 = 130. Plan: ticket 10 + model 60 + record-plan-stage 10
-// = 80. Each adds 30 minutes for Actions queueing; detection lags by up to
+// still live in check or pr. Build: ticket 10 + model 90 + check 30 + pr-meta 10
+// + pr 10 + record 10 = 160. Plan: ticket 10 + model 90 + record-plan-stage 10
+// = 110. Each adds 30 minutes for Actions queueing; detection lags by up to
 // pollInterval on top.
 const (
-	buildAbandonWindow = 160 * time.Minute
-	planAbandonWindow  = 110 * time.Minute
+	buildAbandonWindow = 190 * time.Minute
+	planAbandonWindow  = 140 * time.Minute
 
 	abandonedClass     = "abandoned:"
 	abandonedNoticeKey = "abandoned-"
