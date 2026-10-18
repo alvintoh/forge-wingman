@@ -150,3 +150,25 @@ never echoes, so each second turn fails.
 
 *(Owner's instruction, 2026-10-11; verified live on gemini-3.8-flash through omp
 and through opencode the same day.)*
+
+## Concurrency and parallel work
+
+**Five in flight is the ceiling, and it is not a quota.** Issue up to five
+independent tool calls or subagent spawns at once rather than waiting on each, and
+when one finishes start the next without being asked. Serialising independent work
+is a defect to fix, not a safe default. Idle only on a real dependency (a result
+you need), an outward action the owner owns, or a gate whose answer is genuinely
+theirs.
+
+**This holds whatever harness a run uses, because it is a rule and not a setting.**
+omp exposes no agent, task or tool concurrency limit — the numbers that look like
+one govern background jobs (`async.maxJobs`), a judge/completion worker pool, and
+the `task` tool's own subagent queue. Read the registry of whichever harness a plan
+names and expect the same, so a fallback harness needs no extra configuration. The
+only serialisation is per tool: a tool declaring itself exclusive runs alone, and
+omp's `edit` and `todo` do because they mutate shared state, so a batch of edits
+serialises while reads, shell calls and subagent spawns run together.
+
+*(Judgment call, owner's instruction 2026-10-18: five is a chosen working number,
+not a harness limit. Verified against omp 18.7.0's `omp config list` and its
+`dist/cli.js`.)*
