@@ -43,12 +43,12 @@ func TestRequeueTransientReturnsAStoppedRunAsTheNextAttempt(t *testing.T) {
 	stoppedOnTransient(t, q, client, id, runner.TransientModuleProxy)
 	retriedAt := queueAt.Add(time.Minute)
 
-	attempt, err := q.RequeueTransient(ctx, id, retriedAt, runner.TransientModuleProxy, 2)
+	res, err := q.RequeueTransient(ctx, id, retriedAt, runner.TransientModuleProxy, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if attempt != 1 {
-		t.Fatalf("attempt = %d, want the run put back as attempt 1", attempt)
+	if res.Attempt != 1 {
+		t.Fatalf("attempt = %d, want the run put back as attempt 1", res.Attempt)
 	}
 	row := readRow(t, client, id)
 	if row[stateField] != stateQueued {

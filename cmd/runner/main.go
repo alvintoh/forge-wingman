@@ -687,6 +687,7 @@ func record(ctx context.Context, logger *slog.Logger, getenv func(string) string
 		switch {
 		case err == nil:
 			logger.Info("rebaseConflictRequeued", "run", *runID, "attempt", res.Attempt)
+			restoreTicketState(ctx, logger, e.project, *runID, res.TicketState)
 			return nil
 		case errors.Is(err, store.ErrRetriesExhausted):
 			logger.Warn("rebaseConflictRetriesExhausted", "run", *runID, "retries", maxRebaseConflictRetries)
@@ -833,6 +834,7 @@ func requeue(ctx context.Context, logger *slog.Logger, e env, args []string) err
 		return err
 	}
 	logger.Info("runRequeued", "run", *runID, "attempt", res.Attempt, "state", res.State)
+	restoreTicketState(ctx, logger, e.project, *runID, res.TicketState)
 	return nil
 }
 

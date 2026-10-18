@@ -54,6 +54,10 @@ const (
 	abandonedReasonField = "abandoned_reason"
 	abandonedAtField     = "abandoned_at"
 	attemptField         = "attempt"
+	// ticketStateField is the Linear state the ticket held before its claim: the
+	// state a requeue or an abandon puts it back to. It sits outside the record,
+	// which Finalize rebuilds whole.
+	ticketStateField = "ticket_state"
 	// queuedAtField is stamped at enqueue and requeue, the tie-break among runs
 	// of one priority; an answered or released run keeps its position.
 	queuedAtField = "queued_at"
@@ -285,6 +289,18 @@ func (q *Queue) Enqueue(ctx context.Context, run dispatcher.Queued) error {
 	}
 	if err != nil {
 		return fmt.Errorf("queuing run %s: %w", run.RunID, err)
+	}
+	return nil
+}
+
+// RecordTicketState records the Linear state the run's ticket held before its
+// claim, which a requeue or an abandon restores it to. It is written beside the
+// run record, so the runner's own Finalize cannot drop it, and it is overwritten
+// by the next claim that moves the ticket.
+func (q *Queue) RecordTicketState(ctx context.Context, runID, stateID string) error {
+	rowRef := q.client.Collection(runsCollection).Doc(runID)
+	if _, err := rowRef.Update(ctx, []firestore.Update{{Path: ticketStateField, Value: stateID}}); err != nil {
+		return fmt.Errorf("recording the state run %s claimed its ticket in: %w", runID, err)
 	}
 	return nil
 }
@@ -1244,11 +1260,13 @@ func (q *Queue) Stop(ctx context.Context, runID string, reason runner.StopReason
 	return nil
 }
 
-// RequeueResult is what a requeue did: the state the run returned to and the
-// attempt it was put back as.
+// RequeueResult is what a requeue did: the state the run returned to, the
+// attempt it was put back as, and the Linear state its ticket held before the
+// claim, empty when that claim moved none, which the ticket is put back to.
 type RequeueResult struct {
-	State   string
-	Attempt int
+	State       string
+	Attempt     int
+	TicketState string
 }
 
 // The reasons Requeue refuses a run, each reporting a different operator action:
@@ -1340,16 +1358,16 @@ func (q *Queue) TransientStops(ctx context.Context) ([]dispatcher.TransientStop,
 
 // RequeueTransient returns a run that stopped on a transient fault to the queue
 // as its next attempt, recording the class the requeue was made for and
-// reporting how many automatic requeues the run has now had. It refuses the
+// reporting the attempt it is now on beside the state its ticket held before
+// the claim, which the ticket is put back to. It refuses the
 // runs Requeue refuses — a run still in flight among them — and one that has
 // already used max automatic requeues, with ErrRetriesExhausted.
 //
 // It returns the run to the queue and nothing more: the claim that follows it
 // is admitted like any other, so a budget ceiling, the review WIP limit or a
 // tripped breaker holds a retry exactly as it holds a first attempt.
-func (q *Queue) RequeueTransient(ctx context.Context, runID string, at time.Time, class runner.TransientClass, max int) (int, error) {
-	var attempt int
-	_, err := q.requeue(ctx, runID, at, func(row map[string]any, _ int) (string, []firestore.Update, error) {
+func (q *Queue) RequeueTransient(ctx context.Context, runID string, at time.Time, class runner.TransientClass, max int) (dispatcher.TransientRequeue, error) {
+	res, err := q.requeue(ctx, runID, at, func(row map[string]any, _ int) (string, []firestore.Update, error) {
 		state, err := requeueState(row)
 		if err != nil {
 			return "", nil, err
@@ -1358,14 +1376,13 @@ func (q *Queue) RequeueTransient(ctx context.Context, runID string, at time.Time
 		if len(history) >= max {
 			return "", nil, ErrRetriesExhausted
 		}
-		attempt = len(history) + 1
 		next := append(slices.Clone(history), map[string]any{"class": string(class), "at": at})
 		return state, []firestore.Update{{Path: transientRequeuesField, Value: next}}, nil
 	})
 	if err != nil {
-		return 0, fmt.Errorf("requeueing run %s after a transient fault: %w", runID, err)
+		return dispatcher.TransientRequeue{}, fmt.Errorf("requeueing run %s after a transient fault: %w", runID, err)
 	}
-	return attempt, nil
+	return dispatcher.TransientRequeue{Attempt: res.Attempt, TicketState: res.TicketState}, nil
 }
 
 // requeue is the transaction Requeue and RequeueAfterConflict share: decide
@@ -1407,6 +1424,7 @@ func (q *Queue) requeue(ctx context.Context, runID string, at time.Time,
 			{Path: retriedAtField, Value: at},
 			{Path: abandonedReasonField, Value: firestore.Delete},
 			{Path: abandonedAtField, Value: firestore.Delete},
+			{Path: ticketStateField, Value: firestore.Delete},
 			{Path: queuedAtField, Value: at},
 			{Path: attemptField, Value: attempt},
 			{Path: autonomyField, Value: firestore.Delete},
@@ -1414,7 +1432,7 @@ func (q *Queue) requeue(ctx context.Context, runID string, at time.Time,
 		}, extra...)); err != nil {
 			return err
 		}
-		result = RequeueResult{State: state, Attempt: attempt}
+		result = RequeueResult{State: state, Attempt: attempt, TicketState: str(row, ticketStateField)}
 		return dropReservations(tx, ledgerRef, ledger, runID, attempt-1)
 	})
 	if err != nil {

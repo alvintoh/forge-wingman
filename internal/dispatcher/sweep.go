@@ -46,6 +46,9 @@ type Abandoned struct {
 	Stage  string
 	// Attempt is how many times the ticket had been requeued when it was claimed.
 	Attempt int
+	// TicketState is the Linear state the ticket held before the claim, empty
+	// when the claim moved none, which the sweep puts the ticket back to.
+	TicketState string
 }
 
 // Sweeper flips claims that outlived their stage's window to abandoned,
@@ -59,11 +62,14 @@ type Sweeper interface {
 
 // sweepAbandoned abandons every claim past its window, which also raises the
 // run's notice in the same transaction. The notice is not counted toward the
-// circuit breaker: a dead runner is not a credential or allowance fault.
+// circuit breaker: a dead runner is not a credential or allowance fault. Each
+// abandoned ticket is put back to the state it held before the claim, since the
+// run it was claimed for will not report anything more.
 func sweepAbandoned(ctx context.Context, d Deps) error {
 	abandoned, err := d.Queue.SweepAbandoned(ctx, d.Now(), AbandonWindows{Plan: planAbandonWindow, Build: buildAbandonWindow})
 	for _, a := range abandoned {
 		d.Logger.Warn("runAbandoned", "run", a.RunID, "stage", a.Stage, "attempt", a.Attempt)
+		restoreTicket(ctx, d, a.Ticket, a.TicketState)
 	}
 	return err
 }

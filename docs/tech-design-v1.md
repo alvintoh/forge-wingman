@@ -197,11 +197,20 @@ One Go binary entrypoint (`cmd/dispatcher`). Per poll:
    same poll. The requeue only returns the run to the queue: the claim that follows is
    admitted like any other, so the ceilings, the review WIP limit and the breaker hold
    it. A stop with no matching class is never requeued on its own, and a run that has
-   used its attempts stays stopped with a notice.
+   used its attempts stays stopped with a notice. A requeue or an abandon puts the
+   ticket back to the state it held before the claim — the dispatcher's own
+   requeue in the poll, and an operator's `runner requeue` — so a ticket is In
+   Progress only while a run holds it.
 7. **Claim** each admitted run with a Firestore transaction over the run row and
    `dispatch/ledger`: claim only if still `queued` and the reservation still fits,
    so no two polls dispatch the same run or overbook a window. "No document
-   returned" means another poll won.
+   returned" means another poll won. The claim then moves the run's ticket In
+   Progress, under the state id its own team's workflow names — a ticket already
+   started (In Review among them), finished or canceled is left where it is —
+   writing back the manual order a state change rewrites and reading both back,
+   and records the state the ticket held before the claim on the run row. A
+   Linear write that fails is logged, with the reason, and never withholds the
+   run's start.
 8. **Dispatch** by `workflow_dispatch` against the target repository.
 9. **Notify** per FR-23 — link-only, and only for the five recurring classes
    (FR-11, FR-12, FR-18, NFR-1, FR-26's infrastructure stop). The same classes trip

@@ -487,3 +487,170 @@ func TestPollAdmitsNothingWithoutAnAcceptedToken(t *testing.T) {
 		})
 	}
 }
+
+// ticketReply is one ticket as the state query's reply carries it: its own
+// Linear id, the state it holds, the manual order a state change rewrites, and
+// its team's own workflow states.
+func ticketReply(uuid, stateID, stateName, stateType string, order float64, team ...map[string]any) map[string]any {
+	issue := map[string]any{
+		"id":        uuid,
+		"state":     map[string]any{"id": stateID, "name": stateName, "type": stateType},
+		"sortOrder": order,
+		"team":      map[string]any{"states": map[string]any{"nodes": team}},
+	}
+	return map[string]any{"data": map[string]any{"issue": issue}}
+}
+
+// stateNode is one workflow state of a ticket's team.
+func stateNode(id, name, kind string) map[string]any {
+	return map[string]any{"id": id, "name": name, "type": kind}
+}
+
+// setStateReply is what the move's mutation answers: the state the ticket reads
+// back as, and the order it reads back at.
+func setStateReply(success bool, stateID string, order float64) map[string]any {
+	issue := map[string]any{"state": map[string]any{"id": stateID}, "sortOrder": order}
+	return map[string]any{"data": map[string]any{"issueUpdate": map[string]any{"success": success, "issue": issue}}}
+}
+
+// teamStates is a team's workflow as the ticket reply carries it: In Review is a
+// started state beside In Progress, so a move has to tell them apart by name.
+func teamStates() []map[string]any {
+	return []map[string]any{
+		stateNode("state-backlog", "Backlog", "backlog"),
+		stateNode("state-todo", "Todo", "unstarted"),
+		stateNode("state-progress", "In Progress", "started"),
+		stateNode("state-review", "In Review", "started"),
+		stateNode("state-done", "Done", "completed"),
+		stateNode("state-canceled", "Canceled", "canceled"),
+	}
+}
+
+// TestLinearStartTicketMovesAnUnstartedTicketToItsTeamsInProgressState: the
+// state id is resolved from the ticket's own team, never carried as a constant,
+// and the manual order a state change rewrites is written with the move and read
+// back.
+func TestLinearStartTicketMovesAnUnstartedTicketToItsTeamsInProgressState(t *testing.T) {
+	srv, seen := queryServer(t,
+		ticketReply("uuid-18", "state-todo", "Todo", "unstarted", 12.5, teamStates()...),
+		setStateReply(true, "state-progress", 12.5))
+	prior, err := Linear{Endpoint: linearURL(srv), Tokens: fixedToken("linear-token"), Delegate: "agent-1",
+		Client: srv.Client()}.StartTicket(context.Background(), "FRG-18")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prior != "state-todo" {
+		t.Fatalf("prior = %q, want the state the ticket held before the move", prior)
+	}
+	if len(*seen) != 2 {
+		t.Fatalf("requests = %+v, want the read and the move", *seen)
+	}
+	for _, field := range []string{"team {", "states {", "sortOrder"} {
+		if !strings.Contains((*seen)[0].query, field) {
+			t.Errorf("the state query does not ask for %s: %s", field, (*seen)[0].query)
+		}
+	}
+	if got := (*seen)[1].variables; got["id"] != "uuid-18" || got["state"] != "state-progress" || got["order"] != 12.5 {
+		t.Fatalf("variables = %v, want the ticket's own id, its team's In Progress state and its order", got)
+	}
+	for _, field := range []string{"stateId: $state", "sortOrder: $order", "$order: Float!"} {
+		if !strings.Contains((*seen)[1].query, field) {
+			t.Errorf("the move does not carry %s: %s", field, (*seen)[1].query)
+		}
+	}
+}
+
+// TestLinearStartTicketLeavesATicketThatIsNotUnstartedAlone: In Review is a
+// started state beside In Progress, and a ticket holding one — or a finished or
+// canceled one — is not touched.
+func TestLinearStartTicketLeavesATicketThatIsNotUnstartedAlone(t *testing.T) {
+	for name, held := range map[string]struct{ id, stateName, kind string }{
+		"in progress": {"state-progress", "In Progress", "started"},
+		"in review":   {"state-review", "In Review", "started"},
+		"done":        {"state-done", "Done", "completed"},
+		"canceled":    {"state-canceled", "Canceled", "canceled"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv, seen := queryServer(t, ticketReply("uuid-18", held.id, held.stateName, held.kind, 1, teamStates()...))
+			prior, err := Linear{Endpoint: linearURL(srv), Tokens: fixedToken("linear-token"), Delegate: "agent-1",
+				Client: srv.Client()}.StartTicket(context.Background(), "FRG-18")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if prior != "" {
+				t.Fatalf("prior = %q, want no state reported for a ticket the claim did not move", prior)
+			}
+			if len(*seen) != 1 {
+				t.Fatalf("requests = %+v, want the read alone", *seen)
+			}
+		})
+	}
+}
+
+// TestLinearStartTicketReportsAMoveLinearDidNotTake: a reply reading the ticket
+// back anywhere but where it was put — or at another order — is not a move the
+// dispatcher may count as made.
+func TestLinearStartTicketReportsAMoveLinearDidNotTake(t *testing.T) {
+	for name, reply := range map[string]map[string]any{
+		"the move was refused":   setStateReply(false, "state-progress", 12.5),
+		"the state is unchanged": setStateReply(true, "state-todo", 12.5),
+		"the order moved":        setStateReply(true, "state-progress", 99),
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv, _ := queryServer(t,
+				ticketReply("uuid-18", "state-todo", "Todo", "unstarted", 12.5, teamStates()...), reply)
+			prior, err := Linear{Endpoint: linearURL(srv), Tokens: fixedToken("linear-token"), Delegate: "agent-1",
+				Client: srv.Client()}.StartTicket(context.Background(), "FRG-18")
+			if err == nil || prior != "" {
+				t.Fatalf("prior = %q, err = %v, want the move Linear did not take reported", prior, err)
+			}
+		})
+	}
+}
+
+// TestLinearRestoreTicketPutsAStartedTicketBackWhereItWas: the restore writes the
+// state the claim recorded, with the order the ticket holds now.
+func TestLinearRestoreTicketPutsAStartedTicketBackWhereItWas(t *testing.T) {
+	srv, seen := queryServer(t,
+		ticketReply("uuid-18", "state-progress", "In Progress", "started", 3, teamStates()...),
+		setStateReply(true, "state-todo", 3))
+	err := Linear{Endpoint: linearURL(srv), Tokens: fixedToken("linear-token"), Delegate: "agent-1",
+		Client: srv.Client()}.RestoreTicket(context.Background(), "FRG-18", "state-todo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(*seen) != 2 {
+		t.Fatalf("requests = %+v, want the read and the move", *seen)
+	}
+	if got := (*seen)[1].variables; got["state"] != "state-todo" || got["order"] != 3.0 {
+		t.Fatalf("variables = %v, want the recorded state at the order the ticket holds", got)
+	}
+}
+
+// TestLinearRestoreTicketLeavesATicketThatMovedOnAlone: a ticket Linear's own
+// pull-request automation took to In Review, or the owner moved by hand, is not
+// dragged back to where the claim found it.
+func TestLinearRestoreTicketLeavesATicketThatMovedOnAlone(t *testing.T) {
+	srv, seen := queryServer(t, ticketReply("uuid-18", "state-review", "In Review", "started", 3, teamStates()...))
+	err := Linear{Endpoint: linearURL(srv), Tokens: fixedToken("linear-token"), Delegate: "agent-1",
+		Client: srv.Client()}.RestoreTicket(context.Background(), "FRG-18", "state-todo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(*seen) != 1 {
+		t.Fatalf("requests = %+v, want the read alone", *seen)
+	}
+}
+
+// TestLinearRestoreTicketWritesNothingWithNoStateToPutBack: a claim that moved
+// nothing has nothing to undo, so no request is made at all.
+func TestLinearRestoreTicketWritesNothingWithNoStateToPutBack(t *testing.T) {
+	srv, seen := queryServer(t)
+	client := Linear{Endpoint: linearURL(srv), Tokens: fixedToken("linear-token"), Client: srv.Client()}
+	if err := client.RestoreTicket(context.Background(), "FRG-18", ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(*seen) != 0 {
+		t.Fatalf("requests = %+v, want nothing written for a claim that moved nothing", *seen)
+	}
+}

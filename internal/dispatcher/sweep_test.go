@@ -1,8 +1,10 @@
 package dispatcher
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -98,5 +100,42 @@ func TestAbandonedNoticeTextIsIdsAndTheRequeueCommandForTheRunID(t *testing.T) {
 	want := "abandoned:run-18 ticket FRG-18 requeue with: runner requeue -run-id run-18 https://github.com/o/r/actions"
 	if got := a.Notice().Text(); got != want {
 		t.Fatalf("text = %q, want %q", got, want)
+	}
+}
+
+// TestPollPutsAnAbandonedTicketBackWhereItWas: a run abandoned past its window
+// will report nothing more, so its ticket shows the state it held before the
+// claim again rather than the In Progress that claim set.
+func TestPollPutsAnAbandonedTicketBackWhereItWas(t *testing.T) {
+	run := Abandoned{RunID: "run-18", Ticket: "FRG-18", Repo: "octo/scratch", Stage: StagePlan, Attempt: 2, TicketState: "state-todo"}
+	q := &fakeQueue{abandoned: []Abandoned{run}}
+	tickets := &fakeTicketStates{}
+	d := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	d.TicketStates = tickets
+	if _, err := Poll(context.Background(), d, buildConfig); err != nil {
+		t.Fatal(err)
+	}
+	if len(tickets.restored) != 1 || tickets.restored[0] != (restoreCall{ticket: "FRG-18", state: "state-todo"}) {
+		t.Fatalf("restored = %+v, want the abandoned ticket put back where it was", tickets.restored)
+	}
+}
+
+// TestPollSweepsDespiteAFailedTicketRestore: a failed Linear write is logged
+// once, with the reason as its own field, and never fails the poll.
+func TestPollSweepsDespiteAFailedTicketRestore(t *testing.T) {
+	run := Abandoned{RunID: "run-18", Ticket: "FRG-18", Repo: "octo/scratch", Stage: StagePlan, TicketState: "state-todo"}
+	q := &fakeQueue{abandoned: []Abandoned{run}}
+	var logs bytes.Buffer
+	d := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	d.TicketStates = &fakeTicketStates{restoreErr: errors.New("linear said no")}
+	d.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	if _, err := Poll(context.Background(), d, buildConfig); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(logs.String(), "msg=ticketStateNotRestored"); got != 1 {
+		t.Fatalf("log = %q, want one ticketStateNotRestored", logs.String())
+	}
+	if !strings.Contains(logs.String(), `err="linear said no"`) {
+		t.Fatalf("log = %q, want the reason as its own field", logs.String())
 	}
 }
