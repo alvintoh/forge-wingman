@@ -538,8 +538,8 @@ func countRows(ctx context.Context, query firestore.Query) (int64, error) {
 	return n.GetIntegerValue(), nil
 }
 
-// ClaimedSince counts the runs claimed at or after since: the runs a level's
-// daily bar of delegations is spent from. A run whose claim was
+// ClaimedSince counts the runs claimed at or after since: the runs the daily
+// run cap of delegations is counted from. A run whose claim was
 // released or requeued carries no claim stamp and is not counted, since it never
 // reached a runner.
 func (q *Queue) ClaimedSince(ctx context.Context, since time.Time) (int, error) {

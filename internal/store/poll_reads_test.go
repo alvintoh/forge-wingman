@@ -232,8 +232,10 @@ func (pollPeakModes) Mode(context.Context) (dispatcher.PeakMode, error) {
 	return dispatcher.PeakOffPeakOnly, nil
 }
 
-// pollAutonomies reports the lowest level: it delegates nothing, so a poll here
-// has no delegation phase and no earned level to resolve.
+// pollAutonomies reports the lowest level: the polls here resolve no earned level
+// from it, and the delegation runs on its own configured cap whatever the level.
+// Its claim count is an aggregation, so it adds no document read to the budgets
+// these polls are measured against.
 type pollAutonomies struct{}
 
 func (pollAutonomies) Level(context.Context) (dispatcher.Autonomy, error) {

@@ -102,7 +102,7 @@ func TestAutonomyPrintsTheLevelTheRateAndEachCondition(t *testing.T) {
 	}
 	printed := out.String()
 	for _, want := range []string{
-		"autonomy 3: the product delegates up to 5 runs a day and you merge",
+		"autonomy 3: the product delegates and you merge",
 		"trailing 10 PRs: 1.0% rewrite rate, 10 owner lines of 1000 agent lines over 10 PRs",
 		"advance to level 4: held",
 		"a rewrite rate of 1.0% over 10 of 10 PRs, 5% or less: held",

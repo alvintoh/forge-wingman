@@ -616,7 +616,7 @@ func TestAutonomyWithNoSnapshotAndNoHistoryListsNone(t *testing.T) {
 	if got, want := body["level"], 0.0; got != want {
 		t.Errorf("level = %v, want %v", got, want)
 	}
-	if got, want := body["allows"], "you delegate and you merge"; got != want {
+	if got, want := body["allows"], "the product delegates and you merge"; got != want {
 		t.Errorf("allows = %v, want %v", got, want)
 	}
 	if body["earned"] != nil {

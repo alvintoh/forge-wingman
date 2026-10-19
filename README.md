@@ -58,7 +58,7 @@ in the run's bundle artifact.
 
 A run that stops on a known transient infrastructure fault — a read the Go module
 proxy could not serve, a network timeout, or a runner lost mid-job — is requeued by
-the dispatcher itself, up to two attempts, at autonomy level 1 or above. The runner
+the dispatcher itself, up to two attempts. The runner
 records the class when the stop's recorded detail names one of those faults, and for
 a stop that means a job failed outside the code (setup, the worktree, the PR job, or
 no readable summary) it reads the failed job's own log tail as well; each automatic attempt is
