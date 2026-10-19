@@ -32,7 +32,7 @@ func TestMux(t *testing.T) {
 		"index.html":    {Data: []byte("<html>shell</html>")},
 		"assets/app.js": {Data: []byte("console.log(1)")},
 	}
-	mux := newMux(spa, discardLogger(), nil, nil, nil, nil)
+	mux := newMux(Deps{SPA: spa, Logger: discardLogger()})
 
 	tests := []struct {
 		name     string
@@ -66,7 +66,7 @@ func TestMuxServesAFontFileAsAFont(t *testing.T) {
 		"fonts/IBMPlexSans-400.woff2": {Data: []byte("wOF2\x00\x01\x00\x00fontbytes")},
 	}
 	rec := httptest.NewRecorder()
-	newMux(spa, discardLogger(), nil, nil, nil, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/fonts/IBMPlexSans-400.woff2", nil))
+	newMux(Deps{SPA: spa, Logger: discardLogger()}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/fonts/IBMPlexSans-400.woff2", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -76,7 +76,7 @@ func TestMuxServesAFontFileAsAFont(t *testing.T) {
 }
 
 func TestVersion(t *testing.T) {
-	mux := newMux(fstest.MapFS{}, discardLogger(), nil, nil, nil, nil)
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger()})
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/version", nil))
@@ -113,7 +113,7 @@ func TestComparisonReportsEachModelAndProviderAndEveryDriftedRun(t *testing.T) {
 		Drifted: []store.DriftedRun{{RunID: "run-1", Provider: "command-code", Model: "command-code/x",
 			Cost: 2 * money.Dollar, CostDrift: "cost $2.0000 is 60% above the $1.2500 average of 6 of this provider's runs"}},
 	}}
-	mux := newMux(fstest.MapFS{}, discardLogger(), reader, nil, nil, nil)
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Comparison: reader})
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/comparison", nil))
@@ -180,7 +180,7 @@ func TestComparisonReportsEachRunsPromptCacheShare(t *testing.T) {
 		Runs: []store.RunCache{{RunID: "run-1", Provider: "command-code", Model: "command-code/x", CachedShare: 0.75,
 			BuildCache: "90% first, 75% phase", PlanCache: "50% first, 25% phase"}},
 	}}
-	mux := newMux(fstest.MapFS{}, discardLogger(), reader, nil, nil, nil)
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Comparison: reader})
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/comparison", nil))
@@ -225,7 +225,7 @@ func TestComparisonReportsTheWordForAPhaseThereIsNoShareOf(t *testing.T) {
 		{RunID: "run-2", Provider: "command-code", Model: "command-code/x", CachedShare: 0.5,
 			BuildCache: runner.PhaseCacheNotRecorded, PlanCache: runner.PhaseCacheNotRecorded},
 	}}}
-	mux := newMux(fstest.MapFS{}, discardLogger(), reader, nil, nil, nil)
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Comparison: reader})
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/comparison", nil))
@@ -254,7 +254,11 @@ func TestComparisonReportsTheWordForAPhaseThereIsNoShareOf(t *testing.T) {
 // answers with an empty list rather than a null, which the run view reads as no
 // run to show (AC4).
 func TestComparisonWithNoSettledRunListsNone(t *testing.T) {
-	mux := newMux(fstest.MapFS{}, discardLogger(), &stubComparison{}, nil, nil, nil)
+	mux := newMux(Deps{
+		SPA:        fstest.MapFS{},
+		Logger:     discardLogger(),
+		Comparison: &stubComparison{},
+	})
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/comparison", nil))
@@ -267,7 +271,7 @@ func TestComparisonWithNoSettledRunListsNone(t *testing.T) {
 }
 
 func TestComparisonWithoutAStoreIsUnavailable(t *testing.T) {
-	mux := newMux(fstest.MapFS{}, discardLogger(), nil, nil, nil, nil)
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger()})
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/comparison", nil))
@@ -279,7 +283,11 @@ func TestComparisonWithoutAStoreIsUnavailable(t *testing.T) {
 func TestComparisonReportsAStoreItCannotRead(t *testing.T) {
 	var log strings.Builder
 	reader := &stubComparison{err: errors.New("firestore unreachable")}
-	mux := newMux(fstest.MapFS{}, slog.New(slog.NewTextHandler(&log, nil)), reader, nil, nil, nil)
+	mux := newMux(Deps{
+		SPA:        fstest.MapFS{},
+		Logger:     slog.New(slog.NewTextHandler(&log, nil)),
+		Comparison: reader,
+	})
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/comparison", nil))
@@ -314,7 +322,7 @@ func TestProvidersListsEachPlanInOrderWithPriceUsageAndVerdict(t *testing.T) {
 			Windows: []store.WindowUsage{{Name: "command-code-goat-5h", Limit: 14 * money.Dollar, Used: 2 * money.Dollar}}},
 		{Provider: "gemini", Price: 0, Verdict: providers.VerdictUnconfirmed},
 	}}
-	mux := newMux(fstest.MapFS{}, discardLogger(), nil, reader, nil, nil)
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), ProviderPlans: reader})
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/providers", nil))
@@ -389,7 +397,11 @@ func TestProvidersListsEachPlanInOrderWithPriceUsageAndVerdict(t *testing.T) {
 // method that could write a plan record: the surface has no such route, and the
 // owner CLI alone writes them (AC4, adr/0014).
 func TestProvidersRefusesAWriteMethod(t *testing.T) {
-	mux := newMux(fstest.MapFS{}, discardLogger(), nil, &stubProviders{}, nil, nil)
+	mux := newMux(Deps{
+		SPA:           fstest.MapFS{},
+		Logger:        discardLogger(),
+		ProviderPlans: &stubProviders{},
+	})
 
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		rec := httptest.NewRecorder()
@@ -401,7 +413,7 @@ func TestProvidersRefusesAWriteMethod(t *testing.T) {
 }
 
 func TestProvidersWithoutAStoreIsUnavailable(t *testing.T) {
-	mux := newMux(fstest.MapFS{}, discardLogger(), nil, nil, nil, nil)
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger()})
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/providers", nil))
@@ -413,7 +425,11 @@ func TestProvidersWithoutAStoreIsUnavailable(t *testing.T) {
 // TestProvidersWithNoPlansListsNone asserts an owner with no plan recorded
 // answers with an empty list rather than a null (AC5).
 func TestProvidersWithNoPlansListsNone(t *testing.T) {
-	mux := newMux(fstest.MapFS{}, discardLogger(), nil, &stubProviders{}, nil, nil)
+	mux := newMux(Deps{
+		SPA:           fstest.MapFS{},
+		Logger:        discardLogger(),
+		ProviderPlans: &stubProviders{},
+	})
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/providers", nil))
@@ -428,7 +444,11 @@ func TestProvidersWithNoPlansListsNone(t *testing.T) {
 func TestProvidersReportsAStoreItCannotRead(t *testing.T) {
 	var log strings.Builder
 	reader := &stubProviders{err: errors.New("firestore unreachable")}
-	mux := newMux(fstest.MapFS{}, slog.New(slog.NewTextHandler(&log, nil)), nil, reader, nil, nil)
+	mux := newMux(Deps{
+		SPA:           fstest.MapFS{},
+		Logger:        slog.New(slog.NewTextHandler(&log, nil)),
+		ProviderPlans: reader,
+	})
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/providers", nil))
@@ -479,7 +499,7 @@ func TestAutonomyReportsTheLevelItsEvidenceAndItsHistory(t *testing.T) {
 				Numbers: dispatcher.Numbers{PRs: []int{140}, AgentLines: 1_000, OwnerLines: 6}},
 		},
 	}}
-	mux := newMux(fstest.MapFS{}, discardLogger(), nil, nil, reader, nil)
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Autonomy: reader})
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/autonomy", nil))
@@ -645,7 +665,7 @@ func TestAutonomyReportsAStaleSnapshotAboveTheEarnedLevel(t *testing.T) {
 		Level: 5, HasEarned: true,
 		Earned: dispatcher.Earned{Level: 4, Stale: true, ComputedAt: at},
 	}}
-	mux := newMux(fstest.MapFS{}, discardLogger(), nil, nil, reader, nil)
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Autonomy: reader})
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/autonomy", nil))
@@ -681,7 +701,7 @@ func TestAutonomyPrintsTheWordForARateWithNoAgentLines(t *testing.T) {
 		Earned: dispatcher.Earned{Level: 3, ComputedAt: time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC),
 			Numbers: dispatcher.Numbers{PRs: []int{141}, Rate: math.Inf(1), OwnerLines: 4}},
 	}}
-	mux := newMux(fstest.MapFS{}, discardLogger(), nil, nil, reader, nil)
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Autonomy: reader})
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/autonomy", nil))
@@ -697,7 +717,7 @@ func TestAutonomyPrintsTheWordForARateWithNoAgentLines(t *testing.T) {
 // method that could set a level: the surface has no such route, and the level
 // stays the runner autonomy command's (AC5).
 func TestAutonomyRefusesAWriteMethod(t *testing.T) {
-	mux := newMux(fstest.MapFS{}, discardLogger(), nil, nil, &stubAutonomy{}, nil)
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Autonomy: &stubAutonomy{}})
 
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		rec := httptest.NewRecorder()
@@ -711,7 +731,7 @@ func TestAutonomyRefusesAWriteMethod(t *testing.T) {
 // TestAutonomyWithoutAStoreIsUnavailable asserts a local run with no store
 // answers 503 rather than a level nobody recorded.
 func TestAutonomyWithoutAStoreIsUnavailable(t *testing.T) {
-	mux := newMux(fstest.MapFS{}, discardLogger(), nil, nil, nil, nil)
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger()})
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/autonomy", nil))
@@ -725,7 +745,11 @@ func TestAutonomyWithoutAStoreIsUnavailable(t *testing.T) {
 func TestAutonomyReportsAStoreItCannotRead(t *testing.T) {
 	var log strings.Builder
 	reader := &stubAutonomy{err: errors.New("firestore unreachable")}
-	mux := newMux(fstest.MapFS{}, slog.New(slog.NewTextHandler(&log, nil)), nil, nil, reader, nil)
+	mux := newMux(Deps{
+		SPA:      fstest.MapFS{},
+		Logger:   slog.New(slog.NewTextHandler(&log, nil)),
+		Autonomy: reader,
+	})
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/autonomy", nil))
@@ -739,7 +763,7 @@ func TestAutonomyReportsAStoreItCannotRead(t *testing.T) {
 
 func getAutonomy(t *testing.T, reader *stubAutonomy) *httptest.ResponseRecorder {
 	t.Helper()
-	mux := newMux(fstest.MapFS{}, discardLogger(), nil, nil, reader, nil)
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Autonomy: reader})
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/autonomy", nil))
 	if rec.Code != http.StatusOK {
@@ -1176,7 +1200,7 @@ func (s *stubPeak) Set(_ context.Context, mode dispatcher.PeakMode, at time.Time
 // getPeak reads the peak view through the endpoint, failing if it is not served.
 func getPeak(t *testing.T, reader PeakModeStore) *httptest.ResponseRecorder {
 	t.Helper()
-	mux := newMux(fstest.MapFS{}, discardLogger(), nil, nil, nil, reader)
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Peak: reader})
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/peak", nil))
 	if rec.Code != http.StatusOK {
@@ -1332,7 +1356,7 @@ func TestPeakServesTheStoredModeAndEveryModelsPricing(t *testing.T) {
 // (AC3, AC4).
 func TestPeakSetsTheModeItIsGiven(t *testing.T) {
 	stored := &stubPeak{mode: dispatcher.PeakOffPeakOnly}
-	mux := newMux(fstest.MapFS{}, discardLogger(), nil, nil, nil, stored)
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Peak: stored})
 	rec := postPeak(t, mux, "application/json", `{"mode":"always"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
@@ -1357,7 +1381,7 @@ func TestPeakSetsTheModeItIsGiven(t *testing.T) {
 // unknown (AC3).
 func TestPeakRefusesAModeItDoesNotName(t *testing.T) {
 	stored := &stubPeak{mode: dispatcher.PeakOffPeakOnly}
-	mux := newMux(fstest.MapFS{}, discardLogger(), nil, nil, nil, stored)
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Peak: stored})
 	if rec := postPeak(t, mux, "application/json", `{"mode":"sometimes"}`); rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
@@ -1369,7 +1393,7 @@ func TestPeakRefusesAModeItDoesNotName(t *testing.T) {
 // TestPeakRefusesABodyItCannotRead asserts a body that is not JSON naming a mode
 // is a 400, not a mode nobody chose.
 func TestPeakRefusesABodyItCannotRead(t *testing.T) {
-	mux := newMux(fstest.MapFS{}, discardLogger(), nil, nil, nil, &stubPeak{})
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Peak: &stubPeak{}})
 	if rec := postPeak(t, mux, "application/json", "not json"); rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
@@ -1379,7 +1403,7 @@ func TestPeakRefusesABodyItCannotRead(t *testing.T) {
 // a browser cannot send cross-origin without a preflight: a page that is not the
 // surface cannot switch the mode with the session IAP establishes (AC4).
 func TestPeakRefusesANonJSONContentType(t *testing.T) {
-	mux := newMux(fstest.MapFS{}, discardLogger(), nil, nil, nil, &stubPeak{})
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Peak: &stubPeak{}})
 	for _, contentType := range []string{"", "text/plain", "application/x-www-form-urlencoded"} {
 		rec := postPeak(t, mux, contentType, `{"mode":"always"}`)
 		if rec.Code != http.StatusUnsupportedMediaType {
@@ -1391,7 +1415,7 @@ func TestPeakRefusesANonJSONContentType(t *testing.T) {
 // TestPeakRefusesAnUnsupportedMethod asserts the endpoint answers the read and
 // the write and nothing else: the mode has no other transition.
 func TestPeakRefusesAnUnsupportedMethod(t *testing.T) {
-	mux := newMux(fstest.MapFS{}, discardLogger(), nil, nil, nil, &stubPeak{})
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Peak: &stubPeak{}})
 	for _, method := range []string{http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, httptest.NewRequest(method, "/api/peak", strings.NewReader(`{"mode":"always"}`)))
@@ -1404,7 +1428,7 @@ func TestPeakRefusesAnUnsupportedMethod(t *testing.T) {
 // TestPeakWithoutAStoreIsUnavailable asserts a local run with no store answers
 // 503 on the read and the write rather than a mode nobody recorded.
 func TestPeakWithoutAStoreIsUnavailable(t *testing.T) {
-	mux := newMux(fstest.MapFS{}, discardLogger(), nil, nil, nil, nil)
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger()})
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/peak", nil))
 	if rec.Code != http.StatusServiceUnavailable {
@@ -1419,8 +1443,11 @@ func TestPeakWithoutAStoreIsUnavailable(t *testing.T) {
 // failure reported, not a mode nobody could read.
 func TestPeakReportsAStoreItCannotRead(t *testing.T) {
 	var log strings.Builder
-	mux := newMux(fstest.MapFS{}, slog.New(slog.NewTextHandler(&log, nil)), nil, nil, nil,
-		&stubPeak{readErr: errors.New("firestore unreachable")})
+	mux := newMux(Deps{
+		SPA:    fstest.MapFS{},
+		Logger: slog.New(slog.NewTextHandler(&log, nil)),
+		Peak:   &stubPeak{readErr: errors.New("firestore unreachable")},
+	})
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/peak", nil))
@@ -1436,8 +1463,11 @@ func TestPeakReportsAStoreItCannotRead(t *testing.T) {
 // failure reported, and answers no mode the switch did not make.
 func TestPeakReportsAStoreItCannotWrite(t *testing.T) {
 	var log strings.Builder
-	mux := newMux(fstest.MapFS{}, slog.New(slog.NewTextHandler(&log, nil)), nil, nil, nil,
-		&stubPeak{setErr: errors.New("firestore unreachable")})
+	mux := newMux(Deps{
+		SPA:    fstest.MapFS{},
+		Logger: slog.New(slog.NewTextHandler(&log, nil)),
+		Peak:   &stubPeak{setErr: errors.New("firestore unreachable")},
+	})
 
 	if rec := postPeak(t, mux, "application/json", `{"mode":"always"}`); rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
