@@ -115,7 +115,25 @@ resource "google_project_iam_member" "runner_datastore" {
   role    = "roles/datastore.user"
   member  = google_service_account.runner.member
 
-  depends_on = [google_project_service.this]
+  # Every database except `owner` (adr/0019): the runner keeps reading and writing the
+  # default database and is refused the owner's controls. The expression is the form
+  # Firestore documents for "all databases except one"; IAM's attribute reference also
+  # advises pinning `resource.type`, whose Firestore value is not documented on that
+  # page, so it is left out until the plan's read-back (README, Owner database) settles it.
+  condition {
+    title       = "not-the-owner-database"
+    description = "Every Firestore database except the owner's controls (adr/0019)"
+    expression  = "resource.name != \"projects/${var.project_id}/databases/${google_firestore_database.owner.name}\""
+  }
+
+  # IAM grants add up, so the unconditional binding this replaces must still exist
+  # until the conditional one does: otherwise the runner has no datastore access in
+  # between and a run that starts during the apply fails.
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  depends_on = [google_project_service.this, google_firestore_database.owner]
 }
 
 resource "google_storage_bucket_iam_member" "runner_completions" {
