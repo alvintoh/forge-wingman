@@ -13,6 +13,10 @@ import (
 type Autonomy int
 
 const (
+	// AutonomyRequeues is the lowest level at which the dispatcher requeues a
+	// run stopped on a known transient fault on its own. At level 0 the owner
+	// drives every retry, so nothing is requeued automatically.
+	AutonomyRequeues Autonomy = 1
 	// AutonomyAutoMerge is the lowest level at which an eligible PR may merge
 	// itself.
 	AutonomyAutoMerge Autonomy = 4
@@ -29,22 +33,37 @@ var (
 	ErrAutonomyNotEarned = errors.New("autonomy level not earned")
 )
 
-// autonomyLevels holds, per level, what it allows and, for a level Settable
-// refuses, the PRD's condition for advancing to it. The runs a day the product
-// delegates to itself are not a level's: the cap is configured once
-// (Config.DailyRuns) and the delegation runs at every level.
+// delegatesAtLevel3And4 is the bar levels 3 and 4 share: the PRD states level 4
+// as "as level 3", so the two delegate the same runs a day.
+const delegatesAtLevel3And4 = 5
+
+// autonomyLevels holds, per level, the runs a day it lets the product delegate
+// to itself, what it allows and, for a level Settable refuses, the PRD's
+// condition for advancing to it. A level that delegates has its description
+// built from its bar, so the number the owner reads is the one enforced.
 var autonomyLevels = [...]struct {
-	allows  string
-	advance string
+	delegates int
+	allows    string
+	advance   string
 }{
-	{"the product delegates and you merge", ""},
-	{"the product delegates and you merge", ""},
-	{"the product delegates and you merge", ""},
-	{"the product delegates and you merge", ""},
-	{"as level 3, and eligible S and M PRs auto-merge",
+	{0, "you delegate and you merge", ""},
+	{1, delegatesDescription(1, "and you merge"), ""},
+	{3, delegatesDescription(3, "and you merge"), ""},
+	{delegatesAtLevel3And4, delegatesDescription(delegatesAtLevel3And4, "and you merge"), ""},
+	{delegatesAtLevel3And4, "as level 3, and eligible S and M PRs auto-merge",
 		"level 3 held, a rewrite rate of 5% or less over 10 PRs, zero gate misses, and CD on the target repository"},
-	{"the product delegates and eligible PRs auto-merge",
+	{10, delegatesDescription(10, "and eligible PRs auto-merge"),
 		"level 4 held over 20 sampled PRs with zero reverts"},
+}
+
+// delegatesDescription is what a level that delegates allows, from the bar it
+// delegates up to: a bar of one reads in the singular, as the PRD writes it.
+func delegatesDescription(delegates int, rest string) string {
+	runs := "runs"
+	if delegates == 1 {
+		runs = "run"
+	}
+	return fmt.Sprintf("the product delegates up to %d %s a day %s", delegates, runs, rest)
 }
 
 // Valid reports whether a names a level.
@@ -68,6 +87,19 @@ func (a Autonomy) Describe() string {
 
 // AutoMerges reports whether a lets an eligible PR merge itself.
 func (a Autonomy) AutoMerges() bool { return a.Valid() && a >= AutonomyAutoMerge }
+
+// Requeues reports whether a lets the dispatcher requeue a run that stopped on
+// a known transient fault without the owner.
+func (a Autonomy) Requeues() bool { return a.Valid() && a >= AutonomyRequeues }
+
+// Delegates is the runs a day a lets the product delegate to itself: 1, 3, 5, 5
+// and 10 at levels 1 to 5, and none at level 0, which delegates nothing.
+func (a Autonomy) Delegates() int {
+	if !a.Valid() {
+		return 0
+	}
+	return autonomyLevels[a].delegates
+}
 
 // Condition is one clause of a level's advance condition, with the numbers it
 // was checked against.
@@ -120,8 +152,8 @@ func (a Autonomy) Advance(ev Evidence) []Condition {
 			allMeasured(ev.Window(SampledPRs), SampledPRs),
 			zeroReverts(ev.Window(SampledPRs), SampledPRs),
 		}
-	case AutonomyRolledBack:
-		// Level 3 is set outright, like every level below it.
+	case AutonomyRequeues, AutonomyRolledBack:
+		// Levels 1 and 3 are set outright, like every level below them.
 		return nil
 	}
 	return nil

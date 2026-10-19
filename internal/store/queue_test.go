@@ -2942,8 +2942,8 @@ func listed(t *testing.T, q *Queue, ctx context.Context, runID string) bool {
 	return false
 }
 
-// TestClaimedSinceCountsTheRunsClaimedInsideTheWindow is the daily run cap: the
-// runs a poll's delegations are counted from, by the claim stamp each one carries.
+// TestClaimedSinceCountsTheRunsClaimedInsideTheWindow is the daily bar: the
+// runs a level's delegations are spent from, by the claim stamp each one carries.
 func TestClaimedSinceCountsTheRunsClaimedInsideTheWindow(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()

@@ -90,6 +90,7 @@ func TestLoadConfigRefusesAnUnusableDailyRunCap(t *testing.T) {
 	for name, raw := range map[string]string{
 		"not a whole number": "many",
 		"below one":          "0",
+		"negative":           "-3",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := loadConfig(configEnv(map[string]string{"WINGMAN_DAILY_RUNS": raw})); err == nil {
