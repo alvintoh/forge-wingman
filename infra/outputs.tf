@@ -56,3 +56,7 @@ output "webhook_service_account" {
 output "webhook_url" {
   value = "${google_cloud_run_v2_service.webhook.uri}/linear"
 }
+
+output "surface_service_account" {
+  value = google_service_account.surface.email
+}

@@ -514,7 +514,7 @@ func TestAutonomyReportsTheLevelItsEvidenceAndItsHistory(t *testing.T) {
 	// The endpoint serves these keys and no others, so nothing the level's
 	// records hold beyond them — a ticket's text above all — can reach a reader
 	// (AC5).
-	if got, want := slices.Sorted(maps.Keys(body)), []string{"allows", "earned", "history", "level", "rewrite"}; !slices.Equal(got, want) {
+	if got, want := slices.Sorted(maps.Keys(body)), []string{"allows", "auto_merge", "earned", "history", "level", "rewrite"}; !slices.Equal(got, want) {
 		t.Fatalf("body keys = %v, want %v", got, want)
 	}
 	if got, want := body["level"], 4.0; got != want {
@@ -1159,6 +1159,247 @@ func TestAutonomyReportsARatedSizesSpreadAndWithholdsTheOneItLacks(t *testing.T)
 		lazy["prs"] != float64(dispatcher.MinPRsPerSize) ||
 		lazy["rate"] != "no agent lines" || lazy["median"] != nil || lazy["p90"] != nil {
 		t.Errorf("L = %v, want its +Inf pooled rate with no spread", sizes[2])
+	}
+}
+
+// stubAutoMerge is an AutoMergeStore that answers with the switch it holds,
+// recording what a write set it to.
+type stubAutoMerge struct {
+	enabled bool
+	readErr error
+	setErr  error
+	// setAt is when the last write happened, zero while none did.
+	setAt time.Time
+}
+
+func (s *stubAutoMerge) Enabled(context.Context) (bool, error) {
+	if s.readErr != nil {
+		return false, s.readErr
+	}
+	return s.enabled, nil
+}
+
+func (s *stubAutoMerge) Set(_ context.Context, enabled bool, at time.Time) error {
+	if s.setErr != nil {
+		return s.setErr
+	}
+	s.enabled, s.setAt = enabled, at
+	return nil
+}
+
+// measuredAt is when the merges the auto-merge tests read merged.
+func measuredAt() time.Time { return time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC) }
+
+// ratedMerges is the window the auto-merge rule reads: ten measured merges of
+// one PR each, ownerPerPR of them rewritten.
+func ratedMerges(at time.Time, ownerPerPR int64) []dispatcher.Sample {
+	measured := make([]dispatcher.Sample, 0, dispatcher.TrailingPRs)
+	for i := range dispatcher.TrailingPRs {
+		measured = append(measured, dispatcher.Sample{
+			PR: 140 - i, MergedAt: at.Add(-time.Duration(i) * time.Hour),
+			Rewrite: dispatcher.Rewrite{AgentLines: 1_000, OwnerLines: ownerPerPR},
+		})
+	}
+	return measured
+}
+
+// readAutoMerge reads the auto-merge state through the autonomy view, which is
+// where the page reads it.
+func readAutoMerge(t *testing.T, view store.AutonomyView, switches AutoMergeStore) map[string]any {
+	t.Helper()
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Autonomy: &stubAutonomy{view: view}, AutoMerge: switches})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/autonomy", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	state, ok := body["auto_merge"].(map[string]any)
+	if !ok {
+		t.Fatalf("auto_merge = %v, want the switch and the rate", body["auto_merge"])
+	}
+	return state
+}
+
+// TestAutonomyReportsTheAutoMergeSwitchAndTheRatesVerdict asserts the autonomy
+// view carries the owner's switch beside the rate's verdict, the two facts the
+// effective state needs both of, with the bar read from the dispatcher's own
+// constant (AC1).
+func TestAutonomyReportsTheAutoMergeSwitchAndTheRatesVerdict(t *testing.T) {
+	state := readAutoMerge(t, store.AutonomyView{Measured: ratedMerges(measuredAt(), 98)}, &stubAutoMerge{enabled: true})
+
+	if got, want := slices.Sorted(maps.Keys(state)), []string{"effective", "limit", "rate_allows", "rate_value", "reason", "switch_on"}; !slices.Equal(got, want) {
+		t.Fatalf("auto_merge keys = %v, want %v", got, want)
+	}
+	if state["switch_on"] != true || state["rate_allows"] != true || state["effective"] != true {
+		t.Errorf("auto_merge = %v, want the switch on and the 9.8%% rate allowing it", state)
+	}
+	if state["rate_value"] != "9.8%" || state["limit"] != "10.0%" || state["reason"] != dispatcher.AutoMergeReasonOn {
+		t.Errorf("auto_merge = %v, want the rule's own rate against its bar", state)
+	}
+}
+
+// TestAutonomyReportsARateAboveTheBarAsNotAllowing asserts the two facts are
+// separate: the owner's switch is on while the rate does not allow, so
+// auto-merge is not effective (AC1).
+func TestAutonomyReportsARateAboveTheBarAsNotAllowing(t *testing.T) {
+	state := readAutoMerge(t, store.AutonomyView{Measured: ratedMerges(measuredAt(), 101)}, &stubAutoMerge{enabled: true})
+
+	if state["switch_on"] != true || state["rate_allows"] != false || state["effective"] != false {
+		t.Errorf("auto_merge = %v, want the switch on and the rate refusing", state)
+	}
+	if state["rate_value"] != "10.1%" || state["reason"] != dispatcher.AutoMergeReasonRateAboveBar {
+		t.Errorf("auto_merge = %v, want the rate with the reason it refused", state)
+	}
+}
+
+// TestAutonomyReportsAnOffSwitchBesideARateThatAllows asserts the switch off is
+// reported on its own, with the rate's verdict still read beside it (AC1).
+func TestAutonomyReportsAnOffSwitchBesideARateThatAllows(t *testing.T) {
+	state := readAutoMerge(t, store.AutonomyView{Measured: ratedMerges(measuredAt(), 0)}, &stubAutoMerge{})
+
+	if state["switch_on"] != false || state["effective"] != false {
+		t.Errorf("auto_merge = %v, want the switch off and no effect", state)
+	}
+	if state["rate_allows"] != true || state["reason"] != dispatcher.AutoMergeReasonSwitchOff {
+		t.Errorf("auto_merge = %v, want the rate still allowing it and the switch named as the reason", state)
+	}
+}
+
+// TestAutonomyReportsASwitchItCannotReadAsOff asserts a switch that cannot be
+// read is reported off with the reason, never on (AC4).
+func TestAutonomyReportsASwitchItCannotReadAsOff(t *testing.T) {
+	var log strings.Builder
+	mux := newMux(Deps{
+		SPA:       fstest.MapFS{},
+		Logger:    slog.New(slog.NewTextHandler(&log, nil)),
+		Autonomy:  &stubAutonomy{view: store.AutonomyView{Measured: ratedMerges(measuredAt(), 0)}},
+		AutoMerge: &stubAutoMerge{enabled: true, readErr: errors.New("firestore unreachable")},
+	})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/autonomy", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	state, ok := body["auto_merge"].(map[string]any)
+	if !ok {
+		t.Fatalf("auto_merge = %v, want the switch and the rate", body["auto_merge"])
+	}
+	if state["switch_on"] != false || state["effective"] != false || state["reason"] != dispatcher.AutoMergeReasonSwitchUnread {
+		t.Errorf("auto_merge = %v, want the unread switch reported off with the reason", state)
+	}
+	if !strings.Contains(log.String(), "autoMergeSwitchUnread") {
+		t.Errorf("log = %q, want the unread switch reported", log.String())
+	}
+}
+
+// postAutoMerge posts body to the auto-merge endpoint under contentType, empty
+// for a request carrying no content type at all.
+func postAutoMerge(t *testing.T, mux *http.ServeMux, contentType, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/auto-merge", strings.NewReader(body))
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	return rec
+}
+
+// TestAutoMergeSetsTheSwitchItIsGiven asserts the endpoint sets the switch its
+// store holds and answers the state it set (AC2).
+func TestAutoMergeSetsTheSwitchItIsGiven(t *testing.T) {
+	stored := &stubAutoMerge{enabled: true}
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), AutoMerge: stored})
+	rec := postAutoMerge(t, mux, "application/json", `{"enabled":false}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if stored.enabled || stored.setAt.IsZero() {
+		t.Fatalf("stored = %v at %v, want off recorded", stored.enabled, stored.setAt)
+	}
+	if got, want := rec.Body.String(), "{\"enabled\":false}\n"; got != want {
+		t.Errorf("body = %q, want %q", got, want)
+	}
+}
+
+// TestAutoMergeRefusesABodyNamingNoSetting asserts a request that does not say
+// whether auto-merge is enabled is refused, so a body naming nothing never reads
+// as off (AC3).
+func TestAutoMergeRefusesABodyNamingNoSetting(t *testing.T) {
+	stored := &stubAutoMerge{enabled: true}
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), AutoMerge: stored})
+	for _, body := range []string{`{}`, `not json`, `{"autoMerge":false}`} {
+		if rec := postAutoMerge(t, mux, "application/json", body); rec.Code != http.StatusBadRequest {
+			t.Errorf("body %q = %d, want %d", body, rec.Code, http.StatusBadRequest)
+		}
+	}
+	if !stored.enabled || !stored.setAt.IsZero() {
+		t.Errorf("stored = %v at %v, want a refused body to write nothing", stored.enabled, stored.setAt)
+	}
+}
+
+// TestAutoMergeRefusesANonJSONContentType asserts the write needs a JSON body,
+// which a browser cannot send cross-origin without a preflight: a page that is
+// not the surface cannot set the switch with the session IAP establishes (AC3).
+func TestAutoMergeRefusesANonJSONContentType(t *testing.T) {
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), AutoMerge: &stubAutoMerge{}})
+	for _, contentType := range []string{"", "text/plain", "application/x-www-form-urlencoded"} {
+		if rec := postAutoMerge(t, mux, contentType, `{"enabled":false}`); rec.Code != http.StatusUnsupportedMediaType {
+			t.Errorf("content type %q = %d, want %d", contentType, rec.Code, http.StatusUnsupportedMediaType)
+		}
+	}
+}
+
+// TestAutoMergeAnswersTheWriteAlone asserts the endpoint takes the write and
+// nothing else: the state is read from the autonomy view, so a read of the
+// switch's own path is no endpoint.
+func TestAutoMergeAnswersTheWriteAlone(t *testing.T) {
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), AutoMerge: &stubAutoMerge{}})
+	for _, method := range []string{http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(method, "/api/auto-merge", strings.NewReader(`{"enabled":false}`)))
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s = %d, want %d", method, rec.Code, http.StatusMethodNotAllowed)
+		}
+	}
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/auto-merge", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+// TestAutoMergeWithoutAStoreIsUnavailable asserts a local run with no store
+// answers 503 rather than recording a switch nowhere.
+func TestAutoMergeWithoutAStoreIsUnavailable(t *testing.T) {
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger()})
+	if rec := postAutoMerge(t, mux, "application/json", `{"enabled":false}`); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
+// TestAutoMergeReportsAStoreItCannotWrite asserts a failed write is a 500 with
+// the failure reported, and answers no state the switch did not take.
+func TestAutoMergeReportsAStoreItCannotWrite(t *testing.T) {
+	var log strings.Builder
+	mux := newMux(Deps{
+		SPA:       fstest.MapFS{},
+		Logger:    slog.New(slog.NewTextHandler(&log, nil)),
+		AutoMerge: &stubAutoMerge{setErr: errors.New("firestore unreachable")},
+	})
+	if rec := postAutoMerge(t, mux, "application/json", `{"enabled":false}`); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+	if !strings.Contains(log.String(), "autoMergeSwitchNotSet") {
+		t.Fatalf("log = %q, want the failed write reported", log.String())
 	}
 }
 
