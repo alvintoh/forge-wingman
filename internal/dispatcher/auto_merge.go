@@ -5,12 +5,18 @@ import (
 	"math"
 )
 
-// The reasons an AutoMergeDecision gives, stable so a log can be counted by them.
+// The reasons auto-merge is on or off, stable so a log line and a view can be
+// counted by them.
 const (
 	// AutoMergeReasonOn is the reason when every clause of the rule holds.
 	AutoMergeReasonOn = "on"
 	// AutoMergeReasonSwitchOff is the owner's switch being off.
 	AutoMergeReasonSwitchOff = "switch-off"
+	// AutoMergeReasonSwitchUnread is the owner's switch being unreadable. The
+	// runner's rule takes the switch as a boolean and reports a failed read as a
+	// warning before it runs; the surface, which reads the switch itself, reports
+	// it as the reason auto-merge is off.
+	AutoMergeReasonSwitchUnread = "switch-unread"
 	// AutoMergeReasonTooFewMeasured is fewer than TrailingPRs merged PRs, or one with an unmeasured commit.
 	AutoMergeReasonTooFewMeasured = "too-few-measured"
 	// AutoMergeReasonNoAgentLines is a window whose PRs carry no agent lines, so no rate exists.

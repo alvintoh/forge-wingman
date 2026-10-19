@@ -60,6 +60,7 @@ func run(logger *slog.Logger) error {
 	var providerPlans ProviderPlansReader
 	var autonomy AutonomyReader
 	var peak PeakModeStore
+	var autoMerge AutoMergeStore
 	if project := os.Getenv("GOOGLE_CLOUD_PROJECT"); project != "" {
 		fsc, err := firestore.NewClient(context.Background(), project)
 		if err != nil {
@@ -70,6 +71,7 @@ func run(logger *slog.Logger) error {
 		providerPlans = store.NewProviderPlans(fsc)
 		autonomy = store.NewAutonomies(fsc)
 		peak = store.NewPeakModes(fsc)
+		autoMerge = store.NewAutoMergeSwitches(fsc)
 	}
 
 	deps := Deps{
@@ -79,6 +81,7 @@ func run(logger *slog.Logger) error {
 		ProviderPlans: providerPlans,
 		Autonomy:      autonomy,
 		Peak:          peak,
+		AutoMerge:     autoMerge,
 	}
 
 	srv := &http.Server{
@@ -138,6 +141,15 @@ type PeakModeStore interface {
 	Set(ctx context.Context, mode dispatcher.PeakMode, at time.Time) error
 }
 
+// AutoMergeStore reads and sets the auto-merge switch: the dispatch/auto-merge
+// document the runner's pr-meta reads and the runner auto-merge command sets.
+// Like the peak mode's, the view's control sets it and the service sits behind
+// IAP, whose only authorised principal is the owner.
+type AutoMergeStore interface {
+	Enabled(ctx context.Context) (bool, error)
+	Set(ctx context.Context, enabled bool, at time.Time) error
+}
+
 // Deps are what the surface serves: the SPA it embeds, the stores behind its
 // JSON endpoints, and where it reports. A nil store serves every endpoint but
 // its own, which answers 503 for want of one.
@@ -148,6 +160,7 @@ type Deps struct {
 	ProviderPlans ProviderPlansReader
 	Autonomy      AutonomyReader
 	Peak          PeakModeStore
+	AutoMerge     AutoMergeStore
 }
 
 // newMux claims /api/ explicitly so an unknown endpoint 404s instead of
@@ -203,8 +216,10 @@ func newMux(d Deps) *http.ServeMux {
 			http.Error(w, "reading the autonomy level", http.StatusInternalServerError)
 			return
 		}
+		switchOn, switchRead := d.autoMergeSwitch(r.Context())
+		autoMerge := renderAutoMerge(view.Measured, switchOn, switchRead)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(renderAutonomy(view, autonomyHistoryShown))
+		_ = json.NewEncoder(w).Encode(renderAutonomy(view, autonomyHistoryShown, autoMerge))
 	})
 	mux.HandleFunc("GET /api/peak", func(w http.ResponseWriter, r *http.Request) {
 		if d.Peak == nil {
@@ -220,9 +235,9 @@ func newMux(d Deps) *http.ServeMux {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(renderPeak(mode, time.Now()))
 	})
-	// Setting the mode is the one write on this surface. It requires a JSON
-	// body, which a browser cannot send cross-origin without a preflight, so a
-	// page that is not the surface cannot switch the mode with the session
+	// Setting the mode is one of this surface's two writes, and it requires a
+	// JSON body, which a browser cannot send cross-origin without a preflight,
+	// so a page that is not the surface cannot switch the mode with the session
 	// cookie IAP establishes.
 	mux.HandleFunc("POST /api/peak", func(w http.ResponseWriter, r *http.Request) {
 		if d.Peak == nil {
@@ -254,6 +269,36 @@ func newMux(d Deps) *http.ServeMux {
 		d.Logger.Info("peakModeSet", "mode", string(mode))
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(renderPeak(mode, now))
+	})
+	// Setting the switch is this surface's other write, gated as the peak
+	// mode's is: a JSON body names the setting and nothing else, and the write
+	// reaches the one document its store holds.
+	mux.HandleFunc("POST /api/auto-merge", func(w http.ResponseWriter, r *http.Request) {
+		if d.AutoMerge == nil {
+			http.Error(w, "the auto-merge switch needs a store", http.StatusServiceUnavailable)
+			return
+		}
+		if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+			http.Error(w, "the auto-merge switch is set with a JSON body", http.StatusUnsupportedMediaType)
+			return
+		}
+		var body struct {
+			Enabled *bool `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Enabled == nil {
+			http.Error(w, "the request body is not JSON saying whether auto-merge is enabled", http.StatusBadRequest)
+			return
+		}
+		if err := d.AutoMerge.Set(r.Context(), *body.Enabled, time.Now()); err != nil {
+			d.Logger.Error("autoMergeSwitchNotSet", "err", err.Error())
+			http.Error(w, "setting the auto-merge switch", http.StatusInternalServerError)
+			return
+		}
+		d.Logger.Info("autoMergeSwitchSet", "enabled", *body.Enabled)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(struct {
+			Enabled bool `json:"enabled"`
+		}{*body.Enabled})
 	})
 	mux.Handle("GET /api/", http.NotFoundHandler())
 	mux.Handle("GET /", spaHandler(d.SPA))
@@ -433,7 +478,8 @@ const autonomyHistoryShown = 50
 // recorded newest first and the rewrite figures of the measured merges. It
 // carries no ticket text and no credential — the evidence is counts, PR numbers
 // and links, run ids and repository names — and no field of it sets the level,
-// which stays the runner autonomy command's.
+// which stays the runner autonomy command's. The auto-merge switch beside it is
+// set through its own endpoint.
 type autonomyResponse struct {
 	Level   int              `json:"level"`
 	Allows  string           `json:"allows"`
@@ -445,6 +491,9 @@ type autonomyResponse struct {
 	// Rewrite is the measured merges' own figures: the rates a page draws rather
 	// than the level's evidence.
 	Rewrite rewriteView `json:"rewrite"`
+	// AutoMerge is the owner's switch beside the rate's verdict, the two facts
+	// the effective state needs both of.
+	AutoMerge autoMergeState `json:"auto_merge"`
 }
 
 // earnedSnapshot is the earned level as last computed: the evidence behind it,
@@ -484,16 +533,17 @@ type evidence struct {
 	Recorded bool `json:"recorded"`
 }
 
-// renderAutonomy renders the store's view as JSON. The history and the rewrite
-// figures are rendered whether or not they hold anything, so the view reads an
-// empty list rather than a null; the earned snapshot is null while none is
-// stored.
-func renderAutonomy(v store.AutonomyView, limit int) autonomyResponse {
+// renderAutonomy renders the store's view as JSON, with the auto-merge switch
+// the view was read beside. The history and the rewrite figures are rendered
+// whether or not they hold anything, so the view reads an empty list rather than
+// a null; the earned snapshot is null while none is stored.
+func renderAutonomy(v store.AutonomyView, limit int, autoMerge autoMergeState) autonomyResponse {
 	out := autonomyResponse{
-		Level:   int(v.Level),
-		Allows:  v.Level.Describe(),
-		History: make([]autonomyChange, 0, len(v.History)),
-		Rewrite: renderRewrite(v.Measured),
+		Level:     int(v.Level),
+		Allows:    v.Level.Describe(),
+		AutoMerge: autoMerge,
+		History:   make([]autonomyChange, 0, len(v.History)),
+		Rewrite:   renderRewrite(v.Measured),
 	}
 	if len(v.History) >= limit {
 		out.HistoryCutAt = limit
@@ -559,6 +609,63 @@ func rateText(rate float64) string {
 		return rateNoAgentLines
 	}
 	return fmt.Sprintf("%.1f%%", rate*100)
+}
+
+// autoMergeState is the owner's auto-merge switch beside the rate's verdict, the
+// two facts the effective state needs both of, computed here so the page decides
+// nothing.
+type autoMergeState struct {
+	// SwitchOn is the owner's setting, on while no document is stored.
+	SwitchOn bool `json:"switch_on"`
+	// RateAllows is the rate's verdict alone, the dispatcher's own rule.
+	RateAllows bool `json:"rate_allows"`
+	// RateValue is the trailing rate as the view prints it.
+	RateValue string `json:"rate_value"`
+	// Limit is the bar the rate is compared to.
+	Limit string `json:"limit"`
+	// Effective is the switch on and the rate allowing it.
+	Effective bool `json:"effective"`
+	// Reason is why auto-merge is not effective: the rule's own reason, the
+	// switch being off, or the switch being unreadable.
+	Reason string `json:"reason"`
+}
+
+// renderAutoMerge renders the owner's switch beside the rate's verdict over the
+// measured merges, taken from the dispatcher's own rule. switchRead is false for
+// a switch that could not be read, which reports off whatever switchOn holds.
+func renderAutoMerge(samples []dispatcher.Sample, switchOn, switchRead bool) autoMergeState {
+	rate := dispatcher.AutoMergeOn(dispatcher.Evidence{Trailing: samples})
+	on := switchOn && switchRead
+	out := autoMergeState{
+		SwitchOn:   on,
+		RateAllows: rate.On,
+		RateValue:  rate.RateText(),
+		Limit:      rateText(dispatcher.AutoMergeRate),
+		Effective:  on && rate.On,
+		Reason:     rate.Reason,
+	}
+	switch {
+	case !switchRead:
+		out.Reason = dispatcher.AutoMergeReasonSwitchUnread
+	case !on:
+		out.Reason = dispatcher.AutoMergeReasonSwitchOff
+	}
+	return out
+}
+
+// autoMergeSwitch reads the owner's auto-merge switch, reporting it and whether
+// it could be read. A switch that cannot be read is off and is logged, so the
+// view never reports auto-merge on from a switch nobody read.
+func (d Deps) autoMergeSwitch(ctx context.Context) (on, read bool) {
+	if d.AutoMerge == nil {
+		return false, false
+	}
+	on, err := d.AutoMerge.Enabled(ctx)
+	if err != nil {
+		d.Logger.Warn("autoMergeSwitchUnread", "err", err.Error())
+		return false, false
+	}
+	return on, true
 }
 
 // rewriteView is the measured merges' rewrite figures as a page draws them: the

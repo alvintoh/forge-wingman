@@ -389,6 +389,23 @@ cache the run before it left warm, and only the batch's first run pays the cold
 prefix — the 52k fresh tokens in the table above. This is measured on runs of one
 sha: two shas are two prefixes, and nothing here says they warm each other.
 
+## Surface
+
+`surface.tf` holds the identity the surface runs under — the Cloud Run service
+that serves the SPA and the JSON views. Its views read the store, and it writes
+the two settings an owner switches from a page: `dispatch/auto-merge` for the
+auto-merge switch and `dispatch/peak-mode` for the peak mode, which
+`cmd/surface`'s own handlers write and nothing else. The service's own definition
+is a separate change.
+
+**A Firestore grant is made at the project, and no role narrows one to a
+document**, so that one-document scope is held by the code rather than by the
+grant.
+
+| Service account | Grants |
+|---|---|
+| `surface` | Firestore read/write |
+
 ## Webhook
 
 `webhook.tf` is the service Linear delivers agent-session events to. It is
