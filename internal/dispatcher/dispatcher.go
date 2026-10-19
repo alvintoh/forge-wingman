@@ -23,18 +23,6 @@ type Issue struct {
 	Body     string
 	Priority int
 	Labels   []string
-	// UUID is Linear's own id for the issue, which the mutation that delegates
-	// one names.
-	UUID string
-	// DelegatedTo is the id of the agent the issue is delegated to, empty when
-	// none: Open reads it, and a ticket that names one is never delegated again.
-	DelegatedTo string
-	// StateType is the Linear state type of the issue's workflow state, empty
-	// when the reply did not carry it.
-	StateType string
-	// Milestone is the project milestone the issue belongs to, zero when it has
-	// none.
-	Milestone Milestone
 	// BlockedBy and Blocks are the ids of the issues Linear relates to this
 	// one as blocking it and as blocked by it.
 	BlockedBy []string
@@ -46,13 +34,6 @@ type Issue struct {
 	// BlockerStates maps each BlockedByOpen id to its Linear state type, empty
 	// when the reply did not carry one.
 	BlockerStates map[string]string
-}
-
-// Milestone is the Linear project milestone an issue belongs to.
-type Milestone struct {
-	ID string
-	// SortOrder is Linear's own milestone order: a smaller value is earlier.
-	SortOrder float64
 }
 
 // Refusal is why a delegated ticket was not admitted to the queue.
@@ -131,9 +112,6 @@ type Config struct {
 	Limits Limits
 	// Tuning is the concurrency rule's numbers; a zero field takes its default.
 	Tuning Tuning
-	// DailyRuns is how many runs a poll delegates to itself in a day; zero
-	// takes DefaultDailyRuns.
-	DailyRuns int
 	// LastResortPlans are the plans' free models, each entry one plan's list, in
 	// the order the free-tier fallback walks them; empty for a configuration
 	// with no free tier to fall to.
@@ -191,8 +169,6 @@ type ModelPlans interface {
 // dispatches, and where it reports.
 type Deps struct {
 	Source Source
-	// Delegatable lists the tickets the product may delegate to itself.
-	Delegatable Delegatable
 	// TicketStates is Linear as a claim uses it: a claimed ticket is moved In
 	// Progress, and an undone claim puts it back where it was.
 	TicketStates TicketStates
@@ -244,7 +220,6 @@ func (d Deps) missing() string {
 		set  bool
 	}{
 		{"Source", d.Source != nil},
-		{"Delegatable", d.Delegatable != nil},
 		{"TicketStates", d.TicketStates != nil},
 		{"Queue", d.Queue != nil},
 		{"Estimator", d.Estimator != nil},
@@ -289,17 +264,6 @@ type OpenPRCounter interface {
 // token reads as that agent.
 type Source interface {
 	Delegated(ctx context.Context) ([]Issue, error)
-}
-
-// Delegatable reads the open tickets the product may take on itself and
-// delegates one to the configured agent.
-type Delegatable interface {
-	// Open returns every open issue, with the delegate and milestone a poll
-	// needs to choose the next ticket to delegate itself.
-	Open(ctx context.Context) ([]Issue, error)
-	// DelegateIssue sets the issue's delegate to that agent, and reports whether
-	// Linear took it.
-	DelegateIssue(ctx context.Context, issueID string) error
 }
 
 // Enqueuer writes a run record and queues it, failing with ErrAlreadyQueued
@@ -355,22 +319,10 @@ type Rejector interface {
 	Reject(ctx context.Context, r Rejection) error
 }
 
-// ClaimedRuns counts the runs claimed since a moment: the runs the daily run
-// cap of delegations is counted from.
-type ClaimedRuns interface {
-	ClaimedSince(ctx context.Context, since time.Time) (int, error)
-}
-
 // TicketStateRecorder records the state a claimed ticket held, which the claim's
 // own undo restores it to.
 type TicketStateRecorder interface {
 	RecordTicketState(ctx context.Context, runID, stateID string) error
-}
-
-// EndedRuns reports whether a ticket's run has already ended, so that only the
-// owner's own `runner requeue` takes that ticket further.
-type EndedRuns interface {
-	NeedsRequeue(ctx context.Context, ticketID string) (bool, error)
 }
 
 // Queue is the run store as a poll uses it.
@@ -383,9 +335,7 @@ type Queue interface {
 	Spender
 	Sweeper
 	StuckReader
-	ClaimedRuns
 	TicketStateRecorder
-	EndedRuns
 	TransientRequeuer
 	// SettledHistory reads the settled run history at or after since: the one
 	// read a poll's budget ceilings are summed from, whatever it walks (AC1).
@@ -416,9 +366,6 @@ type Result struct {
 	Deferrals []Deferral
 	// Dispatched is the id of every run this poll claimed and started.
 	Dispatched []string
-	// Delegated is the id of every ticket this poll delegated to the agent
-	// itself, in the order it delegated them.
-	Delegated []string
 
 	// issues is what the poll read from Linear, kept for the stuck check.
 	issues []Issue
@@ -433,8 +380,7 @@ type Result struct {
 // A ticket the queue already holds is left alone; a candidate a condition
 // withholds is deferred, not rejected, and reconsidered next poll; and a run
 // whose dispatch fails is released rather than left claimed, so the next
-// poll considers it again. The tickets the product delegates to itself are
-// taken on at the end of the poll.
+// poll considers it again.
 func Poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	if name := d.missing(); name != "" {
 		return Result{}, fmt.Errorf("dispatcher dependency %s is not set", name)
@@ -515,18 +461,11 @@ func poll(ctx context.Context, d Deps, c Config) (Result, error) {
 		res.Dispatched = append(res.Dispatched, claim.RunID)
 	}
 	LogPhase(d.Logger, "dispatch", start, d.Now())
-	// The delegation runs last, so a failure on it cannot withhold the admission
-	// and dispatch that already succeeded: the agent session it opens wakes the
-	// poll that admits the ticket within seconds.
-	start = d.Now()
-	phaseErrs = append(phaseErrs, autoDelegate(ctx, d, c, &res, history))
-	LogPhase(d.Logger, "delegate", start, d.Now())
 	if err := errors.Join(phaseErrs...); err != nil {
 		return res, err
 	}
 	d.Logger.Info("pollComplete", "seen", res.Seen, "enqueued", len(res.Enqueued),
-		"rejected", len(res.Rejections), "deferred", len(res.Deferrals), "dispatched", len(res.Dispatched),
-		"delegated", len(res.Delegated))
+		"rejected", len(res.Rejections), "deferred", len(res.Deferrals), "dispatched", len(res.Dispatched))
 	return res, nil
 }
 

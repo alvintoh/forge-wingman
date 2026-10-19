@@ -123,16 +123,6 @@ type fakeQueue struct {
 
 	existsErr error
 
-	// claimedCount is the runs ClaimedSince reports as claimed since the moment
-	// it is asked about, and claimedSince records each of those moments.
-	claimedCount int
-	claimedErr   error
-	claimedSince []time.Time
-	// requeues names the tickets whose runs have ended, which only an operator's
-	// requeue takes further.
-	requeues   map[string]bool
-	requeueErr error
-
 	// transientStops is what the transient listing reports and transientErr its
 	// failure; requeued records each automatic requeue, and requeueTransientErr
 	// fails one.
@@ -203,18 +193,6 @@ func (q *fakeQueue) Exists(_ context.Context, runID string) (bool, error) {
 		return false, q.existsErr
 	}
 	return q.holds[runID], nil
-}
-
-func (q *fakeQueue) ClaimedSince(_ context.Context, since time.Time) (int, error) {
-	q.claimedSince = append(q.claimedSince, since)
-	return q.claimedCount, q.claimedErr
-}
-
-func (q *fakeQueue) NeedsRequeue(_ context.Context, ticketID string) (bool, error) {
-	if q.requeueErr != nil {
-		return false, q.requeueErr
-	}
-	return q.requeues[ticketID], nil
 }
 
 func (q *fakeQueue) TransientStops(context.Context) ([]TransientStop, error) {
@@ -450,7 +428,7 @@ func (p fakeOpenPRs) OpenAgentPRs(_ context.Context, repo string) (int, error) {
 
 func pollDeps(source Source, q *fakeQueue, w *fakeWorkflow) Deps {
 	return Deps{
-		Source: source, Delegatable: &fakeDelegatable{}, Queue: q, Workflow: w,
+		Source: source, Queue: q, Workflow: w,
 		TicketStates: &fakeTicketStates{},
 		Estimator:    fakeEstimator{},
 		Visibility:   fakeVisibility{},
@@ -637,25 +615,24 @@ func (d *fakeDecisions) Session(_ context.Context, ticketID string) (string, err
 
 func TestPollNamesTheDependencyItWasNotGiven(t *testing.T) {
 	unset := map[string]func(*Deps){
-		"Source":      func(d *Deps) { d.Source = nil },
-		"Delegatable": func(d *Deps) { d.Delegatable = nil },
-		"Queue":       func(d *Deps) { d.Queue = nil },
-		"Estimator":   func(d *Deps) { d.Estimator = nil },
-		"Visibility":  func(d *Deps) { d.Visibility = nil },
-		"Providers":   func(d *Deps) { d.Providers = nil },
-		"Breaker":     func(d *Deps) { d.Breaker = nil },
-		"PeakModes":   func(d *Deps) { d.PeakModes = nil },
-		"Autonomies":  func(d *Deps) { d.Autonomies = nil },
-		"Notices":     func(d *Deps) { d.Notices = nil },
-		"OpenPoster":  func(d *Deps) { d.OpenPoster = nil },
-		"OpenPRs":     func(d *Deps) { d.OpenPRs = nil },
-		"Workflow":    func(d *Deps) { d.Workflow = nil },
-		"Overrides":   func(d *Deps) { d.Overrides = nil },
-		"ModelPlans":  func(d *Deps) { d.ModelPlans = nil },
-		"Elicit":      func(d *Deps) { d.Elicit = nil },
-		"Decisions":   func(d *Deps) { d.Decisions = nil },
-		"Logger":      func(d *Deps) { d.Logger = nil },
-		"Now":         func(d *Deps) { d.Now = nil },
+		"Source":     func(d *Deps) { d.Source = nil },
+		"Queue":      func(d *Deps) { d.Queue = nil },
+		"Estimator":  func(d *Deps) { d.Estimator = nil },
+		"Visibility": func(d *Deps) { d.Visibility = nil },
+		"Providers":  func(d *Deps) { d.Providers = nil },
+		"Breaker":    func(d *Deps) { d.Breaker = nil },
+		"PeakModes":  func(d *Deps) { d.PeakModes = nil },
+		"Autonomies": func(d *Deps) { d.Autonomies = nil },
+		"Notices":    func(d *Deps) { d.Notices = nil },
+		"OpenPoster": func(d *Deps) { d.OpenPoster = nil },
+		"OpenPRs":    func(d *Deps) { d.OpenPRs = nil },
+		"Workflow":   func(d *Deps) { d.Workflow = nil },
+		"Overrides":  func(d *Deps) { d.Overrides = nil },
+		"ModelPlans": func(d *Deps) { d.ModelPlans = nil },
+		"Elicit":     func(d *Deps) { d.Elicit = nil },
+		"Decisions":  func(d *Deps) { d.Decisions = nil },
+		"Logger":     func(d *Deps) { d.Logger = nil },
+		"Now":        func(d *Deps) { d.Now = nil },
 		// The rewrite measurement's own reads.
 		"PullRequests": func(d *Deps) { d.PullRequests = nil },
 		"Rewrites":     func(d *Deps) { d.Rewrites = nil },
