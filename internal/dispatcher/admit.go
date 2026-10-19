@@ -130,8 +130,6 @@ type Facts struct {
 	// repositories, meaningful only when OpenPRsKnown is set.
 	OpenPRs      int
 	OpenPRsKnown bool
-	// Autonomy is the owner's level the poll read, recorded on the run when it is claimed.
-	Autonomy Autonomy
 	// DecisionMode is how the run's plan decisions are settled, recorded on the run when it is claimed.
 	DecisionMode runner.DecisionMode
 	// History loads the poll's snapshot of the settled run history, which the

@@ -32,7 +32,6 @@ func TestPollRequeuesARunThatStoppedOnAListedFault(t *testing.T) {
 	q := &fakeQueue{transientStops: []TransientStop{stop}}
 	notices := &fakeNotices{}
 	d := pollDeps(fakeSource{}, q, &fakeWorkflow{})
-	d.Autonomies = &fakeAutonomies{level: AutonomyRequeues}
 	d.Notices = notices
 	if _, err := Poll(context.Background(), d, buildConfig); err != nil {
 		t.Fatal(err)
@@ -45,27 +44,10 @@ func TestPollRequeuesARunThatStoppedOnAListedFault(t *testing.T) {
 	}
 }
 
-func TestPollRequeuesARunWithNoLevelSet(t *testing.T) {
-	q := &fakeQueue{transientStops: []TransientStop{{RunID: "FRG-9", Class: runner.TransientModuleProxy}}}
-	notices := &fakeNotices{}
-	d := pollDeps(fakeSource{}, q, &fakeWorkflow{})
-	d.Notices = notices
-	if _, err := Poll(context.Background(), d, buildConfig); err != nil {
-		t.Fatal(err)
-	}
-	if len(q.requeued) != 1 || q.requeued[0].RunID != "FRG-9" {
-		t.Fatalf("requeued = %+v, want the stopped run returned with no level set", q.requeued)
-	}
-	if len(notices.raised) != 0 {
-		t.Fatalf("raised %+v, want no notice while the run has an attempt left", notices.raised)
-	}
-}
-
 func TestPollNeverRequeuesAStopWhoseClassIsNotListed(t *testing.T) {
 	q := &fakeQueue{transientStops: []TransientStop{{RunID: "FRG-9", Class: "something-else"}}}
 	notices := &fakeNotices{}
 	d := pollDeps(fakeSource{}, q, &fakeWorkflow{})
-	d.Autonomies = &fakeAutonomies{level: AutonomyRequeues}
 	d.Notices = notices
 	if _, err := Poll(context.Background(), d, buildConfig); err != nil {
 		t.Fatal(err)
@@ -98,7 +80,6 @@ func TestPollLeavesARunThatHasUsedEveryAutomaticRequeue(t *testing.T) {
 func TestPollReportsAFailedTransientListing(t *testing.T) {
 	q := &fakeQueue{transientErr: errFirestore}
 	d := pollDeps(fakeSource{}, q, &fakeWorkflow{})
-	d.Autonomies = &fakeAutonomies{level: AutonomyRequeues}
 	if _, err := Poll(context.Background(), d, buildConfig); !errors.Is(err, errFirestore) {
 		t.Fatalf("err = %v, want the failed listing reported", err)
 	}
@@ -107,7 +88,6 @@ func TestPollReportsAFailedTransientListing(t *testing.T) {
 func TestPollReportsAFailedAutomaticRequeue(t *testing.T) {
 	q := &fakeQueue{transientStops: []TransientStop{{RunID: "FRG-9", Class: runner.TransientModuleProxy}}, requeueTransientErr: errFirestore}
 	d := pollDeps(fakeSource{}, q, &fakeWorkflow{})
-	d.Autonomies = &fakeAutonomies{level: AutonomyRequeues}
 	if _, err := Poll(context.Background(), d, buildConfig); !errors.Is(err, errFirestore) {
 		t.Fatalf("err = %v, want the failed requeue reported", err)
 	}

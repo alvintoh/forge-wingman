@@ -83,7 +83,7 @@ delivery. Choosing it for latency is the owner's call.*
   **enqueue latency drops from ≤15 minutes to about 2 minutes**: the job execution
   starts within seconds, but Cloud Run's gen2 start-up for a job takes ~2 minutes
   before the poll's own ~3 s (measured with the poll's phase timings); throughput does not change,
-  since 96 polls a day already exceed level 5's 10 runs.
+  since 96 polls a day are far more than the tickets an owner delegates in one.
 - **Two paths enqueue, so the enqueue must be idempotent** — the same property the
   claim transaction already has.
 - **The tracer bullet (Phase 2) is unaffected**; it is triggered by hand.

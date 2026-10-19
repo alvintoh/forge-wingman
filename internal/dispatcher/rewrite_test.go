@@ -98,43 +98,19 @@ func TestLinesAndRateSumTheWindow(t *testing.T) {
 	if got := Lines(window); got != (Rewrite{AgentLines: 200, OwnerLines: 10}) {
 		t.Fatalf("Lines() = %+v, want 200 agent lines and 10 owner lines", got)
 	}
-	rate, prs := Rate(window)
+	rate, prs := Lines(window).Rate(), len(window)
 	if rate != 0.05 || prs != 2 {
 		t.Fatalf("Rate() = %v over %d PRs, want 0.05 over 2", rate, prs)
 	}
 }
 
-func TestGateMissesAndRevertsCountWhatTheProductOwns(t *testing.T) {
+func TestRevertsCountsTheAutoMergedRevertsAlone(t *testing.T) {
 	window := []Sample{
 		sample(scratch, 100, 0, true, true),
 		sample(scratch, 100, 0, false, true),
-		{Repo: scratch, GateMiss: true},
-		{Repo: scratch, GateMiss: true},
 	}
 	if got := Reverts(window); got != 1 {
 		t.Fatalf("Reverts() = %d, want the auto-merged revert alone", got)
-	}
-	if got := GateMisses(window); got != 2 {
-		t.Fatalf("GateMisses() = %d, want 2", got)
-	}
-	if first := FirstReverted(window); first == nil || !first.AutoMerged || !first.Reverted {
-		t.Fatalf("FirstReverted() = %+v, want the first reverted auto-merge", first)
-	}
-	if none := FirstReverted(window[1:]); none != nil {
-		t.Fatalf("FirstReverted() = %+v, want nil when only a hand-merged PR was reverted", none)
-	}
-}
-
-func TestReposIsEverySampledRepositorySorted(t *testing.T) {
-	window := []Sample{
-		{Repo: "octo/scratch"},
-		{Repo: "octo/other"},
-		{Repo: "octo/scratch"},
-		{},
-	}
-	got := Repos(window)
-	if len(got) != 2 || got[0] != "octo/other" || got[1] != "octo/scratch" {
-		t.Fatalf("Repos() = %v, want the two sampled repositories once each, sorted", got)
 	}
 }
 

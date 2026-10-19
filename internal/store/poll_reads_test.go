@@ -107,14 +107,9 @@ func pollReadDeps(q *Queue, openPRs int) dispatcher.Deps {
 		Providers:    pollProviders{},
 		Breaker:      pollBreaker{},
 		PeakModes:    pollPeakModes{},
-		Autonomies:   pollAutonomies{},
 		OpenPRs:      pollOpenPRs{count: openPRs},
 		PullRequests: pollPullRequests{},
 		Rewrites:     pollRewrites{},
-		Earned:       pollEarned{},
-		Shadow:       pollShadow{},
-		CDs:          pollCDs{},
-		History:      pollHistoryStore{},
 		Workflow:     pollWorkflow{},
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Now:          func() time.Time { return pollAt },
@@ -221,17 +216,6 @@ func (pollPeakModes) Mode(context.Context) (dispatcher.PeakMode, error) {
 	return dispatcher.PeakOffPeakOnly, nil
 }
 
-// pollAutonomies reports the lowest level, so a poll here has no earned level to
-// resolve.
-type pollAutonomies struct{}
-
-func (pollAutonomies) Level(context.Context) (dispatcher.Autonomy, error) {
-	return 0, nil
-}
-func (pollAutonomies) Set(context.Context, dispatcher.Autonomy, time.Time) error {
-	return nil
-}
-
 // pollOpenPRs reports the configured count of open agent PRs, the review WIP.
 type pollOpenPRs struct{ count int }
 
@@ -270,37 +254,6 @@ func (pollRewrites) FlagReverted(context.Context, string) error {
 func (pollRewrites) Recent(context.Context, int) ([]dispatcher.Sample, error) {
 	return nil, nil
 }
-
-// pollEarned stores no earned snapshot, which no poll here reads.
-type pollEarned struct{}
-
-func (pollEarned) Earned(context.Context) (dispatcher.Earned, bool, error) {
-	return dispatcher.Earned{}, false, nil
-}
-func (pollEarned) SetEarned(context.Context, dispatcher.Earned) error {
-	return nil
-}
-func (pollEarned) MarkStale(context.Context) error {
-	return nil
-}
-
-// pollShadow counts no merge and began long before these polls.
-type pollShadow struct{}
-
-func (pollShadow) ShadowStart(context.Context, time.Time) (time.Time, error) {
-	return pollAt.Add(-24 * time.Hour), nil
-}
-func (pollShadow) CountShadow(context.Context) (int, error) { return 0, nil }
-
-// pollCDs records no CD flag.
-type pollCDs struct{}
-
-func (pollCDs) Recorded(context.Context) (map[string]bool, error) { return nil, nil }
-
-// pollHistoryStore records no level change.
-type pollHistoryStore struct{}
-
-func (pollHistoryStore) Append(context.Context, dispatcher.Change) error { return nil }
 
 // pollWorkflow starts every run it is handed.
 type pollWorkflow struct{}

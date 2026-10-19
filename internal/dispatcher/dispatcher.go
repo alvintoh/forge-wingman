@@ -180,24 +180,15 @@ type Deps struct {
 	Providers    ProviderHalts
 	Breaker      Breaker
 	PeakModes    PeakModes
-	Autonomies   Autonomies
 	OpenPRs      OpenPRCounter
 	// PullRequests reads the merged run PRs the rewrite rate is measured from,
 	// and Rewrites records each measurement on its run row and reads the samples
-	// the level's conditions are checked against.
+	// the auto-merge rule is decided from.
 	PullRequests PullRequests
 	Rewrites     Rewrites
-	// Earned stores the level the measured PRs have earned, Shadow counts the
-	// merges since the shadow began, CDs reads the
-	// recorded CD flags it is computed with, and History records each change of
-	// the level.
-	Earned   EarnedSnapshots
-	Shadow   ShadowCounter
-	CDs      CDFlags
-	History  AutonomyHistory
-	Workflow Workflow
-	Logger   *slog.Logger
-	Now      func() time.Time
+	Workflow     Workflow
+	Logger       *slog.Logger
+	Now          func() time.Time
 	// Overrides yields the models a ticket names and ModelPlans is what they are
 	// checked against; both are required, as an unchecked model could spend per token.
 	Overrides  ModelOverrides
@@ -229,14 +220,9 @@ func (d Deps) missing() string {
 		{"Providers", d.Providers != nil},
 		{"Breaker", d.Breaker != nil},
 		{"PeakModes", d.PeakModes != nil},
-		{"Autonomies", d.Autonomies != nil},
 		{"OpenPRs", d.OpenPRs != nil},
 		{"PullRequests", d.PullRequests != nil},
 		{"Rewrites", d.Rewrites != nil},
-		{"Earned", d.Earned != nil},
-		{"Shadow", d.Shadow != nil},
-		{"CDs", d.CDs != nil},
-		{"History", d.History != nil},
 		{"Workflow", d.Workflow != nil},
 		{"Logger", d.Logger != nil},
 		{"Now", d.Now != nil},
@@ -413,9 +399,6 @@ func LogPhase(logger *slog.Logger, phase string, start, end time.Time) {
 }
 
 func poll(ctx context.Context, d Deps, c Config) (Result, error) {
-	// The level is read once, ahead of the claims that record it, so one poll
-	// acts on one level throughout.
-	level := readAutonomy(ctx, d)
 	// One loader for the whole poll: the claim walk and the delegation share it,
 	// so the settled run history is read once whichever of them reaches for it
 	// first, and neither reads it at all unless something needs it (AC1, AC5).
@@ -456,7 +439,7 @@ func poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	var claims []Claim
 	var claimErr error
 	if listed {
-		claims, claimErr = admitClaims(ctx, d, c, level, relations, links, &res, history)
+		claims, claimErr = admitClaims(ctx, d, c, relations, links, &res, history)
 	}
 	LogPhase(d.Logger, "claim", start, d.Now())
 	phaseErrs := []error{requeueErr, claimErr}
@@ -572,8 +555,8 @@ func claimStage(cand Candidate, twoStage bool) string {
 // the condition that bound it.
 //
 // On an error it returns the claims already booked beside it, so the caller can
-// dispatch or release them. The level is the poll's own, read once before this
-// walk as the breaker is; the provider halt and the verdict are keyed off each
+// dispatch or release them. The breaker is the poll's own, read once before this
+// walk; the provider halt and the verdict are keyed off each
 // candidate's own plan, and the open-PR count across the allowlist once, when
 // anything is queued. A breaker
 // that cannot be read holds the walk as a tripped one would, and a budget
@@ -589,7 +572,7 @@ func claimStage(cand Candidate, twoStage bool) string {
 // history and one estimate of each size it holds, however many candidates are
 // queued (AC1), and a walk whose candidates a non-budget limit withholds reads
 // no history at all (AC5).
-func admitClaims(ctx context.Context, d Deps, c Config, level Autonomy, relations map[string]Relations, links map[string]string, res *Result, history HistoryLoader) ([]Claim, error) {
+func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Relations, links map[string]string, res *Result, history HistoryLoader) ([]Claim, error) {
 	candidates, err := d.Queue.Candidates(ctx)
 	if err != nil {
 		return nil, err
@@ -711,7 +694,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, level Autonomy, relation
 		candPlan := runner.Provider(candModel)
 		facts := Facts{Limits: limits, Tuning: c.Tuning.OrDefault(), History: history, ProviderHalted: halted(candPlan), BreakerTripped: tripped,
 			OpenPRs: reviewWIPFor(ctx, d, cand, prs), OpenPRsKnown: prs.known, Relations: relations[cand.RunID], Model: candModel, LastResort: lastResort,
-			PeakHeld: PeakHeld(mode, candModel, d.Now(), est.Minutes), Autonomy: level, DecisionMode: c.DecisionMode}
+			PeakHeld: PeakHeld(mode, candModel, d.Now(), est.Minutes), DecisionMode: c.DecisionMode}
 		claimVerdict := verdictOf(candPlan)
 		ok, binding, err := d.Queue.TryClaim(ctx, cand.RunID, d.Now(), budget, facts, reservation)
 		if err != nil {

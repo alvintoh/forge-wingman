@@ -83,12 +83,8 @@ const (
 	planSpendMicrosField  = "plan_spend_micros"
 	planSpendMinutesField = "plan_spend_minutes"
 
-	// autonomyField is the owner's autonomy level the run's attempt was first
-	// claimed at, absent until that claim.
-	autonomyField = "autonomy"
-
-	// decisionModeField is how the run's plan decisions are settled, recorded at
-	// the attempt's first claim like autonomyField.
+	// decisionModeField is how the run's plan decisions are settled, recorded
+	// once per attempt, at its first claim.
 	decisionModeField = "decision_mode"
 
 	// decisionsField is the list of decisions a run has parked on, written
@@ -257,7 +253,6 @@ func (q *Queue) Enqueue(ctx context.Context, run dispatcher.Queued) error {
 	rec.ModelLabels = run.Models
 	rec.UpdatedAt = run.At
 	data := fields(rec)
-	delete(data, autonomyField)
 	delete(data, decisionModeField)
 	data[stateField] = stateQueued
 	data[priorityField] = run.Priority
@@ -822,11 +817,6 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 			{Path: updatedAtField, Value: at},
 			{Path: claimConcurrencyField, Value: len(running) + 1},
 			{Path: waitingOnField, Value: firestore.Delete},
-		}
-		// The level is recorded once per attempt, so a build stage, an answered
-		// decision or a released dispatch keeps the level first claimed at.
-		if _, recorded := data[autonomyField]; !recorded {
-			updates = append(updates, firestore.Update{Path: autonomyField, Value: int64(facts.Autonomy)})
 		}
 		if _, recorded := data[decisionModeField]; !recorded {
 			updates = append(updates, firestore.Update{Path: decisionModeField, Value: string(facts.DecisionMode)})
@@ -1418,7 +1408,6 @@ func (q *Queue) requeue(ctx context.Context, runID string, at time.Time,
 			{Path: ticketStateField, Value: firestore.Delete},
 			{Path: queuedAtField, Value: at},
 			{Path: attemptField, Value: attempt},
-			{Path: autonomyField, Value: firestore.Delete},
 			{Path: decisionModeField, Value: firestore.Delete},
 		}, extra...)); err != nil {
 			return err

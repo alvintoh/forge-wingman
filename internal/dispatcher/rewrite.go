@@ -10,21 +10,10 @@ import (
 	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
-// The windows the rewrite rate is measured over and the rates that bind. The
-// PRD advances level 4 on a rate of 5% or less over 10 PRs and level 5 on 20
-// sampled PRs with zero reverts; a sampled rate over 10% or any trailing-10
-// rate over the 20% hard ceiling drops the level again.
+// The window the rewrite rate is measured over, and the rate that binds.
 const (
 	// TrailingPRs is the window the trailing rate covers.
 	TrailingPRs = 10
-	// SampledPRs is the window the sampled rate and the reverts cover.
-	SampledPRs = 20
-	// AdvanceRate is the rate level 4 advances at or under.
-	AdvanceRate = 0.05
-	// RollbackRate is the sampled rate a level may not pass.
-	RollbackRate = 0.10
-	// CeilingRate is the hard ceiling no trailing rate may pass.
-	CeilingRate = 0.20
 	// AutoMergeRate is the trailing rate auto-merge is on at or under.
 	AutoMergeRate = 0.10
 )
@@ -46,7 +35,7 @@ type Rewrite struct {
 	// UnlabelledLines is the rest of OwnerLines: commits with neither trailer.
 	UnlabelledLines int64
 	// UnmeasuredCommits counts commits whose line counts GitHub did not give, so
-	// the lines above undercount and the PR cannot earn a level.
+	// the lines above undercount the change.
 	UnmeasuredCommits int64
 }
 
@@ -139,42 +128,6 @@ type Measured struct {
 	Title    string
 }
 
-// Numbers is the evidence a level is computed from and a change is recorded
-// with: the rate, the PRs it covers and the lines behind it.
-type Numbers struct {
-	// PRs are the numbers of the PRs measured, newest first.
-	PRs  []int
-	Rate float64
-	// AgentLines and OwnerLines are the rate's denominator and numerator.
-	AgentLines int64
-	OwnerLines int64
-	// The owner lines by their Rework label.
-	ReviewFoundLines int64
-	OwnerChangeLines int64
-	UnlabelledLines  int64
-	// Reverts is how many of the PRs were reverted after auto-merging.
-	Reverts int
-	// Unavailable is set when the evidence could not be read, so the rest is empty.
-	Unavailable bool
-	// NotRecorded is set when the stored record carried no evidence at all, so the
-	// zeros in the rest are absent rather than measured.
-	NotRecorded bool
-}
-
-// NumbersOf is the evidence samples carry.
-func NumbersOf(samples []Sample) Numbers {
-	lines := Lines(samples)
-	n := Numbers{
-		Rate: lines.Rate(), AgentLines: lines.AgentLines, OwnerLines: lines.OwnerLines,
-		ReviewFoundLines: lines.ReviewFoundLines, OwnerChangeLines: lines.OwnerChangeLines,
-		UnlabelledLines: lines.UnlabelledLines, Reverts: Reverts(samples),
-	}
-	for _, s := range samples {
-		n.PRs = append(n.PRs, s.PR)
-	}
-	return n
-}
-
 // RunRow is the run row a merged PR's head branch belongs to.
 type RunRow struct {
 	// RunID is the row's id.
@@ -184,7 +137,7 @@ type RunRow struct {
 	Measured time.Time
 }
 
-// Sample is one merged agent PR as the level's conditions read it.
+// Sample is one merged agent PR as the auto-merge rule reads it.
 type Sample struct {
 	// Run is the id of the run row the PR was measured on.
 	Run string
@@ -208,21 +161,13 @@ type Sample struct {
 	AutoMerged bool
 	// Reverted is whether a merged revert names the PR.
 	Reverted bool
-	// GateMiss is whether the run's own check job reported a failed gate, so the
-	// gate did not hold the PR.
-	GateMiss bool
 }
 
-// Evidence is what a level's advance conditions are checked against.
+// Evidence is what the auto-merge rule is decided from.
 type Evidence struct {
-	// Level is the level the store holds now.
-	Level Autonomy
 	// Trailing is the merged PRs' samples, newest merge first, one read serving
 	// every window.
 	Trailing []Sample
-	// CD is whether each repository was recorded as deploying on merge, keyed by
-	// its lowercased name.
-	CD map[string]bool
 }
 
 // Window is the samples the trailing n merged PRs cover, newest first: a window
@@ -248,11 +193,6 @@ func Lines(samples []Sample) Rewrite {
 	return lines
 }
 
-// Rate is the rewrite rate over samples, and how many PRs it covers.
-func Rate(samples []Sample) (rate float64, prs int) {
-	return Lines(samples).Rate(), len(samples)
-}
-
 // Reverts is how many of samples were reverted after they auto-merged: a revert
 // of a PR the owner merged by hand is the owner's own doing, so it counts none.
 func Reverts(samples []Sample) int {
@@ -265,45 +205,7 @@ func Reverts(samples []Sample) int {
 	return n
 }
 
-// FirstReverted is the first sample in samples a merged revert names, or nil.
-func FirstReverted(samples []Sample) *Sample {
-	for i, s := range samples {
-		if s.AutoMerged && s.Reverted {
-			return &samples[i]
-		}
-	}
-	return nil
-}
-
-// GateMisses is how many of samples a failed gate the run's own check job
-// reported did not hold.
-func GateMisses(samples []Sample) int {
-	n := 0
-	for _, s := range samples {
-		if s.GateMiss {
-			n++
-		}
-	}
-	return n
-}
-
-// Repos is every repository samples name, sorted, so a clause naming them reads
-// the same way twice.
-func Repos(samples []Sample) []string {
-	var repos []string
-	seen := map[string]bool{}
-	for _, s := range samples {
-		if s.Repo == "" || seen[s.Repo] {
-			continue
-		}
-		seen[s.Repo] = true
-		repos = append(repos, s.Repo)
-	}
-	sort.Strings(repos)
-	return repos
-}
-
-// The windows the autonomy view draws as tiles and the length of its series.
+// The windows the Autonomy page draws as tiles and the length of its series.
 const (
 	// ShortPRs is the shorter window drawn beside the trailing one, showing how
 	// much the last few merges moved the rate.
@@ -347,8 +249,8 @@ func WindowRate(samples []Sample, n int) RateWindow {
 	return w
 }
 
-// Tiles is the windows a view draws, widest first: the level's own trailing
-// window, the last few merges, and the last merge alone.
+// Tiles is the windows a view draws, widest first: the trailing window, the last
+// few merges, and the last merge alone.
 func Tiles(samples []Sample) []RateWindow {
 	return []RateWindow{
 		WindowRate(samples, TrailingPRs),

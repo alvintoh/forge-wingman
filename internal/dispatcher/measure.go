@@ -12,12 +12,6 @@ import (
 	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
-// rollbackClass prefixes a rollback notice, and rollbackNoticeKey its id.
-const (
-	rollbackClass     = "level-rollback:"
-	rollbackNoticeKey = "rollback-"
-)
-
 // ClosedPR is one closed pull request of a target repository, as the rewrite
 // rate is measured from it.
 type ClosedPR struct {
@@ -45,7 +39,7 @@ type PullRequests interface {
 }
 
 // Rewrites records each merged agent PR's measured lines on its run row and
-// reads the samples a level's conditions are checked against.
+// reads the samples the auto-merge rule is decided from.
 type Rewrites interface {
 	// RunForMerged returns the run row merged PR pr belongs to, whichever
 	// attempt opened it.
@@ -69,24 +63,11 @@ var revertBody = regexp.MustCompile(`(?m)^Reverts ([^/[:space:]]+/[^#[:space:]]+
 // back.
 var revertTitle = regexp.MustCompile(`^Revert "(.*)"$`)
 
-// measureRewrites records each merged run PR's measured lines on its run row,
-// flags the rows of the PRs a merged revert names, and drops the level when one
-// of its rollback conditions holds. It runs after the dispatch walk, so a level
-// it drops is not the one this poll's runs were claimed at, and before the
-// notices are posted, so the rollback's own notice goes out in the same poll.
+// measureRewrites records each merged run PR's measured lines on its run row and
+// flags the rows of the PRs a merged revert names. It runs after the dispatch
+// walk, so the samples the next poll's auto-merge rule reads are already written.
 func measureRewrites(ctx context.Context, d Deps, c Config) error {
 	var errs []error
-	unreadable := false
-	m := &measurement{}
-	if start, err := d.Shadow.ShadowStart(ctx, d.Now()); err != nil {
-		// Without the marker no merge counts toward the shadow, so it only runs long.
-		d.Logger.Warn("shadowStartUnread", "err", err.Error())
-		errs = append(errs, fmt.Errorf("reading when the shadow began: %w", err))
-	} else if start.IsZero() {
-		d.Logger.Warn("shadowUnstarted")
-	} else {
-		m.shadowStart = start
-	}
 	for _, repo := range c.Repos {
 		prs, err := d.PullRequests.Closed(ctx, repo)
 		truncated := errors.Is(err, ErrClosedTruncated)
@@ -94,27 +75,12 @@ func measureRewrites(ctx context.Context, d Deps, c Config) error {
 			err = nil
 		}
 		if err != nil {
-			unreadable = true
 			// One repository's listing failing must not stop the others', and
 			// the next poll asks again.
 			errs = append(errs, fmt.Errorf("listing the closed pull requests of %s: %w", repo, err))
 			continue
 		}
-		if err := measureRepo(ctx, d, m, repo, prs, truncated); err != nil {
-			if errors.Is(err, ErrClosedTruncated) {
-				unreadable = true
-			}
-			errs = append(errs, err)
-		}
-	}
-	level, dropped, err := rollbackLevel(ctx, d, c, unreadable)
-	if err != nil {
-		errs = append(errs, err)
-	}
-	// The snapshot is recomputed after a merge or a rollback; with the closed
-	// listing unread nothing is recomputed and a level that auto-merges dropped.
-	if !unreadable && (len(m.fresh) > 0 || dropped) {
-		if err := refreshEarned(ctx, d, level, m.fresh); err != nil {
+		if err := measureRepo(ctx, d, repo, prs, truncated); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -125,7 +91,7 @@ func measureRewrites(ctx context.Context, d Deps, c Config) error {
 // the run rows of the PRs its merged reverts name. A failure against one PR is
 // gathered rather than returned, so the rest of the listing is still measured
 // and the next poll retries what failed.
-func measureRepo(ctx context.Context, d Deps, m *measurement, repo string, prs []ClosedPR, truncated bool) error {
+func measureRepo(ctx context.Context, d Deps, repo string, prs []ClosedPR, truncated bool) error {
 	byNumber := make(map[int]ClosedPR, len(prs))
 	byTitle := make(map[string]int, len(prs))
 	for _, pr := range prs {
@@ -141,12 +107,12 @@ func measureRepo(ctx context.Context, d Deps, m *measurement, repo string, prs [
 	tailFresh := false
 	for i, pr := range prs {
 		if !pr.MergedAt.IsZero() && strings.HasPrefix(pr.Head, runner.BranchPrefix) {
-			before := len(m.fresh)
-			if err := measureMerged(ctx, d, m, repo, pr); err != nil {
+			fresh, err := measureMerged(ctx, d, repo, pr)
+			if err != nil {
 				errs = append(errs, err)
 			}
 			// A merge first measured on the last page may have older ones behind it.
-			tailFresh = tailFresh || (len(m.fresh) > before && i >= len(prs)-closedPRsPerPage)
+			tailFresh = tailFresh || (fresh && i >= len(prs)-closedPRsPerPage)
 		}
 	}
 	if truncated && tailFresh {
@@ -163,23 +129,24 @@ func measureRepo(ctx context.Context, d Deps, m *measurement, repo string, prs [
 }
 
 // measureMerged records pr's measured lines on its run row, unless the row
-// already carries the measurement of that same merge.
-func measureMerged(ctx context.Context, d Deps, m *measurement, repo string, pr ClosedPR) error {
+// already carries the measurement of that same merge, and reports whether it
+// measured.
+func measureMerged(ctx context.Context, d Deps, repo string, pr ClosedPR) (bool, error) {
 	row, ok, err := d.Rewrites.RunForMerged(ctx, repo, pr)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !ok {
 		// A merged PR no run row names is not this product's PR: a branch
 		// pushed by hand, or a row removed since.
-		return reportUnfoundPR(ctx, d, "mergedPRUnfound", repo, pr.Number, pr.Head)
+		return false, reportUnfoundPR(ctx, d, "mergedPRUnfound", repo, pr.Number, pr.Head)
 	}
 	if row.Measured.Equal(pr.MergedAt) {
-		return nil
+		return false, nil
 	}
 	commits, err := d.PullRequests.Commits(ctx, repo, pr.Number)
 	if err != nil {
-		return err
+		return false, err
 	}
 	measured := Measured{
 		Rewrite:  RewriteOf(commits),
@@ -188,21 +155,11 @@ func measureMerged(ctx context.Context, d Deps, m *measurement, repo string, pr 
 		Title:    pr.Title,
 	}
 	if err := d.Rewrites.Record(ctx, row.RunID, measured); err != nil {
-		return err
+		return false, err
 	}
 	d.Logger.Info("rewriteMeasured", "run", row.RunID, "repo", repo, "pr", pr.Number,
 		"agentLines", measured.AgentLines, "ownerLines", measured.OwnerLines, "rate", measured.Rate())
-	fresh := freshMerge{PR: pr.Number}
-	if !m.shadowStart.IsZero() && pr.MergedAt.After(m.shadowStart) {
-		// Counted once recorded, so a failed count only lengthens the shadow.
-		n, err := d.Shadow.CountShadow(ctx)
-		if err != nil {
-			return fmt.Errorf("counting PR %d toward the shadow: %w", pr.Number, err)
-		}
-		fresh.Ordinal = n
-	}
-	m.fresh = append(m.fresh, fresh)
-	return nil
+	return true, nil
 }
 
 // reportUnfoundPR reports a pull request that no run row names, and returns
@@ -219,13 +176,6 @@ func reportUnfoundPR(ctx context.Context, d Deps, token, repo string, number int
 		d.Logger.Warn(token, "repo", repo, "pr", number, "branch", head)
 	}
 	return nil
-}
-
-// measurement is what one poll's measuring gathers: when the shadow began and
-// the merges newly measured.
-type measurement struct {
-	shadowStart time.Time
-	fresh       []freshMerge
 }
 
 // flagReverted marks the run row of the PR a merged revert names. The PR must be
@@ -280,84 +230,4 @@ func revertedPR(pr ClosedPR, repo string, byTitle map[string]int) int {
 		return 0
 	}
 	return byTitle[m[1]]
-}
-
-// rollbackLevel drops the recorded autonomy level to AutonomyRolledBack when one
-// of its rollback conditions holds, raising the one notice that names the cause
-// and appending the change to the history, and returns the level now recorded and whether it dropped it.
-// An unreadable level counts as 0 and holds nothing to take back. Evidence that
-// cannot be read, whether the closed listing (unreadable) or the samples, fails
-// closed: the level drops rather than auto-merging on numbers nobody could check.
-func rollbackLevel(ctx context.Context, d Deps, c Config, unreadable bool) (Autonomy, bool, error) {
-	level := readRecorded(ctx, d)
-	if !level.AutoMerges() {
-		return level, false, nil
-	}
-	var readErr error
-	var samples []Sample
-	if !unreadable {
-		samples, readErr = d.Rewrites.Recent(ctx, SampledPRs)
-	}
-	ev := Evidence{Level: level, Trailing: samples}
-	cause := RollbackUnreadable
-	if !unreadable && readErr == nil {
-		cause = RollbackFor(level, ev)
-	}
-	if cause == "" {
-		return level, false, nil
-	}
-	if err := d.Autonomies.Set(ctx, AutonomyRolledBack, d.Now()); err != nil {
-		return level, false, fmt.Errorf("dropping the autonomy level from %d: %w", int(level), err)
-	}
-	d.Logger.Warn("levelRolledBack", "level", int(level), "to", int(AutonomyRolledBack), "cause", string(cause))
-	// The drop is logged ahead of the history and notice, so either failing
-	// still leaves the drop recorded rather than silent.
-	var errs []error
-	change := Change{From: level, To: AutonomyRolledBack, Cause: string(cause),
-		Numbers: NumbersOf(ev.Window(SampledPRs)), At: d.Now()}
-	if err := d.History.Append(ctx, change); err != nil {
-		errs = append(errs, fmt.Errorf("recording the rollback: %w", err))
-	}
-	if err := d.Notices.Raise(ctx, rollbackNotice(level, cause, ev, c, d.Now()), d.Now()); err != nil {
-		errs = append(errs, fmt.Errorf("raising the rollback notice: %w", err))
-	}
-	errs = append(errs, readErr)
-	return AutonomyRolledBack, true, errors.Join(errs...)
-}
-
-// rollbackNotice is the notice one rollback raises: the cause and the numbers
-// behind it, linked at the PR a revert names or the target repository's runs.
-func rollbackNotice(level Autonomy, cause Rollback, ev Evidence, c Config, at time.Time) Notice {
-	class := fmt.Sprintf("%s%s level %d to %d", rollbackClass, cause, int(level), int(AutonomyRolledBack))
-	link := ""
-	switch cause {
-	case RollbackReverted:
-		if pr := FirstReverted(ev.Window(SampledPRs)); pr != nil {
-			class += " " + pr.Repo
-			link = pr.PRURL
-		}
-	case RollbackSampledRate:
-		class += rateOver(ev.Window(SampledPRs))
-	case RollbackCeiling:
-		class += rateOver(ev.Window(TrailingPRs))
-	case RollbackUnreadable:
-		// No window to cite: the evidence could not be read, so the link stays the repository's runs.
-	}
-	if link == "" && len(c.Repos) > 0 {
-		link = "https://github.com/" + c.Repos[0] + "/actions"
-	}
-	return Notice{ID: rollbackNoticeID(cause, level, at), Class: class, Link: link}
-}
-
-// rateOver renders the rate a rate condition fired on.
-func rateOver(samples []Sample) string {
-	rate, prs := Rate(samples)
-	return fmt.Sprintf(": %.1f%% over %d PRs", rate*100, prs)
-}
-
-// rollbackNoticeID names the notice one drop raises: the level it dropped from,
-// the cause and when, so a level the owner sets again and the same condition
-// drops again raises its own notice rather than passing silently.
-func rollbackNoticeID(cause Rollback, level Autonomy, at time.Time) string {
-	return fmt.Sprintf("%s%s-%d-%d", rollbackNoticeKey, cause, int(level), at.Unix())
 }

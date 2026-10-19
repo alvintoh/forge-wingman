@@ -215,7 +215,7 @@ func TestRecentReturnsTheMeasuredMergesNewestFirst(t *testing.T) {
 	}
 	// The oldest row carries the fields the sample reads beside the measurement.
 	if _, err := client.Collection(runsCollection).Doc(ids[0]).Set(ctx, map[string]any{
-		repoField: "octo/scratch", autoMergeField: true, failedGateField: "lint",
+		repoField: "octo/scratch", autoMergeField: true,
 		prURLField: "https://github.com/octo/scratch/pull/7",
 	}, firestore.MergeAll); err != nil {
 		t.Fatal(err)
@@ -233,10 +233,10 @@ func TestRecentReturnsTheMeasuredMergesNewestFirst(t *testing.T) {
 		}
 	}
 	if oldest := samples[2]; oldest.Repo != "octo/scratch" || !oldest.AutoMerged ||
-		oldest.PRURL != "https://github.com/octo/scratch/pull/7" || !oldest.GateMiss {
-		t.Fatalf("oldest = %+v, want its repo, auto-merge, PR and failed gate read with it", oldest)
+		oldest.PRURL != "https://github.com/octo/scratch/pull/7" {
+		t.Fatalf("oldest = %+v, want its repo, auto-merge and PR read with it", oldest)
 	}
-	if newest := samples[0]; newest.GateMiss || newest.AutoMerged || newest.PRURL != "" {
+	if newest := samples[0]; newest.AutoMerged || newest.PRURL != "" {
 		t.Fatalf("newest = %+v, want only the fields that row carries", newest)
 	}
 	if one, err := r.Recent(ctx, 1); err != nil || len(one) != 1 || one[0].AgentLines != 102 {

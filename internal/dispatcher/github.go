@@ -315,7 +315,8 @@ func decodeClosedPRs(body io.Reader, repo string) ([]ClosedPR, error) {
 // Commits returns the commits of pull request number, each with who GitHub
 // resolves its author to and how many lines it changed. The listing carries no
 // line counts, so each commit is read once. A listing cut at the page cap ends in
-// an unmeasured commit, so the PR cannot earn a level on lines it did not see.
+// an unmeasured commit, so a window holding it measures nothing for the
+// auto-merge rule.
 func (g GitHub) Commits(ctx context.Context, repo string, number int) ([]Commit, error) {
 	endpoint := fmt.Sprintf("%s/repos/%s/pulls/%d/commits?per_page=%d",
 		g.endpoint(), repo, number, closedPRsPerPage)
@@ -368,7 +369,8 @@ func (g GitHub) Commits(ctx context.Context, repo string, number int) ([]Commit,
 
 // commitLines reads one commit's own line counts. GitHub answers null for a
 // commit of more than 300 files, which is reported as unmeasured rather than as
-// no lines, so the PR cannot earn a level on a number it does not have.
+// no lines, so the PR measures nothing rather than a rate from a number it does
+// not have.
 func (g GitHub) commitLines(ctx context.Context, repo, sha string) (added, removed int64, measured bool, err error) {
 	endpoint := fmt.Sprintf("%s/repos/%s/commits/%s", g.endpoint(), repo, url.PathEscape(sha))
 	res, err := g.do(ctx, http.MethodGet, endpoint, nil, fmt.Sprintf("read commit %s of %s", sha, repo))

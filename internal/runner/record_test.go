@@ -643,21 +643,6 @@ func TestFinalizeCarriesTheMoveToAnotherPaidPlan(t *testing.T) {
 	}
 }
 
-func TestFinalizeCarriesTheAutonomyLevelTheRunWasClaimedAt(t *testing.T) {
-	store := seeded(t)
-	rec := store[testRunID]
-	rec.Autonomy = 3
-	store[testRunID] = rec
-	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: "",
-		RunResult: "failure", PRResult: "skipped"}
-	if _, err := Finalize(context.Background(), store, &fakeLedger{}, nil, in, finalizeNow); err != nil {
-		t.Fatal(err)
-	}
-	if got := store[testRunID].Autonomy; got != 3 {
-		t.Fatalf("autonomy = %d, want the claimed level 3 carried through finalize", got)
-	}
-}
-
 func TestFinalizeCarriesTheDecisionModeTheRunWasClaimedWith(t *testing.T) {
 	store := seeded(t)
 	rec := store[testRunID]

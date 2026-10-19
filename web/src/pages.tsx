@@ -553,46 +553,26 @@ function peakText(model: PeakModel): string {
   return `${hours} UTC on weekdays, ×${model.peak.multiplier} the price`;
 }
 
-type Evidence = {
-  // The rate as the endpoint prints it: a percentage, or the words for a rate
-  // measured over none of the agent's lines at all.
-  rate: string;
-  // Null never comes from the endpoint; the view reads it as no PRs.
-  prs: number[] | null;
-  agent_lines: number;
-  owner_lines: number;
-  review_found_lines: number;
-  owner_change_lines: number;
-  unlabelled_lines: number;
-  reverts: number;
-  unavailable: boolean;
-  // False when the stored record held no evidence, so the numbers are absent.
-  recorded: boolean;
+// MergeState is the auto-merge state the endpoint serves: the owner's switch
+// beside the rate's verdict over the trailing window, the bar it is compared to
+// and the reason the pair gives.
+type MergeState = {
+  switch_on: boolean;
+  rate_allows: boolean;
+  rate_value: string;
+  limit: string;
+  // Window is how many trailing merged PRs the rate covers.
+  window: number;
+  effective: boolean;
+  // Reason is why auto-merge is or is not effective: one of the endpoint's own
+  // stable tokens, which reasonText words.
+  reason: string;
 };
 
-type Earned = {
-  level: number;
-  stale: boolean;
-  computed_at: string;
-  evidence: Evidence;
-};
-
-type LevelChange = {
-  at: string;
-  from: number;
-  to: number;
-  cause: string;
-  evidence: Evidence;
-};
-
-// The autonomy endpoint's own shape; earned is null while no snapshot is stored.
+// AutonomyView is what the autonomy page reads from the endpoint: the
+// auto-merge state over the measured merges.
 type AutonomyView = {
-  level: number;
-  allows: string;
-  earned: Earned | null;
-  history: LevelChange[];
-  // The cap the history reached, so older changes may exist; absent while whole.
-  history_cut_at?: number;
+  auto_merge: MergeState;
 };
 
 type AutonomyState = {
@@ -600,13 +580,23 @@ type AutonomyState = {
   view: AutonomyView;
 };
 
-// noView is what the section holds before the level is read and after a read
+// noView is what the section holds before the state is read and after a read
 // that failed; it renders in neither state.
-const noView: AutonomyView = { level: 0, allows: "", earned: null, history: [] };
+const noView: AutonomyView = {
+  auto_merge: {
+    switch_on: false,
+    rate_allows: false,
+    rate_value: "",
+    limit: "",
+    window: 0,
+    effective: false,
+    reason: "",
+  },
+};
 
-// Autonomy shows the level the product runs at and what it allows, the PRs the
-// level was earned on, and every recorded change of it. It reads only: the
-// level is set with `runner autonomy -level`.
+// Autonomy shows whether an eligible pull request merges itself: the state over
+// the trailing window, the rate behind it and the reason. The switch is the
+// owner's setting, set with `runner auto-merge`.
 export function Autonomy() {
   const [state, setState] = useState<AutonomyState>({ status: "loading", view: noView });
 
@@ -620,7 +610,7 @@ export function Autonomy() {
       }
       const body: unknown = await response.json();
       if (!isAutonomy(body)) {
-        throw new Error("the autonomy endpoint answered no level");
+        throw new Error("the autonomy endpoint answered no auto-merge state");
       }
       if (controller.signal.aborted) {
         return;
@@ -639,199 +629,70 @@ export function Autonomy() {
     return () => controller.abort();
   }, []);
 
-  const view = state.view;
+  const merge = state.view.auto_merge;
 
   return (
     <section className="mx-auto max-w-desk px-pad py-band">
       <h1 className="text-title font-semibold text-ink">Autonomy</h1>
-      <p className="mt-2 text-body text-ink2">What the product may do on its own.</p>
-      <p className="mt-1 text-body text-ink2">Set with the runner autonomy command.</p>
+      <p className="mt-2 text-body text-ink2">Whether an eligible PR merges itself.</p>
       {state.status === "loading" && (
         <p role="status" className="mt-6">
-          Reading the level…
+          Reading the auto-merge state…
         </p>
       )}
       {state.status === "error" && (
         <p role="alert" className="mt-6">
-          The level could not be read.
+          The auto-merge state could not be read.
         </p>
       )}
       {state.status === "ready" && (
         <>
-          <p className="mt-6 font-mono text-title text-ink">Level {view.level}</p>
-          <p className="mt-1 text-body text-ink2">{view.allows}</p>
-          {levelNotes(view).map((note) => (
-            <p key={note} className="mt-2 text-body text-defer">
-              {note}
-            </p>
-          ))}
-          <h2 className="mt-8 text-head font-semibold text-ink">Evidence</h2>
-          {view.earned === null ? (
-            <p className="mt-2 text-body text-ink2">No snapshot is stored.</p>
-          ) : (
-            <>
-              <p className="mt-2 text-body text-ink2">Earned level {view.earned.level}.</p>
-              {evidenceGap(view.earned.evidence) !== null && (
-                <p className="mt-2 text-body text-defer">{evidenceGap(view.earned.evidence)}</p>
-              )}
-              <div className="mt-4 overflow-x-auto">
-                <table className="w-full text-body">
-                  <caption className="sr-only">The evidence the level was computed from</caption>
-                  <tbody>
-                    {evidenceRows(view.earned).map((row) => (
-                      <tr key={row.measure} className="border-b border-hair">
-                        <th scope="row" className="py-2 pr-4 text-left font-normal text-ink2">
-                          {row.measure}
-                        </th>
-                        <td className="py-2 font-mono">{row.value}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
-          <h2 className="mt-8 text-head font-semibold text-ink">History</h2>
-          {view.history_cut_at !== undefined && view.history_cut_at > 0 && (
-            <p className="mt-2 text-body text-ink2">
-              {`Showing the latest ${view.history_cut_at} changes.`}
-            </p>
-          )}
-          {view.history.length === 0 ? (
-            <p className="mt-2 text-body text-ink2">No change is recorded.</p>
-          ) : (
-            <ul className="mt-2">
-              {view.history.map((change, i) => (
-                <li key={`${change.at}-${i}`} className="border-b border-hair py-3 text-body">
-                  <p className="flex flex-wrap items-baseline gap-2">
-                    <span className="font-mono">{`${change.from} → ${change.to}`}</span>
-                    <span className={change.to < change.from ? "text-stop" : "text-ink2"}>
-                      {changeKind(change)}
-                    </span>
-                    <span className="text-ink">{change.cause}</span>
-                    <span className="text-label text-muted">
-                      {new Date(change.at).toLocaleString()}
-                    </span>
-                  </p>
-                  <p className="mt-1 text-label text-ink2">{evidenceLine(change.evidence)}</p>
-                </li>
-              ))}
-            </ul>
-          )}
+          <p className="mt-6 text-title font-semibold text-ink">
+            {merge.effective ? "Auto-merge is on" : "Auto-merge is off"}
+          </p>
+          <p className="mt-1 text-body text-ink2">
+            {`Rate over the trailing ${merge.window} merged PRs: ${merge.rate_value} (bar ${merge.limit}).`}
+          </p>
+          <p className="mt-2 text-body text-ink2">{reasonText(merge.reason)}</p>
         </>
       )}
     </section>
   );
 }
 
-// isAutonomy checks the top-level fields the view reads have their declared types.
+// isAutonomy narrows the endpoint's answer to the one thing this view can check
+// about a document it did not build: that it carries an auto-merge state.
 function isAutonomy(body: unknown): body is AutonomyView {
-  if (typeof body !== "object" || body === null) {
-    return false;
-  }
-  if (!("level" in body && "allows" in body && "earned" in body && "history" in body)) {
-    return false;
-  }
-  const earnedOk = body.earned === null || typeof body.earned === "object";
   return (
-    typeof body.level === "number" &&
-    typeof body.allows === "string" &&
-    earnedOk &&
-    Array.isArray(body.history)
+    typeof body === "object" &&
+    body !== null &&
+    "auto_merge" in body &&
+    typeof body.auto_merge === "object" &&
+    body.auto_merge !== null
   );
 }
 
-// The levels the autonomy ladder spans, and the first at which a PR merges itself.
-const maxLevel = 5;
-const autoMergeLevel = 4;
-
-// levelNotes is what the view says about a level the PRs have not earned; a held
-// back merge is only worth saying at a stored level that would auto-merge.
-function levelNotes(view: AutonomyView): string[] {
-  const notes: string[] = [];
-  const merges = view.level >= autoMergeLevel;
-  if (view.earned === null) {
-    if (merges) {
-      notes.push("No snapshot is stored: nothing auto-merges until one is computed.");
-    }
-    return notes;
+// reasonText is why auto-merge is on or off, as the view words the endpoint's
+// own reason tokens.
+function reasonText(reason: string): string {
+  switch (reason) {
+    case "on":
+      return "The rate allows it and the switch is on.";
+    case "switch-off":
+      return "The owner's switch is off.";
+    case "switch-unread":
+      return "The switch could not be read, so auto-merge is off.";
+    case "too-few-measured":
+      return "Fewer merged PRs than the window holds are measured, or one carries an unmeasured commit.";
+    case "no-agent-lines":
+      return "The measured PRs carry no agent lines, so there is no rate.";
+    case "rate-above-bar":
+      return "The trailing rate is above the bar.";
+    case "reverted":
+      return "An auto-merged PR of the window was reverted.";
+    case "evidence-unread":
+      return "The measured merges could not be read.";
+    default:
+      return reason;
   }
-  if (
-    !Number.isInteger(view.earned.level) ||
-    view.earned.level < 0 ||
-    view.earned.level > maxLevel
-  ) {
-    notes.push(
-      merges
-        ? "The snapshot names no level and is unusable: nothing auto-merges until it is recomputed."
-        : "The snapshot names no level and is unusable.",
-    );
-    return notes;
-  }
-  if (view.earned.stale) {
-    notes.push(
-      merges
-        ? "The snapshot is stale: nothing auto-merges until it is recomputed."
-        : "The snapshot is stale.",
-    );
-  }
-  if (view.level > view.earned.level) {
-    notes.push("The stored level is above the earned one, so the earned level runs.");
-  }
-  return notes;
-}
-
-// evidenceGap is why a piece of evidence has no numbers to show, null when it has.
-function evidenceGap(e: Evidence): string | null {
-  if (!e.recorded) {
-    return "Not recorded.";
-  }
-  if (e.unavailable) {
-    return "The evidence could not be read.";
-  }
-  return null;
-}
-
-// evidenceRows is the snapshot as the view's table lists it: when it was
-// computed, and the evidence it was computed from when there is any.
-function evidenceRows(earned: Earned): { measure: string; value: string }[] {
-  const e = earned.evidence;
-  const rows = [{ measure: "Computed", value: new Date(earned.computed_at).toLocaleString() }];
-  if (evidenceGap(e) !== null) {
-    return rows;
-  }
-  const prs = e.prs ?? [];
-  return [
-    ...rows,
-    { measure: "Rewrite rate", value: e.rate },
-    { measure: "PRs", value: prs.length === 0 ? "none" : prs.join(", ") },
-    { measure: "Agent lines", value: String(e.agent_lines) },
-    { measure: "Owner lines", value: String(e.owner_lines) },
-    { measure: "Review-found lines", value: String(e.review_found_lines) },
-    { measure: "Owner-change lines", value: String(e.owner_change_lines) },
-    { measure: "Unlabelled lines", value: String(e.unlabelled_lines) },
-    { measure: "Reverts", value: String(e.reverts) },
-  ];
-}
-
-// evidenceLine is one change's evidence in a line: what it was measured on, or
-// why it has none.
-function evidenceLine(e: Evidence): string {
-  const gap = evidenceGap(e);
-  if (gap !== null) {
-    return gap;
-  }
-  return `${e.rate} over ${(e.prs ?? []).length} PRs, ${e.owner_lines} owner lines`;
-}
-
-// changeKind is the word the history marks a change with: a drop is the one that
-// takes a level back, and the word carries it besides the colour.
-function changeKind(change: LevelChange): string {
-  if (change.to < change.from) {
-    return "drop";
-  }
-  if (change.to > change.from) {
-    return "raise";
-  }
-  return "unchanged";
 }
