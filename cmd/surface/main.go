@@ -72,9 +72,18 @@ func run(logger *slog.Logger) error {
 		peak = store.NewPeakModes(fsc)
 	}
 
+	deps := Deps{
+		SPA:           spa,
+		Logger:        logger,
+		Comparison:    comparison,
+		ProviderPlans: providerPlans,
+		Autonomy:      autonomy,
+		Peak:          peak,
+	}
+
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           newMux(spa, logger, comparison, providerPlans, autonomy, peak),
+		Handler:           newMux(deps),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -129,12 +138,21 @@ type PeakModeStore interface {
 	Set(ctx context.Context, mode dispatcher.PeakMode, at time.Time) error
 }
 
+// Deps are what the surface serves: the SPA it embeds, the stores behind its
+// JSON endpoints, and where it reports. A nil store serves every endpoint but
+// its own, which answers 503 for want of one.
+type Deps struct {
+	SPA           fs.FS
+	Logger        *slog.Logger
+	Comparison    ComparisonReader
+	ProviderPlans ProviderPlansReader
+	Autonomy      AutonomyReader
+	Peak          PeakModeStore
+}
+
 // newMux claims /api/ explicitly so an unknown endpoint 404s instead of
-// falling through to the SPA's index.html. A nil comparison serves every
-// endpoint but /api/comparison, a nil providerPlans every endpoint but
-// /api/providers, a nil autonomy every endpoint but /api/autonomy, and a nil
-// peak every endpoint but /api/peak, each of which then has no store to read.
-func newMux(spa fs.FS, logger *slog.Logger, comparison ComparisonReader, providerPlans ProviderPlansReader, autonomy AutonomyReader, peak PeakModeStore) *http.ServeMux {
+// falling through to the SPA's index.html.
+func newMux(d Deps) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -147,13 +165,13 @@ func newMux(spa fs.FS, logger *slog.Logger, comparison ComparisonReader, provide
 		}{commitSHA})
 	})
 	mux.HandleFunc("GET /api/comparison", func(w http.ResponseWriter, r *http.Request) {
-		if comparison == nil {
+		if d.Comparison == nil {
 			http.Error(w, "the comparison needs a run store", http.StatusServiceUnavailable)
 			return
 		}
-		cmp, err := comparison.Comparison(r.Context(), time.Now().Add(-runner.TrailingWindow))
+		cmp, err := d.Comparison.Comparison(r.Context(), time.Now().Add(-runner.TrailingWindow))
 		if err != nil {
-			logger.Error("comparisonNotRead", "err", err.Error())
+			d.Logger.Error("comparisonNotRead", "err", err.Error())
 			http.Error(w, "reading the comparison", http.StatusInternalServerError)
 			return
 		}
@@ -161,13 +179,13 @@ func newMux(spa fs.FS, logger *slog.Logger, comparison ComparisonReader, provide
 		_ = json.NewEncoder(w).Encode(renderComparison(cmp))
 	})
 	mux.HandleFunc("GET /api/providers", func(w http.ResponseWriter, r *http.Request) {
-		if providerPlans == nil {
+		if d.ProviderPlans == nil {
 			http.Error(w, "the providers view needs a plan store", http.StatusServiceUnavailable)
 			return
 		}
-		plans, err := providerPlans.Providers(r.Context(), time.Now())
+		plans, err := d.ProviderPlans.Providers(r.Context(), time.Now())
 		if err != nil {
-			logger.Error("providersNotRead", "err", err.Error())
+			d.Logger.Error("providersNotRead", "err", err.Error())
 			http.Error(w, "reading the plans", http.StatusInternalServerError)
 			return
 		}
@@ -175,13 +193,13 @@ func newMux(spa fs.FS, logger *slog.Logger, comparison ComparisonReader, provide
 		_ = json.NewEncoder(w).Encode(renderProviders(plans))
 	})
 	mux.HandleFunc("GET /api/autonomy", func(w http.ResponseWriter, r *http.Request) {
-		if autonomy == nil {
+		if d.Autonomy == nil {
 			http.Error(w, "the autonomy view needs a store", http.StatusServiceUnavailable)
 			return
 		}
-		view, err := autonomy.AutonomyView(r.Context(), autonomyHistoryShown)
+		view, err := d.Autonomy.AutonomyView(r.Context(), autonomyHistoryShown)
 		if err != nil {
-			logger.Error("autonomyNotRead", "err", err.Error())
+			d.Logger.Error("autonomyNotRead", "err", err.Error())
 			http.Error(w, "reading the autonomy level", http.StatusInternalServerError)
 			return
 		}
@@ -189,13 +207,13 @@ func newMux(spa fs.FS, logger *slog.Logger, comparison ComparisonReader, provide
 		_ = json.NewEncoder(w).Encode(renderAutonomy(view, autonomyHistoryShown))
 	})
 	mux.HandleFunc("GET /api/peak", func(w http.ResponseWriter, r *http.Request) {
-		if peak == nil {
+		if d.Peak == nil {
 			http.Error(w, "the peak view needs a store", http.StatusServiceUnavailable)
 			return
 		}
-		mode, err := peak.Mode(r.Context())
+		mode, err := d.Peak.Mode(r.Context())
 		if err != nil {
-			logger.Error("peakModeNotRead", "err", err.Error())
+			d.Logger.Error("peakModeNotRead", "err", err.Error())
 			http.Error(w, "reading the peak mode", http.StatusInternalServerError)
 			return
 		}
@@ -207,7 +225,7 @@ func newMux(spa fs.FS, logger *slog.Logger, comparison ComparisonReader, provide
 	// page that is not the surface cannot switch the mode with the session
 	// cookie IAP establishes.
 	mux.HandleFunc("POST /api/peak", func(w http.ResponseWriter, r *http.Request) {
-		if peak == nil {
+		if d.Peak == nil {
 			http.Error(w, "the peak view needs a store", http.StatusServiceUnavailable)
 			return
 		}
@@ -228,17 +246,17 @@ func newMux(spa fs.FS, logger *slog.Logger, comparison ComparisonReader, provide
 			return
 		}
 		now := time.Now()
-		if err := peak.Set(r.Context(), mode, now); err != nil {
-			logger.Error("peakModeNotSet", "err", err.Error())
+		if err := d.Peak.Set(r.Context(), mode, now); err != nil {
+			d.Logger.Error("peakModeNotSet", "err", err.Error())
 			http.Error(w, "setting the peak mode", http.StatusInternalServerError)
 			return
 		}
-		logger.Info("peakModeSet", "mode", string(mode))
+		d.Logger.Info("peakModeSet", "mode", string(mode))
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(renderPeak(mode, now))
 	})
 	mux.Handle("GET /api/", http.NotFoundHandler())
-	mux.Handle("GET /", spaHandler(spa))
+	mux.Handle("GET /", spaHandler(d.SPA))
 
 	return mux
 }
