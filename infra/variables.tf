@@ -68,6 +68,7 @@ variable "dispatcher_settings" {
   validation {
     condition = alltrue([for k in keys(var.dispatcher_settings) : contains([
       "WINGMAN_PLATFORM_CAP", "WINGMAN_LARGE_CAP", "WINGMAN_REVIEW_WIP",
+      "WINGMAN_DAILY_RUNS",
       "WINGMAN_STABLE_RUNS", "WINGMAN_RISE_WITHIN", "WINGMAN_HALVE_BEYOND",
       "WINGMAN_TWO_STAGE",
       "WINGMAN_DECISION_TIMEOUT", "WINGMAN_DECISIONS",

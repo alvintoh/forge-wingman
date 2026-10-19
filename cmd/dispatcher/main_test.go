@@ -67,6 +67,37 @@ func TestLoadConfigLeavesUnsetConcurrencySettingsToTheirDefaults(t *testing.T) {
 	if c.limits != (dispatcher.Limits{}) || c.tuning != (dispatcher.Tuning{}) {
 		t.Fatalf("limits %+v tuning %+v, want zero so the defaults apply", c.limits, c.tuning)
 	}
+	if c.dailyRuns != 0 {
+		t.Fatalf("dailyRuns = %d, want zero so the poll's default applies", c.dailyRuns)
+	}
+}
+
+// TestLoadConfigReadsTheDailyRunCap: WINGMAN_DAILY_RUNS is a positive whole
+// number the job reads like the caps.
+func TestLoadConfigReadsTheDailyRunCap(t *testing.T) {
+	c, err := loadConfig(configEnv(map[string]string{"WINGMAN_DAILY_RUNS": " 2 "}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.dailyRuns != 2 {
+		t.Fatalf("dailyRuns = %d, want 2", c.dailyRuns)
+	}
+}
+
+// TestLoadConfigRefusesAnUnusableDailyRunCap: a cap that is not a whole number,
+// or one below one, is refused rather than quietly defaulted.
+func TestLoadConfigRefusesAnUnusableDailyRunCap(t *testing.T) {
+	for name, raw := range map[string]string{
+		"not a whole number": "many",
+		"below one":          "0",
+		"negative":           "-3",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := loadConfig(configEnv(map[string]string{"WINGMAN_DAILY_RUNS": raw})); err == nil {
+				t.Fatalf("WINGMAN_DAILY_RUNS = %q was accepted", raw)
+			}
+		})
+	}
 }
 
 func TestLoadConfigRefusesUnusableConcurrencySettings(t *testing.T) {

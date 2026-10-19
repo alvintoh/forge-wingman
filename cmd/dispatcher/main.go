@@ -107,7 +107,10 @@ type config struct {
 	repos    []string
 	limits   dispatcher.Limits
 	tuning   dispatcher.Tuning
-	twoStage bool
+	// dailyRuns is how many runs a poll delegates to itself in a day; zero
+	// takes the code default.
+	dailyRuns int
+	twoStage  bool
 	// decisionTimeout is how long a run waits on an owner decision; zero takes
 	// the code default.
 	decisionTimeout time.Duration
@@ -140,6 +143,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if c.limits, c.tuning, err = concurrencySettings(getenv); err != nil {
 		return config{}, err
 	}
+	if err := positiveInt(getenv, "WINGMAN_DAILY_RUNS", &c.dailyRuns); err != nil {
+		return config{}, err
+	}
 	c.twoStage = strings.EqualFold(strings.TrimSpace(getenv("WINGMAN_TWO_STAGE")), "on")
 	if raw := strings.TrimSpace(getenv("WINGMAN_DECISION_TIMEOUT")); raw != "" {
 		d, err := time.ParseDuration(raw)
@@ -152,6 +158,21 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, fmt.Errorf("WINGMAN_DECISIONS: %w", err)
 	}
 	return c, nil
+}
+
+// positiveInt reads a WINGMAN_ setting that must be a positive whole number,
+// leaving into as it was for one the environment does not set.
+func positiveInt(getenv func(string) string, key string, into *int) error {
+	raw := strings.TrimSpace(getenv(key))
+	if raw == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return fmt.Errorf("%s = %q is not a positive whole number", key, raw)
+	}
+	*into = n
+	return nil
 }
 
 // concurrencySettings reads the optional limits and tuning the WINGMAN_*
@@ -170,15 +191,9 @@ func concurrencySettings(getenv func(string) string) (dispatcher.Limits, dispatc
 		{"WINGMAN_REVIEW_WIP", &l.ReviewWIP},
 		{"WINGMAN_STABLE_RUNS", &t.StableRuns},
 	} {
-		raw := strings.TrimSpace(getenv(s.key))
-		if raw == "" {
-			continue
+		if err := positiveInt(getenv, s.key, s.into); err != nil {
+			return l, t, err
 		}
-		n, err := strconv.Atoi(raw)
-		if err != nil || n < 1 {
-			return l, t, fmt.Errorf("%s = %q is not a positive whole number", s.key, raw)
-		}
-		*s.into = n
 	}
 	for _, s := range []struct {
 		key  string
@@ -319,7 +334,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		Elicit:       webhook.Linear{Tokens: tokens},
 		Logger:       logger,
 		Now:          time.Now,
-	}, dispatcher.Config{Repos: c.repos, Budget: budgetConfig(runner.Provider(model)), Model: model, NextPlans: next, Limits: c.limits, Tuning: c.tuning, LastResortPlans: lastResortPlans(), TwoStage: c.twoStage, DecisionTimeout: c.decisionTimeout, DecisionMode: c.decisionMode}); err != nil {
+	}, dispatcher.Config{Repos: c.repos, Budget: budgetConfig(runner.Provider(model)), Model: model, NextPlans: next, Limits: c.limits, Tuning: c.tuning, DailyRuns: c.dailyRuns, LastResortPlans: lastResortPlans(), TwoStage: c.twoStage, DecisionTimeout: c.decisionTimeout, DecisionMode: c.decisionMode}); err != nil {
 		return err
 	}
 	return nil

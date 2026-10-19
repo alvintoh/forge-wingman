@@ -63,61 +63,89 @@ func openTicket(id string, priority int) Issue {
 	}
 }
 
-// delegationDeps is a poll that delegates at level from the open issues, with q
-// reporting what the day has already claimed, and the log its lines land in.
-func delegationDeps(level Autonomy, from []Issue, q *fakeQueue) (Deps, *fakeDelegatable, *bytes.Buffer) {
+// delegationDeps is a poll that delegates from the open issues, with q
+// reporting what the day has already claimed, and the log its lines land in. The
+// daily run cap is the caller's, on the config it hands Poll.
+func delegationDeps(from []Issue, q *fakeQueue) (Deps, *fakeDelegatable, *bytes.Buffer) {
 	delegatable := &fakeDelegatable{open: from}
 	var logs bytes.Buffer
 	deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
 	deps.Delegatable = delegatable
-	deps.Autonomies = &fakeAutonomies{level: level}
 	deps.Logger = slog.New(slog.NewTextHandler(&logs, nil))
 	return deps, delegatable, &logs
 }
 
-// TestPollDelegatesNothingAtLevelZero is AC3: while the owner delegates by hand
-// the poll reads no open issue and claims no run of its own.
-func TestPollDelegatesNothingAtLevelZero(t *testing.T) {
-	q := &fakeQueue{}
-	deps, delegatable, logs := delegationDeps(0, []Issue{openTicket("FRG-20", 2)}, q)
+// TestPollDelegatesWithNoLevelSet is AC2: the delegation reads no autonomy
+// level, so a poll whose level cannot be read at all delegates on the configured
+// cap all the same.
+func TestPollDelegatesWithNoLevelSet(t *testing.T) {
+	deps, delegatable, logs := delegationDeps([]Issue{openTicket("FRG-20", 2)}, &fakeQueue{})
+	deps.Autonomies = &fakeAutonomies{err: errFirestore}
 	res, err := Poll(context.Background(), deps, buildConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Delegated) != 0 || delegatable.opened != 0 || len(q.claimedSince) != 0 {
-		t.Fatalf("delegated %v, opened %d times, counted claims %v", res.Delegated, delegatable.opened, q.claimedSince)
-	}
-	if strings.Contains(logs.String(), "ticketAutoDelegation") {
-		t.Fatalf("level 0 logged a delegation in:\n%s", logs.String())
+	if !slices.Equal(res.Delegated, []string{"FRG-20"}) || !slices.Equal(delegatable.delegated, []string{"FRG-20"}) {
+		t.Fatalf("delegated %v (result %v), want FRG-20 from an unreadable level:\n%s", delegatable.delegated, res.Delegated, logs.String())
 	}
 }
 
-// TestPollDelegatesUpToTheBarTheLevelAllows is AC1: the day's bar is the level's
-// own, and a poll delegates the eligible tickets the bar and the review WIP
-// limit leave room for.
-func TestPollDelegatesUpToTheBarTheLevelAllows(t *testing.T) {
+// TestPollDelegatesNothingWhenSeveralConditionsHoldAtOnce pins the order the
+// delegation checks in: the tickets are listed first, then the admission hold,
+// then the review WIP — so a poll where more than one condition holds names the
+// first that stopped it, and a listing that fails is the poll's own error rather
+// than a hold's quiet skip.
+func TestPollDelegatesNothingWhenSeveralConditionsHoldAtOnce(t *testing.T) {
+	t.Run("the hold outranks a full review WIP", func(t *testing.T) {
+		deps, delegatable, logs := delegationDeps([]Issue{openTicket("FRG-20", 1)}, &fakeQueue{})
+		deps.Breaker = fakeBreaker{tripped: true}
+		deps.OpenPRs = fakeOpenPRs{open: map[string]int{"octo/scratch": DefaultLimits.ReviewWIP}}
+		if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
+			t.Fatal(err)
+		}
+		if len(delegatable.delegated) != 0 {
+			t.Fatalf("delegated %v, want nothing with both conditions holding", delegatable.delegated)
+		}
+		if !strings.Contains(logs.String(), "reason=breaker-tripped") || strings.Contains(logs.String(), "reason=wip-full") {
+			t.Fatalf("the skip does not name the hold alone:\n%s", logs.String())
+		}
+	})
+	t.Run("a failed listing is the poll's error", func(t *testing.T) {
+		deps, _, _ := delegationDeps([]Issue{openTicket("FRG-20", 1)}, &fakeQueue{})
+		deps.Breaker = fakeBreaker{tripped: true}
+		deps.Delegatable = &fakeDelegatable{openErr: errFirestore}
+		if _, err := Poll(context.Background(), deps, buildConfig); !errors.Is(err, errFirestore) {
+			t.Fatalf("err = %v, want the failed listing reported rather than masked by the hold", err)
+		}
+	})
+}
+
+// TestPollDelegatesUpToTheDailyRunCap is AC1: the day's cap is the configured
+// one, five by default, and a poll delegates the eligible tickets the cap and
+// the review WIP limit leave room for.
+func TestPollDelegatesUpToTheDailyRunCap(t *testing.T) {
 	three := []Issue{openTicket("FRG-20", 1), openTicket("FRG-21", 2), openTicket("FRG-22", 3)}
 	for name, tt := range map[string]struct {
-		level   Autonomy
-		claimed int
-		openPRs int
-		want    []string
+		dailyRuns int
+		claimed   int
+		openPRs   int
+		want      []string
 	}{
-		"level 1":         {level: 1, want: []string{"FRG-20"}},
-		"level 2":         {level: 2, want: []string{"FRG-20", "FRG-21", "FRG-22"}},
-		"level 3":         {level: 3, want: []string{"FRG-20", "FRG-21", "FRG-22"}},
-		"level 4":         {level: 4, want: []string{"FRG-20", "FRG-21", "FRG-22"}},
-		"level 5":         {level: 5, want: []string{"FRG-20", "FRG-21", "FRG-22"}},
-		"level 5 spent":   {level: 5, claimed: 9, want: []string{"FRG-20"}},
-		"level 1 spent":   {level: 1, claimed: 1},
-		"wip leaves room": {level: 5, openPRs: 2, want: []string{"FRG-20"}},
-		"wip full":        {level: 5, openPRs: 3},
+		"the default cap":      {want: []string{"FRG-20", "FRG-21", "FRG-22"}},
+		"a cap of one":         {dailyRuns: 1, want: []string{"FRG-20"}},
+		"a cap of two":         {dailyRuns: 2, want: []string{"FRG-20", "FRG-21"}},
+		"today's claims spent": {claimed: DefaultDailyRuns},
+		"one left of today's":  {claimed: DefaultDailyRuns - 1, want: []string{"FRG-20"}},
+		"wip leaves room":      {openPRs: 2, want: []string{"FRG-20"}},
+		"wip full":             {openPRs: 3},
 	} {
 		t.Run(name, func(t *testing.T) {
 			q := &fakeQueue{claimedCount: tt.claimed}
-			deps, delegatable, logs := delegationDeps(tt.level, three, q)
+			deps, delegatable, logs := delegationDeps(three, q)
 			deps.OpenPRs = fakeOpenPRs{open: map[string]int{"octo/scratch": tt.openPRs}}
-			res, err := Poll(context.Background(), deps, buildConfig)
+			cfg := buildConfig
+			cfg.DailyRuns = tt.dailyRuns
+			res, err := Poll(context.Background(), deps, cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -128,11 +156,11 @@ func TestPollDelegatesUpToTheBarTheLevelAllows(t *testing.T) {
 	}
 }
 
-// TestPollCountsTodaysClaimsFromTheStartOfTheDay is AC1: the bar is spent by the
-// runs claimed today, in the UTC day the budget's own windows share.
+// TestPollCountsTodaysClaimsFromTheStartOfTheDay is AC1: the cap is counted
+// from the runs claimed today, in the UTC day the budget's own windows share.
 func TestPollCountsTodaysClaimsFromTheStartOfTheDay(t *testing.T) {
 	q := &fakeQueue{}
-	deps, _, _ := delegationDeps(3, []Issue{openTicket("FRG-20", 1)}, q)
+	deps, _, _ := delegationDeps([]Issue{openTicket("FRG-20", 1)}, q)
 	if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
 		t.Fatal(err)
 	}
@@ -142,11 +170,11 @@ func TestPollCountsTodaysClaimsFromTheStartOfTheDay(t *testing.T) {
 	}
 }
 
-// TestPollLogsThatTheBarIsReachedOncePerPoll is AC4: a poll that delegates
-// nothing because the day's bar is spent says so once.
-func TestPollLogsThatTheBarIsReachedOncePerPoll(t *testing.T) {
-	q := &fakeQueue{claimedCount: 3}
-	deps, delegatable, logs := delegationDeps(2, []Issue{openTicket("FRG-20", 1)}, q)
+// TestPollLogsThatTheDailyRunCapIsReachedOncePerPoll is AC4: a poll that
+// delegates nothing because the day's cap is reached says so once.
+func TestPollLogsThatTheDailyRunCapIsReachedOncePerPoll(t *testing.T) {
+	q := &fakeQueue{claimedCount: DefaultDailyRuns}
+	deps, delegatable, logs := delegationDeps([]Issue{openTicket("FRG-20", 1)}, q)
 	res, err := Poll(context.Background(), deps, buildConfig)
 	if err != nil {
 		t.Fatal(err)
@@ -157,22 +185,23 @@ func TestPollLogsThatTheBarIsReachedOncePerPoll(t *testing.T) {
 	if n := strings.Count(logs.String(), "msg=ticketAutoDelegationSkipped"); n != 1 {
 		t.Fatalf("logged %d delegation skips, want one:\n%s", n, logs.String())
 	}
-	if !strings.Contains(logs.String(), "reason=bar-reached") {
-		t.Fatalf("the skip does not name the bar:\n%s", logs.String())
+	if !strings.Contains(logs.String(), "reason=cap-reached") {
+		t.Fatalf("the skip does not name the cap:\n%s", logs.String())
 	}
 }
 
 // TestPollDelegatesNothingWhenTheReviewWIPCannotBeRead is AC1's other half: the
 // phase adds no load it cannot measure, so an unreadable count delegates nothing
-// rather than guessing.
+// rather than guessing — it reads the count after listing the tickets and
+// before delegating any.
 func TestPollDelegatesNothingWhenTheReviewWIPCannotBeRead(t *testing.T) {
-	deps, delegatable, logs := delegationDeps(3, []Issue{openTicket("FRG-20", 1)}, &fakeQueue{})
+	deps, delegatable, logs := delegationDeps([]Issue{openTicket("FRG-20", 1)}, &fakeQueue{})
 	deps.OpenPRs = fakeOpenPRs{err: errFirestore}
 	if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
 		t.Fatal(err)
 	}
-	if len(delegatable.delegated) != 0 || delegatable.opened != 0 {
-		t.Fatalf("delegated %v, opened %d times", delegatable.delegated, delegatable.opened)
+	if len(delegatable.delegated) != 0 {
+		t.Fatalf("delegated %v, want nothing when the count cannot be read", delegatable.delegated)
 	}
 	if !strings.Contains(logs.String(), "reason=wip-unknown") {
 		t.Fatalf("the skip does not name the failed count:\n%s", logs.String())
@@ -182,13 +211,15 @@ func TestPollDelegatesNothingWhenTheReviewWIPCannotBeRead(t *testing.T) {
 // TestPollLogsThatTheReviewWIPIsFull is AC1's remaining reason, and the one an
 // operator reads to know the queue is waiting on review rather than on tickets.
 func TestPollLogsThatTheReviewWIPIsFull(t *testing.T) {
-	deps, delegatable, logs := delegationDeps(3, []Issue{openTicket("FRG-20", 1)}, &fakeQueue{})
+	deps, delegatable, logs := delegationDeps([]Issue{openTicket("FRG-20", 1)}, &fakeQueue{})
 	deps.OpenPRs = fakeOpenPRs{open: map[string]int{"octo/scratch": DefaultLimits.ReviewWIP}}
 	if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
 		t.Fatal(err)
 	}
-	if len(delegatable.delegated) != 0 || delegatable.opened != 0 {
-		t.Fatalf("delegated %v, opened %d times", delegatable.delegated, delegatable.opened)
+	// The ticket is listed before the count is read, so the count withholds the
+	// delegation alone.
+	if len(delegatable.delegated) != 0 {
+		t.Fatalf("delegated %v, want nothing while the review WIP is full", delegatable.delegated)
 	}
 	if !strings.Contains(logs.String(), "reason=wip-full") {
 		t.Fatalf("the skip does not name the review limit:\n%s", logs.String())
@@ -217,7 +248,7 @@ func TestPollDelegatesOnlyTicketsBreakingNoEligibilityRule(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			issue := openTicket("FRG-20", 2)
 			breakRule(&issue)
-			deps, delegatable, logs := delegationDeps(1, []Issue{issue}, &fakeQueue{})
+			deps, delegatable, logs := delegationDeps([]Issue{issue}, &fakeQueue{})
 			res, err := Poll(context.Background(), deps, buildConfig)
 			if err != nil {
 				t.Fatal(err)
@@ -249,7 +280,7 @@ func TestPollDelegatesTheTicketsAnEligibilityRuleAllows(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			issue := openTicket("FRG-20", 2)
 			allow(&issue)
-			deps, delegatable, logs := delegationDeps(1, []Issue{issue}, &fakeQueue{})
+			deps, delegatable, logs := delegationDeps([]Issue{issue}, &fakeQueue{})
 			if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
 				t.Fatal(err)
 			}
@@ -264,7 +295,7 @@ func TestPollDelegatesTheTicketsAnEligibilityRuleAllows(t *testing.T) {
 // run that ended leaves its ticket to the owner's own `runner requeue`.
 func TestPollDoesNotDelegateATicketWhoseRunHasEnded(t *testing.T) {
 	q := &fakeQueue{requeues: map[string]bool{"FRG-20": true}}
-	deps, delegatable, _ := delegationDeps(1, []Issue{openTicket("FRG-20", 2)}, q)
+	deps, delegatable, _ := delegationDeps([]Issue{openTicket("FRG-20", 2)}, q)
 	if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +326,7 @@ func TestPollDelegatesFromTheEarliestMilestoneWithOpenTickets(t *testing.T) {
 		"a ticket in none waits":    {open: []Issue{noMilestone, openTicket("FRG-22", 2)}, want: []string{"FRG-22"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			deps, delegatable, logs := delegationDeps(3, tt.open, &fakeQueue{})
+			deps, delegatable, logs := delegationDeps(tt.open, &fakeQueue{})
 			if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
 				t.Fatal(err)
 			}
@@ -313,8 +344,10 @@ func TestPollDelegatesTheHighestPriorityTicketFirst(t *testing.T) {
 	open := []Issue{
 		openTicket("FRG-22", 3), openTicket("FRG-23", 0), openTicket("FRG-21", 1), openTicket("FRG-20", 1),
 	}
-	deps, delegatable, _ := delegationDeps(1, open, &fakeQueue{})
-	if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
+	deps, delegatable, _ := delegationDeps(open, &fakeQueue{})
+	cfg := buildConfig
+	cfg.DailyRuns = 1
+	if _, err := Poll(context.Background(), deps, cfg); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Equal(delegatable.delegated, []string{"FRG-20"}) {
@@ -325,7 +358,7 @@ func TestPollDelegatesTheHighestPriorityTicketFirst(t *testing.T) {
 // TestPollDelegatesByTheIssuesOwnUUID: Linear's mutation names the issue by its
 // own id, so the identifier would be refused.
 func TestPollDelegatesByTheIssuesOwnUUID(t *testing.T) {
-	deps, delegatable, _ := delegationDeps(1, []Issue{openTicket("FRG-20", 1)}, &fakeQueue{})
+	deps, delegatable, _ := delegationDeps([]Issue{openTicket("FRG-20", 1)}, &fakeQueue{})
 	if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +368,7 @@ func TestPollDelegatesByTheIssuesOwnUUID(t *testing.T) {
 }
 
 // TestPollDelegatesNothingWhileAdmissionIsHeld: a held admission claims nothing,
-// so the day's bar never fills and every poll would delegate more tickets into a
+// so the day's cap never fills and every poll would delegate more tickets into a
 // queue that cannot move.
 func TestPollDelegatesNothingWhileAdmissionIsHeld(t *testing.T) {
 	peakAt := time.Date(2026, 9, 28, 8, 0, 0, 0, time.UTC)
@@ -366,7 +399,7 @@ func TestPollDelegatesNothingWhileAdmissionIsHeld(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			q := &fakeQueue{claimedCount: 1}
-			deps, delegatable, logs := delegationDeps(3, []Issue{openTicket("FRG-20", 1)}, q)
+			deps, _, logs := delegationDeps([]Issue{openTicket("FRG-20", 1)}, q)
 			tt.hold(&deps, q)
 			res, err := Poll(context.Background(), deps, cfg)
 			if err != nil {
@@ -378,8 +411,10 @@ func TestPollDelegatesNothingWhileAdmissionIsHeld(t *testing.T) {
 				}
 				return
 			}
-			if len(res.Delegated) != 0 || delegatable.opened != 0 {
-				t.Fatalf("delegated %v, opened %d times, want nothing while held", res.Delegated, delegatable.opened)
+			// The ticket is listed before the hold is read, so the hold withholds the
+			// delegation alone: only a read that withholds a ticket can leave it unlisted.
+			if len(res.Delegated) != 0 {
+				t.Fatalf("delegated %v, want nothing while held", res.Delegated)
 			}
 			if !strings.Contains(logs.String(), "reason="+tt.reason) {
 				t.Fatalf("the skip does not name %s:\n%s", tt.reason, logs.String())
@@ -389,13 +424,13 @@ func TestPollDelegatesNothingWhileAdmissionIsHeld(t *testing.T) {
 }
 
 // TestPollLogsTheRuleThatChoseTheTicketItDelegated is AC4: each delegation names
-// the ticket, the level and the rule that chose it.
+// the ticket and the rule that chose it.
 func TestPollLogsTheRuleThatChoseTheTicketItDelegated(t *testing.T) {
-	deps, _, logs := delegationDeps(2, []Issue{openTicket("FRG-20", 1)}, &fakeQueue{})
+	deps, _, logs := delegationDeps([]Issue{openTicket("FRG-20", 1)}, &fakeQueue{})
 	if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
 		t.Fatal(err)
 	}
-	want := "msg=ticketAutoDelegated ticket=FRG-20 level=2 rule=" + delegateRule
+	want := "msg=ticketAutoDelegated ticket=FRG-20 rule=" + delegateRule
 	if !strings.Contains(logs.String(), want) {
 		t.Fatalf("log does not carry %q:\n%s", want, logs.String())
 	}
@@ -405,7 +440,7 @@ func TestPollLogsTheRuleThatChoseTheTicketItDelegated(t *testing.T) {
 // error the poll reports, and the tickets after it are left for a later poll.
 func TestPollReportsTheDelegationLinearRefused(t *testing.T) {
 	open := []Issue{openTicket("FRG-20", 1), openTicket("FRG-21", 2)}
-	deps, delegatable, _ := delegationDeps(3, open, &fakeQueue{})
+	deps, delegatable, _ := delegationDeps(open, &fakeQueue{})
 	delegatable.delegateErr = map[string]error{"FRG-20": errors.New("the Linear API refused the mutation")}
 	_, err := Poll(context.Background(), deps, buildConfig)
 	if err == nil || !strings.Contains(err.Error(), "refused the mutation") {
@@ -419,7 +454,7 @@ func TestPollReportsTheDelegationLinearRefused(t *testing.T) {
 // TestPollReportsOpenIssuesItCannotRead: the open read failing is the poll's own
 // failure, as a failed delegated read is.
 func TestPollReportsOpenIssuesItCannotRead(t *testing.T) {
-	deps, delegatable, _ := delegationDeps(1, nil, &fakeQueue{})
+	deps, delegatable, _ := delegationDeps(nil, &fakeQueue{})
 	delegatable.openErr = errFirestore
 	if _, err := Poll(context.Background(), deps, buildConfig); !errors.Is(err, errFirestore) {
 		t.Fatalf("err = %v, want the open read's failure", err)

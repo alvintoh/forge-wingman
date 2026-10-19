@@ -131,6 +131,9 @@ type Config struct {
 	Limits Limits
 	// Tuning is the concurrency rule's numbers; a zero field takes its default.
 	Tuning Tuning
+	// DailyRuns is how many runs a poll delegates to itself in a day; zero
+	// takes DefaultDailyRuns.
+	DailyRuns int
 	// LastResortPlans are the plans' free models, each entry one plan's list, in
 	// the order the free-tier fallback walks them; empty for a configuration
 	// with no free tier to fall to.
@@ -352,8 +355,8 @@ type Rejector interface {
 	Reject(ctx context.Context, r Rejection) error
 }
 
-// ClaimedRuns counts the runs claimed since a moment: the runs a level's daily
-// bar is spent from.
+// ClaimedRuns counts the runs claimed since a moment: the runs the daily run
+// cap of delegations is counted from.
 type ClaimedRuns interface {
 	ClaimedSince(ctx context.Context, since time.Time) (int, error)
 }
@@ -462,8 +465,8 @@ func LogPhase(logger *slog.Logger, phase string, start, end time.Time) {
 }
 
 func poll(ctx context.Context, d Deps, c Config) (Result, error) {
-	// The level is read once, ahead of the delegation that spends its daily bar
-	// and the claims that record it, so one poll acts on one level throughout.
+	// The level is read once, ahead of the claims that record it, so one poll
+	// acts on one level throughout.
 	level := readAutonomy(ctx, d)
 	// One loader for the whole poll: the claim walk and the delegation share it,
 	// so the settled run history is read once whichever of them reaches for it
@@ -516,7 +519,7 @@ func poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	// and dispatch that already succeeded: the agent session it opens wakes the
 	// poll that admits the ticket within seconds.
 	start = d.Now()
-	phaseErrs = append(phaseErrs, autoDelegate(ctx, d, c, level, &res, history))
+	phaseErrs = append(phaseErrs, autoDelegate(ctx, d, c, &res, history))
 	LogPhase(d.Logger, "delegate", start, d.Now())
 	if err := errors.Join(phaseErrs...); err != nil {
 		return res, err
