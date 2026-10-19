@@ -45,6 +45,17 @@ Propose the raise with that evidence; never raise it on throughput alone.
 
 *(Owner's instruction, 2026-10-08; raised to 5, set 2026-10-12.)*
 
+## Runs per repo: when to raise it
+
+The per-repo cap (Config settings, FRG-175) starts at 5. Raise it one step at a time, toward 8
+and no higher without a new decision, only when both hold: no more than 1 of the last 10 runs at
+the cap stopped on `rebase-conflict`, and the review WIP limit is at least as high as the cap,
+since more runs than reviewable PRs only builds a queue. Lower it after two rebase-conflict stops
+in a day. The platform limit (20) is GitHub's Free-plan job cap and is not ours to raise.
+
+*(Judgment call, owner's instruction 2026-10-19. Basis: of 59 runs so far, 1 stopped on
+rebase-conflict and at most 2 ran at once, so 5 and 8 are untested.)*
+
 ## Tickets the runner will build
 
 The runner reads only a ticket's title and description, and its build agent reads
