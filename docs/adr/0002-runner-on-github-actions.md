@@ -83,7 +83,9 @@ repository, 4 vCPU / 16 GB on a public one, with a 6-hour job ceiling against
   **The usable form:** where a repo is already public, or would be published on its
   own merits anyway, the runner is free — worth knowing when choosing what to point
   this at FIRST. Where it cannot be, the minutes are a real cost and FR-22 enforcing
-  them is the answer. NFR-5's allowlist already carries the classification.
+  them is the answer. ~~NFR-5's allowlist already carries the classification.~~
+  Updated (2026-10-20): the allowlist carries no classification; the dispatcher reads
+  each target's visibility live from GitHub (FR-22).
   **`workflow_dispatch` is not a schedule, so the 60-day scheduled-workflow disable
   does not apply** to a public target here.
 - ⚠️ **The free tier is EXHAUSTED BELOW the design volume on private repos, and
