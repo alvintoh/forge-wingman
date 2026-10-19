@@ -1490,6 +1490,38 @@ func TestPollRunsACandidateOnTheFreeTierOnceAPaidCeilingBinds(t *testing.T) {
 	}
 }
 
+// TestPollKeepsTheStageOfAPlanStageClaimOnTheFreeTier asserts a plan-stage
+// claim that falls back to the free tier still carries the run's stage: the
+// store books and settles a plan stage's reservation under its own key, so a
+// claim that dropped the stage would book the build's and never be settled.
+func TestPollKeepsTheStageOfAPlanStageClaimOnTheFreeTier(t *testing.T) {
+	q := &fakeQueue{
+		candidates: []Candidate{{RunID: "run-a", Repo: "octo/scratch", Size: "M"}},
+		bindings:   map[string]string{"run-a": "p-5h"},
+	}
+	deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	deps.Estimator = fakeEstimator{
+		bySize:     map[string]Estimate{"M": {ProviderCost: 2 * money.Dollar, Minutes: 30}},
+		planBySize: map[string]Estimate{"M": {ProviderCost: money.Dollar, Minutes: 5}},
+	}
+	plan := paidPlan
+	plan.TwoStage = true
+	res, err := Poll(context.Background(), deps, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(res.Dispatched, []string{"run-a"}) || len(res.Deferrals) != 0 {
+		t.Fatalf("dispatched %q, deferred %+v, want the run dispatched on the free tier", res.Dispatched, res.Deferrals)
+	}
+	free := q.tryClaims[len(q.tryClaims)-1]
+	if len(q.tryClaims) != 2 || !free.cfg.ProviderFree || free.res.ProviderCost != 0 {
+		t.Fatalf("claims %+v, want a second claim on the free tier", q.tryClaims)
+	}
+	if free.res.Stage != StagePlan {
+		t.Fatalf("reservation = %+v, want the plan stage kept on the free tier", free.res)
+	}
+}
+
 // TestPollWalksTheFreeTierPlansInOrder asserts a candidate whose own plan's
 // ceiling binds, and whose own free tier cannot staff a run, is admitted on the
 // next plan's free models — the move recorded on the claim's facts, so the run

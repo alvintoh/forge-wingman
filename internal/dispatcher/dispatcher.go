@@ -807,7 +807,10 @@ func admitClaims(ctx context.Context, d Deps, c Config, level Autonomy, relation
 				}
 				freeFacts := onLastResort(facts, rung)
 				freeFacts.ProviderHalted = halted(rungPlan)
-				freeRes := Reservation{RunnerMinutes: reservation.RunnerMinutes}
+				// A free-tier claim is the same claim: it keeps its
+				// stage and write set, and spends no provider cost.
+				freeRes := reservation
+				freeRes.ProviderCost = 0
 				ok, binding, err = d.Queue.TryClaim(ctx, cand.RunID, d.Now(), c.Budget.lastResort(), freeFacts, freeRes)
 				if err != nil {
 					return claims, err

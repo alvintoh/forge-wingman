@@ -182,8 +182,10 @@ type AdmitInput struct {
 //
 // The one-run-per-repository condition holds a candidate back only where an
 // in-flight run in its repository has an unknown write set, or the candidate
-// does: runs whose write sets are both known share the repository whether or
-// not the sets intersect, and the runner requeues a run whose merge conflicts.
+// does, and neither holds a plan-stage claim: a plan stage writes nothing, its
+// agent holding edit and shell denied. Runs whose write sets are both known
+// share the repository whether or not the sets intersect, and the runner
+// requeues a run whose merge conflicts.
 //
 // When the open-PR count could not be read, a candidate is admitted only if
 // nothing is in flight.
@@ -242,11 +244,11 @@ func countSize(runs []InFlight, size string) int {
 }
 
 // writeSetsCollide reports whether an in-flight run's write set and the
-// candidate's rule out sharing one repository. A plan-stage run collides with
-// nothing: its agent holds edit and shell denied. An unknown write set — no
-// plan recorded, which is every run before two-stage dispatch — collides with
-// any candidate, which is the interim one-run-per-repository rule; two known
-// sets never collide.
+// candidate's rule out sharing one repository. A plan-stage claim collides with
+// nothing, on either side: it writes nothing, its agent holding edit and shell
+// denied. An unknown write set — no plan recorded, which is every run before
+// two-stage dispatch — collides with any candidate, which is the interim
+// one-run-per-repository rule; two known sets never collide.
 func writeSetsCollide(f InFlight, c Subject) bool {
 	if f.Stage == StagePlan || c.Stage == StagePlan {
 		return false

@@ -1288,6 +1288,96 @@ func TestTryClaimAdmitsOneRunPerRepositoryAndRecordsWhyTheOtherWaits(t *testing.
 	}
 }
 
+// buildInFlight enqueues running and waiting with the ledger reset, and claims
+// running for its build stage on the write set files: the state a poll leaves a
+// repository in while an M or L run builds.
+func buildInFlight(t *testing.T, q *Queue, client *firestore.Client, running, waiting dispatcher.Queued, files []string) {
+	t.Helper()
+	ctx := context.Background()
+	forget(t, client, running.RunID, waiting.RunID)
+	resetLedger(t, client, 5)
+	for _, r := range []dispatcher.Queued{running, waiting} {
+		if err := q.Enqueue(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if ok, _, err := q.TryClaim(ctx, running.RunID, queueAt, generousBudget, openFacts, dispatcher.Reservation{
+		ProviderCost: money.Dollar, Stage: dispatcher.StageBuild, Files: files,
+	}); err != nil || !ok {
+		t.Fatalf("claiming the build in flight: ok %v, err %v", ok, err)
+	}
+}
+
+// TestTryClaimAdmitsAPlanStageBesideABuildInItsRepository asserts a claim's own
+// stage reaches admission: a plan stage writes nothing, so a build in flight in
+// the same repository does not hold it. Without the stage on the candidate its
+// empty write set reads as unknown and the build holds it.
+func TestTryClaimAdmitsAPlanStageBesideABuildInItsRepository(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	running := queuedRun(fresh("queue-plan-stage-running"), 1)
+	plan := queuedRun(fresh("queue-plan-stage"), 2)
+	buildInFlight(t, q, client, running, plan, []string{"a.go"})
+	// The claim the dispatcher makes for an unplanned M or L ticket: its plan
+	// stage, carrying no write set of its own.
+	ok, binding, err := q.TryClaim(ctx, plan.RunID, queueAt, generousBudget, openFacts,
+		dispatcher.Reservation{ProviderCost: money.Dollar, Stage: dispatcher.StagePlan})
+	if err != nil || !ok || binding != "" {
+		t.Fatalf("ok = %v, binding = %q, err = %v, want the plan stage admitted beside a build", ok, binding, err)
+	}
+}
+
+// TestTryClaimHoldsASingleStageClaimBesideABuildInItsRepository asserts an S
+// run — never plan-staged, and recording no write set of its own — is still
+// held while a build runs in its repository.
+func TestTryClaimHoldsASingleStageClaimBesideABuildInItsRepository(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	running := queuedRun(fresh("queue-s-running"), 1)
+	sized := queuedRun(fresh("queue-s-held"), 2)
+	sized.Ticket.Size = "S"
+	buildInFlight(t, q, client, running, sized, []string{"a.go"})
+	ok, binding, err := q.TryClaim(ctx, sized.RunID, queueAt, generousBudget, openFacts,
+		dispatcher.Reservation{ProviderCost: money.Dollar})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok || binding != dispatcher.ConditionRepoBusy {
+		t.Fatalf("ok = %v, binding = %q, want the repository held by the build", ok, binding)
+	}
+	if held := readRow(t, client, sized.RunID)[waitingOnField]; held != dispatcher.ConditionRepoBusy {
+		t.Fatalf("waiting on %v, want the binding condition recorded on the row", held)
+	}
+}
+
+// TestTryClaimHoldsABuildStageClaimBesideABuildInItsRepository asserts the plan
+// stage's exemption is the stage's alone: a build stage whose plan recorded no
+// write set is still held by a build in its repository, where a claim exempted
+// on its file list alone would be admitted.
+func TestTryClaimHoldsABuildStageClaimBesideABuildInItsRepository(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	running := queuedRun(fresh("queue-build-stage-running"), 1)
+	planned := queuedRun(fresh("queue-build-stage"), 2)
+	buildInFlight(t, q, client, running, planned, []string{"a.go"})
+	// The run waits for its build with no write set recorded: its plan stage
+	// settled, listing no files.
+	if _, err := client.Collection(runsCollection).Doc(planned.RunID).Update(ctx, []firestore.Update{
+		{Path: stateField, Value: statePlanned},
+		{Path: planSettledAtField, Value: queueAt},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ok, binding, err := q.TryClaim(ctx, planned.RunID, queueAt, generousBudget, openFacts,
+		dispatcher.Reservation{ProviderCost: money.Dollar, Stage: dispatcher.StageBuild})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok || binding != dispatcher.ConditionRepoBusy {
+		t.Fatalf("ok = %v, binding = %q, want the build stage held beside a build", ok, binding)
+	}
+}
+
 func TestTryClaimHoldsARunBlockedByOneInFlight(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()

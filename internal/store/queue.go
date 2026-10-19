@@ -772,6 +772,9 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 
 		running := inFlight(ledger)
 		cand := subject(data)
+		// The claim's own stage, which the row does not record: admission lets a
+		// plan-stage claim share its repository, since it writes nothing.
+		cand.Stage = res.Stage
 		if facts.Relations.Known {
 			cand.BlockedBy, cand.Blocks = facts.Relations.BlockedBy, facts.Relations.Blocks
 			cand.BlockedByOpen = facts.Relations.BlockedByOpen
