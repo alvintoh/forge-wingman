@@ -228,7 +228,8 @@ One Go binary entrypoint (`cmd/dispatcher`). Per poll:
    records when it was posted, so the question is neither dropped nor repeated, and
    the dispatcher is its one decider (`adr/0013`) — the poll both posts and matches.
 
-11. **Delegate the queue's next ticket itself, at autonomy level 1 or above** (FRG-125).
+11. ~~**Delegate the queue's next ticket itself, at autonomy level 1 or above** (FRG-125).~~
+    > **Retired (2026-10-19):** the dispatcher never delegates a ticket; work starts only when the owner delegates one (`adr/0018`). The paragraph below describes what was built (FRG-125, FRG-164) and removed (FRG-181); the eligibility rule it used is in git at `bc77711` for the surface's START PHASE to restore from.
     The poll delegates the next eligible ticket to the app while today's claimed runs are
     below the level's daily bar (1, 3, 5, 5 and 10 runs a day at levels 1 to 5) and the
     review WIP limit has room. Eligible means an open ticket in the earliest milestone that

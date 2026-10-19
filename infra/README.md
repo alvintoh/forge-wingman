@@ -232,11 +232,8 @@ repository, the large-run cap, blocking relations and the open-PR review limit
 each withhold a run until a later poll. A run the plan's own allowance window or
 model cap would withhold starts on the plan's free models instead, a private
 repository's only after `runner plan-optin -private`. A dispatch GitHub refuses
-releases its claim, so the next poll takes it again. Every poll also delegates the
-next eligible ticket itself — the earliest milestone that still has open tickets,
-by priority — while today's claimed runs are below `WINGMAN_DAILY_RUNS` (5 a day
-unless the job's settings change it) and the review WIP limit has room; a ticket
-delegated this way is admitted by the poll its own agent session wakes.
+releases its claim, so the next poll takes it again. A poll admits only the
+tickets the owner has delegated to the agent; it never delegates one itself.
 
 A systemic stop — a missing key, an identity mismatch, an exhausted allowance —
 trips the breaker, and every poll admits nothing until `runner reset-breaker`
@@ -265,7 +262,7 @@ Four variables name what OpenTofu cannot guess, and a fifth is optional:
 | `webhook_image` | the webhook service's image, built with `CMD=webhook`; pushed and named by digest the same way |
 | `linear_delegate` | the Linear id of the agent the job acts for; a poll whose token is another agent's admits nothing |
 | `linear_repositories` | the allowlist. Empty admits nothing, so a forgotten one refuses every ticket rather than dispatching |
-| `dispatcher_settings` | optional. A map of `WINGMAN_PLATFORM_CAP`, `WINGMAN_LARGE_CAP`, `WINGMAN_REVIEW_WIP`, `WINGMAN_DAILY_RUNS`, `WINGMAN_STABLE_RUNS`, `WINGMAN_RISE_WITHIN`, `WINGMAN_HALVE_BEYOND`, `WINGMAN_TWO_STAGE` and `WINGMAN_DECISION_TIMEOUT` to a value; a key left out keeps its default. `WINGMAN_DAILY_RUNS` is the runs a day the dispatcher delegates to itself (default 5); `WINGMAN_DECISION_TIMEOUT` is how long a run waits on an owner decision (e.g. `24h`) before it is stopped as waiting-on-owner |
+| `dispatcher_settings` | optional. A map of `WINGMAN_PLATFORM_CAP`, `WINGMAN_LARGE_CAP`, `WINGMAN_REVIEW_WIP`, `WINGMAN_STABLE_RUNS`, `WINGMAN_RISE_WITHIN`, `WINGMAN_HALVE_BEYOND`, `WINGMAN_TWO_STAGE` and `WINGMAN_DECISION_TIMEOUT` to a value; a key left out keeps its default. `WINGMAN_DECISION_TIMEOUT` is how long a run waits on an owner decision (e.g. `24h`) before it is stopped as waiting-on-owner |
 
 ### The queue tie-break
 
@@ -327,11 +324,7 @@ otherwise, in `dispatch/rejected-<identifier>`:
 | `size:` | `S`, `M`, `L` | refused `no-size`; `XL` is refused `size-above-ceiling` |
 | `repo:` | `owner/name`, allowlisted | refused `no-repository` or `repository-not-allowlisted` |
 
-The dispatcher also delegates the next eligible ticket
-itself. That read wants more of the ticket: a `[BE]`, `[FE]` or `[SLICE]` lane, the
-two labels above, no `.github/workflows/` path in its description, no `wingman:hold`
-label — create that label in Linear to park work, it stops only the delegation, not a
-ticket already delegated — and no run row that has already ended, which needs
+Delegating a ticket whose run has already ended does not queue it again; that needs
 `runner requeue`.
 
 Sizes are hand-set labels: nothing infers a size from the issue's own estimate.

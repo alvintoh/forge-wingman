@@ -107,10 +107,7 @@ type config struct {
 	repos    []string
 	limits   dispatcher.Limits
 	tuning   dispatcher.Tuning
-	// dailyRuns is how many runs a poll delegates to itself in a day; zero
-	// takes the code default.
-	dailyRuns int
-	twoStage  bool
+	twoStage bool
 	// decisionTimeout is how long a run waits on an owner decision; zero takes
 	// the code default.
 	decisionTimeout time.Duration
@@ -141,9 +138,6 @@ func loadConfig(getenv func(string) string) (config, error) {
 	}
 	c.repos = repos
 	if c.limits, c.tuning, err = concurrencySettings(getenv); err != nil {
-		return config{}, err
-	}
-	if err := positiveInt(getenv, "WINGMAN_DAILY_RUNS", &c.dailyRuns); err != nil {
 		return config{}, err
 	}
 	c.twoStage = strings.EqualFold(strings.TrimSpace(getenv("WINGMAN_TWO_STAGE")), "on")
@@ -298,12 +292,9 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		return err
 	}
 	autonomies := store.NewAutonomies(fsc)
-	// The same Linear client reads the tickets a poll admits and delegates the
-	// ones the product takes on itself.
 	tickets := dispatcher.Linear{Tokens: tokens, Delegate: c.delegate, Client: client}
 	if _, err := dispatcher.Poll(ctx, dispatcher.Deps{
-		Source:      tickets,
-		Delegatable: tickets,
+		Source: tickets,
 		// The same client moves a claimed ticket In Progress and puts it back
 		// when a requeue or an abandon undoes the claim.
 		TicketStates: tickets,
@@ -334,7 +325,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		Elicit:       webhook.Linear{Tokens: tokens},
 		Logger:       logger,
 		Now:          time.Now,
-	}, dispatcher.Config{Repos: c.repos, Budget: budgetConfig(runner.Provider(model)), Model: model, NextPlans: next, Limits: c.limits, Tuning: c.tuning, DailyRuns: c.dailyRuns, LastResortPlans: lastResortPlans(), TwoStage: c.twoStage, DecisionTimeout: c.decisionTimeout, DecisionMode: c.decisionMode}); err != nil {
+	}, dispatcher.Config{Repos: c.repos, Budget: budgetConfig(runner.Provider(model)), Model: model, NextPlans: next, Limits: c.limits, Tuning: c.tuning, LastResortPlans: lastResortPlans(), TwoStage: c.twoStage, DecisionTimeout: c.decisionTimeout, DecisionMode: c.decisionMode}); err != nil {
 		return err
 	}
 	return nil

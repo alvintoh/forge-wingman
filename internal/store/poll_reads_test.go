@@ -100,7 +100,6 @@ func (pollTicketStates) RestoreTicket(context.Context, string, string) error { r
 func pollReadDeps(q *Queue, openPRs int) dispatcher.Deps {
 	return dispatcher.Deps{
 		Source:       pollSource{},
-		Delegatable:  pollDelegatable{},
 		TicketStates: pollTicketStates{},
 		Queue:        q,
 		Estimator:    NewEstimates(q.client),
@@ -200,16 +199,6 @@ type pollSource struct{}
 
 func (pollSource) Delegated(context.Context) ([]dispatcher.Issue, error) { return nil, nil }
 
-// pollDelegatable offers nothing to delegate itself.
-type pollDelegatable struct{}
-
-func (pollDelegatable) Open(context.Context) ([]dispatcher.Issue, error) {
-	return nil, nil
-}
-func (pollDelegatable) DelegateIssue(context.Context, string) error {
-	return nil
-}
-
 // pollVisibility reports every repository public, which no poll here checks.
 type pollVisibility struct{}
 
@@ -232,8 +221,8 @@ func (pollPeakModes) Mode(context.Context) (dispatcher.PeakMode, error) {
 	return dispatcher.PeakOffPeakOnly, nil
 }
 
-// pollAutonomies reports the lowest level: it delegates nothing, so a poll here
-// has no delegation phase and no earned level to resolve.
+// pollAutonomies reports the lowest level, so a poll here has no earned level to
+// resolve.
 type pollAutonomies struct{}
 
 func (pollAutonomies) Level(context.Context) (dispatcher.Autonomy, error) {

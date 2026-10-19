@@ -2,6 +2,7 @@
 
 - **Date:** 2026-10-17
 - **Status:** proposed — the code lands through four tickets, in order (the owner switch, the rule, the daily cap, removing the levels)
+- **Updated (2026-10-19):** the product no longer delegates a ticket to itself, and the daily run cap is gone (see the struck bullet under Decision).
 
 ## Context
 
@@ -14,7 +15,8 @@ The PRD's autonomy ladder has six levels, two rewrite-rate bars (5% to advance, 
 - **Per-PR eligibility is unchanged:** size S and M only (FR-16), a front-end change is held, a PR in the 20% sample is held (FR-17).
 - **An owner switch, on by default.** Turning it off makes every PR manual whatever the rate. It lives in Firestore beside the peak-mode setting and is set by a command (`runner auto-merge`) and by a "..." button beside the status in the inbox and the Autonomy page that opens a small settings modal: an on/off switch with the rate shown, applied by SAVE and discarded by BACK, so a change needs no redeploy. The page shows two separate facts in words: the switch state (the owner's setting) and the rate line (whether the rate allows auto-merge); the effective state needs both. Setting it from the page is a write from the surface to that one Firestore document, so the surface's service account gets write access to it and nothing else. No document means on; a switch that cannot be read holds (off) and logs.
 - **Retired:** levels 0 to 5, the 5% bar, the 20% ceiling, the "delivery step exists" and gate-miss clauses.
-- **Replaced by plain settings:** the daily run cap is one configured number (`WINGMAN_DAILY_RUNS`, default 5); transient requeue and self-delegation are always on.
+- ~~**Replaced by plain settings:** the daily run cap is one configured number (`WINGMAN_DAILY_RUNS`, default 5); transient requeue and self-delegation are always on.~~
+  **Superseded (2026-10-19):** the product never starts work by itself. Work starts only when the owner delegates a ticket (by hand in Linear, through `/drive-phase`, or by the surface's START PHASE), so there is no self-delegation and no daily run cap; transient requeue stays always on. The owner's words: "i dont think forge-wingman should run automatically by itself". Self-delegation was built (FRG-125, FRG-164) and, the day it went live, rolled back and removed (FRG-181). The cap bounded nothing once self-delegation was gone, since the owner's own delegations never counted against it; budget ceilings, review WIP, the adaptive limit and the per-repo rule still bound the work.
 - **The rate is the measure.** A rate above 10% turns auto-merge off by itself, and the 10% is the same bar as the Phase 3 exit gate.
 
 ## Known limitation and revisit trigger

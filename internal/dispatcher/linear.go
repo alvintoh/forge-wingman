@@ -31,6 +31,9 @@ const doneStateTypes = `"` + stateTypeCompleted + `", "` + stateTypeCanceled + `
 // walked rather than the first one taken as all of them.
 const linearPage = 50
 
+// unstartedStates are the Linear state types of a ticket nobody has begun.
+var unstartedStates = []string{"backlog", "unstarted"}
+
 // inProgressStateName is the name of the state a claim moves a ticket into. The
 // state's id is read from the ticket's own team, so a team's workflow decides
 // it; the name is the one Linear's default workflows give that state.
@@ -87,62 +90,6 @@ const delegatedQuery = `query DelegatedIssues($delegate: ID!, $first: Int, $afte
   }
 }`
 
-// openQuery reads the token's own identity beside every open issue, with the
-// delegate and the milestone a poll needs to choose the tickets it takes on
-// itself: an issue already delegated still counts toward the milestone being
-// worked through.
-const openQuery = `query OpenIssues($first: Int, $after: String) {
-  viewer {
-    id
-  }
-  issues(
-    filter: { state: { type: { nin: [` + doneStateTypes + `] } } }
-    first: $first
-    after: $after
-  ) {
-    nodes {
-      id
-      identifier
-      url
-      title
-      description
-      priority
-      labels {
-        nodes {
-          name
-        }
-      }
-      state {
-        type
-      }
-      delegate {
-        id
-      }
-      projectMilestone {
-        id
-        sortOrder
-      }
-    }
-    pageInfo {
-      hasNextPage
-      endCursor
-    }
-  }
-}`
-
-// delegateMutation delegates one issue to the agent, and reads the delegate
-// back: the reply is the only evidence the delegation landed.
-const delegateMutation = `mutation DelegateIssue($id: String!, $delegate: String!) {
-  issueUpdate(id: $id, input: { delegateId: $delegate }) {
-    success
-    issue {
-      delegate {
-        id
-      }
-    }
-  }
-}`
-
 // ticketStateQuery reads one ticket's own id, its state, the manual order a
 // state change rewrites, and its team's workflow states — the last so the In
 // Progress state's id is resolved per team rather than carried as a constant.
@@ -183,13 +130,13 @@ const setTicketStateMutation = `mutation SetTicketState($id: String!, $state: St
   }
 }`
 
-// Linear reads the issues delegated to one Linear agent, and delegates the ones
-// the product takes on itself.
+// Linear reads the issues delegated to one Linear agent and moves the tickets a
+// claim starts and restores.
 type Linear struct {
 	Endpoint string
 	Tokens   linear.TokenSource
 	// Delegate is the agent the poll acts for, the id Linear's viewer query
-	// must return for every page, and the delegate a delegation sets.
+	// must return for every page.
 	Delegate string
 	Client   *http.Client
 	Page     int
@@ -218,22 +165,8 @@ type linearTicket struct {
 	} `json:"team"`
 }
 
-// linearMilestone is the project milestone a reply carries for one issue.
-type linearMilestone struct {
-	ID        string  `json:"id"`
-	SortOrder float64 `json:"sortOrder"`
-}
-
-// linearDelegate is the agent a reply names an issue's delegate as.
-type linearDelegate struct {
-	ID string `json:"id"`
-}
-
-// linearIssue is one issue as a reply carries it: the fields the delegated query
-// asks for, and the ones the open query adds, which a reply without them leaves
-// zero.
+// linearIssue is one issue as the delegated query's reply carries it.
 type linearIssue struct {
-	ID          string `json:"id"`
 	Identifier  string `json:"identifier"`
 	URL         string `json:"url"`
 	Title       string `json:"title"`
@@ -244,9 +177,6 @@ type linearIssue struct {
 			Name string `json:"name"`
 		} `json:"nodes"`
 	} `json:"labels"`
-	State     linearState      `json:"state"`
-	Delegate  *linearDelegate  `json:"delegate"`
-	Milestone *linearMilestone `json:"projectMilestone"`
 	Relations struct {
 		Nodes []struct {
 			Type         string `json:"type"`
@@ -312,65 +242,6 @@ func (l Linear) Delegated(ctx context.Context) ([]Issue, error) {
 		}
 		cursor = resp.Data.Issues.PageInfo.EndCursor
 	}
-}
-
-// Open returns every open issue, excluding the ones in a completed or canceled
-// state. A poll walks them for the tickets it delegates to itself: the milestone
-// each belongs to is what orders them, so a ticket already delegated is returned
-// too. The token's own visibility bounds the read, as it bounds the delegated
-// one, and it fails unless the token reads as the configured agent.
-func (l Linear) Open(ctx context.Context) ([]Issue, error) {
-	page := l.Page
-	if page <= 0 {
-		page = linearPage
-	}
-	var (
-		issues []Issue
-		cursor string
-	)
-	for {
-		resp, err := l.openPage(ctx, cursor, page)
-		if err != nil {
-			return nil, err
-		}
-		if err := l.checkViewer(resp.Data.Viewer.ID); err != nil {
-			return nil, err
-		}
-		for _, node := range resp.Data.Issues.Nodes {
-			issues = append(issues, node.issue())
-		}
-		if !resp.Data.Issues.PageInfo.HasNextPage {
-			return issues, nil
-		}
-		cursor = resp.Data.Issues.PageInfo.EndCursor
-	}
-}
-
-// DelegateIssue sets issueID's delegate to the agent this client acts for, and
-// fails unless Linear reports the issue delegated to that agent.
-func (l Linear) DelegateIssue(ctx context.Context, issueID string) error {
-	var resp struct {
-		Data struct {
-			IssueUpdate struct {
-				Success bool `json:"success"`
-				Issue   struct {
-					Delegate *linearDelegate `json:"delegate"`
-				} `json:"issue"`
-			} `json:"issueUpdate"`
-		} `json:"data"`
-	}
-	variables := struct {
-		ID       string `json:"id"`
-		Delegate string `json:"delegate"`
-	}{ID: issueID, Delegate: l.Delegate}
-	if err := l.request(ctx, delegateMutation, variables, &resp.Data); err != nil {
-		return fmt.Errorf("delegating %s: %w", issueID, err)
-	}
-	delegate := resp.Data.IssueUpdate.Issue.Delegate
-	if !resp.Data.IssueUpdate.Success || delegate == nil || delegate.ID != l.Delegate {
-		return fmt.Errorf("delegating %s: Linear did not report it delegated to %s", issueID, l.Delegate)
-	}
-	return nil
 }
 
 // StartTicket sets a claimed ticket's state In Progress and reports the state
@@ -473,19 +344,11 @@ func (l Linear) setTicketState(ctx context.Context, issueID, stateID string, ord
 // issue is the issue one reply's node names.
 func (n linearIssue) issue() Issue {
 	issue := Issue{
-		ID:        n.Identifier,
-		URL:       n.URL,
-		Title:     n.Title,
-		Body:      n.Description,
-		Priority:  n.Priority,
-		UUID:      n.ID,
-		StateType: n.State.Type,
-	}
-	if n.Delegate != nil {
-		issue.DelegatedTo = n.Delegate.ID
-	}
-	if n.Milestone != nil {
-		issue.Milestone = Milestone{ID: n.Milestone.ID, SortOrder: n.Milestone.SortOrder}
+		ID:       n.Identifier,
+		URL:      n.URL,
+		Title:    n.Title,
+		Body:     n.Description,
+		Priority: n.Priority,
 	}
 	for _, label := range n.Labels.Nodes {
 		issue.Labels = append(issue.Labels, label.Name)
@@ -547,17 +410,5 @@ func (l Linear) page(ctx context.Context, after string, size int) (linearRespons
 		After    string `json:"after,omitempty"`
 	}{Delegate: l.Delegate, First: size, After: after}
 	err := l.request(ctx, delegatedQuery, variables, &resp.Data)
-	return resp, err
-}
-
-// openPage asks Linear for one page of the open issues, with the cursor omitted
-// where page omits it.
-func (l Linear) openPage(ctx context.Context, after string, size int) (linearResponse, error) {
-	var resp linearResponse
-	variables := struct {
-		First int    `json:"first"`
-		After string `json:"after,omitempty"`
-	}{First: size, After: after}
-	err := l.request(ctx, openQuery, variables, &resp.Data)
 	return resp, err
 }

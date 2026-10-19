@@ -538,18 +538,6 @@ func countRows(ctx context.Context, query firestore.Query) (int64, error) {
 	return n.GetIntegerValue(), nil
 }
 
-// ClaimedSince counts the runs claimed at or after since: the runs a level's
-// daily bar of delegations is spent from. A run whose claim was
-// released or requeued carries no claim stamp and is not counted, since it never
-// reached a runner.
-func (q *Queue) ClaimedSince(ctx context.Context, since time.Time) (int, error) {
-	n, err := countRows(ctx, q.client.Collection(runsCollection).Where(claimedAtField, ">=", since))
-	if err != nil {
-		return 0, fmt.Errorf("counting the runs claimed since %s: %w", since.UTC().Format(time.RFC3339), err)
-	}
-	return int(n), nil
-}
-
 // Planned lists every run whose plan stage has recorded a write set and whose
 // own run has not been recorded yet: the rows in state planned or claimed that
 // carry plan_files and no settled_at. A two-stage run waits in planned between
@@ -1488,22 +1476,6 @@ func requeueState(row map[string]any) (string, error) {
 func planStamped(row map[string]any) bool {
 	at, ok := row[planSettledAtField].(time.Time)
 	return ok && !at.IsZero()
-}
-
-// NeedsRequeue reports whether ticketID has a run that has ended — stopped,
-// abandoned, or carrying a recorded outcome — so that only an operator's
-// own Requeue takes the ticket further, never another delegation. A
-// ticket with no run row at all has not ended.
-func (q *Queue) NeedsRequeue(ctx context.Context, ticketID string) (bool, error) {
-	snap, err := q.client.Collection(runsCollection).Doc(ticketID).Get(ctx)
-	if status.Code(err) == codes.NotFound {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("reading run %s: %w", ticketID, err)
-	}
-	_, err = requeueState(snap.Data())
-	return err == nil, nil
 }
 
 // dropReservations removes the ledger reservations runID holds at attempt, in
