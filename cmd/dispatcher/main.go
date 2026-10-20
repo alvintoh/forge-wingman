@@ -6,8 +6,9 @@
 // priority order, each into the repository its ticket names. Everything it
 // holds is a reference to a value provisioned with the job: the Linear app's
 // client credentials and the GitHub token are read from Secret Manager as the
-// run starts, and WINGMAN_REPOS is the allowlist a ticket's repo: label must
-// name. Each poll mints its own Linear token and revokes it as the poll ends.
+// run starts, and the allowlist a ticket's repo: label must name is read from
+// the owner database. Each poll mints its own Linear token and revokes it as
+// the poll ends.
 //
 // The job runs under its own service account, holds the store, the Linear
 // credentials, the GitHub token and the notice webhook, and holds nothing that
@@ -23,7 +24,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -98,13 +98,12 @@ func main() {
 }
 
 // config is what one poll needs: the project whose store is the queue, the
-// Linear agent it acts for, the repositories it may dispatch into, and the
-// optional concurrency limits and tuning, where zero means the default. The
-// tokens are not here because a poll reads them from Secret Manager.
+// Linear agent it acts for, and the optional concurrency limits and tuning,
+// where zero means the default. The tokens are not here because a poll reads
+// them from Secret Manager.
 type config struct {
 	project  string
 	delegate string
-	repos    []string
 	limits   dispatcher.Limits
 	tuning   dispatcher.Tuning
 	twoStage bool
@@ -132,11 +131,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if len(missing) > 0 {
 		return config{}, fmt.Errorf("missing environment: %v", missing)
 	}
-	repos, err := allowlist(getenv("WINGMAN_REPOS"))
-	if err != nil {
-		return config{}, err
-	}
-	c.repos = repos
+	var err error
 	if c.limits, c.tuning, err = concurrencySettings(getenv); err != nil {
 		return config{}, err
 	}
@@ -212,28 +207,38 @@ func concurrencySettings(getenv func(string) string) (dispatcher.Limits, dispatc
 	return l, t, nil
 }
 
-// repoPattern is what GitHub calls a repository: an owner and a name.
-var repoPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
+// repositoryLister is the owner's project allowlist as the dispatcher reads it.
+type repositoryLister interface {
+	Repositories(ctx context.Context) ([]string, error)
+}
 
-// allowlist is the repositories WINGMAN_REPOS names, comma separated. An empty
-// allowlist is refused rather than admitted: a dispatcher that was not
-// configured must dispatch into nothing.
-func allowlist(raw string) ([]string, error) {
-	var repos []string
-	for _, entry := range strings.Split(raw, ",") {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
-		if !repoPattern.MatchString(entry) {
-			return nil, fmt.Errorf("WINGMAN_REPOS entry %q is not owner/name", entry)
-		}
-		repos = append(repos, entry)
+// listedRepositories is the repositories the owner listed. An entry that is not
+// owner/name fails the read rather than being skipped: a list that cannot be
+// trusted whole admits nothing.
+func listedRepositories(ctx context.Context, projects repositoryLister) ([]string, error) {
+	repos, err := projects.Repositories(ctx)
+	if err != nil {
+		return nil, err
 	}
-	if len(repos) == 0 {
-		return nil, errors.New("WINGMAN_REPOS names no repository")
+	for _, repo := range repos {
+		if !store.ValidRepository(repo) {
+			return nil, fmt.Errorf("listed repository %q is not owner/name", repo)
+		}
 	}
 	return repos, nil
+}
+
+// ownerRepositories reads the allowlist from the owner database once, for the
+// poll that follows.
+func ownerRepositories(ctx context.Context, project string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+	owner, err := firestore.NewClientWithDatabase(ctx, project, store.OwnerDatabase)
+	if err != nil {
+		return nil, fmt.Errorf("owner database client: %w", err)
+	}
+	defer func() { _ = owner.Close() }()
+	return listedRepositories(ctx, store.NewProjects(owner))
 }
 
 // slackPoster opens the Slack poster from the webhook secret, trimmed of the
@@ -282,6 +287,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		linear.RevokeAll(ctx, tokens, logger)
 		dispatcher.LogPhase(logger, "revoke", start, time.Now())
 	}()
+	repos, reposErr := ownerRepositories(ctx, c.project)
 	dispatcher.LogPhase(logger, "setup", started, time.Now())
 	gh := dispatcher.GitHub{Token: githubToken, Workflow: runWorkflow, Branch: runBranch, Client: client}
 	queue := store.NewQueue(fsc).WithLogger(logger)
@@ -325,7 +331,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		Elicit:       webhook.Linear{Tokens: tokens},
 		Logger:       logger,
 		Now:          time.Now,
-	}, dispatcher.Config{Repos: c.repos, Budget: budgetConfig(runner.Provider(model)), Model: model, NextPlans: next, Limits: c.limits, Tuning: c.tuning, LastResortPlans: lastResortPlans(), TwoStage: c.twoStage, DecisionTimeout: c.decisionTimeout, DecisionMode: c.decisionMode}); err != nil {
+	}, dispatcher.Config{Repos: repos, ReposErr: reposErr, Budget: budgetConfig(runner.Provider(model)), Model: model, NextPlans: next, Limits: c.limits, Tuning: c.tuning, LastResortPlans: lastResortPlans(), TwoStage: c.twoStage, DecisionTimeout: c.decisionTimeout, DecisionMode: c.decisionMode}); err != nil {
 		return err
 	}
 	return nil

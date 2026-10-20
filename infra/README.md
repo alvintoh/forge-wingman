@@ -254,14 +254,13 @@ schedule can only start the job.
 | `dispatcher` | Firestore read/write on the queue, read both tokens and `notice-webhook-url` |
 | `dispatcher-schedule` | start one execution of the `forge-wingman-dispatcher` job |
 
-Four variables name what OpenTofu cannot guess, and a fifth is optional:
+Three variables name what OpenTofu cannot guess, and a fourth is optional:
 
 | Variable | What it is |
 |---|---|
 | `dispatcher_image` | the image to run. The `Dockerfile` builds it with `CMD=dispatcher`; nothing here pushes it, so push it yourself and name the digest |
 | `webhook_image` | the webhook service's image, built with `CMD=webhook`; pushed and named by digest the same way |
 | `linear_delegate` | the Linear id of the agent the job acts for; a poll whose token is another agent's admits nothing |
-| `linear_repositories` | the allowlist. Empty admits nothing, so a forgotten one refuses every ticket rather than dispatching |
 | `dispatcher_settings` | optional. A map of `WINGMAN_PLATFORM_CAP`, `WINGMAN_LARGE_CAP`, `WINGMAN_REVIEW_WIP`, `WINGMAN_STABLE_RUNS`, `WINGMAN_RISE_WITHIN`, `WINGMAN_HALVE_BEYOND`, `WINGMAN_TWO_STAGE` and `WINGMAN_DECISION_TIMEOUT` to a value; a key left out keeps its default. `WINGMAN_DECISION_TIMEOUT` is how long a run waits on an owner decision (e.g. `24h`) before it is stopped as waiting-on-owner |
 
 ### The queue tie-break
@@ -294,7 +293,7 @@ business and not a redeploy's.
 printf %s "$GITHUB_TOKEN" | gcloud secrets versions add github-token --data-file=-
 ```
 
-The GitHub token also needs two permissions on every allowlisted repository.
+The GitHub token also needs two permissions on every listed repository.
 `pull_requests: read`: admission counts the open agent PRs, and a repository it
 cannot read leaves that count unknown, which admits only a lone run.
 `actions: write`: the dispatch is a `workflow_dispatch`, which GitHub refuses
@@ -322,7 +321,7 @@ otherwise, in `dispatch/rejected-<identifier>`:
 | Label | Values | Without it |
 |---|---|---|
 | `size:` | `S`, `M`, `L` | refused `no-size`; `XL` is refused `size-above-ceiling` |
-| `repo:` | `owner/name`, allowlisted | refused `no-repository` or `repository-not-allowlisted` |
+| `repo:` | `owner/name`, listed in the owner database | refused `no-repository` or `repository-not-allowlisted` |
 
 Delegating a ticket whose run has already ended does not queue it again; that needs
 `runner requeue`.
