@@ -362,6 +362,20 @@ unconditional one is destroyed: IAM grants add up, so destroying first would lea
 runner with no datastore access while a run starts. If an apply stops between the two, both
 bindings stay, which is today's access; rerun it.
 
+### List a project
+
+Run from a terminal with `GOOGLE_CLOUD_PROJECT`, `WINGMAN_ACCOUNT` and
+`GITHUB_REPOSITORY_OWNER` set (the last two name the same owner): the owner commands check
+the account before they write.
+
+```sh
+GOOGLE_CLOUD_PROJECT=forge-wingman WINGMAN_ACCOUNT=alvintoh GITHUB_REPOSITORY_OWNER=alvintoh \
+  go run ./cmd/runner project-add -linear-project forge-wingman -repo alvintoh/forge-wingman
+```
+
+`project-remove` takes `-repo` alone. The dispatcher reads the list once per poll, so an
+addition is admitted by the next one.
+
 ### Read it back
 
 A policy that reads right is not a policy that refuses, so check with a write and a read.
