@@ -7,7 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"maps"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -460,268 +459,32 @@ func TestProvidersReportsAStoreItCannotRead(t *testing.T) {
 	}
 }
 
-// stubAutonomy is an AutonomyReader that answers with the view it holds, or the
+// stubMeasured is a MeasuredReader that answers with the merges it holds, or the
 // error it was given.
-type stubAutonomy struct {
-	view store.AutonomyView
-	err  error
-	// limit is the history limit the last read asked for.
+type stubMeasured struct {
+	merges []dispatcher.Sample
+	err    error
+	// limit is the cap the last read asked for.
 	limit int
 }
 
-func (s *stubAutonomy) AutonomyView(_ context.Context, limit int) (store.AutonomyView, error) {
+func (s *stubMeasured) Recent(_ context.Context, limit int) ([]dispatcher.Sample, error) {
 	s.limit = limit
 	if s.err != nil {
-		return store.AutonomyView{}, s.err
+		return nil, s.err
 	}
-	return s.view, nil
-}
-
-// TestAutonomyReportsTheLevelItsEvidenceAndItsHistory asserts the autonomy
-// endpoint serves the stored level and what it allows, the earned snapshot with
-// the numbers behind it, and the changes recorded newest first, each with the
-// cause it happened for and the numbers it was measured on (AC1, AC2, AC3).
-func TestAutonomyReportsTheLevelItsEvidenceAndItsHistory(t *testing.T) {
-	at := time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC)
-	reader := &stubAutonomy{view: store.AutonomyView{
-		Level: 4, HasEarned: true,
-		Earned: dispatcher.Earned{
-			Level: 3, ComputedAt: at,
-			Numbers: dispatcher.Numbers{
-				PRs: []int{141, 140}, Rate: 0.006, AgentLines: 1_000, OwnerLines: 6,
-				ReviewFoundLines: 4, OwnerChangeLines: 2,
-			},
-		},
-		History: []dispatcher.Change{
-			{From: 4, To: 3, Cause: string(dispatcher.RollbackSampledRate), At: at,
-				Numbers: dispatcher.Numbers{PRs: []int{141}, Rate: 0.11, AgentLines: 1_000, OwnerLines: 110}},
-			{From: 3, To: 4, Cause: dispatcher.ChangeAdvance, At: at.Add(-time.Hour),
-				Numbers: dispatcher.Numbers{PRs: []int{140}, AgentLines: 1_000, OwnerLines: 6}},
-		},
-	}}
-	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Autonomy: reader})
-
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/autonomy", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-
-	var body map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatal(err)
-	}
-	// The endpoint serves these keys and no others, so nothing the level's
-	// records hold beyond them — a ticket's text above all — can reach a reader
-	// (AC5).
-	if got, want := slices.Sorted(maps.Keys(body)), []string{"allows", "auto_merge", "earned", "history", "level", "rewrite"}; !slices.Equal(got, want) {
-		t.Fatalf("body keys = %v, want %v", got, want)
-	}
-	if got, want := body["level"], 4.0; got != want {
-		t.Errorf("level = %v, want %v", got, want)
-	}
-	if got, want := body["allows"], "as level 3, and eligible S and M PRs auto-merge"; got != want {
-		t.Errorf("allows = %v, want %v", got, want)
-	}
-	earned, ok := body["earned"].(map[string]any)
-	if !ok {
-		t.Fatalf("earned = %v, want the snapshot", body["earned"])
-	}
-	if got, want := slices.Sorted(maps.Keys(earned)), []string{"computed_at", "evidence", "level", "stale"}; !slices.Equal(got, want) {
-		t.Errorf("earned keys = %v, want %v", got, want)
-	}
-	if got, want := earned["level"], 3.0; got != want {
-		t.Errorf("earned level = %v, want %v", got, want)
-	}
-	if got, want := earned["stale"], false; got != want {
-		t.Errorf("earned stale = %v, want %v", got, want)
-	}
-	if got, want := earned["computed_at"], "2026-10-15T09:00:00Z"; got != want {
-		t.Errorf("computed_at = %v, want %v", got, want)
-	}
-	numbers, ok := earned["evidence"].(map[string]any)
-	if !ok {
-		t.Fatalf("evidence = %v, want the numbers", earned["evidence"])
-	}
-	if got, want := slices.Sorted(maps.Keys(numbers)), []string{"agent_lines", "owner_change_lines", "owner_lines", "prs", "rate",
-		"recorded", "reverts", "review_found_lines", "unavailable", "unlabelled_lines"}; !slices.Equal(got, want) {
-		t.Errorf("evidence keys = %v, want %v", got, want)
-	}
-	if got, want := numbers["rate"], "0.6%"; got != want {
-		t.Errorf("rate = %v, want %v", got, want)
-	}
-	if prs, ok := numbers["prs"].([]any); !ok || len(prs) != 2 || prs[0] != 141.0 || prs[1] != 140.0 {
-		t.Errorf("prs = %v, want the two PRs measured", numbers["prs"])
-	}
-	if got, want := numbers["agent_lines"], 1000.0; got != want {
-		t.Errorf("agent lines = %v, want %v", got, want)
-	}
-	if got, want := numbers["owner_lines"], 6.0; got != want {
-		t.Errorf("owner lines = %v, want %v", got, want)
-	}
-	if got, want := numbers["review_found_lines"], 4.0; got != want {
-		t.Errorf("review-found lines = %v, want %v", got, want)
-	}
-	if got, want := numbers["owner_change_lines"], 2.0; got != want {
-		t.Errorf("owner-change lines = %v, want %v", got, want)
-	}
-	history, ok := body["history"].([]any)
-	if !ok || len(history) != 2 {
-		t.Fatalf("history = %v, want the two changes", body["history"])
-	}
-	drop, ok := history[0].(map[string]any)
-	if !ok {
-		t.Fatalf("newest change = %v, want an object", history[0])
-	}
-	if got, want := slices.Sorted(maps.Keys(drop)), []string{"at", "cause", "evidence", "from", "to"}; !slices.Equal(got, want) {
-		t.Errorf("change keys = %v, want %v", got, want)
-	}
-	if got, want := drop["from"], 4.0; got != want {
-		t.Errorf("drop from = %v, want %v", got, want)
-	}
-	if got, want := drop["to"], 3.0; got != want {
-		t.Errorf("drop to = %v, want %v", got, want)
-	}
-	if got, want := drop["cause"], "sampled-rate"; got != want {
-		t.Errorf("drop cause = %v, want %v", got, want)
-	}
-	if got, want := drop["at"], "2026-10-15T09:00:00Z"; got != want {
-		t.Errorf("drop at = %v, want %v", got, want)
-	}
-	raised, ok := history[1].(map[string]any)
-	if !ok {
-		t.Fatalf("second change = %v, want an object", history[1])
-	}
-	if got, want := raised["cause"], "advance"; got != want {
-		t.Errorf("second cause = %v, want %v", got, want)
-	}
-	if got, want := raised["from"], 3.0; got != want {
-		t.Errorf("second from = %v, want %v", got, want)
-	}
-	if got, want := raised["at"], "2026-10-15T08:00:00Z"; got != want {
-		t.Errorf("second at = %v, want %v", got, want)
-	}
-}
-
-// TestAutonomyWithNoSnapshotAndNoHistoryListsNone asserts an owner whose level
-// has never been computed reads no snapshot, an empty history and empty rewrite
-// figures rather than nulls, which the view reads as nothing to show (AC2, AC6).
-func TestAutonomyWithNoSnapshotAndNoHistoryListsNone(t *testing.T) {
-	rec := getAutonomy(t, &stubAutonomy{})
-
-	var body map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatal(err)
-	}
-	if got, want := body["level"], 0.0; got != want {
-		t.Errorf("level = %v, want %v", got, want)
-	}
-	if got, want := body["allows"], "you delegate and you merge"; got != want {
-		t.Errorf("allows = %v, want %v", got, want)
-	}
-	if body["earned"] != nil {
-		t.Errorf("earned = %v, want none", body["earned"])
-	}
-	if history, ok := body["history"].([]any); !ok || len(history) != 0 {
-		t.Errorf("history = %v, want an empty list", body["history"])
-	}
-	rewrite, ok := body["rewrite"].(map[string]any)
-	if !ok {
-		t.Fatalf("rewrite = %v, want the figures", body["rewrite"])
-	}
-	for _, key := range []string{"series", "prs", "by_repo"} {
-		if list, ok := rewrite[key].([]any); !ok || len(list) != 0 {
-			t.Errorf("%s = %v, want an empty list", key, rewrite[key])
-		}
-	}
-	// The tiles and the sizes are drawn whether or not anything is measured, so
-	// the view reads the same figures it will fill.
-	tiles, ok := rewrite["tiles"].([]any)
-	if !ok || len(tiles) != 3 {
-		t.Fatalf("tiles = %v, want the three windows", rewrite["tiles"])
-	}
-	for _, tile := range tiles {
-		row, ok := tile.(map[string]any)
-		if !ok {
-			t.Fatalf("tile = %v, want an object", tile)
-		}
-		// A window with no PRs reads an empty list rather than a null, which
-		// would blank the tile.
-		if prs, ok := row["prs"].([]any); !ok || len(prs) != 0 {
-			t.Errorf("tile prs = %v, want an empty list", row["prs"])
-		}
-	}
-	if sizes, ok := rewrite["by_size"].([]any); !ok || len(sizes) != 4 {
-		t.Errorf("by_size = %v, want the four sizes", rewrite["by_size"])
-	}
-}
-
-// TestAutonomyReportsAStaleSnapshotAboveTheEarnedLevel asserts the two facts the
-// view words: the snapshot is stale, and the stored level is above the one the
-// PRs have earned (AC4, AC6).
-func TestAutonomyReportsAStaleSnapshotAboveTheEarnedLevel(t *testing.T) {
-	at := time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC)
-	reader := &stubAutonomy{view: store.AutonomyView{
-		Level: 5, HasEarned: true,
-		Earned: dispatcher.Earned{Level: 4, Stale: true, ComputedAt: at},
-	}}
-	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Autonomy: reader})
-
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/autonomy", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-
-	var body map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatal(err)
-	}
-	if got, want := body["level"], 5.0; got != want {
-		t.Errorf("level = %v, want %v", got, want)
-	}
-	earned, ok := body["earned"].(map[string]any)
-	if !ok {
-		t.Fatalf("earned = %v, want the snapshot", body["earned"])
-	}
-	if got, want := earned["stale"], true; got != want {
-		t.Errorf("stale = %v, want %v", got, want)
-	}
-	if got, want := earned["level"], 4.0; got != want {
-		t.Errorf("earned level = %v, want %v", got, want)
-	}
-}
-
-// TestAutonomyPrintsTheWordForARateWithNoAgentLines asserts a rate measured over
-// none of the agent's lines reads as words rather than the +Inf that no JSON
-// number holds, which would fail the whole answer (AC1).
-func TestAutonomyPrintsTheWordForARateWithNoAgentLines(t *testing.T) {
-	reader := &stubAutonomy{view: store.AutonomyView{
-		Level: 3, HasEarned: true,
-		Earned: dispatcher.Earned{Level: 3, ComputedAt: time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC),
-			Numbers: dispatcher.Numbers{PRs: []int{141}, Rate: math.Inf(1), OwnerLines: 4}},
-	}}
-	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Autonomy: reader})
-
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/autonomy", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), `"rate":"no agent lines"`) {
-		t.Fatalf("body = %s, want the word for a rate with no agent lines under it", rec.Body.String())
-	}
+	return s.merges, nil
 }
 
 // TestAutonomyRefusesAWriteMethod asserts the autonomy endpoint refuses every
-// method that could set a level: the surface has no such route, and the level
-// stays the runner autonomy command's (AC5).
+// method that could set anything: the surface has no such route, and the switch
+// is set through its own endpoint (AC5).
 func TestAutonomyRefusesAWriteMethod(t *testing.T) {
-	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Autonomy: &stubAutonomy{}})
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Measured: &stubMeasured{}})
 
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, httptest.NewRequest(method, "/api/autonomy", strings.NewReader(`{"level":5}`)))
+		mux.ServeHTTP(rec, httptest.NewRequest(method, "/api/autonomy", strings.NewReader(`{}`)))
 		if rec.Code != http.StatusMethodNotAllowed {
 			t.Errorf("%s = %d, want %d", method, rec.Code, http.StatusMethodNotAllowed)
 		}
@@ -729,7 +492,7 @@ func TestAutonomyRefusesAWriteMethod(t *testing.T) {
 }
 
 // TestAutonomyWithoutAStoreIsUnavailable asserts a local run with no store
-// answers 503 rather than a level nobody recorded.
+// answers 503 rather than figures nobody could read.
 func TestAutonomyWithoutAStoreIsUnavailable(t *testing.T) {
 	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger()})
 
@@ -741,14 +504,14 @@ func TestAutonomyWithoutAStoreIsUnavailable(t *testing.T) {
 }
 
 // TestAutonomyReportsAStoreItCannotRead asserts a failed read is a 500 with the
-// failure reported, not a level nobody could read.
+// failure reported, not figures nobody could read.
 func TestAutonomyReportsAStoreItCannotRead(t *testing.T) {
 	var log strings.Builder
-	reader := &stubAutonomy{err: errors.New("firestore unreachable")}
+	reader := &stubMeasured{err: errors.New("firestore unreachable")}
 	mux := newMux(Deps{
 		SPA:      fstest.MapFS{},
 		Logger:   slog.New(slog.NewTextHandler(&log, nil)),
-		Autonomy: reader,
+		Measured: reader,
 	})
 
 	rec := httptest.NewRecorder()
@@ -761,9 +524,9 @@ func TestAutonomyReportsAStoreItCannotRead(t *testing.T) {
 	}
 }
 
-func getAutonomy(t *testing.T, reader *stubAutonomy) *httptest.ResponseRecorder {
+func getAutonomy(t *testing.T, reader *stubMeasured) *httptest.ResponseRecorder {
 	t.Helper()
-	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Autonomy: reader})
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Measured: reader})
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/autonomy", nil))
 	if rec.Code != http.StatusOK {
@@ -772,54 +535,13 @@ func getAutonomy(t *testing.T, reader *stubAutonomy) *httptest.ResponseRecorder 
 	return rec
 }
 
-// TestAutonomySerialisesAnEmptySnapshotsPRsAsAnEmptyList asserts evidence with no
-// PRs reads `"prs":[]` and never null, which would blank the view.
-func TestAutonomySerialisesAnEmptySnapshotsPRsAsAnEmptyList(t *testing.T) {
-	rec := getAutonomy(t, &stubAutonomy{view: store.AutonomyView{
-		Level: 3, HasEarned: true,
-		Earned: dispatcher.Earned{Level: 3, ComputedAt: time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC)},
-	}})
-	if !strings.Contains(rec.Body.String(), `"prs":[]`) || strings.Contains(rec.Body.String(), `"prs":null`) {
-		t.Fatalf("body = %s, want prs as an empty list", rec.Body.String())
-	}
-}
-
-// TestAutonomyAsksForTheCappedHistoryAndSaysWhenItIsCut asserts the reader is
-// asked for exactly the cap, and the answer says so only when the list reached it.
-func TestAutonomyAsksForTheCappedHistoryAndSaysWhenItIsCut(t *testing.T) {
-	full := make([]dispatcher.Change, autonomyHistoryShown)
-	for _, tt := range []struct {
-		name    string
-		history []dispatcher.Change
-		cutAt   string
-	}{
-		{"whole", full[:2], ``},
-		{"cut", full, `cut`},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			reader := &stubAutonomy{view: store.AutonomyView{History: tt.history}}
-			rec := getAutonomy(t, reader)
-			if reader.limit != 50 {
-				t.Errorf("limit asked = %d, want 50", reader.limit)
-			}
-			if got := strings.Contains(rec.Body.String(), `"history_cut_at":50`); got != (tt.cutAt != "") {
-				t.Errorf("history_cut_at present = %v, want %v", got, tt.cutAt != "")
-			}
-		})
-	}
-}
-
-// TestAutonomyMarksEvidenceTheStoreHeldNoneOfAsNotRecorded asserts the endpoint
-// says the numbers are absent rather than leaving the view to read zeros.
-func TestAutonomyMarksEvidenceTheStoreHeldNoneOfAsNotRecorded(t *testing.T) {
-	rec := getAutonomy(t, &stubAutonomy{view: store.AutonomyView{
-		History: []dispatcher.Change{
-			{From: 3, To: 4, Numbers: dispatcher.Numbers{NotRecorded: true}},
-			{From: 4, To: 3, Numbers: dispatcher.Numbers{PRs: []int{1}}},
-		},
-	}})
-	if got := strings.Count(rec.Body.String(), `"recorded":false`); got != 1 {
-		t.Fatalf("body = %s, want exactly the first change not recorded", rec.Body.String())
+// TestAutonomyAsksForTheMeasuredCap asserts the endpoint reads the measured
+// merges under the cap the figures are drawn from, never the whole collection.
+func TestAutonomyAsksForTheMeasuredCap(t *testing.T) {
+	reader := &stubMeasured{}
+	getAutonomy(t, reader)
+	if reader.limit != measuredShown {
+		t.Errorf("limit asked = %d, want %d", reader.limit, measuredShown)
 	}
 }
 
@@ -847,7 +569,7 @@ func seriesOf(t *testing.T, rec *httptest.ResponseRecorder) []any {
 // PRs' own rates (AC1, AC3, AC4, AC5, AC6).
 func TestAutonomyReportsTheRewriteFiguresThePageDraws(t *testing.T) {
 	at := time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC)
-	reader := &stubAutonomy{view: store.AutonomyView{Measured: []dispatcher.Sample{
+	reader := &stubMeasured{merges: []dispatcher.Sample{
 		{Run: "run-2", Repo: "octo/scratch", Size: "M", PR: 143, MergedAt: at,
 			PRURL:   "https://github.com/octo/scratch/pull/143",
 			Title:   "feat(runner): FRG-143 add the widget",
@@ -856,7 +578,7 @@ func TestAutonomyReportsTheRewriteFiguresThePageDraws(t *testing.T) {
 			Rewrite: dispatcher.Rewrite{AgentLines: 10, OwnerLines: 10}},
 		{Run: "run-0", PR: 141, MergedAt: at.Add(-2 * time.Hour),
 			Rewrite: dispatcher.Rewrite{OwnerLines: 4}},
-	}}}
+	}}
 	rec := getAutonomy(t, reader)
 
 	var body map[string]any
@@ -996,7 +718,7 @@ func TestAutonomyReportsTheRollingRateOverTheMerges(t *testing.T) {
 			Rewrite:  dispatcher.Rewrite{AgentLines: 100, OwnerLines: int64(i + 1)},
 		})
 	}
-	series := seriesOf(t, getAutonomy(t, &stubAutonomy{view: store.AutonomyView{Measured: measured}}))
+	series := seriesOf(t, getAutonomy(t, &stubMeasured{merges: measured}))
 	if len(series) != 1 {
 		t.Fatalf("series = %v, want the one window ten measured PRs fill", series)
 	}
@@ -1016,7 +738,7 @@ func TestAutonomyReportsTheRollingRateOverTheMerges(t *testing.T) {
 	// the series runs oldest first.
 	measured = append(measured, dispatcher.Sample{PR: 100, MergedAt: at.Add(-10 * time.Hour),
 		Rewrite: dispatcher.Rewrite{AgentLines: 100, OwnerLines: 100}})
-	series = seriesOf(t, getAutonomy(t, &stubAutonomy{view: store.AutonomyView{Measured: measured}}))
+	series = seriesOf(t, getAutonomy(t, &stubMeasured{merges: measured}))
 	if len(series) != 2 {
 		t.Fatalf("series = %v, want a point per merge with ten measured up to it", series)
 	}
@@ -1035,7 +757,7 @@ func TestAutonomyReportsTheRollingRateOverTheMerges(t *testing.T) {
 // the ten merges the tiles are read over, newest first, so a page lists the same
 // window the rate is pooled over (AC3).
 func TestAutonomyPrintsNoAgentLinesForAnEmptyWindowAndAPRWithNoLines(t *testing.T) {
-	empty := getAutonomy(t, &stubAutonomy{})
+	empty := getAutonomy(t, &stubMeasured{})
 	if strings.Contains(empty.Body.String(), `"rate":"0.0%"`) {
 		t.Fatalf("body = %s, want no measured zero over no merges", empty.Body.String())
 	}
@@ -1055,7 +777,7 @@ func TestAutonomyPrintsNoAgentLinesForAnEmptyWindowAndAPRWithNoLines(t *testing.
 		}
 	}
 
-	rec := getAutonomy(t, &stubAutonomy{view: store.AutonomyView{Measured: []dispatcher.Sample{{PR: 7}}}})
+	rec := getAutonomy(t, &stubMeasured{merges: []dispatcher.Sample{{PR: 7}}})
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
@@ -1071,7 +793,7 @@ func TestAutonomyFoldsAPRsSizeIntoTheBucketBySizeUses(t *testing.T) {
 		{PR: 2, Size: "", Rewrite: dispatcher.Rewrite{AgentLines: 1}},
 		{PR: 1, Size: "L", Rewrite: dispatcher.Rewrite{AgentLines: 1}},
 	}
-	rec := getAutonomy(t, &stubAutonomy{view: store.AutonomyView{Measured: measured}})
+	rec := getAutonomy(t, &stubMeasured{merges: measured})
 	var body struct {
 		Rewrite map[string][]map[string]any `json:"rewrite"`
 	}
@@ -1095,7 +817,7 @@ func TestAutonomyCapsThePRListAtTheTrailingWindow(t *testing.T) {
 			Rewrite:  dispatcher.Rewrite{AgentLines: 100},
 		})
 	}
-	rec := getAutonomy(t, &stubAutonomy{view: store.AutonomyView{Measured: measured}})
+	rec := getAutonomy(t, &stubMeasured{merges: measured})
 
 	var body map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -1136,7 +858,7 @@ func TestAutonomyReportsARatedSizesSpreadAndWithholdsTheOneItLacks(t *testing.T)
 			Rewrite: dispatcher.Rewrite{OwnerLines: 10},
 		})
 	}
-	rec := getAutonomy(t, &stubAutonomy{view: store.AutonomyView{Measured: measured}})
+	rec := getAutonomy(t, &stubMeasured{merges: measured})
 
 	var body map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -1203,11 +925,11 @@ func ratedMerges(at time.Time, ownerPerPR int64) []dispatcher.Sample {
 	return measured
 }
 
-// readAutoMerge reads the auto-merge state through the autonomy view, which is
-// where the page reads it.
-func readAutoMerge(t *testing.T, view store.AutonomyView, switches AutoMergeStore) map[string]any {
+// readAutoMerge reads the auto-merge state through the autonomy endpoint, which
+// is where the page reads it.
+func readAutoMerge(t *testing.T, merges []dispatcher.Sample, switches AutoMergeStore) map[string]any {
 	t.Helper()
-	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Autonomy: &stubAutonomy{view: view}, AutoMerge: switches})
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Measured: &stubMeasured{merges: merges}, AutoMerge: switches})
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/autonomy", nil))
 	if rec.Code != http.StatusOK {
@@ -1229,15 +951,15 @@ func readAutoMerge(t *testing.T, view store.AutonomyView, switches AutoMergeStor
 // effective state needs both of, with the bar read from the dispatcher's own
 // constant (AC1).
 func TestAutonomyReportsTheAutoMergeSwitchAndTheRatesVerdict(t *testing.T) {
-	state := readAutoMerge(t, store.AutonomyView{Measured: ratedMerges(measuredAt(), 98)}, &stubAutoMerge{enabled: true})
+	state := readAutoMerge(t, ratedMerges(measuredAt(), 98), &stubAutoMerge{enabled: true})
 
-	if got, want := slices.Sorted(maps.Keys(state)), []string{"effective", "limit", "rate_allows", "rate_value", "reason", "switch_on"}; !slices.Equal(got, want) {
+	if got, want := slices.Sorted(maps.Keys(state)), []string{"effective", "limit", "rate_allows", "rate_value", "reason", "switch_on", "window"}; !slices.Equal(got, want) {
 		t.Fatalf("auto_merge keys = %v, want %v", got, want)
 	}
 	if state["switch_on"] != true || state["rate_allows"] != true || state["effective"] != true {
 		t.Errorf("auto_merge = %v, want the switch on and the 9.8%% rate allowing it", state)
 	}
-	if state["rate_value"] != "9.8%" || state["limit"] != "10.0%" || state["reason"] != dispatcher.AutoMergeReasonOn {
+	if state["rate_value"] != "9.8%" || state["limit"] != "10.0%" || state["window"] != 10.0 || state["reason"] != dispatcher.AutoMergeReasonOn {
 		t.Errorf("auto_merge = %v, want the rule's own rate against its bar", state)
 	}
 }
@@ -1246,7 +968,7 @@ func TestAutonomyReportsTheAutoMergeSwitchAndTheRatesVerdict(t *testing.T) {
 // separate: the owner's switch is on while the rate does not allow, so
 // auto-merge is not effective (AC1).
 func TestAutonomyReportsARateAboveTheBarAsNotAllowing(t *testing.T) {
-	state := readAutoMerge(t, store.AutonomyView{Measured: ratedMerges(measuredAt(), 101)}, &stubAutoMerge{enabled: true})
+	state := readAutoMerge(t, ratedMerges(measuredAt(), 101), &stubAutoMerge{enabled: true})
 
 	if state["switch_on"] != true || state["rate_allows"] != false || state["effective"] != false {
 		t.Errorf("auto_merge = %v, want the switch on and the rate refusing", state)
@@ -1259,7 +981,7 @@ func TestAutonomyReportsARateAboveTheBarAsNotAllowing(t *testing.T) {
 // TestAutonomyReportsAnOffSwitchBesideARateThatAllows asserts the switch off is
 // reported on its own, with the rate's verdict still read beside it (AC1).
 func TestAutonomyReportsAnOffSwitchBesideARateThatAllows(t *testing.T) {
-	state := readAutoMerge(t, store.AutonomyView{Measured: ratedMerges(measuredAt(), 0)}, &stubAutoMerge{})
+	state := readAutoMerge(t, ratedMerges(measuredAt(), 0), &stubAutoMerge{})
 
 	if state["switch_on"] != false || state["effective"] != false {
 		t.Errorf("auto_merge = %v, want the switch off and no effect", state)
@@ -1276,7 +998,7 @@ func TestAutonomyReportsASwitchItCannotReadAsOff(t *testing.T) {
 	mux := newMux(Deps{
 		SPA:       fstest.MapFS{},
 		Logger:    slog.New(slog.NewTextHandler(&log, nil)),
-		Autonomy:  &stubAutonomy{view: store.AutonomyView{Measured: ratedMerges(measuredAt(), 0)}},
+		Measured:  &stubMeasured{merges: ratedMerges(measuredAt(), 0)},
 		AutoMerge: &stubAutoMerge{enabled: true, readErr: errors.New("firestore unreachable")},
 	})
 	rec := httptest.NewRecorder()

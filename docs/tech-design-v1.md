@@ -191,8 +191,8 @@ One Go binary entrypoint (`cmd/dispatcher`). Per poll:
    code (setup, the worktree, the PR job, no readable summary), the failed job's own log
    tail, which the runner reads at record time — names one of a closed list of transient
    signatures — a Go module proxy or checksum read, a network timeout, a lost runner.
-   An abandoned claim carries none: it is as likely cancelled by the owner as lost. At autonomy level 1 or
-   above the poll returns such a run to the queue for up to two more attempts, each
+   An abandoned claim carries none: it is as likely cancelled by the owner as lost. The poll
+   returns such a run to the queue for up to two more attempts, each
    recorded with its class, ahead of the claim walk so the retry can be claimed by the
    same poll. The requeue only returns the run to the queue: the claim that follows is
    admitted like any other, so the ceilings, the review WIP limit and the breaker hold
@@ -228,10 +228,10 @@ One Go binary entrypoint (`cmd/dispatcher`). Per poll:
    records when it was posted, so the question is neither dropped nor repeated, and
    the dispatcher is its one decider (`adr/0013`) — the poll both posts and matches.
 
-11. ~~**Delegate the queue's next ticket itself, at autonomy level 1 or above** (FRG-125).~~
+11. ~~**Delegate the queue's next ticket itself** (FRG-125).~~
     > **Retired (2026-10-19):** the dispatcher never delegates a ticket; work starts only when the owner delegates one (`adr/0018`). The paragraph below describes what was built (FRG-125, FRG-164) and removed (FRG-181); the eligibility rule it used is in git at `bc77711` for the surface's START PHASE to restore from.
     The poll delegates the next eligible ticket to the app while today's claimed runs are
-    below the level's daily bar (1, 3, 5, 5 and 10 runs a day at levels 1 to 5) and the
+    below the daily bar it was configured with and the
     review WIP limit has room. Eligible means an open ticket in the earliest milestone that
     still has open tickets, ordered by Linear priority: a `[BE]`, `[FE]` or `[SLICE]` title,
     a `repo:` label on the runner's allowlist and a `size:` label, no `.github/workflows/`
@@ -239,7 +239,7 @@ One Go binary entrypoint (`cmd/dispatcher`). Per poll:
     requeues a transient stop itself; every other ended run needs an operator's
     `runner requeue`). A ticket with an open blocker is delegated, since the dispatcher
     holds it anyway. It runs last in the poll, and the agent session a delegation opens
-    wakes the poll that admits it. Level 0 delegates nothing.
+    wakes the poll that admits it.
 
 **Why a Job and not a service:** nothing calls it over HTTP. It is started by the schedule or by the webhook's run request (`adr/0013`), and the public endpoint lives in the webhook service, not here.
 
@@ -316,12 +316,13 @@ request. It posts one marked comment and the `wingman-review` status, and reques
 auto-merge only for a clean review of an eligible PR, pinned to the reviewed head
 (`FR-16`). Branch protection requires the `go` and `web` checks and no approval.
 
-**Autonomy level — *Updated (2026-10-14)*, FRG-124.** Whether an eligible PR may merge at
-all is the owner's autonomy level, stored at `dispatch/autonomy` beside the peak mode, set
-with `runner autonomy -level N`, and recorded on each run row when it is claimed. pr-meta
-marks a PR eligible only when that recorded level is 4 or more; a missing level counts as
-0. It replaces the `WINGMAN_AUTO_MERGE` repository variable, which the dispatcher could not
-read. Levels 4 and 5 are refused until their advance conditions are measured (FRG-126).
+**Auto-merge — *Updated (2026-10-19)*, `adr/0018`.** Whether an eligible PR may merge at
+all is one metric-gated rule and the owner's switch: the switch is stored at
+`dispatch/auto-merge`, set with `runner auto-merge` and by the surface's own handler, and
+auto-merge is on when the trailing rewrite rate is 10% or less over the ten newest measured
+merged PRs and none of them is an auto-merged PR a later merged revert names. pr-meta marks
+a PR eligible only when the rule is on and the switch is on. It replaces the
+`WINGMAN_AUTO_MERGE` repository variable, which the dispatcher could not read.
 
 **Front-end hold — *Updated (2026-10-13)*, forge-wingman #115.** Eligibility for auto-merge
 (`FR-5`) excludes an S or M PR that touches the front end, which stays ready, not a draft.
@@ -509,11 +510,11 @@ optimize routing and prompt caching"* (verified 2026-09-21). Three consequences:
   no identity, so this does not blur two run records — they stay linked by run id.
 - **Keyed per PHASE as well**, because FR-19 emits a full projection for plan and
   a trimmed one for build. Two different prefixes are two different caches.
-- **It stretches the ALLOWANCE, not the cash.** At level 5 the rule stack is about
+- **It stretches the ALLOWANCE, not the cash.** The rule stack is about
   $4.82/month uncached and $0.96 cached — a rounding error against NFR-1's $20.
   What matters is that NFR-1 names the allowance windows as the binding
   constraint, so a 5x cut on the largest token line is roughly 5x more runs before
-  FR-22 starts deferring. Caching is what decides how soon the ladder stalls.
+  FR-22 starts deferring. Caching is what decides how soon the budget stalls.
 
 **Evaluation is the run record, not a tracing vendor.** FR-6 already persists model
 per phase, tokens in/out/cached, cost, duration per phase and outcome — which is
@@ -576,7 +577,7 @@ It is the only diagram in this product that names technology.
 | # | Item | Blocks |
 |---|---|---|
 | 1 | **Superseded (2026-09-23):** the probe ran — series 8 verdict in `three-trap-probe-v1.md`; its two protocol lines are not yet in the projection. ~~FR-19's three-trap probe has not been run; the trimmed projection is unproven~~ | Phase 2's first ticket |
-| 2 | **Updated (2026-09-25): first full run measured** — one size-S ticket (no plan phase): build 4m13s, whole run 7m06s, ~8 billed runner minutes (each job rounds up to the minute), so ~250 runs/month fit a private target's free 2,000. One sample: close at ≥10 runs per size, with p90 for the per-run cap and the mean for minute budgets. ~~probe cells ran **0.9–8.1 min, median 5.5**, so the ~30 min figure is falsified — but a full plan-build-PR run is still unmeasured, and it decides whether level 2 is free or metered. Run duration is assumed at ~30 min and has never been measured~~ **Updated (2026-10-17): closed for S and M** — the sum of each run's recorded phase durations on its last attempt (S n = 17, M n = 18; L has 3, so it stays open): **S mean 18.1 min, p90 32.3 min; M mean 46.7 min, p90 57.9 min**. These are phase sums, not wall clock or billed minutes (each job rounds up), so the per-run cap should read the p90 and the minute budget the mean once billed minutes are recorded per size. | nothing; FR-6 records it and NFR-4 says measure before tuning |
+| 2 | **Updated (2026-09-25): first full run measured** — one size-S ticket (no plan phase): build 4m13s, whole run 7m06s, ~8 billed runner minutes (each job rounds up to the minute), so ~250 runs/month fit a private target's free 2,000. One sample: close at ≥10 runs per size, with p90 for the per-run cap and the mean for minute budgets. ~~probe cells ran **0.9–8.1 min, median 5.5**, so the ~30 min figure is falsified — but a full plan-build-PR run is still unmeasured, and it decides whether the second run tier is free or metered. Run duration is assumed at ~30 min and has never been measured~~ **Updated (2026-10-17): closed for S and M** — the sum of each run's recorded phase durations on its last attempt (S n = 17, M n = 18; L has 3, so it stays open): **S mean 18.1 min, p90 32.3 min; M mean 46.7 min, p90 57.9 min**. These are phase sums, not wall clock or billed minutes (each job rounds up), so the per-run cap should read the p90 and the minute budget the mean once billed minutes are recorded per size. | nothing; FR-6 records it and NFR-4 says measure before tuning |
 | 3 | FR-20's PR actions need a scoped GitHub credential for the operator; the scope set is enumerated but not created | the retry-and-act phase only |
-| 4 | **The decision seam's provider is admissible but unproven.** Jev fits FR-15's shape exactly and NFR-2 no longer bars it, but it has not been scored against the held-out set and it is six days old | nothing at level 0 — FR-15's deterministic signals run first and free, and the classifier decides only the remainder |
+| 4 | **The decision seam's provider is admissible but unproven.** Jev fits FR-15's shape exactly and NFR-2 no longer bars it, but it has not been scored against the held-out set and it is six days old | nothing — FR-15's deterministic signals run first and free, and the classifier decides only the remainder |
 | 5 | **Updated (2026-10-07):** the cost source is per harness adapter. omp's own figure is wrong (it charged peak rates off-peak), so its runs are priced from tokens × the plan's rates (`adr/0015`, FRG-57), as the opencode fallback's must be (FRG-65); the retired Command Code CLI adapter is removed after FRG-65. **Added (2026-10-05):** a Command Code run records a provider cost of 0, so FR-22's GOAT windows and NFR-1's per-run cost cap meter nothing until FRG-47 fills the cost from the CLI transcript's `costUsd` — the record then numbered `adr/0015` | enforcement of FR-22 and NFR-1's cost cap |

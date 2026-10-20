@@ -53,12 +53,12 @@ func run(logger *slog.Logger) error {
 	}
 
 	// The comparison, providers, autonomy and peak endpoints read past runs,
-	// the owner's plan records, the level and the peak mode, so they need the
-	// store. A local run without GOOGLE_CLOUD_PROJECT has none and serves the
-	// SPA alone, answering those endpoints with 503.
+	// the owner's plan records, the measured merges and the peak mode, so they
+	// need the store. A local run without GOOGLE_CLOUD_PROJECT has none and
+	// serves the SPA alone, answering those endpoints with 503.
 	var comparison ComparisonReader
 	var providerPlans ProviderPlansReader
-	var autonomy AutonomyReader
+	var measured MeasuredReader
 	var peak PeakModeStore
 	var autoMerge AutoMergeStore
 	if project := os.Getenv("GOOGLE_CLOUD_PROJECT"); project != "" {
@@ -69,7 +69,7 @@ func run(logger *slog.Logger) error {
 		defer func() { _ = fsc.Close() }()
 		comparison = store.NewRecords(fsc)
 		providerPlans = store.NewProviderPlans(fsc)
-		autonomy = store.NewAutonomies(fsc)
+		measured = store.NewRewrites(fsc)
 		peak = store.NewPeakModes(fsc)
 		autoMerge = store.NewAutoMergeSwitches(fsc)
 	}
@@ -79,7 +79,7 @@ func run(logger *slog.Logger) error {
 		Logger:        logger,
 		Comparison:    comparison,
 		ProviderPlans: providerPlans,
-		Autonomy:      autonomy,
+		Measured:      measured,
 		Peak:          peak,
 		AutoMerge:     autoMerge,
 	}
@@ -125,11 +125,11 @@ type ProviderPlansReader interface {
 	Providers(ctx context.Context, at time.Time) ([]store.ProviderPlan, error)
 }
 
-// AutonomyReader reads what the autonomy view shows: the level the owner has
-// set, the earned snapshot behind it, the changes recorded newest first and the
-// measured merges the rewrite figures are computed from. It has no method that sets the level, which stays the runner autonomy command.
-type AutonomyReader interface {
-	AutonomyView(ctx context.Context, history int) (store.AutonomyView, error)
+// MeasuredReader reads the measured merges the autonomy view's figures are
+// computed from: every merged runner PR, newest merge first. It reads only; the
+// measurement is written by the dispatcher's poll.
+type MeasuredReader interface {
+	Recent(ctx context.Context, limit int) ([]dispatcher.Sample, error)
 }
 
 // PeakModeStore reads and sets what the peak view shows: whether a run waits out
@@ -158,7 +158,7 @@ type Deps struct {
 	Logger        *slog.Logger
 	Comparison    ComparisonReader
 	ProviderPlans ProviderPlansReader
-	Autonomy      AutonomyReader
+	Measured      MeasuredReader
 	Peak          PeakModeStore
 	AutoMerge     AutoMergeStore
 }
@@ -206,20 +206,19 @@ func newMux(d Deps) *http.ServeMux {
 		_ = json.NewEncoder(w).Encode(renderProviders(plans))
 	})
 	mux.HandleFunc("GET /api/autonomy", func(w http.ResponseWriter, r *http.Request) {
-		if d.Autonomy == nil {
+		if d.Measured == nil {
 			http.Error(w, "the autonomy view needs a store", http.StatusServiceUnavailable)
 			return
 		}
-		view, err := d.Autonomy.AutonomyView(r.Context(), autonomyHistoryShown)
+		measured, err := d.Measured.Recent(r.Context(), measuredShown)
 		if err != nil {
 			d.Logger.Error("autonomyNotRead", "err", err.Error())
-			http.Error(w, "reading the autonomy level", http.StatusInternalServerError)
+			http.Error(w, "reading the measured merges", http.StatusInternalServerError)
 			return
 		}
 		switchOn, switchRead := d.autoMergeSwitch(r.Context())
-		autoMerge := renderAutoMerge(view.Measured, switchOn, switchRead)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(renderAutonomy(view, autonomyHistoryShown, autoMerge))
+		_ = json.NewEncoder(w).Encode(renderAutonomy(measured, switchOn, switchRead))
 	})
 	mux.HandleFunc("GET /api/peak", func(w http.ResponseWriter, r *http.Request) {
 		if d.Peak == nil {
@@ -468,124 +467,31 @@ func renderProviders(plans []store.ProviderPlan) providersResponse {
 	return out
 }
 
-// autonomyHistoryShown is how many level changes the autonomy view lists, newest
-// first. The history gains one document per change, so it is many times the
-// number of changes a level's own range can produce.
-const autonomyHistoryShown = 50
+// measuredShown is how many measured merges the autonomy view reads, newest
+// first: enough for the tiles, the rolling series and the split by size and
+// repository a page draws.
+const measuredShown = 200
 
-// autonomyResponse is the autonomy endpoint's wire shape: the level the owner
-// has set and what it allows, the earned snapshot behind it, the changes
-// recorded newest first and the rewrite figures of the measured merges. It
-// carries no ticket text and no credential — the evidence is counts, PR numbers
-// and links, run ids and repository names — and no field of it sets the level,
-// which stays the runner autonomy command's. The auto-merge switch beside it is
-// set through its own endpoint.
+// autonomyResponse is the autonomy endpoint's wire shape: whether auto-merge is
+// on, with the rate's verdict and the reason, and the rewrite figures of the
+// measured merges. It carries no ticket text and no credential — the evidence is
+// counts, PR numbers and links, run ids and repository names — and no field of it
+// sets anything; the switch is set through its own endpoint.
 type autonomyResponse struct {
-	Level   int              `json:"level"`
-	Allows  string           `json:"allows"`
-	Earned  *earnedSnapshot  `json:"earned"`
-	History []autonomyChange `json:"history"`
-	// HistoryCutAt is the cap the history reached, so older changes may exist
-	// beyond it; absent while the list is whole.
-	HistoryCutAt int `json:"history_cut_at,omitempty"`
-	// Rewrite is the measured merges' own figures: the rates a page draws rather
-	// than the level's evidence.
-	Rewrite rewriteView `json:"rewrite"`
 	// AutoMerge is the owner's switch beside the rate's verdict, the two facts
 	// the effective state needs both of.
 	AutoMerge autoMergeState `json:"auto_merge"`
+	// Rewrite is the measured merges' own figures: the rates a page draws.
+	Rewrite rewriteView `json:"rewrite"`
 }
 
-// earnedSnapshot is the earned level as last computed: the evidence behind it,
-// and the stale mark left by a recomputation that could not store one.
-type earnedSnapshot struct {
-	Level      int       `json:"level"`
-	Stale      bool      `json:"stale"`
-	ComputedAt time.Time `json:"computed_at"`
-	Evidence   evidence  `json:"evidence"`
-}
-
-// autonomyChange is one recorded change of the level: when it happened, the
-// levels it moved between, its cause and the evidence at that moment.
-type autonomyChange struct {
-	At       time.Time `json:"at"`
-	From     int       `json:"from"`
-	To       int       `json:"to"`
-	Cause    string    `json:"cause"`
-	Evidence evidence  `json:"evidence"`
-}
-
-// evidence is the rewrite rate's numbers: the rate, the PRs it covers and the
-// lines behind it, with the owner's lines split by the Rework label that marks
-// them.
-type evidence struct {
-	Rate             string `json:"rate"`
-	PRs              []int  `json:"prs"`
-	AgentLines       int64  `json:"agent_lines"`
-	OwnerLines       int64  `json:"owner_lines"`
-	ReviewFoundLines int64  `json:"review_found_lines"`
-	OwnerChangeLines int64  `json:"owner_change_lines"`
-	UnlabelledLines  int64  `json:"unlabelled_lines"`
-	Reverts          int    `json:"reverts"`
-	Unavailable      bool   `json:"unavailable"`
-	// Recorded is false when the stored record held no evidence, so the numbers
-	// are absent and not zero.
-	Recorded bool `json:"recorded"`
-}
-
-// renderAutonomy renders the store's view as JSON, with the auto-merge switch
-// the view was read beside. The history and the rewrite figures are rendered
-// whether or not they hold anything, so the view reads an empty list rather than
-// a null; the earned snapshot is null while none is stored.
-func renderAutonomy(v store.AutonomyView, limit int, autoMerge autoMergeState) autonomyResponse {
-	out := autonomyResponse{
-		Level:     int(v.Level),
-		Allows:    v.Level.Describe(),
-		AutoMerge: autoMerge,
-		History:   make([]autonomyChange, 0, len(v.History)),
-		Rewrite:   renderRewrite(v.Measured),
-	}
-	if len(v.History) >= limit {
-		out.HistoryCutAt = limit
-	}
-	if v.HasEarned {
-		out.Earned = &earnedSnapshot{
-			Level:      int(v.Earned.Level),
-			Stale:      v.Earned.Stale,
-			ComputedAt: v.Earned.ComputedAt,
-			Evidence:   renderEvidence(v.Earned.Numbers),
-		}
-	}
-	for _, c := range v.History {
-		out.History = append(out.History, autonomyChange{
-			At:       c.At,
-			From:     int(c.From),
-			To:       int(c.To),
-			Cause:    c.Cause,
-			Evidence: renderEvidence(c.Numbers),
-		})
-	}
-	return out
-}
-
-// renderEvidence renders the numbers a level was computed from, with the rate as
-// the view prints it.
-func renderEvidence(n dispatcher.Numbers) evidence {
-	prs := n.PRs
-	if prs == nil {
-		prs = []int{}
-	}
-	return evidence{
-		Rate:             rateText(n.Rate),
-		PRs:              prs,
-		AgentLines:       n.AgentLines,
-		OwnerLines:       n.OwnerLines,
-		ReviewFoundLines: n.ReviewFoundLines,
-		OwnerChangeLines: n.OwnerChangeLines,
-		UnlabelledLines:  n.UnlabelledLines,
-		Reverts:          n.Reverts,
-		Unavailable:      n.Unavailable,
-		Recorded:         !n.NotRecorded,
+// renderAutonomy renders the auto-merge state and the rewrite figures of the
+// measured merges as JSON. switchRead is false for a switch that could not be
+// read, which reports off whatever switchOn holds.
+func renderAutonomy(samples []dispatcher.Sample, switchOn, switchRead bool) autonomyResponse {
+	return autonomyResponse{
+		AutoMerge: renderAutoMerge(samples, switchOn, switchRead),
+		Rewrite:   renderRewrite(samples),
 	}
 }
 
@@ -623,6 +529,8 @@ type autoMergeState struct {
 	RateValue string `json:"rate_value"`
 	// Limit is the bar the rate is compared to.
 	Limit string `json:"limit"`
+	// Window is how many trailing merged PRs the rate covers.
+	Window int `json:"window"`
 	// Effective is the switch on and the rate allowing it.
 	Effective bool `json:"effective"`
 	// Reason is why auto-merge is not effective: the rule's own reason, the
@@ -641,6 +549,7 @@ func renderAutoMerge(samples []dispatcher.Sample, switchOn, switchRead bool) aut
 		RateAllows: rate.On,
 		RateValue:  rate.RateText(),
 		Limit:      rateText(dispatcher.AutoMergeRate),
+		Window:     dispatcher.TrailingPRs,
 		Effective:  on && rate.On,
 		Reason:     rate.Reason,
 	}

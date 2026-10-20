@@ -129,7 +129,7 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	switchOn := autoMergeSwitchOn(ctx, logger, *runID, store.NewAutoMergeSwitches(fsc))
 	rule := autoMergeRule(ctx, logger, *runID, store.NewRewrites(fsc), switchOn)
 	merge := autoMerge(rule.On, *runID, rec.Ticket(), sum, runner.FailedGate(*checkReport), check)
-	logger.Info("autoMergeDecided", append(ruleAttrs(rule), "run", *runID, "autoMerge", merge, "autonomy", rec.Autonomy, "sampled", runner.Sampled(*runID),
+	logger.Info("autoMergeDecided", append(ruleAttrs(rule), "run", *runID, "autoMerge", merge, "sampled", runner.Sampled(*runID),
 		"draft", draft, "frontEnd", len(check.FrontEnd), "changed", len(check.Changed), "outOfPlan", len(check.OutOfPlan), "overlap", check.Overlap, "planned", check.Planned)...)
 	if err := writeOutputs(e.output, map[string]string{
 		"title":          title,

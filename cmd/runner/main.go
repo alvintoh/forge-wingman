@@ -10,7 +10,6 @@
 //	runner reset-breaker                             clear the breaker a systemic stop tripped, admitting dispatch again
 //	runner peak-mode       [-mode off-peak-only|always] print the peak mode, or set whether a run waits out its model's peak-price hours
 //	runner auto-merge      [-mode on|off]            print whether auto-merge is on, or switch it for the next PR pr-meta handles
-//	runner autonomy        [-level N]                print the autonomy level and what it allows and recompute the earned-level snapshot, or set the level for the next claim
 //	runner requeue         -run-id <id>              return a stopped run to the queue for another attempt
 //	runner backfill-queued-at [-dry-run]             stamp queued_at on the queued and planned runs that lack it
 //	runner project-add     -linear-project <name> -repo <owner/name>  list a project and its repository in the owner database
@@ -113,7 +112,7 @@ type env struct {
 // Actions environment.
 func requiredEnv(command string) ([]string, bool) {
 	switch command {
-	case "ticket", "pr-meta", "enable-provider", "reset-breaker", "peak-mode", "auto-merge", "autonomy", "cd", "requeue", "backfill-queued-at",
+	case "ticket", "pr-meta", "enable-provider", "reset-breaker", "peak-mode", "auto-merge", "requeue", "backfill-queued-at",
 		"plan-define", "plan-optin", "plan-verdict", "plan-reply", "plan-list", "plans-refresh", "project-add", "project-remove":
 		return []string{"GOOGLE_CLOUD_PROJECT"}, true
 	case "record", "record-plan-stage":
@@ -157,7 +156,7 @@ func loadEnv(getenv func(string) string, required ...string) (env, error) {
 
 func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(string) string) error {
 	if len(args) == 0 {
-		return errors.New("usage: runner ticket|build|plan-stage|record-plan-stage|pr-meta|record|enable-provider|reset-breaker|peak-mode|auto-merge|autonomy|cd|requeue|backfill-queued-at|project-add|project-remove|plan-define|plan-verdict|plan-reply|plan-list|plans-refresh|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post|agent-probe|egress-proxy [flags]")
+		return errors.New("usage: runner ticket|build|plan-stage|record-plan-stage|pr-meta|record|enable-provider|reset-breaker|peak-mode|auto-merge|requeue|backfill-queued-at|project-add|project-remove|plan-define|plan-verdict|plan-reply|plan-list|plans-refresh|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post|agent-probe|egress-proxy [flags]")
 	}
 	if args[0] == "plan-smoke" {
 		return planSmoke(ctx, logger, getenv, args[1:])
@@ -208,10 +207,6 @@ func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(st
 		return peakMode(ctx, logger, e, args[1:])
 	case "auto-merge":
 		return autoMergeSwitch(ctx, logger, e, args[1:])
-	case "autonomy":
-		return autonomy(ctx, logger, e, args[1:])
-	case "cd":
-		return cd(ctx, logger, e, args[1:])
 	case "requeue":
 		return requeue(ctx, logger, e, args[1:])
 	case "backfill-queued-at":

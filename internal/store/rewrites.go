@@ -36,12 +36,11 @@ const (
 	branchField             = "branch"
 	branchesField           = "branches"
 	autoMergeField          = "auto_merge"
-	failedGateField         = "failed_gate"
 	prURLField              = "pr_url"
 )
 
 // Rewrites records each merged agent PR's measured lines on its run row and
-// reads back the samples the autonomy level's conditions are checked against.
+// reads back the samples the auto-merge rule is decided from.
 type Rewrites struct {
 	client *firestore.Client
 }
@@ -203,8 +202,7 @@ func recentSamples(ctx context.Context, client *firestore.Client, limit int) ([]
 	return out, nil
 }
 
-// sample reads one measured row, id, as a condition sample. A field a row does
-// not carry reads as its zero, which withholds a level rather than granting one.
+// sample reads one measured row, id, as the auto-merge rule reads it.
 func sample(id string, row map[string]any) dispatcher.Sample {
 	autoMerged, _ := row[autoMergeField].(bool)
 	reverted, _ := row[rewriteRevertedField].(bool)
@@ -216,7 +214,6 @@ func sample(id string, row map[string]any) dispatcher.Sample {
 		Title:      str(row, prTitleField),
 		AutoMerged: autoMerged,
 		Reverted:   reverted,
-		GateMiss:   str(row, failedGateField) != "",
 	}
 	if at, ok := row[rewriteMergedAtField].(time.Time); ok {
 		s.MergedAt = at

@@ -64,7 +64,7 @@ func AutoMergeOn(ev Evidence) AutoMergeDecision {
 	lines := Lines(window)
 	d := AutoMergeDecision{PRs: len(window), Rate: lines.Rate(), Reverted: Reverts(window)}
 	switch {
-	case !allMeasured(window, TrailingPRs).Held || len(window) < TrailingPRs:
+	case !allMeasured(window) || len(window) < TrailingPRs:
 		d.Reason = AutoMergeReasonTooFewMeasured
 	case lines.AgentLines <= 0:
 		d.Reason = AutoMergeReasonNoAgentLines
@@ -76,4 +76,16 @@ func AutoMergeOn(ev Evidence) AutoMergeDecision {
 		d.Reason, d.On = AutoMergeReasonOn, true
 	}
 	return d
+}
+
+// allMeasured reports whether every PR of window has all its commits measured: a
+// PR with an unmeasured commit undercounts the rate, so a window holding one
+// measures nothing.
+func allMeasured(window []Sample) bool {
+	for _, s := range window {
+		if s.UnmeasuredCommits > 0 {
+			return false
+		}
+	}
+	return true
 }

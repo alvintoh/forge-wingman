@@ -1,7 +1,6 @@
 // Command dispatcher is the scheduled job that polls Linear and dispatches runs.
 //
-// It reads the issues Linear has delegated to the configured agent, delegates
-// the next eligible ones itself once the autonomy level lets it, queues the
+// It reads the issues Linear has delegated to the configured agent, queues the
 // ones it can build, and dispatches the queued runs admission lets start, in
 // priority order, each into the repository its ticket names. Everything it
 // holds is a reference to a value provisioned with the job: the Linear app's
@@ -297,7 +296,6 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 	if err != nil {
 		return err
 	}
-	autonomies := store.NewAutonomies(fsc)
 	tickets := dispatcher.Linear{Tokens: tokens, Delegate: c.delegate, Client: client}
 	if _, err := dispatcher.Poll(ctx, dispatcher.Deps{
 		Source: tickets,
@@ -311,11 +309,6 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		Providers:    store.NewProviders(fsc),
 		Breaker:      store.NewBreaker(fsc),
 		PeakModes:    store.NewPeakModes(fsc),
-		Autonomies:   autonomies,
-		Earned:       autonomies,
-		Shadow:       autonomies,
-		CDs:          store.NewCDs(fsc),
-		History:      store.NewAutonomyHistory(fsc),
 		Notices:      store.NewNotices(fsc),
 		OpenPoster:   slackPoster(secrets.Token, client),
 		Plans:        plans,

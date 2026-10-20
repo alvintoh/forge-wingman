@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -169,17 +168,12 @@ var (
 )
 
 // rewriteDeps is the deps the measurement phase reads, with no notices raised
-// yet and the fake level 0, which rolls nothing back.
+// yet.
 func rewriteDeps(prs *fakePullRequests, rows *fakeRewrites) (Deps, *fakeNotices) {
 	notices := &fakeNotices{}
 	return Deps{
 		PullRequests: prs,
 		Rewrites:     rows,
-		Autonomies:   &fakeAutonomies{},
-		Earned:       freshEarned(5),
-		Shadow:       &fakeShadow{start: mergedAt.Add(-time.Hour)},
-		CDs:          fakeCDs{},
-		History:      &fakeHistory{},
 		Notices:      notices,
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Now:          func() time.Time { return mergedAt },
@@ -380,115 +374,6 @@ func TestRevertOfAPRWhenTheRevertNeverMerged(t *testing.T) {
 	}
 }
 
-func TestRollbackDropsTheLevelAndRaisesOneNotice(t *testing.T) {
-	rows := &fakeRewrites{recent: joined(samples(scratch, 19, 100, 0), []Sample{{
-		Repo:       scratch,
-		AutoMerged: true,
-		Reverted:   true,
-		PRURL:      "https://github.com/octo/scratch/pull/7",
-	}})}
-	deps, notices := rewriteDeps(&fakePullRequests{}, rows)
-	autonomies := &fakeAutonomies{level: 4}
-	deps.Autonomies = autonomies
-	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
-		t.Fatal(err)
-	}
-	if len(autonomies.set) != 1 || autonomies.set[0] != AutonomyRolledBack {
-		t.Fatalf("set = %v, want the level dropped to %d", autonomies.set, int(AutonomyRolledBack))
-	}
-	if len(notices.raised) != 1 {
-		t.Fatalf("raised = %+v, want one notice", notices.raised)
-	}
-	n := notices.raised[0]
-	if !strings.HasPrefix(n.ID, rollbackNoticeKey) || !strings.Contains(n.Class, string(RollbackReverted)) {
-		t.Fatalf("notice = %+v, want it keyed and classed as a reverted auto-merge", n)
-	}
-	if n.Link != "https://github.com/octo/scratch/pull/7" {
-		t.Fatalf("link = %q, want the reverted PR", n.Link)
-	}
-	// The drop took, so a later poll takes nothing back a second time.
-	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
-		t.Fatal(err)
-	}
-	if len(autonomies.set) != 1 || len(notices.raised) != 1 {
-		t.Fatalf("set = %v, raised = %+v, want one drop and one notice", autonomies.set, notices.raised)
-	}
-}
-
-func TestRollbackNoticeNamesTheRateItFiredOn(t *testing.T) {
-	// 50 owner lines of 100 agent lines over the trailing 10 is 50%, while the
-	// sampled window keeps the sampled rate at 4.5%.
-	rows := &fakeRewrites{recent: joined(samples(scratch, 10, 10, 5), samples(scratch, 10, 100, 0))}
-	deps, notices := rewriteDeps(&fakePullRequests{}, rows)
-	autonomies := &fakeAutonomies{level: 4}
-	deps.Autonomies = autonomies
-	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
-		t.Fatal(err)
-	}
-	if len(notices.raised) != 1 {
-		t.Fatalf("raised = %+v, want one notice", notices.raised)
-	}
-	n := notices.raised[0]
-	if !strings.Contains(n.Class, string(RollbackCeiling)) || !strings.Contains(n.Class, "50.0% over 10 PRs") {
-		t.Fatalf("notice = %+v, want it naming the ceiling and the rate", n)
-	}
-	if n.Link != "https://github.com/octo/scratch/actions" {
-		t.Fatalf("link = %q, want the repository's runs", n.Link)
-	}
-}
-
-func TestRollbackLeavesALevelWhoseNumbersHold(t *testing.T) {
-	rows := &fakeRewrites{recent: samples(scratch, 20, 100, 0)}
-	deps, notices := rewriteDeps(&fakePullRequests{}, rows)
-	autonomies := &fakeAutonomies{level: 4}
-	deps.Autonomies = autonomies
-	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
-		t.Fatal(err)
-	}
-	if slices.Contains(autonomies.set, AutonomyRolledBack) || len(notices.raised) != 0 {
-		t.Fatalf("set = %v, raised = %+v, want a level with nothing wrong left alone", autonomies.set, notices.raised)
-	}
-}
-
-func TestRollbackReportsAWindowItCannotRead(t *testing.T) {
-	rows := &fakeRewrites{recentErr: errFirestore}
-	deps, notices := rewriteDeps(&fakePullRequests{}, rows)
-	autonomies := &fakeAutonomies{level: 4}
-	deps.Autonomies = autonomies
-	if err := measureRewrites(context.Background(), deps, oneRepo); err == nil {
-		t.Fatal("want an unreadable window reported rather than read as no cause")
-	}
-	if len(autonomies.set) != 1 || autonomies.set[0] != AutonomyRolledBack || len(notices.raised) != 1 {
-		t.Fatalf("set = %v, raised = %+v, want the level dropped on evidence that cannot be read", autonomies.set, notices.raised)
-	}
-	if !strings.Contains(notices.raised[0].Class, string(RollbackUnreadable)) {
-		t.Fatalf("notice = %+v, want it naming the unreadable evidence", notices.raised[0])
-	}
-}
-
-func TestRollbackFailsClosedWhenTheClosedListingCannotBeRead(t *testing.T) {
-	for name, tt := range map[string]struct {
-		level Autonomy
-		want  int
-	}{
-		"auto-merging level":     {4, 1},
-		"non-auto-merging level": {3, 0},
-	} {
-		t.Run(name, func(t *testing.T) {
-			rows := &fakeRewrites{recent: samples(scratch, 20, 100, 0)}
-			deps, _ := rewriteDeps(&fakePullRequests{closedErr: errFirestore}, rows)
-			autonomies := &fakeAutonomies{level: tt.level}
-			deps.Autonomies = autonomies
-			if err := measureRewrites(context.Background(), deps, oneRepo); err == nil {
-				t.Fatal("want the unreadable listing reported")
-			}
-			if len(autonomies.set) != tt.want {
-				t.Fatalf("set = %v, want %d drops", autonomies.set, tt.want)
-			}
-		})
-	}
-}
-
 func TestRevertBodyWithCRLFFlagsTheRun(t *testing.T) {
 	prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {
 		{Number: 7, Title: "a run's PR", Head: runBranch, MergedAt: mergedAt},
@@ -533,30 +418,6 @@ func TestRevertOfAPRThatNeverMergedFlagsNothing(t *testing.T) {
 	}
 	if len(rows.reverted) != 0 {
 		t.Fatalf("reverted = %v, want a revert of an unmerged PR to flag nothing", rows.reverted)
-	}
-}
-
-func TestRollbackLeavesBothRatesAtTheirLimits(t *testing.T) {
-	// Trailing 10 at exactly 20% and the sampled 20 at exactly 10%: neither
-	// limit is passed.
-	rows := &fakeRewrites{recent: joined(samples(scratch, 10, 100, 20), samples(scratch, 10, 100, 0))}
-	deps, notices := rewriteDeps(&fakePullRequests{}, rows)
-	autonomies := &fakeAutonomies{level: 4}
-	deps.Autonomies = autonomies
-	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
-		t.Fatal(err)
-	}
-	if slices.Contains(autonomies.set, AutonomyRolledBack) || len(notices.raised) != 0 {
-		t.Fatalf("set = %v, raised = %+v, want rates at their limits left alone", autonomies.set, notices.raised)
-	}
-}
-
-func TestRollbackReportsALevelItCannotDrop(t *testing.T) {
-	rows := &fakeRewrites{recent: joined(samples(scratch, 19, 100, 0), []Sample{sample(scratch, 100, 0, true, true)})}
-	deps, _ := rewriteDeps(&fakePullRequests{}, rows)
-	deps.Autonomies = &fakeAutonomies{level: 4, setErr: errFirestore}
-	if err := measureRewrites(context.Background(), deps, oneRepo); err == nil {
-		t.Fatal("want a drop that could not be written reported")
 	}
 }
 
@@ -605,14 +466,8 @@ func TestTruncatedListingWithAFreshMergeOnItsLastPageFailsClosed(t *testing.T) {
 	}
 	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch}}, recent: samples(scratch, 20, 100, 0)}
 	deps, _ := rewriteDeps(prs, rows)
-	autonomies := &fakeAutonomies{level: 4}
-	earned := &fakeEarned{}
-	deps.Autonomies, deps.Earned = autonomies, earned
 	if err := measureRewrites(context.Background(), deps, oneRepo); !errors.Is(err, ErrClosedTruncated) {
 		t.Fatalf("err = %v, want the truncation reported", err)
-	}
-	if len(autonomies.set) != 1 || autonomies.set[0] != AutonomyRolledBack || len(earned.stored) != 0 {
-		t.Fatalf("set = %v, stored = %+v, want level 4 dropped and nothing recomputed", autonomies.set, earned.stored)
 	}
 }
 
@@ -624,7 +479,6 @@ func TestTruncatedListingWithNothingNewOnItsLastPageIsRead(t *testing.T) {
 	}
 	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch, Measured: mergedAt}}, recent: samples(scratch, 20, 100, 0)}
 	deps, _ := rewriteDeps(prs, rows)
-	deps.Autonomies = &fakeAutonomies{level: 4}
 	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
 		t.Fatalf("err = %v, want a capped listing whose last page is already measured to be fine", err)
 	}

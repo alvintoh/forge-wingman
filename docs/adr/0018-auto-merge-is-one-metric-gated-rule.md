@@ -1,7 +1,7 @@
 # 0018 — Auto-merge is one metric-gated rule with an owner switch
 
 - **Date:** 2026-10-17
-- **Status:** proposed — the code lands through four tickets, in order (the owner switch, the rule, the daily cap, removing the levels)
+- **Status:** accepted — the switch, the rule and the removal of the levels are live (2026-10-19); the daily run cap was dropped before it shipped (see the struck bullet under Decision)
 - **Updated (2026-10-19):** the product no longer delegates a ticket to itself, and the daily run cap is gone (see the struck bullet under Decision).
 
 ## Context
