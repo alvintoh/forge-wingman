@@ -363,31 +363,41 @@ tofu apply -target=google_firestore_database.owner -target=google_project_iam_me
 
 The plan reads that way because the runner's binding is replaced create-first, then the
 unconditional one is destroyed: IAM grants add up, so destroying first would leave the
-runner with no datastore access while a run starts.
+runner with no datastore access while a run starts. If an apply stops between the two, both
+bindings stay, which is today's access; rerun it.
 
 ### Read it back
 
-A policy that reads right is not a policy that refuses, so check with a write. Each line
-prints the HTTP status of a document write made as that identity; the document is removed
-after. Needs `roles/iam.serviceAccountTokenCreator` on the three accounts.
+A policy that reads right is not a policy that refuses, so check with a write and a read.
+Each line prints the HTTP status of a document write (`w`) and read (`r`) made as that
+identity; the document is removed after. Needs `roles/iam.serviceAccountTokenCreator` on the
+three accounts.
 
 ```sh
 P=forge-wingman
 probe() { # $1 service account, $2 database id
-  local tok; tok=$(gcloud auth print-access-token --impersonate-service-account="$1")
-  curl -s -o /dev/null -w '%{http_code}' -X PATCH -H "Authorization: Bearer $tok" \
-    -H 'Content-Type: application/json' -d '{"fields":{"probe":{"booleanValue":true}}}' \
-    "https://firestore.googleapis.com/v1/projects/$P/databases/$2/documents/probe/check?updateMask.fieldPaths=probe"
+  local tok url
+  tok=$(gcloud auth print-access-token --impersonate-service-account="$1")
+  url="https://firestore.googleapis.com/v1/projects/${P}/databases/${2}/documents/probe/check"
+  printf 'w=%s r=%s' \
+    "$(curl -s -o /dev/null -w '%{http_code}' -X PATCH -H "Authorization: Bearer $tok" \
+      -H 'Content-Type: application/json' -d '{"fields":{"probe":{"booleanValue":true}}}' \
+      "${url}?updateMask.fieldPaths=probe")" \
+    "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $tok" "${url}")"
 }
 for out in runner_service_account dispatcher_service_account surface_service_account; do
   sa=$(tofu output -raw "$out")
-  echo "$out owner=$(probe "$sa" owner) default=$(probe "$sa" '(default)')"
+  echo "$out owner: $(probe "$sa" owner)  default: $(probe "$sa" '(default)')"
 done
 ```
 
-Expect `403` for the runner on `owner` and `200` everywhere else. Then delete the probe
-documents in both databases (`probe/check`) from the console or with the same token.
+Expect `w=403 r=403` for the runner on `owner` and `w=200 r=200` everywhere else. Then delete
+the probe documents in both databases (`probe/check`) from the console or with the same token.
 Also confirm the database exists: `gcloud firestore databases list --project=forge-wingman`.
+
+If the runner gets `200` on `owner`, the condition does not bind: store nothing in `owner`
+(no allowlist, no phase state) until the expression, and whether `resource.type` must be
+pinned, is settled.
 
 IAM's attribute reference advises pinning `resource.type` beside `resource.name`. Its
 Firestore value is not on that page, so the condition uses the name alone; the check
