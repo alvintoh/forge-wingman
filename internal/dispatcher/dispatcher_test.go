@@ -2079,6 +2079,21 @@ func TestPollRecordsNoStateForATicketTheClaimDidNotMove(t *testing.T) {
 	}
 }
 
+// TestPollSucceedsWhenOneListedRepositoryCannotBeListed: one repository whose
+// closed pull requests cannot be read neither fails the poll nor withholds a run.
+func TestPollSucceedsWhenOneListedRepositoryCannotBeListed(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{{RunID: "ABC-18", Repo: "octo/scratch", Size: "M"}}}
+	w := &fakeWorkflow{}
+	deps := pollDeps(fakeSource{}, q, w)
+	deps.PullRequests = &fakePullRequests{closedErr: errors.New("not found"), failClosed: "AlvinToh/Forge-Wingman"}
+	if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
+		t.Fatalf("err = %v, want the poll to succeed", err)
+	}
+	if len(w.claims) != 1 {
+		t.Fatalf("dispatches = %+v, want the run started", w.claims)
+	}
+}
+
 // TestPollDispatchesDespiteAFailedTicketMove: a failed Linear write is logged
 // once, with the reason as its own field, and never withholds the run's start.
 func TestPollDispatchesDespiteAFailedTicketMove(t *testing.T) {

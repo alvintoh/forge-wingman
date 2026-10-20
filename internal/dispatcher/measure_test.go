@@ -270,7 +270,7 @@ func TestMeasureReportsAMergedPRWithNoRunRowOnce(t *testing.T) {
 	}
 }
 
-func TestMeasureKeepsGoingWhenOneRepositoryCannotBeListed(t *testing.T) {
+func TestMeasureSkipsAnUnlistableRepositoryWhenAnotherListed(t *testing.T) {
 	prs := &fakePullRequests{
 		closed:     map[string][]ClosedPR{"octo/other": {{Number: 7, Head: runBranch, MergedAt: mergedAt}}},
 		closedErr:  errFirestore,
@@ -279,12 +279,28 @@ func TestMeasureKeepsGoingWhenOneRepositoryCannotBeListed(t *testing.T) {
 	}
 	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch}}}
 	deps, _ := rewriteDeps(prs, rows)
-	err := measureRewrites(context.Background(), deps, Config{Repos: []string{scratch, "octo/other"}})
-	if err == nil || !strings.Contains(err.Error(), scratch) {
-		t.Fatalf("err = %v, want the repository that could not be listed named", err)
+	var logs bytes.Buffer
+	deps.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	if err := measureRewrites(context.Background(), deps, Config{Repos: []string{scratch, "octo/other"}}); err != nil {
+		t.Fatalf("err = %v, want none while another repository listed", err)
 	}
 	if got := rows.recorded[runOnBranch]; got.AgentLines != 5 {
 		t.Fatalf("recorded %+v, want the other repository still measured", got)
+	}
+	if got := strings.Count(logs.String(), "msg=rewriteListingFailed"); got != 1 {
+		t.Fatalf("log = %q, want one rewriteListingFailed", logs.String())
+	}
+	if !strings.Contains(logs.String(), "repo="+scratch) || !strings.Contains(logs.String(), "err=") {
+		t.Fatalf("log = %q, want the repository and the reason as their own fields", logs.String())
+	}
+}
+
+func TestMeasureFailsWhenNoRepositoryCanBeListed(t *testing.T) {
+	prs := &fakePullRequests{closedErr: errFirestore}
+	deps, _ := rewriteDeps(prs, &fakeRewrites{})
+	err := measureRewrites(context.Background(), deps, Config{Repos: []string{scratch, "octo/other"}})
+	if !errors.Is(err, errFirestore) || !strings.Contains(err.Error(), scratch) || !strings.Contains(err.Error(), "octo/other") {
+		t.Fatalf("err = %v, want every unlistable repository named", err)
 	}
 }
 

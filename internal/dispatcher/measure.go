@@ -66,8 +66,13 @@ var revertTitle = regexp.MustCompile(`^Revert "(.*)"$`)
 // measureRewrites records each merged run PR's measured lines on its run row and
 // flags the rows of the PRs a merged revert names. It runs after the dispatch
 // walk, so the samples the next poll's auto-merge rule reads are already written.
+//
+// A repository whose listing fails is logged and skipped while another one
+// listed, since the reachability record already reports it; only when every
+// listed repository fails does the phase return the failures.
 func measureRewrites(ctx context.Context, d Deps, c Config) error {
 	var errs []error
+	var failures []listingFailure
 	for _, repo := range c.Repos {
 		prs, err := d.PullRequests.Closed(ctx, repo)
 		truncated := errors.Is(err, ErrClosedTruncated)
@@ -75,16 +80,27 @@ func measureRewrites(ctx context.Context, d Deps, c Config) error {
 			err = nil
 		}
 		if err != nil {
-			// One repository's listing failing must not stop the others', and
-			// the next poll asks again.
-			errs = append(errs, fmt.Errorf("listing the closed pull requests of %s: %w", repo, err))
+			failures = append(failures, listingFailure{repo, err})
 			continue
 		}
 		if err := measureRepo(ctx, d, repo, prs, truncated); err != nil {
 			errs = append(errs, err)
 		}
 	}
+	for _, f := range failures {
+		if len(failures) == len(c.Repos) {
+			errs = append(errs, fmt.Errorf("listing the closed pull requests of %s: %w", f.repo, f.err))
+		} else {
+			d.Logger.Warn("rewriteListingFailed", "repo", f.repo, "err", f.err)
+		}
+	}
 	return errors.Join(errs...)
+}
+
+// listingFailure is one repository whose closed pull requests could not be listed.
+type listingFailure struct {
+	repo string
+	err  error
 }
 
 // measureRepo measures the merged run PRs of one repository's listing, and flags
