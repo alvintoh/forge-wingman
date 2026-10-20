@@ -100,6 +100,18 @@ flight and stopped when none is; another project is unaffected. The pause is the
 `paused` and `paused_at` fields of the project's document in the owner database,
 and a pause that cannot be read holds every project.
 
+Each poll the dispatcher reads Linear once for every listed project and writes a
+snapshot to `project_phases/<project>` in the default database: the project's phases
+(the current one is the first not fully done), the current phase's runs in flight with
+their stage, its queued and blocked tickets, and the tickets a start would delegate. A
+Linear read that fails writes an unreadable snapshot with its reason and time and
+delegates nothing. `GET /api/projects` lists the projects newest-activity first, each
+with its snapshot, reach, queue load and last activity; `POST /api/projects/start`
+`{repository, phase}` records a start request on the project's owner-database document
+(`start_phase`, `start_requested_at`) and delegates nothing. The next poll delegates the
+eligible tickets of the current phase, only if it is still the phase named, and clears the
+request, or records why it refused in `start_refusal`. The surface holds no Linear credential.
+
 ## Operate
 
 These subcommands run from a local checkout against the store itself, for the
