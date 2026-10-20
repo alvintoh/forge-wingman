@@ -473,7 +473,7 @@ func poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	LogPhase(d.Logger, "reach", start, d.Now())
 	start = d.Now()
 	if listed {
-		pollProjects(ctx, d)
+		pollProjects(ctx, d, res.Reach)
 	}
 	LogPhase(d.Logger, "projects", start, d.Now())
 	phaseErrs := []error{requeueErr, claimErr}

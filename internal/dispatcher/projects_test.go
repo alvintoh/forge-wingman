@@ -100,6 +100,8 @@ func TestPhaseEligibleTable(t *testing.T) {
 		{"held by the owner", with(func(i *Issue) { i.Labels = append([]string{"Wingman:Hold"}, i.Labels...) }), TicketRun{}, false},
 		{"already delegated", with(func(i *Issue) { i.DelegatedTo = "agent-1" }), TicketRun{}, false},
 		{"run row ended", ok, TicketRun{Ended: true}, false},
+		{"run queued", ok, TicketRun{Queued: true}, false},
+		{"run in flight", ok, TicketRun{Stage: PhaseStageBuilding}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -126,7 +128,7 @@ func TestPollProjectsSnapshotsTheCurrentPhase(t *testing.T) {
 		phaseIssue("FRG-7", "unstarted", "P3", 3, ""),
 	}}
 	runs := fakeRuns{"FRG-3": {Stage: PhaseStageBuilding}, "FRG-6": {Queued: true}}
-	pollProjects(context.Background(), phaseDeps(&fakePhaseProjects{listed: []PhaseProject{{Repository: "octo/widget", LinearProject: "Roadmap"}}}, snaps, runs, issues))
+	pollProjects(context.Background(), phaseDeps(&fakePhaseProjects{listed: []PhaseProject{{Repository: "octo/widget", LinearProject: "Roadmap"}}}, snaps, runs, issues), nil)
 
 	if len(snaps.got) != 1 {
 		t.Fatalf("recorded %d snapshots, want 1", len(snaps.got))
@@ -152,7 +154,7 @@ func TestStartDelegatesTheCurrentPhaseOnceAndIsIdempotent(t *testing.T) {
 		phaseIssue("FRG-3", "unstarted", "P2", 2, ""),
 	}}
 	d := phaseDeps(projects, &fakeSnapshots{}, fakeRuns{}, issues)
-	pollProjects(context.Background(), d)
+	pollProjects(context.Background(), d, nil)
 	if want := []string{"uuid-FRG-1"}; !slices.Equal(issues.delegated, want) {
 		t.Fatalf("delegated %v, want %v: another phase's ticket or one already delegated was taken", issues.delegated, want)
 	}
@@ -161,7 +163,7 @@ func TestStartDelegatesTheCurrentPhaseOnceAndIsIdempotent(t *testing.T) {
 	}
 
 	issues.issues[0].DelegatedTo = "agent-1"
-	pollProjects(context.Background(), d)
+	pollProjects(context.Background(), d, nil)
 	if len(issues.delegated) != 1 {
 		t.Errorf("delegated %v after a second poll, want nothing more", issues.delegated)
 	}
@@ -173,7 +175,7 @@ func TestStartIsRefusedWhenThePhaseMoved(t *testing.T) {
 		phaseIssue("FRG-1", "completed", "P1", 1, ""),
 		phaseIssue("FRG-2", "unstarted", "P2", 2, ""),
 	}}
-	pollProjects(context.Background(), phaseDeps(projects, &fakeSnapshots{}, fakeRuns{}, issues))
+	pollProjects(context.Background(), phaseDeps(projects, &fakeSnapshots{}, fakeRuns{}, issues), nil)
 	if len(issues.delegated) != 0 {
 		t.Fatalf("delegated %v, want nothing once the confirmed phase is done", issues.delegated)
 	}
@@ -186,7 +188,7 @@ func TestStartDelegatesNothingWhenLinearCannotBeRead(t *testing.T) {
 	projects := &fakePhaseProjects{listed: []PhaseProject{widget("P1")}}
 	snaps := &fakeSnapshots{}
 	issues := &fakeProjectIssues{err: errors.New("page 2 failed"), issues: []Issue{phaseIssue("FRG-1", "unstarted", "P1", 1, "")}}
-	pollProjects(context.Background(), phaseDeps(projects, snaps, fakeRuns{}, issues))
+	pollProjects(context.Background(), phaseDeps(projects, snaps, fakeRuns{}, issues), nil)
 	if len(issues.delegated) != 0 {
 		t.Fatalf("delegated %v from a failed read", issues.delegated)
 	}
@@ -243,7 +245,7 @@ func TestStartIsRefusedWhenNothingIsEligible(t *testing.T) {
 	held := phaseIssue("FRG-1", "unstarted", "P1", 1, "")
 	held.Labels = append(held.Labels, holdLabel)
 	issues := &fakeProjectIssues{issues: []Issue{held}}
-	pollProjects(context.Background(), phaseDeps(projects, &fakeSnapshots{}, fakeRuns{}, issues))
+	pollProjects(context.Background(), phaseDeps(projects, &fakeSnapshots{}, fakeRuns{}, issues), nil)
 	if len(issues.delegated) != 0 {
 		t.Fatalf("delegated %v, want nothing", issues.delegated)
 	}
@@ -258,7 +260,7 @@ func TestAProjectWithNoPendingRequestIsSnapshottedAndLeftAlone(t *testing.T) {
 	projects := &fakePhaseProjects{listed: []PhaseProject{p}}
 	issues := &fakeProjectIssues{issues: []Issue{phaseIssue("FRG-1", "unstarted", "P1", 1, "")}}
 	snaps := &fakeSnapshots{}
-	pollProjects(context.Background(), phaseDeps(projects, snaps, fakeRuns{}, issues))
+	pollProjects(context.Background(), phaseDeps(projects, snaps, fakeRuns{}, issues), nil)
 	if len(snaps.got) != 1 || len(issues.delegated) != 0 || len(projects.resolved) != 0 {
 		t.Errorf("snapshots %d, delegated %v, resolved %v: want a snapshot and nothing else", len(snaps.got), issues.delegated, projects.resolved)
 	}
@@ -266,7 +268,7 @@ func TestAProjectWithNoPendingRequestIsSnapshottedAndLeftAlone(t *testing.T) {
 
 func TestPollProjectsReadsNothingWithoutListedProjects(t *testing.T) {
 	issues := &fakeProjectIssues{}
-	pollProjects(context.Background(), phaseDeps(&fakePhaseProjects{}, &fakeSnapshots{}, fakeRuns{}, issues))
+	pollProjects(context.Background(), phaseDeps(&fakePhaseProjects{}, &fakeSnapshots{}, fakeRuns{}, issues), nil)
 	if issues.reads != 0 {
 		t.Errorf("Linear was read %d times with no project listed", issues.reads)
 	}
@@ -279,7 +281,7 @@ func TestACompletedTicketIsNeverInFlightOrQueued(t *testing.T) {
 		phaseIssue("FRG-2", "unstarted", "P1", 1, ""),
 	}}
 	runs := fakeRuns{"FRG-1": {Stage: PhaseStageBuilding}}
-	pollProjects(context.Background(), phaseDeps(&fakePhaseProjects{listed: []PhaseProject{{Repository: "octo/widget", LinearProject: "Roadmap"}}}, snaps, runs, issues))
+	pollProjects(context.Background(), phaseDeps(&fakePhaseProjects{listed: []PhaseProject{{Repository: "octo/widget", LinearProject: "Roadmap"}}}, snaps, runs, issues), nil)
 	if got := snaps.got[0]; len(got.InFlight) != 0 || got.Queued != 0 {
 		t.Errorf("in flight %v queued %d, want the completed ticket left out", got.InFlight, got.Queued)
 	}
@@ -318,5 +320,34 @@ func TestPollReadsProjectPhasesOnlyAgainstAUsableAllowlist(t *testing.T) {
 				t.Errorf("Linear read %d times, want %d", issues.reads, tt.reads)
 			}
 		})
+	}
+}
+
+func TestStartIsRefusedOnAnUnreachableRepository(t *testing.T) {
+	projects := &fakePhaseProjects{listed: []PhaseProject{widget("P1")}}
+	issues := &fakeProjectIssues{issues: []Issue{phaseIssue("FRG-1", "unstarted", "P1", 1, "")}}
+	reaches := []RepoReach{{Repository: "Octo/Widget", Reachable: false, Reason: ReachForbidden}}
+	pollProjects(context.Background(), phaseDeps(projects, &fakeSnapshots{}, fakeRuns{}, issues), reaches)
+	if len(issues.delegated) != 0 {
+		t.Fatalf("delegated %v on an unreachable repository", issues.delegated)
+	}
+	if want := []string{"octo/widget:repository-unreachable"}; !slices.Equal(projects.resolved, want) {
+		t.Errorf("resolved %v, want %v", projects.resolved, want)
+	}
+}
+
+func TestStartIsRefusedWhenTheProjectHasNoCurrentPhase(t *testing.T) {
+	projects := &fakePhaseProjects{listed: []PhaseProject{widget("P1")}}
+	issues := &fakeProjectIssues{issues: []Issue{phaseIssue("FRG-1", "completed", "P1", 1, "")}}
+	pollProjects(context.Background(), phaseDeps(projects, &fakeSnapshots{}, fakeRuns{}, issues), nil)
+	if want := []string{"octo/widget:no-current-phase"}; !slices.Equal(projects.resolved, want) {
+		t.Errorf("resolved %v, want %v", projects.resolved, want)
+	}
+}
+
+func TestLinearProjectsAreDistinctIgnoringCase(t *testing.T) {
+	got := linearProjects([]PhaseProject{{LinearProject: "Roadmap"}, {LinearProject: "roadmap"}, {LinearProject: "Other"}})
+	if want := []string{"Roadmap", "Other"}; !slices.Equal(got, want) {
+		t.Errorf("linearProjects = %v, want %v", got, want)
 	}
 }
