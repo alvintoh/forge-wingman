@@ -106,6 +106,7 @@ func pollReadDeps(q *Queue, openPRs int) dispatcher.Deps {
 		Visibility:   pollVisibility{},
 		Providers:    pollProviders{},
 		Breaker:      pollBreaker{},
+		Phases:       pollPhases{},
 		PeakModes:    pollPeakModes{},
 		OpenPRs:      pollOpenPRs{count: openPRs},
 		PullRequests: pollPullRequests{},
@@ -208,6 +209,11 @@ func (pollProviders) Halted(context.Context, string) (bool, error) { return fals
 type pollBreaker struct{}
 
 func (pollBreaker) Tripped(context.Context) (bool, error) { return false, nil }
+
+// pollPhases reports no project paused.
+type pollPhases struct{}
+
+func (pollPhases) Paused(context.Context) (map[string]bool, error) { return map[string]bool{}, nil }
 
 // pollPeakModes reports off-peak-only, which holds no candidate.
 type pollPeakModes struct{}
