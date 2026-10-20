@@ -304,6 +304,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		TicketStates: tickets,
 		Queue:        queue,
 		Verdicts:     queue,
+		Reach:        store.NewReaches(fsc),
 		Estimator:    store.NewEstimates(fsc),
 		Visibility:   gh,
 		Providers:    store.NewProviders(fsc),
