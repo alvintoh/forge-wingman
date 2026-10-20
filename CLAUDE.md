@@ -4,24 +4,21 @@ Repo-specific conventions for working on this codebase. Global conventions
 (git, PR workflow, code style) come from `~/.claude`'s layered config; this
 file only holds what's specific to *this* repo.
 
-## Default the run-lane to agentic worktrees, not supervise
+## The harness builds by default; delegating to forge-wingman is an option
 
-When `/spec-plan` gates step 2b's run-lane (branch in this directory vs a
-separate worktree an agent runs), **default-recommend the separate worktree,
-agent-run lane** for this repo specifically. This product's own reason for
-existing is autonomous agent-driven builds — dogfooding that path here is the
-point, not an exception carved out for convenience.
+When a Claude Code or omp session takes a ticket or a phase (`/spec-plan`,
+`/dev-build`, `/drive-phase`), the default is that this harness builds it: a
+worktree off `main`, builders dispatched by `/dev-build`, and the owner reviews
+and merges. Delegating to forge-wingman's runner (the Linear delegate, the plan
+in the description) is offered at the same gate as an option, never as the
+recommendation. Recommend it only when asked, or when the session is ending and
+the ticket should keep moving without it.
 
-**Reserve "you supervise" for work that genuinely warrants closer
-supervision**, and say so explicitly when recommending it over the default:
-a change with real money/budget consequences (e.g. FRG-20's cost-ceiling
-logic), or a ticket sequenced ahead of a sibling because they rewrite the
-same core function (e.g. FRG-19 before FRG-26, both touching `Build()`'s
-phase sequence) — closer review reduces the chance of a collision the
-sibling's plan then has to re-ground against.
-
-This is a picker-default change, not a rule removal — still gate per ticket,
-just flip which option is recommended.
+*Superseded (2026-10-20): ~~default-recommend the separate worktree, agent-run
+lane, because dogfooding the runner is the point~~. Owner's instruction: "when i
+open claude code, or omp in interactive mode i want that harness to run
+development tasks by itself, whereas there should be an option to delegate to
+forge-wingman but its not the recommended". A judgment call.*
 
 ## Work-in-progress limits
 
