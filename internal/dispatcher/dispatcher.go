@@ -368,8 +368,9 @@ type Result struct {
 // on a known transient fault to the queue and walks it in priority order
 // claiming every run Admit lets start, abandons the claims that outlived
 // their window, measures the merges that landed since the last poll, raises a
-// notice for each run stuck past its limit, and posts the notices waiting,
-// whatever the rest of the poll did.
+// notice for each run stuck past its limit, records whether each listed
+// repository could be read, and posts the notices waiting, whatever the rest of
+// the poll did.
 // A ticket the queue already holds is left alone; a candidate a condition
 // withholds is deferred, not rejected, and reconsidered next poll; and a run
 // whose dispatch fails is released rather than left claimed, so the next
@@ -570,9 +571,8 @@ func claimStage(cand Candidate, twoStage bool) string {
 //
 // On an error it returns the claims already booked beside it, so the caller can
 // dispatch or release them. The breaker is the poll's own, read once before this
-// walk; the provider halt and the verdict are keyed off each
-// candidate's own plan, and the open-PR count across the allowlist once, when
-// anything is queued. A breaker
+// walk, and so is the open-PR count across the allowlist; the provider halt and
+// the verdict are keyed off each candidate's own plan. A breaker
 // that cannot be read holds the walk as a tripped one would, and a budget
 // ceiling raises at most one notice. A candidate the plan's own window or cap
 // withholds is retried on the next paid plans in order, and once every one binds
