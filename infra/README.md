@@ -363,8 +363,7 @@ tofu apply -target=google_firestore_database.owner -target=google_project_iam_me
 
 The plan reads that way because the runner's binding is replaced create-first, then the
 unconditional one is destroyed: IAM grants add up, so destroying first would leave the
-runner with no datastore access while a run starts. (Read 2026-10-20 against the live
-state: the database is added, and the binding shows `must be replaced` with the condition.)
+runner with no datastore access while a run starts.
 
 ### Read it back
 
