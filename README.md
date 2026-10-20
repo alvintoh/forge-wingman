@@ -103,7 +103,7 @@ and a pause that cannot be read holds every project.
 Each poll the dispatcher reads Linear once for every listed project and writes a
 snapshot to `project_phases/<project>` in the default database: the project's phases
 (the current one is the first not fully done), the current phase's runs in flight with
-their stage, its queued and blocked tickets, and the tickets a start would delegate. A
+their stage, its queued tickets and how many wait on a blocker, and the tickets a start would delegate and how many wait on one. A
 Linear read that fails writes an unreadable snapshot with its reason and time and
 delegates nothing. `GET /api/projects` lists the projects newest-activity first, each
 with its snapshot, reach, queue load and last activity; `POST /api/projects/start`
