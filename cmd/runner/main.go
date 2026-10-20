@@ -13,6 +13,8 @@
 //	runner autonomy        [-level N]                print the autonomy level and what it allows and recompute the earned-level snapshot, or set the level for the next claim
 //	runner requeue         -run-id <id>              return a stopped run to the queue for another attempt
 //	runner backfill-queued-at [-dry-run]             stamp queued_at on the queued and planned runs that lack it
+//	runner project-add     -linear-project <name> -repo <owner/name>  list a project and its repository in the owner database
+//	runner project-remove  -repo <owner/name>       unlist a project's repository
 //	runner plan-define     -provider <name> ...      record a provider plan's price, billing, limit behaviour, pages and harnesses
 //	runner plan-optin      -provider <name>          record the owner's consent to a per-token provider's spend, or with -private to private repos on its free tier, or with -harness to a harness that is not open-source
 //	runner plan-verdict    -provider <name> ...      record the verdict on a plan's terms with its wording and source
@@ -112,7 +114,7 @@ type env struct {
 func requiredEnv(command string) ([]string, bool) {
 	switch command {
 	case "ticket", "pr-meta", "enable-provider", "reset-breaker", "peak-mode", "auto-merge", "autonomy", "cd", "requeue", "backfill-queued-at",
-		"plan-define", "plan-optin", "plan-verdict", "plan-reply", "plan-list", "plans-refresh":
+		"plan-define", "plan-optin", "plan-verdict", "plan-reply", "plan-list", "plans-refresh", "project-add", "project-remove":
 		return []string{"GOOGLE_CLOUD_PROJECT"}, true
 	case "record", "record-plan-stage":
 		return []string{"GOOGLE_CLOUD_PROJECT", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"}, true
@@ -155,7 +157,7 @@ func loadEnv(getenv func(string) string, required ...string) (env, error) {
 
 func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(string) string) error {
 	if len(args) == 0 {
-		return errors.New("usage: runner ticket|build|plan-stage|record-plan-stage|pr-meta|record|enable-provider|reset-breaker|peak-mode|auto-merge|autonomy|cd|requeue|backfill-queued-at|plan-define|plan-verdict|plan-reply|plan-list|plans-refresh|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post|agent-probe|egress-proxy [flags]")
+		return errors.New("usage: runner ticket|build|plan-stage|record-plan-stage|pr-meta|record|enable-provider|reset-breaker|peak-mode|auto-merge|autonomy|cd|requeue|backfill-queued-at|project-add|project-remove|plan-define|plan-verdict|plan-reply|plan-list|plans-refresh|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post|agent-probe|egress-proxy [flags]")
 	}
 	if args[0] == "plan-smoke" {
 		return planSmoke(ctx, logger, getenv, args[1:])
@@ -226,6 +228,10 @@ func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(st
 		return planList(ctx, logger, e, args[1:])
 	case "plans-refresh":
 		return plansRefresh(ctx, logger, e, args[1:])
+	case "project-add":
+		return projectAdd(ctx, logger, e, args[1:])
+	case "project-remove":
+		return projectRemove(ctx, logger, e, args[1:])
 	default:
 		return fmt.Errorf("unknown subcommand %q", args[0])
 	}
