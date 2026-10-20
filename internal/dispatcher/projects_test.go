@@ -136,7 +136,7 @@ func TestPollProjectsSnapshotsTheCurrentPhase(t *testing.T) {
 	if !slices.Equal(got.Phases, wantPhases) || got.Current != "P2" {
 		t.Errorf("phases = %v current %q, want %v current P2", got.Phases, got.Current, wantPhases)
 	}
-	if want := []PhaseTicket{{"FRG-3", "building"}}; !slices.Equal(got.InFlight, want) || got.Queued != 1 || got.QueuedBlocked != 1 || got.EligibleBlocked != 1 {
+	if want := []PhaseTicket{{ID: "FRG-3", Title: "[BE] FRG-3", Stage: "building"}}; !slices.Equal(got.InFlight, want) || got.Queued != 1 || got.QueuedBlocked != 1 || got.EligibleBlocked != 1 {
 		t.Errorf("in flight %v queued %d queued blocked %d eligible blocked %d", got.InFlight, got.Queued, got.QueuedBlocked, got.EligibleBlocked)
 	}
 	if want := []string{"FRG-4", "FRG-5"}; !slices.Equal(got.Eligible, want) {

@@ -63,6 +63,7 @@ type PhaseProgress struct {
 // stage that run is in.
 type PhaseTicket struct {
 	ID    string `firestore:"id" json:"id"`
+	Title string `firestore:"title" json:"title"`
 	Stage string `firestore:"stage" json:"stage"`
 }
 
@@ -238,7 +239,7 @@ func projectView(ctx context.Context, d Deps, p PhaseProject, all []Issue, at ti
 		blocked := len(issue.BlockedByOpen) > 0
 		switch {
 		case run.Stage != "":
-			v.snapshot.InFlight = append(v.snapshot.InFlight, PhaseTicket{ID: issue.ID, Stage: run.Stage})
+			v.snapshot.InFlight = append(v.snapshot.InFlight, PhaseTicket{ID: issue.ID, Title: issue.Title, Stage: run.Stage})
 		case run.Queued:
 			v.snapshot.Queued++
 			if blocked {

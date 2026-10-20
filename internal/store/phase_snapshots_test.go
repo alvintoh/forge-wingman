@@ -23,7 +23,7 @@ func TestPhaseSnapshotsRoundTripKeyedByLowerCasedRepository(t *testing.T) {
 	want := dispatcher.PhaseSnapshot{
 		Repository: repo, Current: "P2", At: at,
 		Phases:   []dispatcher.PhaseProgress{{Name: "P1", Done: 2, Total: 2}, {Name: "P2", Total: 3}},
-		InFlight: []dispatcher.PhaseTicket{{ID: "FRG-3", Stage: dispatcher.PhaseStageBuilding}},
+		InFlight: []dispatcher.PhaseTicket{{ID: "FRG-3", Title: "Surface merges", Stage: dispatcher.PhaseStageBuilding}},
 		Queued:   1, QueuedBlocked: 1, Eligible: []string{"FRG-4"}, EligibleBlocked: 1,
 	}
 	s := NewPhaseSnapshots(client)
