@@ -200,6 +200,8 @@ type Deps struct {
 	Plans ProviderVerdicts
 	// Verdicts is optional: left unset, no verdict is written to the run.
 	Verdicts VerdictRecorder
+	// Reach is optional: left unset, no repository reachability is recorded.
+	Reach ReachRecorder
 	// Elicit asks the owner a decision in a run's Linear agent session, and
 	// Decisions is the store's decision surface a poll reads and writes.
 	Elicit    Elicitor
@@ -355,6 +357,9 @@ type Result struct {
 	// Dispatched is the id of every run this poll claimed and started.
 	Dispatched []string
 
+	// Reach is whether each listed repository's open PRs could be read this poll.
+	Reach []RepoReach
+
 	// issues is what the poll read from Linear, kept for the stuck check.
 	issues []Issue
 }
@@ -363,8 +368,9 @@ type Result struct {
 // on a known transient fault to the queue and walks it in priority order
 // claiming every run Admit lets start, abandons the claims that outlived
 // their window, measures the merges that landed since the last poll, raises a
-// notice for each run stuck past its limit, and posts the notices waiting,
-// whatever the rest of the poll did.
+// notice for each run stuck past its limit, records whether each listed
+// repository could be read, and posts the notices waiting, whatever the rest of
+// the poll did.
 // A ticket the queue already holds is left alone; a candidate a condition
 // withholds is deferred, not rejected, and reconsidered next poll; and a run
 // whose dispatch fails is released rather than left claimed, so the next
@@ -436,12 +442,21 @@ func poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	requeueErr := requeueStopped(ctx, d)
 	LogPhase(d.Logger, "requeue", start, d.Now())
 	start = d.Now()
+	var prs openPRCount
+	if listed {
+		prs, res.Reach = countOpenPRs(ctx, d, c.Repos)
+	}
+	LogPhase(d.Logger, "openPRs", start, d.Now())
+	start = d.Now()
 	var claims []Claim
 	var claimErr error
 	if listed {
-		claims, claimErr = admitClaims(ctx, d, c, relations, links, &res, history)
+		claims, claimErr = admitClaims(ctx, d, c, relations, links, &res, history, prs)
 	}
 	LogPhase(d.Logger, "claim", start, d.Now())
+	start = d.Now()
+	recordReach(ctx, d, res.Reach)
+	LogPhase(d.Logger, "reach", start, d.Now())
 	phaseErrs := []error{requeueErr, claimErr}
 	start = d.Now()
 	for _, claim := range claims {
@@ -556,9 +571,8 @@ func claimStage(cand Candidate, twoStage bool) string {
 //
 // On an error it returns the claims already booked beside it, so the caller can
 // dispatch or release them. The breaker is the poll's own, read once before this
-// walk; the provider halt and the verdict are keyed off each
-// candidate's own plan, and the open-PR count across the allowlist once, when
-// anything is queued. A breaker
+// walk, and so is the open-PR count across the allowlist; the provider halt and
+// the verdict are keyed off each candidate's own plan. A breaker
 // that cannot be read holds the walk as a tripped one would, and a budget
 // ceiling raises at most one notice. A candidate the plan's own window or cap
 // withholds is retried on the next paid plans in order, and once every one binds
@@ -572,17 +586,15 @@ func claimStage(cand Candidate, twoStage bool) string {
 // history and one estimate of each size it holds, however many candidates are
 // queued (AC1), and a walk whose candidates a non-budget limit withholds reads
 // no history at all (AC5).
-func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Relations, links map[string]string, res *Result, history HistoryLoader) ([]Claim, error) {
+func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Relations, links map[string]string, res *Result, history HistoryLoader, prs openPRCount) ([]Claim, error) {
 	candidates, err := d.Queue.Candidates(ctx)
 	if err != nil {
 		return nil, err
 	}
 	tripped := breakerTripped(ctx, d)
 	limits := c.Limits.orDefault()
-	var prs openPRCount
 	var mode PeakMode
 	if len(candidates) > 0 {
-		prs = countOpenPRs(ctx, d, c.Repos)
 		mode = readPeakMode(ctx, d)
 	}
 	// A size's estimate is the poll's, not the candidate's: one estimator read
@@ -896,17 +908,39 @@ type openPRCount struct {
 	known bool
 }
 
-func countOpenPRs(ctx context.Context, d Deps, repos []string) openPRCount {
+// countOpenPRs reads every listed repository, continuing past a failed read so
+// each one's reachability is known, and returns the count admission sees (known
+// only when every read succeeded) with one RepoReach per repository.
+func countOpenPRs(ctx context.Context, d Deps, repos []string) (openPRCount, []RepoReach) {
 	total := 0
+	known := true
+	checkedAt := d.Now()
+	reaches := make([]RepoReach, 0, len(repos))
 	for _, repo := range repos {
 		n, err := d.OpenPRs.OpenAgentPRs(ctx, repo)
+		reaches = append(reaches, classifyReach(repo, err, checkedAt))
 		if err != nil {
 			d.Logger.Info("openPRCountFailed", "repo", repo, "err", err.Error())
-			return openPRCount{}
+			known = false
+			continue
 		}
 		total += n
 	}
-	return openPRCount{count: total, known: true}
+	if !known {
+		return openPRCount{}, reaches
+	}
+	return openPRCount{count: total, known: true}, reaches
+}
+
+// recordReach writes each repository's reachability. A failed write is logged
+// and never stops the poll or refuses a ticket.
+func recordReach(ctx context.Context, d Deps, reaches []RepoReach) {
+	if d.Reach == nil || len(reaches) == 0 {
+		return
+	}
+	if err := d.Reach.RecordReach(ctx, reaches); err != nil {
+		d.Logger.Warn("reachRecordFailed", "repos", len(reaches), "err", err.Error())
+	}
 }
 
 // reviewWIPFor is the open agent PR count a candidate is admitted against. The

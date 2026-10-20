@@ -558,3 +558,16 @@ func TestGitHubFailsWhenALaterPageCannotBeRead(t *testing.T) {
 		t.Fatal("want a page that cannot be read to fail the listing, not undercount it")
 	}
 }
+
+func TestGitHubRefusalCarriesItsStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	_, err := (GitHub{Endpoint: srv.URL, Token: "gh-token", Client: srv.Client()}).OpenAgentPRs(context.Background(), "octo/scratch")
+	var api *APIError
+	if !errors.As(err, &api) || api.Status != 404 {
+		t.Fatalf("err = %v, want an APIError with status 404", err)
+	}
+}

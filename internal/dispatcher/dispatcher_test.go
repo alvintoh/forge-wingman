@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"reflect"
@@ -1272,15 +1273,103 @@ func TestPollMarksTheOpenPRCountUnknownWhenOneRepositoryFailsToRead(t *testing.T
 	}
 }
 
-func TestPollReadsNoOpenPRCountWhenNothingIsQueued(t *testing.T) {
+func TestPollReadsTheOpenPRCountOfEveryRepositoryWhenNothingIsQueued(t *testing.T) {
 	deps := pollDeps(fakeSource{}, &fakeQueue{}, &fakeWorkflow{})
 	calls := map[string]int{}
 	deps.OpenPRs = fakeOpenPRs{calls: calls}
 	if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
 		t.Fatal(err)
 	}
-	if len(calls) != 0 {
-		t.Fatalf("reads = %v, want none when there is nothing to admit", calls)
+	if calls["AlvinToh/Forge-Wingman"] != 1 || calls["octo/scratch"] != 1 {
+		t.Fatalf("reads = %v, want one per listed repository", calls)
+	}
+}
+
+func TestPollReadsEveryRepositoryAfterAnEarlyFailure(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{{RunID: "run-a", Repo: "octo/a", Priority: 1}}}
+	deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	calls := map[string]int{}
+	deps.OpenPRs = fakeOpenPRs{err: errFirestore, failOnly: "octo/a", calls: calls}
+	if _, err := Poll(context.Background(), deps, Config{Repos: []string{"octo/a", "octo/b", "octo/c"}}); err != nil {
+		t.Fatal(err)
+	}
+	if calls["octo/a"] != 1 || calls["octo/b"] != 1 || calls["octo/c"] != 1 {
+		t.Fatalf("reads = %v, want every repository read once", calls)
+	}
+	if got := q.tryClaims[0].facts; got.OpenPRsKnown || got.OpenPRs != 0 {
+		t.Fatalf("facts = %+v, want the count unknown while one read failed", got)
+	}
+}
+
+func TestPollRecordsOneReachPerListedRepository(t *testing.T) {
+	deps := pollDeps(fakeSource{}, &fakeQueue{}, &fakeWorkflow{})
+	rec := &fakeReach{}
+	deps.Reach = rec
+	deps.OpenPRs = fakeOpenPRs{err: &APIError{Status: 404, message: "GitHub refused to list: 404 Not Found: gone"}, failOnly: "octo/b"}
+	res, err := Poll(context.Background(), deps, Config{Repos: []string{"octo/a", "octo/b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []RepoReach{
+		{Repository: "octo/a", Reachable: true, CheckedAt: pollAt},
+		{Repository: "octo/b", Reason: "not-found", Status: 404, CheckedAt: pollAt},
+	}
+	if !slices.Equal(rec.recorded, want) || !slices.Equal(res.Reach, want) {
+		t.Fatalf("recorded %+v, result %+v, want %+v", rec.recorded, res.Reach, want)
+	}
+}
+
+func TestPollRecordsNoReachWhenTheListIsEmptyOrUnreadable(t *testing.T) {
+	for name, cfg := range map[string]Config{
+		"empty":      {},
+		"unreadable": {ReposErr: errFirestore},
+	} {
+		t.Run(name, func(t *testing.T) {
+			deps := pollDeps(fakeSource{}, &fakeQueue{}, &fakeWorkflow{})
+			rec := &fakeReach{}
+			deps.Reach = rec
+			if _, err := Poll(context.Background(), deps, cfg); err != nil {
+				t.Fatal(err)
+			}
+			if rec.calls != 0 {
+				t.Fatalf("the recorder was called %d times, want none", rec.calls)
+			}
+		})
+	}
+}
+
+func TestPollNeitherStopsNorRefusesATicketWhenTheReachWriteFails(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{{RunID: "run-a", Repo: "octo/a", Priority: 1}}}
+	var logs strings.Builder
+	deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	deps.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	deps.Reach = &fakeReach{err: errFirestore}
+	res, err := Poll(context.Background(), deps, Config{Repos: []string{"octo/a"}})
+	if err != nil {
+		t.Fatalf("err = %v, want the poll to continue past the failed write", err)
+	}
+	if !slices.Equal(res.Dispatched, []string{"run-a"}) || len(q.rejected) != 0 {
+		t.Fatalf("dispatched %v, rejected %v, want the ticket dispatched", res.Dispatched, q.rejected)
+	}
+	if !strings.Contains(logs.String(), "level=WARN msg=reachRecordFailed") {
+		t.Fatalf("logs:\n%s\nwant a reachRecordFailed warning", logs.String())
+	}
+}
+
+func TestPollAdmitsTheSameWhetherOrNotReachIsRecorded(t *testing.T) {
+	admitted := func(rec ReachRecorder) string {
+		q := &fakeQueue{candidates: []Candidate{{RunID: "run-a", Repo: "octo/a", Priority: 1}}}
+		deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+		deps.Reach = rec
+		deps.OpenPRs = fakeOpenPRs{open: map[string]int{"octo/a": 2}}
+		if _, err := Poll(context.Background(), deps, Config{Repos: []string{"octo/a"}}); err != nil {
+			t.Fatal(err)
+		}
+		f := q.tryClaims[0].facts
+		return fmt.Sprint(len(q.tryClaims), f.OpenPRs, f.OpenPRsKnown, f.PeakHeld, f.BreakerTripped)
+	}
+	if with, without := admitted(&fakeReach{}), admitted(nil); with != without {
+		t.Fatalf("admission with a recorder = %q, without = %q, want them equal", with, without)
 	}
 }
 

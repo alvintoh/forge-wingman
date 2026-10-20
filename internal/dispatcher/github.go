@@ -421,8 +421,17 @@ func (g GitHub) do(ctx context.Context, method, endpoint string, reqBody io.Read
 	}
 	defer func() { _ = res.Body.Close() }()
 	raw, _ := io.ReadAll(io.LimitReader(res.Body, maxErrorBytes))
-	return nil, fmt.Errorf("GitHub refused to %s: %s: %s", action, res.Status, snippet(raw))
+	return nil, &APIError{Status: res.StatusCode, message: fmt.Sprintf("GitHub refused to %s: %s: %s", action, res.Status, snippet(raw))}
 }
+
+// APIError is a GitHub refusal, carrying the HTTP status so a caller can
+// classify it without reading the message.
+type APIError struct {
+	Status  int
+	message string
+}
+
+func (e *APIError) Error() string { return e.message }
 
 func (g GitHub) endpoint() string {
 	if g.Endpoint == "" {
