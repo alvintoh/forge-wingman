@@ -1,5 +1,6 @@
 import { Link, Outlet, useParams } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
+import { ProjectsSection } from "./projects";
 
 export function Root() {
   return (
@@ -27,6 +28,7 @@ export function Inbox() {
           Statistics
         </Link>
       </nav>
+      <ProjectsSection />
     </>
   );
 }
