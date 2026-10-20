@@ -674,6 +674,78 @@ func TestPollAdmitsWhatItCanAndRefusesWhatItCannot(t *testing.T) {
 	}
 }
 
+func TestPollRefusesWhatTheListedRepositoriesDoNotName(t *testing.T) {
+	q := &fakeQueue{}
+	res, err := Poll(context.Background(), pollDeps(fakeSource{issues: []Issue{
+		admitted("size:S", "repo:someone/else"),
+		admitted("size:S", "repo:octo/scratch"),
+	}}, q, &fakeWorkflow{}), Config{Repos: []string{"octo/scratch"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reasons(res.Rejections); !slices.Equal(got, []Refusal{RefusalNotAllowlist}) {
+		t.Fatalf("refused %v", got)
+	}
+	if len(q.queued) != 1 || q.queued[0].Repo != "octo/scratch" {
+		t.Fatalf("queued = %+v", q.queued)
+	}
+}
+
+func TestPollAdmitsARepositoryListedSinceThePollBefore(t *testing.T) {
+	issues := []Issue{admitted("size:S", "repo:octo/new")}
+	before := &fakeQueue{}
+	if _, err := Poll(context.Background(), pollDeps(fakeSource{issues: issues}, before, &fakeWorkflow{}), Config{Repos: []string{"octo/old"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(before.queued) != 0 || len(before.rejected) != 1 {
+		t.Fatalf("before the listing: queued %+v, rejected %+v", before.queued, before.rejected)
+	}
+	after := &fakeQueue{}
+	if _, err := Poll(context.Background(), pollDeps(fakeSource{issues: issues}, after, &fakeWorkflow{}), Config{Repos: []string{"octo/old", "octo/new"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(after.queued) != 1 || len(after.rejected) != 0 {
+		t.Fatalf("after the listing: queued %+v, rejected %+v", after.queued, after.rejected)
+	}
+}
+
+func TestPollAdmitsNothingAgainstAnAllowlistItCannotUse(t *testing.T) {
+	for name, tt := range map[string]struct {
+		cfg Config
+		log string
+	}{
+		"an unreadable list": {Config{ReposErr: errFirestore}, "msg=allowlistUnreadable"},
+		"an empty list":      {Config{}, "msg=allowlistEmpty"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			q := &fakeQueue{
+				candidates:     []Candidate{{RunID: "run-18", Repo: "octo/scratch", Size: "M", Priority: 2}},
+				transientStops: []TransientStop{{RunID: "run-9", Class: runner.TransientModuleProxy}},
+			}
+			w := &fakeWorkflow{}
+			var logs strings.Builder
+			deps := pollDeps(fakeSource{issues: []Issue{admitted("size:S", "repo:octo/scratch"), admitted("size:S", "repo:someone/else")}}, q, w)
+			deps.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+			res, err := Poll(context.Background(), deps, tt.cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Seen != 2 || len(res.Enqueued) != 0 || len(res.Rejections) != 0 || len(q.rejected) != 0 || len(q.queued) != 0 {
+				t.Fatalf("result %+v, queued %+v, rejected %+v: want nothing admitted or refused", res, q.queued, q.rejected)
+			}
+			if len(q.tryClaims) != 0 || len(w.claims) != 0 {
+				t.Fatalf("claimed %+v, dispatched %+v, want no claim walk", q.tryClaims, w.claims)
+			}
+			if len(q.requeued) != 1 {
+				t.Fatalf("requeued = %+v, want the other phases to run", q.requeued)
+			}
+			if !strings.Contains(logs.String(), tt.log) {
+				t.Fatalf("log = %q, want %s", logs.String(), tt.log)
+			}
+		})
+	}
+}
+
 func TestPollLeavesATicketTheQueueAlreadyHolds(t *testing.T) {
 	q := &fakeQueue{holds: map[string]bool{"FRG-18": true}}
 	deps := pollDeps(fakeSource{issues: []Issue{

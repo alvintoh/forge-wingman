@@ -22,7 +22,6 @@ func TestLoadConfigReadsTheBoundaries(t *testing.T) {
 	c, err := loadConfig(envOf(map[string]string{
 		"GOOGLE_CLOUD_PROJECT": "forge-wingman",
 		"LINEAR_DELEGATE":      "agent-1",
-		"WINGMAN_REPOS":        "octo/scratch, AlvinToh/Forge-Wingman ,",
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -30,13 +29,10 @@ func TestLoadConfigReadsTheBoundaries(t *testing.T) {
 	if c.project != "forge-wingman" || c.delegate != "agent-1" {
 		t.Fatalf("config = %+v", c)
 	}
-	if !slices.Equal(c.repos, []string{"octo/scratch", "AlvinToh/Forge-Wingman"}) {
-		t.Fatalf("repos = %v", c.repos)
-	}
 }
 
 func configEnv(extra map[string]string) func(string) string {
-	kv := map[string]string{"GOOGLE_CLOUD_PROJECT": "forge-wingman", "LINEAR_DELEGATE": "agent-1", "WINGMAN_REPOS": "octo/scratch"}
+	kv := map[string]string{"GOOGLE_CLOUD_PROJECT": "forge-wingman", "LINEAR_DELEGATE": "agent-1"}
 	for k, v := range extra {
 		kv[k] = v
 	}
@@ -102,7 +98,6 @@ func TestLoadConfigRefusesAnUnconfiguredJob(t *testing.T) {
 	full := map[string]string{
 		"GOOGLE_CLOUD_PROJECT": "forge-wingman",
 		"LINEAR_DELEGATE":      "agent-1",
-		"WINGMAN_REPOS":        "octo/scratch",
 	}
 	for _, unset := range []string{"GOOGLE_CLOUD_PROJECT", "LINEAR_DELEGATE"} {
 		t.Run(unset, func(t *testing.T) {
@@ -117,16 +112,35 @@ func TestLoadConfigRefusesAnUnconfiguredJob(t *testing.T) {
 			}
 		})
 	}
-	// An allowlist that names no repository would admit whatever a label names.
-	for _, repos := range []string{"", "  ,  ", "octo"} {
-		kv := map[string]string{}
-		for k, v := range full {
-			kv[k] = v
-		}
-		kv["WINGMAN_REPOS"] = repos
-		if _, err := loadConfig(envOf(kv)); err == nil {
-			t.Fatalf("WINGMAN_REPOS = %q was accepted", repos)
-		}
+}
+
+type fakeLister struct {
+	repos []string
+	err   error
+}
+
+func (f fakeLister) Repositories(context.Context) ([]string, error) { return f.repos, f.err }
+
+func TestListedRepositoriesReturnsTheOwnersList(t *testing.T) {
+	got, err := listedRepositories(context.Background(), fakeLister{repos: []string{"AlvinToh/Forge-Wingman", "octo/scratch"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got, []string{"AlvinToh/Forge-Wingman", "octo/scratch"}) {
+		t.Fatalf("repos = %v", got)
+	}
+}
+
+func TestListedRepositoriesFailsTheWholeListOnOneBadEntry(t *testing.T) {
+	got, err := listedRepositories(context.Background(), fakeLister{repos: []string{"octo/scratch", "octo"}})
+	if err == nil || !strings.Contains(err.Error(), `"octo"`) || got != nil {
+		t.Fatalf("got %v, %v, want no repositories and an error naming the entry", got, err)
+	}
+}
+
+func TestListedRepositoriesReturnsAReadFailure(t *testing.T) {
+	if _, err := listedRepositories(context.Background(), fakeLister{err: errors.New("owner database unreachable")}); err == nil {
+		t.Fatal("an unreadable list was returned without an error")
 	}
 }
 

@@ -41,7 +41,7 @@ Without both labels the ticket is refused rather than queued, and the reason is
 recorded against it in the store as `dispatch/rejected-<identifier>`: `no-size` for
 no size label, `size-unknown` for a size that is not `S`, `M` or `L`,
 `size-above-ceiling` for an `XL`, `no-repository` for no repo label,
-`repository-not-allowlisted` for a repo it may not run in, and `ticket-invalid` for a
+`repository-not-allowlisted` for a repo not listed in the owner database, and `ticket-invalid` for a
 ticket that fails its own checks. A model a run may not use is refused the
 same way: `model-malformed` for a label that is not `provider/model` (or a
 plan list with an empty or repeated entry), `review-model-is-build-model` for

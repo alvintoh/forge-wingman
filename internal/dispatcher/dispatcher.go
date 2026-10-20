@@ -102,9 +102,11 @@ type Claim struct {
 // Source's own, which proves the token reads as that agent before any
 // ticket is looked at.
 type Config struct {
-	Repos  []string
-	Budget BudgetConfig
-	Model  string
+	Repos []string
+	// ReposErr is why Repos could not be read; Repos is then empty.
+	ReposErr error
+	Budget   BudgetConfig
+	Model    string
 	// NextPlans are the paid plans a run moves to, in order, once the ceilings
 	// of the plan Model names bind; empty when Model's plan is the only one.
 	NextPlans []PaidPlan
@@ -425,11 +427,14 @@ func poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	}
 	LogPhase(d.Logger, "delegated", start, d.Now())
 	res := Result{Seen: len(issues), issues: issues}
+	listed := allowlistRead(d, c)
 	start = d.Now()
-	for _, issue := range issues {
-		admitErr := admit(ctx, d, c, issue, &res)
-		if admitErr != nil {
-			return res, admitErr
+	if listed {
+		for _, issue := range issues {
+			admitErr := admit(ctx, d, c, issue, &res)
+			if admitErr != nil {
+				return res, admitErr
+			}
 		}
 	}
 	LogPhase(d.Logger, "admit", start, d.Now())
@@ -448,7 +453,11 @@ func poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	requeueErr := requeueStopped(ctx, d)
 	LogPhase(d.Logger, "requeue", start, d.Now())
 	start = d.Now()
-	claims, claimErr := admitClaims(ctx, d, c, level, relations, links, &res, history)
+	var claims []Claim
+	var claimErr error
+	if listed {
+		claims, claimErr = admitClaims(ctx, d, c, level, relations, links, &res, history)
+	}
 	LogPhase(d.Logger, "claim", start, d.Now())
 	phaseErrs := []error{requeueErr, claimErr}
 	start = d.Now()
@@ -787,6 +796,22 @@ func admitClaims(ctx context.Context, d Deps, c Config, level Autonomy, relation
 		d.Logger.Info("everyCandidateDeferred", "candidates", len(candidates))
 	}
 	return claims, nil
+}
+
+// allowlistRead reports whether the poll has an allowlist to admit against. An
+// unreadable or empty one fails closed and says why: a refusal is permanent, so
+// admitting against nothing would refuse every delegated ticket over one failed
+// read, and an empty list counts open PRs as a known zero.
+func allowlistRead(d Deps, c Config) bool {
+	switch {
+	case len(c.Repos) > 0:
+		return true
+	case c.ReposErr != nil:
+		d.Logger.Warn("allowlistUnreadable", "err", c.ReposErr.Error())
+	default:
+		d.Logger.Warn("allowlistEmpty")
+	}
+	return false
 }
 
 // breakerTripped reads the breaker the way admission does: one that cannot be

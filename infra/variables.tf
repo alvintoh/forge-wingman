@@ -50,14 +50,6 @@ variable "linear_delegate" {
   type = string
 }
 
-# The repositories a ticket's repo: label may name, in the spelling the
-# dispatch sends back to GitHub. A ticket naming any other repository is refused,
-# so leaving this empty admits nothing rather than anything.
-variable "linear_repositories" {
-  type    = list(string)
-  default = []
-}
-
 # Optional settings the dispatcher reads from its own environment; a key left
 # out keeps its default. The allowed keys are the WINGMAN_ variables
 # cmd/dispatcher/main.go reads, and change with it.
