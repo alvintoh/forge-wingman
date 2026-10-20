@@ -99,8 +99,8 @@ func main() {
 
 // config is what one poll needs: the project whose store is the queue, the
 // Linear agent it acts for, and the optional concurrency limits and tuning,
-// where zero means the default. The
-// tokens are not here because a poll reads them from Secret Manager.
+// where zero means the default. The tokens are not here because a poll reads
+// them from Secret Manager.
 type config struct {
 	project  string
 	delegate string
