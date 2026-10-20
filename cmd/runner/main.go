@@ -625,6 +625,7 @@ func record(ctx context.Context, logger *slog.Logger, getenv func(string) string
 	runURL := fs.String("run-url", "", "URL of the workflow run")
 	autoMerge := fs.Bool("auto-merge", false, "the pr job marked the PR eligible for auto-merge")
 	claimAttempt := fs.String("attempt", "", "attempt the dispatcher claimed the run at, empty for a run dispatched without one")
+	dispatcherURI := fs.String("dispatcher-uri", "", "the dispatcher job's run endpoint, woken once the record is written; empty skips the wake")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -667,6 +668,7 @@ func record(ctx context.Context, logger *slog.Logger, getenv func(string) string
 	if err != nil {
 		return err
 	}
+	defer wakeAfterRecord(ctx, logger, googleClient, *dispatcherURI, *runID)
 	if rec.StopReason == runner.StopSummaryInvalid {
 		logger.Warn("summaryRejected", "run", *runID, "err", rec.StopDetail)
 	}

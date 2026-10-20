@@ -534,12 +534,14 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}
           SUMMARY: ${{ needs.model.outputs.summary }}
           GH_TOKEN: ${{ github.token }}
+          DISPATCHER_RUN_URI: ${{ vars.WINGMAN_DISPATCHER_RUN_URI }}
         run: >-
           "$RUNNER_TEMP/runner" record
           -run-id "$RUN_ID" -attempt-id "$ATTEMPT_ID" -summary "$SUMMARY" -pr-url "$PR_URL"
           -run-result "$RUN_RESULT" -pr-result "$PR_RESULT" -pr-duration-s "$PR_DURATION"
           -failed-gate "$FAILED_GATE" -pr-stop-reason "$PR_STOP_REASON" -run-url "$RUN_URL"
           -auto-merge="$AUTO_MERGE" -attempt "$ATTEMPT"
+          -dispatcher-uri "$DISPATCHER_RUN_URI"
 
       # A summary too large to pass as an argument fails the step before record runs,
       # so record never reports started; any later failure leaves the record as it is.
@@ -547,8 +549,10 @@ jobs:
         name: Record an unreadable summary
         env:
           GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}
+          DISPATCHER_RUN_URI: ${{ vars.WINGMAN_DISPATCHER_RUN_URI }}
         run: >-
           "$RUNNER_TEMP/runner" record -summary-unreadable
           -run-id "$RUN_ID" -attempt-id "$ATTEMPT_ID" -pr-url "$PR_URL"
           -run-result "$RUN_RESULT" -pr-result "$PR_RESULT" -pr-duration-s "$PR_DURATION"
           -failed-gate "$FAILED_GATE" -run-url "$RUN_URL" -attempt "$ATTEMPT"
+          -dispatcher-uri "$DISPATCHER_RUN_URI"
