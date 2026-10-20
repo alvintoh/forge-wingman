@@ -100,3 +100,20 @@ resource "google_firestore_index" "settled_runs_of_size" {
     order      = "DESCENDING"
   }
 }
+
+# Serves a project's last activity: the newest run row of one repository.
+resource "google_firestore_index" "runs_by_repo_and_updated_at" {
+  project    = var.project_id
+  database   = google_firestore_database.default.name
+  collection = "runs"
+
+  fields {
+    field_path = "repo"
+    order      = "ASCENDING"
+  }
+
+  fields {
+    field_path = "updated_at"
+    order      = "DESCENDING"
+  }
+}

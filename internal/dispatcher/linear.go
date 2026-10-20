@@ -1,8 +1,10 @@
 package dispatcher
 
 import (
+	"cmp"
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -90,6 +92,76 @@ const delegatedQuery = `query DelegatedIssues($delegate: ID!, $first: Int, $afte
   }
 }`
 
+// projectIssuesQuery reads the token's own identity beside every unfinished-or-
+// completed issue of the named Linear projects, with the milestone each belongs
+// to: a phase's progress counts its completed tickets, so those are read too.
+const projectIssuesQuery = `query ProjectIssues($projects: [String!]!, $first: Int, $after: String) {
+  viewer {
+    id
+  }
+  issues(
+    filter: { project: { name: { in: $projects } }, state: { type: { nin: ["` + stateTypeCanceled + `"] } } }
+    first: $first
+    after: $after
+  ) {
+    nodes {
+      id
+      identifier
+      url
+      title
+      description
+      priority
+      labels {
+        nodes {
+          name
+        }
+      }
+      state {
+        type
+      }
+      delegate {
+        id
+      }
+      project {
+        name
+      }
+      projectMilestone {
+        id
+        name
+        sortOrder
+      }
+      inverseRelations {
+        nodes {
+          type
+          issue {
+            identifier
+            state {
+              type
+            }
+          }
+        }
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}`
+
+// delegateMutation delegates one issue to the agent, and reads the delegate
+// back: the reply is the only evidence the delegation landed.
+const delegateMutation = `mutation DelegateIssue($id: String!, $delegate: String!) {
+  issueUpdate(id: $id, input: { delegateId: $delegate }) {
+    success
+    issue {
+      delegate {
+        id
+      }
+    }
+  }
+}`
+
 // ticketStateQuery reads one ticket's own id, its state, the manual order a
 // state change rewrites, and its team's workflow states — the last so the In
 // Progress state's id is resolved per team rather than carried as a constant.
@@ -130,13 +202,14 @@ const setTicketStateMutation = `mutation SetTicketState($id: String!, $state: St
   }
 }`
 
-// Linear reads the issues delegated to one Linear agent and moves the tickets a
-// claim starts and restores.
+// Linear reads the issues delegated to one Linear agent and the issues of the
+// listed projects, delegates a ticket, and moves the tickets a claim starts and
+// restores.
 type Linear struct {
 	Endpoint string
 	Tokens   linear.TokenSource
 	// Delegate is the agent the poll acts for, the id Linear's viewer query
-	// must return for every page.
+	// must return for every page, and the delegate a delegation sets.
 	Delegate string
 	Client   *http.Client
 	Page     int
@@ -165,8 +238,10 @@ type linearTicket struct {
 	} `json:"team"`
 }
 
-// linearIssue is one issue as the delegated query's reply carries it.
+// linearIssue is one issue as a query's reply carries it; a field the query did
+// not ask for stays zero.
 type linearIssue struct {
+	ID          string `json:"id"`
 	Identifier  string `json:"identifier"`
 	URL         string `json:"url"`
 	Title       string `json:"title"`
@@ -177,6 +252,18 @@ type linearIssue struct {
 			Name string `json:"name"`
 		} `json:"nodes"`
 	} `json:"labels"`
+	State    linearState `json:"state"`
+	Delegate *struct {
+		ID string `json:"id"`
+	} `json:"delegate"`
+	Project *struct {
+		Name string `json:"name"`
+	} `json:"project"`
+	Milestone *struct {
+		ID        string  `json:"id"`
+		Name      string  `json:"name"`
+		SortOrder float64 `json:"sortOrder"`
+	} `json:"projectMilestone"`
 	Relations struct {
 		Nodes []struct {
 			Type         string `json:"type"`
@@ -218,30 +305,40 @@ type linearResponse struct {
 // reads as the configured agent, since the filter asks the API about the
 // delegate by id and would otherwise return another agent's issues.
 func (l Linear) Delegated(ctx context.Context) ([]Issue, error) {
-	page := l.Page
-	if page <= 0 {
-		page = linearPage
+	return l.listIssues(ctx, delegatedQuery, map[string]any{"delegate": l.Delegate})
+}
+
+// ProjectIssues returns every issue of the named Linear projects that is not
+// canceled, failing unless every page was read and the token reads as the
+// configured agent: a partial read would misstate a phase's progress.
+func (l Linear) ProjectIssues(ctx context.Context, projects []string) ([]Issue, error) {
+	return l.listIssues(ctx, projectIssuesQuery, map[string]any{"projects": projects})
+}
+
+// DelegateIssue sets issueID's delegate to the agent this client acts for, and
+// fails unless Linear reports the issue delegated to that agent.
+func (l Linear) DelegateIssue(ctx context.Context, issueID string) error {
+	var resp struct {
+		Data struct {
+			IssueUpdate struct {
+				Success bool `json:"success"`
+				Issue   struct {
+					Delegate *struct {
+						ID string `json:"id"`
+					} `json:"delegate"`
+				} `json:"issue"`
+			} `json:"issueUpdate"`
+		} `json:"data"`
 	}
-	var (
-		issues []Issue
-		cursor string
-	)
-	for {
-		resp, err := l.page(ctx, cursor, page)
-		if err != nil {
-			return nil, err
-		}
-		if err := l.checkViewer(resp.Data.Viewer.ID); err != nil {
-			return nil, err
-		}
-		for _, node := range resp.Data.Issues.Nodes {
-			issues = append(issues, node.issue())
-		}
-		if !resp.Data.Issues.PageInfo.HasNextPage {
-			return issues, nil
-		}
-		cursor = resp.Data.Issues.PageInfo.EndCursor
+	variables := map[string]string{"id": issueID, "delegate": l.Delegate}
+	if err := l.request(ctx, delegateMutation, variables, &resp.Data); err != nil {
+		return fmt.Errorf("delegating %s: %w", issueID, err)
 	}
+	delegate := resp.Data.IssueUpdate.Issue.Delegate
+	if !resp.Data.IssueUpdate.Success || delegate == nil || delegate.ID != l.Delegate {
+		return fmt.Errorf("delegating %s: Linear did not report it delegated to %s", issueID, l.Delegate)
+	}
+	return nil
 }
 
 // StartTicket sets a claimed ticket's state In Progress and reports the state
@@ -344,11 +441,22 @@ func (l Linear) setTicketState(ctx context.Context, issueID, stateID string, ord
 // issue is the issue one reply's node names.
 func (n linearIssue) issue() Issue {
 	issue := Issue{
-		ID:       n.Identifier,
-		URL:      n.URL,
-		Title:    n.Title,
-		Body:     n.Description,
-		Priority: n.Priority,
+		ID:        n.Identifier,
+		UUID:      n.ID,
+		URL:       n.URL,
+		Title:     n.Title,
+		Body:      n.Description,
+		Priority:  n.Priority,
+		StateType: n.State.Type,
+	}
+	if n.Delegate != nil {
+		issue.DelegatedTo = n.Delegate.ID
+	}
+	if n.Project != nil {
+		issue.Project = n.Project.Name
+	}
+	if m := n.Milestone; m != nil {
+		issue.Milestone = Milestone{ID: m.ID, Name: m.Name, SortOrder: m.SortOrder}
 	}
 	for _, label := range n.Labels.Nodes {
 		issue.Labels = append(issue.Labels, label.Name)
@@ -399,16 +507,33 @@ func (l Linear) request(ctx context.Context, query string, variables, out any) e
 	})
 }
 
-// page asks Linear for one page of the delegated issues. The cursor is omitted
-// rather than sent empty on the first page, since "" is not a cursor Linear can
-// resume from.
-func (l Linear) page(ctx context.Context, after string, size int) (linearResponse, error) {
-	var resp linearResponse
-	variables := struct {
-		Delegate string `json:"delegate"`
-		First    int    `json:"first"`
-		After    string `json:"after,omitempty"`
-	}{Delegate: l.Delegate, First: size, After: after}
-	err := l.request(ctx, delegatedQuery, variables, &resp.Data)
-	return resp, err
+// listIssues walks every page of query, whose variables beyond the paging are
+// vars. The cursor is omitted rather than sent empty on the first page, since ""
+// is not a cursor Linear can resume from.
+func (l Linear) listIssues(ctx context.Context, query string, vars map[string]any) ([]Issue, error) {
+	var (
+		issues []Issue
+		cursor string
+	)
+	for {
+		variables := maps.Clone(vars)
+		variables["first"] = cmp.Or(l.Page, linearPage)
+		if cursor != "" {
+			variables["after"] = cursor
+		}
+		var resp linearResponse
+		if err := l.request(ctx, query, variables, &resp.Data); err != nil {
+			return nil, err
+		}
+		if err := l.checkViewer(resp.Data.Viewer.ID); err != nil {
+			return nil, err
+		}
+		for _, node := range resp.Data.Issues.Nodes {
+			issues = append(issues, node.issue())
+		}
+		if !resp.Data.Issues.PageInfo.HasNextPage {
+			return issues, nil
+		}
+		cursor = resp.Data.Issues.PageInfo.EndCursor
+	}
 }
