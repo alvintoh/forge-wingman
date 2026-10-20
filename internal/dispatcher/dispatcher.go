@@ -179,6 +179,7 @@ type Deps struct {
 	Visibility   RepoVisibility
 	Providers    ProviderHalts
 	Breaker      Breaker
+	Phases       Phases
 	PeakModes    PeakModes
 	OpenPRs      OpenPRCounter
 	// PullRequests reads the merged run PRs the rewrite rate is measured from,
@@ -221,6 +222,7 @@ func (d Deps) missing() string {
 		{"Visibility", d.Visibility != nil},
 		{"Providers", d.Providers != nil},
 		{"Breaker", d.Breaker != nil},
+		{"Phases", d.Phases != nil},
 		{"PeakModes", d.PeakModes != nil},
 		{"OpenPRs", d.OpenPRs != nil},
 		{"PullRequests", d.PullRequests != nil},
@@ -570,8 +572,9 @@ func claimStage(cand Candidate, twoStage bool) string {
 // the condition that bound it.
 //
 // On an error it returns the claims already booked beside it, so the caller can
-// dispatch or release them. The breaker is the poll's own, read once before this
-// walk, and so is the open-PR count across the allowlist; the provider halt and
+// dispatch or release them. The breaker and the owner's paused projects are the poll's own,
+// read once before this walk (an unreadable set holds every repository), and so
+// is the open-PR count across the allowlist; the provider halt and
 // the verdict are keyed off each candidate's own plan. A breaker
 // that cannot be read holds the walk as a tripped one would, and a budget
 // ceiling raises at most one notice. A candidate the plan's own window or cap
@@ -592,6 +595,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		return nil, err
 	}
 	tripped := breakerTripped(ctx, d)
+	paused := readPaused(ctx, d)
 	limits := c.Limits.orDefault()
 	var mode PeakMode
 	if len(candidates) > 0 {
@@ -706,7 +710,8 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		candPlan := runner.Provider(candModel)
 		facts := Facts{Limits: limits, Tuning: c.Tuning.OrDefault(), History: history, ProviderHalted: halted(candPlan), BreakerTripped: tripped,
 			OpenPRs: reviewWIPFor(ctx, d, cand, prs), OpenPRsKnown: prs.known, Relations: relations[cand.RunID], Model: candModel, LastResort: lastResort,
-			PeakHeld: PeakHeld(mode, candModel, d.Now(), est.Minutes), DecisionMode: c.DecisionMode}
+			PeakHeld: PeakHeld(mode, candModel, d.Now(), est.Minutes), DecisionMode: c.DecisionMode,
+			OwnerPaused: paused.holds(cand.Repo) && stage != StageBuild}
 		claimVerdict := verdictOf(candPlan)
 		ok, binding, err := d.Queue.TryClaim(ctx, cand.RunID, d.Now(), budget, facts, reservation)
 		if err != nil {
@@ -818,6 +823,17 @@ func breakerTripped(ctx context.Context, d Deps) bool {
 		return true
 	}
 	return tripped
+}
+
+// readPaused reads the owner's paused projects the way the breaker is read: a
+// read that fails holds every repository, since which are paused is unknown.
+func readPaused(ctx context.Context, d Deps) pausedSet {
+	repos, err := d.Phases.Paused(ctx)
+	if err != nil {
+		d.Logger.Warn("phaseCheckFailed", "err", err.Error())
+		return pausedSet{all: true}
+	}
+	return pausedSet{repos: repos}
 }
 
 // providerHalted reads plan's halt the way admission does: a read that fails

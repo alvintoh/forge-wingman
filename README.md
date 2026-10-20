@@ -91,6 +91,15 @@ when, whether a run is being held now, and the same switch, so the mode need not
 be read from a terminal. The next poll reads it, so a switch needs no redeploy —
 see [Operate](#operate) for the command and the environment it needs.
 
+The owner can stop a project without cancelling a run. A paused project's new
+tickets are held, not refused: the run's row shows `waiting_on: owner-paused` and
+each poll tries it again, so a resume makes it claimable with no re-delegation. A
+ticket whose plan stage has settled still claims its build, and every run already
+in flight runs to its end. The project reads stopping while any of its runs is in
+flight and stopped when none is; another project is unaffected. The pause is the
+`paused` and `paused_at` fields of the project's document in the owner database,
+and a pause that cannot be read holds every project.
+
 ## Operate
 
 These subcommands run from a local checkout against the store itself, for the

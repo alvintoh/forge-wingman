@@ -2941,3 +2941,71 @@ func listed(t *testing.T, q *Queue, ctx context.Context, runID string) bool {
 	}
 	return false
 }
+
+func TestInFlightByRepoCountsReservationsPerLowerCasedRepository(t *testing.T) {
+	doc := ledgerDoc{Reservations: map[string]reservationEntry{
+		"a#a0":      {Repo: "Octo/Scratch"},
+		"a#a0#plan": {Repo: "octo/scratch"},
+		"b#a0":      {Repo: "octo/other"},
+	}}
+	got := inFlightByRepo(doc)
+	if len(got) != 2 || got["octo/scratch"] != 2 || got["octo/other"] != 1 {
+		t.Fatalf("inFlightByRepo = %v, want octo/scratch 2 and octo/other 1", got)
+	}
+}
+
+func TestRepoLoadsCountsReservationsAndQueuedRowsPerRepository(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	repo, other := "octo/"+fresh("loaded"), "octo/"+fresh("idle")
+	queuedID, planned, running := fresh("held"), fresh("planned"), fresh("running")
+	forget(t, client, queuedID, planned)
+	for _, id := range []string{queuedID, planned} {
+		run := queuedRun(id, 1)
+		run.Repo = repo
+		if err := q.Enqueue(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := client.Collection(runsCollection).Doc(planned).Update(ctx, []firestore.Update{{Path: stateField, Value: statePlanned}}); err != nil {
+		t.Fatal(err)
+	}
+	seedLedger(t, client, 2, map[string]reservationEntry{running: {Repo: repo, TicketID: running}})
+	loads, err := q.RepoLoads(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loads[repo]; got != (RepoLoad{InFlight: 1, Held: 1}) {
+		t.Fatalf("load of %s = %+v, want 1 in flight and 1 held, the planned row not held", repo, got)
+	}
+	if got := loads[other]; got != (RepoLoad{}) {
+		t.Fatalf("load of %s = %+v, want none", other, got)
+	}
+}
+
+func TestTryClaimRecordsAnOwnerPauseAsWhatTheRowWaitsOn(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	id := fresh("paused")
+	forget(t, client, id)
+	resetLedger(t, client, 1)
+	if err := q.Enqueue(ctx, queuedRun(id, 1)); err != nil {
+		t.Fatal(err)
+	}
+	held := openFacts
+	held.OwnerPaused = true
+	ok, why, err := q.TryClaim(ctx, id, queueAt, generousBudget, held, dispatcher.Reservation{})
+	if err != nil || ok || why != dispatcher.ConditionOwnerPaused {
+		t.Fatalf("claim = %v, %q, %v; want it held as owner-paused", ok, why, err)
+	}
+	snap, err := client.Collection(runsCollection).Doc(id).Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Data()[stateField] != stateQueued || snap.Data()[waitingOnField] != "owner-paused" {
+		t.Fatalf("stored state %v, waiting on %v, want queued, waiting on owner-paused", snap.Data()[stateField], snap.Data()[waitingOnField])
+	}
+	if ok, why, err := q.TryClaim(ctx, id, queueAt, generousBudget, openFacts, dispatcher.Reservation{}); err != nil || !ok {
+		t.Fatalf("claim after the resume = %v, %q, %v; want it claimed", ok, why, err)
+	}
+}

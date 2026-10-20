@@ -39,7 +39,8 @@ func TestAdmitNamesTheConditionThatWithholdsACandidate(t *testing.T) {
 		break_ func(*AdmitInput)
 		want   string
 	}{
-		"the provider is halted": {func(in *AdmitInput) { in.Facts.ProviderHalted = true }, CeilingProviderHalted},
+		"the provider is halted":       {func(in *AdmitInput) { in.Facts.ProviderHalted = true }, CeilingProviderHalted},
+		"the owner paused the project": {func(in *AdmitInput) { in.Facts.OwnerPaused = true }, ConditionOwnerPaused},
 		"the platform cap is reached": {func(in *AdmitInput) {
 			in.Facts.Limits.PlatformCap = 2
 			in.N = 10
@@ -173,6 +174,14 @@ func TestAdmitReportsTheEarlierOfTwoConditionsThatWithhold(t *testing.T) {
 			in.Facts.BreakerTripped = true
 			in.Facts.ProviderHalted = true
 		}, ConditionCircuitBreaker},
+		"the breaker before the owner pause": {func(in *AdmitInput) {
+			in.Facts.BreakerTripped = true
+			in.Facts.OwnerPaused = true
+		}, ConditionCircuitBreaker},
+		"the owner pause before the provider halt": {func(in *AdmitInput) {
+			in.Facts.OwnerPaused = true
+			in.Facts.ProviderHalted = true
+		}, ConditionOwnerPaused},
 		"the provider halt before the platform cap": {func(in *AdmitInput) {
 			in.Facts.ProviderHalted = true
 			in.Facts.Limits.PlatformCap = 2

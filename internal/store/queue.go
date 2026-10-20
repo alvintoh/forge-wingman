@@ -659,6 +659,57 @@ func inFlight(doc ledgerDoc) []dispatcher.InFlight {
 	return out
 }
 
+// RepoLoad is what one repository holds in the queue: the runs the ledger
+// reserves for it, and the tickets queued and not yet claimed.
+type RepoLoad struct {
+	InFlight int
+	Held     int
+}
+
+// inFlightByRepo counts doc's reservations per lower-cased repository.
+func inFlightByRepo(doc ledgerDoc) map[string]int {
+	counts := map[string]int{}
+	for _, run := range inFlight(doc) {
+		counts[strings.ToLower(run.Repo)]++
+	}
+	return counts
+}
+
+// RepoLoads reads each repository's load, keyed by lower-cased repository. A
+// planned row is not Held: its plan stage has settled and its build still claims
+// while the project is paused.
+func (q *Queue) RepoLoads(ctx context.Context) (map[string]RepoLoad, error) {
+	loads := map[string]RepoLoad{}
+	var ledger ledgerDoc
+	switch snap, err := q.ledgerRef().Get(ctx); {
+	case status.Code(err) == codes.NotFound:
+	case err != nil:
+		return nil, fmt.Errorf("reading the ledger: %w", err)
+	default:
+		if err := snap.DataTo(&ledger); err != nil {
+			return nil, fmt.Errorf("decoding the ledger: %w", err)
+		}
+	}
+	for repo, n := range inFlightByRepo(ledger) {
+		loads[repo] = RepoLoad{InFlight: n}
+	}
+	iter := q.client.Collection(runsCollection).Where(stateField, "==", stateQueued).Select(repoField).Documents(ctx)
+	defer iter.Stop()
+	for {
+		snap, err := iter.Next()
+		if errors.Is(err, iterator.Done) {
+			return loads, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("listing queued runs: %w", err)
+		}
+		repo := strings.ToLower(str(snap.Data(), repoField))
+		load := loads[repo]
+		load.Held++
+		loads[repo] = load
+	}
+}
+
 // tuning is the rule's numbers as the ledger holds them, defaulted where unset.
 func (d ledgerDoc) tuning() dispatcher.Tuning {
 	return dispatcher.Tuning{StableRuns: d.TuneStableRuns, RiseWithin: d.TuneRiseWithin, HalveBeyond: d.TuneHalveBeyond}.OrDefault()

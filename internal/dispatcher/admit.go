@@ -22,6 +22,8 @@ const (
 	ConditionEstimateFailed = "estimate-failed"
 	// ConditionCircuitBreaker withholds every candidate while a systemic stop holds dispatch.
 	ConditionCircuitBreaker = "circuit-breaker"
+	// ConditionOwnerPaused withholds a new claim of a project the owner has paused.
+	ConditionOwnerPaused = "owner-paused"
 	// ConditionPeakHours withholds a candidate that would run in its model's peak-price hours.
 	ConditionPeakHours = "peak-hours"
 )
@@ -114,6 +116,9 @@ type Facts struct {
 	ProviderHalted bool
 	// BreakerTripped is set while a systemic stop holds every dispatch.
 	BreakerTripped bool
+	// OwnerPaused is set while the owner holds the candidate's project, for a claim
+	// that is not a planned ticket's build.
+	OwnerPaused bool
 	// PeakHeld is set when the run would run in its model's peak-price hours.
 	PeakHeld bool
 	// Model is the run's build model — the model its ticket named, or the run's
@@ -171,7 +176,7 @@ type AdmitInput struct {
 
 // Admit reports whether the candidate may start now, and otherwise the first
 // condition that withholds it, checked in this order: the circuit breaker,
-// provider halt, peak hours, platform cap, N, the concurrent-L cap, one run per
+// owner pause, provider halt, peak hours, platform cap, N, the concurrent-L cap, one run per
 // repository, a blocker, review WIP, then the budget ceilings. It does no IO.
 //
 // The blocker condition holds a candidate back while a blocked-by issue Linear
@@ -208,6 +213,8 @@ func HeldBeforeBudget(in AdmitInput) string {
 	switch {
 	case in.Facts.BreakerTripped:
 		return ConditionCircuitBreaker
+	case in.Facts.OwnerPaused:
+		return ConditionOwnerPaused
 	case in.Facts.ProviderHalted:
 		return CeilingProviderHalted
 	case in.Facts.PeakHeld:
