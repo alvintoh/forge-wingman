@@ -115,6 +115,19 @@ resource "google_project_iam_member" "runner_datastore" {
   role    = "roles/datastore.user"
   member  = google_service_account.runner.member
 
+  # `resource.type` is not pinned: its Firestore value is undocumented (README, Owner database).
+  condition {
+    title       = "not-the-owner-database"
+    description = "Every Firestore database except the owner's controls (adr/0019)"
+    expression  = "resource.name != \"projects/${var.project_id}/databases/${google_firestore_database.owner.name}\""
+  }
+
+  # IAM grants add up: create the conditional binding before destroying the unconditional
+  # one, or the runner has no datastore access while a run starts mid-apply.
+  lifecycle {
+    create_before_destroy = true
+  }
+
   depends_on = [google_project_service.this]
 }
 

@@ -14,6 +14,25 @@ resource "google_firestore_database" "default" {
   }
 }
 
+# The owner's controls: the repository allowlist and each project's phase state
+# (adr/0019). A named database, because a Firestore grant cannot be narrowed below a
+# database, and the runner's binding in identity.tf excludes this one by name.
+resource "google_firestore_database" "owner" {
+  name        = "owner"
+  type        = "FIRESTORE_NATIVE"
+  location_id = var.region
+
+  # The same protection as the default database: a destroy must fail, not delete it.
+  delete_protection_state = "DELETE_PROTECTION_ENABLED"
+  deletion_policy         = "PREVENT"
+
+  depends_on = [google_project_service.this]
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
 # The queue's claim read, ordered by the Linear priority the dispatcher wrote and
 # then by when the run was queued, which a single-field index cannot serve.
 resource "google_firestore_index" "queue_claim_by_queued_at" {

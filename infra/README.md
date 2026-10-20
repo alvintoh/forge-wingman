@@ -336,6 +336,73 @@ one issue to the agent, then read the job's log for the poll that took it.
 gcloud logging read 'resource.type="cloud_run_job"' --freshness=1h --limit=50
 ```
 
+## Owner database
+
+`owner` is a second Firestore database holding the owner's controls: the repository
+allowlist and each project's phase state (`docs/adr/0019-owner-controls-live-in-an-owner-database.md`).
+It exists so the runner cannot change what it works on. The runner's
+`roles/datastore.user` binding (`identity.tf`) carries a condition that excludes it, and no
+other identity's binding changes: the dispatcher, the surface and the webhook keep their
+unconditional grants, which already reach every database.
+
+### Apply
+
+Apply it targeted. A plain `tofu apply` also resets the dispatcher's runtime settings
+(FRG-150). `dispatcher_image`, `webhook_image` and `linear_delegate` have no default, and
+neither target uses them, so a placeholder satisfies the plan and the apply; a target that
+did depend on one would need its live value.
+
+```sh
+cd infra
+# expect: Plan: 2 to add, 0 to change, 1 to destroy.
+tofu plan -target=google_firestore_database.owner -target=google_project_iam_member.runner_datastore \
+  -var=dispatcher_image=x -var=webhook_image=x -var=linear_delegate=x
+tofu apply -target=google_firestore_database.owner -target=google_project_iam_member.runner_datastore \
+  -var=dispatcher_image=x -var=webhook_image=x -var=linear_delegate=x
+```
+
+The plan reads that way because the runner's binding is replaced create-first, then the
+unconditional one is destroyed: IAM grants add up, so destroying first would leave the
+runner with no datastore access while a run starts. If an apply stops between the two, both
+bindings stay, which is today's access; rerun it.
+
+### Read it back
+
+A policy that reads right is not a policy that refuses, so check with a write and a read.
+Each line prints the HTTP status of a document write (`w`) and read (`r`) made as that
+identity; the document is removed after. Needs `roles/iam.serviceAccountTokenCreator` on the
+three accounts.
+
+```sh
+P=forge-wingman
+probe() { # $1 service account, $2 database id
+  local tok url
+  tok=$(gcloud auth print-access-token --impersonate-service-account="$1")
+  url="https://firestore.googleapis.com/v1/projects/${P}/databases/${2}/documents/probe/check"
+  printf 'w=%s r=%s' \
+    "$(curl -s -o /dev/null -w '%{http_code}' -X PATCH -H "Authorization: Bearer $tok" \
+      -H 'Content-Type: application/json' -d '{"fields":{"probe":{"booleanValue":true}}}' \
+      "${url}?updateMask.fieldPaths=probe")" \
+    "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $tok" "${url}")"
+}
+for out in runner_service_account dispatcher_service_account surface_service_account; do
+  sa=$(tofu output -raw "$out")
+  echo "$out owner: $(probe "$sa" owner)  default: $(probe "$sa" '(default)')"
+done
+```
+
+Expect `w=403 r=403` for the runner on `owner` and `w=200 r=200` everywhere else. Then delete
+the probe documents in both databases (`probe/check`) from the console or with the same token.
+Also confirm the database exists: `gcloud firestore databases list --project=forge-wingman`.
+
+If the runner gets `200` on `owner`, the condition does not bind: store nothing in `owner`
+(no allowlist, no phase state) until the expression, and whether `resource.type` must be
+pinned, is settled.
+
+IAM's attribute reference advises pinning `resource.type` beside `resource.name`. Its
+Firestore value is not on that page, so the condition uses the name alone; the check
+above is what shows it refuses.
+
 ## Prompt caching
 
 Every phase of a run sends the same projection prefix to the model, so most of
