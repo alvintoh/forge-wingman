@@ -9,7 +9,7 @@
 # `record-plan-stage` records it instead, while check, pr-meta, pr and record are skipped.
 # Needs the GCP_WIF_PROVIDER, GCP_SERVICE_ACCOUNT, GCP_MODEL_SERVICE_ACCOUNT and
 # WINGMAN_ACCOUNT variables (infra/README.md) and the COMMANDCODE_API_KEY secret; whether
-# a PR may auto-merge is the autonomy level the run was claimed at (`runner autonomy`).
+# a PR may auto-merge is the owner's switch and the trailing rewrite rate (`runner auto-merge`).
 # Workload Identity Federation trusts main only, so dispatch from main.
 name: run
 # The run's title carries the ticket and the stage, and each job's name carries the ticket: the
