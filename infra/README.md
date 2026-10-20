@@ -464,8 +464,7 @@ sha: two shas are two prefixes, and nothing here says they warm each other.
 that serves the SPA and the JSON views. Its views read the store, and it writes
 the two settings an owner switches from a page: `dispatch/auto-merge` for the
 auto-merge switch and `dispatch/peak-mode` for the peak mode, which
-`cmd/surface`'s own handlers write and nothing else. The service's own definition
-is a separate change.
+`cmd/surface`'s own handlers write and nothing else.
 
 **A Firestore grant is made at the project, and no role narrows one to a
 document**, so that one-document scope is held by the code rather than by the
@@ -474,6 +473,90 @@ grant.
 | Service account | Grants |
 |---|---|
 | `surface` | Firestore read/write |
+
+### The service
+
+`forge-wingman-surface` is a Cloud Run service behind Identity-Aware Proxy (IAP), turned on
+at the service itself, so no load balancer stands in front. IAP signs the caller in with
+Google before a request reaches the container; the container reads `PORT` and
+`GOOGLE_CLOUD_PROJECT` and holds no secret. Two grants make that work: the IAP service agent
+(`service-<project number>@gcp-sa-iap.iam.gserviceaccount.com`) holds `roles/run.invoker`
+on the service, and `surface_owner_email` holds `roles/iap.httpsResourceAccessor` on it.
+Anyone else is refused at the proxy. `invoker_iam_disabled` stays unset.
+
+The provider has no resource for the IAP service agent, and the grant above fails if the
+agent does not exist yet. If the apply reports it missing, create it once with
+`gcloud services identity create --service=iap.googleapis.com --project=forge-wingman`
+and rerun the apply.
+
+### OAuth client and consent screen (once, by the owner)
+
+The project has no organization, so IAP cannot use Google's managed client: it needs a custom
+OAuth client and an External consent screen. Neither has a resource in this configuration, and
+OAuth clients cannot be created programmatically. Steps from Google's guide to enabling IAP for
+external applications (docs.cloud.google.com/iap/docs/custom-oauth-configuration, read
+2026-10-20):
+
+1. Console, Google Auth Platform, Branding: Get started. Enter an app name and a user support
+   email, set Audience to External, enter a contact email, and Create. If the Audience page reads
+   Testing, add `surface_owner_email` as a test user.
+2. Console, APIs & Services, Credentials: Create credentials, OAuth client ID, application type
+   Web application, with a name. Note the client ID.
+3. In that client's Authorized redirect URIs, add
+   `https://iap.googleapis.com/v1/oauth/clientIds/<CLIENT_ID>:handleRedirect` and Save.
+4. Once the service exists, give IAP the client: a file with
+   `accessSettings: {oauthSettings: {clientId: <id>, clientSecret: <secret>}}`, then
+   `gcloud iap settings set <file> --project=forge-wingman --resource-type=cloud-run --region=us-central1 --service=forge-wingman-surface`.
+   Delete the file afterwards: it holds the client secret.
+
+### Apply
+
+Apply it targeted, for the same reason as the owner database: a plain `tofu apply` also
+resets the dispatcher's runtime settings. `dispatcher_image`, `webhook_image` and
+`linear_delegate` are not used by these targets, so a placeholder satisfies them;
+`surface_image` and `surface_owner_email` are used and need their live values.
+
+```sh
+cd infra
+T=(-target=google_project_service.this -target=google_cloud_run_v2_service.surface
+   -target=google_cloud_run_v2_service_iam_member.surface_iap_invoker
+   -target=google_iap_web_cloud_run_service_iam_member.surface_owner)
+V=(-var=dispatcher_image=x -var=webhook_image=x -var=linear_delegate=x
+   -var=surface_image=us-central1-docker.pkg.dev/forge-wingman/forge-wingman/surface@sha256:<digest>
+   -var=surface_owner_email=<owner google account>)
+tofu plan "${T[@]}" "${V[@]}"
+tofu apply "${T[@]}" "${V[@]}"
+```
+
+Expect `Plan: 6 to add, 0 to change, 0 to destroy.`: the IAP API, the `surface` service
+account and its datastore grant (declared earlier, not yet applied), the service, and the two
+IAP grants.
+
+### Build the image
+
+```sh
+docker buildx build --platform linux/amd64 --provenance=false \
+  --build-arg CMD=surface --build-arg COMMIT_SHA=<sha> \
+  -t us-central1-docker.pkg.dev/forge-wingman/forge-wingman/surface:<sha> --push .
+docker buildx imagetools inspect us-central1-docker.pkg.dev/forge-wingman/forge-wingman/surface:<sha>
+```
+
+The manifest must list `linux/amd64` alone; Cloud Run rejects an arm64 image. Pass the
+digest it prints as `surface_image`.
+
+### Check it
+
+```sh
+gcloud run services describe forge-wingman-surface --region=us-central1 --project=forge-wingman
+URL=$(tofu output -raw surface_url)
+curl -I "$URL"
+```
+
+- `describe` shows `Iap Enabled` and a `Ready` condition of True.
+- The unauthenticated `curl -I` is refused (a redirect to Google sign-in or a 401/403),
+  never a 200.
+- The owner's browser, signed in as `surface_owner_email`, reaches `$URL` and the page loads.
+- A second targeted plan with the same `T` and `V` arrays reads No changes.
 
 ## Webhook
 

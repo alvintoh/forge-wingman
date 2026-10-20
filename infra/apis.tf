@@ -5,6 +5,7 @@ resource "google_project_service" "this" {
     "firestore.googleapis.com",
     "iam.googleapis.com",
     "iamcredentials.googleapis.com",
+    "iap.googleapis.com",
     "run.googleapis.com",
     "secretmanager.googleapis.com",
     "storage.googleapis.com",

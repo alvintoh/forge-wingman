@@ -44,6 +44,17 @@ variable "webhook_image" {
   type = string
 }
 
+# The Dockerfile builds the surface's image with CMD=surface; as with the
+# dispatcher's, nothing here pushes it.
+variable "surface_image" {
+  type = string
+}
+
+# The one Google account IAP lets through to the surface.
+variable "surface_owner_email" {
+  type = string
+}
+
 # The Linear agent the job acts for, as Linear's own id for it. A poll refuses
 # to admit anything if the token it reads is a different agent's.
 variable "linear_delegate" {
