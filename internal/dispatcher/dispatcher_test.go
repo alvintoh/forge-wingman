@@ -435,6 +435,7 @@ func pollDeps(source Source, q *fakeQueue, w *fakeWorkflow) Deps {
 		Visibility:   fakeVisibility{},
 		Providers:    fakeProviders{},
 		Breaker:      fakeBreaker{},
+		Phases:       fakePhases{},
 		PeakModes:    fakePeakModes{mode: PeakOffPeakOnly},
 		OpenPRs:      fakeOpenPRs{},
 		Overrides:    LabelOverrides{},
@@ -609,6 +610,60 @@ func (d *fakeDecisions) Session(_ context.Context, ticketID string) (string, err
 	return d.sessions[ticketID], nil
 }
 
+// fakePhases reports the repositories the owner has paused, or fails to read them.
+type fakePhases struct {
+	paused map[string]bool
+	err    error
+}
+
+func (p fakePhases) Paused(context.Context) (map[string]bool, error) { return p.paused, p.err }
+
+func TestPollHoldsANewClaimOfAPausedProjectOnly(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{
+		{RunID: "plan-m", Repo: "octo/scratch", Size: "M", Priority: 1},
+		{RunID: "single-s", Repo: "Octo/Scratch", Size: "S", Priority: 2},
+		{RunID: "planned", Repo: "octo/scratch", Size: "M", Stage: StageBuild, Priority: 3},
+		{RunID: "other", Repo: "octo/other", Size: "M", Priority: 4},
+	}}
+	d := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	d.Phases = fakePhases{paused: map[string]bool{"octo/scratch": true}}
+	cfg := buildConfig
+	cfg.TwoStage = true
+	if _, err := Poll(context.Background(), d, cfg); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"plan-m": ConditionOwnerPaused, "single-s": ConditionOwnerPaused, "planned": "", "other": ""}
+	if len(q.tryClaims) != len(want) {
+		t.Fatalf("tryClaims = %+v, want one per candidate", q.tryClaims)
+	}
+	for _, call := range q.tryClaims {
+		if got := HeldBeforeBudget(AdmitInput{Facts: call.facts}); got != want[call.runID] {
+			t.Errorf("%s held by %q, want %q", call.runID, got, want[call.runID])
+		}
+	}
+}
+
+func TestPollHoldsEveryNewClaimWhenThePausedSetCannotBeRead(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{
+		{RunID: "plan-m", Repo: "octo/scratch", Size: "M", Priority: 1},
+		{RunID: "planned", Repo: "octo/scratch", Size: "M", Stage: StageBuild, Priority: 2},
+	}}
+	d := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	d.Phases = fakePhases{err: errFirestore}
+	cfg := buildConfig
+	cfg.TwoStage = true
+	if _, err := Poll(context.Background(), d, cfg); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, call := range q.tryClaims {
+		got[call.runID] = call.facts.OwnerPaused
+	}
+	if len(got) != 2 || !got["plan-m"] || got["planned"] {
+		t.Fatalf("OwnerPaused by run = %v, want the new claim held and the planned build not", got)
+	}
+}
+
 func TestPollNamesTheDependencyItWasNotGiven(t *testing.T) {
 	unset := map[string]func(*Deps){
 		"Source":     func(d *Deps) { d.Source = nil },
@@ -617,6 +672,7 @@ func TestPollNamesTheDependencyItWasNotGiven(t *testing.T) {
 		"Visibility": func(d *Deps) { d.Visibility = nil },
 		"Providers":  func(d *Deps) { d.Providers = nil },
 		"Breaker":    func(d *Deps) { d.Breaker = nil },
+		"Phases":     func(d *Deps) { d.Phases = nil },
 		"PeakModes":  func(d *Deps) { d.PeakModes = nil },
 		"Notices":    func(d *Deps) { d.Notices = nil },
 		"OpenPoster": func(d *Deps) { d.OpenPoster = nil },

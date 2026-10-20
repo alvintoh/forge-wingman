@@ -229,14 +229,9 @@ func listedRepositories(ctx context.Context, projects repositoryLister) ([]strin
 
 // ownerRepositories reads the allowlist from the owner database once, for the
 // poll that follows.
-func ownerRepositories(ctx context.Context, project string) ([]string, error) {
+func ownerRepositories(ctx context.Context, owner *firestore.Client) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	owner, err := firestore.NewClientWithDatabase(ctx, project, store.OwnerDatabase)
-	if err != nil {
-		return nil, fmt.Errorf("owner database client: %w", err)
-	}
-	defer func() { _ = owner.Close() }()
 	return listedRepositories(ctx, store.NewProjects(owner))
 }
 
@@ -286,7 +281,12 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		linear.RevokeAll(ctx, tokens, logger)
 		dispatcher.LogPhase(logger, "revoke", start, time.Now())
 	}()
-	repos, reposErr := ownerRepositories(ctx, c.project)
+	owner, err := firestore.NewClientWithDatabase(ctx, c.project, store.OwnerDatabase)
+	if err != nil {
+		return fmt.Errorf("owner database client: %w", err)
+	}
+	defer func() { _ = owner.Close() }()
+	repos, reposErr := ownerRepositories(ctx, owner)
 	dispatcher.LogPhase(logger, "setup", started, time.Now())
 	gh := dispatcher.GitHub{Token: githubToken, Workflow: runWorkflow, Branch: runBranch, Client: client}
 	queue := store.NewQueue(fsc).WithLogger(logger)
@@ -309,6 +309,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		Visibility:   gh,
 		Providers:    store.NewProviders(fsc),
 		Breaker:      store.NewBreaker(fsc),
+		Phases:       store.NewPhases(owner),
 		PeakModes:    store.NewPeakModes(fsc),
 		Notices:      store.NewNotices(fsc),
 		OpenPoster:   slackPoster(secrets.Token, client),
