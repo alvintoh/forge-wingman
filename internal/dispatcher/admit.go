@@ -176,8 +176,9 @@ type AdmitInput struct {
 
 // Admit reports whether the candidate may start now, and otherwise the first
 // condition that withholds it, checked in this order: the circuit breaker,
-// owner pause, provider halt, peak hours, platform cap, N, the concurrent-L cap, one run per
-// repository, a blocker, review WIP, then the budget ceilings. It does no IO.
+// owner pause, provider halt, peak hours, platform cap, N, the concurrent-L cap,
+// one run per repository, a blocker, review WIP, then the budget ceilings. It
+// does no IO.
 //
 // The blocker condition holds a candidate back while a blocked-by issue Linear
 // has not completed or canceled still holds it, or while a run in flight bears

@@ -572,10 +572,10 @@ func claimStage(cand Candidate, twoStage bool) string {
 // the condition that bound it.
 //
 // On an error it returns the claims already booked beside it, so the caller can
-// dispatch or release them. The breaker and the owner's paused projects are the poll's own,
-// read once before this walk (an unreadable set holds every repository), and so
-// is the open-PR count across the allowlist; the provider halt and
-// the verdict are keyed off each candidate's own plan. A breaker
+// dispatch or release them. The breaker and the owner's paused projects are the
+// poll's own, read once before this walk (an unreadable set holds every
+// repository), and so is the open-PR count across the allowlist; the provider
+// halt and the verdict are keyed off each candidate's own plan. A breaker
 // that cannot be read holds the walk as a tripped one would, and a budget
 // ceiling raises at most one notice. A candidate the plan's own window or cap
 // withholds is retried on the next paid plans in order, and once every one binds
