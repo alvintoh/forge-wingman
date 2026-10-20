@@ -114,13 +114,15 @@ func TestPollProjectsSnapshotsTheCurrentPhase(t *testing.T) {
 	snaps := &fakeSnapshots{}
 	blocked := phaseIssue("FRG-4", "unstarted", "P2", 2, "")
 	blocked.BlockedByOpen = []string{"FRG-3"}
+	queuedBlocked := phaseIssue("FRG-6", "unstarted", "P2", 2, "agent-1")
+	queuedBlocked.BlockedByOpen = []string{"FRG-3"}
 	issues := &fakeProjectIssues{issues: []Issue{
 		phaseIssue("FRG-1", "completed", "P1", 1, ""),
 		phaseIssue("FRG-2", "completed", "P1", 1, ""),
 		phaseIssue("FRG-3", "started", "P2", 2, "agent-1"),
 		blocked,
 		phaseIssue("FRG-5", "unstarted", "P2", 2, ""),
-		phaseIssue("FRG-6", "unstarted", "P2", 2, "agent-1"),
+		queuedBlocked,
 		phaseIssue("FRG-7", "unstarted", "P3", 3, ""),
 	}}
 	runs := fakeRuns{"FRG-3": {Stage: PhaseStageBuilding}, "FRG-6": {Queued: true}}
@@ -134,8 +136,8 @@ func TestPollProjectsSnapshotsTheCurrentPhase(t *testing.T) {
 	if !slices.Equal(got.Phases, wantPhases) || got.Current != "P2" {
 		t.Errorf("phases = %v current %q, want %v current P2", got.Phases, got.Current, wantPhases)
 	}
-	if want := []PhaseTicket{{"FRG-3", "building"}}; !slices.Equal(got.InFlight, want) || got.Queued != 1 || got.Blocked != 1 {
-		t.Errorf("in flight %v queued %d blocked %d", got.InFlight, got.Queued, got.Blocked)
+	if want := []PhaseTicket{{"FRG-3", "building"}}; !slices.Equal(got.InFlight, want) || got.Queued != 1 || got.QueuedBlocked != 1 || got.EligibleBlocked != 1 {
+		t.Errorf("in flight %v queued %d queued blocked %d eligible blocked %d", got.InFlight, got.Queued, got.QueuedBlocked, got.EligibleBlocked)
 	}
 	if want := []string{"FRG-4", "FRG-5"}; !slices.Equal(got.Eligible, want) {
 		t.Errorf("eligible = %v, want %v", got.Eligible, want)

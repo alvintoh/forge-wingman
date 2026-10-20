@@ -24,7 +24,7 @@ func TestPhaseSnapshotsRoundTripKeyedByLowerCasedRepository(t *testing.T) {
 		Repository: repo, Current: "P2", At: at,
 		Phases:   []dispatcher.PhaseProgress{{Name: "P1", Done: 2, Total: 2}, {Name: "P2", Total: 3}},
 		InFlight: []dispatcher.PhaseTicket{{ID: "FRG-3", Stage: dispatcher.PhaseStageBuilding}},
-		Queued:   1, Blocked: 1, Eligible: []string{"FRG-4"},
+		Queued:   1, QueuedBlocked: 1, Eligible: []string{"FRG-4"}, EligibleBlocked: 1,
 	}
 	s := NewPhaseSnapshots(client)
 	if err := s.RecordSnapshots(ctx, []dispatcher.PhaseSnapshot{want}); err != nil {
@@ -36,7 +36,7 @@ func TestPhaseSnapshotsRoundTripKeyedByLowerCasedRepository(t *testing.T) {
 	}
 	read, ok := got[repoKey(repo)]
 	if !ok || read.Current != "P2" || !read.At.Equal(at) || !slices.Equal(read.Phases, want.Phases) ||
-		!slices.Equal(read.InFlight, want.InFlight) || read.Queued != 1 || read.Blocked != 1 || !slices.Equal(read.Eligible, want.Eligible) {
+		!slices.Equal(read.InFlight, want.InFlight) || read.Queued != 1 || read.QueuedBlocked != 1 || read.EligibleBlocked != 1 || !slices.Equal(read.Eligible, want.Eligible) {
 		t.Fatalf("read %+v (found %v), want %+v", read, ok, want)
 	}
 }

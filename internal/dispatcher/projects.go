@@ -75,12 +75,15 @@ type PhaseSnapshot struct {
 	Current  string        `firestore:"current" json:"current"`
 	InFlight []PhaseTicket `firestore:"in_flight" json:"in_flight"`
 	Queued   int           `firestore:"queued" json:"queued"`
-	Blocked  int           `firestore:"blocked" json:"blocked"`
-	// Eligible is the ids of the current phase's tickets a start would delegate.
-	Eligible   []string  `firestore:"eligible" json:"eligible"`
-	Unreadable bool      `firestore:"unreadable" json:"unreadable"`
-	Reason     string    `firestore:"reason" json:"reason"`
-	At         time.Time `firestore:"at" json:"at"`
+	// QueuedBlocked is how many of the queued tickets wait on an open blocker.
+	QueuedBlocked int `firestore:"queued_blocked" json:"queued_blocked"`
+	// Eligible is the ids of the current phase's tickets a start would delegate,
+	// and EligibleBlocked how many of them wait on an open blocker.
+	Eligible        []string  `firestore:"eligible" json:"eligible"`
+	EligibleBlocked int       `firestore:"eligible_blocked" json:"eligible_blocked"`
+	Unreadable      bool      `firestore:"unreadable" json:"unreadable"`
+	Reason          string    `firestore:"reason" json:"reason"`
+	At              time.Time `firestore:"at" json:"at"`
 }
 
 // TicketRun is where one ticket's run row stands: ended (stopped, abandoned or
@@ -232,17 +235,22 @@ func projectView(ctx context.Context, d Deps, p PhaseProject, all []Issue, at ti
 	}}
 	for _, issue := range open {
 		run := runs[issue.ID]
+		blocked := len(issue.BlockedByOpen) > 0
 		switch {
 		case run.Stage != "":
 			v.snapshot.InFlight = append(v.snapshot.InFlight, PhaseTicket{ID: issue.ID, Stage: run.Stage})
 		case run.Queued:
 			v.snapshot.Queued++
-		case len(issue.BlockedByOpen) > 0:
-			v.snapshot.Blocked++
+			if blocked {
+				v.snapshot.QueuedBlocked++
+			}
 		}
 		if phaseEligible(issue, p.Repository, run) {
 			v.eligible = append(v.eligible, issue)
 			v.snapshot.Eligible = append(v.snapshot.Eligible, issue.ID)
+			if blocked {
+				v.snapshot.EligibleBlocked++
+			}
 		}
 	}
 	return v
