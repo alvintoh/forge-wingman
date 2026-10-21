@@ -10,14 +10,18 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path"
+	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"cloud.google.com/go/firestore"
+	"golang.org/x/sync/singleflight"
 	"google.golang.org/api/idtoken"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
@@ -63,13 +67,16 @@ func run(logger *slog.Logger) error {
 	var peak PeakModeStore
 	var autoMerge AutoMergeStore
 	var projects ProjectStores
+	var inbox InboxStore
+	var runs MergeRuns
 	if project := os.Getenv("GOOGLE_CLOUD_PROJECT"); project != "" {
 		fsc, err := firestore.NewClient(context.Background(), project)
 		if err != nil {
 			return fmt.Errorf("firestore client: %w", err)
 		}
 		defer func() { _ = fsc.Close() }()
-		comparison = store.NewRecords(fsc)
+		records := store.NewRecords(fsc)
+		comparison, inbox, runs = records, records, records
 		providerPlans = store.NewProviderPlans(fsc)
 		measured = store.NewRewrites(fsc)
 		peak = store.NewPeakModes(fsc)
@@ -88,6 +95,15 @@ func run(logger *slog.Logger) error {
 		}
 	}
 
+	// Merging needs the surface's own GitHub token, which no run job holds.
+	// Without it the merge route answers 503.
+	var merger PRMerger
+	var pulls PullLister
+	if token := os.Getenv("WINGMAN_MERGE_TOKEN"); token != "" {
+		gh := dispatcher.GitHub{Token: token}
+		merger, pulls = gh, gh
+	}
+
 	deps := Deps{
 		SPA:           spa,
 		Logger:        logger,
@@ -97,6 +113,10 @@ func run(logger *slog.Logger) error {
 		Peak:          peak,
 		AutoMerge:     autoMerge,
 		Projects:      projects,
+		Inbox:         inbox,
+		Runs:          runs,
+		Merger:        merger,
+		Pulls:         pulls,
 	}
 
 	handler, err := gate(context.Background(), logger, newMux(deps))
@@ -199,6 +219,34 @@ type AutoMergeStore interface {
 	Set(ctx context.Context, enabled bool, at time.Time) error
 }
 
+// InboxStore lists the runs whose PR waits on the owner, newest first.
+type InboxStore interface {
+	Inbox(ctx context.Context, since time.Time, limit int) ([]store.InboxRun, error)
+}
+
+// MergeRuns reads the run a merge acts on and records the merge on it.
+// RunRepository is the repository the dispatcher queued the run for, which the
+// PR the run's job recorded must be in.
+type MergeRuns interface {
+	GetRecord(ctx context.Context, id string) (runner.Record, error)
+	RunRepository(ctx context.Context, id string) (string, error)
+	RecordMerge(ctx context.Context, id, sha string, at time.Time) error
+}
+
+// PRMerger reads where a pull request stands and merges it, under the surface's
+// own GitHub token.
+type PRMerger interface {
+	PullState(ctx context.Context, repo string, number int) (dispatcher.PullStatus, error)
+	ChecksGreen(ctx context.Context, repo, sha string) (bool, error)
+	Merge(ctx context.Context, repo string, number int, sha string) (string, error)
+}
+
+// PullLister reads title, draft, head and checks of many pull requests in one
+// call, for the inbox to show.
+type PullLister interface {
+	PullSummaries(ctx context.Context, refs []dispatcher.PullRef) (map[dispatcher.PullRef]dispatcher.PullSummary, error)
+}
+
 // Deps are what the surface serves: the SPA it embeds, the stores behind its
 // JSON endpoints, and where it reports. A nil store serves every endpoint but
 // its own, which answers 503 for want of one.
@@ -211,6 +259,10 @@ type Deps struct {
 	Peak          PeakModeStore
 	AutoMerge     AutoMergeStore
 	Projects      ProjectStores
+	Inbox         InboxStore
+	Runs          MergeRuns
+	Merger        PRMerger
+	Pulls         PullLister
 }
 
 // newMux claims /api/ explicitly so an unknown endpoint 404s instead of
@@ -361,10 +413,284 @@ func newMux(d Deps) *http.ServeMux {
 	mux.HandleFunc("POST /api/projects/resume", d.resumeProject)
 	mux.HandleFunc("POST /api/projects/add", d.addProject)
 	mux.HandleFunc("GET /api/projects/options", d.projectOptions)
+	var inboxFlight singleflight.Group
+	mux.HandleFunc("GET /api/inbox", func(w http.ResponseWriter, r *http.Request) {
+		if d.Inbox == nil {
+			http.Error(w, "the inbox needs a run store", http.StatusServiceUnavailable)
+			return
+		}
+		view, err, _ := inboxFlight.Do("inbox", func() (any, error) {
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), inboxReadTimeout)
+			defer cancel()
+			return d.readInbox(ctx, time.Now())
+		})
+		if err != nil {
+			d.Logger.Error("inboxNotRead", "err", err.Error())
+			http.Error(w, "reading the inbox", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Cache-Control", "private, max-age="+strconv.Itoa(inboxMaxAgeSeconds))
+		writeJSON(w, http.StatusOK, view)
+	})
+	mux.HandleFunc("POST /api/runs/{run}/merge", d.mergeRun)
 	mux.Handle("GET /api/", http.NotFoundHandler())
 	mux.Handle("GET /", spaHandler(d.SPA))
 
 	return mux
+}
+
+const (
+	inboxLimit         = 100
+	inboxMaxAgeSeconds = 30
+	inboxReadTimeout   = 10 * time.Second
+	// mergeTimeout bounds one merge request across its GitHub calls and its writes.
+	mergeTimeout = 30 * time.Second
+)
+
+// The reasons a merge is refused, each answered with status 409.
+const (
+	refusedChecksNotGreen = "checks-not-green"
+	refusedDraft          = "draft"
+	refusedGitHub         = "github-refused"
+	refusedHeadMoved      = "head-moved"
+	refusedNoPullRequest  = "no-pull-request"
+	refusedNotOpen        = "not-open"
+	refusedUnconfirmed    = "unconfirmed-decision"
+)
+
+// inboxResponse is the inbox endpoint's wire shape. It carries no ticket text,
+// for the reason the comparison does not; the PR title is GitHub's, not the ticket's.
+type inboxResponse struct {
+	Runs []inboxRun `json:"runs"`
+}
+
+type inboxRun struct {
+	Run    string `json:"run"`
+	Ticket string `json:"ticket"`
+	Repo   string `json:"repo"`
+	Size   string `json:"size"`
+	PRURL  string `json:"pr_url"`
+	// WaitReason is why the PR waits for the owner, empty for a PR nothing but a
+	// switch or a failed gate holds.
+	WaitReason string    `json:"wait_reason"`
+	UpdatedAt  time.Time `json:"updated_at"`
+	// The rest is GitHub's view of the PR as of the cached read, and is absent
+	// where the read failed or the surface holds no merge token. The merge route
+	// never trusts it: it reads the PR again.
+	Title   string       `json:"title,omitempty"`
+	HeadSHA string       `json:"head_sha,omitempty"`
+	Draft   *bool        `json:"draft,omitempty"`
+	Checks  *inboxChecks `json:"checks,omitempty"`
+}
+
+// inboxChecks is how a PR's head checks stand: green, failing or pending, and
+// the checks that say so.
+type inboxChecks struct {
+	State   string `json:"state"`
+	Summary string `json:"summary"`
+}
+
+// readInbox lists the runs waiting on the owner. A PR whose checks are not green
+// shows checks-not-green unless a draft or an unconfirmed decision, which block
+// the merge first, names it; a run whose PR no reason holds shows auto-merge-off
+// while the switch is off, so a change to the switch shows without a new run.
+func (d Deps) readInbox(ctx context.Context, now time.Time) (inboxResponse, error) {
+	runs, err := d.Inbox.Inbox(ctx, now.Add(-runner.TrailingWindow), inboxLimit)
+	if err != nil {
+		return inboxResponse{}, err
+	}
+	switchOn, _ := d.autoMergeSwitch(ctx)
+	pulls := d.pullSummaries(ctx, runs)
+	out := inboxResponse{Runs: make([]inboxRun, 0, len(runs))}
+	for _, r := range runs {
+		reason := r.WaitReason
+		row := inboxRun{Run: r.Run, Ticket: r.Ticket, Repo: r.Repo, Size: r.Size,
+			PRURL: r.PRURL, UpdatedAt: r.UpdatedAt}
+		if repo, number, err := parsePullURL(r.PRURL); err == nil {
+			if p, ok := pulls[dispatcher.PullRef{Repo: repo, Number: number}]; ok {
+				row.Title, row.HeadSHA, row.Draft = p.Title, p.HeadSHA, &p.Draft
+				row.Checks = &inboxChecks{State: p.Checks, Summary: p.ChecksSummary}
+				if p.Checks != dispatcher.CheckGreen && reason != runner.WaitUnconfirmedDecision && reason != runner.WaitDraft {
+					reason = runner.WaitChecksNotGreen
+				}
+			}
+		}
+		if reason == "" && !switchOn {
+			reason = runner.WaitAutoMergeOff
+		}
+		row.WaitReason = string(reason)
+		out.Runs = append(out.Runs, row)
+	}
+	return out, nil
+}
+
+// pullSummaries reads the listed PRs from GitHub in one request. A list the
+// surface cannot enrich is still a list, so a failed read is logged and the
+// rows go without GitHub's fields.
+func (d Deps) pullSummaries(ctx context.Context, runs []store.InboxRun) map[dispatcher.PullRef]dispatcher.PullSummary {
+	if d.Pulls == nil {
+		return nil
+	}
+	var refs []dispatcher.PullRef
+	for _, r := range runs {
+		if repo, number, err := parsePullURL(r.PRURL); err == nil {
+			refs = append(refs, dispatcher.PullRef{Repo: repo, Number: number})
+		}
+	}
+	summaries, err := d.Pulls.PullSummaries(ctx, refs)
+	if err != nil {
+		d.Logger.Error("inboxPullsNotRead", "err", err.Error())
+		return nil
+	}
+	return summaries
+}
+
+// mergeStatus is the merge endpoint's answer to a merge it made or found made.
+type mergeStatus struct {
+	Status string `json:"status"`
+	SHA    string `json:"sha,omitempty"`
+}
+
+// mergeRefusal is the merge endpoint's answer to a merge it will not make.
+type mergeRefusal struct {
+	Reason string `json:"reason"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// mergeRun squash-merges the PR the run's row names, as the owner.
+//
+// The body names only the head the owner saw; the repository and PR come from
+// the row. GitHub's own 405 and 409 reasons are passed through as a refusal.
+func (d Deps) mergeRun(w http.ResponseWriter, r *http.Request) {
+	if d.Merger == nil || d.Runs == nil {
+		http.Error(w, "merging needs a run store and the merge token", http.StatusServiceUnavailable)
+		return
+	}
+	if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		http.Error(w, "a merge is requested with a JSON body", http.StatusUnsupportedMediaType)
+		return
+	}
+	var body struct {
+		ExpectedHeadSHA string `json:"expected_head_sha"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ExpectedHeadSHA == "" {
+		http.Error(w, "the request body is not JSON naming the head commit it saw", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), mergeTimeout)
+	defer cancel()
+	run := r.PathValue("run")
+	rec, err := d.Runs.GetRecord(ctx, run)
+	if errors.Is(err, runner.ErrRecordNotFound) {
+		http.Error(w, "no such run", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		d.Logger.Error("ownerMergeRunNotRead", "run", run, "err", err.Error())
+		http.Error(w, "reading the run", http.StatusInternalServerError)
+		return
+	}
+	repo, number, err := parsePullURL(rec.PRURL)
+	if err != nil {
+		d.refuseMerge(w, run, refusedNoPullRequest, "")
+		return
+	}
+	queuedFor, err := d.Runs.RunRepository(ctx, run)
+	if err != nil {
+		d.Logger.Error("ownerMergeRunNotRead", "run", run, "err", err.Error())
+		http.Error(w, "reading the run", http.StatusInternalServerError)
+		return
+	}
+	if !strings.EqualFold(repo, queuedFor) {
+		d.refuseMerge(w, run, refusedNoPullRequest, "")
+		return
+	}
+	state, err := d.Merger.PullState(ctx, repo, number)
+	if err != nil {
+		d.mergeFailed(w, run, repo, number, "reading the pull request", err)
+		return
+	}
+	switch {
+	case state.Merged:
+		writeJSON(w, http.StatusOK, mergeStatus{Status: "already-merged"})
+		return
+	case !state.Open:
+		d.refuseMerge(w, run, refusedNotOpen, "")
+		return
+	case state.Draft:
+		d.refuseMerge(w, run, refusedDraft, "")
+		return
+	case state.HeadSHA != body.ExpectedHeadSHA:
+		d.refuseMerge(w, run, refusedHeadMoved, "")
+		return
+	case rec.WaitReason == runner.WaitUnconfirmedDecision:
+		d.refuseMerge(w, run, refusedUnconfirmed, "")
+		return
+	}
+	green, err := d.Merger.ChecksGreen(ctx, repo, state.HeadSHA)
+	if err != nil {
+		d.mergeFailed(w, run, repo, number, "reading the checks", err)
+		return
+	}
+	if !green {
+		d.refuseMerge(w, run, refusedChecksNotGreen, "")
+		return
+	}
+	sha, err := d.Merger.Merge(ctx, repo, number, state.HeadSHA)
+	var refused *dispatcher.APIError
+	if errors.As(err, &refused) && (refused.Status == http.StatusMethodNotAllowed || refused.Status == http.StatusConflict) {
+		d.refuseMerge(w, run, refusedGitHub, refused.Reason)
+		return
+	}
+	if err != nil {
+		d.mergeFailed(w, run, repo, number, "merging the pull request", err)
+		return
+	}
+	d.Logger.Info("ownerMerged", "run", run, "repo", repo, "number", number, "sha", sha)
+	if err := d.Runs.RecordMerge(ctx, run, sha, time.Now()); err != nil {
+		d.Logger.Error("ownerMergeNotRecorded", "run", run, "repo", repo, "number", number, "sha", sha, "err", err.Error())
+	}
+	writeJSON(w, http.StatusOK, mergeStatus{Status: "merged", SHA: sha})
+}
+
+// refuseMerge answers a merge it will not make with reason, and logs it.
+func (d Deps) refuseMerge(w http.ResponseWriter, run, reason, detail string) {
+	d.Logger.Info("ownerMergeRefused", "run", run, "reason", reason)
+	writeJSON(w, http.StatusConflict, mergeRefusal{Reason: reason, Detail: detail})
+}
+
+// mergeFailed answers a merge that GitHub could not be asked about with a 502.
+func (d Deps) mergeFailed(w http.ResponseWriter, run, repo string, number int, doing string, err error) {
+	d.Logger.Error("ownerMergeFailed", "run", run, "repo", repo, "number", number, "doing", doing, "err", err.Error())
+	http.Error(w, doing+" failed", http.StatusBadGateway)
+}
+
+// parsePullURL reads the repository and number out of a pull request page URL.
+func parsePullURL(raw string) (repo string, number int, err error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host != "github.com" {
+		return "", 0, fmt.Errorf("%q is not a github.com pull request URL", raw)
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) != 4 || parts[2] != "pull" {
+		return "", 0, fmt.Errorf("%q is not a github.com pull request URL", raw)
+	}
+	number, err = strconv.Atoi(parts[3])
+	if err != nil || number <= 0 {
+		return "", 0, fmt.Errorf("%q names no pull request number", raw)
+	}
+	repo = parts[0] + "/" + parts[1]
+	if !store.ValidRepository(repo) || slices.Contains(parts[:2], ".") || slices.Contains(parts[:2], "..") {
+		return "", 0, fmt.Errorf("%q names no valid repository", raw)
+	}
+	return repo, number, nil
+}
+
+// writeJSON writes v as the response body with status.
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 // comparisonResponse is the comparison endpoint's wire shape. It carries no

@@ -120,6 +120,22 @@ const (
 	StopAgentNoProgress StopReason = "agent-no-progress"
 )
 
+// WaitReason names why a run's PR waits for the owner rather than merging itself.
+type WaitReason string
+
+// The reasons a PR waits for the owner. The inbox adds WaitAutoMergeOff from
+// the live switch and WaitChecksNotGreen from GitHub's check state; the merge
+// refuses on WaitChecksNotGreen, WaitDraft and WaitUnconfirmedDecision.
+const (
+	WaitAutoMergeOff        WaitReason = "auto-merge-off"
+	WaitChecksNotGreen      WaitReason = "checks-not-green"
+	WaitDraft               WaitReason = "draft"
+	WaitFrontEnd            WaitReason = "front-end"
+	WaitSampled             WaitReason = "sampled"
+	WaitSizeL               WaitReason = "size-l"
+	WaitUnconfirmedDecision WaitReason = "unconfirmed-decision"
+)
+
 // gates are the gates run.yml's check job runs on the branch, in order, and
 // what FailedGate admits. It runs the Go gates alone: the web job's steps
 // RunChecks runs when a run's diff touches webDir are the pre-PR loop's, ahead
@@ -221,6 +237,11 @@ type Record struct {
 	Sampled bool `firestore:"sampled"`
 	// AutoMerge is whether the pr job marked the PR eligible for auto-merge (FR-16).
 	AutoMerge bool `firestore:"auto_merge"`
+	// WaitReason is why the PR waits for the owner, empty when none is named.
+	WaitReason WaitReason `firestore:"wait_reason"`
+	// MergedByOwnerAt and MergedSHA are when, and as what, the owner merged it.
+	MergedByOwnerAt time.Time `firestore:"merged_by_owner_at"`
+	MergedSHA       string    `firestore:"merged_sha"`
 	// DecisionMode is how the run's plan decisions were settled when it was claimed, empty for a run claimed before it was recorded.
 	DecisionMode DecisionMode `firestore:"decision_mode"`
 	// CommitSubject is the subject the build committed with, and the PR's title.
@@ -468,6 +489,7 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, reader Prov
 	rec.PriorSettledProviderCostMicros, rec.PriorSettledRunnerMinutes = existing.PriorSettledProviderCostMicros, existing.PriorSettledRunnerMinutes
 	rec.MovedFrom, rec.PlanModels = existing.MovedFrom, existing.PlanModels
 	rec.DecisionMode = existing.DecisionMode
+	rec.WaitReason, rec.MergedByOwnerAt, rec.MergedSHA = existing.WaitReason, existing.MergedByOwnerAt, existing.MergedSHA
 	identityErr := in.Identity.CheckAccount()
 	sum, err := ParseSummary(in.Summary, in.AttemptID, t, now)
 	switch {

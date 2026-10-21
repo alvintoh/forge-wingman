@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -43,7 +44,13 @@ const (
 	// maxListPages bounds how many pages a closed-PR or commit listing is
 	// followed for; a listing cut there is reported rather than undercounted.
 	maxListPages = 10
+	// checkRunsPerPage is how many check runs one read of a commit holds.
+	checkRunsPerPage = 100
 )
+
+// greenConclusions are the check run conclusions that do not hold a merge, as
+// the REST API spells them; GraphQL's uppercase is lowered to match.
+var greenConclusions = []string{"success", "neutral", "skipped"}
 
 // GitHub starts the run workflow in one repository.
 type GitHub struct {
@@ -260,6 +267,313 @@ func (g GitHub) Pull(ctx context.Context, repo string, number int) (ClosedPR, er
 	return pulls[0], nil
 }
 
+// PullStatus is where one pull request stands: whether it is open, a draft or
+// merged, and the commit its head is at.
+type PullStatus struct {
+	Open    bool
+	Draft   bool
+	Merged  bool
+	HeadSHA string
+}
+
+// PullState reads where one pull request of repo stands.
+func (g GitHub) PullState(ctx context.Context, repo string, number int) (PullStatus, error) {
+	endpoint := fmt.Sprintf("%s/repos/%s/pulls/%d", g.endpoint(), repo, number)
+	res, err := g.do(ctx, http.MethodGet, endpoint, nil, fmt.Sprintf("read pull request %s#%d", repo, number))
+	if err != nil {
+		return PullStatus{}, err
+	}
+	defer func() { _ = res.Body.Close() }()
+	var body struct {
+		State  string `json:"state"`
+		Draft  bool   `json:"draft"`
+		Merged bool   `json:"merged"`
+		Head   struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
+	}
+	if err := json.NewDecoder(io.LimitReader(res.Body, maxPullsResponseBytes)).Decode(&body); err != nil {
+		return PullStatus{}, fmt.Errorf("decoding pull request %s#%d: %w", repo, number, err)
+	}
+	return PullStatus{Open: body.State == "open", Draft: body.Draft, Merged: body.Merged, HeadSHA: body.Head.SHA}, nil
+}
+
+// ChecksGreen reports whether commit sha of repo passes everything that gates
+// a merge: every check run completed green, and the combined commit status,
+// when the commit has any status, is success.
+// A commit with no check run is not green.
+func (g GitHub) ChecksGreen(ctx context.Context, repo, sha string) (bool, error) {
+	runsGreen, err := g.checkRunsGreen(ctx, repo, sha)
+	if err != nil || !runsGreen {
+		return false, err
+	}
+	return g.statusGreen(ctx, repo, sha)
+}
+
+// checkRunsGreen reads the commit's check runs. More runs than one page holds
+// is an error rather than a guess.
+func (g GitHub) checkRunsGreen(ctx context.Context, repo, sha string) (bool, error) {
+	endpoint := fmt.Sprintf("%s/repos/%s/commits/%s/check-runs?per_page=%d", g.endpoint(), repo, url.PathEscape(sha), checkRunsPerPage)
+	res, err := g.do(ctx, http.MethodGet, endpoint, nil, fmt.Sprintf("read the check runs of %s@%s", repo, sha))
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = res.Body.Close() }()
+	var body struct {
+		Total int `json:"total_count"`
+		Runs  []struct {
+			Conclusion string `json:"conclusion"`
+		} `json:"check_runs"`
+	}
+	if err := json.NewDecoder(io.LimitReader(res.Body, maxPullsResponseBytes)).Decode(&body); err != nil {
+		return false, fmt.Errorf("decoding the check runs of %s@%s: %w", repo, sha, err)
+	}
+	if body.Total > len(body.Runs) {
+		return false, fmt.Errorf("%d check runs on %s@%s exceed the %d one read holds", body.Total, repo, sha, checkRunsPerPage)
+	}
+	if len(body.Runs) == 0 {
+		return false, nil
+	}
+	for _, run := range body.Runs {
+		if !slices.Contains(greenConclusions, run.Conclusion) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// statusGreen reads the commit's combined status, which holds the legacy
+// statuses that check runs do not include. A commit with none is green.
+func (g GitHub) statusGreen(ctx context.Context, repo, sha string) (bool, error) {
+	endpoint := fmt.Sprintf("%s/repos/%s/commits/%s/status", g.endpoint(), repo, url.PathEscape(sha))
+	res, err := g.do(ctx, http.MethodGet, endpoint, nil, fmt.Sprintf("read the status of %s@%s", repo, sha))
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = res.Body.Close() }()
+	var body struct {
+		State string `json:"state"`
+		Total int    `json:"total_count"`
+	}
+	if err := json.NewDecoder(io.LimitReader(res.Body, maxPullsResponseBytes)).Decode(&body); err != nil {
+		return false, fmt.Errorf("decoding the status of %s@%s: %w", repo, sha, err)
+	}
+	return body.Total == 0 || body.State == "success", nil
+}
+
+// Merge squash-merges pull request number of repo if its head is still at sha,
+// and returns the commit the merge made. A merge GitHub will not make comes back
+// as a *APIError.
+func (g GitHub) Merge(ctx context.Context, repo string, number int, sha string) (string, error) {
+	body, err := json.Marshal(map[string]string{"merge_method": "squash", "sha": sha})
+	if err != nil {
+		return "", fmt.Errorf("encoding the merge request: %w", err)
+	}
+	endpoint := fmt.Sprintf("%s/repos/%s/pulls/%d/merge", g.endpoint(), repo, number)
+	res, err := g.do(ctx, http.MethodPut, endpoint, bytes.NewReader(body), fmt.Sprintf("merge pull request %s#%d", repo, number))
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = res.Body.Close() }()
+	var merged struct {
+		SHA string `json:"sha"`
+	}
+	if err := json.NewDecoder(io.LimitReader(res.Body, maxRepoResponseBytes)).Decode(&merged); err != nil {
+		return "", fmt.Errorf("decoding the merge of %s#%d: %w", repo, number, err)
+	}
+	return merged.SHA, nil
+}
+
+// PullRef names one pull request of a repository.
+type PullRef struct {
+	Repo   string
+	Number int
+}
+
+// Check states of a pull request's head commit.
+const (
+	CheckGreen   = "green"
+	CheckFailing = "failing"
+	CheckPending = "pending"
+)
+
+// PullSummary is what a list of pull requests shows of one: its title, whether
+// it is a draft, the commit its head is at, and how that commit's checks stand.
+type PullSummary struct {
+	Title   string
+	Draft   bool
+	HeadSHA string
+	// Checks is one of CheckGreen, CheckFailing and CheckPending; a head with
+	// no check yet is pending.
+	Checks string
+	// ChecksSummary names the checks in that state, like "go and web".
+	ChecksSummary string
+}
+
+const (
+	// summaryContexts is how many checks of a head commit one read lists.
+	summaryContexts = 50
+	// summaryNames is how many check names a summary spells out.
+	summaryNames = 4
+	// MaxSummaryRefs bounds one batched read.
+	MaxSummaryRefs = 100
+)
+
+// pullSummaryFields is read from every pull request of a batched read.
+var pullSummaryFields = fmt.Sprintf(`title isDraft headRefOid
+commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: %d) { nodes {
+__typename
+... on CheckRun { name status conclusion }
+... on StatusContext { context state }
+} } } } } }`, summaryContexts)
+
+// PullSummaries reads title, draft, head and check state of every pull request
+// in refs with ONE GraphQL request. A pull request GitHub does not return is
+// absent from the result. It is a read for display: a merge reads the pull
+// request again.
+func (g GitHub) PullSummaries(ctx context.Context, refs []PullRef) (map[PullRef]PullSummary, error) {
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	if len(refs) > MaxSummaryRefs {
+		return nil, fmt.Errorf("%d pull requests exceed the %d one read holds", len(refs), MaxSummaryRefs)
+	}
+	var decl, selection strings.Builder
+	vars := make(map[string]any, 3*len(refs))
+	for i, ref := range refs {
+		owner, name, ok := strings.Cut(ref.Repo, "/")
+		if !ok {
+			return nil, fmt.Errorf("%q is not an owner/name repository", ref.Repo)
+		}
+		fmt.Fprintf(&decl, "$o%[1]d: String!, $n%[1]d: String!, $p%[1]d: Int!, ", i)
+		fmt.Fprintf(&selection, "r%[1]d: repository(owner: $o%[1]d, name: $n%[1]d) { pullRequest(number: $p%[1]d) { %[2]s } }\n", i, pullSummaryFields)
+		vars[fmt.Sprintf("o%d", i)], vars[fmt.Sprintf("n%d", i)], vars[fmt.Sprintf("p%d", i)] = owner, name, ref.Number
+	}
+	payload, err := json.Marshal(map[string]any{"query": fmt.Sprintf("query(%s) {\n%s}", strings.TrimSuffix(decl.String(), ", "), selection.String()), "variables": vars})
+	if err != nil {
+		return nil, fmt.Errorf("encoding the pull request read: %w", err)
+	}
+	res, err := g.do(ctx, http.MethodPost, g.endpoint()+"/graphql", bytes.NewReader(payload), "read the pull requests")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = res.Body.Close() }()
+	var body struct {
+		Data map[string]*struct {
+			PullRequest *struct {
+				Title      string `json:"title"`
+				IsDraft    bool   `json:"isDraft"`
+				HeadRefOid string `json:"headRefOid"`
+				Commits    struct {
+					Nodes []struct {
+						Commit struct {
+							Rollup *struct {
+								State    string `json:"state"`
+								Contexts struct {
+									Nodes []summaryContext `json:"nodes"`
+								} `json:"contexts"`
+							} `json:"statusCheckRollup"`
+						} `json:"commit"`
+					} `json:"nodes"`
+				} `json:"commits"`
+			} `json:"pullRequest"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.NewDecoder(io.LimitReader(res.Body, maxPullsResponseBytes)).Decode(&body); err != nil {
+		return nil, fmt.Errorf("decoding the pull requests: %w", err)
+	}
+	if len(body.Data) == 0 && len(body.Errors) > 0 {
+		return nil, fmt.Errorf("GitHub refused to read the pull requests: %s", body.Errors[0].Message)
+	}
+	out := make(map[PullRef]PullSummary, len(refs))
+	for i, ref := range refs {
+		repo := body.Data[fmt.Sprintf("r%d", i)]
+		if repo == nil || repo.PullRequest == nil {
+			continue
+		}
+		pr := repo.PullRequest
+		sum := PullSummary{Title: pr.Title, Draft: pr.IsDraft, HeadSHA: pr.HeadRefOid, Checks: CheckPending, ChecksSummary: "no checks yet"}
+		if len(pr.Commits.Nodes) > 0 && pr.Commits.Nodes[0].Commit.Rollup != nil {
+			rollup := pr.Commits.Nodes[0].Commit.Rollup
+			sum.Checks = rollupChecks(rollup.State)
+			sum.ChecksSummary = namesInState(rollup.Contexts.Nodes, sum.Checks)
+		}
+		out[ref] = sum
+	}
+	return out, nil
+}
+
+// summaryContext is one check run or commit status of a head commit.
+type summaryContext struct {
+	Type       string `json:"__typename"`
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+	Context    string `json:"context"`
+	State      string `json:"state"`
+}
+
+// state is the context's own state, in the CheckGreen, CheckFailing and
+// CheckPending words.
+func (c summaryContext) state() string {
+	if c.Type == "StatusContext" {
+		return rollupChecks(c.State)
+	}
+	if c.Status != "COMPLETED" {
+		return CheckPending
+	}
+	if slices.Contains(greenConclusions, strings.ToLower(c.Conclusion)) {
+		return CheckGreen
+	}
+	return CheckFailing
+}
+
+func (c summaryContext) name() string {
+	if c.Type == "StatusContext" {
+		return c.Context
+	}
+	return c.Name
+}
+
+// rollupChecks maps GitHub's StatusState onto the three check states; a state
+// it does not know is not green.
+func rollupChecks(state string) string {
+	switch state {
+	case "SUCCESS":
+		return CheckGreen
+	case "PENDING", "EXPECTED":
+		return CheckPending
+	}
+	return CheckFailing
+}
+
+// namesInState spells out the checks in state, like "go and web".
+func namesInState(contexts []summaryContext, state string) string {
+	var names []string
+	for _, c := range contexts {
+		if n := c.name(); c.state() == state && n != "" && !slices.Contains(names, n) {
+			names = append(names, n)
+		}
+	}
+	more := 0
+	if len(names) > summaryNames {
+		more = len(names) - summaryNames
+		names = names[:summaryNames]
+	}
+	switch {
+	case len(names) == 0:
+		return ""
+	case more > 0:
+		return fmt.Sprintf("%s and %d more", strings.Join(names, ", "), more)
+	case len(names) == 1:
+		return names[0]
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
+}
+
 // closedPR is one entry of a pull request listing or read, as the rewrite rate
 // needs it.
 type closedPR struct {
@@ -421,13 +735,27 @@ func (g GitHub) do(ctx context.Context, method, endpoint string, reqBody io.Read
 	}
 	defer func() { _ = res.Body.Close() }()
 	raw, _ := io.ReadAll(io.LimitReader(res.Body, maxErrorBytes))
-	return nil, &APIError{Status: res.StatusCode, message: fmt.Sprintf("GitHub refused to %s: %s: %s", action, res.Status, snippet(raw))}
+	return nil, &APIError{Status: res.StatusCode, Reason: refusalReason(raw), message: fmt.Sprintf("GitHub refused to %s: %s: %s", action, res.Status, snippet(raw))}
+}
+
+// refusalReason is the message of GitHub's JSON error body, or the body itself
+// when it holds none.
+func refusalReason(raw []byte) string {
+	var body struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(raw, &body) == nil && body.Message != "" {
+		return body.Message
+	}
+	return snippet(raw)
 }
 
 // APIError is a GitHub refusal, carrying the HTTP status so a caller can
 // classify it without reading the message.
 type APIError struct {
-	Status  int
+	Status int
+	// Reason is the message GitHub gave, or its body where it gave none.
+	Reason  string
 	message string
 }
 

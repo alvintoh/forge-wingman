@@ -104,6 +104,36 @@ func TestAutoMergeNeedsTheRuleOn(t *testing.T) {
 	}
 }
 
+func TestWaitReasonPutsTheReasonsThatBlockAMergeFirst(t *testing.T) {
+	const unsampled, sampled = "run-abc-12", "run-0"
+	unconfirmed := []runner.Provisional{{Question: "Q?", Choice: "A"}}
+	for name, tt := range map[string]struct {
+		runID, size string
+		ready       bool
+		check       prCheck
+		want        runner.WaitReason
+	}{
+		"nothing holds it":                     {unsampled, "M", true, prCheck{Planned: true}, ""},
+		"a decision hides every other reason":  {sampled, "L", false, prCheck{Planned: true, FrontEnd: []string{"web/"}, Provisional: unconfirmed}, runner.WaitUnconfirmedDecision},
+		"unread decisions count as unsettled":  {unsampled, "M", true, prCheck{Planned: true, ProvisionalUnread: true}, runner.WaitUnconfirmedDecision},
+		"a draft hides front-end":              {unsampled, "L", false, prCheck{Planned: true, FrontEnd: []string{"web/"}}, runner.WaitDraft},
+		"an unread bundle makes a draft":       {unsampled, "M", true, prCheck{Planned: true, Unread: true}, runner.WaitDraft},
+		"front-end comes before size L":        {sampled, "L", true, prCheck{Planned: true, FrontEnd: []string{"web/"}}, runner.WaitFrontEnd},
+		"size L comes before the sample":       {sampled, "L", true, prCheck{Planned: true}, runner.WaitSizeL},
+		"the sample alone":                     {sampled, "M", true, prCheck{Planned: true}, runner.WaitSampled},
+		"an unplanned run has no named reason": {unsampled, "M", true, prCheck{}, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tk := prRecord.Ticket()
+			tk.Size = tt.size
+			sum := runner.Summary{Outcome: runner.OutcomeBuilt, Ready: tt.ready}
+			if got := waitReason(tt.runID, tk, sum, tt.check); got != tt.want {
+				t.Fatalf("waitReason = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // fakeRecentRewrites returns the samples configured, or fails to read them.
 type fakeRecentRewrites struct {
 	samples []dispatcher.Sample
