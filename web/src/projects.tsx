@@ -382,7 +382,7 @@ function ProjectCard({ project, now, refresh }: CardProps) {
               label={open ? "HIDE" : "DETAILS"}
               aria-expanded={open}
               aria-controls={detailId}
-              aria-label={`${open ? "Hide" : "Show"} what is running in ${project.repository}`}
+              aria-label={`${open ? "Hide" : "Details:"} what is running in ${project.repository}`}
               onClick={() => setOpen((v) => !v)}
             />
           )
@@ -404,7 +404,7 @@ function ProjectCard({ project, now, refresh }: CardProps) {
       )}
       {moved !== null && (
         <p role="alert" className="mt-3 text-cap text-defer">
-          The phase moved: {moved}
+          The start was not requested: {moved}.
         </p>
       )}
 
