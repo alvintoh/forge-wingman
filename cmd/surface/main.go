@@ -61,6 +61,7 @@ func run(logger *slog.Logger) error {
 	var measured MeasuredReader
 	var peak PeakModeStore
 	var autoMerge AutoMergeStore
+	var projects ProjectStores
 	if project := os.Getenv("GOOGLE_CLOUD_PROJECT"); project != "" {
 		fsc, err := firestore.NewClient(context.Background(), project)
 		if err != nil {
@@ -72,6 +73,17 @@ func run(logger *slog.Logger) error {
 		measured = store.NewRewrites(fsc)
 		peak = store.NewPeakModes(fsc)
 		autoMerge = store.NewAutoMergeSwitches(fsc)
+		// A project's phase is requested on its document in the owner database.
+		owner, err := firestore.NewClientWithDatabase(context.Background(), project, store.OwnerDatabase)
+		if err != nil {
+			return fmt.Errorf("owner database client: %w", err)
+		}
+		defer func() { _ = owner.Close() }()
+		phases, queue, reaches := store.NewPhases(owner), store.NewQueue(fsc), store.NewReaches(fsc)
+		projects = ProjectStores{
+			Projects: phases, Snapshots: store.NewPhaseSnapshots(fsc), Reaches: reaches,
+			Loads: queue, Activity: queue, Starts: phases,
+		}
 	}
 
 	deps := Deps{
@@ -82,6 +94,7 @@ func run(logger *slog.Logger) error {
 		Measured:      measured,
 		Peak:          peak,
 		AutoMerge:     autoMerge,
+		Projects:      projects,
 	}
 
 	srv := &http.Server{
@@ -161,6 +174,7 @@ type Deps struct {
 	Measured      MeasuredReader
 	Peak          PeakModeStore
 	AutoMerge     AutoMergeStore
+	Projects      ProjectStores
 }
 
 // newMux claims /api/ explicitly so an unknown endpoint 404s instead of
@@ -299,6 +313,8 @@ func newMux(d Deps) *http.ServeMux {
 			Enabled bool `json:"enabled"`
 		}{*body.Enabled})
 	})
+	mux.HandleFunc("GET /api/projects", d.projects)
+	mux.HandleFunc("POST /api/projects/start", d.startProject)
 	mux.Handle("GET /api/", http.NotFoundHandler())
 	mux.Handle("GET /", spaHandler(d.SPA))
 
