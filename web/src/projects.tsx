@@ -172,12 +172,16 @@ const chipFill: Record<Exclude<StatePill, null>, string> = {
   RUNNING: "bg-accent",
 };
 
+// One status line of a card. The phone card keeps only the line marked `keep` (what is moving);
+// the others show from md up and sit behind Details on a phone.
+type StatusLine = { text: string; keep: boolean };
+
 // The view of one project: derived here from the list's fields alone.
 type ProjectView = {
   pill: StatePill;
   readable: PhaseSnapshot | null;
   phase: PhaseProgress | null;
-  lines: string[];
+  lines: StatusLine[];
   working: boolean;
   startable: boolean;
   notice: string | null;
@@ -204,37 +208,43 @@ function describe(project: Project, now: number): ProjectView {
   const index = phases.findIndex((p) => p.name === readable?.current);
   const phase = index >= 0 ? (phases[index] ?? null) : null;
   const activity = project.last_activity
-    ? `active ${ago(project.last_activity, now)}`
-    : `added ${ago(project.added_at, now)}`;
+    ? `Active ${ago(project.last_activity, now)}`
+    : `Added ${ago(project.added_at, now)}`;
 
-  const lines: string[] = [];
+  const lines: StatusLine[] = [];
+  const line = (text: string, keep = false) => lines.push({ text, keep });
   if (readable !== null && phases.length === 0) {
-    lines.push(`No phases yet; ${activity}`);
+    line(`No phases yet; ${activity.charAt(0).toLowerCase()}${activity.slice(1)}`, true);
   } else if (readable !== null) {
     const later = index >= 0 ? phases.length - 1 - index : 0;
     const locked =
       later === 0
         ? null
         : later === 1
-          ? `phase ${phases.length} locked`
-          : `phases ${index + 2}-${phases.length} locked`;
+          ? `Phase ${phases.length} locked`
+          : `Phases ${index + 2}-${phases.length} locked`;
     if (pill === "STOPPING") {
-      lines.push("No new tickets start", `${queue.in_flight} finishing, ${queue.held} queued held`);
+      line("No new tickets start");
+      line(`${queue.in_flight} finishing, ${queue.held} queued held`, true);
     } else {
       if (phase !== null) {
-        lines.push(`${phase.done} of ${phase.total} tickets done`);
+        line(`${phase.done} of ${phase.total} tickets done`);
       }
       if (pill === "STOPPED" && queue.held > 0) {
-        lines.push(`${queue.held} queued, held until resumed`);
+        line(`${queue.held} queued, held until resumed`, true);
       } else if (working) {
-        lines.push(`${queue.in_flight} in flight, ${queued} queued`);
+        line(`${queue.in_flight} in flight, ${queued} queued`, true);
       } else if (locked !== null) {
-        lines.push(locked);
+        line(locked, true);
       }
     }
-    lines.push(activity);
+    line(activity);
   } else {
-    lines.push(activity);
+    line(activity, true);
+  }
+  // A phone card always shows one line beside its control: the last line when none is marked.
+  if (!lines.some((l) => l.keep)) {
+    lines.splice(-1, 1, { text: lines[lines.length - 1]?.text ?? activity, keep: true });
   }
 
   const idle =
@@ -408,15 +418,52 @@ function ProjectCard({ project, now, refresh }: CardProps) {
   const eligible = readable?.eligible.length ?? 0;
   const blocked = readable?.eligible_blocked ?? 0;
 
+  const control =
+    view.startable || view.startDisabled ? (
+      <PillButton
+        label="START"
+        disabled={view.startDisabled}
+        aria-describedby={view.startDisabled ? noticeId : undefined}
+        aria-label={`Start ${readable?.current ?? "the phase"} in ${project.repository}`}
+        onClick={() => {
+          setSaveError(false);
+          dialogRef.current?.showModal();
+        }}
+      />
+    ) : view.pill === "RUNNING" ? (
+      <PillButton
+        label="STOP"
+        aria-label={`Stop ${readable?.current ?? "the phase"} in ${project.repository}`}
+        onClick={() => {
+          setStopError(false);
+          stopRef.current?.showModal();
+        }}
+      />
+    ) : (
+      (view.pill === "STOPPING" || view.pill === "STOPPED") && (
+        <PillButton
+          label="RESUME"
+          disabled={saving}
+          aria-label={`Resume ${readable?.current ?? "the phase"} in ${project.repository}`}
+          onClick={() => pause("resume")}
+        />
+      )
+    );
+
   return (
     <li className="rounded-card border border-hair bg-card p-4">
-      <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            <h3 className="break-words text-body font-semibold text-ink">{project.repository}</h3>
+      <div className="min-w-0">
+        <div className="min-w-0">
+          <div className="flex items-center gap-3">
+            <h3
+              title={project.repository}
+              className="min-w-0 truncate text-body font-semibold text-ink"
+            >
+              {project.repository}
+            </h3>
             {view.pill !== null && (
               <span
-                className={`inline-flex h-5.5 items-center rounded-full px-2.5 font-mono text-micro font-semibold tracking-[1.2px] text-card ${chipFill[view.pill]}`}
+                className={`inline-flex h-5.5 shrink-0 items-center rounded-full px-2.5 font-mono text-micro font-semibold tracking-[1.2px] text-card ${chipFill[view.pill]}`}
               >
                 {view.pill}
               </span>
@@ -443,54 +490,29 @@ function ProjectCard({ project, now, refresh }: CardProps) {
               />
             </div>
           )}
-          <div className="mt-3 text-cap text-ink2">
-            {view.lines.map((line, i) => (
-              <p key={i}>{line}</p>
-            ))}
+          <div className="mt-1 flex items-center justify-between gap-4">
+            <div className="min-w-0 flex-1 py-2 text-cap text-ink2">
+              {view.lines.map((l, i) => (
+                <p key={i} className={l.keep ? undefined : "hidden md:block"}>
+                  {l.text}
+                </p>
+              ))}
+            </div>
+            {control}
           </div>
-          {view.working && (
+          {(view.working || view.lines.some((l) => !l.keep)) && (
             <button
               type="button"
               aria-expanded={open}
               aria-controls={detailId}
               aria-label={`${open ? "Hide details" : "Details"}: what is running in ${project.repository}`}
-              className="-ml-1 mt-1 inline-flex min-h-11 min-w-11 cursor-pointer items-center px-1 text-label text-accent"
+              className={`-mb-3 -ml-1 -mt-1 inline-flex min-h-11 min-w-11 cursor-pointer items-center px-1 text-label text-accent ${view.working ? "" : "md:hidden"}`}
               onClick={() => setOpen((v) => !v)}
             >
               {open ? "Hide details" : "Details"}
             </button>
           )}
         </div>
-        {view.startable || view.startDisabled ? (
-          <PillButton
-            label="START"
-            disabled={view.startDisabled}
-            aria-describedby={view.startDisabled ? noticeId : undefined}
-            aria-label={`Start ${readable?.current ?? "the phase"} in ${project.repository}`}
-            onClick={() => {
-              setSaveError(false);
-              dialogRef.current?.showModal();
-            }}
-          />
-        ) : view.pill === "RUNNING" ? (
-          <PillButton
-            label="STOP"
-            aria-label={`Stop ${readable?.current ?? "the phase"} in ${project.repository}`}
-            onClick={() => {
-              setStopError(false);
-              stopRef.current?.showModal();
-            }}
-          />
-        ) : (
-          (view.pill === "STOPPING" || view.pill === "STOPPED") && (
-            <PillButton
-              label="RESUME"
-              disabled={saving}
-              aria-label={`Resume ${readable?.current ?? "the phase"} in ${project.repository}`}
-              onClick={() => pause("resume")}
-            />
-          )
-        )}
       </div>
 
       {project.snapshot?.unreadable && (
@@ -519,6 +541,13 @@ function ProjectCard({ project, now, refresh }: CardProps) {
 
       {readable !== null && open && (
         <div id={detailId} className="mt-4 border-t border-hair pt-3">
+          <div className="mb-3 text-cap text-ink2 md:hidden">
+            {view.lines
+              .filter((l) => !l.keep)
+              .map((l, i) => (
+                <p key={i}>{l.text}</p>
+              ))}
+          </div>
           <h4 className="font-mono text-label font-semibold text-ink2">IN FLIGHT NOW</h4>
           {readable.in_flight.length === 0 ? (
             <p className="mt-2 text-cap text-ink2">Nothing is running.</p>
