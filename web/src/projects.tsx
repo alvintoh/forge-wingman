@@ -299,7 +299,7 @@ function PillButton({ label, ...rest }: PillButtonProps) {
       className="group inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center disabled:cursor-not-allowed"
       {...rest}
     >
-      <span className="inline-flex h-8 min-w-24 items-center justify-center rounded-full border border-accent px-5 font-mono text-micro font-semibold text-accent group-disabled:border-muted group-disabled:text-muted">
+      <span className="inline-flex h-8 w-26 items-center justify-center rounded-full border border-accent font-mono text-micro font-semibold text-accent group-disabled:border-muted group-disabled:text-muted">
         {label}
       </span>
     </button>
