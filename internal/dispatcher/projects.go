@@ -28,6 +28,7 @@ const (
 	StartRefusedPhaseMoved  = "phase-moved"
 	StartRefusedUnreadable  = "linear-unreadable"
 	StartRefusedUnreachable = "repository-unreachable"
+	StartRefusedUnchecked   = "repository-unchecked"
 	StartRefusedNoPhase     = "no-current-phase"
 	StartRefusedNoEligible  = "no-eligible-ticket"
 	SnapshotRunsUnreadable  = "runs-unreadable"
@@ -149,8 +150,8 @@ type phaseView struct {
 // pollProjects reads Linear once for every listed project, writes each
 // project's snapshot, and carries out each pending start request. A Linear read
 // that fails writes an unreadable snapshot and delegates nothing; no failure
-// here fails the poll. A start on a repository this poll found unreachable is
-// refused.
+// here fails the poll. A start on a repository this poll did not find reachable
+// is refused.
 func pollProjects(ctx context.Context, d Deps, reaches []RepoReach) {
 	deps := d.ProjectPhases
 	if !deps.ready() {
@@ -184,15 +185,17 @@ func pollProjects(ctx context.Context, d Deps, reaches []RepoReach) {
 	if err := deps.Snapshots.RecordSnapshots(ctx, snapshots); err != nil {
 		d.Logger.Warn("phaseSnapshotsNotRecorded", "projects", len(snapshots), "err", err.Error())
 	}
-	unreachable := map[string]bool{}
+	reads := map[string]RepoReach{}
 	for _, r := range reaches {
-		if !r.Reachable {
-			unreachable[strings.ToLower(r.Repository)] = true
-		}
+		reads[strings.ToLower(r.Repository)] = r
 	}
 	for i, p := range projects {
 		if !p.StartRequestedAt.IsZero() {
-			startPhase(ctx, d, p, views[i], unreachable[strings.ToLower(p.Repository)])
+			var read *RepoReach
+			if r, ok := reads[strings.ToLower(p.Repository)]; ok {
+				read = &r
+			}
+			startPhase(ctx, d, p, views[i], read)
 		}
 	}
 }
@@ -201,7 +204,7 @@ func pollProjects(ctx context.Context, d Deps, reaches []RepoReach) {
 func linearProjects(projects []PhaseProject) []string {
 	var names []string
 	for _, p := range projects {
-		if !slices.ContainsFunc(names, func(n string) bool { return strings.EqualFold(n, p.LinearProject) }) {
+		if !slices.Contains(names, p.LinearProject) {
 			names = append(names, p.LinearProject)
 		}
 	}
@@ -328,17 +331,19 @@ func phaseEligible(issue Issue, repo string, run TicketRun) bool {
 }
 
 // startPhase carries out p's pending start request against the snapshot just
-// read: it is refused when Linear could not be read, when the repository is
-// unreachable, when the project has no current phase, when the current phase is
+// read: it is refused when Linear could not be read, when the repository was
+// not read this poll or could not be, when the project has no current phase, when the current phase is
 // no longer the one the owner confirmed, or when nothing is eligible; otherwise
 // every eligible ticket is delegated. A delegation that fails leaves the request
 // pending, and the next poll skips what was already delegated.
-func startPhase(ctx context.Context, d Deps, p PhaseProject, v phaseView, unreachable bool) {
+func startPhase(ctx context.Context, d Deps, p PhaseProject, v phaseView, read *RepoReach) {
 	refusal := ""
 	switch {
 	case v.snapshot.Unreadable:
 		refusal = v.snapshot.Reason
-	case unreachable:
+	case read == nil:
+		refusal = StartRefusedUnchecked
+	case !read.Reachable:
 		refusal = StartRefusedUnreachable
 	case v.snapshot.Current == "":
 		refusal = StartRefusedNoPhase
