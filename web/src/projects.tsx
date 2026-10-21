@@ -164,11 +164,12 @@ function plural(n: number, one: string, many: string): string {
 
 type StatePill = "CHECKING" | "STOPPING" | "STOPPED" | "RUNNING" | null;
 
-const pillTone: Record<Exclude<StatePill, null>, string> = {
-  CHECKING: "text-muted",
-  STOPPING: "text-defer",
-  STOPPED: "text-stop",
-  RUNNING: "text-ok",
+// The state chip's fill, as the design draws it: the word is in white on a solid pill.
+const chipFill: Record<Exclude<StatePill, null>, string> = {
+  CHECKING: "bg-muted",
+  STOPPING: "bg-defer",
+  STOPPED: "bg-muted",
+  RUNNING: "bg-accent",
 };
 
 // The view of one project: derived here from the list's fields alone.
@@ -289,6 +290,33 @@ function percent(phase: PhaseProgress): number {
   return phase.total > 0 ? Math.round((phase.done / phase.total) * 100) : 0;
 }
 
+// runsSentence and heldSentence word the stop confirm's counts, singular and plural.
+function runsSentence(n: number): string {
+  if (n === 0) {
+    return "No run is in flight.";
+  }
+  return n === 1
+    ? "The 1 run in flight finishes, and so does any ticket already planned."
+    : `The ${n} runs in flight finish, and so does any ticket already planned.`;
+}
+
+function heldSentence(n: number): string {
+  if (n === 0) {
+    return "No ticket is queued.";
+  }
+  return n === 1
+    ? "1 queued ticket stays delegated and waits until you resume."
+    : `${n} queued tickets stay delegated and wait until you resume.`;
+}
+
+function postJSON(path: string, body: Record<string, string>): Promise<Response> {
+  return fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 type PillButtonProps = React.ComponentProps<"button"> & { label: string };
 
 // A small outlined pill with a 44px hit area around it.
@@ -318,10 +346,13 @@ function ProjectCard({ project, now, refresh }: CardProps) {
   const detailId = useId();
   const noticeId = useId();
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const stopRef = useRef<HTMLDialogElement>(null);
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(false);
   const [moved, setMoved] = useState<string | null>(null);
+  const [stopError, setStopError] = useState(false);
+  const [resumeError, setResumeError] = useState(false);
 
   // start posts the phase this card showed; the server checks it is still the
   // current one, and a refusal leaves the list as it was.
@@ -333,10 +364,9 @@ function ProjectCard({ project, now, refresh }: CardProps) {
     setSaveError(false);
     setMoved(null);
     try {
-      const response = await fetch("/api/projects/start", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ repository: project.repository, phase: readable.current }),
+      const response = await postJSON("/api/projects/start", {
+        repository: project.repository,
+        phase: readable.current,
       });
       if (response.status === 409) {
         setMoved(await response.text());
@@ -353,17 +383,41 @@ function ProjectCard({ project, now, refresh }: CardProps) {
     }
   }
 
+  // pause stops or resumes the project; a failure leaves the state as it was.
+  async function pause(action: "stop" | "resume") {
+    setSaving(true);
+    setStopError(false);
+    setResumeError(false);
+    try {
+      const response = await postJSON(`/api/projects/${action}`, {
+        repository: project.repository,
+      });
+      if (!response.ok) {
+        throw new Error(`the ${action} endpoint answered ${response.status}`);
+      }
+      stopRef.current?.close();
+      refresh();
+    } catch (err: unknown) {
+      console.error("projectPauseNotSet", action, err);
+      (action === "stop" ? setStopError : setResumeError)(true);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const eligible = readable?.eligible.length ?? 0;
   const blocked = readable?.eligible_blocked ?? 0;
 
   return (
-    <li className="border border-hair bg-card p-4">
+    <li className="rounded-card border border-hair bg-card p-4">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-baseline gap-x-3">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <h3 className="break-words text-body font-semibold text-ink">{project.repository}</h3>
             {view.pill !== null && (
-              <span className={`font-mono text-micro font-semibold ${pillTone[view.pill]}`}>
+              <span
+                className={`inline-flex h-5.5 items-center rounded-full px-2.5 font-mono text-micro font-semibold tracking-[1.2px] text-card ${chipFill[view.pill]}`}
+              >
                 {view.pill}
               </span>
             )}
@@ -381,9 +435,12 @@ function ProjectCard({ project, now, refresh }: CardProps) {
               aria-valuemin={0}
               aria-valuemax={100}
               aria-valuenow={percent(phase)}
-              className="mt-2 h-1 bg-track"
+              className="mt-2 h-1.5 overflow-hidden rounded-tag bg-track"
             >
-              <div className="h-full bg-accent" style={{ width: `${percent(phase)}%` }} />
+              <div
+                className="h-full rounded-tag bg-accent"
+                style={{ width: `${percent(phase)}%` }}
+              />
             </div>
           )}
           <div className="mt-3 text-cap text-ink2">
@@ -391,6 +448,18 @@ function ProjectCard({ project, now, refresh }: CardProps) {
               <p key={i}>{line}</p>
             ))}
           </div>
+          {view.working && (
+            <button
+              type="button"
+              aria-expanded={open}
+              aria-controls={detailId}
+              aria-label={`${open ? "Hide details" : "Details"}: what is running in ${project.repository}`}
+              className="-ml-1 mt-1 inline-flex min-h-11 min-w-11 cursor-pointer items-center px-1 text-label text-accent"
+              onClick={() => setOpen((v) => !v)}
+            >
+              {open ? "Hide details" : "Details"}
+            </button>
+          )}
         </div>
         {view.startable || view.startDisabled ? (
           <PillButton
@@ -403,14 +472,22 @@ function ProjectCard({ project, now, refresh }: CardProps) {
               dialogRef.current?.showModal();
             }}
           />
+        ) : view.pill === "RUNNING" ? (
+          <PillButton
+            label="STOP"
+            aria-label={`Stop ${readable?.current ?? "the phase"} in ${project.repository}`}
+            onClick={() => {
+              setStopError(false);
+              stopRef.current?.showModal();
+            }}
+          />
         ) : (
-          view.working && (
+          (view.pill === "STOPPING" || view.pill === "STOPPED") && (
             <PillButton
-              label={open ? "HIDE" : "DETAILS"}
-              aria-expanded={open}
-              aria-controls={detailId}
-              aria-label={`${open ? "Hide" : "Details:"} what is running in ${project.repository}`}
-              onClick={() => setOpen((v) => !v)}
+              label="RESUME"
+              disabled={saving}
+              aria-label={`Resume ${readable?.current ?? "the phase"} in ${project.repository}`}
+              onClick={() => pause("resume")}
             />
           )
         )}
@@ -427,6 +504,11 @@ function ProjectCard({ project, now, refresh }: CardProps) {
       {view.notice !== null && (
         <p id={noticeId} className="mt-3 text-cap text-ink2">
           {view.notice}
+        </p>
+      )}
+      {resumeError && (
+        <p role="alert" className="mt-3 text-cap text-stop">
+          The resume was not made. Nothing changed; try again.
         </p>
       )}
       {moved !== null && (
@@ -457,11 +539,34 @@ function ProjectCard({ project, now, refresh }: CardProps) {
         </div>
       )}
 
+      <dialog
+        ref={stopRef}
+        aria-labelledby={`${detailId}-stop-title`}
+        className="m-auto max-h-dvh w-full max-w-[min(var(--container-phone),calc(100dvw-2rem))] overflow-auto rounded-card border border-hair bg-card p-6 text-ink backdrop:bg-ink/40"
+      >
+        <h2 id={`${detailId}-stop-title`} className="text-head font-semibold">
+          Stop {readable?.current ?? "the phase"} in {project.repository}?
+        </h2>
+        <p className="mt-3 text-body text-ink2">
+          No new tickets start. {runsSentence(project.queue.in_flight)}{" "}
+          {heldSentence(project.queue.held)}
+        </p>
+        {stopError && (
+          <p role="alert" className="mt-3 text-body text-stop">
+            The stop was not made. Nothing changed; try again.
+          </p>
+        )}
+        <div className="mt-4 flex justify-end gap-3">
+          <PillButton label="BACK" onClick={() => stopRef.current?.close()} />
+          <PillButton label="STOP PHASE" disabled={saving} onClick={() => pause("stop")} />
+        </div>
+      </dialog>
+
       {readable !== null && (
         <dialog
           ref={dialogRef}
           aria-labelledby={`${detailId}-title`}
-          className="m-auto max-h-dvh w-full max-w-[min(var(--container-phone),calc(100dvw-2rem))] overflow-auto border border-hair bg-card p-6 text-ink backdrop:bg-ink/40"
+          className="m-auto max-h-dvh w-full max-w-[min(var(--container-phone),calc(100dvw-2rem))] overflow-auto rounded-card border border-hair bg-card p-6 text-ink backdrop:bg-ink/40"
         >
           <h2 id={`${detailId}-title`} className="text-head font-semibold">
             Start {readable.current} in {project.repository}?
