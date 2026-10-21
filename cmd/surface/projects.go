@@ -151,12 +151,27 @@ func (d Deps) readProjects(ctx context.Context) (projectsResponse, error) {
 			StartPhase: p.StartPhase, StartRequestedAt: p.StartRequestedAt, StartRefusal: p.StartRefusal,
 		}
 		if snap, ok := snapshots[key]; ok {
-			entry.Snapshot = &snap
+			entry.Snapshot = withLists(snap)
 		}
 		out.Projects = append(out.Projects, entry)
 	}
 	slices.SortStableFunc(out.Projects, func(a, b projectEntry) int { return b.SortKey.Compare(a.SortKey) })
 	return out, nil
+}
+
+// withLists gives the snapshot's lists to the page as arrays: Firestore reads an empty
+// array back as nil, which would encode as null and which the page cannot take.
+func withLists(snap dispatcher.PhaseSnapshot) *dispatcher.PhaseSnapshot {
+	if snap.Phases == nil {
+		snap.Phases = []dispatcher.PhaseProgress{}
+	}
+	if snap.InFlight == nil {
+		snap.InFlight = []dispatcher.PhaseTicket{}
+	}
+	if snap.Eligible == nil {
+		snap.Eligible = []string{}
+	}
+	return &snap
 }
 
 // reachOf reads the record kept for key against when the project was added.

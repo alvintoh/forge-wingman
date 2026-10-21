@@ -173,6 +173,17 @@ func TestProjectsListNewestActivityFirstWithTheTotal(t *testing.T) {
 	}
 }
 
+func TestProjectsListEmptySnapshotListsAsArrays(t *testing.T) {
+	s := startableProjects()
+	rec := httptest.NewRecorder()
+	newProjectsMux(s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/projects", nil))
+	for _, field := range []string{`"phases":[]`, `"in_flight":[]`, `"eligible":[]`} {
+		if !strings.Contains(rec.Body.String(), field) {
+			t.Errorf("body lacks %s: %s", field, rec.Body.String())
+		}
+	}
+}
+
 func TestProjectsWithoutStoresAreUnavailable(t *testing.T) {
 	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger()})
 	rec := httptest.NewRecorder()
