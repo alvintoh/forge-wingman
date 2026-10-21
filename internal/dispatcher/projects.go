@@ -226,7 +226,7 @@ func projectView(ctx context.Context, d Deps, p PhaseProject, all []Issue, at ti
 	var open []Issue
 	var ids []string
 	for _, issue := range issues {
-		if current != "" && issue.Milestone.Name == current && issue.StateType != stateTypeCompleted {
+		if current != "" && issue.Milestone.Name == current && issue.StateType != stateTypeCompleted && issue.StateType != stateTypeCanceled {
 			open = append(open, issue)
 			ids = append(ids, issue.ID)
 		}

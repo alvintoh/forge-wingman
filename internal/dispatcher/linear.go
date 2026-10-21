@@ -1,7 +1,6 @@
 package dispatcher
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"maps"
@@ -507,6 +506,15 @@ func (l Linear) request(ctx context.Context, query string, variables, out any) e
 	})
 }
 
+// pageSize is the page the client asks for: the configured one when it is
+// positive, else the default.
+func (l Linear) pageSize() int {
+	if l.Page > 0 {
+		return l.Page
+	}
+	return linearPage
+}
+
 // listIssues walks every page of query, whose variables beyond the paging are
 // vars. The cursor is omitted rather than sent empty on the first page, since ""
 // is not a cursor Linear can resume from.
@@ -517,7 +525,7 @@ func (l Linear) listIssues(ctx context.Context, query string, vars map[string]an
 	)
 	for {
 		variables := maps.Clone(vars)
-		variables["first"] = cmp.Or(l.Page, linearPage)
+		variables["first"] = l.pageSize()
 		if cursor != "" {
 			variables["after"] = cursor
 		}

@@ -351,3 +351,24 @@ func TestLinearProjectsAreDistinctIgnoringCase(t *testing.T) {
 		t.Errorf("linearProjects = %v, want %v", got, want)
 	}
 }
+
+func TestLinearPageSizeIsTheConfiguredPositiveOrTheDefault(t *testing.T) {
+	for page, want := range map[int]int{50: 50, 0: linearPage, -3: linearPage} {
+		if got := (Linear{Page: page}).pageSize(); got != want {
+			t.Errorf("Page %d: pageSize = %d, want %d", page, got, want)
+		}
+	}
+}
+
+func TestACanceledTicketIsNeverInFlightOrQueued(t *testing.T) {
+	snaps := &fakeSnapshots{}
+	issues := &fakeProjectIssues{issues: []Issue{
+		phaseIssue("FRG-1", "canceled", "P1", 1, ""),
+		phaseIssue("FRG-2", "unstarted", "P1", 1, ""),
+	}}
+	runs := fakeRuns{"FRG-1": {Stage: PhaseStageBuilding}}
+	pollProjects(context.Background(), phaseDeps(&fakePhaseProjects{listed: []PhaseProject{{Repository: "octo/widget", LinearProject: "Roadmap"}}}, snaps, runs, issues), nil)
+	if got := snaps.got[0]; len(got.InFlight) != 0 || got.Queued != 0 {
+		t.Errorf("in flight %v queued %d, want the canceled ticket left out", got.InFlight, got.Queued)
+	}
+}
