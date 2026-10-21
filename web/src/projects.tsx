@@ -50,6 +50,8 @@ type ProjectsState = {
   projects: Project[];
   // When the list was read, so every card's "ago" is against one clock.
   readAt: number;
+  // A re-read failed while an earlier read is on screen.
+  stale: boolean;
 };
 
 // The section on the inbox shows this many projects, then a link to the rest.
@@ -89,6 +91,7 @@ function useProjects() {
     total: 0,
     projects: [],
     readAt: 0,
+    stale: false,
   });
   const [attempt, setAttempt] = useState(0);
 
@@ -107,7 +110,13 @@ function useProjects() {
       if (controller.signal.aborted) {
         return;
       }
-      setState({ status: "ready", total: body.total, projects: body.projects, readAt: Date.now() });
+      setState({
+        status: "ready",
+        total: body.total,
+        projects: body.projects,
+        readAt: Date.now(),
+        stale: false,
+      });
     }
 
     read().catch((err: unknown) => {
@@ -117,8 +126,8 @@ function useProjects() {
       console.error("projectsNotRead", err);
       setState((previous) =>
         previous.status === "ready"
-          ? previous
-          : { status: "error", total: 0, projects: [], readAt: 0 },
+          ? { ...previous, stale: true }
+          : { status: "error", total: 0, projects: [], readAt: 0, stale: false },
       );
     });
 
@@ -127,7 +136,7 @@ function useProjects() {
 
   const refresh = useCallback(() => setAttempt((n) => n + 1), []);
   const retry = useCallback(() => {
-    setState({ status: "loading", total: 0, projects: [], readAt: 0 });
+    setState({ status: "loading", total: 0, projects: [], readAt: 0, stale: false });
     setAttempt((n) => n + 1);
   }, []);
 
@@ -136,6 +145,9 @@ function useProjects() {
 
 function ago(iso: string, now: number): string {
   const minutes = Math.max(0, Math.floor((now - Date.parse(iso)) / 60_000));
+  if (Number.isNaN(minutes)) {
+    return "at an unknown time";
+  }
   if (minutes < 1) {
     return "just now";
   }
@@ -241,7 +253,7 @@ function describe(project: Project, now: number): ProjectView {
   } else if (reach.status === REACH_CHECKING) {
     notice = "Checking on the next poll.";
   } else if (reach.status !== REACH_REACHABLE) {
-    notice = `The dispatcher's token cannot read ${project.repository}. Check its access on GitHub to start a phase.`;
+    notice = unreachableWords(project);
   } else if (snapshot === null) {
     notice = "The phases have not been read yet.";
   } else if (project.start_refusal) {
@@ -258,6 +270,19 @@ function describe(project: Project, now: number): ProjectView {
     notice,
     startDisabled: idle && !startable,
   };
+}
+
+// unreachableWords says why the dispatcher could not read the repository, from
+// the closed set of reasons it records.
+function unreachableWords(project: Project): string {
+  const { repository, reach } = project;
+  if (reach.reason === "not-found") {
+    return `${repository} was not found, or the dispatcher's token cannot see it. Check its name and access on GitHub to start a phase.`;
+  }
+  if (reach.reason === "forbidden" || reach.reason === "unauthorized") {
+    return `The dispatcher's token cannot read ${repository}. Check its access on GitHub to start a phase.`;
+  }
+  return `The dispatcher could not reach ${repository}. It is checked again on the next poll.`;
 }
 
 function percent(phase: PhaseProgress): number {
@@ -362,8 +387,8 @@ function ProjectCard({ project, now, refresh }: CardProps) {
             </div>
           )}
           <div className="mt-3 text-cap text-ink2">
-            {view.lines.map((line) => (
-              <p key={line}>{line}</p>
+            {view.lines.map((line, i) => (
+              <p key={i}>{line}</p>
             ))}
           </div>
         </div>
@@ -463,16 +488,24 @@ function ProjectCard({ project, now, refresh }: CardProps) {
 type ListProps = {
   projects: Project[];
   now: number;
+  stale: boolean;
   refresh: () => void;
 };
 
-function ProjectList({ projects, now, refresh }: ListProps) {
+function ProjectList({ projects, now, stale, refresh }: ListProps) {
   return (
-    <ul className="mt-4 flex flex-col gap-4">
-      {projects.map((project) => (
-        <ProjectCard key={project.repository} project={project} now={now} refresh={refresh} />
-      ))}
-    </ul>
+    <>
+      {stale && (
+        <p role="status" className="mt-4 text-cap text-defer">
+          The list could not be refreshed; showing the last read.
+        </p>
+      )}
+      <ul className="mt-4 flex flex-col gap-4">
+        {projects.map((project) => (
+          <ProjectCard key={project.repository} project={project} now={now} refresh={refresh} />
+        ))}
+      </ul>
+    </>
   );
 }
 
@@ -523,6 +556,7 @@ export function ProjectsSection() {
         <ProjectList
           projects={state.projects.slice(0, SECTION_PROJECTS)}
           now={state.readAt}
+          stale={state.stale}
           refresh={refresh}
         />
         {state.total > SECTION_PROJECTS && (
@@ -545,7 +579,12 @@ export function Projects() {
     <section className="mx-auto max-w-desk px-padx py-band md:px-pad">
       <h1 className="text-title font-semibold text-ink">Projects</h1>
       <ProjectsPanels state={state} retry={retry}>
-        <ProjectList projects={state.projects} now={state.readAt} refresh={refresh} />
+        <ProjectList
+          projects={state.projects}
+          now={state.readAt}
+          stale={state.stale}
+          refresh={refresh}
+        />
       </ProjectsPanels>
     </section>
   );
