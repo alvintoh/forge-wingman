@@ -66,6 +66,8 @@ const refusalWords: Record<string, string> = {
   "repository-unreachable":
     "The last start was not carried out: the repository could not be reached.",
   "no-current-phase": "The last start was not carried out: the project has no current phase.",
+  "repository-unchecked":
+    "The last start was not carried out: the repository had not been checked yet.",
 };
 
 function isProjects(body: unknown): body is ProjectsResponse {
