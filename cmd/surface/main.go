@@ -82,7 +82,7 @@ func run(logger *slog.Logger) error {
 		phases, queue, reaches := store.NewPhases(owner), store.NewQueue(fsc), store.NewReaches(fsc)
 		projects = ProjectStores{
 			Projects: phases, Snapshots: store.NewPhaseSnapshots(fsc), Reaches: reaches,
-			Loads: queue, Activity: queue, Starts: phases,
+			Loads: queue, Activity: queue, Starts: phases, Pauses: phases,
 		}
 	}
 
@@ -315,6 +315,8 @@ func newMux(d Deps) *http.ServeMux {
 	})
 	mux.HandleFunc("GET /api/projects", d.projects)
 	mux.HandleFunc("POST /api/projects/start", d.startProject)
+	mux.HandleFunc("POST /api/projects/stop", d.stopProject)
+	mux.HandleFunc("POST /api/projects/resume", d.resumeProject)
 	mux.Handle("GET /api/", http.NotFoundHandler())
 	mux.Handle("GET /", spaHandler(d.SPA))
 

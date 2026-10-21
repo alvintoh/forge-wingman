@@ -48,6 +48,11 @@ type StartRequester interface {
 	RequestStart(ctx context.Context, repository, phase string, at time.Time) error
 }
 
+// PauseSetter sets whether a project's phase is paused.
+type PauseSetter interface {
+	Set(ctx context.Context, repository string, paused bool, at time.Time) error
+}
+
 // ProjectStores are the stores behind the projects endpoints; every one is
 // needed, and a surface without them answers 503.
 type ProjectStores struct {
@@ -57,10 +62,11 @@ type ProjectStores struct {
 	Loads     LoadReader
 	Activity  ActivityReader
 	Starts    StartRequester
+	Pauses    PauseSetter
 }
 
 func (p ProjectStores) ready() bool {
-	return p.Projects != nil && p.Snapshots != nil && p.Reaches != nil && p.Loads != nil && p.Activity != nil && p.Starts != nil
+	return p.Projects != nil && p.Snapshots != nil && p.Reaches != nil && p.Loads != nil && p.Activity != nil && p.Starts != nil && p.Pauses != nil
 }
 
 type projectReach struct {
@@ -258,4 +264,45 @@ func (d Deps) checkStart(ctx context.Context, repository, phase string) (int, st
 		return http.StatusConflict, "the current phase is no longer the one named", nil
 	}
 	return 0, "", nil
+}
+
+// stopProject serves POST /api/projects/stop.
+func (d Deps) stopProject(w http.ResponseWriter, r *http.Request) { d.setPause(w, r, true) }
+
+// resumeProject serves POST /api/projects/resume.
+func (d Deps) resumeProject(w http.ResponseWriter, r *http.Request) { d.setPause(w, r, false) }
+
+// setPause writes the project's pause for a stop or a resume. Repeating one is
+// not an error: the write sets a value and does not toggle it.
+func (d Deps) setPause(w http.ResponseWriter, r *http.Request, paused bool) {
+	if !d.Projects.ready() {
+		http.Error(w, "the projects view needs its stores", http.StatusServiceUnavailable)
+		return
+	}
+	if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		http.Error(w, "a pause is set with a JSON body", http.StatusUnsupportedMediaType)
+		return
+	}
+	var body struct {
+		Repository string `json:"repository"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || !store.ValidRepository(body.Repository) {
+		http.Error(w, "the request body is not JSON naming a repository", http.StatusBadRequest)
+		return
+	}
+	switch err := d.Projects.Pauses.Set(r.Context(), body.Repository, paused, time.Now()); {
+	case errors.Is(err, store.ErrRepositoryNotListed):
+		http.Error(w, "no listed project names that repository", http.StatusNotFound)
+		return
+	case err != nil:
+		d.Logger.Error("projectPauseNotSet", "repo", body.Repository, "paused", paused, "err", err.Error())
+		http.Error(w, "setting the pause", http.StatusInternalServerError)
+		return
+	}
+	d.Logger.Info("projectPauseSet", "repo", body.Repository, "paused", paused)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(struct {
+		Repository string `json:"repository"`
+	}{body.Repository})
 }

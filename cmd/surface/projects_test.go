@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -24,6 +26,8 @@ type stubProjects struct {
 	reaches   map[string]dispatcher.RepoReach
 	activity  map[string]time.Time
 	requested []string
+	pauses    []string
+	pauseErr  error
 }
 
 func (s *stubProjects) Listed(context.Context) ([]dispatcher.PhaseProject, error) {
@@ -51,9 +55,17 @@ func (s *stubProjects) RequestStart(_ context.Context, repo, phase string, _ tim
 	return nil
 }
 
+func (s *stubProjects) Set(_ context.Context, repo string, paused bool, _ time.Time) error {
+	if s.pauseErr != nil {
+		return s.pauseErr
+	}
+	s.pauses = append(s.pauses, fmt.Sprintf("%s:%t", repo, paused))
+	return nil
+}
+
 func newProjectsMux(s *stubProjects) *http.ServeMux {
 	return newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Projects: ProjectStores{
-		Projects: s, Snapshots: s, Reaches: s, Loads: s, Activity: s, Starts: s,
+		Projects: s, Snapshots: s, Reaches: s, Loads: s, Activity: s, Starts: s, Pauses: s,
 	}})
 }
 
@@ -181,5 +193,79 @@ func TestStartProjectSaysWhyARepositoryIsRefused(t *testing.T) {
 	rec = postStart(newProjectsMux(s), "application/json", `{"repository":"octo/widget","phase":"P1"}`)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "not been checked") {
 		t.Errorf("unchecked: %d %q, want 409 saying it has not been checked", rec.Code, rec.Body.String())
+	}
+}
+
+func postPause(mux http.Handler, action, contentType, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+action, strings.NewReader(body))
+	req.Header.Set("Content-Type", contentType)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestStopAndResumeSetThePauseThroughTheSetter(t *testing.T) {
+	s := startableProjects()
+	mux := newProjectsMux(s)
+	for _, action := range []string{"stop", "resume", "resume"} {
+		rec := postPause(mux, action, "application/json", `{"repository":"Octo/Widget"}`)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("%s status = %d, want %d: %s", action, rec.Code, http.StatusAccepted, rec.Body.String())
+		}
+	}
+	if want := []string{"Octo/Widget:true", "Octo/Widget:false", "Octo/Widget:false"}; !slices.Equal(s.pauses, want) {
+		t.Errorf("set %v, want %v", s.pauses, want)
+	}
+}
+
+func TestStopAndResumeRefusals(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+		err         error
+		want        int
+	}{
+		{"unlisted repository", "application/json", `{"repository":"octo/other"}`, store.ErrRepositoryNotListed, http.StatusNotFound},
+		{"not JSON", "application/json", `nope`, nil, http.StatusBadRequest},
+		{"no repository", "application/json", `{}`, nil, http.StatusBadRequest},
+		{"repository not owner/name", "application/json", `{"repository":"widget"}`, nil, http.StatusBadRequest},
+		{"not a JSON content type", "text/plain", `{"repository":"octo/widget"}`, nil, http.StatusUnsupportedMediaType},
+		{"the write fails", "application/json", `{"repository":"octo/widget"}`, errors.New("down"), http.StatusInternalServerError},
+	}
+	for _, action := range []string{"stop", "resume"} {
+		for _, tt := range tests {
+			t.Run(action+" "+tt.name, func(t *testing.T) {
+				s := startableProjects()
+				s.pauseErr = tt.err
+				rec := postPause(newProjectsMux(s), action, tt.contentType, tt.body)
+				if rec.Code != tt.want {
+					t.Fatalf("status = %d, want %d: %s", rec.Code, tt.want, rec.Body.String())
+				}
+				if len(s.pauses) != 0 {
+					t.Errorf("set %v for a refused request", s.pauses)
+				}
+			})
+		}
+	}
+}
+
+func TestStopWithoutStoresIsUnavailable(t *testing.T) {
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger()})
+	if rec := postPause(mux, "stop", "application/json", `{"repository":"octo/widget"}`); rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestPauseIsUnavailableWithoutThePauseStore(t *testing.T) {
+	s := startableProjects()
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Projects: ProjectStores{
+		Projects: s, Snapshots: s, Reaches: s, Loads: s, Activity: s, Starts: s,
+	}})
+	for _, action := range []string{"stop", "resume"} {
+		rec := postPause(mux, action, "application/json", `{"repository":"octo/widget"}`)
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Errorf("%s without a pause store = %d, want %d", action, rec.Code, http.StatusServiceUnavailable)
+		}
 	}
 }
