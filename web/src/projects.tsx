@@ -164,11 +164,12 @@ function plural(n: number, one: string, many: string): string {
 
 type StatePill = "CHECKING" | "STOPPING" | "STOPPED" | "RUNNING" | null;
 
-const pillTone: Record<Exclude<StatePill, null>, string> = {
-  CHECKING: "text-muted",
-  STOPPING: "text-defer",
-  STOPPED: "text-stop",
-  RUNNING: "text-ok",
+// The state chip's fill, as the design draws it: the word is in white on a solid pill.
+const chipFill: Record<Exclude<StatePill, null>, string> = {
+  CHECKING: "bg-muted",
+  STOPPING: "bg-defer",
+  STOPPED: "bg-muted",
+  RUNNING: "bg-accent",
 };
 
 // The view of one project: derived here from the list's fields alone.
@@ -411,10 +412,12 @@ function ProjectCard({ project, now, refresh }: CardProps) {
     <li className="rounded-card border border-hair bg-card p-4">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-baseline gap-x-3">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <h3 className="break-words text-body font-semibold text-ink">{project.repository}</h3>
             {view.pill !== null && (
-              <span className={`font-mono text-micro font-semibold ${pillTone[view.pill]}`}>
+              <span
+                className={`inline-flex h-5.5 items-center rounded-full px-2.5 font-mono text-micro font-semibold tracking-[1.2px] text-card ${chipFill[view.pill]}`}
+              >
                 {view.pill}
               </span>
             )}
