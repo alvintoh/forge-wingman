@@ -536,7 +536,7 @@ function ProjectCard({ project, now, refresh }: CardProps) {
       <dialog
         ref={stopRef}
         aria-labelledby={`${detailId}-stop-title`}
-        className="m-auto max-h-dvh w-full max-w-[min(var(--container-phone),calc(100dvw-2rem))] overflow-auto border border-hair bg-card p-6 text-ink backdrop:bg-ink/40"
+        className="m-auto max-h-dvh w-full max-w-[min(var(--container-phone),calc(100dvw-2rem))] overflow-auto rounded-2xl border border-hair bg-card p-6 text-ink backdrop:bg-ink/40"
       >
         <h2 id={`${detailId}-stop-title`} className="text-head font-semibold">
           Stop {readable?.current ?? "the phase"} in {project.repository}?
@@ -560,7 +560,7 @@ function ProjectCard({ project, now, refresh }: CardProps) {
         <dialog
           ref={dialogRef}
           aria-labelledby={`${detailId}-title`}
-          className="m-auto max-h-dvh w-full max-w-[min(var(--container-phone),calc(100dvw-2rem))] overflow-auto border border-hair bg-card p-6 text-ink backdrop:bg-ink/40"
+          className="m-auto max-h-dvh w-full max-w-[min(var(--container-phone),calc(100dvw-2rem))] overflow-auto rounded-2xl border border-hair bg-card p-6 text-ink backdrop:bg-ink/40"
         >
           <h2 id={`${detailId}-title`} className="text-head font-semibold">
             Start {readable.current} in {project.repository}?
