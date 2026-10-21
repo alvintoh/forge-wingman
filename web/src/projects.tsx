@@ -434,7 +434,7 @@ function ProjectCard({ project, now, refresh }: CardProps) {
         <dialog
           ref={dialogRef}
           aria-labelledby={`${detailId}-title`}
-          className="m-auto max-h-dvh w-full max-w-phone overflow-auto border border-hair bg-card p-6 text-ink backdrop:bg-ink/40"
+          className="m-auto max-h-dvh w-full max-w-[min(var(--container-phone),calc(100dvw-2rem))] overflow-auto border border-hair bg-card p-6 text-ink backdrop:bg-ink/40"
         >
           <h2 id={`${detailId}-title`} className="text-head font-semibold">
             Start {readable.current} in {project.repository}?
