@@ -272,7 +272,7 @@ function PillButton({ label, ...rest }: PillButtonProps) {
       className="group inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center disabled:cursor-not-allowed"
       {...rest}
     >
-      <span className="inline-flex h-6 w-16 items-center justify-center border border-accent font-mono text-micro font-semibold text-accent group-disabled:border-muted group-disabled:text-muted">
+      <span className="inline-flex h-8 min-w-24 items-center justify-center rounded-full border border-accent px-5 font-mono text-micro font-semibold text-accent group-disabled:border-muted group-disabled:text-muted">
         {label}
       </span>
     </button>
@@ -448,7 +448,7 @@ function ProjectCard({ project, now, refresh }: CardProps) {
               The start was not requested. Nothing changed; try again.
             </p>
           )}
-          <div className="mt-4 flex justify-end gap-4">
+          <div className="mt-4 flex justify-end gap-3">
             <PillButton label="BACK" onClick={() => dialogRef.current?.close()} />
             <PillButton label="START" disabled={saving} onClick={start} />
           </div>
