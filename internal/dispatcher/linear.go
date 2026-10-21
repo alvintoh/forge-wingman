@@ -148,6 +148,24 @@ const projectIssuesQuery = `query ProjectIssues($projects: [String!]!, $first: I
   }
 }`
 
+// projectNamesQuery reads the token's own identity beside every Linear project
+// the token reads, each as its name alone: the record it feeds offers the names
+// to pick from and holds nothing else Linear returns.
+const projectNamesQuery = `query ProjectNames($first: Int, $after: String) {
+  viewer {
+    id
+  }
+  projects(first: $first, after: $after) {
+    nodes {
+      name
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}`
+
 // delegateMutation delegates one issue to the agent, and reads the delegate
 // back: the reply is the only evidence the delegation landed.
 const delegateMutation = `mutation DelegateIssue($id: String!, $delegate: String!) {
@@ -299,6 +317,25 @@ type linearResponse struct {
 	} `json:"data"`
 }
 
+// projectNamesResponse is one page of the projects' names, with the viewer that
+// proves which agent the token reads as.
+type projectNamesResponse struct {
+	Data struct {
+		Viewer struct {
+			ID string `json:"id"`
+		} `json:"viewer"`
+		Projects struct {
+			Nodes []struct {
+				Name string `json:"name"`
+			} `json:"nodes"`
+			PageInfo struct {
+				HasNextPage bool   `json:"hasNextPage"`
+				EndCursor   string `json:"endCursor"`
+			} `json:"pageInfo"`
+		} `json:"projects"`
+	} `json:"data"`
+}
+
 // Delegated returns every issue still delegated to the configured agent,
 // excluding the ones in a completed or canceled state. It fails unless the token
 // reads as the configured agent, since the filter asks the API about the
@@ -312,6 +349,35 @@ func (l Linear) Delegated(ctx context.Context) ([]Issue, error) {
 // configured agent: a partial read would misstate a phase's progress.
 func (l Linear) ProjectIssues(ctx context.Context, projects []string) ([]Issue, error) {
 	return l.listIssues(ctx, projectIssuesQuery, map[string]any{"projects": projects})
+}
+
+// ProjectNames returns the names of the Linear projects the token reads, failing
+// unless every page was read and the token reads as the configured agent.
+func (l Linear) ProjectNames(ctx context.Context) ([]string, error) {
+	var (
+		names  []string
+		cursor string
+	)
+	for {
+		variables := map[string]any{"first": l.pageSize()}
+		if cursor != "" {
+			variables["after"] = cursor
+		}
+		var resp projectNamesResponse
+		if err := l.request(ctx, projectNamesQuery, variables, &resp.Data); err != nil {
+			return nil, err
+		}
+		if err := l.checkViewer(resp.Data.Viewer.ID); err != nil {
+			return nil, err
+		}
+		for _, node := range resp.Data.Projects.Nodes {
+			names = append(names, node.Name)
+		}
+		if !resp.Data.Projects.PageInfo.HasNextPage {
+			return names, nil
+		}
+		cursor = resp.Data.Projects.PageInfo.EndCursor
+	}
 }
 
 // DelegateIssue sets issueID's delegate to the agent this client acts for, and
