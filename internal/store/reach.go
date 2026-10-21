@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"cloud.google.com/go/firestore"
 
@@ -39,4 +41,30 @@ func (r *Reaches) RecordReach(ctx context.Context, reaches []dispatcher.RepoReac
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// Reads returns each repository's last read, keyed by lower-cased repository.
+func (r *Reaches) Reads(ctx context.Context) (map[string]dispatcher.RepoReach, error) {
+	docs, err := r.client.Collection(reachCollection).Documents(ctx).GetAll()
+	if err != nil {
+		return nil, fmt.Errorf("reading the repository reach: %w", err)
+	}
+	out := make(map[string]dispatcher.RepoReach, len(docs))
+	for _, doc := range docs {
+		var stored struct {
+			Reachable bool      `firestore:"reachable"`
+			Reason    string    `firestore:"reason"`
+			Status    int       `firestore:"status"`
+			CheckedAt time.Time `firestore:"checked_at"`
+		}
+		if err := doc.DataTo(&stored); err != nil {
+			return nil, fmt.Errorf("decoding %s: %w", doc.Ref.Path, err)
+		}
+		repo := strings.ReplaceAll(doc.Ref.ID, "~", "/")
+		out[repoKey(repo)] = dispatcher.RepoReach{
+			Repository: repo, Reachable: stored.Reachable, Reason: dispatcher.ReachReason(stored.Reason),
+			Status: stored.Status, CheckedAt: stored.CheckedAt,
+		}
+	}
+	return out, nil
 }

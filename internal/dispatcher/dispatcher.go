@@ -17,12 +17,21 @@ import (
 
 // Issue is one Linear issue delegated to this agent.
 type Issue struct {
-	ID       string
+	ID string
+	// UUID is Linear's own id for the issue, which a mutation names it by.
+	UUID     string
 	URL      string
 	Title    string
 	Body     string
 	Priority int
 	Labels   []string
+	// StateType, DelegatedTo, Project and Milestone are read only by the project
+	// query: the Linear state type, the delegate's id, the project's name and the
+	// phase the issue belongs to.
+	StateType   string
+	DelegatedTo string
+	Project     string
+	Milestone   Milestone
 	// BlockedBy and Blocks are the ids of the issues Linear relates to this
 	// one as blocking it and as blocked by it.
 	BlockedBy []string
@@ -203,6 +212,9 @@ type Deps struct {
 	Verdicts VerdictRecorder
 	// Reach is optional: left unset, no repository reachability is recorded.
 	Reach ReachRecorder
+	// ProjectPhases is optional: left unset, no phase snapshot is written and no
+	// start request is read.
+	ProjectPhases ProjectPhaseDeps
 	// Elicit asks the owner a decision in a run's Linear agent session, and
 	// Decisions is the store's decision surface a poll reads and writes.
 	Elicit    Elicitor
@@ -459,6 +471,11 @@ func poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	start = d.Now()
 	recordReach(ctx, d, res.Reach)
 	LogPhase(d.Logger, "reach", start, d.Now())
+	start = d.Now()
+	if listed {
+		pollProjects(ctx, d, res.Reach)
+	}
+	LogPhase(d.Logger, "projects", start, d.Now())
 	phaseErrs := []error{requeueErr, claimErr}
 	start = d.Now()
 	for _, claim := range claims {

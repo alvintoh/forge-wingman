@@ -239,10 +239,11 @@ type queryCall struct {
 	auth      string
 }
 
-// TestTheDispatcherHoldsNoLinearDelegateMutation: no non-test source file of the
-// package carries the GraphQL input that sets an issue's delegate, so a poll has
-// no way to delegate a ticket.
-func TestTheDispatcherHoldsNoLinearDelegateMutation(t *testing.T) {
+// TestOnlyTheLinearClientHoldsTheDelegateMutation: no non-test source file of the
+// package but the Linear client carries the GraphQL input that sets an issue's
+// delegate, so a delegation goes through DelegateIssue, which only the owner's
+// start request calls.
+func TestOnlyTheLinearClientHoldsTheDelegateMutation(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
@@ -250,7 +251,7 @@ func TestTheDispatcherHoldsNoLinearDelegateMutation(t *testing.T) {
 	fset := token.NewFileSet()
 	for _, e := range entries {
 		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") || name == "linear.go" {
 			continue
 		}
 		file, err := parser.ParseFile(fset, name, nil, 0)

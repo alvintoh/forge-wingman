@@ -675,20 +675,29 @@ func inFlightByRepo(doc ledgerDoc) map[string]int {
 	return counts
 }
 
+// ledgerOutsideTx reads the ledger, which is empty before the first claim.
+func (q *Queue) ledgerOutsideTx(ctx context.Context) (ledgerDoc, error) {
+	var ledger ledgerDoc
+	switch snap, err := q.ledgerRef().Get(ctx); {
+	case status.Code(err) == codes.NotFound:
+	case err != nil:
+		return ledgerDoc{}, fmt.Errorf("reading the ledger: %w", err)
+	default:
+		if err := snap.DataTo(&ledger); err != nil {
+			return ledgerDoc{}, fmt.Errorf("decoding the ledger: %w", err)
+		}
+	}
+	return ledger, nil
+}
+
 // RepoLoads reads each repository's load, keyed by lower-cased repository. A
 // planned row is not Held: its plan stage has settled and its build still claims
 // while the project is paused.
 func (q *Queue) RepoLoads(ctx context.Context) (map[string]RepoLoad, error) {
 	loads := map[string]RepoLoad{}
-	var ledger ledgerDoc
-	switch snap, err := q.ledgerRef().Get(ctx); {
-	case status.Code(err) == codes.NotFound:
-	case err != nil:
-		return nil, fmt.Errorf("reading the ledger: %w", err)
-	default:
-		if err := snap.DataTo(&ledger); err != nil {
-			return nil, fmt.Errorf("decoding the ledger: %w", err)
-		}
+	ledger, err := q.ledgerOutsideTx(ctx)
+	if err != nil {
+		return nil, err
 	}
 	for repo, n := range inFlightByRepo(ledger) {
 		loads[repo] = RepoLoad{InFlight: n}
@@ -708,6 +717,62 @@ func (q *Queue) RepoLoads(ctx context.Context) (map[string]RepoLoad, error) {
 		load.Held++
 		loads[repo] = load
 	}
+}
+
+// LastActivity is when repository's most recently updated run row was updated,
+// zero when it has none.
+func (q *Queue) LastActivity(ctx context.Context, repository string) (time.Time, error) {
+	iter := q.client.Collection(runsCollection).Where(repoField, "==", repository).
+		OrderBy(updatedAtField, firestore.Desc).Limit(1).Select(updatedAtField).Documents(ctx)
+	defer iter.Stop()
+	snap, err := iter.Next()
+	if errors.Is(err, iterator.Done) {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("reading the last activity of %s: %w", repository, err)
+	}
+	at, _ := snap.Data()[updatedAtField].(time.Time)
+	return at, nil
+}
+
+// TicketRuns reads where each named ticket's run stands; a ticket with no run
+// row is absent from the result.
+func (q *Queue) TicketRuns(ctx context.Context, tickets []string) (map[string]dispatcher.TicketRun, error) {
+	refs := make([]*firestore.DocumentRef, 0, len(tickets))
+	for _, id := range tickets {
+		refs = append(refs, q.client.Collection(runsCollection).Doc(id))
+	}
+	snaps, err := q.client.GetAll(ctx, refs)
+	if err != nil {
+		return nil, fmt.Errorf("reading the run rows: %w", err)
+	}
+	ledger, err := q.ledgerOutsideTx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	stages := map[string]string{}
+	for _, run := range inFlight(ledger) {
+		stages[run.Ticket] = dispatcher.PhaseStageBuilding
+		if run.Stage == dispatcher.StagePlan {
+			stages[run.Ticket] = dispatcher.PhaseStagePlanning
+		}
+	}
+	runs := make(map[string]dispatcher.TicketRun, len(snaps))
+	for _, snap := range snaps {
+		if !snap.Exists() {
+			continue
+		}
+		row := snap.Data()
+		_, notEnded := requeueState(row)
+		ended := notEnded == nil
+		runs[snap.Ref.ID] = dispatcher.TicketRun{
+			Ended:  ended,
+			Queued: !ended && slices.Contains(candidateStates, str(row, stateField)),
+			Stage:  stages[snap.Ref.ID],
+		}
+	}
+	return runs, nil
 }
 
 // tuning is the rule's numbers as the ledger holds them, defaulted where unset.
