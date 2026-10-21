@@ -72,12 +72,13 @@
   --spacing-row: 6.625rem;            /* 106px */
   --container-phone: 25rem;           /* 400px */
   --container-desk: 70rem;            /* 1120px */
-}
 
-/* NO RADIUS TOKENS here, deliberately -- tokens.py declares the scale
- * (RADII: four steps) for the DRAWN surfaces, where sheetcheck.radii()
- * enforces it. Emitting it as CSS waits until a component uses it, so
- * a token exists only where something reads it. */
+  /* ---- corners: a pill is `rounded-full` (radius = height / 2), never a token ---- */
+  --radius-tag: 3px;                  /* a tag block, a gauge bar */
+  --radius-tile: 10px;                /* an inner tile or row */
+  --radius-card: 16px;                /* a card, a toast or a modal sheet */
+  --radius-frame: 20px;               /* the panel or phone frame */
+}
 
 /* Focus is FUNCTIONAL feedback, so it survives reduced motion. */
 :focus-visible {

@@ -408,7 +408,7 @@ function ProjectCard({ project, now, refresh }: CardProps) {
   const blocked = readable?.eligible_blocked ?? 0;
 
   return (
-    <li className="border border-hair bg-card p-4">
+    <li className="rounded-card border border-hair bg-card p-4">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-baseline gap-x-3">
@@ -432,9 +432,12 @@ function ProjectCard({ project, now, refresh }: CardProps) {
               aria-valuemin={0}
               aria-valuemax={100}
               aria-valuenow={percent(phase)}
-              className="mt-2 h-1 bg-track"
+              className="mt-2 h-1.5 overflow-hidden rounded-tag bg-track"
             >
-              <div className="h-full bg-accent" style={{ width: `${percent(phase)}%` }} />
+              <div
+                className="h-full rounded-tag bg-accent"
+                style={{ width: `${percent(phase)}%` }}
+              />
             </div>
           )}
           <div className="mt-3 text-cap text-ink2">
@@ -536,7 +539,7 @@ function ProjectCard({ project, now, refresh }: CardProps) {
       <dialog
         ref={stopRef}
         aria-labelledby={`${detailId}-stop-title`}
-        className="m-auto max-h-dvh w-full max-w-[min(var(--container-phone),calc(100dvw-2rem))] overflow-auto rounded-2xl border border-hair bg-card p-6 text-ink backdrop:bg-ink/40"
+        className="m-auto max-h-dvh w-full max-w-[min(var(--container-phone),calc(100dvw-2rem))] overflow-auto rounded-card border border-hair bg-card p-6 text-ink backdrop:bg-ink/40"
       >
         <h2 id={`${detailId}-stop-title`} className="text-head font-semibold">
           Stop {readable?.current ?? "the phase"} in {project.repository}?
@@ -560,7 +563,7 @@ function ProjectCard({ project, now, refresh }: CardProps) {
         <dialog
           ref={dialogRef}
           aria-labelledby={`${detailId}-title`}
-          className="m-auto max-h-dvh w-full max-w-[min(var(--container-phone),calc(100dvw-2rem))] overflow-auto rounded-2xl border border-hair bg-card p-6 text-ink backdrop:bg-ink/40"
+          className="m-auto max-h-dvh w-full max-w-[min(var(--container-phone),calc(100dvw-2rem))] overflow-auto rounded-card border border-hair bg-card p-6 text-ink backdrop:bg-ink/40"
         >
           <h2 id={`${detailId}-title`} className="text-head font-semibold">
             Start {readable.current} in {project.repository}?
