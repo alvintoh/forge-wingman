@@ -6,6 +6,55 @@ import (
 	"testing"
 )
 
+// TestRecordProjectNamesStoresNoProjectsAsAnEmptyList: a team with no projects
+// is recorded as an empty list, never a null the surface would have to guard.
+func TestRecordProjectNamesStoresNoProjectsAsAnEmptyList(t *testing.T) {
+	_, client := queue(t)
+	ctx := context.Background()
+	doc := client.Collection(projectNamesCollection).Doc(projectNamesDoc)
+	t.Cleanup(func() { _, _ = doc.Delete(context.Background()) })
+
+	if err := NewProjectNames(client).RecordProjectNames(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := doc.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names, ok := snap.Data()["names"].([]any); !ok || len(names) != 0 {
+		t.Fatalf("stored %v, want an empty list", snap.Data())
+	}
+}
+
+func TestProjectNamesReadsARecordWithoutNamesAsEmpty(t *testing.T) {
+	_, client := queue(t)
+	ctx := context.Background()
+	doc := client.Collection(projectNamesCollection).Doc(projectNamesDoc)
+	t.Cleanup(func() { _, _ = doc.Delete(context.Background()) })
+
+	if _, err := doc.Set(ctx, map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	names, err := NewProjectNames(client).Names(ctx)
+	if err != nil || names == nil || len(names) != 0 {
+		t.Fatalf("names = %v, err = %v, want an empty list", names, err)
+	}
+}
+
+func TestProjectNamesRefusesARecordItCannotDecode(t *testing.T) {
+	_, client := queue(t)
+	ctx := context.Background()
+	doc := client.Collection(projectNamesCollection).Doc(projectNamesDoc)
+	t.Cleanup(func() { _, _ = doc.Delete(context.Background()) })
+
+	if _, err := doc.Set(ctx, map[string]any{"names": "Forge"}); err != nil {
+		t.Fatal(err)
+	}
+	if names, err := NewProjectNames(client).Names(ctx); err == nil {
+		t.Fatalf("names = %v, want a record that is not a list refused", names)
+	}
+}
+
 func TestRecordProjectNamesReplacesTheWholeRecord(t *testing.T) {
 	_, client := queue(t)
 	ctx := context.Background()

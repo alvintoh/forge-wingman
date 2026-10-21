@@ -14,9 +14,11 @@ import (
 type fakeLinearProjects struct {
 	names []string
 	err   error
+	reads int
 }
 
 func (f *fakeLinearProjects) ProjectNames(context.Context) ([]string, error) {
+	f.reads++
 	return f.names, f.err
 }
 
@@ -45,6 +47,28 @@ func TestPollRecordsTheLinearProjectNames(t *testing.T) {
 	}
 	if len(records.writes) != 1 || !slices.Equal(records.writes[0], []string{"Forge", "Atlas"}) {
 		t.Fatalf("recorded %v, want the names the poll read", records.writes)
+	}
+}
+
+func TestPollReadsAndRecordsNoProjectNamesWithEitherHalfUnset(t *testing.T) {
+	lister := &fakeLinearProjects{names: []string{"Forge"}}
+	deps := pollDeps(fakeSource{}, &fakeQueue{}, &fakeWorkflow{})
+	deps.LinearProjects = lister
+	if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
+		t.Fatal(err)
+	}
+	if lister.reads != 0 {
+		t.Fatalf("read the projects %d times with nowhere to record them, want none", lister.reads)
+	}
+
+	records := &fakeProjectRecords{}
+	deps = pollDeps(fakeSource{}, &fakeQueue{}, &fakeWorkflow{})
+	deps.ProjectRecords = records
+	if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
+		t.Fatal(err)
+	}
+	if len(records.writes) != 0 {
+		t.Fatalf("recorded %v with no projects to read, want nothing", records.writes)
 	}
 }
 
