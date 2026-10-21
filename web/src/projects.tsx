@@ -242,6 +242,10 @@ function describe(project: Project, now: number): ProjectView {
   } else {
     line(activity, true);
   }
+  // A phone card always shows one line beside its control: the last line when none is marked.
+  if (!lines.some((l) => l.keep)) {
+    lines.splice(-1, 1, { text: lines[lines.length - 1]?.text ?? activity, keep: true });
+  }
 
   const idle =
     readable !== null &&
@@ -496,13 +500,13 @@ function ProjectCard({ project, now, refresh }: CardProps) {
             </div>
             {control}
           </div>
-          {view.working && (
+          {(view.working || view.lines.some((l) => !l.keep)) && (
             <button
               type="button"
               aria-expanded={open}
               aria-controls={detailId}
               aria-label={`${open ? "Hide details" : "Details"}: what is running in ${project.repository}`}
-              className="-mb-3 -ml-1 -mt-1 inline-flex min-h-11 min-w-11 cursor-pointer items-center px-1 text-label text-accent"
+              className={`-mb-3 -ml-1 -mt-1 inline-flex min-h-11 min-w-11 cursor-pointer items-center px-1 text-label text-accent ${view.working ? "" : "md:hidden"}`}
               onClick={() => setOpen((v) => !v)}
             >
               {open ? "Hide details" : "Details"}
