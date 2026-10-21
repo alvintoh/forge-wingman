@@ -289,6 +289,25 @@ function percent(phase: PhaseProgress): number {
   return phase.total > 0 ? Math.round((phase.done / phase.total) * 100) : 0;
 }
 
+// runsSentence and heldSentence word the stop confirm's counts, singular and plural.
+function runsSentence(n: number): string {
+  if (n === 0) {
+    return "No run is in flight.";
+  }
+  return n === 1
+    ? "The 1 run in flight finishes, and so does any ticket already planned."
+    : `The ${n} runs in flight finish, and so does any ticket already planned.`;
+}
+
+function heldSentence(n: number): string {
+  if (n === 0) {
+    return "No ticket is queued.";
+  }
+  return n === 1
+    ? "1 queued ticket stays delegated and waits until you resume."
+    : `${n} queued tickets stay delegated and wait until you resume.`;
+}
+
 function postJSON(path: string, body: Record<string, string>): Promise<Response> {
   return fetch(path, {
     method: "POST",
@@ -523,11 +542,8 @@ function ProjectCard({ project, now, refresh }: CardProps) {
           Stop {readable?.current ?? "the phase"} in {project.repository}?
         </h2>
         <p className="mt-3 text-body text-ink2">
-          No new tickets start. The {project.queue.in_flight}{" "}
-          {project.queue.in_flight === 1 ? "run" : "runs"} in flight finish, and so does any ticket
-          already planned. {project.queue.held} queued{" "}
-          {project.queue.held === 1 ? "ticket stays" : "tickets stay"} delegated and wait until you
-          resume.
+          No new tickets start. {runsSentence(project.queue.in_flight)}{" "}
+          {heldSentence(project.queue.held)}
         </p>
         {stopError && (
           <p role="alert" className="mt-3 text-body text-stop">
