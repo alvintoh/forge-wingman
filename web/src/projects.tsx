@@ -208,21 +208,21 @@ function describe(project: Project, now: number): ProjectView {
   const index = phases.findIndex((p) => p.name === readable?.current);
   const phase = index >= 0 ? (phases[index] ?? null) : null;
   const activity = project.last_activity
-    ? `active ${ago(project.last_activity, now)}`
-    : `added ${ago(project.added_at, now)}`;
+    ? `Active ${ago(project.last_activity, now)}`
+    : `Added ${ago(project.added_at, now)}`;
 
   const lines: StatusLine[] = [];
   const line = (text: string, keep = false) => lines.push({ text, keep });
   if (readable !== null && phases.length === 0) {
-    line(`No phases yet; ${activity}`, true);
+    line(`No phases yet; ${activity.charAt(0).toLowerCase()}${activity.slice(1)}`, true);
   } else if (readable !== null) {
     const later = index >= 0 ? phases.length - 1 - index : 0;
     const locked =
       later === 0
         ? null
         : later === 1
-          ? `phase ${phases.length} locked`
-          : `phases ${index + 2}-${phases.length} locked`;
+          ? `Phase ${phases.length} locked`
+          : `Phases ${index + 2}-${phases.length} locked`;
     if (pill === "STOPPING") {
       line("No new tickets start");
       line(`${queue.in_flight} finishing, ${queue.held} queued held`, true);
