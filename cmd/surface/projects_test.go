@@ -169,3 +169,17 @@ func TestProjectsWithoutStoresAreUnavailable(t *testing.T) {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
 	}
 }
+
+func TestStartProjectSaysWhyARepositoryIsRefused(t *testing.T) {
+	s := startableProjects()
+	s.reaches["octo/widget"] = dispatcher.RepoReach{Reason: dispatcher.ReachForbidden, CheckedAt: projectsAt}
+	rec := postStart(newProjectsMux(s), "application/json", `{"repository":"octo/widget","phase":"P1"}`)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "cannot read the repository") {
+		t.Errorf("unreachable: %d %q, want 409 saying the dispatcher cannot read it", rec.Code, rec.Body.String())
+	}
+	delete(s.reaches, "octo/widget")
+	rec = postStart(newProjectsMux(s), "application/json", `{"repository":"octo/widget","phase":"P1"}`)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "not been checked") {
+		t.Errorf("unchecked: %d %q, want 409 saying it has not been checked", rec.Code, rec.Body.String())
+	}
+}

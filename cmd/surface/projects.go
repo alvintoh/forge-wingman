@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -243,7 +242,10 @@ func (d Deps) checkStart(ctx context.Context, repository, phase string) (int, st
 		return 0, "", err
 	}
 	if reach := reachOf(reaches, key, listed[i].AddedAt); reach.Status != dispatcher.ReachReachable {
-		return http.StatusConflict, fmt.Sprintf("the repository is %s", reach.Status), nil
+		if reach.Status == dispatcher.ReachChecking {
+			return http.StatusConflict, "the repository has not been checked yet", nil
+		}
+		return http.StatusConflict, "the dispatcher cannot read the repository", nil
 	}
 	snapshots, err := d.Projects.Snapshots.Snapshots(ctx)
 	if err != nil {
