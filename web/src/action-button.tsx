@@ -30,16 +30,20 @@ export function ActionButton({ label, kind, ...rest }: ActionButtonProps) {
 type ButtonPairProps = {
   back: React.ReactNode;
   action: React.ReactNode;
+  margin?: string;
 };
 
 /**
  * ButtonPair lays out a dialog's BACK and its action. Under 600px they stack
  * at the full width, the action on top; from 600px they sit side by side,
- * centred, one width (the wider label's) and 72px apart.
+ * centred, one width (the wider label's) and 72px apart. margin is the spacing
+ * above the pair: 24px unless the caller sets another.
  */
-export function ButtonPair({ back, action }: ButtonPairProps) {
+export function ButtonPair({ back, action, margin = "mt-6" }: ButtonPairProps) {
   return (
-    <div className="mt-6 grid gap-3 [&>:last-child]:order-first min-[600px]:mx-auto min-[600px]:w-max min-[600px]:auto-cols-fr min-[600px]:grid-flow-col min-[600px]:gap-18 min-[600px]:[&>:last-child]:order-none">
+    <div
+      className={`${margin} grid gap-3 [&>:last-child]:order-first min-[600px]:mx-auto min-[600px]:w-max min-[600px]:auto-cols-fr min-[600px]:grid-flow-col min-[600px]:gap-18 min-[600px]:[&>:last-child]:order-none`}
+    >
       {back}
       {action}
     </div>

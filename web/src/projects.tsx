@@ -1,6 +1,8 @@
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { ActionButton, ButtonPair } from "./action-button";
+import { AddProjectDialog } from "./add-project";
+import { postJSON } from "./post-json";
 
 type PhaseProgress = {
   name: string;
@@ -318,14 +320,6 @@ function heldSentence(n: number): string {
     : `${n} queued tickets stay delegated and wait until you resume.`;
 }
 
-function postJSON(path: string, body: Record<string, string>): Promise<Response> {
-  return fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-}
-
 type PillButtonProps = React.ComponentProps<"button"> & { label: string };
 
 // A small outlined pill with a 44px hit area around it.
@@ -478,8 +472,8 @@ function ProjectEntry({ project, now, refresh }: EntryProps) {
     // under the last baseline. Each margin below is that gap less the 16px line box around the
     // baseline (its baseline sits 12px down). pt: 22.8, less the 8px between the 44px hit area and
     // the 28px pill, less the 1px rule or card edge. pb: 20, less the 4px under a last line's
-    // baseline, less the card's 1px bottom edge on the last section.
-    <li className="border-t border-hair pt-[13.8px] pb-4 first:border-t-0 last:pb-[15px]">
+    // baseline.
+    <li className="border-t border-hair pt-[13.8px] pb-4 first:border-t-0">
       <div className="min-w-0">
         <div className="min-w-0">
           <div className="flex min-h-11 items-center justify-between gap-3">
@@ -667,14 +661,22 @@ function ProjectEntry({ project, now, refresh }: EntryProps) {
   );
 }
 
-type ListProps = {
+type CardProps = {
   projects: Project[];
+  total: number;
   now: number;
   stale: boolean;
+  // Offers the full list, which the page of every project does not.
+  seeAll: boolean;
   refresh: () => void;
 };
 
-function ProjectList({ projects, now, stale, refresh }: ListProps) {
+// ProjectsCard is ONE elevated card: each project a section split from the next by a rule, then
+// the footer row with SEE ALL at the left and the ADD pill at the right. With no project listed
+// the card is the footer alone.
+function ProjectsCard({ projects, total, now, stale, seeAll, refresh }: CardProps) {
+  const [adding, setAdding] = useState(false);
+  const addRef = useRef<HTMLButtonElement>(null);
   return (
     <>
       {stale && (
@@ -682,12 +684,67 @@ function ProjectList({ projects, now, stale, refresh }: ListProps) {
           The list could not be refreshed; showing the last read.
         </p>
       )}
-      {/* ONE elevated card holds every project, each a section split from the next by a rule. */}
-      <ul className="card-frame mt-4">
-        {projects.map((project) => (
-          <ProjectEntry key={project.repository} project={project} now={now} refresh={refresh} />
-        ))}
-      </ul>
+      <div className="card-frame mt-4">
+        {projects.length > 0 && (
+          <ul>
+            {projects.map((project) => (
+              <ProjectEntry
+                key={project.repository}
+                project={project}
+                now={now}
+                refresh={refresh}
+              />
+            ))}
+          </ul>
+        )}
+        {/* The footer's rule and its 52px row, then 6px to the card's edge (less its 1px border). */}
+        <div className={`pb-1.25 ${projects.length > 0 ? "border-t border-hair" : ""}`}>
+          <div className="flex min-h-13 items-center justify-between gap-4">
+            {projects.length === 0 ? (
+              <p className="text-body">No project is listed.</p>
+            ) : seeAll ? (
+              <Link
+                to="/projects"
+                className="inline-flex min-h-13 min-w-11 items-center gap-[9.5px] text-label font-semibold text-ink"
+              >
+                See all {total} projects
+                <svg
+                  aria-hidden="true"
+                  width="5"
+                  height="10"
+                  viewBox="0 0 5 10"
+                  className="overflow-visible text-ink2"
+                >
+                  <path
+                    d="M0 0l5 5l-5 5"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.75"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </Link>
+            ) : (
+              <span />
+            )}
+            <CardPill
+              ref={addRef}
+              label="ADD"
+              aria-label="Add a project"
+              onClick={() => setAdding(true)}
+            />
+          </div>
+        </div>
+      </div>
+      <AddProjectDialog
+        open={adding}
+        onClose={() => {
+          setAdding(false);
+          addRef.current?.focus();
+        }}
+        onAdded={refresh}
+      />
     </>
   );
 }
@@ -698,7 +755,7 @@ type PanelsProps = {
   children: React.ReactNode;
 };
 
-// The loading, error and empty panels both views share.
+// The loading and error panels both views share.
 function ProjectsPanels({ state, retry, children }: PanelsProps) {
   if (state.status === "loading") {
     return (
@@ -717,9 +774,6 @@ function ProjectsPanels({ state, retry, children }: PanelsProps) {
       </div>
     );
   }
-  if (state.projects.length === 0) {
-    return <p className="mt-4 text-body">No project is listed.</p>;
-  }
   return children;
 }
 
@@ -736,20 +790,14 @@ export function ProjectsSection() {
         PROJECTS
       </h2>
       <ProjectsPanels state={state} retry={retry}>
-        <ProjectList
+        <ProjectsCard
           projects={state.projects.slice(0, SECTION_PROJECTS)}
+          total={state.total}
           now={state.readAt}
           stale={state.stale}
+          seeAll={state.total > SECTION_PROJECTS}
           refresh={refresh}
         />
-        {state.total > SECTION_PROJECTS && (
-          <Link
-            to="/projects"
-            className="mt-2 inline-flex min-h-11 min-w-11 items-center text-label text-accent"
-          >
-            See all {state.total} projects
-          </Link>
-        )}
       </ProjectsPanels>
     </section>
   );
@@ -762,10 +810,12 @@ export function Projects() {
     <section className="mx-auto max-w-desk px-padx py-band md:px-pad">
       <h1 className="text-title font-semibold text-ink">Projects</h1>
       <ProjectsPanels state={state} retry={retry}>
-        <ProjectList
+        <ProjectsCard
           projects={state.projects}
+          total={state.total}
           now={state.readAt}
           stale={state.stale}
+          seeAll={false}
           refresh={refresh}
         />
       </ProjectsPanels>
