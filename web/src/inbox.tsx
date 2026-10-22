@@ -62,7 +62,8 @@ const MERGED_WORDS = "Merged. Squashed, branch deleted.";
 const MERGED_HOLD_MS = 3_000;
 
 // The merge pill takes RETRY MERGE's width, the set the drawing sizes it from.
-const MERGE_PILL_WIDTH = pillSetWidth(["MERGE PR", "MERGING…", "RETRY MERGE"]);
+const MERGING_LABEL = "MERGING...";
+const MERGE_PILL_WIDTH = pillSetWidth(["MERGE PR", MERGING_LABEL, "RETRY MERGE"]);
 
 // Why a merge the server refused with 409 cannot go ahead; a retry cannot change any of them.
 const refusalWords: Record<string, string> = {
@@ -147,7 +148,7 @@ function useInbox() {
     async function read() {
       const response = await fetch("/api/inbox", {
         signal: controller.signal,
-        cache: attempt === 0 ? "default" : "no-cache",
+        cache: attempt === 0 ? "default" : "reload",
       });
       if (!response.ok) {
         throw new Error(`the inbox endpoint answered ${response.status}`);
@@ -210,6 +211,10 @@ async function failureOf(response: Response): Promise<Failure> {
     if (words !== undefined) {
       return { words, retry: false };
     }
+    return {
+      words: isRefusal(body) ? `The merge was refused: ${body.reason}.` : "The merge was refused.",
+      retry: false,
+    };
   }
   if (response.status === 404) {
     return { words: "This run is no longer listed.", retry: false };
@@ -245,7 +250,10 @@ function InboxRow({ run, now, state, onMerge, onRetry }: RowProps) {
   // A draft on GitHub shows the same chip as a stored draft reason, whatever reason is stored.
   const kind = draft ? "TODO" : (wait?.kind ?? "REVIEW");
 
-  let reason = draft ? DRAFT_WORDS : wait?.words;
+  const plainReason = run.wait_reason.replaceAll("-", " ");
+  let reason = draft
+    ? DRAFT_WORDS
+    : (wait?.words ?? (plainReason === "" ? undefined : plainReason));
   if (!blocked && unread) {
     reason = UNREAD_WORDS;
   }
@@ -255,7 +263,7 @@ function InboxRow({ run, now, state, onMerge, onRetry }: RowProps) {
   let onPill: (() => void) | undefined = () => onMerge(run);
   if (state?.status === "merging") {
     reason = MERGING_WORDS;
-    pillLabel = "MERGING...";
+    pillLabel = MERGING_LABEL;
     onPill = undefined;
   } else if (state?.status === "merged") {
     reason = MERGED_WORDS;

@@ -63,7 +63,7 @@ export function Inbox() {
         </Link>
       </nav>
       <div className="mx-auto grid max-w-desk grid-cols-1 gap-x-8 gap-y-[calc(var(--spacing-band)*2)] px-padx py-band lg:grid-cols-2">
-        {twoColumns ? sections : sections.toReversed()}
+        {twoColumns ? sections : [...sections].reverse()}
       </div>
     </>
   );
