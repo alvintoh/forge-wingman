@@ -200,6 +200,18 @@ the webhook's. To set it up:
    `read` scope only.
 2. Add its client id and secret as the first versions of `linear-review-client-id`
    and `linear-review-client-secret`, by hand, after `tofu apply` creates them.
+3. Authorize it once with `actor=app`, so Linear creates its app user and adds it to
+   the team: give the app a callback URL (any, such as `http://localhost:8765/callback`),
+   open `https://linear.app/oauth/authorize?client_id=<linear-review-client-id>&redirect_uri=<that URL, encoded>&response_type=code&scope=read&actor=app`
+   and approve. No code exchange is needed.
+
+If the review's `context` job fails with `the Linear API refused the query: Entity not
+found: Issue`, the app's user has lost the team: a workspace admin suspended it (Linear
+records `adminSuspended`). Linear refuses to unsuspend an app user ("Users tied to an
+OAuth client cannot be directly unsuspended"), so repeat step 3, which reactivates it
+and restores its team membership. Revoking its client-credentials tokens does not
+suspend it (tested 2026-10-22). Do not suspend `Forge Wingman` or `Forge Wingman Review`
+in Linear's Members.
 
 ## Rolling out the publisher
 
