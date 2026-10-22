@@ -15,9 +15,9 @@ export function Root() {
   );
 }
 
-// The width from which the grid below has two columns: Tailwind's lg, the breakpoint of its
-// lg:grid-cols-2. The two must change together.
-const TWO_COLUMNS = "(min-width: 64rem)";
+// The width from which the grid below has two columns: Tailwind's md, the breakpoint of its
+// md:grid-cols-2. The two must change together.
+const TWO_COLUMNS = "(min-width: 48rem)";
 
 function subscribeWidth(notify: () => void) {
   const query = window.matchMedia(TWO_COLUMNS);
@@ -62,7 +62,7 @@ export function Inbox() {
           Statistics
         </Link>
       </nav>
-      <div className="mx-auto grid max-w-desk grid-cols-1 gap-x-8 gap-y-[calc(var(--spacing-band)*2)] px-padx py-band lg:grid-cols-2">
+      <div className="mx-auto grid max-w-desk grid-cols-1 gap-x-8 gap-y-[calc(var(--spacing-band)*2)] px-padx py-band md:grid-cols-2">
         {twoColumns ? sections : [...sections].reverse()}
       </div>
     </>
