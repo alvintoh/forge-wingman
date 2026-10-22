@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { ActionButton, ButtonPair } from "./action-button";
 import { ago } from "./ago";
 import { pillSetWidth } from "./button-style";
@@ -399,7 +400,8 @@ function MergeDialog({ run, onClose, onConfirm }: DialogProps) {
   const pull = run === null ? null : parsePull(run.pr_url);
   const checks = run?.checks;
 
-  return (
+  // In the body, so the inbox section moving between columns never takes an open modal with it.
+  return createPortal(
     <dialog
       ref={dialogRef}
       aria-labelledby={titleId}
@@ -471,7 +473,8 @@ function MergeDialog({ run, onClose, onConfirm }: DialogProps) {
           />
         </>
       )}
-    </dialog>
+    </dialog>,
+    document.body,
   );
 }
 

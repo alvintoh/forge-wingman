@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { ActionButton, ButtonPair } from "./action-button";
 import { AddProjectDialog } from "./add-project";
 import { ago } from "./ago";
@@ -554,54 +555,24 @@ function ProjectEntry({ project, now, refresh }: EntryProps) {
         </div>
       )}
 
-      <dialog
-        ref={stopRef}
-        aria-labelledby={`${detailId}-stop-title`}
-        className="m-auto max-h-dvh w-full max-w-[min(var(--container-phone),calc(100dvw-2rem))] overflow-auto rounded-card border border-hair bg-card p-6 text-ink backdrop:bg-ink/40"
-      >
-        <h2 id={`${detailId}-stop-title`} className="text-head font-semibold">
-          Stop {readable?.current ?? "the phase"} in {project.repository}?
-        </h2>
-        <p className="mt-3 text-body text-ink2">
-          No new tickets start. {runsSentence(project.queue.in_flight)}{" "}
-          {heldSentence(project.queue.held)}
-        </p>
-        {stopError && (
-          <p role="alert" className="mt-3 text-body text-stop">
-            The stop was not made. Nothing changed; try again.
-          </p>
-        )}
-        <ButtonPair
-          back={
-            <ActionButton kind="secondary" label="BACK" onClick={() => stopRef.current?.close()} />
-          }
-          action={
-            <ActionButton
-              kind="primary"
-              label="STOP PHASE"
-              disabled={saving}
-              onClick={() => pause("stop")}
-            />
-          }
-        />
-      </dialog>
-
-      {readable !== null && (
+      {/* Both dialogs sit in the body, so the card moving between columns never takes an open
+          modal with it. */}
+      {createPortal(
         <dialog
-          ref={dialogRef}
-          aria-labelledby={`${detailId}-title`}
+          ref={stopRef}
+          aria-labelledby={`${detailId}-stop-title`}
           className="m-auto max-h-dvh w-full max-w-[min(var(--container-phone),calc(100dvw-2rem))] overflow-auto rounded-card border border-hair bg-card p-6 text-ink backdrop:bg-ink/40"
         >
-          <h2 id={`${detailId}-title`} className="text-head font-semibold">
-            Start {readable.current} in {project.repository}?
+          <h2 id={`${detailId}-stop-title`} className="text-head font-semibold">
+            Stop {readable?.current ?? "the phase"} in {project.repository}?
           </h2>
           <p className="mt-3 text-body text-ink2">
-            Delegates {plural(eligible, "ticket", "tickets")} to the runner. {blocked} wait on a
-            blocker; the rest start as the run limits allow.
+            No new tickets start. {runsSentence(project.queue.in_flight)}{" "}
+            {heldSentence(project.queue.held)}
           </p>
-          {saveError && (
+          {stopError && (
             <p role="alert" className="mt-3 text-body text-stop">
-              The start was not requested. Nothing changed; try again.
+              The stop was not made. Nothing changed; try again.
             </p>
           )}
           <ButtonPair
@@ -609,13 +580,56 @@ function ProjectEntry({ project, now, refresh }: EntryProps) {
               <ActionButton
                 kind="secondary"
                 label="BACK"
-                onClick={() => dialogRef.current?.close()}
+                onClick={() => stopRef.current?.close()}
               />
             }
-            action={<ActionButton kind="primary" label="START" disabled={saving} onClick={start} />}
+            action={
+              <ActionButton
+                kind="primary"
+                label="STOP PHASE"
+                disabled={saving}
+                onClick={() => pause("stop")}
+              />
+            }
           />
-        </dialog>
+        </dialog>,
+        document.body,
       )}
+
+      {readable !== null &&
+        createPortal(
+          <dialog
+            ref={dialogRef}
+            aria-labelledby={`${detailId}-title`}
+            className="m-auto max-h-dvh w-full max-w-[min(var(--container-phone),calc(100dvw-2rem))] overflow-auto rounded-card border border-hair bg-card p-6 text-ink backdrop:bg-ink/40"
+          >
+            <h2 id={`${detailId}-title`} className="text-head font-semibold">
+              Start {readable.current} in {project.repository}?
+            </h2>
+            <p className="mt-3 text-body text-ink2">
+              Delegates {plural(eligible, "ticket", "tickets")} to the runner. {blocked} wait on a
+              blocker; the rest start as the run limits allow.
+            </p>
+            {saveError && (
+              <p role="alert" className="mt-3 text-body text-stop">
+                The start was not requested. Nothing changed; try again.
+              </p>
+            )}
+            <ButtonPair
+              back={
+                <ActionButton
+                  kind="secondary"
+                  label="BACK"
+                  onClick={() => dialogRef.current?.close()}
+                />
+              }
+              action={
+                <ActionButton kind="primary" label="START" disabled={saving} onClick={start} />
+              }
+            />
+          </dialog>,
+          document.body,
+        )}
     </li>
   );
 }
