@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/firestore"
+	"google.golang.org/api/idtoken"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 	"github.com/alvintoh/forge-wingman/internal/providers"
@@ -97,9 +98,14 @@ func run(logger *slog.Logger) error {
 		Projects:      projects,
 	}
 
+	handler, err := gate(context.Background(), logger, newMux(deps))
+	if err != nil {
+		return err
+	}
+
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           newMux(deps),
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -123,6 +129,26 @@ func run(logger *slog.Logger) error {
 		defer cancel()
 		return srv.Shutdown(shutdownCtx)
 	}
+}
+
+// gate puts IAP's assertion check in front of every route, unless
+// WINGMAN_LOCAL_DEV is 1, where no IAP fronts the process and every request
+// passes with no account. Outside local development the audience must be set,
+// so a missing setting stops the process rather than serving unchecked.
+func gate(ctx context.Context, logger *slog.Logger, mux http.Handler) (http.Handler, error) {
+	if os.Getenv("WINGMAN_LOCAL_DEV") == "1" {
+		logger.Warn("iapCheckOff", "reason", "local-dev")
+		return mux, nil
+	}
+	audience := os.Getenv("WINGMAN_IAP_AUDIENCE")
+	if audience == "" {
+		return nil, errors.New("WINGMAN_IAP_AUDIENCE is unset and WINGMAN_LOCAL_DEV is not 1")
+	}
+	validator, err := idtoken.NewValidator(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("IAP assertion validator: %w", err)
+	}
+	return requireIAP(validator, audience, logger, mux), nil
 }
 
 // ComparisonReader reads the comparison of past runs the endpoint reports.
@@ -195,7 +221,7 @@ func newMux(d Deps) *http.ServeMux {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(struct {
 			Email *string `json:"email"`
-		}{signedInEmail(r)})
+		}{requestEmail(r)})
 	})
 	mux.HandleFunc("GET /api/comparison", func(w http.ResponseWriter, r *http.Request) {
 		if d.Comparison == nil {
@@ -327,24 +353,6 @@ func newMux(d Deps) *http.ServeMux {
 	mux.Handle("GET /", spaHandler(d.SPA))
 
 	return mux
-}
-
-// IAP passes the address it signed in on iapEmailHeader, as iapEmailPrefix then
-// the address.
-const (
-	iapEmailHeader = "X-Goog-Authenticated-User-Email"
-	iapEmailPrefix = "accounts.google.com:"
-)
-
-// signedInEmail is the address IAP signed the request in as, or nil without the
-// header, as in local development. The header is trusted only because IAP fronts
-// the service and sets it on every request it lets through.
-func signedInEmail(r *http.Request) *string {
-	email := strings.TrimPrefix(r.Header.Get(iapEmailHeader), iapEmailPrefix)
-	if email == "" {
-		return nil
-	}
-	return &email
 }
 
 // comparisonResponse is the comparison endpoint's wire shape. It carries no

@@ -10,9 +10,10 @@ web/node_modules: web/package.json web/bun.lock
 	@touch web/node_modules
 
 # Backend on :8080, frontend on :5173 with /api proxied to it. Ctrl-C stops both.
+# WINGMAN_LOCAL_DEV=1 serves without IAP's assertion, which only IAP can sign.
 dev: web/node_modules
 	@trap 'kill 0' EXIT; \
-	go run ./cmd/surface 2>&1 | sed 's/^/[be] /' & \
+	WINGMAN_LOCAL_DEV=1 go run ./cmd/surface 2>&1 | sed 's/^/[be] /' & \
 	(cd web && bun run dev) 2>&1 | sed 's/^/[fe] /' & \
 	wait
 
