@@ -556,6 +556,13 @@ docker buildx imagetools inspect us-central1-docker.pkg.dev/forge-wingman/forge-
 The manifest must list `linux/amd64` alone; Cloud Run rejects an arm64 image. Pass the
 digest it prints as `surface_image`.
 
+In zsh, write the tag as `"${R}:${sha}"` when the repository is a variable: `$R:sha` reads `:s...`
+as a modifier and pushes to a different repository. Confirm the push reached the registry before
+applying: `gcloud artifacts docker tags list us-central1-docker.pkg.dev/forge-wingman/forge-wingman/surface --format='value(tag,version)' | grep <sha>`
+must print the digest. `imagetools inspect` on a local build passes even when the push went
+elsewhere, and Cloud Run then answers `Image ... not found` and keeps the previous revision
+serving.
+
 ### Check it
 
 ```sh
