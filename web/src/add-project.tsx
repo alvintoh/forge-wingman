@@ -51,6 +51,9 @@ type DialogProps = {
 export function AddProjectDialog({ open, onClose, onAdded }: DialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const addRef = useRef<HTMLButtonElement>(null);
+  // attemptRef counts the adds and the closes, so a post's outcome is shown only while the dialog
+  // it was made from is still the one open.
+  const attemptRef = useRef(0);
   const titleId = useId();
   const helperId = useId();
   const [options, setOptions] = useState<Options>({ status: "loading" });
@@ -94,20 +97,25 @@ export function AddProjectDialog({ open, onClose, onAdded }: DialogProps) {
   }, [problem]);
 
   const typed = repository.trim();
-  const valid =
-    linearProject !== "" && REPOSITORY_PATTERN.test(typed) && typed.length <= MAX_REPOSITORY;
+  const repositoryValid = REPOSITORY_PATTERN.test(typed) && typed.length <= MAX_REPOSITORY;
+  const valid = linearProject !== "" && repositoryValid;
 
   function handleClose() {
+    attemptRef.current += 1;
     setOptions({ status: "loading" });
     setLinearProject("");
     setRepository("");
     setProblem(null);
+    setSaving(false);
     onClose();
   }
 
   // add posts the pair; a refusal keeps the dialog open with its reason, and a failure says
-  // nothing was added.
+  // nothing was added. A dialog closed while the post is in flight no longer shows its outcome,
+  // so a late refusal cannot greet the next open; an add that went through still refreshes the list.
   async function add() {
+    const attempt = ++attemptRef.current;
+    const current = () => attempt === attemptRef.current;
     setSaving(true);
     setProblem(null);
     try {
@@ -115,8 +123,17 @@ export function AddProjectDialog({ open, onClose, onAdded }: DialogProps) {
         linear_project: linearProject,
         repository: typed,
       });
+      if (!current()) {
+        if (response.ok) {
+          onAdded();
+        }
+        return;
+      }
       if (response.status === 409) {
-        setProblem({ refusal: (await response.text()).trim() });
+        const reason = (await response.text()).trim();
+        if (current()) {
+          setProblem({ refusal: reason });
+        }
         return;
       }
       if (!response.ok) {
@@ -126,9 +143,13 @@ export function AddProjectDialog({ open, onClose, onAdded }: DialogProps) {
       dialogRef.current?.close();
     } catch (err: unknown) {
       console.error("projectNotAdded", err);
-      setProblem({ refusal: null });
+      if (current()) {
+        setProblem({ refusal: null });
+      }
     } finally {
-      setSaving(false);
+      if (current()) {
+        setSaving(false);
+      }
     }
   }
 
@@ -139,7 +160,7 @@ export function AddProjectDialog({ open, onClose, onAdded }: DialogProps) {
       ref={dialogRef}
       aria-labelledby={titleId}
       onClose={handleClose}
-      className="m-auto max-h-dvh w-full max-w-[min(28.75rem,calc(100dvw-2rem))] overflow-auto rounded-card border border-hair bg-card px-6.25 pt-7.25 pb-5.25 text-ink backdrop:bg-ink/40"
+      className="m-auto max-h-dvh w-full max-w-[min(28.75rem,calc(100dvw-2rem))] scroll-py-1.5 overflow-auto rounded-card border border-hair bg-card px-6.25 pt-7.25 pb-5.25 text-ink backdrop:bg-ink/40"
     >
       <form
         noValidate
@@ -217,7 +238,7 @@ export function AddProjectDialog({ open, onClose, onAdded }: DialogProps) {
             autoCorrect="off"
             spellCheck={false}
             aria-describedby={helperId}
-            aria-invalid={repository !== "" && !valid}
+            aria-invalid={repository !== "" && !repositoryValid}
             onChange={(event) => setRepository(event.target.value)}
             className={`${fieldClass} mt-1.5 pr-3.25 ${repository === "" ? "" : "font-mono"}`}
           />
