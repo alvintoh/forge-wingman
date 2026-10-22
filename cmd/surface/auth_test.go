@@ -232,19 +232,32 @@ func TestIAPLetsTheHealthCheckThroughWithoutAnAssertion(t *testing.T) {
 	}
 }
 
-func TestGateInLocalDevelopmentServesNoAccount(t *testing.T) {
-	t.Setenv("WINGMAN_LOCAL_DEV", "1")
-	t.Setenv("WINGMAN_IAP_AUDIENCE", "")
-	h, err := gate(context.Background(), discardLogger(), newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger()}))
-	if err != nil {
-		t.Fatal(err)
+func TestGateInLocalDevelopmentSignsInTheDeveloperAccount(t *testing.T) {
+	tests := []struct {
+		name  string
+		email string
+		want  string
+	}{
+		{"the configured address", "me@example.com", "{\"email\":\"me@example.com\"}\n"},
+		{"the default without one", "", "{\"email\":\"dev@localhost\"}\n"},
 	}
-	rec := serve(h, "/api/me", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	if got, want := rec.Body.String(), "{\"email\":null}\n"; got != want {
-		t.Fatalf("body = %q, want %q", got, want)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("WINGMAN_LOCAL_DEV", "1")
+			t.Setenv("WINGMAN_LOCAL_DEV_EMAIL", tt.email)
+			t.Setenv("WINGMAN_IAP_AUDIENCE", "")
+			h, err := gate(context.Background(), discardLogger(), newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger()}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec := serve(h, "/api/me", "")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			if got := rec.Body.String(); got != tt.want {
+				t.Fatalf("body = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

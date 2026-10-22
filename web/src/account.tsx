@@ -1,16 +1,12 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { ActionButton } from "./action-button";
 
-// The me endpoint's own shape: the address IAP signed in, or null with no IAP
-// header, as in local development.
+// The me endpoint's own shape: the address the request is signed in as.
 type Me = {
-  email: string | null;
+  email: string;
 };
 
-type MeState =
-  | { status: "loading" }
-  | { status: "error" }
-  | { status: "ready"; email: string | null };
+type MeState = { status: "loading" } | { status: "error" } | { status: "ready"; email: string };
 
 // IAP clears its own session cookie on this query and sends the browser back
 // through Google's sign-in, which is both switching account and signing out.
@@ -23,10 +19,7 @@ const ACCOUNT_ACTIONS = [
 
 function isMe(body: unknown): body is Me {
   return (
-    typeof body === "object" &&
-    body !== null &&
-    "email" in body &&
-    (body.email === null || typeof body.email === "string")
+    typeof body === "object" && body !== null && "email" in body && typeof body.email === "string"
   );
 }
 
@@ -84,7 +77,7 @@ export function Account() {
 }
 
 type AccountMenuProps = {
-  email: string | null;
+  email: string;
 };
 
 // AccountMenu is the avatar button and the popover it discloses (the APG
@@ -101,8 +94,7 @@ function AccountMenu({ email }: AccountMenuProps) {
     if (!open) {
       return;
     }
-    // With no action to land on, the menu itself takes focus so it is read.
-    (firstActionRef.current ?? menuRef.current)?.focus();
+    firstActionRef.current?.focus();
 
     function close() {
       setOpen(false);
@@ -134,8 +126,6 @@ function AccountMenu({ email }: AccountMenuProps) {
     };
   }, [open]);
 
-  const name = email ? `Account, signed in as ${email}` : "Account, not signed in";
-
   return (
     <>
       {/* The hit area overhangs the content edge by 6px so the 32px tile, not
@@ -143,21 +133,15 @@ function AccountMenu({ email }: AccountMenuProps) {
       <button
         ref={buttonRef}
         type="button"
-        aria-label={name}
+        aria-label={`Account, signed in as ${email}`}
         aria-expanded={open}
         aria-controls={menuId}
         onClick={() => setOpen((was) => !was)}
         className="-mr-1.5 inline-flex size-11 cursor-pointer items-center justify-center"
       >
-        {email ? (
-          <span className="inline-flex size-8 items-center justify-center rounded-tile bg-ink2 font-sans text-micro font-semibold tracking-[0.4px] text-card">
-            {initials(email)}
-          </span>
-        ) : (
-          <span className="inline-flex size-8 items-center justify-center rounded-tile border border-ink2 bg-track">
-            <span className="h-0.5 w-3 rounded-full bg-ink2" />
-          </span>
-        )}
+        <span className="inline-flex size-8 items-center justify-center rounded-tile bg-ink2 font-sans text-micro font-semibold tracking-[0.4px] text-card">
+          {initials(email)}
+        </span>
       </button>
       {/* Placed from the header's title row: 8px under the tile, whose foot is
           16px below the row's middle. The phone takes the page width inside the
@@ -167,40 +151,27 @@ function AccountMenu({ email }: AccountMenuProps) {
         id={menuId}
         role="group"
         aria-label="Account"
-        tabIndex={-1}
         hidden={!open}
         className="absolute top-[calc(50%+24px)] right-[calc(1rem-var(--spacing-padx))] left-[calc(1rem-var(--spacing-padx))] z-20 rounded-card border border-hair bg-card px-padx text-left shadow-[0_8px_28px_color-mix(in_srgb,var(--color-ink)_16%,transparent)] md:right-0 md:left-auto md:w-[372px]"
       >
-        {email ? (
-          <>
-            <p className="pt-5 font-mono text-body leading-5 font-semibold [overflow-wrap:anywhere] text-ink">
-              {email}
-            </p>
-            <p className="mt-1.5 text-label leading-[18px] text-ink2">
-              Sign-in is Google's, through IAP. Only the allowed account gets in.
-            </p>
-            {/* The dialogs' button, stacked at the content's full width, 12px apart. */}
-            <div className="mt-[22px] grid gap-3 border-t border-hair pt-4 pb-[22px]">
-              {ACCOUNT_ACTIONS.map((action, i) => (
-                <ActionButton
-                  key={action.key}
-                  ref={i === 0 ? firstActionRef : undefined}
-                  kind="secondary"
-                  label={action.label}
-                  onClick={() => window.location.assign(CLEAR_LOGIN_URL)}
-                />
-              ))}
-            </div>
-          </>
-        ) : (
-          <>
-            <p className="pt-5 text-head leading-6 font-semibold text-ink">Not signed in</p>
-            <p className="mt-1.5 pb-6 text-label leading-[18px] text-ink2">
-              Running locally: no IAP header reaches the app, so there is no account. Switch account
-              and sign out show once it runs behind IAP.
-            </p>
-          </>
-        )}
+        <p className="pt-5 font-mono text-body leading-5 font-semibold [overflow-wrap:anywhere] text-ink">
+          {email}
+        </p>
+        <p className="mt-1.5 text-label leading-[18px] text-ink2">
+          Sign-in is Google's, through IAP. Only the allowed account gets in.
+        </p>
+        {/* The dialogs' button, stacked at the content's full width, 12px apart. */}
+        <div className="mt-[22px] grid gap-3 border-t border-hair pt-4 pb-[22px]">
+          {ACCOUNT_ACTIONS.map((action, i) => (
+            <ActionButton
+              key={action.key}
+              ref={i === 0 ? firstActionRef : undefined}
+              kind="secondary"
+              label={action.label}
+              onClick={() => window.location.assign(CLEAR_LOGIN_URL)}
+            />
+          ))}
+        </div>
       </div>
     </>
   );

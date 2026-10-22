@@ -39,8 +39,8 @@ var (
 
 type emailKey struct{}
 
-// requestEmail is the address the request's verified assertion names, or nil
-// for a request that passed without one, as in local development.
+// requestEmail is the address the request is signed in as, or nil for one
+// that reached the mux without passing gate.
 func requestEmail(r *http.Request) *string {
 	email, ok := r.Context().Value(emailKey{}).(string)
 	if !ok {
@@ -65,8 +65,20 @@ func requireIAP(v TokenValidator, audience string, logger *slog.Logger, next htt
 			http.Error(w, "this service is reached through IAP", http.StatusUnauthorized)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), emailKey{}, email)))
+		next.ServeHTTP(w, withEmail(r, email))
 	})
+}
+
+// signedInAs passes every request on signed in as email, for local
+// development, where no IAP fronts the process.
+func signedInAs(email string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, withEmail(r, email))
+	})
+}
+
+func withEmail(r *http.Request, email string) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), emailKey{}, email))
 }
 
 // verifyAssertion checks the assertion carries an ES256 signature that v

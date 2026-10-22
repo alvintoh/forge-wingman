@@ -131,14 +131,23 @@ func run(logger *slog.Logger) error {
 	}
 }
 
+// localDevEmail is the account local development acts as when
+// WINGMAN_LOCAL_DEV_EMAIL names none.
+const localDevEmail = "dev@localhost"
+
 // gate puts IAP's assertion check in front of every route, unless
 // WINGMAN_LOCAL_DEV is 1, where no IAP fronts the process and every request
-// passes with no account. Outside local development the audience must be set,
-// so a missing setting stops the process rather than serving unchecked.
+// passes as WINGMAN_LOCAL_DEV_EMAIL, or localDevEmail. Outside local
+// development the audience must be set, so a missing setting stops the process
+// rather than serving unchecked.
 func gate(ctx context.Context, logger *slog.Logger, mux http.Handler) (http.Handler, error) {
 	if os.Getenv("WINGMAN_LOCAL_DEV") == "1" {
-		logger.Warn("iapCheckOff", "reason", "local-dev")
-		return mux, nil
+		email := os.Getenv("WINGMAN_LOCAL_DEV_EMAIL")
+		if email == "" {
+			email = localDevEmail
+		}
+		logger.Warn("iapCheckOff", "reason", "local-dev", "email", email)
+		return signedInAs(email, mux), nil
 	}
 	audience := os.Getenv("WINGMAN_IAP_AUDIENCE")
 	if audience == "" {
