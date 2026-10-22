@@ -484,14 +484,14 @@ grant.
 
 | Service account | Grants |
 |---|---|
-| `surface` | Firestore read/write |
+| `surface` | Firestore read/write; `secretAccessor` on `surface-merge-token` |
 
 ### The service
 
 `forge-wingman-surface` is a Cloud Run service behind Identity-Aware Proxy (IAP), turned on
 at the service itself, so no load balancer stands in front. IAP signs the caller in with
-Google before a request reaches the container; the container reads `PORT` and
-`GOOGLE_CLOUD_PROJECT` and holds no secret. Two grants make that work: the IAP service agent
+Google before a request reaches the container; the container reads `PORT`,
+`GOOGLE_CLOUD_PROJECT` and, for the merge route, `WINGMAN_MERGE_TOKEN` (below). Two grants make that work: the IAP service agent
 (`service-<project number>@gcp-sa-iap.iam.gserviceaccount.com`) holds `roles/run.invoker`
 on the service, and `surface_owner_email` holds `roles/iap.httpsResourceAccessor` on it.
 Anyone else is refused at the proxy. `invoker_iam_disabled` stays unset.
@@ -500,6 +500,46 @@ The provider has no resource for the IAP service agent, and the grant above fail
 agent does not exist yet. If the apply reports it missing, create it once with
 `gcloud services identity create --service=iap.googleapis.com --project=forge-wingman`
 and rerun the apply.
+
+### The merge token
+
+`surface-merge-token` holds the GitHub token the merge route acts with. The apply creates
+it empty, grants `secretAccessor` on it to the `surface` service account alone, and passes its
+latest version to the service as `WINGMAN_MERGE_TOKEN`. Without a value the route answers 503.
+
+Create a fine-grained personal access token as the owner, limited to `alvintoh/forge-wingman`,
+with these repository permissions and no others (Metadata read is added automatically). Read
+against GitHub's fine-grained permissions page, 2026-10-22:
+
+| Permission | Level | Used by |
+|---|---|---|
+| Contents | Read and write | `PUT /pulls/{n}/merge` |
+| Pull requests | Read-only | `GET /pulls/{n}` |
+| Commit statuses | Read-only | `GET /commits/{sha}/status` |
+
+Fine-grained tokens have no Checks permission. The check-runs read needs none while the
+repository is public; if it goes private, read the checks through the GraphQL
+`statusCheckRollup` that `PullSummaries` already uses.
+
+Cloud Run resolves `latest` when a revision starts, so the value must exist before the service
+is applied: secret first, value second, service third:
+
+```sh
+cd infra
+T=(-target=google_secret_manager_secret.surface_merge_token
+   -target=google_secret_manager_secret_iam_member.surface_merge_token)
+V=(-var=dispatcher_image=x -var=webhook_image=x -var=linear_delegate=x
+   -var=surface_image=<the image digest now serving> -var=surface_owner_email=<owner google account>)
+tofu apply "${T[@]}" "${V[@]}"
+pbpaste | gcloud secrets versions add surface-merge-token --project=forge-wingman --data-file=-
+pbcopy < /dev/null
+tofu apply -target=google_cloud_run_v2_service.surface "${V[@]}"
+```
+
+Read it back: `gcloud secrets get-iam-policy surface-merge-token --project=forge-wingman` lists the
+`surface` service account and nothing else, and `gcloud run services describe forge-wingman-surface`
+shows `WINGMAN_MERGE_TOKEN` sourced from the secret. A new revision reads the value again, so
+rotate by adding a version and applying the service once more.
 
 ### OAuth client and consent screen (once, by the owner)
 

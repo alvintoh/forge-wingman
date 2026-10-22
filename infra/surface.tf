@@ -20,6 +20,24 @@ resource "google_project_iam_member" "surface_datastore" {
   depends_on = [google_project_service.this]
 }
 
+# The token the merge route acts with: its value is added by hand, and the
+# surface's identity is the only one that may read it.
+resource "google_secret_manager_secret" "surface_merge_token" {
+  secret_id = "surface-merge-token"
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.this]
+}
+
+resource "google_secret_manager_secret_iam_member" "surface_merge_token" {
+  secret_id = google_secret_manager_secret.surface_merge_token.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = google_service_account.surface.member
+}
+
 # The name is a local so the service's own IAP audience can name it without
 # referring to the resource from inside itself.
 locals {
@@ -62,6 +80,16 @@ resource "google_cloud_run_v2_service" "surface" {
         value = var.project_id
       }
 
+      env {
+        name = "WINGMAN_MERGE_TOKEN"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.surface_merge_token.secret_id
+            version = "latest"
+          }
+        }
+      }
+
       # The audience IAP signs this service's assertions for, the format for a
       # Cloud Run service in docs.cloud.google.com/iap/docs/signed-headers-howto.
       env {
@@ -74,6 +102,7 @@ resource "google_cloud_run_v2_service" "surface" {
   depends_on = [
     google_project_iam_member.surface_datastore,
     google_project_service.this,
+    google_secret_manager_secret_iam_member.surface_merge_token,
   ]
 }
 
