@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { PillButton } from "./pill-button";
 
 // The me endpoint's own shape: the address IAP signed in, or null with no IAP
 // header, as in local development.
@@ -19,11 +20,6 @@ const ACCOUNT_ACTIONS = [
   { key: "switch", label: "SWITCH ACCOUNT" },
   { key: "sign-out", label: "SIGN OUT" },
 ] as const;
-
-// The account actions' one size, so a change to the pill is one edit: an
-// outlined pill 44px high, the full width of the menu's content.
-const actionClass =
-  "inline-flex h-11 w-full items-center justify-center rounded-full border border-ink2 bg-card font-mono text-micro font-semibold tracking-[1.2px] text-ink";
 
 function isMe(body: unknown): body is Me {
   return (
@@ -76,17 +72,15 @@ function useMe(): MeState {
   return state;
 }
 
-// AccountHeader is every page's header: the account avatar at its right end,
-// opening the account menu. Until the account is read, or when it cannot be,
-// the header keeps its height and shows no avatar, since neither state is an
-// account to describe.
-export function AccountHeader() {
+/**
+ * Account is the signed-in account's avatar and the menu it opens. It sits in
+ * the header's title row, which must be positioned: the menu is placed from it.
+ * Until the account is read, or when it cannot be, it renders nothing, since
+ * neither state is an account to describe.
+ */
+export function Account() {
   const me = useMe();
-  return (
-    <header className="relative mx-auto flex min-h-15 max-w-desk justify-end px-padx pt-4 md:px-pad">
-      {me.status === "ready" && <AccountMenu email={me.email} />}
-    </header>
-  );
+  return me.status === "ready" ? <AccountMenu email={me.email} /> : null;
 }
 
 type AccountMenuProps = {
@@ -101,7 +95,7 @@ function AccountMenu({ email }: AccountMenuProps) {
   const menuId = useId();
   const buttonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const firstActionRef = useRef<HTMLAnchorElement>(null);
+  const firstActionRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!open) {
@@ -165,9 +159,9 @@ function AccountMenu({ email }: AccountMenuProps) {
           </span>
         )}
       </button>
-      {/* 2px under the header is 8px under the tile, which ends 6px above the
-          hit area's foot. The phone takes the page width inside the 16px
-          gutter; from md the menu is 372 wide, its right edge on the tile's. */}
+      {/* Placed from the header's title row: 8px under the tile, whose foot is
+          16px below the row's middle. The phone takes the page width inside the
+          16px gutter; from md the menu is 372 wide, its right edge on the tile's. */}
       <div
         ref={menuRef}
         id={menuId}
@@ -175,7 +169,7 @@ function AccountMenu({ email }: AccountMenuProps) {
         aria-label="Account"
         tabIndex={-1}
         hidden={!open}
-        className="absolute top-[calc(100%+2px)] right-4 left-4 z-20 rounded-card border border-hair bg-card px-padx text-left shadow-[0_8px_28px_color-mix(in_srgb,var(--color-ink)_16%,transparent)] md:right-pad md:left-auto md:w-[372px]"
+        className="absolute top-[calc(50%+24px)] right-[calc(1rem-var(--spacing-padx))] left-[calc(1rem-var(--spacing-padx))] z-20 rounded-card border border-hair bg-card px-padx text-left shadow-[0_8px_28px_color-mix(in_srgb,var(--color-ink)_16%,transparent)] md:right-0 md:left-auto md:w-[372px]"
       >
         {email ? (
           <>
@@ -185,16 +179,16 @@ function AccountMenu({ email }: AccountMenuProps) {
             <p className="mt-1.5 text-label leading-[18px] text-ink2">
               Sign-in is Google's, through IAP. Only the allowed account gets in.
             </p>
-            <div className="mt-[22px] flex flex-col gap-3 border-t border-hair pt-4 pb-[22px]">
+            {/* The dialogs' pair button, stacked; each 44px hit area holds a
+                32px pill, so stacking them flush leaves 12px between pills. */}
+            <div className="mt-[22px] flex flex-col items-start border-t border-hair pt-2.5 pb-4">
               {ACCOUNT_ACTIONS.map((action, i) => (
-                <a
+                <PillButton
                   key={action.key}
                   ref={i === 0 ? firstActionRef : undefined}
-                  href={CLEAR_LOGIN_URL}
-                  className={actionClass}
-                >
-                  {action.label}
-                </a>
+                  label={action.label}
+                  onClick={() => window.location.assign(CLEAR_LOGIN_URL)}
+                />
               ))}
             </div>
           </>

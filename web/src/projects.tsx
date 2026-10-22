@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { PillButton } from "./pill-button";
 
 type PhaseProgress = {
   name: string;
@@ -325,23 +326,6 @@ function postJSON(path: string, body: Record<string, string>): Promise<Response>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-}
-
-type PillButtonProps = React.ComponentProps<"button"> & { label: string };
-
-// A small outlined pill with a 44px hit area around it.
-function PillButton({ label, ...rest }: PillButtonProps) {
-  return (
-    <button
-      type="button"
-      className="group inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center disabled:cursor-not-allowed"
-      {...rest}
-    >
-      <span className="inline-flex h-8 min-w-26 items-center justify-center rounded-full border border-accent px-3 font-mono text-micro font-semibold text-accent group-disabled:border-muted group-disabled:text-muted">
-        {label}
-      </span>
-    </button>
-  );
 }
 
 type CardProps = {
