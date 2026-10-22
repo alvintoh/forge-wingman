@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { PillButton } from "./pill-button";
+import { ActionButton, ButtonPair } from "./action-button";
 
 type PhaseProgress = {
   name: string;
@@ -328,6 +328,23 @@ function postJSON(path: string, body: Record<string, string>): Promise<Response>
   });
 }
 
+type PillButtonProps = React.ComponentProps<"button"> & { label: string };
+
+// A small outlined pill with a 44px hit area around it.
+function PillButton({ label, ...rest }: PillButtonProps) {
+  return (
+    <button
+      type="button"
+      className="group inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center disabled:cursor-not-allowed"
+      {...rest}
+    >
+      <span className="inline-flex h-8 min-w-26 items-center justify-center rounded-full border border-accent px-3 font-mono text-micro font-semibold text-accent group-disabled:border-muted group-disabled:text-muted">
+        {label}
+      </span>
+    </button>
+  );
+}
+
 type CardProps = {
   project: Project;
   now: number;
@@ -569,10 +586,19 @@ function ProjectCard({ project, now, refresh }: CardProps) {
             The stop was not made. Nothing changed; try again.
           </p>
         )}
-        <div className="mt-4 flex justify-end gap-3">
-          <PillButton label="BACK" onClick={() => stopRef.current?.close()} />
-          <PillButton label="STOP PHASE" disabled={saving} onClick={() => pause("stop")} />
-        </div>
+        <ButtonPair
+          back={
+            <ActionButton kind="secondary" label="BACK" onClick={() => stopRef.current?.close()} />
+          }
+          action={
+            <ActionButton
+              kind="primary"
+              label="STOP PHASE"
+              disabled={saving}
+              onClick={() => pause("stop")}
+            />
+          }
+        />
       </dialog>
 
       {readable !== null && (
@@ -593,10 +619,16 @@ function ProjectCard({ project, now, refresh }: CardProps) {
               The start was not requested. Nothing changed; try again.
             </p>
           )}
-          <div className="mt-4 flex justify-end gap-3">
-            <PillButton label="BACK" onClick={() => dialogRef.current?.close()} />
-            <PillButton label="START" disabled={saving} onClick={start} />
-          </div>
+          <ButtonPair
+            back={
+              <ActionButton
+                kind="secondary"
+                label="BACK"
+                onClick={() => dialogRef.current?.close()}
+              />
+            }
+            action={<ActionButton kind="primary" label="START" disabled={saving} onClick={start} />}
+          />
         </dialog>
       )}
     </li>

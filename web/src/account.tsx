@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { PillButton } from "./pill-button";
+import { ActionButton } from "./action-button";
 
 // The me endpoint's own shape: the address IAP signed in, or null with no IAP
 // header, as in local development.
@@ -179,13 +179,13 @@ function AccountMenu({ email }: AccountMenuProps) {
             <p className="mt-1.5 text-label leading-[18px] text-ink2">
               Sign-in is Google's, through IAP. Only the allowed account gets in.
             </p>
-            {/* The dialogs' pair button, stacked; each 44px hit area holds a
-                32px pill, so stacking them flush leaves 12px between pills. */}
-            <div className="mt-[22px] flex flex-col items-start border-t border-hair pt-2.5 pb-4">
+            {/* The dialogs' button, stacked at the content's full width, 12px apart. */}
+            <div className="mt-[22px] grid gap-3 border-t border-hair pt-4 pb-[22px]">
               {ACCOUNT_ACTIONS.map((action, i) => (
-                <PillButton
+                <ActionButton
                   key={action.key}
                   ref={i === 0 ? firstActionRef : undefined}
+                  kind="secondary"
                   label={action.label}
                   onClick={() => window.location.assign(CLEAR_LOGIN_URL)}
                 />
