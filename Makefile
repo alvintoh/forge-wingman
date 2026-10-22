@@ -1,7 +1,7 @@
 # Local development. `make dev` needs nothing beyond Go and Bun; `make ui` adds a
 # process-compose terminal UI (a pane per process, restart one on its own).
 
-.PHONY: dev ui check
+.PHONY: dev ui check landing-check
 
 # A fresh clone has no web/node_modules, so `bun run dev` fails with `vite: command
 # not found`. Install on first use, and again whenever the manifest or lockfile changes.
@@ -29,3 +29,8 @@ check:
 	go vet ./...
 	golangci-lint run
 	go test -race -shuffle=on -cover ./...
+
+# The landing page copies the web app's tokens, fonts and icon. CI runs its steps one by one and
+# does not call `make check`, so this is separate from the Go gate above.
+landing-check:
+	tools/landing/check-copies.sh
