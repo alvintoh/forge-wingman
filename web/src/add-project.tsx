@@ -3,7 +3,7 @@ import { ActionButton, ButtonPair } from "./action-button";
 import { postJSON } from "./post-json";
 
 // The slug of the runner's GitHub App, which names its install page.
-const GITHUB_APP_SLUG = "TODO-slug";
+const GITHUB_APP_SLUG = "forge-wingman-runner";
 const INSTALL_URL = `https://github.com/apps/${GITHUB_APP_SLUG}/installations/new`;
 
 // What the surface checks before it adds: owner/name, and GitHub's longest owner (39) and
