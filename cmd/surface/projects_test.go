@@ -325,6 +325,8 @@ func TestAddProjectRefusals(t *testing.T) {
 		{"not a JSON content type", "text/plain", fresh, nil, http.StatusUnsupportedMediaType},
 		{"the Linear project already has a repository", "application/json", `{"linear_project":"Roadmap","repository":"octo/fresh"}`, nil, http.StatusConflict},
 		{"the same Linear project in another case", "application/json", `{"linear_project":"roadmap","repository":"octo/fresh"}`, nil, http.StatusConflict},
+		{"the same Linear project padded", "application/json", `{"linear_project":"  Roadmap ","repository":"octo/fresh"}`, nil, http.StatusConflict},
+		{"a repository padded", "application/json", `{"linear_project":"Fresh","repository":" octo/fresh "}`, nil, http.StatusBadRequest},
 		{"the repository is already listed", "application/json", fresh, func(s *stubProjects) {
 			s.addErr = fmt.Errorf("%w: octo/fresh", store.ErrRepositoryListed)
 		}, http.StatusConflict},
@@ -374,6 +376,20 @@ func TestAddProjectListsThePair(t *testing.T) {
 	}
 	if len(s.requested) != 0 || len(s.pauses) != 0 {
 		t.Errorf("an add also started %v or paused %v", s.requested, s.pauses)
+	}
+}
+
+func TestAddProjectListsTheLinearProjectTrimmed(t *testing.T) {
+	s := startableProjects()
+	rec := postAdd(newProjectsMux(s), "application/json", `{"linear_project":"  Fresh ","repository":"octo/fresh"}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+	if want := []string{"Fresh:octo/fresh"}; !slices.Equal(s.added, want) {
+		t.Errorf("added %v, want %v", s.added, want)
+	}
+	if !strings.Contains(rec.Body.String(), `"linear_project":"Fresh"`) {
+		t.Errorf("response %q, want the trimmed name", rec.Body.String())
 	}
 }
 

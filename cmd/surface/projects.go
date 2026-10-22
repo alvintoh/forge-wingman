@@ -403,9 +403,12 @@ func (d Deps) addProject(w http.ResponseWriter, r *http.Request) {
 		LinearProject string `json:"linear_project"`
 		Repository    string `json:"repository"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || !store.ValidRepository(body.Repository) ||
-		len(body.Repository) > maxRepository || strings.TrimSpace(body.LinearProject) == "" ||
-		len(body.LinearProject) > maxLinearProjectName {
+	err := json.NewDecoder(r.Body).Decode(&body)
+	// The name is trimmed before it is compared and stored, so a padded " Roadmap " is the listed
+	// "Roadmap" and cannot slip past the conflict check; a padded repository is refused as not owner/name.
+	linearProject := strings.TrimSpace(body.LinearProject)
+	if err != nil || !store.ValidRepository(body.Repository) || len(body.Repository) > maxRepository ||
+		linearProject == "" || len(linearProject) > maxLinearProjectName {
 		http.Error(w, "the request body is not JSON naming a Linear project and an owner/name repository", http.StatusBadRequest)
 		return
 	}
@@ -415,11 +418,11 @@ func (d Deps) addProject(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "checking the listed projects", http.StatusInternalServerError)
 		return
 	}
-	if linearProjectListed(listed, body.LinearProject) {
+	if linearProjectListed(listed, linearProject) {
 		http.Error(w, "that Linear project already has a listed repository", http.StatusConflict)
 		return
 	}
-	switch err := d.Projects.Adds.Add(r.Context(), body.LinearProject, body.Repository, time.Now()); {
+	switch err := d.Projects.Adds.Add(r.Context(), linearProject, body.Repository, time.Now()); {
 	case errors.Is(err, store.ErrRepositoryListed):
 		http.Error(w, "that repository is already listed", http.StatusConflict)
 		return
@@ -434,5 +437,5 @@ func (d Deps) addProject(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(struct {
 		LinearProject string `json:"linear_project"`
 		Repository    string `json:"repository"`
-	}{body.LinearProject, body.Repository})
+	}{linearProject, body.Repository})
 }
