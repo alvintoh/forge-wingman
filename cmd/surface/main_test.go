@@ -87,6 +87,36 @@ func TestVersion(t *testing.T) {
 	}
 }
 
+func TestMeServesTheAddressIAPSignedIn(t *testing.T) {
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger()})
+
+	tests := []struct {
+		name   string
+		header string
+		want   string
+	}{
+		{"the prefix IAP adds is stripped", "accounts.google.com:owner@example.com", "{\"email\":\"owner@example.com\"}\n"},
+		{"no header, as locally, is no account", "", "{\"email\":null}\n"},
+		{"a header holding only the prefix is no account", "accounts.google.com:", "{\"email\":null}\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+			if tt.header != "" {
+				req.Header.Set("X-Goog-Authenticated-User-Email", tt.header)
+			}
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+			}
+			if got := rec.Body.String(); got != tt.want {
+				t.Fatalf("body = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // stubComparison is a ComparisonReader that answers with the comparison it
 // holds, recording the window it was asked for.
 type stubComparison struct {

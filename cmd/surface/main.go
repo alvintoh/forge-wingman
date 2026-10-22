@@ -191,6 +191,12 @@ func newMux(d Deps) *http.ServeMux {
 			SHA string `json:"sha"`
 		}{commitSHA})
 	})
+	mux.HandleFunc("GET /api/me", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(struct {
+			Email *string `json:"email"`
+		}{signedInEmail(r)})
+	})
 	mux.HandleFunc("GET /api/comparison", func(w http.ResponseWriter, r *http.Request) {
 		if d.Comparison == nil {
 			http.Error(w, "the comparison needs a run store", http.StatusServiceUnavailable)
@@ -321,6 +327,24 @@ func newMux(d Deps) *http.ServeMux {
 	mux.Handle("GET /", spaHandler(d.SPA))
 
 	return mux
+}
+
+// IAP passes the address it signed in on iapEmailHeader, as iapEmailPrefix then
+// the address.
+const (
+	iapEmailHeader = "X-Goog-Authenticated-User-Email"
+	iapEmailPrefix = "accounts.google.com:"
+)
+
+// signedInEmail is the address IAP signed the request in as, or nil without the
+// header, as in local development. The header is trusted only because IAP fronts
+// the service and sets it on every request it lets through.
+func signedInEmail(r *http.Request) *string {
+	email := strings.TrimPrefix(r.Header.Get(iapEmailHeader), iapEmailPrefix)
+	if email == "" {
+		return nil
+	}
+	return &email
 }
 
 // comparisonResponse is the comparison endpoint's wire shape. It carries no

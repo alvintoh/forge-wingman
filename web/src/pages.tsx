@@ -1,12 +1,16 @@
 import { Link, Outlet, useParams } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
+import { AccountHeader } from "./account";
 import { ProjectsSection } from "./projects";
 
 export function Root() {
   return (
-    <main className="min-h-dvh bg-ground text-ink">
-      <Outlet />
-    </main>
+    <div className="min-h-dvh bg-ground text-ink">
+      <AccountHeader />
+      <main>
+        <Outlet />
+      </main>
+    </div>
   );
 }
 
