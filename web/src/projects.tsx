@@ -182,7 +182,6 @@ type ProjectView = {
   readable: PhaseSnapshot | null;
   phase: PhaseProgress | null;
   lines: StatusLine[];
-  working: boolean;
   startable: boolean;
   notice: string | null;
   startDisabled: boolean;
@@ -276,7 +275,6 @@ function describe(project: Project, now: number): ProjectView {
     readable,
     phase,
     lines,
-    working,
     startable,
     notice,
     startDisabled: idle && !startable,
@@ -365,13 +363,13 @@ function CardPill({ label, ...rest }: CardPillProps) {
   );
 }
 
-type CardProps = {
+type EntryProps = {
   project: Project;
   now: number;
   refresh: () => void;
 };
 
-function ProjectCard({ project, now, refresh }: CardProps) {
+function ProjectEntry({ project, now, refresh }: EntryProps) {
   const view = describe(project, now);
   const { readable, phase } = view;
   const detailId = useId();
@@ -472,13 +470,15 @@ function ProjectCard({ project, now, refresh }: CardProps) {
     );
 
   return (
-    // The vertical rhythm is the drawing's, measured from the card's top edge: the pill at 22.8 and
+    // One project is one section of the Projects card. Its vertical rhythm is the drawing's,
+    // measured from the section's top (the card's edge, or the rule above it): the pill at 22.8 and
     // the name's baseline at 42, the phase row's at 74, the bar at 84, the first status line's at
-    // 108 and 16 apart, Details 24 under the last line, and the card's edge 20 under the last
-    // baseline. Each margin below is that gap less the 16px line box around the baseline (its
-    // baseline sits 12px down). pt: 22.8, less the 8px between the 44px hit area and the 28px
-    // pill, less the 1px border. pb: 20, less the 4px under a last line's baseline, less the border.
-    <li className="card-frame pt-[13.8px] pb-[15px]">
+    // 108 and 16 apart, Details 24 under the last line, and the next rule (or the card's edge) 20
+    // under the last baseline. Each margin below is that gap less the 16px line box around the
+    // baseline (its baseline sits 12px down). pt: 22.8, less the 8px between the 44px hit area and
+    // the 28px pill, less the 1px rule or card edge. pb: 20, less the 4px under a last line's
+    // baseline, less the card's 1px bottom edge on the last section.
+    <li className="border-t border-hair pt-[13.8px] pb-4 first:border-t-0 last:pb-[15px]">
       <div className="min-w-0">
         <div className="min-w-0">
           <div className="flex min-h-11 items-center justify-between gap-3">
@@ -530,13 +530,16 @@ function ProjectCard({ project, now, refresh }: CardProps) {
               </p>
             ))}
           </div>
-          {(view.working || view.lines.some((l) => !l.keep)) && (
+          {/* Details only on the phone, and only while a phase runs, drains or is held, as drawn:
+              the phone card shows three elements and these hold the rest; the desktop card shows
+              every status line and no in-flight list. */}
+          {(view.pill === "RUNNING" || view.pill === "STOPPING" || view.pill === "STOPPED") && (
             <button
               type="button"
               aria-expanded={open}
               aria-controls={detailId}
               aria-label={`${open ? "Hide details" : "Details"}: what is running in ${project.repository}`}
-              className={`-mb-3.5 -ml-1 -mt-1.5 flex w-fit min-h-11 min-w-11 cursor-pointer items-center px-1 text-label leading-4 text-accent ${view.working ? "" : "md:hidden"}`}
+              className="-mb-3.5 -ml-1 -mt-1.5 flex w-fit min-h-11 min-w-11 cursor-pointer items-center px-1 text-label leading-4 text-accent md:hidden"
               onClick={() => setOpen((v) => !v)}
             >
               {open ? "Hide details" : "Details"}
@@ -570,8 +573,8 @@ function ProjectCard({ project, now, refresh }: CardProps) {
       )}
 
       {readable !== null && open && (
-        <div id={detailId} className="mt-4 border-t border-hair pt-3">
-          <div className="mb-3 text-cap text-ink2 md:hidden">
+        <div id={detailId} className="mt-4 border-t border-hair pt-3 md:hidden">
+          <div className="mb-3 text-cap text-ink2">
             {view.lines
               .filter((l) => !l.keep)
               .map((l, i) => (
@@ -664,9 +667,10 @@ function ProjectList({ projects, now, stale, refresh }: ListProps) {
           The list could not be refreshed; showing the last read.
         </p>
       )}
-      <ul className="mt-4 flex flex-col gap-4">
+      {/* ONE elevated card holds every project, each a section split from the next by a rule. */}
+      <ul className="card-frame mt-4">
         {projects.map((project) => (
-          <ProjectCard key={project.repository} project={project} now={now} refresh={refresh} />
+          <ProjectEntry key={project.repository} project={project} now={now} refresh={refresh} />
         ))}
       </ul>
     </>

@@ -2,12 +2,15 @@
    unedited — it carries the Tailwind import and every @theme token. */
 @import "./theme.css";
 
-/* Every card's frame, shared so the Projects cards and the inbox cards take one radius, edge,
-   fill and side padding; a card's height and vertical rhythm come from its content. The side
-   padding is the design's PADX (26), the same on the phone and the desktop sheets. */
+/* Every card's frame, shared so the Projects card and the inbox cards take one radius, edge,
+   fill, side padding and shadow; a card's height and vertical rhythm come from its content. The
+   side padding is the design's PADX (26), the same on the phone and the desktop sheets. The
+   shadow is the design's "soft" filter (dy 2, stdDeviation 3 = a 6px blur, ink at 6%): elevation
+   is scarce, so it goes on a card, never on a row or section inside one. */
 @utility card-frame {
   border-radius: var(--radius-card);
   border: 1px solid var(--color-hair);
   background-color: var(--color-card);
   padding-inline: var(--spacing-padx);
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--color-ink) 6%, transparent);
 }
