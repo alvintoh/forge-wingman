@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { ActionButton, ButtonPair } from "./action-button";
 import { postJSON } from "./post-json";
 
@@ -155,7 +156,8 @@ export function AddProjectDialog({ open, onClose, onAdded }: DialogProps) {
 
   const names = options.status === "ready" ? options.names : [];
 
-  return (
+  // In the body, so the Projects section moving between columns never takes an open modal with it.
+  return createPortal(
     <dialog
       ref={dialogRef}
       aria-labelledby={titleId}
@@ -288,6 +290,7 @@ export function AddProjectDialog({ open, onClose, onAdded }: DialogProps) {
           }
         />
       </form>
-    </dialog>
+    </dialog>,
+    document.body,
   );
 }

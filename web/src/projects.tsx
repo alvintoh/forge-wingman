@@ -1,7 +1,11 @@
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { ActionButton, ButtonPair } from "./action-button";
 import { AddProjectDialog } from "./add-project";
+import { ago } from "./ago";
+import { pillSetWidth } from "./button-style";
+import { SmallPill, TryAgainPill } from "./pill-button";
 import { postJSON } from "./post-json";
 
 type PhaseProgress = {
@@ -62,6 +66,9 @@ const SECTION_PROJECTS = 3;
 
 const REACH_REACHABLE = "reachable";
 const REACH_CHECKING = "checking";
+
+// Every small pill on the Projects card takes RESUME's width, the set's longest label.
+const PROJECT_PILL_WIDTH = pillSetWidth(["STOP", "RESUME", "START", "ADD"]);
 
 // The refusals the dispatcher records for a start it did not carry out.
 const refusalWords: Record<string, string> = {
@@ -144,21 +151,6 @@ function useProjects() {
   }, []);
 
   return { state, refresh, retry };
-}
-
-function ago(iso: string, now: number): string {
-  const minutes = Math.max(0, Math.floor((now - Date.parse(iso)) / 60_000));
-  if (Number.isNaN(minutes)) {
-    return "at an unknown time";
-  }
-  if (minutes < 1) {
-    return "just now";
-  }
-  if (minutes < 60) {
-    return `${minutes}m ago`;
-  }
-  const hours = Math.floor(minutes / 60);
-  return hours < 24 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`;
 }
 
 function plural(n: number, one: string, many: string): string {
@@ -320,44 +312,6 @@ function heldSentence(n: number): string {
     : `${n} queued tickets stay delegated and wait until you resume.`;
 }
 
-type PillButtonProps = React.ComponentProps<"button"> & { label: string };
-
-// A small outlined pill with a 44px hit area around it.
-function PillButton({ label, ...rest }: PillButtonProps) {
-  return (
-    <button
-      type="button"
-      className="group inline-flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center disabled:cursor-not-allowed"
-      {...rest}
-    >
-      <span className="inline-flex h-8 min-w-26 items-center justify-center rounded-full border border-accent px-3 font-mono text-micro font-semibold text-accent group-disabled:border-muted group-disabled:text-muted">
-        {label}
-      </span>
-    </button>
-  );
-}
-
-type CardPillProps = React.ComponentProps<"button"> & { label: string };
-
-// The card's START, STOP or RESUME: the design's small pill, 28px visible inside a 44px-high hit
-// area, outlined in ink2 with an ink label, and on track with a muted label while disabled.
-// Every label takes ONE width, RESUME's (the set's longest): 6 glyphs of 1ch, the 1.2px tracking
-// after each, and 12px a side, 70.8px in IBM Plex Mono. The label's trailing tracking is
-// cancelled (-mr) so the glyphs, not the glyphs plus 1.2px, are what sits centred.
-function CardPill({ label, ...rest }: CardPillProps) {
-  return (
-    <button
-      type="button"
-      className="group inline-flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center disabled:cursor-not-allowed"
-      {...rest}
-    >
-      <span className="inline-flex h-7 w-[calc(6ch+7.2px+24px)] items-center justify-center rounded-full border border-ink2 bg-card font-mono text-micro font-semibold tracking-[1.2px] text-ink group-disabled:border-hair group-disabled:bg-track group-disabled:text-muted">
-        <span className="-mr-[1.2px]">{label}</span>
-      </span>
-    </button>
-  );
-}
-
 type EntryProps = {
   project: Project;
   now: number;
@@ -434,7 +388,9 @@ function ProjectEntry({ project, now, refresh }: EntryProps) {
 
   const control =
     view.startable || view.startDisabled ? (
-      <CardPill
+      <SmallPill
+        kind="secondary"
+        width={PROJECT_PILL_WIDTH}
         label="START"
         disabled={view.startDisabled}
         aria-describedby={view.startDisabled ? noticeId : undefined}
@@ -445,7 +401,9 @@ function ProjectEntry({ project, now, refresh }: EntryProps) {
         }}
       />
     ) : view.pill === "RUNNING" ? (
-      <CardPill
+      <SmallPill
+        kind="secondary"
+        width={PROJECT_PILL_WIDTH}
         label="STOP"
         aria-label={`Stop ${readable?.current ?? "the phase"} in ${project.repository}`}
         onClick={() => {
@@ -455,7 +413,9 @@ function ProjectEntry({ project, now, refresh }: EntryProps) {
       />
     ) : (
       (view.pill === "STOPPING" || view.pill === "STOPPED") && (
-        <CardPill
+        <SmallPill
+          kind="secondary"
+          width={PROJECT_PILL_WIDTH}
           label="RESUME"
           disabled={saving}
           aria-label={`Resume ${readable?.current ?? "the phase"} in ${project.repository}`}
@@ -547,7 +507,7 @@ function ProjectEntry({ project, now, refresh }: EntryProps) {
           <p role="status" className="text-cap text-ink2">
             The phases could not be read at {new Date(project.snapshot.at).toLocaleTimeString()}.
           </p>
-          <PillButton label="TRY AGAIN" onClick={refresh} />
+          <TryAgainPill onClick={refresh} />
         </div>
       )}
       {view.notice !== null && (
@@ -595,54 +555,24 @@ function ProjectEntry({ project, now, refresh }: EntryProps) {
         </div>
       )}
 
-      <dialog
-        ref={stopRef}
-        aria-labelledby={`${detailId}-stop-title`}
-        className="m-auto max-h-dvh w-full max-w-[min(var(--container-phone),calc(100dvw-2rem))] overflow-auto rounded-card border border-hair bg-card p-6 text-ink backdrop:bg-ink/40"
-      >
-        <h2 id={`${detailId}-stop-title`} className="text-head font-semibold">
-          Stop {readable?.current ?? "the phase"} in {project.repository}?
-        </h2>
-        <p className="mt-3 text-body text-ink2">
-          No new tickets start. {runsSentence(project.queue.in_flight)}{" "}
-          {heldSentence(project.queue.held)}
-        </p>
-        {stopError && (
-          <p role="alert" className="mt-3 text-body text-stop">
-            The stop was not made. Nothing changed; try again.
-          </p>
-        )}
-        <ButtonPair
-          back={
-            <ActionButton kind="secondary" label="BACK" onClick={() => stopRef.current?.close()} />
-          }
-          action={
-            <ActionButton
-              kind="primary"
-              label="STOP PHASE"
-              disabled={saving}
-              onClick={() => pause("stop")}
-            />
-          }
-        />
-      </dialog>
-
-      {readable !== null && (
+      {/* Both dialogs sit in the body, so the card moving between columns never takes an open
+          modal with it. */}
+      {createPortal(
         <dialog
-          ref={dialogRef}
-          aria-labelledby={`${detailId}-title`}
+          ref={stopRef}
+          aria-labelledby={`${detailId}-stop-title`}
           className="m-auto max-h-dvh w-full max-w-[min(var(--container-phone),calc(100dvw-2rem))] overflow-auto rounded-card border border-hair bg-card p-6 text-ink backdrop:bg-ink/40"
         >
-          <h2 id={`${detailId}-title`} className="text-head font-semibold">
-            Start {readable.current} in {project.repository}?
+          <h2 id={`${detailId}-stop-title`} className="text-head font-semibold">
+            Stop {readable?.current ?? "the phase"} in {project.repository}?
           </h2>
           <p className="mt-3 text-body text-ink2">
-            Delegates {plural(eligible, "ticket", "tickets")} to the runner. {blocked} wait on a
-            blocker; the rest start as the run limits allow.
+            No new tickets start. {runsSentence(project.queue.in_flight)}{" "}
+            {heldSentence(project.queue.held)}
           </p>
-          {saveError && (
+          {stopError && (
             <p role="alert" className="mt-3 text-body text-stop">
-              The start was not requested. Nothing changed; try again.
+              The stop was not made. Nothing changed; try again.
             </p>
           )}
           <ButtonPair
@@ -650,13 +580,56 @@ function ProjectEntry({ project, now, refresh }: EntryProps) {
               <ActionButton
                 kind="secondary"
                 label="BACK"
-                onClick={() => dialogRef.current?.close()}
+                onClick={() => stopRef.current?.close()}
               />
             }
-            action={<ActionButton kind="primary" label="START" disabled={saving} onClick={start} />}
+            action={
+              <ActionButton
+                kind="primary"
+                label="STOP PHASE"
+                disabled={saving}
+                onClick={() => pause("stop")}
+              />
+            }
           />
-        </dialog>
+        </dialog>,
+        document.body,
       )}
+
+      {readable !== null &&
+        createPortal(
+          <dialog
+            ref={dialogRef}
+            aria-labelledby={`${detailId}-title`}
+            className="m-auto max-h-dvh w-full max-w-[min(var(--container-phone),calc(100dvw-2rem))] overflow-auto rounded-card border border-hair bg-card p-6 text-ink backdrop:bg-ink/40"
+          >
+            <h2 id={`${detailId}-title`} className="text-head font-semibold">
+              Start {readable.current} in {project.repository}?
+            </h2>
+            <p className="mt-3 text-body text-ink2">
+              Delegates {plural(eligible, "ticket", "tickets")} to the runner. {blocked} wait on a
+              blocker; the rest start as the run limits allow.
+            </p>
+            {saveError && (
+              <p role="alert" className="mt-3 text-body text-stop">
+                The start was not requested. Nothing changed; try again.
+              </p>
+            )}
+            <ButtonPair
+              back={
+                <ActionButton
+                  kind="secondary"
+                  label="BACK"
+                  onClick={() => dialogRef.current?.close()}
+                />
+              }
+              action={
+                <ActionButton kind="primary" label="START" disabled={saving} onClick={start} />
+              }
+            />
+          </dialog>,
+          document.body,
+        )}
     </li>
   );
 }
@@ -728,7 +701,9 @@ function ProjectsCard({ projects, total, now, stale, seeAll, refresh }: CardProp
             ) : (
               <span />
             )}
-            <CardPill
+            <SmallPill
+              kind="secondary"
+              width={PROJECT_PILL_WIDTH}
               ref={addRef}
               label="ADD"
               aria-label="Add a project"
@@ -770,7 +745,7 @@ function ProjectsPanels({ state, retry, children }: PanelsProps) {
         <p role="alert" className="text-body">
           The projects could not be read.
         </p>
-        <PillButton label="TRY AGAIN" onClick={retry} />
+        <TryAgainPill onClick={retry} />
       </div>
     );
   }
@@ -782,13 +757,12 @@ function ProjectsPanels({ state, retry, children }: PanelsProps) {
 export function ProjectsSection() {
   const { state, refresh, retry } = useProjects();
   return (
-    <section
-      aria-labelledby="projects-heading"
-      className="mx-auto max-w-desk px-padx py-band md:px-pad"
-    >
-      <h2 id="projects-heading" className="font-mono text-label font-semibold text-ink2">
-        PROJECTS
-      </h2>
+    <section aria-labelledby="projects-heading" className="min-w-0">
+      <div className="flex min-h-6.5 items-center">
+        <h2 id="projects-heading" className="font-mono text-label font-semibold text-ink2">
+          PROJECTS
+        </h2>
+      </div>
       <ProjectsPanels state={state} retry={retry}>
         <ProjectsCard
           projects={state.projects.slice(0, SECTION_PROJECTS)}
