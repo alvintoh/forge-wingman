@@ -530,16 +530,15 @@ function ProjectEntry({ project, now, refresh }: EntryProps) {
               </p>
             ))}
           </div>
-          {/* Details only on the phone, and only while a phase runs, drains or is held, as drawn:
-              the phone card shows three elements and these hold the rest; the desktop card shows
-              every status line and no in-flight list. */}
+          {/* Details only while a phase runs, drains or is held: it opens the tickets in flight, and
+              on the phone the status lines its card leaves out (owner, 2026-10-22). */}
           {(view.pill === "RUNNING" || view.pill === "STOPPING" || view.pill === "STOPPED") && (
             <button
               type="button"
               aria-expanded={open}
               aria-controls={detailId}
               aria-label={`${open ? "Hide details" : "Details"}: what is running in ${project.repository}`}
-              className="-mb-3.5 -ml-1 -mt-1.5 flex w-fit min-h-11 min-w-11 cursor-pointer items-center px-1 text-label leading-4 text-accent md:hidden"
+              className="-mb-3.5 -ml-1 -mt-1.5 flex w-fit min-h-11 min-w-11 cursor-pointer items-center px-1 text-label leading-4 text-accent"
               onClick={() => setOpen((v) => !v)}
             >
               {open ? "Hide details" : "Details"}
@@ -573,8 +572,8 @@ function ProjectEntry({ project, now, refresh }: EntryProps) {
       )}
 
       {readable !== null && open && (
-        <div id={detailId} className="mt-4 border-t border-hair pt-3 md:hidden">
-          <div className="mb-3 text-cap text-ink2">
+        <div id={detailId} className="mt-4 border-t border-hair pt-3">
+          <div className="mb-3 text-cap text-ink2 md:hidden">
             {view.lines
               .filter((l) => !l.keep)
               .map((l, i) => (
