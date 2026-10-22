@@ -17,7 +17,14 @@ export function Root() {
 export function Inbox() {
   return (
     <>
-      <nav aria-label="Views" className="flex flex-wrap gap-gap">
+      {/* The header's own container and side padding, so the first link starts at the
+          icon's edge. The 24px column gap keeps the four links on one row from 412px,
+          where the token gap (40px) inside the gutter would wrap the last one below
+          460px and push the card down. */}
+      <nav
+        aria-label="Views"
+        className="mx-auto flex max-w-desk flex-wrap gap-x-6 gap-y-gap px-padx"
+      >
         <Link to="/autonomy" className="inline-flex min-h-11 min-w-11 items-center">
           Autonomy
         </Link>

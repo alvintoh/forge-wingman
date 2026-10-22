@@ -15,11 +15,13 @@ export function PageHeader() {
       {/* The row is the menu's anchor. Its 44px height is the avatar's hit
           area, which centres the tile on the title's line. The 34px title needs
           about 392px beside the icon and the avatar, so a narrower phone takes
-          the 22px title rather than cutting the name short. */}
+          the 22px title rather than cutting the name short. The title's line
+          box is 1.25 tall, not 1: truncate clips at that box, and a 1.0 box
+          cut the g's descenders off. */}
       <div className="relative flex h-11 items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3 text-ink">
           <img src="/icon.svg" alt="" width={32} height={32} className="size-8 shrink-0" />
-          <Title className="truncate font-sans text-title leading-none min-[400px]:text-hero font-semibold">
+          <Title className="truncate font-sans text-title leading-tight min-[400px]:text-hero font-semibold">
             Forge Wingman
           </Title>
         </div>
