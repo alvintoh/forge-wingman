@@ -1,71 +1,58 @@
-import { Link, Outlet, useParams } from "@tanstack/react-router";
-import { useEffect, useState, useSyncExternalStore } from "react";
-import { PageHeader } from "./header";
-import { InboxSection } from "./inbox";
+import { Outlet, useParams } from "@tanstack/react-router";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { InboxProvider, InboxSection } from "./inbox";
+import { AppShell } from "./menu";
 import { ProjectsSection } from "./projects";
 
 export function Root() {
   return (
-    <div className="min-h-dvh bg-ground text-ink">
-      <PageHeader />
-      <main>
-        <Outlet />
-      </main>
+    <div className="bg-ground text-ink">
+      <InboxProvider>
+        <AppShell>
+          <Outlet />
+        </AppShell>
+      </InboxProvider>
     </div>
   );
 }
 
-// The width from which the grid below has two columns: Tailwind's md, the breakpoint of its
-// md:grid-cols-2. The two must change together.
-const TWO_COLUMNS = "(min-width: 48rem)";
-
-function subscribeWidth(notify: () => void) {
-  const query = window.matchMedia(TWO_COLUMNS);
-  query.addEventListener("change", notify);
-  return () => query.removeEventListener("change", notify);
-}
-
-function useTwoColumns() {
-  return useSyncExternalStore(
-    subscribeWidth,
-    () => window.matchMedia(TWO_COLUMNS).matches,
-    () => false,
-  );
+// useTwoColumns asks the grid whether it lays out two columns, so the container query that decides
+// it is the only place the width is written.
+function useTwoColumns(grid: React.RefObject<HTMLDivElement | null>) {
+  const [twoColumns, setTwoColumns] = useState(false);
+  useLayoutEffect(() => {
+    const element = grid.current;
+    if (element === null) {
+      return;
+    }
+    const read = () =>
+      setTwoColumns(getComputedStyle(element).gridTemplateColumns.trim().split(/\s+/).length > 1);
+    read();
+    const observer = new ResizeObserver(read);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [grid]);
+  return twoColumns;
 }
 
 export function Inbox() {
-  // Needs you leads in the left column; stacked, Projects leads. The sections are rendered in the
+  // Actions leads in the main column; stacked, Projects leads. The sections are rendered in the
   // order they are shown, so the Tab order matches what is on screen, and their keys keep each one's
   // state across the switch.
   const sections = [<InboxSection key="inbox" />, <ProjectsSection key="projects" />];
-  const twoColumns = useTwoColumns();
+  const grid = useRef<HTMLDivElement>(null);
+  const twoColumns = useTwoColumns(grid);
   return (
-    <>
-      {/* The header's own container and side padding, so the first link starts at the
-          icon's edge. The 24px column gap keeps the four links on one row from 412px,
-          where the token gap (40px) inside the gutter would wrap the last one below
-          460px and push the card down. */}
-      <nav
-        aria-label="Views"
-        className="mx-auto flex max-w-desk flex-wrap gap-x-6 gap-y-gap px-padx"
-      >
-        <Link to="/autonomy" className="inline-flex min-h-11 min-w-11 items-center">
-          Autonomy
-        </Link>
-        <Link to="/peak" className="inline-flex min-h-11 min-w-11 items-center">
-          Peak hours
-        </Link>
-        <Link to="/providers" className="inline-flex min-h-11 min-w-11 items-center">
-          Providers
-        </Link>
-        <Link to="/stats" className="inline-flex min-h-11 min-w-11 items-center">
-          Statistics
-        </Link>
-      </nav>
-      <div className="mx-auto grid max-w-desk grid-cols-1 gap-x-8 gap-y-[calc(var(--spacing-band)*2)] px-padx py-band md:grid-cols-2">
-        {twoColumns ? sections : [...sections].reverse()}
-      </div>
-    </>
+    // Two columns once the page's width holds the 368px Projects card, the 32px gap, the insets and
+    // an Actions card at least as wide as Projects: 53rem. The right inset is the header's 26px
+    // gutter, so the Projects card ends under the avatar; the left one is the same gutter, and 16px
+    // more beside the menu column (lg), which takes the cards off the menu's edge.
+    <div
+      ref={grid}
+      className="grid grid-cols-1 gap-y-[calc(var(--spacing-band)*2)] px-padx py-band @[53rem]:grid-cols-[minmax(0,1fr)_23rem] @[53rem]:gap-x-8 lg:@[53rem]:pl-[calc(var(--spacing-padx)+1rem)]"
+    >
+      {twoColumns ? sections : [...sections].reverse()}
+    </div>
   );
 }
 
@@ -130,7 +117,7 @@ export function Stats() {
   }, []);
 
   return (
-    <section className="mx-auto max-w-desk px-pad py-band">
+    <section className="mx-auto max-w-desk px-padx py-band">
       <h1 className="text-title font-semibold text-ink">Statistics</h1>
       <p className="mt-2 text-body text-ink2">
         Each run's cached share per phase, its first request then its whole phase.
@@ -250,7 +237,7 @@ export function Providers() {
   }, []);
 
   return (
-    <section className="mx-auto max-w-desk px-pad py-band">
+    <section className="mx-auto max-w-desk px-padx py-band">
       <h1 className="text-title font-semibold text-ink">Providers</h1>
       <p className="mt-2 text-body text-ink2">
         Listed in the order a run walks them. Order and models are changed in configuration.
@@ -465,7 +452,7 @@ export function Peak() {
   }
 
   return (
-    <section className="mx-auto max-w-desk px-pad py-band">
+    <section className="mx-auto max-w-desk px-padx py-band">
       <h1 className="text-title font-semibold text-ink">Peak hours</h1>
       <p className="mt-2 text-body text-ink2">
         A run waits out its model's peak-price hours while the mode is off-peak only.
@@ -670,7 +657,7 @@ export function Autonomy() {
   const merge = state.view.auto_merge;
 
   return (
-    <section className="mx-auto max-w-desk px-pad py-band">
+    <section className="mx-auto max-w-desk px-padx py-band">
       <h1 className="text-title font-semibold text-ink">Autonomy</h1>
       <p className="mt-2 text-body text-ink2">Whether an eligible PR merges itself.</p>
       {state.status === "loading" && (

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ActionButton, ButtonPair } from "./action-button";
 import { ago } from "./ago";
+import { InboxContext, useInbox } from "./inbox-context";
 import { pillSetWidth } from "./button-style";
 import { SmallPill, TryAgainPill } from "./pill-button";
 import { postJSON } from "./post-json";
@@ -131,10 +132,19 @@ function parsePull(prUrl: string): { repository: string; number: string } | null
     : null;
 }
 
-// useInbox reads the list. refresh re-reads in place; retry shows the loading panel again first,
-// for a read that failed. A re-read skips the browser's copy: the list is cached for 30 seconds,
-// and a PR just merged must leave it.
-function useInbox() {
+type InboxRead = {
+  state: InboxState;
+  refresh: () => void;
+  retry: () => void;
+};
+
+/** The inbox list, the ways to read it again, and the merges made from it. */
+export type Inbox = InboxRead & Merges;
+
+// useInboxRead reads the list. refresh re-reads in place; retry shows the loading panel again
+// first, for a read that failed. A re-read skips the browser's copy: the list is cached for 30
+// seconds, and a PR just merged must leave it.
+function useInboxRead(): InboxRead {
   const [state, setState] = useState<InboxState>({
     status: "loading",
     runs: [],
@@ -478,23 +488,25 @@ function MergeDialog({ run, onClose, onConfirm }: DialogProps) {
   );
 }
 
-// InboxSection is the inbox's NEEDS YOU section: the PRs that wait on the owner, each with a
-// MERGE PR that opens its confirm and then shows the merge on the row.
-export function InboxSection() {
-  const { state, refresh, retry } = useInbox();
-  const [target, setTarget] = useState<InboxRun | null>(null);
+type Merges = {
   // Each row's merge state, keyed by run, so a response only ever writes its own row.
+  rows: Record<string, RowState>;
+  // The words the live region tells, so a row that leaves with its merge still announces it.
+  announcement: string;
+  merge: (run: InboxRun, sha: string) => Promise<void>;
+  clearRefusal: (run: InboxRun) => void;
+  // The Actions heading, which takes focus as a merged row leaves, while the Overview is open.
+  headingRef: React.RefObject<HTMLHeadingElement | null>;
+};
+
+// useMerges holds the merges made from the list beside the read itself, so a merge in flight and
+// the re-read after it outlive the Overview being closed and opened again.
+function useMerges(refresh: () => void): Merges {
   const [rows, setRows] = useState<Record<string, RowState>>({});
-  // One live region tells a result, so a row that leaves with its merge still announces it.
   const [announcement, setAnnouncement] = useState("");
   const sending = useRef(new Set<string>());
   const holds = useRef(new Map<string, ReturnType<typeof setTimeout>>());
-  const headingId = useId();
   const headingRef = useRef<HTMLHeadingElement>(null);
-
-  function handleClose() {
-    setTarget(null);
-  }
 
   useEffect(() => {
     const timers = holds.current;
@@ -507,7 +519,7 @@ export function InboxSection() {
   }, []);
 
   // Opening a row's confirm clears the words of a refusal a retry could not change.
-  function handleOpen(run: InboxRun) {
+  const clearRefusal = useCallback((run: InboxRun) => {
     setRows((previous) => {
       const shown = previous[run.run];
       if (shown?.status !== "failed" || shown.retry) {
@@ -517,57 +529,101 @@ export function InboxSection() {
       delete next[run.run];
       return next;
     });
+  }, []);
+
+  // merge posts the head commit the owner confirmed; the server merges only if it is still the PR's
+  // head. A refusal a retry cannot change means the list is stale, so it is read again.
+  const merge = useCallback(
+    async (run: InboxRun, sha: string) => {
+      if (sending.current.has(run.run)) {
+        return;
+      }
+      sending.current.add(run.run);
+      const where = `${run.ticket} in ${run.repo}`;
+      const settle = (next: RowState) => setRows((previous) => ({ ...previous, [run.run]: next }));
+      settle({ status: "merging", sha });
+      setAnnouncement(`Merging ${where}.`);
+      let failure: Failure;
+      try {
+        const response = await postJSON(`/api/runs/${encodeURIComponent(run.run)}/merge`, {
+          expected_head_sha: sha,
+        });
+        if (response.ok) {
+          settle({ status: "merged" });
+          setAnnouncement(`Merged ${where}.`);
+          // The merged row has no control and leaves with the re-read, so focus moves to the
+          // heading as the list is read again.
+          holds.current.set(
+            run.run,
+            setTimeout(() => {
+              holds.current.delete(run.run);
+              refresh();
+              headingRef.current?.focus();
+            }, MERGED_HOLD_MS),
+          );
+          return;
+        }
+        failure = await failureOf(response);
+      } catch (err: unknown) {
+        console.error("mergeNotMade", err);
+        failure = { words: "The merge could not be sent. Try again.", retry: true };
+      } finally {
+        sending.current.delete(run.run);
+      }
+      settle({ status: "failed", words: failure.words, sha, retry: failure.retry });
+      setAnnouncement(`${where} was not merged. ${failure.words}`);
+      if (!failure.retry) {
+        refresh();
+      }
+    },
+    [refresh],
+  );
+
+  return { rows, announcement, merge, clearRefusal, headingRef };
+}
+
+type InboxProviderProps = {
+  children: React.ReactNode;
+};
+
+/**
+ * InboxProvider reads the inbox for every screen inside it and holds the merges made from it: the
+ * menu counts the actions and the Overview lists them.
+ */
+export function InboxProvider({ children }: InboxProviderProps) {
+  const read = useInboxRead();
+  const merges = useMerges(read.refresh);
+  return <InboxContext value={{ ...read, ...merges }}>{children}</InboxContext>;
+}
+
+// InboxSection is the inbox's ACTIONS section: the PRs that wait on the owner, each with a
+// MERGE PR that opens its confirm and then shows the merge on the row.
+export function InboxSection() {
+  const { state, refresh, retry, rows, announcement, merge, clearRefusal, headingRef } = useInbox();
+  const [target, setTarget] = useState<InboxRun | null>(null);
+  const headingId = useId();
+
+  // The list is read once for the whole app, so the Overview reads it again each time it opens,
+  // unless that first read is still under way.
+  const loadingAtOpen = useRef(state.status === "loading");
+  useEffect(() => {
+    if (!loadingAtOpen.current) {
+      refresh();
+    }
+  }, [refresh]);
+
+  function handleClose() {
+    setTarget(null);
+  }
+
+  function handleOpen(run: InboxRun) {
+    clearRefusal(run);
     setTarget(run);
   }
 
   function handleConfirm(run: InboxRun) {
     if (run.head_sha !== undefined) {
       void merge(run, run.head_sha);
-    }
-  }
-
-  // merge posts the head commit the owner confirmed; the server merges only if it is still the PR's
-  // head. A refusal a retry cannot change means the list is stale, so it is read again.
-  async function merge(run: InboxRun, sha: string) {
-    if (sending.current.has(run.run)) {
-      return;
-    }
-    sending.current.add(run.run);
-    const where = `${run.ticket} in ${run.repo}`;
-    const settle = (next: RowState) => setRows((previous) => ({ ...previous, [run.run]: next }));
-    settle({ status: "merging", sha });
-    setAnnouncement(`Merging ${where}.`);
-    let failure: Failure;
-    try {
-      const response = await postJSON(`/api/runs/${encodeURIComponent(run.run)}/merge`, {
-        expected_head_sha: sha,
-      });
-      if (response.ok) {
-        settle({ status: "merged" });
-        setAnnouncement(`Merged ${where}.`);
-        // The merged row has no control and leaves with the re-read, so focus moves to the heading
-        // as the list is read again.
-        holds.current.set(
-          run.run,
-          setTimeout(() => {
-            holds.current.delete(run.run);
-            refresh();
-            headingRef.current?.focus();
-          }, MERGED_HOLD_MS),
-        );
-        return;
-      }
-      failure = await failureOf(response);
-    } catch (err: unknown) {
-      console.error("mergeNotMade", err);
-      failure = { words: "The merge could not be sent. Try again.", retry: true };
-    } finally {
-      sending.current.delete(run.run);
-    }
-    settle({ status: "failed", words: failure.words, sha, retry: failure.retry });
-    setAnnouncement(`${where} was not merged. ${failure.words}`);
-    if (!failure.retry) {
-      refresh();
     }
   }
 
@@ -580,7 +636,7 @@ export function InboxSection() {
           tabIndex={-1}
           className="font-mono text-label font-semibold text-ink2"
         >
-          NEEDS YOU
+          ACTIONS
         </h2>
         {state.status === "ready" && (
           <span className="inline-flex h-6.5 items-center rounded-full bg-track px-2.5 text-body font-semibold text-ink">
