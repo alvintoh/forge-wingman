@@ -1,6 +1,7 @@
 import { Link, Outlet, useParams } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { PageHeader } from "./header";
+import { InboxSection } from "./inbox";
 import { ProjectsSection } from "./projects";
 
 export function Root() {
@@ -14,7 +15,30 @@ export function Root() {
   );
 }
 
+// The width from which the grid below has two columns: Tailwind's lg, the breakpoint of its
+// lg:grid-cols-2. The two must change together.
+const TWO_COLUMNS = "(min-width: 64rem)";
+
+function subscribeWidth(notify: () => void) {
+  const query = window.matchMedia(TWO_COLUMNS);
+  query.addEventListener("change", notify);
+  return () => query.removeEventListener("change", notify);
+}
+
+function useTwoColumns() {
+  return useSyncExternalStore(
+    subscribeWidth,
+    () => window.matchMedia(TWO_COLUMNS).matches,
+    () => false,
+  );
+}
+
 export function Inbox() {
+  // Needs you leads in the left column; stacked, Projects leads. The sections are rendered in the
+  // order they are shown, so the Tab order matches what is on screen, and their keys keep each one's
+  // state across the switch.
+  const sections = [<InboxSection key="inbox" />, <ProjectsSection key="projects" />];
+  const twoColumns = useTwoColumns();
   return (
     <>
       {/* The header's own container and side padding, so the first link starts at the
@@ -38,7 +62,9 @@ export function Inbox() {
           Statistics
         </Link>
       </nav>
-      <ProjectsSection />
+      <div className="mx-auto grid max-w-desk grid-cols-1 gap-x-8 gap-y-[calc(var(--spacing-band)*2)] px-padx py-band lg:grid-cols-2">
+        {twoColumns ? sections : sections.toReversed()}
+      </div>
     </>
   );
 }

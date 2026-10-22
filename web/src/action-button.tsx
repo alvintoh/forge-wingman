@@ -1,12 +1,9 @@
+import { kindClass } from "./button-style";
+
 type ActionButtonProps = React.ComponentProps<"button"> & {
   label: string;
   kind: "primary" | "secondary";
 };
-
-const kindClass = {
-  primary: "border-accent bg-accent text-card",
-  secondary: "border-ink2 bg-card text-ink",
-} as const;
 
 /**
  * ActionButton is the app's one 44px button: a dialog's pair and a menu's
