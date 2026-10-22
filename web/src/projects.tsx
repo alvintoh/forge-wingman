@@ -347,8 +347,9 @@ function PillButton({ label, ...rest }: PillButtonProps) {
 type CardPillProps = React.ComponentProps<"button"> & { label: string };
 
 // The card's START, STOP or RESUME: the design's small pill, 28px visible inside a 44px-high hit
-// area. Every label takes ONE width, RESUME's (the set's longest): 6 glyphs of 1ch, the 1.2px
-// tracking after each, and 12px a side, 70.8px in IBM Plex Mono. The label's trailing tracking is
+// area, outlined in ink2 with an ink label, and on track with a muted label while disabled.
+// Every label takes ONE width, RESUME's (the set's longest): 6 glyphs of 1ch, the 1.2px tracking
+// after each, and 12px a side, 70.8px in IBM Plex Mono. The label's trailing tracking is
 // cancelled (-mr) so the glyphs, not the glyphs plus 1.2px, are what sits centred.
 function CardPill({ label, ...rest }: CardPillProps) {
   return (
@@ -357,7 +358,7 @@ function CardPill({ label, ...rest }: CardPillProps) {
       className="group inline-flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center disabled:cursor-not-allowed"
       {...rest}
     >
-      <span className="inline-flex h-7 w-[calc(6ch+7.2px+24px)] items-center justify-center rounded-full border border-accent font-mono text-micro font-semibold tracking-[1.2px] text-accent group-disabled:border-muted group-disabled:text-muted">
+      <span className="inline-flex h-7 w-[calc(6ch+7.2px+24px)] items-center justify-center rounded-full border border-ink2 bg-card font-mono text-micro font-semibold tracking-[1.2px] text-ink group-disabled:border-hair group-disabled:bg-track group-disabled:text-muted">
         <span className="-mr-[1.2px]">{label}</span>
       </span>
     </button>
@@ -471,17 +472,20 @@ function ProjectCard({ project, now, refresh }: CardProps) {
     );
 
   return (
-    // The top padding puts the control's pill 22.8px under the card's top edge, as drawn: 22.8,
-    // less the 8px between the 44px hit area and the 28px pill, less the 1px border. The row keeps
-    // 44px without a control too, so the name's baseline holds at 42px in every state.
-    <li className="rounded-card border border-hair bg-card p-4 pt-[13.8px]">
+    // The vertical rhythm is the drawing's, measured from the card's top edge: the pill at 22.8 and
+    // the name's baseline at 42, the phase row's at 74, the bar at 84, the first status line's at
+    // 108 and 16 apart, Details 24 under the last line, and the card's edge 20 under the last
+    // baseline. Each margin below is that gap less the 16px line box around the baseline (its
+    // baseline sits 12px down). pt: 22.8, less the 8px between the 44px hit area and the 28px
+    // pill, less the 1px border. pb: 20, less the 4px under a last line's baseline, less the border.
+    <li className="card-frame pt-[13.8px] pb-[15px]">
       <div className="min-w-0">
         <div className="min-w-0">
           <div className="flex min-h-11 items-center justify-between gap-3">
-            <div className="flex min-w-0 items-center gap-3">
+            <div className="flex min-w-0 items-center gap-2.5">
               <h3
                 title={project.repository}
-                className="min-w-0 truncate text-body font-semibold text-ink"
+                className="min-w-0 truncate text-body leading-5 font-semibold text-ink"
               >
                 {project.repository}
               </h3>
@@ -496,9 +500,9 @@ function ProjectCard({ project, now, refresh }: CardProps) {
             {control}
           </div>
           {readable !== null && phase !== null && (
-            <div className="mt-2 flex items-baseline justify-between gap-4 text-label text-ink">
+            <div className="mt-[3.2px] flex items-baseline justify-between gap-4 text-label leading-4 font-semibold text-ink">
               <span className="break-words">{phase.name}</span>
-              <span>{percent(phase)}%</span>
+              <span className="font-mono">{percent(phase)}%</span>
             </div>
           )}
           {phase !== null && (
@@ -508,7 +512,7 @@ function ProjectCard({ project, now, refresh }: CardProps) {
               aria-valuemin={0}
               aria-valuemax={100}
               aria-valuenow={percent(phase)}
-              className="mt-2 h-1.5 overflow-hidden rounded-tag bg-track"
+              className="mt-1.5 h-1.5 overflow-hidden rounded-tag bg-track"
             >
               <div
                 className="h-full rounded-tag bg-accent"
@@ -516,9 +520,12 @@ function ProjectCard({ project, now, refresh }: CardProps) {
               />
             </div>
           )}
-          <div className="mt-1 py-2 text-cap text-ink2">
+          <div className="mt-1.5 text-cap leading-4 text-ink2">
             {view.lines.map((l, i) => (
-              <p key={i} className={l.keep ? undefined : "hidden md:block"}>
+              <p
+                key={i}
+                className={`${l.keep ? "" : "hidden md:block"} ${i === view.lines.length - 1 ? "md:text-muted" : ""}`}
+              >
                 {l.text}
               </p>
             ))}
@@ -529,7 +536,7 @@ function ProjectCard({ project, now, refresh }: CardProps) {
               aria-expanded={open}
               aria-controls={detailId}
               aria-label={`${open ? "Hide details" : "Details"}: what is running in ${project.repository}`}
-              className={`-mb-3 -ml-1 -mt-1 inline-flex min-h-11 min-w-11 cursor-pointer items-center px-1 text-label text-accent ${view.working ? "" : "md:hidden"}`}
+              className={`-mb-3.5 -ml-1 -mt-1.5 flex w-fit min-h-11 min-w-11 cursor-pointer items-center px-1 text-label leading-4 text-accent ${view.working ? "" : "md:hidden"}`}
               onClick={() => setOpen((v) => !v)}
             >
               {open ? "Hide details" : "Details"}
@@ -547,7 +554,7 @@ function ProjectCard({ project, now, refresh }: CardProps) {
         </div>
       )}
       {view.notice !== null && (
-        <p id={noticeId} className="mt-3 text-cap text-ink2">
+        <p id={noticeId} className="mt-0.5 text-cap leading-4 text-muted">
           {view.notice}
         </p>
       )}
