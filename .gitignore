@@ -8,3 +8,6 @@
 .terraform/
 __pycache__/
 /tools/omp/node_modules/
+
+# The Firebase CLI's deploy cache, written to the repo root by `firebase deploy`.
+/.firebase/

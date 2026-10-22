@@ -1,0 +1,213 @@
+/* The public landing page: one card, the wordmark, one line, one link to the surface.
+   Drawn first in the vault (design/landing-v1.svg); the numbers below are that drawing's. */
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  src: url("fonts/IBMPlexSans-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+  src: url("fonts/IBMPlexSans-600.woff2") format("woff2");
+}
+
+:root {
+  color-scheme: light;
+
+  /* Copied from web/src/theme.css, which is generated from the vault's tokens.py and cannot be
+     imported here (it pulls in Tailwind). `make landing-check` fails when a value drifts. */
+  --color-ground: #f7f8fa;
+  --color-card: #ffffff;
+  --color-hair: #e8eaed;
+  --color-ink: #111827;
+  --color-ink2: #4b5563;
+  --color-accent: #4f46e5;
+  --font-sans: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+  --text-hero: 2.125rem;
+  --text-title: 1.375rem;
+  --text-body: 0.9375rem;
+  --spacing-gap: 2.5rem;
+  --spacing-pad: 2.75rem;
+  --spacing-padx: 1.625rem;
+  --radius-card: 16px;
+
+  /* Google's "Sign in with Google" button, light theme (developers.google.com/identity/branding-guidelines).
+     These values (the hover state layer included) and the 20/12/10/12 spacing are Google's, not
+     house tokens. */
+  --google-stroke: #747775;
+  --google-ink: #1f1f1f;
+  --google-hover: #303030;
+
+  --btn-h: 44px;
+  --card-w: 28.75rem; /* 460px */
+  --edge: 1px;
+
+  /* IBM Plex Sans line metrics, in em: ascent 1.025, descent 0.275, capitals 0.698. A line box
+     puts its baseline at (line-height / 2 + MID * font-size) below its top, which is how the
+     drawing's baseline-to-baseline spacing is rebuilt below without measuring each element.
+     Chrome rounds the ascent and descent and floors the half-leading, so each gap lands within
+     1px of the drawing (0.8px at most, measured). */
+  --mid: 0.375; /* (ascent - descent) / 2 */
+  --cap: 0.698;
+  --line-body: 1.375rem; /* the drawing's 22px description leading */
+  /* The wordmark's line box is as tall as Plex's own ascent plus descent (1.3em), so the descender
+     of the "g" always sits inside its box and nothing above it can clip it. */
+  --leading-wordmark: 1.3;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-ground);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  line-height: var(--line-body);
+}
+
+/* The card is centred both ways at the viewport's own height; 16px of gutter keeps it off the
+   edge on a phone. The page is the container the card's tiers query: below 460px of room the card
+   IS the page's width. */
+.page {
+  container-type: inline-size;
+  display: grid;
+  place-items: center;
+  min-height: 100dvh;
+  padding: 1rem;
+}
+
+.card {
+  /* The narrowest tier first: the wordmark falls to the title size and the side padding stays at
+     PADX, so a 320px phone reflows without sideways scroll. The tiers below restore the drawing. */
+  --wordmark: var(--text-title);
+  --padx: var(--spacing-padx);
+  /* The brand row's height: the wordmark's line box, or the 32px icon when that is taller (22px). */
+  --brand-h: max(var(--wordmark) * var(--leading-wordmark), 2rem);
+
+  width: min(100%, var(--card-w));
+  /* The top padding is PAD less the gap between the wordmark's line box and its capitals, so the
+     capitals start PAD below the card's top whatever the line height; the sides and bottom are PAD
+     less the 1px border. */
+  padding: calc(var(--spacing-pad) - var(--edge) - var(--brand-h) / 2 + (var(--cap) - var(--mid)) * var(--wordmark))
+    calc(var(--padx) - var(--edge)) calc(var(--spacing-pad) - var(--edge));
+  background: var(--color-card);
+  border: var(--edge) solid var(--color-hair);
+  border-radius: var(--radius-card);
+  /* The design's "soft" shadow: dy 2, a 6px blur, ink at 6%. */
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--color-ink) 6%, transparent);
+}
+
+/* Where each size of the drawing fits, from the wordmark's measured width (245.2px at 34px in Plex
+   Sans 600): icon 32 + gap 12 + 245.2 plus the side padding both sides. At PADX (26) that is 341.2,
+   at PAD (44) 377.2; each threshold adds about 1px of slack, and a wordmark that still does not
+   fit wraps onto two lines rather than overflow. The drawing's own phone card (368) sits between
+   the two, which is why it keeps PADX. */
+@container (min-width: 21.4rem) {
+  .card {
+    --wordmark: var(--text-hero);
+  }
+}
+@container (min-width: 23.65rem) {
+  .card {
+    --padx: var(--spacing-pad);
+  }
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: var(--brand-h);
+}
+
+.brand-icon {
+  flex: none;
+  display: block;
+}
+
+.wordmark {
+  min-width: 0;
+  margin: 0;
+  font-size: var(--wordmark);
+  font-weight: 600;
+  line-height: var(--brand-h);
+  overflow-wrap: anywhere; /* unlike break-word, it lowers the min-content, so the card can shrink */
+}
+
+/* GAP between the wordmark's baseline and the description's, then between the description's
+   last baseline and the button's top. */
+.line {
+  margin: calc(
+      var(--spacing-gap) - var(--brand-h) / 2 + var(--mid) * var(--wordmark) - var(--line-body) / 2 - var(--mid) *
+        var(--text-body)
+    )
+    0 0;
+  color: var(--color-ink2);
+  overflow-wrap: anywhere;
+}
+
+.signin {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  /* The 44px is a floor, so the label can wrap when text is zoomed; 11px of padding plus the two
+     1px borders plus the 20px line make exactly 44. */
+  min-height: var(--btn-h);
+  margin-top: calc(var(--spacing-gap) - var(--line-body) / 2 + var(--mid) * var(--text-body));
+  padding: 11px 12px;
+  border: 1px solid var(--google-stroke);
+  border-radius: calc(var(--btn-h) / 2);
+  background: var(--color-card);
+  color: var(--google-ink);
+  font-weight: 600;
+  line-height: 20px;
+  text-align: center;
+  text-decoration: none;
+  transition: background-color 150ms;
+}
+
+.signin:hover {
+  background: color-mix(in srgb, var(--google-hover) 8%, var(--color-card));
+}
+
+.signin:active {
+  background: color-mix(in srgb, var(--google-hover) 12%, var(--color-card));
+}
+
+.signin-g {
+  flex: none;
+  display: block;
+}
+
+.signin-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Focus is functional feedback, so it survives reduced motion. */
+:focus-visible {
+  outline: 3px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .signin {
+    transition-duration: 0.01ms;
+  }
+}
