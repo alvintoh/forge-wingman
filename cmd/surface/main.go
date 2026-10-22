@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/firestore"
+	"google.golang.org/api/idtoken"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 	"github.com/alvintoh/forge-wingman/internal/providers"
@@ -97,9 +98,14 @@ func run(logger *slog.Logger) error {
 		Projects:      projects,
 	}
 
+	handler, err := gate(context.Background(), logger, newMux(deps))
+	if err != nil {
+		return err
+	}
+
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           newMux(deps),
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -123,6 +129,35 @@ func run(logger *slog.Logger) error {
 		defer cancel()
 		return srv.Shutdown(shutdownCtx)
 	}
+}
+
+// localDevEmail is the account local development acts as when
+// WINGMAN_LOCAL_DEV_EMAIL names none.
+const localDevEmail = "dev@localhost"
+
+// gate puts IAP's assertion check in front of every route, unless
+// WINGMAN_LOCAL_DEV is 1, where no IAP fronts the process and every request
+// passes as WINGMAN_LOCAL_DEV_EMAIL, or localDevEmail. Outside local
+// development the audience must be set, so a missing setting stops the process
+// rather than serving unchecked.
+func gate(ctx context.Context, logger *slog.Logger, mux http.Handler) (http.Handler, error) {
+	if os.Getenv("WINGMAN_LOCAL_DEV") == "1" {
+		email := os.Getenv("WINGMAN_LOCAL_DEV_EMAIL")
+		if email == "" {
+			email = localDevEmail
+		}
+		logger.Warn("iapCheckOff", "reason", "local-dev", "email", email)
+		return signedInAs(email, mux), nil
+	}
+	audience := os.Getenv("WINGMAN_IAP_AUDIENCE")
+	if audience == "" {
+		return nil, errors.New("WINGMAN_IAP_AUDIENCE is unset and WINGMAN_LOCAL_DEV is not 1")
+	}
+	validator, err := idtoken.NewValidator(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("IAP assertion validator: %w", err)
+	}
+	return requireIAP(validator, audience, logger, mux), nil
 }
 
 // ComparisonReader reads the comparison of past runs the endpoint reports.
@@ -190,6 +225,12 @@ func newMux(d Deps) *http.ServeMux {
 		_ = json.NewEncoder(w).Encode(struct {
 			SHA string `json:"sha"`
 		}{commitSHA})
+	})
+	mux.HandleFunc("GET /api/me", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(struct {
+			Email *string `json:"email"`
+		}{requestEmail(r)})
 	})
 	mux.HandleFunc("GET /api/comparison", func(w http.ResponseWriter, r *http.Request) {
 		if d.Comparison == nil {

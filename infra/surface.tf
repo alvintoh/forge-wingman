@@ -20,8 +20,14 @@ resource "google_project_iam_member" "surface_datastore" {
   depends_on = [google_project_service.this]
 }
 
+# The name is a local so the service's own IAP audience can name it without
+# referring to the resource from inside itself.
+locals {
+  surface_name = "forge-wingman-surface"
+}
+
 resource "google_cloud_run_v2_service" "surface" {
-  name     = "forge-wingman-surface"
+  name     = local.surface_name
   location = var.region
   ingress  = "INGRESS_TRAFFIC_ALL"
 
@@ -54,6 +60,13 @@ resource "google_cloud_run_v2_service" "surface" {
       env {
         name  = "GOOGLE_CLOUD_PROJECT"
         value = var.project_id
+      }
+
+      # The audience IAP signs this service's assertions for, the format for a
+      # Cloud Run service in docs.cloud.google.com/iap/docs/signed-headers-howto.
+      env {
+        name  = "WINGMAN_IAP_AUDIENCE"
+        value = "/projects/${data.google_project.this.number}/locations/${var.region}/services/${local.surface_name}"
       }
     }
   }

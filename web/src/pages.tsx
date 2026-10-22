@@ -1,20 +1,23 @@
 import { Link, Outlet, useParams } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
+import { PageHeader } from "./header";
 import { ProjectsSection } from "./projects";
 
 export function Root() {
   return (
-    <main className="min-h-dvh bg-ground text-ink">
-      <Outlet />
-    </main>
+    <div className="min-h-dvh bg-ground text-ink">
+      <PageHeader />
+      <main>
+        <Outlet />
+      </main>
+    </div>
   );
 }
 
 export function Inbox() {
   return (
     <>
-      <h1>Inbox</h1>
-      <nav aria-label="Views" className="mt-2 flex flex-wrap gap-gap">
+      <nav aria-label="Views" className="flex flex-wrap gap-gap">
         <Link to="/autonomy" className="inline-flex min-h-11 min-w-11 items-center">
           Autonomy
         </Link>

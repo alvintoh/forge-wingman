@@ -3,6 +3,9 @@
 processes:
   surface:
     command: go run ./cmd/surface
+    # serves without IAP's assertion, which only IAP can sign
+    environment:
+      - WINGMAN_LOCAL_DEV=1
     readiness_probe:
       http_get:
         host: 127.0.0.1

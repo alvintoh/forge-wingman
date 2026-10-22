@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { ActionButton, ButtonPair } from "./action-button";
 
 type PhaseProgress = {
   name: string;
@@ -617,10 +618,19 @@ function ProjectEntry({ project, now, refresh }: EntryProps) {
             The stop was not made. Nothing changed; try again.
           </p>
         )}
-        <div className="mt-4 flex justify-end gap-3">
-          <PillButton label="BACK" onClick={() => stopRef.current?.close()} />
-          <PillButton label="STOP PHASE" disabled={saving} onClick={() => pause("stop")} />
-        </div>
+        <ButtonPair
+          back={
+            <ActionButton kind="secondary" label="BACK" onClick={() => stopRef.current?.close()} />
+          }
+          action={
+            <ActionButton
+              kind="primary"
+              label="STOP PHASE"
+              disabled={saving}
+              onClick={() => pause("stop")}
+            />
+          }
+        />
       </dialog>
 
       {readable !== null && (
@@ -641,10 +651,16 @@ function ProjectEntry({ project, now, refresh }: EntryProps) {
               The start was not requested. Nothing changed; try again.
             </p>
           )}
-          <div className="mt-4 flex justify-end gap-3">
-            <PillButton label="BACK" onClick={() => dialogRef.current?.close()} />
-            <PillButton label="START" disabled={saving} onClick={start} />
-          </div>
+          <ButtonPair
+            back={
+              <ActionButton
+                kind="secondary"
+                label="BACK"
+                onClick={() => dialogRef.current?.close()}
+              />
+            }
+            action={<ActionButton kind="primary" label="START" disabled={saving} onClick={start} />}
+          />
         </dialog>
       )}
     </li>

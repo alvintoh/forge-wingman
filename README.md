@@ -171,8 +171,10 @@ make dev                  # backend :8080 + frontend http://localhost:5173, Ctrl
 make ui                   # the same, in a process-compose UI: a pane per process
 ```
 
-For the single binary exactly as it ships: `cd web && bun run build && cd .. && go run ./cmd/surface`,
-then http://localhost:8080. `make ui` needs `brew install f1bonacc1/tap/process-compose`.
+For the single binary exactly as it ships: `cd web && bun run build && cd .. && WINGMAN_LOCAL_DEV=1 go run ./cmd/surface`,
+then http://localhost:8080. Without `WINGMAN_LOCAL_DEV=1` the surface refuses every request that lacks
+IAP's signed assertion, which only IAP can produce. With it, every request is signed in as
+`dev@localhost`, or as `WINGMAN_LOCAL_DEV_EMAIL` when that is set. `make ui` needs `brew install f1bonacc1/tap/process-compose`.
 
 ## Checks
 
