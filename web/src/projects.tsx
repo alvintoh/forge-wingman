@@ -344,6 +344,26 @@ function PillButton({ label, ...rest }: PillButtonProps) {
   );
 }
 
+type CardPillProps = React.ComponentProps<"button"> & { label: string };
+
+// The card's START, STOP or RESUME: the design's small pill, 28px visible inside a 44px-high hit
+// area. Every label takes ONE width, RESUME's (the set's longest): 6 glyphs of 1ch, the 1.2px
+// tracking after each, and 12px a side, 70.8px in IBM Plex Mono. The label's trailing tracking is
+// cancelled (-mr) so the glyphs, not the glyphs plus 1.2px, are what sits centred.
+function CardPill({ label, ...rest }: CardPillProps) {
+  return (
+    <button
+      type="button"
+      className="group inline-flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center disabled:cursor-not-allowed"
+      {...rest}
+    >
+      <span className="inline-flex h-7 w-[calc(6ch+7.2px+24px)] items-center justify-center rounded-full border border-accent font-mono text-micro font-semibold tracking-[1.2px] text-accent group-disabled:border-muted group-disabled:text-muted">
+        <span className="-mr-[1.2px]">{label}</span>
+      </span>
+    </button>
+  );
+}
+
 type CardProps = {
   project: Project;
   now: number;
@@ -420,7 +440,7 @@ function ProjectCard({ project, now, refresh }: CardProps) {
 
   const control =
     view.startable || view.startDisabled ? (
-      <PillButton
+      <CardPill
         label="START"
         disabled={view.startDisabled}
         aria-describedby={view.startDisabled ? noticeId : undefined}
@@ -431,7 +451,7 @@ function ProjectCard({ project, now, refresh }: CardProps) {
         }}
       />
     ) : view.pill === "RUNNING" ? (
-      <PillButton
+      <CardPill
         label="STOP"
         aria-label={`Stop ${readable?.current ?? "the phase"} in ${project.repository}`}
         onClick={() => {
@@ -441,7 +461,7 @@ function ProjectCard({ project, now, refresh }: CardProps) {
       />
     ) : (
       (view.pill === "STOPPING" || view.pill === "STOPPED") && (
-        <PillButton
+        <CardPill
           label="RESUME"
           disabled={saving}
           aria-label={`Resume ${readable?.current ?? "the phase"} in ${project.repository}`}
@@ -451,10 +471,13 @@ function ProjectCard({ project, now, refresh }: CardProps) {
     );
 
   return (
-    <li className="rounded-card border border-hair bg-card p-4">
+    // The top padding puts the control's pill 22.8px under the card's top edge, as drawn: 22.8,
+    // less the 8px between the 44px hit area and the 28px pill, less the 1px border. The row keeps
+    // 44px without a control too, so the name's baseline holds at 42px in every state.
+    <li className="rounded-card border border-hair bg-card p-4 pt-[13.8px]">
       <div className="min-w-0">
         <div className="min-w-0">
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex min-h-11 items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-3">
               <h3
                 title={project.repository}
