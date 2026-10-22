@@ -114,6 +114,11 @@ with its snapshot, reach, queue load and last activity; `POST /api/projects/star
 (`start_phase`, `start_requested_at`) and delegates nothing. The next poll delegates the
 eligible tickets of the current phase, only if it is still the phase named, and clears the
 request, or records why it refused in `start_refusal`. The surface holds no Linear credential.
+`GET /api/projects/options` answers the recorded Linear project names less those that
+already have a listed repository, and `POST /api/projects/add` `{linear_project, repository}`
+lists a project by creating its document in the owner database, which is all it writes: a
+repository already listed, or a Linear project that already has one, is refused with 409. The
+project reads `checking` until the dispatcher's next poll has tried to read the repository.
 
 ## Operate
 

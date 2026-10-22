@@ -16,6 +16,12 @@ import (
 // maxPhaseName bounds the phase a start request names, which is stored as sent.
 const maxPhaseName = 200
 
+// maxLinearProjectName bounds the Linear project an add names, which is stored as sent.
+const maxLinearProjectName = 200
+
+// maxRepository is GitHub's longest owner (39) and name (100) around the "/".
+const maxRepository = 140
+
 // ProjectLister reads the owner's listed projects.
 type ProjectLister interface {
 	Listed(ctx context.Context) ([]dispatcher.PhaseProject, error)
@@ -53,6 +59,16 @@ type PauseSetter interface {
 	Set(ctx context.Context, repository string, paused bool, at time.Time) error
 }
 
+// ProjectAdder lists a project under its repository, refusing one already listed.
+type ProjectAdder interface {
+	Add(ctx context.Context, linearProject, repository string, at time.Time) error
+}
+
+// LinearNameReader reads the Linear project names the dispatcher last recorded.
+type LinearNameReader interface {
+	Names(ctx context.Context) ([]string, error)
+}
+
 // ProjectStores are the stores behind the projects endpoints; every one is
 // needed, and a surface without them answers 503.
 type ProjectStores struct {
@@ -63,10 +79,13 @@ type ProjectStores struct {
 	Activity  ActivityReader
 	Starts    StartRequester
 	Pauses    PauseSetter
+	Adds      ProjectAdder
+	Names     LinearNameReader
 }
 
 func (p ProjectStores) ready() bool {
-	return p.Projects != nil && p.Snapshots != nil && p.Reaches != nil && p.Loads != nil && p.Activity != nil && p.Starts != nil && p.Pauses != nil
+	return p.Projects != nil && p.Snapshots != nil && p.Reaches != nil && p.Loads != nil && p.Activity != nil &&
+		p.Starts != nil && p.Pauses != nil && p.Adds != nil && p.Names != nil
 }
 
 type projectReach struct {
@@ -320,4 +339,103 @@ func (d Deps) setPause(w http.ResponseWriter, r *http.Request, paused bool) {
 	_ = json.NewEncoder(w).Encode(struct {
 		Repository string `json:"repository"`
 	}{body.Repository})
+}
+
+// linearProjectListed reports whether a listed project already carries the Linear
+// project's name; Linear names are compared without regard to case.
+func linearProjectListed(listed []dispatcher.PhaseProject, name string) bool {
+	return slices.ContainsFunc(listed, func(p dispatcher.PhaseProject) bool { return strings.EqualFold(p.LinearProject, name) })
+}
+
+type optionsResponse struct {
+	Names []string `json:"names"`
+}
+
+// projectOptions serves GET /api/projects/options: the Linear project names the
+// dispatcher last recorded, less those that already have a listed repository.
+func (d Deps) projectOptions(w http.ResponseWriter, r *http.Request) {
+	if !d.Projects.ready() {
+		http.Error(w, "the projects view needs its stores", http.StatusServiceUnavailable)
+		return
+	}
+	out, err := d.readOptions(r.Context())
+	if err != nil {
+		d.Logger.Error("projectOptionsNotRead", "err", err.Error())
+		http.Error(w, "reading the Linear projects", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+func (d Deps) readOptions(ctx context.Context) (optionsResponse, error) {
+	names, err := d.Projects.Names.Names(ctx)
+	if err != nil {
+		return optionsResponse{}, err
+	}
+	listed, err := d.Projects.Projects.Listed(ctx)
+	if err != nil {
+		return optionsResponse{}, err
+	}
+	out := optionsResponse{Names: make([]string, 0, len(names))}
+	for _, name := range names {
+		if !linearProjectListed(listed, name) {
+			out.Names = append(out.Names, name)
+		}
+	}
+	return out, nil
+}
+
+// addProject serves POST /api/projects/add. It lists the project and nothing
+// else: the dispatcher reads the repository on its next poll, so the project
+// reads checking until then. The check that the Linear project has no listed
+// repository reads and then writes, so two adds in the same instant can both pass.
+func (d Deps) addProject(w http.ResponseWriter, r *http.Request) {
+	if !d.Projects.ready() {
+		http.Error(w, "the projects view needs its stores", http.StatusServiceUnavailable)
+		return
+	}
+	if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		http.Error(w, "a project is added with a JSON body", http.StatusUnsupportedMediaType)
+		return
+	}
+	var body struct {
+		LinearProject string `json:"linear_project"`
+		Repository    string `json:"repository"`
+	}
+	err := json.NewDecoder(r.Body).Decode(&body)
+	// The name is trimmed before it is compared and stored, so a padded " Roadmap " is the listed
+	// "Roadmap" and cannot slip past the conflict check; a padded repository is refused as not owner/name.
+	linearProject := strings.TrimSpace(body.LinearProject)
+	if err != nil || !store.ValidRepository(body.Repository) || len(body.Repository) > maxRepository ||
+		linearProject == "" || len(linearProject) > maxLinearProjectName {
+		http.Error(w, "the request body is not JSON naming a Linear project and an owner/name repository", http.StatusBadRequest)
+		return
+	}
+	listed, err := d.Projects.Projects.Listed(r.Context())
+	if err != nil {
+		d.Logger.Error("projectAddNotChecked", "repo", body.Repository, "err", err.Error())
+		http.Error(w, "checking the listed projects", http.StatusInternalServerError)
+		return
+	}
+	if linearProjectListed(listed, linearProject) {
+		http.Error(w, "that Linear project already has a listed repository", http.StatusConflict)
+		return
+	}
+	switch err := d.Projects.Adds.Add(r.Context(), linearProject, body.Repository, time.Now()); {
+	case errors.Is(err, store.ErrRepositoryListed):
+		http.Error(w, "that repository is already listed", http.StatusConflict)
+		return
+	case err != nil:
+		d.Logger.Error("projectAddNotMade", "repo", body.Repository, "err", err.Error())
+		http.Error(w, "adding the project", http.StatusInternalServerError)
+		return
+	}
+	d.Logger.Info("projectAdded", "repo", body.Repository)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(struct {
+		LinearProject string `json:"linear_project"`
+		Repository    string `json:"repository"`
+	}{linearProject, body.Repository})
 }

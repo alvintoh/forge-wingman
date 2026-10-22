@@ -19,19 +19,24 @@ import (
 
 var projectsAt = time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
 
-// stubProjects serves every project store from fixed data and records the start it is asked for.
+// stubProjects serves every project store from fixed data and records the start, pause and add it is asked for.
 type stubProjects struct {
 	listed    []dispatcher.PhaseProject
 	snapshots map[string]dispatcher.PhaseSnapshot
 	reaches   map[string]dispatcher.RepoReach
 	activity  map[string]time.Time
+	listedErr error
+	names     []string
+	namesErr  error
 	requested []string
 	pauses    []string
 	pauseErr  error
+	added     []string
+	addErr    error
 }
 
 func (s *stubProjects) Listed(context.Context) ([]dispatcher.PhaseProject, error) {
-	return s.listed, nil
+	return s.listed, s.listedErr
 }
 
 func (s *stubProjects) Snapshots(context.Context) (map[string]dispatcher.PhaseSnapshot, error) {
@@ -63,9 +68,21 @@ func (s *stubProjects) Set(_ context.Context, repo string, paused bool, _ time.T
 	return nil
 }
 
+func (s *stubProjects) Names(context.Context) ([]string, error) {
+	return s.names, s.namesErr
+}
+
+func (s *stubProjects) Add(_ context.Context, linearProject, repo string, _ time.Time) error {
+	if s.addErr != nil {
+		return s.addErr
+	}
+	s.added = append(s.added, linearProject+":"+repo)
+	return nil
+}
+
 func newProjectsMux(s *stubProjects) *http.ServeMux {
 	return newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Projects: ProjectStores{
-		Projects: s, Snapshots: s, Reaches: s, Loads: s, Activity: s, Starts: s, Pauses: s,
+		Projects: s, Snapshots: s, Reaches: s, Loads: s, Activity: s, Starts: s, Pauses: s, Adds: s, Names: s,
 	}})
 }
 
@@ -271,12 +288,175 @@ func TestStopWithoutStoresIsUnavailable(t *testing.T) {
 func TestPauseIsUnavailableWithoutThePauseStore(t *testing.T) {
 	s := startableProjects()
 	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Projects: ProjectStores{
-		Projects: s, Snapshots: s, Reaches: s, Loads: s, Activity: s, Starts: s,
+		Projects: s, Snapshots: s, Reaches: s, Loads: s, Activity: s, Starts: s, Adds: s, Names: s,
 	}})
 	for _, action := range []string{"stop", "resume"} {
 		rec := postPause(mux, action, "application/json", `{"repository":"octo/widget"}`)
 		if rec.Code != http.StatusServiceUnavailable {
 			t.Errorf("%s without a pause store = %d, want %d", action, rec.Code, http.StatusServiceUnavailable)
 		}
+	}
+}
+
+func postAdd(mux http.Handler, contentType, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/add", strings.NewReader(body))
+	req.Header.Set("Content-Type", contentType)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestAddProjectRefusals(t *testing.T) {
+	const fresh = `{"linear_project":"Fresh","repository":"octo/fresh"}`
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+		change      func(*stubProjects)
+		want        int
+	}{
+		{"not JSON", "application/json", `nope`, nil, http.StatusBadRequest},
+		{"no repository", "application/json", `{"linear_project":"Fresh"}`, nil, http.StatusBadRequest},
+		{"repository not owner/name", "application/json", `{"linear_project":"Fresh","repository":"widget"}`, nil, http.StatusBadRequest},
+		{"repository over the bound", "application/json", `{"linear_project":"Fresh","repository":"octo/` + strings.Repeat("r", maxRepository) + `"}`, nil, http.StatusBadRequest},
+		{"no Linear project", "application/json", `{"repository":"octo/fresh"}`, nil, http.StatusBadRequest},
+		{"a blank Linear project", "application/json", `{"linear_project":"  ","repository":"octo/fresh"}`, nil, http.StatusBadRequest},
+		{"a Linear project over the bound", "application/json", `{"linear_project":"` + strings.Repeat("p", maxLinearProjectName+1) + `","repository":"octo/fresh"}`, nil, http.StatusBadRequest},
+		{"not a JSON content type", "text/plain", fresh, nil, http.StatusUnsupportedMediaType},
+		{"the Linear project already has a repository", "application/json", `{"linear_project":"Roadmap","repository":"octo/fresh"}`, nil, http.StatusConflict},
+		{"the same Linear project in another case", "application/json", `{"linear_project":"roadmap","repository":"octo/fresh"}`, nil, http.StatusConflict},
+		{"the same Linear project padded", "application/json", `{"linear_project":"  Roadmap ","repository":"octo/fresh"}`, nil, http.StatusConflict},
+		{"a repository padded", "application/json", `{"linear_project":"Fresh","repository":" octo/fresh "}`, nil, http.StatusBadRequest},
+		{"the repository is already listed", "application/json", fresh, func(s *stubProjects) {
+			s.addErr = fmt.Errorf("%w: octo/fresh", store.ErrRepositoryListed)
+		}, http.StatusConflict},
+		{"the write fails", "application/json", fresh, func(s *stubProjects) { s.addErr = errors.New("down") }, http.StatusInternalServerError},
+		{"the listed projects cannot be read", "application/json", fresh, func(s *stubProjects) {
+			s.listedErr = errors.New("down")
+		}, http.StatusInternalServerError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := startableProjects()
+			if tt.change != nil {
+				tt.change(s)
+			}
+			rec := postAdd(newProjectsMux(s), tt.contentType, tt.body)
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.want, rec.Body.String())
+			}
+			if len(s.added) != 0 {
+				t.Errorf("added %v for a refused add", s.added)
+			}
+		})
+	}
+}
+
+func TestAddProjectSaysWhichConflictRefusedIt(t *testing.T) {
+	s := startableProjects()
+	rec := postAdd(newProjectsMux(s), "application/json", `{"linear_project":"Roadmap","repository":"octo/fresh"}`)
+	if !strings.Contains(rec.Body.String(), "Linear project already has") {
+		t.Errorf("Linear project conflict: %q, want it to name the Linear project", rec.Body.String())
+	}
+	s.addErr = fmt.Errorf("%w: octo/fresh", store.ErrRepositoryListed)
+	rec = postAdd(newProjectsMux(s), "application/json", `{"linear_project":"Fresh","repository":"octo/fresh"}`)
+	if !strings.Contains(rec.Body.String(), "repository is already listed") {
+		t.Errorf("repository conflict: %q, want it to name the repository", rec.Body.String())
+	}
+}
+
+func TestAddProjectListsThePair(t *testing.T) {
+	s := startableProjects()
+	rec := postAdd(newProjectsMux(s), "application/json", `{"linear_project":"Fresh","repository":"Octo/Fresh"}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+	if want := []string{"Fresh:Octo/Fresh"}; !slices.Equal(s.added, want) {
+		t.Errorf("added %v, want %v", s.added, want)
+	}
+	if len(s.requested) != 0 || len(s.pauses) != 0 {
+		t.Errorf("an add also started %v or paused %v", s.requested, s.pauses)
+	}
+}
+
+func TestAddProjectListsTheLinearProjectTrimmed(t *testing.T) {
+	s := startableProjects()
+	rec := postAdd(newProjectsMux(s), "application/json", `{"linear_project":"  Fresh ","repository":"octo/fresh"}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+	if want := []string{"Fresh:octo/fresh"}; !slices.Equal(s.added, want) {
+		t.Errorf("added %v, want %v", s.added, want)
+	}
+	if !strings.Contains(rec.Body.String(), `"linear_project":"Fresh"`) {
+		t.Errorf("response %q, want the trimmed name", rec.Body.String())
+	}
+}
+
+func TestAddProjectIsUnavailableWithoutAStore(t *testing.T) {
+	s := startableProjects()
+	const body = `{"linear_project":"Fresh","repository":"octo/fresh"}`
+	if rec := postAdd(newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger()}), "application/json", body); rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("without stores = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+	withoutAdds := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Projects: ProjectStores{
+		Projects: s, Snapshots: s, Reaches: s, Loads: s, Activity: s, Starts: s, Pauses: s, Names: s,
+	}})
+	if rec := postAdd(withoutAdds, "application/json", body); rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("without the add store = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+	withoutNames := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Projects: ProjectStores{
+		Projects: s, Snapshots: s, Reaches: s, Loads: s, Activity: s, Starts: s, Pauses: s, Adds: s,
+	}})
+	if rec := postAdd(withoutNames, "application/json", body); rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("without the names store = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func getOptions(s *stubProjects) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	newProjectsMux(s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/projects/options", nil))
+	return rec
+}
+
+func TestProjectOptionsLeaveOutLinearProjectsAlreadyListed(t *testing.T) {
+	s := startableProjects()
+	s.names = []string{"parallax", "ROADMAP", "forge-octant"}
+	rec := getOptions(s)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var got optionsResponse
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"parallax", "forge-octant"}; !slices.Equal(got.Names, want) {
+		t.Errorf("names = %v, want %v", got.Names, want)
+	}
+}
+
+func TestProjectOptionsListNoNamesAsAnEmptyArray(t *testing.T) {
+	s := startableProjects()
+	s.names = []string{"Roadmap"}
+	if body := getOptions(s).Body.String(); !strings.Contains(body, `"names":[]`) {
+		t.Errorf("body = %s, want an empty names array", body)
+	}
+}
+
+func TestProjectOptionsRefusals(t *testing.T) {
+	s := startableProjects()
+	s.namesErr = errors.New("down")
+	if rec := getOptions(s); rec.Code != http.StatusInternalServerError {
+		t.Errorf("names unreadable = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+	s = startableProjects()
+	s.listedErr = errors.New("down")
+	if rec := getOptions(s); rec.Code != http.StatusInternalServerError {
+		t.Errorf("listed projects unreadable = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+	rec := httptest.NewRecorder()
+	newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger()}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/projects/options", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("without stores = %d, want %d", rec.Code, http.StatusServiceUnavailable)
 	}
 }
