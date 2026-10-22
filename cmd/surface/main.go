@@ -74,7 +74,7 @@ func run(logger *slog.Logger) error {
 		measured = store.NewRewrites(fsc)
 		peak = store.NewPeakModes(fsc)
 		autoMerge = store.NewAutoMergeSwitches(fsc)
-		// A project's phase is requested on its document in the owner database.
+		// A project's phase is requested, and a project added, in the owner database.
 		owner, err := firestore.NewClientWithDatabase(context.Background(), project, store.OwnerDatabase)
 		if err != nil {
 			return fmt.Errorf("owner database client: %w", err)
@@ -84,6 +84,7 @@ func run(logger *slog.Logger) error {
 		projects = ProjectStores{
 			Projects: phases, Snapshots: store.NewPhaseSnapshots(fsc), Reaches: reaches,
 			Loads: queue, Activity: queue, Starts: phases, Pauses: phases,
+			Adds: store.NewProjects(owner), Names: store.NewProjectNames(fsc),
 		}
 	}
 
@@ -358,6 +359,8 @@ func newMux(d Deps) *http.ServeMux {
 	mux.HandleFunc("POST /api/projects/start", d.startProject)
 	mux.HandleFunc("POST /api/projects/stop", d.stopProject)
 	mux.HandleFunc("POST /api/projects/resume", d.resumeProject)
+	mux.HandleFunc("POST /api/projects/add", d.addProject)
+	mux.HandleFunc("GET /api/projects/options", d.projectOptions)
 	mux.Handle("GET /api/", http.NotFoundHandler())
 	mux.Handle("GET /", spaHandler(d.SPA))
 

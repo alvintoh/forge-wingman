@@ -27,7 +27,8 @@ var repositoryPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
 // ErrRepositoryListed reports an add whose repository is already listed.
 var ErrRepositoryListed = errors.New("repository already listed")
 
-// ValidRepository reports whether repo is written as owner/name.
+// ValidRepository reports whether repo is written as owner/name. The Projects view
+// checks the same pattern before it posts an add.
 func ValidRepository(repo string) bool {
 	return repositoryPattern.MatchString(repo)
 }
