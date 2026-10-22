@@ -242,7 +242,7 @@ function describe(project: Project, now: number): ProjectView {
   } else {
     line(activity, true);
   }
-  // A phone card always shows one line beside its control: the last line when none is marked.
+  // A phone card always shows one status line: the last line when none is marked.
   if (!lines.some((l) => l.keep)) {
     lines.splice(-1, 1, { text: lines[lines.length - 1]?.text ?? activity, keep: true });
   }
@@ -334,7 +334,7 @@ function PillButton({ label, ...rest }: PillButtonProps) {
   return (
     <button
       type="button"
-      className="group inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center disabled:cursor-not-allowed"
+      className="group inline-flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center disabled:cursor-not-allowed"
       {...rest}
     >
       <span className="inline-flex h-8 min-w-26 items-center justify-center rounded-full border border-accent px-3 font-mono text-micro font-semibold text-accent group-disabled:border-muted group-disabled:text-muted">
@@ -454,20 +454,23 @@ function ProjectCard({ project, now, refresh }: CardProps) {
     <li className="rounded-card border border-hair bg-card p-4">
       <div className="min-w-0">
         <div className="min-w-0">
-          <div className="flex items-center gap-3">
-            <h3
-              title={project.repository}
-              className="min-w-0 truncate text-body font-semibold text-ink"
-            >
-              {project.repository}
-            </h3>
-            {view.pill !== null && (
-              <span
-                className={`inline-flex h-5.5 shrink-0 items-center rounded-full px-2.5 font-mono text-micro font-semibold tracking-[1.2px] text-card ${chipFill[view.pill]}`}
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-3">
+              <h3
+                title={project.repository}
+                className="min-w-0 truncate text-body font-semibold text-ink"
               >
-                {view.pill}
-              </span>
-            )}
+                {project.repository}
+              </h3>
+              {view.pill !== null && (
+                <span
+                  className={`inline-flex h-5.5 shrink-0 items-center rounded-full px-2.5 font-mono text-micro font-semibold tracking-[1.2px] text-card ${chipFill[view.pill]}`}
+                >
+                  {view.pill}
+                </span>
+              )}
+            </div>
+            {control}
           </div>
           {readable !== null && phase !== null && (
             <div className="mt-2 flex items-baseline justify-between gap-4 text-label text-ink">
@@ -490,15 +493,12 @@ function ProjectCard({ project, now, refresh }: CardProps) {
               />
             </div>
           )}
-          <div className="mt-1 flex items-center justify-between gap-4">
-            <div className="min-w-0 flex-1 py-2 text-cap text-ink2">
-              {view.lines.map((l, i) => (
-                <p key={i} className={l.keep ? undefined : "hidden md:block"}>
-                  {l.text}
-                </p>
-              ))}
-            </div>
-            {control}
+          <div className="mt-1 py-2 text-cap text-ink2">
+            {view.lines.map((l, i) => (
+              <p key={i} className={l.keep ? undefined : "hidden md:block"}>
+                {l.text}
+              </p>
+            ))}
           </div>
           {(view.working || view.lines.some((l) => !l.keep)) && (
             <button
