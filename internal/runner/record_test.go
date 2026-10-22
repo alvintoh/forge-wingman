@@ -658,6 +658,22 @@ func TestFinalizeCarriesTheDecisionModeTheRunWasClaimedWith(t *testing.T) {
 	}
 }
 
+func TestFinalizeKeepsTheWaitReasonAndTheOwnersMerge(t *testing.T) {
+	store := seeded(t)
+	rec := store[testRunID]
+	rec.WaitReason, rec.MergedSHA, rec.MergedByOwnerAt = WaitFrontEnd, "abc123", finalizeNow
+	store[testRunID] = rec
+	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: "",
+		RunResult: "failure", PRResult: "skipped"}
+	if _, err := Finalize(context.Background(), store, &fakeLedger{}, nil, in, finalizeNow); err != nil {
+		t.Fatal(err)
+	}
+	got := store[testRunID]
+	if got.WaitReason != WaitFrontEnd || got.MergedSHA != "abc123" || !got.MergedByOwnerAt.Equal(finalizeNow) {
+		t.Fatalf("wait reason %q, merged %q at %v, want all three carried through finalize", got.WaitReason, got.MergedSHA, got.MergedByOwnerAt)
+	}
+}
+
 func TestFinalizeRecordsTheSampleAndTheAutoMergeRequest(t *testing.T) {
 	for _, tt := range []struct {
 		runID              string

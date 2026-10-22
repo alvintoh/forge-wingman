@@ -129,6 +129,9 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	switchOn := autoMergeSwitchOn(ctx, logger, *runID, store.NewAutoMergeSwitches(fsc))
 	rule := autoMergeRule(ctx, logger, *runID, store.NewRewrites(fsc), switchOn)
 	merge := autoMerge(rule.On, *runID, rec.Ticket(), sum, runner.FailedGate(*checkReport), check)
+	if err := records.SetWaitReason(ctx, *runID, waitReason(*runID, rec.Ticket(), sum, check)); err != nil {
+		logger.Warn("waitReasonNotRecorded", "run", *runID, "err", err.Error())
+	}
 	logger.Info("autoMergeDecided", append(ruleAttrs(rule), "run", *runID, "autoMerge", merge, "sampled", runner.Sampled(*runID),
 		"draft", draft, "frontEnd", len(check.FrontEnd), "changed", len(check.Changed), "outOfPlan", len(check.OutOfPlan), "overlap", check.Overlap, "planned", check.Planned)...)
 	if err := writeOutputs(e.output, map[string]string{
@@ -290,8 +293,27 @@ func draftPR(sum runner.Summary, check prCheck) bool {
 // no recorded plan, or holding a provisional decision the owner has not
 // confirmed, which hold the PR without making it a draft.
 func ownerAttention(runID string, t runner.Ticket, sum runner.Summary, failedGate string, check prCheck) bool {
-	return draftPR(sum, check) || (t.Size != "S" && t.Size != "M") || runner.Sampled(runID) ||
-		sum.StopReason == runner.StopWorkflowChange || failedGate != "" || len(check.FrontEnd) > 0 || !check.Planned || check.unconfirmed()
+	return waitReason(runID, t, sum, check) != "" ||
+		sum.StopReason == runner.StopWorkflowChange || failedGate != "" || !check.Planned
+}
+
+// waitReason is the first reason the run's PR waits for the owner, empty when
+// none holds. The two that block a merge come first, so the merge route sees
+// them whatever else holds the PR.
+func waitReason(runID string, t runner.Ticket, sum runner.Summary, check prCheck) runner.WaitReason {
+	switch {
+	case check.unconfirmed():
+		return runner.WaitUnconfirmedDecision
+	case draftPR(sum, check):
+		return runner.WaitDraft
+	case len(check.FrontEnd) > 0:
+		return runner.WaitFrontEnd
+	case t.Size != "S" && t.Size != "M":
+		return runner.WaitSizeL
+	case runner.Sampled(runID):
+		return runner.WaitSampled
+	}
+	return ""
 }
 
 // autoMergeSwitchOn reads the owner's switch once. A switch that cannot be read

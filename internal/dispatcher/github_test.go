@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -569,5 +570,247 @@ func TestGitHubRefusalCarriesItsStatus(t *testing.T) {
 	var api *APIError
 	if !errors.As(err, &api) || api.Status != 404 {
 		t.Fatalf("err = %v, want an APIError with status 404", err)
+	}
+}
+
+func TestGitHubMergesSquashGuardedByTheHeadSHA(t *testing.T) {
+	var method, path string
+	var body map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decoding the request: %v", err)
+		}
+		_, _ = io.WriteString(w, `{"sha":"def456","merged":true}`)
+	}))
+	defer srv.Close()
+
+	sha, err := (GitHub{Endpoint: srv.URL, Token: "t", Client: srv.Client()}).Merge(context.Background(), "octo/scratch", 7, "abc123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if method != http.MethodPut || path != "/repos/octo/scratch/pulls/7/merge" {
+		t.Fatalf("request = %s %s", method, path)
+	}
+	if len(body) != 2 || body["merge_method"] != "squash" || body["sha"] != "abc123" {
+		t.Fatalf("body = %v, want a squash guarded by sha abc123", body)
+	}
+	if sha != "def456" {
+		t.Fatalf("merge sha = %q, want def456", sha)
+	}
+}
+
+func TestGitHubMergeReturnsGitHubsOwnReasonForAnUnmergeablePull(t *testing.T) {
+	for status, reason := range map[int]string{
+		http.StatusMethodNotAllowed: "Pull Request is not mergeable",
+		http.StatusConflict:         "Head branch was modified. Review and try the merge again.",
+	} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(status)
+				_, _ = fmt.Fprintf(w, `{"message":%q}`, reason)
+			}))
+			defer srv.Close()
+
+			_, err := (GitHub{Endpoint: srv.URL, Token: "t", Client: srv.Client()}).Merge(context.Background(), "octo/scratch", 7, "abc123")
+			var refused *APIError
+			if !errors.As(err, &refused) || refused.Status != status || refused.Reason != reason {
+				t.Fatalf("err = %v, want a refusal %d saying %q", err, status, reason)
+			}
+		})
+	}
+}
+
+func TestGitHubPullStateReadsOpenDraftMergedAndHead(t *testing.T) {
+	for name, tt := range map[string]struct {
+		body string
+		want PullStatus
+	}{
+		"an open draft":   {`{"state":"open","draft":true,"merged":false,"head":{"sha":"abc123"}}`, PullStatus{Open: true, Draft: true, HeadSHA: "abc123"}},
+		"a merged one":    {`{"state":"closed","draft":false,"merged":true,"head":{"sha":"abc123"}}`, PullStatus{Merged: true, HeadSHA: "abc123"}},
+		"closed unmerged": {`{"state":"closed","draft":false,"merged":false,"head":{"sha":"abc123"}}`, PullStatus{HeadSHA: "abc123"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/repos/octo/scratch/pulls/7" {
+					t.Errorf("path = %q", r.URL.Path)
+				}
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			defer srv.Close()
+
+			got, err := (GitHub{Endpoint: srv.URL, Token: "t", Client: srv.Client()}).PullState(context.Background(), "octo/scratch", 7)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("state = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGitHubRefusalWithNoMessageKeepsTheBodyAsItsReason(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = io.WriteString(w, `{"errors":["no good"]}`)
+	}))
+	defer srv.Close()
+
+	_, err := (GitHub{Endpoint: srv.URL, Token: "t", Client: srv.Client()}).Merge(context.Background(), "octo/scratch", 7, "abc123")
+	var refused *APIError
+	if !errors.As(err, &refused) || !strings.Contains(refused.Reason, "no good") {
+		t.Fatalf("err = %v, want a refusal whose reason carries the body", err)
+	}
+}
+
+func TestGitHubChecksGreenNeedsEveryRunPassingAndAnyStatusSuccessful(t *testing.T) {
+	const green = `{"total_count":1,"check_runs":[{"status":"completed","conclusion":"success"}]}`
+	const noStatus = `{"state":"pending","total_count":0}`
+	for _, tt := range []struct {
+		name, runs, status string
+		want, wantErr      bool
+	}{
+		{"all passing", `{"total_count":3,"check_runs":[{"conclusion":"success"},{"conclusion":"neutral"},{"conclusion":"skipped"}]}`, noStatus, true, false},
+		{"one failed", `{"total_count":2,"check_runs":[{"conclusion":"success"},{"conclusion":"failure"}]}`, noStatus, false, false},
+		{"one running", `{"total_count":2,"check_runs":[{"conclusion":"success"},{"conclusion":null}]}`, noStatus, false, false},
+		{"none", `{"total_count":0,"check_runs":[]}`, noStatus, false, false},
+		{"more than a page", `{"total_count":150,"check_runs":[{"conclusion":"success"}]}`, noStatus, false, true},
+		{"status success", green, `{"state":"success","total_count":1}`, true, false},
+		{"status failing", green, `{"state":"failure","total_count":1}`, false, false},
+		{"status pending", green, `{"state":"pending","total_count":1}`, false, false},
+		{"no statuses", green, noStatus, true, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/repos/octo/scratch/commits/abc123/check-runs":
+					_, _ = io.WriteString(w, tt.runs)
+				case "/repos/octo/scratch/commits/abc123/status":
+					_, _ = io.WriteString(w, tt.status)
+				default:
+					t.Errorf("path = %q", r.URL.Path)
+				}
+			}))
+			defer srv.Close()
+
+			got, err := (GitHub{Endpoint: srv.URL, Token: "t", Client: srv.Client()}).ChecksGreen(context.Background(), "octo/scratch", "abc123")
+			if got != tt.want || (err != nil) != tt.wantErr {
+				t.Fatalf("green = %v, err = %v, want %v, error %v", got, err, tt.want, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestGitHubPullSummariesReadsEveryPullInOneGraphQLRequest(t *testing.T) {
+	var calls int
+	var path string
+	var req struct {
+		Query     string         `json:"query"`
+		Variables map[string]any `json:"variables"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		path = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decoding the request: %v", err)
+		}
+		_, _ = io.WriteString(w, `{"data":{
+		"r0":{"pullRequest":{"title":"feat: a","isDraft":false,"headRefOid":"abc123","commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS","contexts":{"nodes":[
+			{"__typename":"CheckRun","name":"go","status":"COMPLETED","conclusion":"SUCCESS"},
+			{"__typename":"CheckRun","name":"web","status":"COMPLETED","conclusion":"SKIPPED"}]}}}}]}}},
+		"r1":{"pullRequest":{"title":"fix: b","isDraft":true,"headRefOid":"def456","commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE","contexts":{"nodes":[
+			{"__typename":"CheckRun","name":"go","status":"COMPLETED","conclusion":"SUCCESS"},
+			{"__typename":"CheckRun","name":"web","status":"COMPLETED","conclusion":"FAILURE"},
+			{"__typename":"StatusContext","context":"lint","state":"ERROR"}]}}}}]}}},
+		"r4":{"pullRequest":{"title":"feat: d","isDraft":false,"headRefOid":"9f9f9f","commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"PENDING","contexts":{"nodes":[
+			{"__typename":"CheckRun","name":"go","status":"IN_PROGRESS","conclusion":null},
+			{"__typename":"StatusContext","context":"lint","state":"PENDING"},
+			{"__typename":"CheckRun","name":"web","status":"COMPLETED","conclusion":"SUCCESS"}]}}}}]}}},
+		"r2":{"pullRequest":{"title":"chore: c","isDraft":false,"headRefOid":"0a0a0a","commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}},
+		"r3":null}}`)
+	}))
+	defer srv.Close()
+
+	refs := []PullRef{{"octo/scratch", 7}, {"octo/scratch", 8}, {"octo/other", 9}, {"octo/gone", 1}, {"octo/scratch", 10}}
+	got, err := (GitHub{Endpoint: srv.URL, Token: "t", Client: srv.Client()}).PullSummaries(context.Background(), refs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || path != "/graphql" {
+		t.Fatalf("%d requests to %s, want one to /graphql", calls, path)
+	}
+	if req.Variables["o2"] != "octo" || req.Variables["n2"] != "other" || req.Variables["p2"] != float64(9) || strings.Contains(req.Query, "octo") {
+		t.Fatalf("variables = %v, query %q, want the repository passed as variables", req.Variables, req.Query)
+	}
+	want := map[PullRef]PullSummary{
+		{"octo/scratch", 7}:  {Title: "feat: a", HeadSHA: "abc123", Checks: CheckGreen, ChecksSummary: "go and web"},
+		{"octo/scratch", 8}:  {Title: "fix: b", Draft: true, HeadSHA: "def456", Checks: CheckFailing, ChecksSummary: "web and lint"},
+		{"octo/scratch", 10}: {Title: "feat: d", HeadSHA: "9f9f9f", Checks: CheckPending, ChecksSummary: "go and lint"},
+		{"octo/other", 9}:    {Title: "chore: c", HeadSHA: "0a0a0a", Checks: CheckPending, ChecksSummary: "no checks yet"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("summaries = %+v, want %+v", got, want)
+	}
+}
+
+func TestGitHubPullSummariesReportsAReadGitHubRefuses(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"errors":[{"message":"Bad credentials"}]}`)
+	}))
+	defer srv.Close()
+	_, err := (GitHub{Endpoint: srv.URL, Token: "t", Client: srv.Client()}).PullSummaries(context.Background(), []PullRef{{"octo/scratch", 7}})
+	if err == nil || !strings.Contains(err.Error(), "Bad credentials") {
+		t.Fatalf("err = %v, want GitHub's reason", err)
+	}
+}
+
+func TestGitHubPullSummariesRefusesMoreRefsThanOneReadHolds(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls++ }))
+	defer srv.Close()
+	refs := make([]PullRef, MaxSummaryRefs+1)
+	for i := range refs {
+		refs[i] = PullRef{"octo/scratch", i + 1}
+	}
+	_, err := (GitHub{Endpoint: srv.URL, Token: "t", Client: srv.Client()}).PullSummaries(context.Background(), refs)
+	if err == nil || !strings.Contains(err.Error(), "exceed") || calls != 0 {
+		t.Fatalf("err = %v after %d requests, want a refusal before any request", err, calls)
+	}
+}
+
+func TestRollupChecksMapsStatusStateAndDoesNotTrustAnUnknownOne(t *testing.T) {
+	for state, want := range map[string]string{
+		"SUCCESS":  CheckGreen,
+		"PENDING":  CheckPending,
+		"EXPECTED": CheckPending,
+		"FAILURE":  CheckFailing,
+		"ERROR":    CheckFailing,
+		"":         CheckFailing,
+	} {
+		if got := rollupChecks(state); got != want {
+			t.Errorf("rollupChecks(%q) = %q, want %q", state, got, want)
+		}
+	}
+}
+
+func TestNamesInStateNamesACheckOnceAndCapsTheList(t *testing.T) {
+	run := func(name, conclusion string) summaryContext {
+		return summaryContext{Type: "CheckRun", Name: name, Status: "COMPLETED", Conclusion: conclusion}
+	}
+	for name, tt := range map[string]struct {
+		contexts []summaryContext
+		state    string
+		want     string
+	}{
+		"a rerun check is named once":     {[]summaryContext{run("go", "FAILURE"), run("go", "FAILURE"), run("web", "FAILURE")}, CheckFailing, "go and web"},
+		"more than four are counted":      {[]summaryContext{run("a", "SUCCESS"), run("b", "SUCCESS"), run("c", "SUCCESS"), run("d", "SUCCESS"), run("e", "SUCCESS"), run("f", "SUCCESS")}, CheckGreen, "a, b, c, d and 2 more"},
+		"none in the state names nothing": {[]summaryContext{run("go", "SUCCESS")}, CheckFailing, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := namesInState(tt.contexts, tt.state); got != tt.want {
+				t.Fatalf("namesInState = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

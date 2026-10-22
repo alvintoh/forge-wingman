@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"cloud.google.com/go/firestore"
 	"google.golang.org/grpc/codes"
@@ -41,10 +42,47 @@ func (r *Records) GetRecord(ctx context.Context, id string) (runner.Record, erro
 	return rec, nil
 }
 
+// RunRepository is the repository run id was queued for. The dispatcher writes
+// it when it queues the run; the record the run's jobs write has no such field.
+func (r *Records) RunRepository(ctx context.Context, id string) (string, error) {
+	snap, err := r.client.Collection(runsCollection).Doc(id).Get(ctx)
+	if status.Code(err) == codes.NotFound {
+		return "", fmt.Errorf("%s: %w", id, runner.ErrRecordNotFound)
+	}
+	if err != nil {
+		return "", err
+	}
+	return str(snap.Data(), repoField), nil
+}
+
 // PutRecord replaces each field rec names in the record whole, keeping the fields
 // rec does not name and creating the record if it is absent.
 func (r *Records) PutRecord(ctx context.Context, id string, rec runner.Record) error {
 	return merge(ctx, r.client.Collection(runsCollection).Doc(id), rec)
+}
+
+// SetWaitReason sets only why run id's PR waits for the owner, which the record
+// job later carries through Finalize.
+func (r *Records) SetWaitReason(ctx context.Context, id string, reason runner.WaitReason) error {
+	_, err := r.client.Collection(runsCollection).Doc(id).Update(ctx,
+		[]firestore.Update{{Path: waitReasonField, Value: string(reason)}})
+	if err != nil {
+		return fmt.Errorf("setting run %s's wait reason: %w", id, err)
+	}
+	return nil
+}
+
+// RecordMerge sets when, and as what sha, the owner merged run id's PR, keeping
+// every other field.
+func (r *Records) RecordMerge(ctx context.Context, id, sha string, at time.Time) error {
+	_, err := r.client.Collection(runsCollection).Doc(id).Update(ctx, []firestore.Update{
+		{Path: mergedByOwnerAtField, Value: at},
+		{Path: mergedSHAField, Value: sha},
+	})
+	if err != nil {
+		return fmt.Errorf("recording run %s's merge: %w", id, err)
+	}
+	return nil
 }
 
 // GetPlan reads the plan stage's fields from run id. A run whose plan stage has

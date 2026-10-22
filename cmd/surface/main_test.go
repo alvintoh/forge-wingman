@@ -1,16 +1,21 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -1446,5 +1451,530 @@ func TestComparisonReportsAModelNoMergeMeasuredAsNotMeasured(t *testing.T) {
 	})
 	if len(got.Models) != 1 || got.Models[0].RewriteRate != "not measured" {
 		t.Fatalf("models = %+v, want a model with no measured run reported as not measured, not 0.0%%", got.Models)
+	}
+}
+
+// stubInbox answers with the runs it holds and counts its reads.
+type stubInbox struct {
+	runs  []store.InboxRun
+	err   error
+	reads atomic.Int32
+	// since and limit are what the last read asked for.
+	since time.Time
+	limit int
+	// hold blocks a read until closed; entered is sent to as a read starts.
+	hold    chan struct{}
+	entered chan struct{}
+}
+
+func (s *stubInbox) Inbox(_ context.Context, since time.Time, limit int) ([]store.InboxRun, error) {
+	s.reads.Add(1)
+	s.since, s.limit = since, limit
+	if s.entered != nil {
+		s.entered <- struct{}{}
+	}
+	if s.hold != nil {
+		<-s.hold
+	}
+	return s.runs, s.err
+}
+
+func getInbox(mux *http.ServeMux) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/inbox", nil))
+	return rec
+}
+
+func TestInboxListsEachWaitingRunWithoutTicketText(t *testing.T) {
+	inbox := &stubInbox{runs: []store.InboxRun{
+		{Run: "r1", Ticket: "ABC-1", Repo: "octo/scratch", Size: "L", PRURL: "https://github.com/octo/scratch/pull/7",
+			WaitReason: runner.WaitSizeL, UpdatedAt: measuredAt()},
+	}}
+	rec := getInbox(newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Inbox: inbox, AutoMerge: &stubAutoMerge{enabled: true}}))
+	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "private, max-age=30" {
+		t.Fatalf("status = %d, cache = %q", rec.Code, rec.Header().Get("Cache-Control"))
+	}
+	want := `{"runs":[{"run":"r1","ticket":"ABC-1","repo":"octo/scratch","size":"L","pr_url":"https://github.com/octo/scratch/pull/7","wait_reason":"size-l","updated_at":"2026-10-18T09:00:00Z"}]}` + "\n"
+	if rec.Body.String() != want {
+		t.Fatalf("body = %s, want %s", rec.Body.String(), want)
+	}
+}
+
+// stubPulls answers PullSummaries with the summaries it holds and counts the reads.
+type stubPulls struct {
+	summaries map[dispatcher.PullRef]dispatcher.PullSummary
+	err       error
+	reads     int
+	refs      []dispatcher.PullRef
+}
+
+func (s *stubPulls) PullSummaries(_ context.Context, refs []dispatcher.PullRef) (map[dispatcher.PullRef]dispatcher.PullSummary, error) {
+	s.reads++
+	s.refs = refs
+	return s.summaries, s.err
+}
+
+func TestInboxCarriesGitHubsViewOfEachPRFromOneRead(t *testing.T) {
+	inbox := &stubInbox{runs: []store.InboxRun{
+		{Run: "r1", Repo: "octo/scratch", PRURL: "https://github.com/octo/scratch/pull/7"},
+		{Run: "r2", Repo: "octo/scratch", PRURL: "https://github.com/octo/scratch/pull/8"},
+		{Run: "r3", Repo: "octo/scratch", PRURL: "https://github.com/octo/scratch/pull/9"},
+	}}
+	pulls := &stubPulls{summaries: map[dispatcher.PullRef]dispatcher.PullSummary{
+		{Repo: "octo/scratch", Number: 7}: {Title: "feat: a", HeadSHA: "abc123", Checks: dispatcher.CheckGreen, ChecksSummary: "go and web"},
+		{Repo: "octo/scratch", Number: 8}: {Title: "fix: b", Draft: true, HeadSHA: "def456", Checks: dispatcher.CheckFailing, ChecksSummary: "web"},
+	}}
+	rec := getInbox(newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Inbox: inbox, Pulls: pulls, AutoMerge: &stubAutoMerge{enabled: true}}))
+	var got struct {
+		Runs []map[string]any `json:"runs"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || len(got.Runs) != 3 {
+		t.Fatalf("body = %s, %v", rec.Body.String(), err)
+	}
+	if pulls.reads != 1 || len(pulls.refs) != 3 {
+		t.Fatalf("GitHub read %d times for %v, want one read of all three PRs", pulls.reads, pulls.refs)
+	}
+	one, two, three := got.Runs[0], got.Runs[1], got.Runs[2]
+	if one["title"] != "feat: a" || one["head_sha"] != "abc123" || one["draft"] != false ||
+		!reflect.DeepEqual(one["checks"], map[string]any{"state": "green", "summary": "go and web"}) {
+		t.Errorf("first = %v, want GitHub's title, head, draft and checks", one)
+	}
+	if two["draft"] != true || !reflect.DeepEqual(two["checks"], map[string]any{"state": "failing", "summary": "web"}) {
+		t.Errorf("second = %v, want a failing draft", two)
+	}
+	for _, k := range []string{"title", "head_sha", "draft", "checks"} {
+		if _, ok := three[k]; ok {
+			t.Errorf("third has %q though GitHub did not return its PR: %v", k, three)
+		}
+	}
+}
+
+func TestInboxStillListsWhenGitHubCannotBeRead(t *testing.T) {
+	inbox := &stubInbox{runs: []store.InboxRun{{Run: "r1", PRURL: "https://github.com/octo/scratch/pull/7", WaitReason: runner.WaitSizeL}}}
+	rec := getInbox(newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Inbox: inbox,
+		Pulls: &stubPulls{err: errors.New("unreachable")}, AutoMerge: &stubAutoMerge{enabled: true}}))
+	var got struct {
+		Runs []map[string]any `json:"runs"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); rec.Code != http.StatusOK || err != nil || len(got.Runs) != 1 {
+		t.Fatalf("status %d, body %s, %v, want the run listed", rec.Code, rec.Body.String(), err)
+	}
+	if _, ok := got.Runs[0]["checks"]; ok || got.Runs[0]["wait_reason"] != "size-l" {
+		t.Fatalf("row = %v, want the store's fields without checks", got.Runs[0])
+	}
+}
+
+func TestInboxShowsAutoMergeOffOnlyWhereNoNamedReasonHoldsThePR(t *testing.T) {
+	runs := []store.InboxRun{{Run: "named", WaitReason: runner.WaitFrontEnd}, {Run: "unnamed"}}
+	for name, tt := range map[string]struct {
+		switches   AutoMergeStore
+		wantNamed  string
+		wantUnname string
+	}{
+		"switch off":        {&stubAutoMerge{}, "front-end", "auto-merge-off"},
+		"switch unreadable": {&stubAutoMerge{readErr: errors.New("unreachable")}, "front-end", "auto-merge-off"},
+		"switch on":         {&stubAutoMerge{enabled: true}, "front-end", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := getInbox(newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Inbox: &stubInbox{runs: runs}, AutoMerge: tt.switches}))
+			var raw struct {
+				Runs []map[string]any `json:"runs"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil || len(raw.Runs) != 2 {
+				t.Fatalf("body = %s, %v", rec.Body.String(), err)
+			}
+			if raw.Runs[0]["wait_reason"] != tt.wantNamed || raw.Runs[1]["wait_reason"] != tt.wantUnname {
+				t.Fatalf("reasons = %v, %v, want %q, %q", raw.Runs[0]["wait_reason"], raw.Runs[1]["wait_reason"], tt.wantNamed, tt.wantUnname)
+			}
+		})
+	}
+}
+
+func TestInboxReadsTheTrailingWindowUpToItsLimit(t *testing.T) {
+	inbox := &stubInbox{}
+	now := time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC)
+	if _, err := (Deps{Inbox: inbox, AutoMerge: &stubAutoMerge{enabled: true}}).readInbox(context.Background(), now); err != nil {
+		t.Fatal(err)
+	}
+	if want := now.Add(-runner.TrailingWindow); !inbox.since.Equal(want) || inbox.limit != 100 {
+		t.Fatalf("read since %v up to %d, want since %v up to 100", inbox.since, inbox.limit, want)
+	}
+}
+
+func TestInboxWithNoRunsListsNone(t *testing.T) {
+	rec := getInbox(newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Inbox: &stubInbox{}}))
+	if rec.Body.String() != "{\"runs\":[]}\n" {
+		t.Fatalf("body = %q, want an empty list, not null", rec.Body.String())
+	}
+}
+
+func TestInboxWithoutAStoreIsUnavailable(t *testing.T) {
+	if rec := getInbox(newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger()})); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestInboxReportsAStoreItCannotRead(t *testing.T) {
+	var log strings.Builder
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: slog.New(slog.NewTextHandler(&log, nil)),
+		Inbox: &stubInbox{err: errors.New("firestore unreachable")}})
+	if rec := getInbox(mux); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+	if !strings.Contains(log.String(), "inboxNotRead") {
+		t.Fatalf("log = %q, want the failed read reported", log.String())
+	}
+}
+
+func TestInboxReadsOnceForRequestsThatOverlap(t *testing.T) {
+	inbox := &stubInbox{hold: make(chan struct{}), entered: make(chan struct{}, 8)}
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Inbox: inbox})
+	var wg sync.WaitGroup
+	for range 3 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			getInbox(mux)
+		}()
+	}
+	<-inbox.entered
+	time.Sleep(100 * time.Millisecond)
+	close(inbox.hold)
+	wg.Wait()
+	if got := inbox.reads.Load(); got != 1 {
+		t.Fatalf("reads = %d, want one shared by the three requests", got)
+	}
+}
+
+// stubRuns holds the run rows a merge reads and records the merge it is told of.
+type stubRuns struct {
+	rows      map[string]runner.Record
+	recordErr error
+	repo      string
+	repoErr   error
+	merges    []string
+}
+
+func (s *stubRuns) RunRepository(_ context.Context, id string) (string, error) {
+	if _, ok := s.rows[id]; !ok {
+		return "", runner.ErrRecordNotFound
+	}
+	return s.repo, s.repoErr
+}
+
+func (s *stubRuns) GetRecord(_ context.Context, id string) (runner.Record, error) {
+	rec, ok := s.rows[id]
+	if !ok {
+		return runner.Record{}, runner.ErrRecordNotFound
+	}
+	return rec, nil
+}
+
+func (s *stubRuns) RecordMerge(_ context.Context, id, sha string, _ time.Time) error {
+	if s.recordErr != nil {
+		return s.recordErr
+	}
+	s.merges = append(s.merges, id+"@"+sha)
+	return nil
+}
+
+// stubMerger answers with the PR state it holds and records each merge.
+type stubMerger struct {
+	state    dispatcher.PullStatus
+	stateErr error
+	green    bool
+	greenErr error
+	mergeSHA string
+	mergeErr error
+	merged   []string
+}
+
+func (s *stubMerger) PullState(context.Context, string, int) (dispatcher.PullStatus, error) {
+	return s.state, s.stateErr
+}
+
+func (s *stubMerger) ChecksGreen(context.Context, string, string) (bool, error) {
+	return s.green, s.greenErr
+}
+
+func (s *stubMerger) Merge(_ context.Context, repo string, number int, sha string) (string, error) {
+	if s.mergeErr != nil {
+		return "", s.mergeErr
+	}
+	s.merged = append(s.merged, fmt.Sprintf("%s#%d@%s", repo, number, sha))
+	return s.mergeSHA, nil
+}
+
+// readyToMerge is an open PR at head abc123 with green checks.
+func readyToMerge() *stubMerger {
+	return &stubMerger{state: dispatcher.PullStatus{Open: true, HeadSHA: "abc123"}, green: true, mergeSHA: "def456"}
+}
+
+func mergeRows(edit func(*runner.Record)) *stubRuns {
+	rec := runner.Record{RunID: "r1", PRURL: "https://github.com/octo/scratch/pull/7"}
+	if edit != nil {
+		edit(&rec)
+	}
+	return &stubRuns{rows: map[string]runner.Record{"r1": rec}, repo: "octo/scratch"}
+}
+
+func postMerge(t *testing.T, d Deps, run, contentType, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	d.SPA, d.Logger = fstest.MapFS{}, cmp.Or(d.Logger, discardLogger())
+	req := httptest.NewRequest(http.MethodPost, "/api/runs/"+run+"/merge", strings.NewReader(body))
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	rec := httptest.NewRecorder()
+	newMux(d).ServeHTTP(rec, req)
+	return rec
+}
+
+const mergeBody = `{"expected_head_sha":"abc123"}`
+
+func TestMergeActsOnTheRowsPRWhateverTheBodyNames(t *testing.T) {
+	merger, runs := readyToMerge(), mergeRows(nil)
+	rec := postMerge(t, Deps{Merger: merger, Runs: runs}, "r1", "application/json",
+		`{"expected_head_sha":"abc123","repo":"evil/other","number":99,"sha":"zzz"}`)
+	if rec.Code != http.StatusOK || rec.Body.String() != "{\"status\":\"merged\",\"sha\":\"def456\"}\n" {
+		t.Fatalf("answer = %d %s", rec.Code, rec.Body.String())
+	}
+	if !slices.Equal(merger.merged, []string{"octo/scratch#7@abc123"}) {
+		t.Fatalf("merged = %v, want the row's PR at the head the owner saw", merger.merged)
+	}
+	if !slices.Equal(runs.merges, []string{"r1@def456"}) {
+		t.Fatalf("recorded = %v, want the merge commit recorded on the run", runs.merges)
+	}
+}
+
+func TestMergeRefusesWhatTheOwnerMayNotMerge(t *testing.T) {
+	for name, tt := range map[string]struct {
+		edit   func(*runner.Record)
+		merger func(*stubMerger)
+		reason string
+	}{
+		"a row with no PR page":                     {func(r *runner.Record) { r.PRURL = "" }, nil, "no-pull-request"},
+		"a PR in another repository than the run's": {func(r *runner.Record) { r.PRURL = "https://github.com/octo/other/pull/7" }, nil, "no-pull-request"},
+		"a closed PR":                               {nil, func(m *stubMerger) { m.state.Open = false }, "not-open"},
+		"a draft":                                   {nil, func(m *stubMerger) { m.state.Draft = true }, "draft"},
+		"a head that moved":                         {nil, func(m *stubMerger) { m.state.HeadSHA = "moved99" }, "head-moved"},
+		"an unconfirmed decision":                   {func(r *runner.Record) { r.WaitReason = runner.WaitUnconfirmedDecision }, nil, "unconfirmed-decision"},
+		"checks that are not green":                 {nil, func(m *stubMerger) { m.green = false }, "checks-not-green"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			merger, runs := readyToMerge(), mergeRows(tt.edit)
+			if tt.merger != nil {
+				tt.merger(merger)
+			}
+			rec := postMerge(t, Deps{Merger: merger, Runs: runs}, "r1", "application/json", mergeBody)
+			if rec.Code != http.StatusConflict || rec.Body.String() != fmt.Sprintf("{\"reason\":%q}\n", tt.reason) {
+				t.Fatalf("answer = %d %s, want a %s refusal", rec.Code, rec.Body.String(), tt.reason)
+			}
+			if len(merger.merged) != 0 || len(runs.merges) != 0 {
+				t.Fatalf("merged %v, recorded %v, want neither", merger.merged, runs.merges)
+			}
+		})
+	}
+}
+
+func TestMergeIsNotHeldByAWaitReasonThatNeverBlocks(t *testing.T) {
+	merger := readyToMerge()
+	runs := mergeRows(func(r *runner.Record) { r.WaitReason = runner.WaitFrontEnd })
+	if rec := postMerge(t, Deps{Merger: merger, Runs: runs}, "r1", "application/json", mergeBody); rec.Code != http.StatusOK || len(merger.merged) != 1 {
+		t.Fatalf("answer = %d, merged %v, want a merge", rec.Code, merger.merged)
+	}
+}
+
+func TestMergeOfAMergedPRSucceedsWithoutMergingAgain(t *testing.T) {
+	merger, runs := readyToMerge(), mergeRows(nil)
+	merger.state = dispatcher.PullStatus{Merged: true, HeadSHA: "other"}
+	rec := postMerge(t, Deps{Merger: merger, Runs: runs}, "r1", "application/json", mergeBody)
+	if rec.Code != http.StatusOK || rec.Body.String() != "{\"status\":\"already-merged\"}\n" {
+		t.Fatalf("answer = %d %s", rec.Code, rec.Body.String())
+	}
+	if len(merger.merged) != 0 || len(runs.merges) != 0 {
+		t.Fatalf("merged %v, recorded %v, want neither", merger.merged, runs.merges)
+	}
+}
+
+func TestMergePassesOnGitHubsOwnReasonForARefusedMerge(t *testing.T) {
+	for _, status := range []int{http.StatusMethodNotAllowed, http.StatusConflict} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			merger, runs := readyToMerge(), mergeRows(nil)
+			merger.mergeErr = fmt.Errorf("merging: %w", &dispatcher.APIError{Status: status, Reason: "Pull Request is not mergeable"})
+			rec := postMerge(t, Deps{Merger: merger, Runs: runs}, "r1", "application/json", mergeBody)
+			if rec.Code != http.StatusConflict || rec.Body.String() != "{\"reason\":\"github-refused\",\"detail\":\"Pull Request is not mergeable\"}\n" {
+				t.Fatalf("answer = %d %s", rec.Code, rec.Body.String())
+			}
+			if len(runs.merges) != 0 {
+				t.Fatalf("recorded = %v, want no merge recorded", runs.merges)
+			}
+		})
+	}
+}
+
+func TestMergeReportsGitHubCallsThatFailAsBadGateway(t *testing.T) {
+	for name, edit := range map[string]func(*stubMerger){
+		"reading the pull request":        func(m *stubMerger) { m.stateErr = errors.New("timeout") },
+		"reading the checks":              func(m *stubMerger) { m.greenErr = errors.New("timeout") },
+		"a refusal other than 405 or 409": func(m *stubMerger) { m.mergeErr = &dispatcher.APIError{Status: http.StatusForbidden} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			var log strings.Builder
+			merger, runs := readyToMerge(), mergeRows(nil)
+			edit(merger)
+			rec := postMerge(t, Deps{Merger: merger, Runs: runs, Logger: slog.New(slog.NewTextHandler(&log, nil))}, "r1", "application/json", mergeBody)
+			if rec.Code != http.StatusBadGateway || !strings.Contains(log.String(), "ownerMergeFailed") || len(runs.merges) != 0 {
+				t.Fatalf("answer = %d, log = %q, recorded %v", rec.Code, log.String(), runs.merges)
+			}
+		})
+	}
+}
+
+func TestMergeStillAnswersMergedWhenTheRecordCannotBeWritten(t *testing.T) {
+	var log strings.Builder
+	runs := mergeRows(nil)
+	runs.recordErr = errors.New("firestore unreachable")
+	rec := postMerge(t, Deps{Merger: readyToMerge(), Runs: runs, Logger: slog.New(slog.NewTextHandler(&log, nil))}, "r1", "application/json", mergeBody)
+	if rec.Code != http.StatusOK || !strings.Contains(log.String(), "ownerMergeNotRecorded") {
+		t.Fatalf("answer = %d, log = %q, want the merge answered and the lost record reported", rec.Code, log.String())
+	}
+}
+
+func TestMergeRefusesARequestThatIsNotWellFormed(t *testing.T) {
+	d := Deps{Merger: readyToMerge(), Runs: mergeRows(nil)}
+	for name, tt := range map[string]struct {
+		run, contentType, body string
+		want                   int
+	}{
+		"not JSON":                {"r1", "text/plain", mergeBody, http.StatusUnsupportedMediaType},
+		"no content type":         {"r1", "", mergeBody, http.StatusUnsupportedMediaType},
+		"no head":                 {"r1", "application/json", `{}`, http.StatusBadRequest},
+		"a body that is not JSON": {"r1", "application/json", `head`, http.StatusBadRequest},
+		"a run that is absent":    {"nope", "application/json", mergeBody, http.StatusNotFound},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if rec := postMerge(t, d, tt.run, tt.contentType, tt.body); rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d", rec.Code, tt.want)
+			}
+		})
+	}
+	if merged := d.Merger.(*stubMerger).merged; len(merged) != 0 {
+		t.Fatalf("merged = %v, want none", merged)
+	}
+}
+
+func TestMergeWithoutATokenOrAStoreIsUnavailable(t *testing.T) {
+	for name, d := range map[string]Deps{
+		"no merge token": {Runs: mergeRows(nil)},
+		"no run store":   {Merger: readyToMerge()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if rec := postMerge(t, d, "r1", "application/json", mergeBody); rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+			}
+		})
+	}
+}
+
+func TestParsePullURLReadsOnlyAGitHubPullRequestPage(t *testing.T) {
+	repo, number, err := parsePullURL("https://github.com/octo/scratch/pull/7")
+	if err != nil || repo != "octo/scratch" || number != 7 {
+		t.Fatalf("got %q, %d, %v", repo, number, err)
+	}
+	for _, raw := range []string{"", "http://github.com/octo/scratch/pull/7", "https://evil.example/octo/scratch/pull/7",
+		"https://github.com/octo/scratch/issues/7", "https://github.com/octo/scratch/pull/7/files", "https://github.com/octo/scratch/pull/x",
+		"https://github.com/octo/scratch/pull/0", "https://github.com/octo/scratch/pull/-3",
+		"https://github.com/../scratch/pull/7", "https://github.com/octo/../pull/7", "https://github.com/./scratch/pull/7", "https://github.com/oc%20to/scratch/pull/7"} {
+		if _, _, err := parsePullURL(raw); err == nil {
+			t.Errorf("parsePullURL(%q) read a PR out of it", raw)
+		}
+	}
+}
+
+func TestMergeRefusalReasonsAreTheStringsThePageSwitchesOn(t *testing.T) {
+	for got, want := range map[string]string{
+		refusedChecksNotGreen: "checks-not-green",
+		refusedDraft:          "draft",
+		refusedGitHub:         "github-refused",
+		refusedHeadMoved:      "head-moved",
+		refusedNoPullRequest:  "no-pull-request",
+		refusedNotOpen:        "not-open",
+		refusedUnconfirmed:    "unconfirmed-decision",
+	} {
+		if got != want {
+			t.Errorf("reason %q, want %q", got, want)
+		}
+	}
+	for refusal, reason := range map[string]runner.WaitReason{
+		refusedChecksNotGreen: runner.WaitChecksNotGreen,
+		refusedDraft:          runner.WaitDraft,
+		refusedUnconfirmed:    runner.WaitUnconfirmedDecision,
+	} {
+		if refusal != string(reason) {
+			t.Errorf("the refusal %q is not the wait reason %q the row shows", refusal, reason)
+		}
+	}
+}
+
+func TestInboxShowsChecksNotGreenAboveTheReasonsThatNeverBlock(t *testing.T) {
+	const pr = "https://github.com/octo/scratch/pull/7"
+	ref := dispatcher.PullRef{Repo: "octo/scratch", Number: 7}
+	for name, tt := range map[string]struct {
+		stored  runner.WaitReason
+		checks  string
+		unread  bool
+		enabled bool
+		want    string
+	}{
+		"failing checks, nothing else holds it":        {"", dispatcher.CheckFailing, false, true, "checks-not-green"},
+		"pending checks count as not green":            {runner.WaitSizeL, dispatcher.CheckPending, false, true, "checks-not-green"},
+		"failing checks beat the switch being off":     {"", dispatcher.CheckFailing, false, false, "checks-not-green"},
+		"failing checks beat a front-end hold":         {runner.WaitFrontEnd, dispatcher.CheckFailing, false, true, "checks-not-green"},
+		"green checks leave the stored reason":         {runner.WaitFrontEnd, dispatcher.CheckGreen, false, true, "front-end"},
+		"a draft is named before the checks":           {runner.WaitDraft, dispatcher.CheckFailing, false, true, "draft"},
+		"an open decision is named before checks":      {runner.WaitUnconfirmedDecision, dispatcher.CheckFailing, false, true, "unconfirmed-decision"},
+		"checks GitHub did not return are not made up": {"", "", true, true, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pulls := &stubPulls{summaries: map[dispatcher.PullRef]dispatcher.PullSummary{ref: {Checks: tt.checks}}}
+			if tt.unread {
+				pulls.summaries = nil
+			}
+			inbox := &stubInbox{runs: []store.InboxRun{{Run: "r1", PRURL: pr, WaitReason: tt.stored}}}
+			rec := getInbox(newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Inbox: inbox, Pulls: pulls, AutoMerge: &stubAutoMerge{enabled: tt.enabled}}))
+			var got struct {
+				Runs []map[string]any `json:"runs"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || len(got.Runs) != 1 {
+				t.Fatalf("body = %s, %v", rec.Body.String(), err)
+			}
+			if got.Runs[0]["wait_reason"] != tt.want {
+				t.Fatalf("wait_reason = %v, want %q", got.Runs[0]["wait_reason"], tt.want)
+			}
+		})
+	}
+}
+
+func TestInboxPageFitsOneBatchedGitHubRead(t *testing.T) {
+	if inboxLimit > dispatcher.MaxSummaryRefs {
+		t.Fatalf("inboxLimit %d exceeds the %d pull requests one GitHub read holds, so no row would show its checks", inboxLimit, dispatcher.MaxSummaryRefs)
+	}
+}
+
+func TestMergeAnswers500WhenTheRunsRepositoryCannotBeRead(t *testing.T) {
+	merger, runs := readyToMerge(), mergeRows(nil)
+	runs.repoErr = errors.New("firestore unreachable")
+	rec := postMerge(t, Deps{Merger: merger, Runs: runs}, "r1", "application/json", mergeBody)
+	if rec.Code != http.StatusInternalServerError || len(merger.merged) != 0 {
+		t.Fatalf("answer = %d %s, merged %v, want a 500 and no merge", rec.Code, rec.Body.String(), merger.merged)
+	}
+}
+
+func TestMergeMatchesTheQueuedRepositoryWhateverItsCase(t *testing.T) {
+	merger, runs := readyToMerge(), mergeRows(nil)
+	runs.repo = "Octo/Scratch"
+	if rec := postMerge(t, Deps{Merger: merger, Runs: runs}, "r1", "application/json", mergeBody); rec.Code != http.StatusOK {
+		t.Fatalf("answer = %d %s, want the merge made", rec.Code, rec.Body.String())
 	}
 }
