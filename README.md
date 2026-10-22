@@ -105,7 +105,10 @@ snapshot to `project_phases/<project>` in the default database: the project's ph
 (the current one is the first not fully done), the current phase's runs in flight with
 their stage, its queued tickets and how many wait on a blocker, and the tickets a start would delegate and how many wait on one. A
 Linear read that fails writes an unreadable snapshot with its reason and time and
-delegates nothing. `GET /api/projects` lists the projects newest-activity first, each
+delegates nothing. The same poll writes the names of the Linear projects it reads to
+`linear_projects/current` in that database, so the dialog that adds a project offers
+them without a Linear credential; a read that fails leaves the last record in place.
+`GET /api/projects` lists the projects newest-activity first, each
 with its snapshot, reach, queue load and last activity; `POST /api/projects/start`
 `{repository, phase}` records a start request on the project's owner-database document
 (`start_phase`, `start_requested_at`) and delegates nothing. The next poll delegates the

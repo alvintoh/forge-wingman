@@ -212,6 +212,11 @@ type Deps struct {
 	Verdicts VerdictRecorder
 	// Reach is optional: left unset, no repository reachability is recorded.
 	Reach ReachRecorder
+	// LinearProjects lists the Linear projects the surface offers and
+	// ProjectRecords is where each poll writes their names; both are optional,
+	// and with either unset nothing is read or recorded.
+	LinearProjects LinearProjects
+	ProjectRecords ProjectNameRecorder
 	// ProjectPhases is optional: left unset, no phase snapshot is written and no
 	// start request is read.
 	ProjectPhases ProjectPhaseDeps
@@ -383,8 +388,9 @@ type Result struct {
 // claiming every run Admit lets start, abandons the claims that outlived
 // their window, measures the merges that landed since the last poll, raises a
 // notice for each run stuck past its limit, records whether each listed
-// repository could be read, and posts the notices waiting, whatever the rest of
-// the poll did.
+// repository could be read and the names of the Linear projects an added one may
+// be picked from, and posts the notices waiting, whatever the rest of the poll
+// did.
 // A ticket the queue already holds is left alone; a candidate a condition
 // withholds is deferred, not rejected, and reconsidered next poll; and a run
 // whose dispatch fails is released rather than left claimed, so the next
@@ -395,6 +401,9 @@ func Poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	}
 	res, err := poll(ctx, d, c)
 	start := d.Now()
+	recordProjectNames(ctx, d)
+	LogPhase(d.Logger, "projectNames", start, d.Now())
+	start = d.Now()
 	sweepErr := sweepAbandoned(ctx, d)
 	LogPhase(d.Logger, "sweep", start, d.Now())
 	start = d.Now()

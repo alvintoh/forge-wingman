@@ -553,3 +553,81 @@ func TestLinearRestoreTicketWritesNothingWithNoStateToPutBack(t *testing.T) {
 		t.Fatalf("requests = %+v, want nothing written for a claim that moved nothing", *seen)
 	}
 }
+
+// projectNamesReply is one page of the projects' names as the project names
+// query reads them.
+func projectNamesReply(viewer string, hasNext bool, cursor string, nodes ...map[string]any) map[string]any {
+	return map[string]any{"data": map[string]any{
+		"viewer": map[string]any{"id": viewer},
+		"projects": map[string]any{
+			"nodes":    nodes,
+			"pageInfo": map[string]any{"hasNextPage": hasNext, "endCursor": cursor},
+		},
+	}}
+}
+
+// TestLinearReadsEveryProjectNamePage: the record offers every project the token
+// reads, and carries the names alone — a reply's other fields are dropped.
+func TestLinearReadsEveryProjectNamePage(t *testing.T) {
+	srv, seen := queryServer(t,
+		projectNamesReply("agent-1", true, "cursor-1", map[string]any{"name": "Forge", "id": "project-1", "description": "ignored"}),
+		projectNamesReply("agent-1", false, "", map[string]any{"name": "Atlas", "state": "started"}),
+	)
+	names, err := Linear{Endpoint: linearURL(srv), Tokens: fixedToken("linear-token"), Delegate: "agent-1",
+		Client: srv.Client()}.ProjectNames(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(names, []string{"Forge", "Atlas"}) {
+		t.Fatalf("names = %v, want every page's names and nothing else the reply carried", names)
+	}
+	if len(*seen) != 2 || (*seen)[0].variables["after"] != nil || (*seen)[1].variables["after"] != "cursor-1" {
+		t.Fatalf("pages asked with %+v", *seen)
+	}
+	for _, call := range *seen {
+		if !strings.Contains(call.query, "projects(first: $first, after: $after)") {
+			t.Errorf("the query does not page the projects: %s", call.query)
+		}
+		if !strings.Contains(call.query, "nodes {\n      name\n    }") {
+			t.Errorf("the query asks for a field other than the project's name: %s", call.query)
+		}
+	}
+}
+
+func TestLinearRefusesProjectNamesFromATokenReadingAsAnotherAgent(t *testing.T) {
+	srv, _ := queryServer(t, projectNamesReply("agent-2", false, "", map[string]any{"name": "Forge"}))
+	_, err := Linear{Endpoint: linearURL(srv), Tokens: fixedToken("linear-token"), Delegate: "agent-1",
+		Client: srv.Client()}.ProjectNames(context.Background())
+	if !errors.Is(err, ErrDelegateMismatch) {
+		t.Fatalf("err = %v, want a delegate mismatch", err)
+	}
+}
+
+// TestLinearRefusesProjectNamesFromAPageItCouldNotRead: a page that fails fails
+// the read whole, so a partial set is never recorded over a whole one.
+func TestLinearRefusesProjectNamesFromAPageItCouldNotRead(t *testing.T) {
+	srv, _ := queryServer(t,
+		projectNamesReply("agent-1", true, "cursor-1", map[string]any{"name": "Forge"}),
+		map[string]any{"errors": []map[string]any{{"message": "rate limited"}}},
+	)
+	names, err := Linear{Endpoint: linearURL(srv), Tokens: fixedToken("linear-token"), Delegate: "agent-1",
+		Client: srv.Client()}.ProjectNames(context.Background())
+	if err == nil || names != nil {
+		t.Fatalf("names = %v, err = %v, want the partial read refused whole", names, err)
+	}
+}
+
+// TestLinearReportsAProjectNamePageItCouldNotRequest: a page whose request fails
+// is reported as that failure, never as another agent's token, which a reply
+// that never arrived cannot show.
+func TestLinearReportsAProjectNamePageItCouldNotRequest(t *testing.T) {
+	srv, _ := queryServer(t, map[string]any{"errors": []map[string]any{{"message": "rate limited"}}})
+	names, err := Linear{Endpoint: linearURL(srv), Tokens: fixedToken("linear-token"), Delegate: "agent-1",
+		Client: srv.Client()}.ProjectNames(context.Background())
+	if err == nil || names != nil {
+		t.Fatalf("names = %v, err = %v, want the read refused whole", names, err)
+	}
+	if errors.Is(err, ErrDelegateMismatch) {
+		t.Fatalf("err = %v, want the page's own failure, not a delegate mismatch", err)
+	}
+}
