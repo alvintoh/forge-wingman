@@ -182,7 +182,6 @@ type ProjectView = {
   readable: PhaseSnapshot | null;
   phase: PhaseProgress | null;
   lines: StatusLine[];
-  working: boolean;
   startable: boolean;
   notice: string | null;
   startDisabled: boolean;
@@ -242,7 +241,7 @@ function describe(project: Project, now: number): ProjectView {
   } else {
     line(activity, true);
   }
-  // A phone card always shows one line beside its control: the last line when none is marked.
+  // A phone card always shows one status line: the last line when none is marked.
   if (!lines.some((l) => l.keep)) {
     lines.splice(-1, 1, { text: lines[lines.length - 1]?.text ?? activity, keep: true });
   }
@@ -276,7 +275,6 @@ function describe(project: Project, now: number): ProjectView {
     readable,
     phase,
     lines,
-    working,
     startable,
     notice,
     startDisabled: idle && !startable,
@@ -334,7 +332,7 @@ function PillButton({ label, ...rest }: PillButtonProps) {
   return (
     <button
       type="button"
-      className="group inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center disabled:cursor-not-allowed"
+      className="group inline-flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center disabled:cursor-not-allowed"
       {...rest}
     >
       <span className="inline-flex h-8 min-w-26 items-center justify-center rounded-full border border-accent px-3 font-mono text-micro font-semibold text-accent group-disabled:border-muted group-disabled:text-muted">
@@ -344,13 +342,34 @@ function PillButton({ label, ...rest }: PillButtonProps) {
   );
 }
 
-type CardProps = {
+type CardPillProps = React.ComponentProps<"button"> & { label: string };
+
+// The card's START, STOP or RESUME: the design's small pill, 28px visible inside a 44px-high hit
+// area, outlined in ink2 with an ink label, and on track with a muted label while disabled.
+// Every label takes ONE width, RESUME's (the set's longest): 6 glyphs of 1ch, the 1.2px tracking
+// after each, and 12px a side, 70.8px in IBM Plex Mono. The label's trailing tracking is
+// cancelled (-mr) so the glyphs, not the glyphs plus 1.2px, are what sits centred.
+function CardPill({ label, ...rest }: CardPillProps) {
+  return (
+    <button
+      type="button"
+      className="group inline-flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center disabled:cursor-not-allowed"
+      {...rest}
+    >
+      <span className="inline-flex h-7 w-[calc(6ch+7.2px+24px)] items-center justify-center rounded-full border border-ink2 bg-card font-mono text-micro font-semibold tracking-[1.2px] text-ink group-disabled:border-hair group-disabled:bg-track group-disabled:text-muted">
+        <span className="-mr-[1.2px]">{label}</span>
+      </span>
+    </button>
+  );
+}
+
+type EntryProps = {
   project: Project;
   now: number;
   refresh: () => void;
 };
 
-function ProjectCard({ project, now, refresh }: CardProps) {
+function ProjectEntry({ project, now, refresh }: EntryProps) {
   const view = describe(project, now);
   const { readable, phase } = view;
   const detailId = useId();
@@ -420,7 +439,7 @@ function ProjectCard({ project, now, refresh }: CardProps) {
 
   const control =
     view.startable || view.startDisabled ? (
-      <PillButton
+      <CardPill
         label="START"
         disabled={view.startDisabled}
         aria-describedby={view.startDisabled ? noticeId : undefined}
@@ -431,7 +450,7 @@ function ProjectCard({ project, now, refresh }: CardProps) {
         }}
       />
     ) : view.pill === "RUNNING" ? (
-      <PillButton
+      <CardPill
         label="STOP"
         aria-label={`Stop ${readable?.current ?? "the phase"} in ${project.repository}`}
         onClick={() => {
@@ -441,7 +460,7 @@ function ProjectCard({ project, now, refresh }: CardProps) {
       />
     ) : (
       (view.pill === "STOPPING" || view.pill === "STOPPED") && (
-        <PillButton
+        <CardPill
           label="RESUME"
           disabled={saving}
           aria-label={`Resume ${readable?.current ?? "the phase"} in ${project.repository}`}
@@ -451,28 +470,39 @@ function ProjectCard({ project, now, refresh }: CardProps) {
     );
 
   return (
-    <li className="rounded-card border border-hair bg-card p-4">
+    // One project is one section of the Projects card. Its vertical rhythm is the drawing's,
+    // measured from the section's top (the card's edge, or the rule above it): the pill at 22.8 and
+    // the name's baseline at 42, the phase row's at 74, the bar at 84, the first status line's at
+    // 108 and 16 apart, Details 24 under the last line, and the next rule (or the card's edge) 20
+    // under the last baseline. Each margin below is that gap less the 16px line box around the
+    // baseline (its baseline sits 12px down). pt: 22.8, less the 8px between the 44px hit area and
+    // the 28px pill, less the 1px rule or card edge. pb: 20, less the 4px under a last line's
+    // baseline, less the card's 1px bottom edge on the last section.
+    <li className="border-t border-hair pt-[13.8px] pb-4 first:border-t-0 last:pb-[15px]">
       <div className="min-w-0">
         <div className="min-w-0">
-          <div className="flex items-center gap-3">
-            <h3
-              title={project.repository}
-              className="min-w-0 truncate text-body font-semibold text-ink"
-            >
-              {project.repository}
-            </h3>
-            {view.pill !== null && (
-              <span
-                className={`inline-flex h-5.5 shrink-0 items-center rounded-full px-2.5 font-mono text-micro font-semibold tracking-[1.2px] text-card ${chipFill[view.pill]}`}
+          <div className="flex min-h-11 items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-2.5">
+              <h3
+                title={project.repository}
+                className="min-w-0 truncate text-body leading-5 font-semibold text-ink"
               >
-                {view.pill}
-              </span>
-            )}
+                {project.repository}
+              </h3>
+              {view.pill !== null && (
+                <span
+                  className={`inline-flex h-5.5 shrink-0 items-center rounded-full px-2.5 font-mono text-micro font-semibold tracking-[1.2px] text-card ${chipFill[view.pill]}`}
+                >
+                  {view.pill}
+                </span>
+              )}
+            </div>
+            {control}
           </div>
           {readable !== null && phase !== null && (
-            <div className="mt-2 flex items-baseline justify-between gap-4 text-label text-ink">
+            <div className="mt-[3.2px] flex items-baseline justify-between gap-4 text-label leading-4 font-semibold text-ink">
               <span className="break-words">{phase.name}</span>
-              <span>{percent(phase)}%</span>
+              <span className="font-mono">{percent(phase)}%</span>
             </div>
           )}
           {phase !== null && (
@@ -482,7 +512,7 @@ function ProjectCard({ project, now, refresh }: CardProps) {
               aria-valuemin={0}
               aria-valuemax={100}
               aria-valuenow={percent(phase)}
-              className="mt-2 h-1.5 overflow-hidden rounded-tag bg-track"
+              className="mt-1.5 h-1.5 overflow-hidden rounded-tag bg-track"
             >
               <div
                 className="h-full rounded-tag bg-accent"
@@ -490,23 +520,25 @@ function ProjectCard({ project, now, refresh }: CardProps) {
               />
             </div>
           )}
-          <div className="mt-1 flex items-center justify-between gap-4">
-            <div className="min-w-0 flex-1 py-2 text-cap text-ink2">
-              {view.lines.map((l, i) => (
-                <p key={i} className={l.keep ? undefined : "hidden md:block"}>
-                  {l.text}
-                </p>
-              ))}
-            </div>
-            {control}
+          <div className="mt-1.5 text-cap leading-4 text-ink2">
+            {view.lines.map((l, i) => (
+              <p
+                key={i}
+                className={`${l.keep ? "" : "hidden md:block"} ${i === view.lines.length - 1 ? "md:text-muted" : ""}`}
+              >
+                {l.text}
+              </p>
+            ))}
           </div>
-          {(view.working || view.lines.some((l) => !l.keep)) && (
+          {/* Details only while a phase runs, drains or is held: it opens the tickets in flight, and
+              on the phone the status lines its card leaves out (owner, 2026-10-22). */}
+          {(view.pill === "RUNNING" || view.pill === "STOPPING" || view.pill === "STOPPED") && (
             <button
               type="button"
               aria-expanded={open}
               aria-controls={detailId}
               aria-label={`${open ? "Hide details" : "Details"}: what is running in ${project.repository}`}
-              className={`-mb-3 -ml-1 -mt-1 inline-flex min-h-11 min-w-11 cursor-pointer items-center px-1 text-label text-accent ${view.working ? "" : "md:hidden"}`}
+              className="-mb-3.5 -ml-1 -mt-1.5 flex w-fit min-h-11 min-w-11 cursor-pointer items-center px-1 text-label leading-4 text-accent"
               onClick={() => setOpen((v) => !v)}
             >
               {open ? "Hide details" : "Details"}
@@ -524,7 +556,7 @@ function ProjectCard({ project, now, refresh }: CardProps) {
         </div>
       )}
       {view.notice !== null && (
-        <p id={noticeId} className="mt-3 text-cap text-ink2">
+        <p id={noticeId} className="mt-0.5 text-cap leading-4 text-muted">
           {view.notice}
         </p>
       )}
@@ -634,9 +666,10 @@ function ProjectList({ projects, now, stale, refresh }: ListProps) {
           The list could not be refreshed; showing the last read.
         </p>
       )}
-      <ul className="mt-4 flex flex-col gap-4">
+      {/* ONE elevated card holds every project, each a section split from the next by a rule. */}
+      <ul className="card-frame mt-4">
         {projects.map((project) => (
-          <ProjectCard key={project.repository} project={project} now={now} refresh={refresh} />
+          <ProjectEntry key={project.repository} project={project} now={now} refresh={refresh} />
         ))}
       </ul>
     </>
