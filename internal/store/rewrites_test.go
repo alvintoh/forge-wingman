@@ -304,13 +304,59 @@ func TestRecentReadsTheModelsAndTheWholeProjection(t *testing.T) {
 	}
 }
 
+// A malformed step costs a measured PR its model and nothing else: the read
+// succeeds, and a field the models do not use cannot spoil them.
+func TestRecentReadsAMalformedStepAsNoModel(t *testing.T) {
+	_, client := queue(t)
+	ctx := context.Background()
+	at := time.Now().UTC().Add(time.Hour)
+	build := map[string]any{"phase": "build", "model": "p/build"}
+	with := func(field string, value any) map[string]any {
+		step := map[string]any{"phase": "build", "model": "p/build"}
+		step[field] = value
+		return step
+	}
+	cases := []struct {
+		name  string
+		steps any
+		want  string
+	}{
+		{"steps a string", "not a list", ""},
+		{"a step that is not an object", []any{"x", int64(5)}, ""},
+		{"a model that is a number", []any{with("model", int64(7))}, ""},
+		{"a phase that is a number", []any{with("phase", int64(9))}, ""},
+		{"a fractional round", []any{with("round", 1.5)}, "p/build"},
+		{"a fractional duration_ms", []any{with("duration_ms", 12.5)}, "p/build"},
+		{"tokens a string", []any{with("tokens", "x")}, "p/build"},
+		{"one bad step beside a good one", []any{"x", build}, "p/build"},
+	}
+	for i, tc := range cases {
+		id := fresh("rewrites-malformed")
+		seedRow(t, client, id, map[string]any{
+			rewriteMergedAtField: at.Add(-time.Duration(i) * time.Minute), stepsField: tc.steps,
+		})
+	}
+	got, err := NewRewrites(client).Recent(ctx, len(cases))
+	if err != nil {
+		t.Fatalf("Recent = %v, want a malformed step never to fail the read", err)
+	}
+	if len(got) != len(cases) {
+		t.Fatalf("Recent = %+v, want the %d rows this test seeded", got, len(cases))
+	}
+	for i, tc := range cases {
+		if got[i].BuildModel != tc.want {
+			t.Errorf("%s: build model = %q, want %q", tc.name, got[i].BuildModel, tc.want)
+		}
+	}
+}
+
 // A row carrying no plan_model and no steps reads every phase model as empty,
 // and the plan model never stands in for another phase's.
 func TestSampleReadsTheModelsOffTheRow(t *testing.T) {
-	if s := sample("run-1", map[string]any{}, nil); s.PlanModel != "" || s.BuildModel != "" || s.ReviewModel != "" {
+	if s := sample("run-1", map[string]any{}); s.PlanModel != "" || s.BuildModel != "" || s.ReviewModel != "" {
 		t.Fatalf("sample = %+v, want no model on a row that names none", s)
 	}
-	s := sample("run-2", map[string]any{planModelField: "p/plan"}, nil)
+	s := sample("run-2", map[string]any{planModelField: "p/plan"})
 	if s.PlanModel != "p/plan" || s.BuildModel != "" || s.ReviewModel != "" {
 		t.Fatalf("sample = %+v, want the plan model on the plan phase alone", s)
 	}
@@ -336,12 +382,12 @@ func TestRewritesRecordsThePRTitleOnTheRunRow(t *testing.T) {
 // measured before the title was kept reads as an empty one.
 func TestSampleReadsThePRTitleOffTheRow(t *testing.T) {
 	row := map[string]any{prTitleField: "feat(runner): FRG-1 add the widget"}
-	if got, want := sample("run-1", row, nil).Title, "feat(runner): FRG-1 add the widget"; got != want {
+	if got, want := sample("run-1", row).Title, "feat(runner): FRG-1 add the widget"; got != want {
 		t.Fatalf("title = %q, want %q", got, want)
 	}
 	// A row measured before this change carries the measurement and no title.
 	before := map[string]any{rewriteMergedAtField: mergeAt, rewriteAgentLinesField: int64(3)}
-	if got := sample("run-old", before, nil).Title; got != "" {
+	if got := sample("run-old", before).Title; got != "" {
 		t.Fatalf("title = %q, want a row with no pr_title read as empty", got)
 	}
 }

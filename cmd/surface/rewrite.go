@@ -9,10 +9,9 @@ import (
 // rewriteView is the measured merges' rewrite figures as a page draws them: the
 // pooled rate over each trailing window, the rolling rate behind them, the PRs
 // they are measured on, and the same figures split by size, by the model of each
-// phase and by repository, with the bar the rate is held to. Every headline rate
-// is the pooled owner lines over the agent lines, never a mean of the PRs' own
-// rates; a group's median and p90 are the spread of those own rates. Each rate
-// printed as text has a number beside it, as the fraction a chart plots.
+// phase and by repository. Every headline rate is the pooled owner lines over the
+// agent lines, never a mean of the PRs' own rates; a group's median and p90 are
+// the spread of those own rates. Each rate printed as text has a number beside it.
 type rewriteView struct {
 	Tiles   []rewriteTile  `json:"tiles"`
 	Series  []rewritePoint `json:"series"`
@@ -31,7 +30,7 @@ type bars struct {
 
 // rewriteTile is one trailing window: the PRs it covers, the count it asked for
 // — which a shorter history may not reach — and the rate pooled over them, with
-// the rate of the same window one PR earlier and which way the rate is heading.
+// the rate one PR earlier and the trend.
 type rewriteTile struct {
 	PRs               []int    `json:"prs"`
 	Asked             int      `json:"asked"`
@@ -66,19 +65,15 @@ type rewritePR struct {
 	RateValue  *float64  `json:"rate_value"`
 	MergedAt   time.Time `json:"merged_at"`
 	PRURL      string    `json:"pr_url"`
-	// PlanModel, BuildModel and ReviewModel are the one model each phase ran on,
-	// or "unknown" when it ran none or more than one.
+	// PlanModel, BuildModel and ReviewModel are the phase's one model, or "unknown".
 	PlanModel   string `json:"plan_model"`
 	BuildModel  string `json:"build_model"`
 	ReviewModel string `json:"review_model"`
 }
 
-// groupFigures is the figures of one group of PRs, the same object for a size, a
-// model and a repository's average: its count, the rate pooled over its PRs and
-// the lines and the owner's split behind it, and the median and p90 of their own
-// rates. The rate is null for a group of no PRs; the median and p90 are null
-// below the PRs a spread needs, and for a group whose PRs have no rate of their
-// own, since a rate of zero is a real measurement.
+// groupFigures is one group of PRs, the same object for a size, a model and a
+// repository's average. The rate is null for no PRs, and the median and p90 for
+// a group with no spread, since a rate of zero is a real measurement.
 type groupFigures struct {
 	PRs               int      `json:"prs"`
 	Rate              *string  `json:"rate"`
@@ -102,21 +97,20 @@ type sizeRate struct {
 	groupFigures
 }
 
-// modelRate is one model's figures over the PRs it ran a phase of.
+// modelRate is one model's figures.
 type modelRate struct {
 	Model string `json:"model"`
 	groupFigures
 }
 
-// modelsView is the figures grouped by the model each phase ran on.
+// modelsView is each phase's models.
 type modelsView struct {
 	Plan   []modelRate `json:"plan"`
 	Build  []modelRate `json:"build"`
 	Review []modelRate `json:"review"`
 }
 
-// repoRewrite is one repository's own windows and rolling rate, and the figures
-// over all of its measured PRs.
+// repoRewrite is one repository's own windows and rolling rate, and its average over all its PRs.
 type repoRewrite struct {
 	Repo    string         `json:"repo"`
 	Tiles   []rewriteTile  `json:"tiles"`
@@ -139,8 +133,7 @@ func renderRewrite(samples []dispatcher.Sample) rewriteView {
 	}
 }
 
-// renderTiles renders each trailing window, its rate as the view prints it and
-// as a fraction, beside the rate a PR earlier and the trend.
+// renderTiles renders each trailing window.
 func renderTiles(windows []dispatcher.RateWindow) []rewriteTile {
 	out := make([]rewriteTile, 0, len(windows))
 	for _, w := range windows {
@@ -169,7 +162,7 @@ func renderTiles(windows []dispatcher.RateWindow) []rewriteTile {
 func renderSeries(points []dispatcher.SeriesPoint) []rewritePoint {
 	out := make([]rewritePoint, 0, len(points))
 	for _, p := range points {
-		out = append(out, rewritePoint{PR: p.PR, MergedAt: p.MergedAt, Rate: rateText(p.Rate), RateValue: rateNumber(p.Rate)})
+		out = append(out, rewritePoint{PR: p.PR, MergedAt: p.MergedAt, Rate: linesRateText(p.AgentLines, p.Rate), RateValue: linesRateNumber(p.AgentLines, p.Rate)})
 	}
 	return out
 }

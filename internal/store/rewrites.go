@@ -183,9 +183,9 @@ func (r *Rewrites) Recent(ctx context.Context, limit int) ([]dispatcher.Sample, 
 }
 
 // recentSamples reads the rows a rewrite measurement sits on, newest merge
-// first, projected to the fields a sample reads and the steps its phase models
-// come from. The measurement fields are the store's own, so the range filter is
-// what tells a measured row from one no merge has reached.
+// first, projected to the fields a sample reads. The measurement fields are the
+// store's own, so the range filter is what tells a measured row from one no
+// merge has reached.
 func recentSamples(ctx context.Context, client *firestore.Client, limit int) ([]dispatcher.Sample, error) {
 	iter := client.Collection(runsCollection).
 		Where(rewriteMergedAtField, ">", time.Time{}).
@@ -205,22 +205,16 @@ func recentSamples(ctx context.Context, client *firestore.Client, limit int) ([]
 		if err != nil {
 			return nil, fmt.Errorf("listing the measured runs: %w", err)
 		}
-		var run struct {
-			Steps []runner.Step `firestore:"steps"`
-		}
-		if err := snap.DataTo(&run); err != nil {
-			return nil, fmt.Errorf("decoding the steps of run %s: %w", snap.Ref.ID, err)
-		}
-		out = append(out, sample(snap.Ref.ID, snap.Data(), run.Steps))
+		out = append(out, sample(snap.Ref.ID, snap.Data()))
 	}
 	return out, nil
 }
 
-// sample reads one measured row, id, as the auto-merge rule reads it; steps are
-// the row's own, which the build and review models come from.
-func sample(id string, row map[string]any, steps []runner.Step) dispatcher.Sample {
+// sample reads one measured row, id, as the auto-merge rule reads it.
+func sample(id string, row map[string]any) dispatcher.Sample {
 	autoMerged, _ := row[autoMergeField].(bool)
 	reverted, _ := row[rewriteRevertedField].(bool)
+	steps := stepModels(row)
 	s := dispatcher.Sample{
 		Run:         id,
 		Size:        str(row, sizeField),
@@ -240,6 +234,21 @@ func sample(id string, row map[string]any, steps []runner.Step) dispatcher.Sampl
 	pr, _ := row[prNumberField].(int64)
 	s.PR = int(pr)
 	return s
+}
+
+// stepModels reads only the phase and model of each of the row's steps, so a
+// malformed step or field costs that step its model and never the read: the
+// models annotate a measurement that is already sound.
+func stepModels(row map[string]any) []runner.Step {
+	raw, _ := row[stepsField].([]any)
+	steps := make([]runner.Step, 0, len(raw))
+	for _, item := range raw {
+		fields, _ := item.(map[string]any)
+		phase, _ := fields["phase"].(string)
+		model, _ := fields["model"].(string)
+		steps = append(steps, runner.Step{Phase: runner.Phase(phase), Model: model})
+	}
+	return steps
 }
 
 // rewriteOf reads the rewrite measurement a run row carries, and whether a merge

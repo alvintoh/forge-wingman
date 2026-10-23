@@ -328,14 +328,14 @@ func TestAutonomyCapsThePRListAtTheTrailingWindow(t *testing.T) {
 func TestAutonomyReportsARatedSizesSpreadAndWithholdsTheOneItLacks(t *testing.T) {
 	at := time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC)
 	var measured []dispatcher.Sample
-	for range dispatcher.MinPRsPerSize {
+	for range dispatcher.MinPRsForSpread {
 		measured = append(measured, dispatcher.Sample{
 			Size: dispatcher.SizeMedium, MergedAt: at,
 			Rewrite: dispatcher.Rewrite{AgentLines: 100, OwnerLines: 20},
 		})
 	}
 	// A rated size whose PRs the agent wrote nothing in: +Inf rates, no spread.
-	for range dispatcher.MinPRsPerSize {
+	for range dispatcher.MinPRsForSpread {
 		measured = append(measured, dispatcher.Sample{
 			Size: dispatcher.SizeLarge, MergedAt: at,
 			Rewrite: dispatcher.Rewrite{OwnerLines: 10},
@@ -356,12 +356,12 @@ func TestAutonomyReportsARatedSizesSpreadAndWithholdsTheOneItLacks(t *testing.T)
 		t.Fatalf("by_size = %v, want the S, M, L and unsized rows", rewrite["by_size"])
 	}
 	if m, _ := sizes[1].(map[string]any); m["size"] != dispatcher.SizeMedium ||
-		m["prs"] != float64(dispatcher.MinPRsPerSize) ||
+		m["prs"] != float64(dispatcher.MinPRsForSpread) ||
 		m["rate"] != "20.0%" || m["median"] != "20.0%" || m["p90"] != "20.0%" {
 		t.Errorf("M = %v, want its pooled rate with the median and p90 of its own rates", sizes[1])
 	}
 	if lazy, _ := sizes[2].(map[string]any); lazy["size"] != dispatcher.SizeLarge ||
-		lazy["prs"] != float64(dispatcher.MinPRsPerSize) ||
+		lazy["prs"] != float64(dispatcher.MinPRsForSpread) ||
 		lazy["rate"] != "no agent lines" || lazy["median"] != nil || lazy["p90"] != nil {
 		t.Errorf("L = %v, want its +Inf pooled rate with no spread", sizes[2])
 	}
@@ -500,7 +500,7 @@ func TestAutonomyEveryRateTextHasItsNumber(t *testing.T) {
 	// A PR the agent wrote nothing in, and a size of ten of them: null numbers
 	// beside the words, and no spread.
 	merges = append(merges, dispatcher.Sample{PR: 150, Rewrite: dispatcher.Rewrite{OwnerLines: 4}})
-	for range dispatcher.MinPRsPerSize {
+	for range dispatcher.MinPRsForSpread {
 		merges = append(merges, dispatcher.Sample{Size: "L", Rewrite: dispatcher.Rewrite{OwnerLines: 3}})
 	}
 	rewrite := rewriteFigures(t, merges)
@@ -617,5 +617,19 @@ func TestAutonomyServesEachPRsPhaseModels(t *testing.T) {
 		if pr["plan_model"] != want.plan || pr["build_model"] != want.build || pr["review_model"] != want.review {
 			t.Errorf("prs[%d] = %v, want plan %s, build %s and review %s", i, pr, want.plan, want.build, want.review)
 		}
+	}
+}
+
+// A window of merges with no lines at all has no rate: the series says so as the
+// tiles do, rather than plotting a zero.
+func TestAutonomyPrintsNoAgentLinesForASeriesWindowWithNoLines(t *testing.T) {
+	merges := make([]dispatcher.Sample, 0, dispatcher.TrailingPRs)
+	for i := range dispatcher.TrailingPRs {
+		merges = append(merges, dispatcher.Sample{PR: 50 - i})
+	}
+	series := seriesOf(t, getAutonomy(t, &stubMeasured{merges: merges}))
+	point, _ := series[0].(map[string]any)
+	if len(series) != 1 || point["rate"] != "no agent lines" || point["rate_value"] != nil {
+		t.Errorf("series = %v, want one point reading no agent lines with a null number", series)
 	}
 }

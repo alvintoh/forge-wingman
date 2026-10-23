@@ -4,6 +4,7 @@ import (
 	"math"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -155,8 +156,7 @@ type Sample struct {
 	// Title is the PR's own title as its row holds it, empty for a row measured
 	// before it was kept.
 	Title string
-	// PlanModel, BuildModel and ReviewModel are the one model each phase ran on,
-	// empty when the phase ran none or more than one.
+	// PlanModel, BuildModel and ReviewModel are the phase's one model, empty for none or several.
 	PlanModel, BuildModel, ReviewModel string
 	Rewrite
 	// AutoMerged is whether the run's PR merged itself, recorded on the run row
@@ -218,8 +218,7 @@ const (
 	SeriesPoints = 25
 )
 
-// Trend is which way a window's rate is heading: lower is better, so a view
-// reads TrendDown as improving.
+// Trend is which way a window's rate is heading; lower is better.
 type Trend string
 
 // The directions a window's rate takes.
@@ -229,8 +228,7 @@ const (
 	TrendFlat Trend = "flat"
 )
 
-// trendMinMove is the smallest latest move, in thousandths, that shows as an
-// arrow: 0.5 points of rate.
+// trendMinMove is the smallest latest move, in tenths of a point, that shows as an arrow.
 const trendMinMove = 5
 
 // RateWindow is one trailing window of merged PRs as a view draws it: the PRs
@@ -247,13 +245,11 @@ type RateWindow struct {
 	// Rate is Lines' rate: the owner's lines over the agent's, pooled rather
 	// than a mean of the PRs' own rates.
 	Rate float64
-	// Previous is the rate of the same window ending one PR earlier, and
-	// HasPrevious whether there is one: it needs a PR before the window and agent
-	// lines in both.
+	// Previous is the rate of the same window ending one PR earlier; HasPrevious
+	// needs both windows full and with agent lines.
 	Previous    float64
 	HasPrevious bool
-	// Trend is the direction Tiles reads the window's rate heading, TrendFlat
-	// when it cannot tell.
+	// Trend is TrendFlat unless three full windows with agent lines show an arrow.
 	Trend Trend
 }
 
@@ -275,8 +271,7 @@ func WindowRate(samples []Sample, n int) RateWindow {
 	return w
 }
 
-// Tiles is the windows a view draws, widest first: the trailing window, the last
-// few merges, and the last merge alone, each with the trend of its own rate.
+// Tiles is the trailing, last-few and last-merge windows, widest first, each with its trend.
 func Tiles(samples []Sample) []RateWindow {
 	return []RateWindow{
 		trendedWindow(samples, TrailingPRs),
@@ -285,12 +280,13 @@ func Tiles(samples []Sample) []RateWindow {
 	}
 }
 
-// trendedWindow is WindowRate with the same window one and two PRs earlier read
-// beside it, so the window's own rate has two moves to judge a trend by.
+// trendedWindow reads the window beside the same window one and two PRs earlier.
+// A shorter window would compare different quantities, as the series has no
+// point for one, so a trend needs all three full.
 func trendedWindow(samples []Sample, n int) RateWindow {
 	w := WindowRate(samples, n)
 	w.Trend = TrendFlat
-	if w.Lines.AgentLines <= 0 {
+	if w.Lines.AgentLines <= 0 || len(samples) < n+1 {
 		return w
 	}
 	prev := WindowRate(samples[1:], n)
@@ -298,19 +294,20 @@ func trendedWindow(samples []Sample, n int) RateWindow {
 		return w
 	}
 	w.Previous, w.HasPrevious = prev.Rate, true
+	if len(samples) < n+2 {
+		return w
+	}
 	if before := WindowRate(samples[2:], n); before.Lines.AgentLines > 0 {
 		w.Trend = trendOf(w.Rate, prev.Rate, before.Rate)
 	}
 	return w
 }
 
-// trendOf is the direction rate is heading, given the same window's rate one and
-// two PRs earlier: an arrow only when the last two moves go the same way and the
-// latest is at least 0.5 points, read on the rates as a view prints them, in
-// whole thousandths, so the edge is an integer compare and no float one.
+// trendOf is an arrow only when the last two moves go the same way and the
+// latest is at least 0.5 points, on the rates as printed.
 func trendOf(rate, previous, earlier float64) Trend {
-	latest := thousandths(rate) - thousandths(previous)
-	before := thousandths(previous) - thousandths(earlier)
+	latest := printedTenths(rate) - printedTenths(previous)
+	before := printedTenths(previous) - printedTenths(earlier)
 	switch {
 	case latest >= trendMinMove && before > 0:
 		return TrendUp
@@ -320,9 +317,16 @@ func trendOf(rate, previous, earlier float64) Trend {
 	return TrendFlat
 }
 
-// thousandths is rate in whole thousandths, so 0.1234 is 123.
-func thousandths(rate float64) int {
-	return int(math.Round(rate * 1000))
+// PercentText is rate as a percentage to one decimal: the one rounding the view
+// prints and the trend compares, so an arrow never contradicts the text.
+func PercentText(rate float64) string {
+	return strconv.FormatFloat(rate*100, 'f', 1, 64)
+}
+
+// printedTenths is rate in tenths of a point as PercentText prints it.
+func printedTenths(rate float64) int {
+	n, _ := strconv.Atoi(strings.Replace(PercentText(rate), ".", "", 1))
+	return n
 }
 
 // SeriesPoint is one point of the rolling rate: the merge the window ends at and
@@ -331,7 +335,9 @@ type SeriesPoint struct {
 	// PR and MergedAt are the merge the window ends at, the newest PR in it.
 	PR       int
 	MergedAt time.Time
-	Rate     float64
+	// AgentLines is the window's agent lines: with none the rate has no figure.
+	AgentLines int64
+	Rate       float64
 }
 
 // RollingSeries is the rolling trailing-n rate over the merged PRs in samples:
@@ -347,10 +353,12 @@ func RollingSeries(samples []Sample, n, points int) []SeriesPoint {
 	// window one merge later.
 	var out []SeriesPoint
 	for i := len(samples) - n; i >= 0; i-- {
+		lines := Lines(samples[i : i+n])
 		out = append(out, SeriesPoint{
-			PR:       samples[i].PR,
-			MergedAt: samples[i].MergedAt,
-			Rate:     Lines(samples[i : i+n]).Rate(),
+			PR:         samples[i].PR,
+			MergedAt:   samples[i].MergedAt,
+			AgentLines: lines.AgentLines,
+			Rate:       lines.Rate(),
 		})
 	}
 	if points < 0 {
@@ -371,30 +379,22 @@ const (
 	SizeUnsized = "unsized"
 )
 
-// MinPRsPerSize is how many measured PRs a group needs before its median and
-// p90 are reported: below it the spread of a handful of rates says more about
-// which PRs merged than about the group.
-const MinPRsPerSize = 10
+// MinPRsForSpread is how many measured PRs a group needs before its median and
+// p90 are reported: a spread over fewer says more about which PRs merged than about the group.
+const MinPRsForSpread = 10
 
-// Group is the rewrite figures of any set of measured PRs: a size, a model or a
-// repository's whole history.
+// Group is the rewrite figures of a set of measured PRs: a size, a model or a repository.
 type Group struct {
-	// PRs is how many measured PRs the group holds.
 	PRs int
-	// Lines are the group's pooled measured lines, and Rate their rate: the
-	// owner's lines over the agent's, pooled rather than a mean of the PRs' rates.
+	// Lines are the pooled lines and Rate their pooled rate.
 	Lines Rewrite
 	Rate  float64
-	// Spread is whether the group holds MinPRsPerSize PRs and any of them has a
-	// rate of its own to rank: a PR the agent wrote no lines in has none.
+	// Spread is whether Median and P90 exist: MinPRsForSpread PRs, one with agent lines.
 	Spread bool
-	// Median and P90 are the PRs' per-PR rates, nearest rank, over the PRs the
-	// agent wrote lines in.
 	Median float64
 	P90    float64
-	// NoAgentLinesPRs is how many of the group's PRs the agent wrote no lines in,
-	// which count in PRs and are left out of the ranking, and NoAgentOwnerLines
-	// the owner's lines in them.
+	// NoAgentLinesPRs counts the PRs with no agent lines, which are in PRs but
+	// not in the ranking, and NoAgentOwnerLines their owner lines.
 	NoAgentLinesPRs   int
 	NoAgentOwnerLines int64
 }
@@ -409,7 +409,7 @@ func GroupOf(samples []Sample) Group {
 			g.NoAgentOwnerLines += s.OwnerLines
 		}
 	}
-	if len(samples) >= MinPRsPerSize {
+	if len(samples) >= MinPRsForSpread {
 		if rates := measuredRates(samples); len(rates) > 0 {
 			g.Spread = true
 			g.Median = medianOf(rates)
@@ -488,25 +488,21 @@ func nearestRank(sorted []float64, p float64) float64 {
 // reported under.
 const RepoUnattributed = "unattributed"
 
-// ModelUnknown is the model group of the PRs whose phase ran no one model: none
-// recorded, or a fallback took over.
+// ModelUnknown is the group of PRs whose phase has no one model.
 const ModelUnknown = "unknown"
 
-// ModelRow is one model's rewrite figures over the PRs it ran a phase of.
+// ModelRow is one model's figures over the PRs it ran a phase of.
 type ModelRow struct {
-	// Model is the model, or ModelUnknown.
 	Model string
 	Group
 }
 
-// PhaseModels is the rewrite figures grouped by the model each phase ran on.
+// PhaseModels is the rows of each phase's models.
 type PhaseModels struct {
 	Plan, Build, Review []ModelRow
 }
 
-// ByModel groups samples by the one model each phase ran on, so one PR is a
-// member of three groups: its plan model's, its build model's and its review
-// model's.
+// ByModel groups samples by each phase's model, so a PR is in three groups.
 func ByModel(samples []Sample) PhaseModels {
 	return PhaseModels{
 		Plan:   groupByModel(samples, func(s Sample) string { return s.PlanModel }),
@@ -515,8 +511,7 @@ func ByModel(samples []Sample) PhaseModels {
 	}
 }
 
-// groupByModel is one phase's rows: the most PRs first, then by name, with
-// ModelUnknown last whatever its count.
+// groupByModel is one phase's rows, most PRs first then by name, ModelUnknown last.
 func groupByModel(samples []Sample, pick func(Sample) string) []ModelRow {
 	grouped := map[string][]Sample{}
 	for _, s := range samples {
@@ -551,8 +546,7 @@ type RepoRow struct {
 	// Tiles are the repository's own windows, and Series its own rolling rate.
 	Tiles  []RateWindow
 	Series []SeriesPoint
-	// Average is the figures over all of the repository's measured PRs, not its
-	// trailing window.
+	// Average is over all its measured PRs, not its trailing window.
 	Average Group
 }
 

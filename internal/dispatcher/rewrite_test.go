@@ -171,7 +171,7 @@ func TestRollingSeriesIsEachWindowsOwnPooledRate(t *testing.T) {
 		pr   int
 		rate float64
 	}{{10, 55.0 / 1000.0}, {11, 65.0 / 1000.0}, {12, 75.0 / 1000.0}} {
-		if points[i].PR != want.pr || points[i].Rate != want.rate {
+		if points[i].PR != want.pr || points[i].Rate != want.rate || points[i].AgentLines != 1000 {
 			t.Fatalf("point %d = %+v, want PR %d at %v", i, points[i], want.pr, want.rate)
 		}
 	}
@@ -202,13 +202,13 @@ func TestBySizeGroupsTheSizesAndTheirRates(t *testing.T) {
 	// +Inf and no median or percentile holds it.
 	samples = append(samples, Sample{Size: SizeMedium, Rewrite: Rewrite{OwnerLines: 5}})
 	// A size at exactly the count its rates need, and ones below it.
-	for range MinPRsPerSize {
+	for range MinPRsForSpread {
 		samples = append(samples, Sample{Size: SizeLarge, Rewrite: Rewrite{AgentLines: 8, OwnerLines: 1}})
 	}
 	// The unsized row holds one PR below the count its rates need: one naming a
 	// size the ladder does not carry, which counts with those naming none.
 	samples = append(samples, Sample{Size: aboveCeiling, Rewrite: Rewrite{AgentLines: 8, OwnerLines: 1}})
-	for range MinPRsPerSize - 2 {
+	for range MinPRsForSpread - 2 {
 		samples = append(samples, Sample{Rewrite: Rewrite{AgentLines: 8, OwnerLines: 1}})
 	}
 
@@ -223,8 +223,8 @@ func TestBySizeGroupsTheSizesAndTheirRates(t *testing.T) {
 	}{
 		{SizeSmall, 0, false},
 		{SizeMedium, 11, true},
-		{SizeLarge, MinPRsPerSize, true},
-		{SizeUnsized, MinPRsPerSize - 1, false},
+		{SizeLarge, MinPRsForSpread, true},
+		{SizeUnsized, MinPRsForSpread - 1, false},
 	} {
 		if row := rows[i]; row.Size != want.size || row.PRs != want.prs || row.Spread != want.spread {
 			t.Errorf("BySize[%d] = %+v, want %s with %d PRs and its spread %v", i, row, want.size, want.prs, want.spread)
@@ -268,12 +268,12 @@ func TestSizeBucketFoldsAnythingButTheLadderIntoUnsized(t *testing.T) {
 // whose measured PRs all have +Inf rates carries its count and the rate pooled
 // over it, with no spread of its own for a median or a p90 to rank.
 func TestBySizeReadsNoSpreadForASizeTheAgentWroteNothingIn(t *testing.T) {
-	samples := make([]Sample, 0, MinPRsPerSize)
-	for range MinPRsPerSize {
+	samples := make([]Sample, 0, MinPRsForSpread)
+	for range MinPRsForSpread {
 		samples = append(samples, Sample{Size: SizeLarge, Rewrite: Rewrite{OwnerLines: 10}})
 	}
 	rows := BySize(samples)
-	if lazy := rows[2]; lazy.PRs != MinPRsPerSize || lazy.Spread || !math.IsInf(lazy.Rate, 1) {
+	if lazy := rows[2]; lazy.PRs != MinPRsForSpread || lazy.Spread || !math.IsInf(lazy.Rate, 1) {
 		t.Fatalf("L = %+v, want its count, its +Inf pooled rate and no spread", lazy)
 	}
 }
@@ -359,16 +359,16 @@ func TestGroupOfWithholdsMedianAndP90UnderTenPRs(t *testing.T) {
 		}
 		return out
 	}
-	unmeasurable := make([]Sample, 0, MinPRsPerSize)
-	for range MinPRsPerSize {
+	unmeasurable := make([]Sample, 0, MinPRsForSpread)
+	for range MinPRsForSpread {
 		unmeasurable = append(unmeasurable, Sample{Rewrite: Rewrite{OwnerLines: 1}})
 	}
 	for name, tt := range map[string]struct {
 		samples []Sample
 		spread  bool
 	}{
-		"nine PRs":                        {measured(MinPRsPerSize - 1), false},
-		"ten PRs":                         {measured(MinPRsPerSize), true},
+		"nine PRs":                        {measured(MinPRsForSpread - 1), false},
+		"ten PRs":                         {measured(MinPRsForSpread), true},
 		"ten PRs none of them has a rate": {unmeasurable, false},
 		"no PRs at all":                   {nil, false},
 	} {
@@ -457,19 +457,20 @@ func TestTilesTrendComparesTheWindowWithItsPredecessors(t *testing.T) {
 		trend       Trend
 		hasPrevious bool
 	}{
-		"two falls of 0.6 points":             {prs(100, 106, 112), TrendDown, true},
-		"two rises of 0.6 points":             {prs(112, 106, 100), TrendUp, true},
-		"a fall then a rise":                  {prs(100, 106, 100), TrendFlat, true},
-		"a rise then a fall":                  {prs(106, 100, 106), TrendFlat, true},
-		"a latest fall of 0.4 points":         {prs(100, 104, 110), TrendFlat, true},
-		"a latest fall of exactly 0.5 points": {prs(100, 105, 110), TrendDown, true},
-		"a latest rise of exactly 0.5 points": {prs(110, 105, 100), TrendUp, true},
-		"an earlier move of none":             {prs(100, 105, 105), TrendFlat, true},
-		"one PR has no predecessor":           {prs(100), TrendFlat, false},
-		"two PRs have no second move":         {prs(100, 106), TrendFlat, true},
-		"a predecessor with no agent lines":   {append(prs(100), Sample{Rewrite: Rewrite{OwnerLines: 4}}, prs(112)[0]), TrendFlat, false},
-		"an earlier PR with no agent lines":   {append(prs(100, 106), Sample{Rewrite: Rewrite{OwnerLines: 4}}), TrendFlat, true},
-		"a latest PR with no agent lines":     {append([]Sample{{Rewrite: Rewrite{OwnerLines: 4}}}, prs(106, 112)...), TrendFlat, false},
+		"two falls of 0.6 points":                       {prs(100, 106, 112), TrendDown, true},
+		"two rises of 0.6 points":                       {prs(112, 106, 100), TrendUp, true},
+		"a fall then a rise":                            {prs(100, 106, 100), TrendFlat, true},
+		"a rise then a fall":                            {prs(106, 100, 106), TrendFlat, true},
+		"a latest fall of 0.4 points":                   {prs(100, 104, 110), TrendFlat, true},
+		"a latest fall of exactly 0.5 points":           {prs(100, 105, 110), TrendDown, true},
+		"a latest rise of exactly 0.5 points":           {prs(110, 105, 100), TrendUp, true},
+		"an earlier move of none":                       {prs(100, 105, 105), TrendFlat, true},
+		"one PR has no predecessor":                     {prs(100), TrendFlat, false},
+		"two PRs have no second move":                   {prs(100, 106), TrendFlat, true},
+		"a predecessor with no agent lines":             {append(prs(100), Sample{Rewrite: Rewrite{OwnerLines: 4}}, prs(112)[0]), TrendFlat, false},
+		"an earlier PR with no agent lines":             {append(prs(100, 106), Sample{Rewrite: Rewrite{OwnerLines: 4}}), TrendFlat, true},
+		"a rise over an earlier PR with no agent lines": {append(prs(112, 106), Sample{Rewrite: Rewrite{OwnerLines: 4}}), TrendFlat, true},
+		"a latest PR with no agent lines":               {append([]Sample{{Rewrite: Rewrite{OwnerLines: 4}}}, prs(106, 112)...), TrendFlat, false},
 	} {
 		w := Tiles(tt.samples)[2]
 		if w.Trend != tt.trend || w.HasPrevious != tt.hasPrevious {
@@ -481,12 +482,69 @@ func TestTilesTrendComparesTheWindowWithItsPredecessors(t *testing.T) {
 		t.Errorf("previous = %v, want the rate one PR earlier, 0.106", w.Previous)
 	}
 
-	// The trailing window of ten PRs against its own ten holds nine in the
-	// window one PR earlier: the newest PR's 200 owner lines against the nine
-	// that carry 100 each.
-	ten := prs(200, 100, 100, 100, 100, 100, 100, 100, 100, 100)
-	w := Tiles(ten)[0]
-	if !w.HasPrevious || w.Previous != 0.1 || w.Rate != 1100.0/10000.0 {
-		t.Errorf("trailing = %+v, want the ten PRs' rate against the nine after the newest", w)
+	// The trailing window needs ten PRs before it has a predecessor and eleven
+	// before the predecessor has one: the owners run newest first, each PR 1000
+	// agent lines, 200 owner lines in the newest and 100 in every other.
+	owners := func(n int) []Sample {
+		out := []int64{200}
+		for len(out) < n {
+			out = append(out, 100)
+		}
+		return prs(out...)
+	}
+	if w := Tiles(owners(10))[0]; w.HasPrevious || w.Trend != TrendFlat || len(w.PRs) != 10 {
+		t.Errorf("ten PRs: trailing = %+v, want no predecessor, as a window of nine is not a full one", w)
+	}
+	if w := Tiles(owners(11))[0]; !w.HasPrevious || w.Previous != 0.1 || w.Rate != 1100.0/10000.0 || w.Trend != TrendFlat {
+		t.Errorf("eleven PRs: trailing = %+v, want its rate against the full ten after the newest and no trend yet", w)
+	}
+	// Eleven PRs leave the third window one PR short: owner lines 160 in the
+	// oldest would read as a fall against it, were it compared.
+	if w := Tiles(prs(100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 160))[0]; !w.HasPrevious || w.Trend != TrendFlat {
+		t.Errorf("eleven PRs: trailing = %+v, want its previous rate and no trend over a short third window", w)
+	}
+	// Twelve PRs have three full windows: owner lines 100 in the ten newest and
+	// 160 in the two oldest move the rate down by 0.6 points twice.
+	twelve := prs(100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 160, 160)
+	if w := Tiles(twelve)[0]; !w.HasPrevious || w.Trend != TrendDown {
+		t.Errorf("twelve PRs: trailing = %+v, want a fall across three full windows", w)
+	}
+}
+
+// Three merges are no trailing window, so neither the trailing-ten nor the
+// last-five tile has a previous rate or a trend, while the last-PR tile does:
+// its windows are single PRs, which are always full.
+func TestTilesTrendNeedsFullWindows(t *testing.T) {
+	tiles := Tiles([]Sample{
+		{PR: 3, Rewrite: Rewrite{AgentLines: 100, OwnerLines: 5}},
+		{PR: 2, Rewrite: Rewrite{AgentLines: 100, OwnerLines: 10}},
+		{PR: 1, Rewrite: Rewrite{AgentLines: 100, OwnerLines: 30}},
+	})
+	for _, w := range tiles[:2] {
+		if w.HasPrevious || w.Trend != TrendFlat {
+			t.Errorf("tile of %d = %+v, want no previous rate and a flat trend over a history shorter than its window", w.Asked, w)
+		}
+	}
+	if last := tiles[2]; !last.HasPrevious || last.Trend != TrendDown {
+		t.Errorf("last-PR tile = %+v, want a fall of 5%% from 10%% from 30%%", last)
+	}
+}
+
+// The trend reads the rates as printed: 1/16 prints as 6.2%, so its moves are
+// those of the text, not of a rounding half away from zero.
+func TestTilesTrendReadsTheRatesAsPrinted(t *testing.T) {
+	pr := func(agent, owner int64) Sample { return Sample{Rewrite: Rewrite{AgentLines: agent, OwnerLines: owner}} }
+	for name, tt := range map[string]struct {
+		newest, previous, earlier Sample
+		want                      Trend
+	}{
+		// 5.8%, 6.2% (6.25 prints to the even tenth), 7.0%: moves of -0.4 and -0.8.
+		"a printed fall of 0.4 points": {pr(1000, 58), pr(16, 1), pr(1000, 70), TrendFlat},
+		// 6.2%, 6.7%, 7.5%: moves of -0.5 and -0.8, though a rounding of 6.25 up reads -0.4.
+		"a printed fall of exactly 0.5 points": {pr(16, 1), pr(1000, 67), pr(1000, 75), TrendDown},
+	} {
+		if got := Tiles([]Sample{tt.newest, tt.previous, tt.earlier})[2].Trend; got != tt.want {
+			t.Errorf("%s: trend = %q, want %q", name, got, tt.want)
+		}
 	}
 }
