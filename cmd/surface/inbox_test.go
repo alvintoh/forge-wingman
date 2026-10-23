@@ -290,19 +290,54 @@ func TestInboxPageFitsOneBatchedGitHubRead(t *testing.T) {
 	}
 }
 
-func TestInboxListsAStoppedRunWithItsAttemptAndNoPRRead(t *testing.T) {
+func TestInboxListsAStoppedRunWithItsAttemptTitleAndNoPRRead(t *testing.T) {
 	inbox := &stubInbox{runs: []store.InboxRun{
-		{Run: "stopped", Ticket: "ABC-1", Stopped: true, Attempt: 2, Outcome: "agent-failed", StopReason: "agent-exit", UpdatedAt: measuredAt()},
+		{Run: "stopped", Ticket: "ABC-1", Title: "Add the widget", Stopped: true, Attempt: 2, Outcome: "agent-failed", StopReason: "agent-exit", UpdatedAt: measuredAt()},
 	}}
 	pulls := &stubPulls{}
 	rec := getInbox(newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Inbox: inbox, Pulls: pulls, AutoMerge: &stubAutoMerge{}}))
 	want := `{"runs":[{"run":"stopped","ticket":"ABC-1","repo":"","size":"","pr_url":"","wait_reason":"","updated_at":"2026-10-18T09:00:00Z",` +
-		`"attempt":2,"outcome":"agent-failed","stop_reason":"agent-exit","retryable":true}]}` + "\n"
+		`"attempt":2,"outcome":"agent-failed","stop_reason":"agent-exit","stopped":true,"retryable":true,"title":"Add the widget"}]}` + "\n"
 	if rec.Body.String() != want {
 		t.Fatalf("body = %s, want %s: no wait reason though the auto-merge switch is off", rec.Body.String(), want)
 	}
 	if len(pulls.refs) != 0 {
 		t.Fatalf("GitHub was asked about %v for a run with no PR", pulls.refs)
+	}
+}
+
+// A retried draft whose next attempt stopped still names the old draft: it is a stopped run, kept
+// with that PR, which GitHub is not asked about.
+func TestInboxListsAStoppedRunThatStillNamesAnEarlierDraft(t *testing.T) {
+	const pr = "https://github.com/octo/scratch/pull/7"
+	inbox := &stubInbox{runs: []store.InboxRun{
+		{Run: "kept", Ticket: "ABC-1", Title: "Add the widget", PRURL: pr, WaitReason: runner.WaitDraft, Stopped: true, Outcome: "stopped", StopReason: "plan-stage-failed", UpdatedAt: measuredAt()},
+	}}
+	pulls := &stubPulls{summaries: map[dispatcher.PullRef]dispatcher.PullSummary{{Repo: "octo/scratch", Number: 7}: {State: dispatcher.PullStateOpen, Draft: true, Title: "feat: widget"}}}
+	rec := getInbox(newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Inbox: inbox, Pulls: pulls, AutoMerge: &stubAutoMerge{enabled: true}}))
+	var got struct {
+		Runs []map[string]any `json:"runs"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || len(got.Runs) != 1 {
+		t.Fatalf("body = %s, %v", rec.Body.String(), err)
+	}
+	row := got.Runs[0]
+	if row["stopped"] != true || row["retryable"] != true || row["pr_url"] != pr || row["wait_reason"] != "" || row["title"] != "Add the widget" || row["draft"] != nil {
+		t.Fatalf("row = %v, want stopped and retryable, still naming the draft, with the ticket's title, no wait reason and nothing of GitHub's", row)
+	}
+	if len(pulls.refs) != 0 {
+		t.Fatalf("GitHub was asked about %v for a stopped run", pulls.refs)
+	}
+}
+
+// A PR row's title is GitHub's: a ticket title the store holds for it is not served.
+func TestInboxServesNoTicketTitleOnAPRRow(t *testing.T) {
+	inbox := &stubInbox{runs: []store.InboxRun{
+		{Run: "r1", Ticket: "ABC-1", Title: "The ticket's title", PRURL: "https://github.com/octo/scratch/pull/7", WaitReason: runner.WaitSizeL, UpdatedAt: measuredAt()},
+	}}
+	rec := getInbox(newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Inbox: inbox, AutoMerge: &stubAutoMerge{enabled: true}}))
+	if strings.Contains(rec.Body.String(), "title") {
+		t.Fatalf("body = %s, want no title for a PR whose GitHub read is absent", rec.Body.String())
 	}
 }
 

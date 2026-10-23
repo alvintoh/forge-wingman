@@ -5,7 +5,7 @@ import { SmallPill } from "../pill-button";
 import { Chevron } from "./chevron";
 import { type Cell, cellAttrs } from "./keyboard";
 import type { RowState } from "./merge-state";
-import { type InboxRun, isStoppedWithoutPR, stopReasonOf, titleOf } from "./run";
+import { type InboxRun, isStopped, stopReasonOf, titleOf } from "./run";
 
 type Kind = "FORK" | "TODO" | "REVIEW" | "STOPPED";
 
@@ -64,7 +64,7 @@ export function InboxRow({ run, now, state, stop, onOpen, onMerge, onRetry, onCo
   const blocked = wait?.blocks === true || draft;
   const unread = run.head_sha === undefined;
   const title = titleOf(run);
-  const stopped = isStoppedWithoutPR(run);
+  const stopped = isStopped(run);
   // A draft on GitHub shows the same chip as a stored draft reason, whatever reason is stored.
   const kind: Kind = stopped ? "STOPPED" : draft ? "TODO" : (wait?.kind ?? "REVIEW");
 
@@ -110,7 +110,7 @@ export function InboxRow({ run, now, state, stop, onOpen, onMerge, onRetry, onCo
   if (state === undefined && blocked) {
     tone = "text-ink";
   }
-  // A stopped run has no pull request to read: its reason is why it stopped.
+  // A stopped run waits for a retry, not a merge: its reason is why it stopped, whatever PR it names.
   if (stopped) {
     reason = stopReasonOf(run);
     tone = "text-stop";

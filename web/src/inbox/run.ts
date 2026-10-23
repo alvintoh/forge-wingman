@@ -19,6 +19,9 @@ export type InboxRun = {
   // The attempt the run is on, from 0; a retry names it so the server can refuse a stale one.
   attempt?: number;
   retryable?: boolean;
+  // Set for a run that ended and waits for a retry, whatever pull request its row still names; its
+  // title is then the ticket's.
+  stopped?: boolean;
 };
 
 function isChecks(value: unknown): value is Checks {
@@ -49,6 +52,7 @@ function isInboxRun(row: unknown): row is InboxRun {
     optional("outcome", "string") &&
     optional("attempt", "number") &&
     optional("retryable", "boolean") &&
+    optional("stopped", "boolean") &&
     (!fields.has("checks") || isChecks(fields.get("checks")))
   );
 }
@@ -71,14 +75,20 @@ export function parsePull(prUrl: string): { repository: string; number: string }
 }
 
 export function titleOf(run: InboxRun): string {
+  if (run.title !== undefined) {
+    return run.title;
+  }
+  if (isStopped(run)) {
+    return run.ticket;
+  }
   const pull = parsePull(run.pr_url);
-  return run.title ?? (pull === null ? "Pull request" : `Pull request #${pull.number}`);
+  return pull === null ? "Pull request" : `Pull request #${pull.number}`;
 }
 
-// isStoppedWithoutPR is a run that stopped and left no pull request, which the inbox lists on its own
-// for a retry.
-export function isStoppedWithoutPR(run: InboxRun): boolean {
-  return run.pr_url === "" && run.retryable === true;
+// isStopped is a run that ended and waits for a retry, which the inbox lists for that, not for a merge,
+// even when its row still names an earlier attempt's draft.
+export function isStopped(run: InboxRun): boolean {
+  return run.stopped === true;
 }
 
 // Why a run stopped, in words, keyed by the runner's stop reason. waiting-on-owner is a run parked on

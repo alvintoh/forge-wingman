@@ -33,8 +33,9 @@ func (d Deps) comparison(w http.ResponseWriter, r *http.Request) {
 
 // comparisonResponse is the comparison endpoint's wire shape. It carries no
 // ticket text: the run records it reads hold ticket titles and bodies, and what
-// gates this binary today is IAP rather than the endpoint itself, so none of them
-// is ever served from here.
+// gates this binary today is IAP rather than the endpoint itself, so neither is
+// served from here. Only the inbox serves a title, for a stopped run, and no
+// endpoint serves a body.
 type comparisonResponse struct {
 	Models    []modelComparison    `json:"models"`
 	Providers []providerComparison `json:"providers"`

@@ -17,11 +17,12 @@ const (
 	waitReasonField      = "wait_reason"
 	mergedByOwnerAtField = "merged_by_owner_at"
 	mergedSHAField       = "merged_sha"
+	ticketTitleField     = "ticket_title"
 )
 
 // InboxRun is one run waiting on the owner, as the inbox lists it: one whose PR
-// is open and waiting to be merged, or one that stopped with no PR. Attempt is
-// the attempt the row is on, which a retry names to say which it saw.
+// is open and waiting to be merged, or one that stopped. Attempt is the attempt
+// the row is on, which a retry names to say which it saw.
 type InboxRun struct {
 	Run        string
 	Ticket     string
@@ -32,15 +33,18 @@ type InboxRun struct {
 	Attempt    int
 	Outcome    string
 	StopReason string
-	// Stopped is set for a run that ended with no PR, which waits for a retry.
-	Stopped   bool
+	// Stopped is set for a run that ended and waits for a retry, whatever PR the row
+	// still names: an earlier attempt's draft stays on it until a later one opens its own.
+	Stopped bool
+	// Title is the ticket's title, read for a stopped run only, which has no PR whose
+	// title could name it. The ticket's body is never read.
+	Title     string
 	UpdatedAt time.Time
 }
 
 // Inbox returns the runs updated since whose PR is open and not merged, and
 // that either name a wait reason or were not marked for auto-merge, and the
-// runs that stopped with no PR and no automatic requeue due, newest first, up
-// to limit.
+// runs that stopped and have no automatic requeue due, newest first, up to limit.
 //
 // A PR closed unmerged on GitHub is not known here, so it stays listed until
 // the owner's merge attempt finds it closed.
@@ -50,7 +54,7 @@ func (r *Records) Inbox(ctx context.Context, since time.Time, limit int) ([]Inbo
 		OrderBy(updatedAtField, firestore.Desc).
 		Select(repoField, sizeField, prURLField, autoMergeField, outcomeField, ticketIDField, updatedAtField,
 			waitReasonField, mergedByOwnerAtField, rewriteMergedAtField, stateField, stopReasonField, attemptField,
-			settledAtField, claimedAtField, transientField, transientRequeuesField).
+			settledAtField, claimedAtField, transientField, transientRequeuesField, ticketTitleField).
 		Documents(ctx)
 	defer iter.Stop()
 	var out []InboxRun
@@ -84,8 +88,9 @@ func inboxRun(id string, row map[string]any) (InboxRun, bool) {
 		StopReason: str(row, stopReasonField),
 	}
 	run.UpdatedAt, _ = row[updatedAtField].(time.Time)
-	if stoppedWithoutPR(row) {
+	if stoppedRun(row) {
 		run.Stopped = true
+		run.Title = str(row, ticketTitleField)
 		return run, true
 	}
 	open := run.PRURL != "" && run.Outcome == string(runner.OutcomePROpened) && !mergedRow(row)
@@ -102,10 +107,10 @@ func mergedRow(row map[string]any) bool {
 	return !at.IsZero()
 }
 
-// stoppedWithoutPR reports whether row is a run that ended with no PR and waits
-// for the owner to retry it. A run that made no changes has nothing a note could
-// change, and one a poll will requeue by itself is not the owner's yet.
-func stoppedWithoutPR(row map[string]any) bool {
+// stoppedRun reports whether row is a run that ended and waits for the owner to
+// retry it. A run that made no changes has nothing a note could change, and one a
+// poll will requeue by itself is not the owner's yet.
+func stoppedRun(row map[string]any) bool {
 	if _, _, finished := finishedClaim(row); !finished && str(row, stateField) != stateStopped {
 		return false
 	}

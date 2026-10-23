@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { ActionButton, ButtonPair } from "../action-button";
 import { type Cell, type Opened, listDialog } from "./keyboard";
 import type { RetryState } from "./retry-state";
-import { type InboxRun, isStoppedWithoutPR, stopReasonOf, titleOf } from "./run";
+import { type InboxRun, isStopped, stopReasonOf, titleOf } from "./run";
 
 // The note's limits: the field stops at 2000 characters, and the server takes 4096 bytes of the
 // trimmed note, which a multibyte note can pass first.
@@ -31,7 +31,7 @@ type FormProps = Omit<DialogProps, "opened" | "onClose"> & { run: InboxRun; onBa
 
 // reasonSentence is why the run is here and what the new attempt does.
 function reasonSentence(run: InboxRun): string {
-  const clause = isStoppedWithoutPR(run) ? stopReasonOf(run) : "Its pull request is still a draft";
+  const clause = isStopped(run) ? stopReasonOf(run) : "Its pull request is still a draft";
   const closes = run.pr_url === "" ? "" : "; its draft PR is closed once the new PR opens";
   return `${clause}. The new attempt starts from the ticket and your note${closes}.`;
 }

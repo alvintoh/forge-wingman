@@ -23,6 +23,7 @@ func TestInboxListsOpenPRsWaitingOnTheOwnerNewestFirst(t *testing.T) {
 		r := map[string]any{
 			"ticket_id": "ABC-1", "repo": "octo/scratch", "size": "M", "outcome": string(runner.OutcomePROpened),
 			"pr_url": "https://github.com/octo/scratch/pull/7", "auto_merge": false, "updated_at": inboxBase.Add(-age),
+			"ticket_title": "A ticket a PR row does not name",
 		}
 		for k, v := range extra {
 			r[k] = v
@@ -63,8 +64,8 @@ func TestInboxListsOpenPRsWaitingOnTheOwnerNewestFirst(t *testing.T) {
 		t.Fatalf("inbox = %v, want %v", names, want)
 	}
 	first := got[0]
-	if first.Stopped {
-		t.Fatalf("first = %+v, want a PR row not marked as a stopped run", first)
+	if first.Stopped || first.Title != "" {
+		t.Fatalf("first = %+v, want a PR row not marked as a stopped run and carrying no ticket title", first)
 	}
 	if first.Ticket != "ABC-1" || first.Repo != "octo/scratch" || first.Size != "M" || first.WaitReason != runner.WaitFrontEnd ||
 		first.PRURL != "https://github.com/octo/scratch/pull/7" || !first.UpdatedAt.Equal(inboxBase.Add(-time.Hour)) {
@@ -77,7 +78,7 @@ func TestInboxListsOpenPRsWaitingOnTheOwnerNewestFirst(t *testing.T) {
 	}
 }
 
-func TestInboxListsRunsThatStoppedWithNoPRUnlessThereIsNothingForTheOwnerToRetry(t *testing.T) {
+func TestInboxListsStoppedRunsUnlessThereIsNothingForTheOwnerToRetry(t *testing.T) {
 	_, client := queue(t)
 	ctx := context.Background()
 	prefix := fmt.Sprintf("inbox-stopped-%d", time.Now().UnixNano())
@@ -86,6 +87,7 @@ func TestInboxListsRunsThatStoppedWithNoPRUnlessThereIsNothingForTheOwnerToRetry
 			"ticket_id": "ABC-1", "repo": "octo/scratch", "size": "M", "state": "claimed", "attempt": int64(2),
 			"outcome": string(runner.OutcomeAgentFailed), "stop_reason": "agent-exit",
 			"settled_at": inboxBase.Add(-age), "claimed_at": inboxBase.Add(-age - time.Hour), "updated_at": inboxBase.Add(-age),
+			"ticket_title": "Add the widget", "ticket_body": "the whole ticket body",
 		}
 		for k, v := range extra {
 			r[k] = v
@@ -96,6 +98,7 @@ func TestInboxListsRunsThatStoppedWithNoPRUnlessThereIsNothingForTheOwnerToRetry
 	rows := map[string]map[string]any{
 		"finished claim":      row(time.Hour, nil),
 		"stopped state":       row(2*time.Hour, map[string]any{"state": "stopped", "outcome": "stopped", "stop_reason": "waiting-on-owner"}),
+		"old draft kept":      row(2*time.Hour+time.Minute, map[string]any{"state": "stopped", "outcome": "stopped", "stop_reason": "plan-stage-failed", "pr_url": "https://github.com/octo/scratch/pull/9", "wait_reason": "draft"}),
 		"retry exhausted":     row(3*time.Hour, map[string]any{"transient": string(runner.TransientModuleProxy), "transient_requeues": append(requeued, requeued...)}),
 		"requeue due":         row(4*time.Hour, map[string]any{"transient": string(runner.TransientModuleProxy), "transient_requeues": requeued}),
 		"made no changes":     row(5*time.Hour, map[string]any{"outcome": string(runner.OutcomeNoChanges), "stop_reason": ""}),
@@ -123,12 +126,18 @@ func TestInboxListsRunsThatStoppedWithNoPRUnlessThereIsNothingForTheOwnerToRetry
 	for _, r := range got {
 		names = append(names, r.Run[len(prefix)+1:])
 	}
-	if want := []string{"finished claim", "stopped state", "retry exhausted"}; !slices.Equal(names, want) {
+	if want := []string{"finished claim", "stopped state", "old draft kept", "retry exhausted"}; !slices.Equal(names, want) {
 		t.Fatalf("inbox = %v, want %v", names, want)
 	}
 	first := got[0]
 	if !first.Stopped || first.Attempt != 2 || first.Outcome != string(runner.OutcomeAgentFailed) || first.StopReason != "agent-exit" || first.PRURL != "" {
 		t.Fatalf("first = %+v, want the attempt, outcome and stop reason, and no PR", first)
+	}
+	if first.Title != "Add the widget" {
+		t.Fatalf("title = %q, want the ticket's title for a stopped run", first.Title)
+	}
+	if kept := got[2]; !kept.Stopped || kept.PRURL != "https://github.com/octo/scratch/pull/9" {
+		t.Fatalf("kept = %+v, want a stopped run that still names its earlier attempt's draft", kept)
 	}
 }
 

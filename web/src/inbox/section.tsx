@@ -16,7 +16,7 @@ import { RowSheet } from "./row-sheet";
 import type { InboxRun } from "./run";
 
 // InboxSection is the inbox's ACTIONS section: the PRs that wait on the owner, and the runs that
-// stopped with none. A row opens its sheet of actions; its MERGE PR opens its confirm and then shows
+// stopped. A row opens its sheet of actions; its MERGE PR opens its confirm and then shows
 // the merge on the row, and its RETRY, on a stopped run, opens the note for a new attempt.
 //
 // The list is one tab stop, the APG layout grid: the arrow keys move between the rows and from a row
