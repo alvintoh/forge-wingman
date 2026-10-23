@@ -5,9 +5,9 @@ import { SmallPill } from "../pill-button";
 import { Chevron } from "./chevron";
 import { type Cell, cellAttrs } from "./keyboard";
 import type { RowState } from "./merge-state";
-import { type InboxRun, titleOf } from "./run";
+import { type InboxRun, isStoppedWithoutPR, stopReasonOf, titleOf } from "./run";
 
-type Kind = "FORK" | "TODO" | "REVIEW";
+type Kind = "FORK" | "TODO" | "REVIEW" | "STOPPED";
 
 type Wait = { words: string; blocks: boolean; kind: Kind };
 
@@ -28,13 +28,15 @@ const kindFill: Record<Kind, string> = {
   FORK: "bg-stop",
   TODO: "bg-defer",
   REVIEW: "bg-review",
+  STOPPED: "bg-stop",
 };
 
 const UNREAD_WORDS = "GitHub could not be read";
 const MERGING_WORDS = "squash in progress";
 const MERGED_WORDS = "Merged. Squashed, branch deleted.";
 
-// The merge pill takes RETRY MERGE's width, the set the drawing sizes it from.
+// The merge pill takes RETRY MERGE's width, the set the drawing sizes it from; a stopped run's RETRY
+// pill takes the same width.
 const MERGING_LABEL = "MERGING...";
 const MERGE_PILL_WIDTH = pillSetWidth(["MERGE PR", MERGING_LABEL, "RETRY MERGE"]);
 
@@ -50,9 +52,10 @@ type RowProps = {
   onOpen: (run: InboxRun) => void;
   onMerge: (run: InboxRun) => void;
   onRetry: (run: InboxRun, sha: string) => void;
+  onCompose: (run: InboxRun) => void;
 };
 
-export function InboxRow({ run, now, state, stop, onOpen, onMerge, onRetry }: RowProps) {
+export function InboxRow({ run, now, state, stop, onOpen, onMerge, onRetry, onCompose }: RowProps) {
   const reasonId = useId();
   const ticketId = useId();
   const titleId = useId();
@@ -61,8 +64,9 @@ export function InboxRow({ run, now, state, stop, onOpen, onMerge, onRetry }: Ro
   const blocked = wait?.blocks === true || draft;
   const unread = run.head_sha === undefined;
   const title = titleOf(run);
+  const stopped = isStoppedWithoutPR(run);
   // A draft on GitHub shows the same chip as a stored draft reason, whatever reason is stored.
-  const kind = draft ? "TODO" : (wait?.kind ?? "REVIEW");
+  const kind: Kind = stopped ? "STOPPED" : draft ? "TODO" : (wait?.kind ?? "REVIEW");
 
   const plainReason = run.wait_reason.replaceAll("-", " ");
   let reason = draft
@@ -106,11 +110,20 @@ export function InboxRow({ run, now, state, stop, onOpen, onMerge, onRetry }: Ro
   if (state === undefined && blocked) {
     tone = "text-ink";
   }
+  // A stopped run has no pull request to read: its reason is why it stopped.
+  if (stopped) {
+    reason = stopReasonOf(run);
+    tone = "text-stop";
+  }
   // A merged row has no pill, so a stop left on it falls back to the row.
   const rowStop = stop === "row" || (stop === "pill" && merged);
 
   function handleOpen() {
     onOpen(run);
+  }
+
+  function handleCompose() {
+    onCompose(run);
   }
 
   return (
@@ -162,6 +175,19 @@ export function InboxRow({ run, now, state, stop, onOpen, onMerge, onRetry }: Ro
             style={MERGE_PILL_WIDTH}
             className="h-11 min-w-11 font-mono text-micro"
           />
+        ) : stopped ? (
+          <span className="relative flex">
+            <SmallPill
+              kind="secondary"
+              width={MERGE_PILL_WIDTH}
+              label="RETRY"
+              tabIndex={stop === "pill" ? 0 : -1}
+              {...cellAttrs(run.run, "pill")}
+              aria-haspopup="dialog"
+              aria-label={`Retry ${run.ticket} in ${run.repo} with a note`}
+              onClick={handleCompose}
+            />
+          </span>
         ) : (
           <span className="relative flex">
             <SmallPill

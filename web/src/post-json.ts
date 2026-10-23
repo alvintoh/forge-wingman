@@ -1,4 +1,4 @@
-export function postJSON(path: string, body: Record<string, string>): Promise<Response> {
+export function postJSON(path: string, body: Record<string, string | number>): Promise<Response> {
   return fetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

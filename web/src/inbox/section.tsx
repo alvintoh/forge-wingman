@@ -1,21 +1,44 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useInbox } from "../inbox-context";
 import { TryAgainPill } from "../pill-button";
-import { LIST_DIALOG_ATTR, type Opened, type Position, cellIn, positionOf } from "./keyboard";
+import {
+  type Cell,
+  LIST_DIALOG_ATTR,
+  type Opened,
+  type Position,
+  cellIn,
+  positionOf,
+} from "./keyboard";
 import { MergeDialog } from "./merge-dialog";
+import { type Composing, RetryDialog } from "./retry-dialog";
 import { InboxRow } from "./row";
 import { RowSheet } from "./row-sheet";
 import type { InboxRun } from "./run";
 
-// InboxSection is the inbox's ACTIONS section: the PRs that wait on the owner. A row opens its
-// sheet of actions; its MERGE PR opens its confirm and then shows the merge on the row.
+// InboxSection is the inbox's ACTIONS section: the PRs that wait on the owner, and the runs that
+// stopped with none. A row opens its sheet of actions; its MERGE PR opens its confirm and then shows
+// the merge on the row, and its RETRY, on a stopped run, opens the note for a new attempt.
 //
 // The list is one tab stop, the APG layout grid: the arrow keys move between the rows and from a row
-// to its MERGE PR and back, Home and End to the first and last row, and the stop stays on the cell
+// to its pill and back, Home and End to the first and last row, and the stop stays on the cell
 // last focused.
 export function InboxSection() {
-  const { state, refresh, retry, rows, announcement, merge, clearRefusal } = useInbox();
+  const {
+    state,
+    refresh,
+    retry,
+    rows,
+    announcement,
+    merge,
+    clearRefusal,
+    retries,
+    draftOf,
+    setDraft,
+    clearRetryFailure,
+    sendRetry,
+  } = useInbox();
   const [target, setTarget] = useState<Opened | null>(null);
+  const [composing, setComposing] = useState<Composing | null>(null);
   const [sheet, setSheet] = useState<Opened | null>(null);
   const [active, setActive] = useState<Position | null>(null);
   const headingId = useId();
@@ -164,6 +187,36 @@ export function InboxSection() {
     setSheet({ run });
   }
 
+  function handleComposeOpen(run: InboxRun, from: Cell) {
+    clearRetryFailure(run);
+    setComposing({ run, from });
+  }
+
+  function handlePillCompose(run: InboxRun) {
+    handleComposeOpen(run, "pill");
+  }
+
+  function handleSheetCompose(run: InboxRun) {
+    handleComposeOpen(run, "row");
+  }
+
+  // However the dialog closed, focus goes back to the cell that opened it.
+  function handleComposeClose() {
+    const from = composing;
+    setComposing(null);
+    if (from !== null) {
+      cellIn(listRef.current, from.run.run, from.from)?.focus();
+    }
+  }
+
+  // The dialog stays open while the note is sent, and closes when the run is queued again, unless
+  // the owner has since opened another row's.
+  async function handleRetryConfirm(run: InboxRun, note: string) {
+    if (await sendRetry(run, note)) {
+      setComposing((open) => (open?.run.run === run.run ? null : open));
+    }
+  }
+
   // However the sheet closed, focus goes back to the row that opened it.
   function handleSheetClose() {
     const run = sheet?.run;
@@ -229,6 +282,7 @@ export function InboxSection() {
                     onOpen={handleSheetOpen}
                     onMerge={handleMerge}
                     onRetry={merge}
+                    onCompose={handlePillCompose}
                   />
                 ))}
               </ul>
@@ -237,7 +291,15 @@ export function InboxSection() {
         </>
       )}
       <MergeDialog opened={target} onClose={handleClose} onConfirm={handleConfirm} />
-      <RowSheet opened={sheet} onClose={handleSheetClose} />
+      <RetryDialog
+        opened={composing}
+        state={composing === null ? undefined : retries[composing.run.run]}
+        draftOf={draftOf}
+        onDraft={setDraft}
+        onClose={handleComposeClose}
+        onConfirm={handleRetryConfirm}
+      />
+      <RowSheet opened={sheet} onClose={handleSheetClose} onRetry={handleSheetCompose} />
     </section>
   );
 }

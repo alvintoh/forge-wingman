@@ -1,11 +1,11 @@
-import { useEffect, useId, useRef } from "react";
+import { useCallback, useEffect, useId, useRef } from "react";
 import { createPortal } from "react-dom";
 import { Chevron } from "./chevron";
 import { type Opened, listDialog } from "./keyboard";
-import { parsePull, titleOf } from "./run";
+import { type InboxRun, parsePull, titleOf } from "./run";
 
 // One action of a row's sheet, a 68px row under a rule: the label at its 28px baseline, the detail
-// at 48, the chevron from 30 to 42. A later action takes the same class and body on a button.
+// at 48, the chevron from 30 to 42. An action is a link or a button, with the same class and body.
 const sheetActionClass = "flex min-h-[67px] gap-3.5 rounded-tile pt-[11.9px] pb-4";
 
 type SheetActionBodyProps = {
@@ -30,15 +30,19 @@ function SheetActionBody({ label, detail }: SheetActionBodyProps) {
 type SheetProps = {
   opened: Opened | null;
   onClose: () => void;
+  onRetry: (run: InboxRun) => void;
 };
 
-// RowSheet is a row's actions, opened by the row. It opens when `opened` is set with the focus on
-// its first action, or on the close control when the row has no pull request to open; an action,
-// the close control, Escape and a press on the scrim close it, and the dialog hands the focus back
-// to the row.
-export function RowSheet({ opened, onClose }: SheetProps) {
+// RowSheet is a row's actions, opened by the row: retry with a note when the run can be retried, and
+// open its pull request when it has one. It opens when `opened` is set with the focus on its first
+// action, or on the close control when the row has none; an action, the close control, Escape and a
+// press on the scrim close it, and the dialog hands the focus back to the row.
+export function RowSheet({ opened, onClose, onRetry }: SheetProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
-  const firstRef = useRef<HTMLAnchorElement>(null);
+  const firstRef = useRef<HTMLElement | null>(null);
+  const setFirst = useCallback((action: HTMLElement | null) => {
+    firstRef.current = action;
+  }, []);
   const closeRef = useRef<HTMLButtonElement>(null);
   const titleId = useId();
   const descriptionId = useId();
@@ -66,6 +70,13 @@ export function RowSheet({ opened, onClose }: SheetProps) {
     dialogRef.current?.close();
   }
 
+  function retry() {
+    if (run !== null) {
+      onRetry(run);
+    }
+    close();
+  }
+
   // The close event is queued after the dialog closes, so it can land after the row opened the sheet
   // again; only a close that left the dialog shut is one.
   function handleClose() {
@@ -91,6 +102,7 @@ export function RowSheet({ opened, onClose }: SheetProps) {
   }
 
   const pull = run === null ? null : parsePull(run.pr_url);
+  const retryable = run?.retryable === true;
 
   // From the drawing: the repository's capitals on a 36px baseline, the ticket's on 60, the title's
   // on 82, the first action's rule at 104 and the sheet's end 14 under the last; the close control's
@@ -119,7 +131,7 @@ export function RowSheet({ opened, onClose }: SheetProps) {
           >
             {titleOf(run)}
           </p>
-          {pull === null ? (
+          {pull === null && !retryable ? (
             <p className="mt-[18.5px] border-t border-hair pt-3 text-label leading-5 text-muted">
               {run.pr_url === ""
                 ? "This run has no pull request to open."
@@ -127,19 +139,36 @@ export function RowSheet({ opened, onClose }: SheetProps) {
             </p>
           ) : (
             <ul className="mt-[18.5px]">
-              <li className="border-t border-hair">
-                <a
-                  ref={firstRef}
-                  href={run.pr_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={close}
-                  className={sheetActionClass}
-                >
-                  <SheetActionBody label="Open pull request" detail="Review the diff on GitHub" />
-                  <span className="sr-only"> (opens in a new tab)</span>
-                </a>
-              </li>
+              {retryable && (
+                <li className="border-t border-hair">
+                  <button
+                    ref={setFirst}
+                    type="button"
+                    onClick={retry}
+                    className={`w-full cursor-pointer text-left ${sheetActionClass}`}
+                  >
+                    <SheetActionBody
+                      label="Retry with a note"
+                      detail="Start a new attempt with guidance"
+                    />
+                  </button>
+                </li>
+              )}
+              {pull !== null && (
+                <li className="border-t border-hair">
+                  <a
+                    ref={retryable ? undefined : setFirst}
+                    href={run.pr_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={close}
+                    className={sheetActionClass}
+                  >
+                    <SheetActionBody label="Open pull request" detail="Review the diff on GitHub" />
+                    <span className="sr-only"> (opens in a new tab)</span>
+                  </a>
+                </li>
+              )}
             </ul>
           )}
           <button
