@@ -239,25 +239,71 @@ async function failureOf(response: Response): Promise<Failure> {
   return { words: "The merge was not made. Try again.", retry: true };
 }
 
+function titleOf(run: InboxRun): string {
+  const pull = parsePull(run.pr_url);
+  return run.title ?? (pull === null ? "Pull request" : `Pull request #${pull.number}`);
+}
+
 const chipClass =
   "inline-flex h-5.5 shrink-0 items-center rounded-full px-2.5 font-mono text-micro font-semibold tracking-[1.2px] text-card";
+
+type ChevronProps = {
+  className: string;
+};
+
+// Chevron is the drawing's row affordance: a 6x12 right chevron, muted, its tip at the box's 7px.
+function Chevron({ className }: ChevronProps) {
+  return (
+    <svg
+      aria-hidden="true"
+      width="8"
+      height="14"
+      viewBox="0 0 8 14"
+      className={`shrink-0 text-muted ${className}`}
+    >
+      <path
+        d="M1 1l6 6l-6 6"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+// The two focusable cells of a row: the row itself, which opens its sheet, and its MERGE PR pill.
+type Cell = "row" | "pill";
+
+// The attributes a cell carries, which the list's keys read back to find where the focus is.
+const RUN_ATTR = "data-run";
+const CELL_ATTR = "data-cell";
+
+function cellAttrs(run: string, cell: Cell): Record<string, string> {
+  return { [RUN_ATTR]: run, [CELL_ATTR]: cell };
+}
 
 type RowProps = {
   run: InboxRun;
   now: number;
   state: RowState | undefined;
+  // Which of the row's cells is the list's one tab stop, if the stop is on this row.
+  stop: Cell | undefined;
+  onOpen: (run: InboxRun) => void;
   onMerge: (run: InboxRun) => void;
   onRetry: (run: InboxRun, sha: string) => void;
 };
 
-function InboxRow({ run, now, state, onMerge, onRetry }: RowProps) {
+function InboxRow({ run, now, state, stop, onOpen, onMerge, onRetry }: RowProps) {
   const reasonId = useId();
+  const ticketId = useId();
+  const titleId = useId();
   const wait: Wait | undefined = waits[run.wait_reason];
   const draft = run.draft === true;
   const blocked = wait?.blocks === true || draft;
   const unread = run.head_sha === undefined;
-  const pull = parsePull(run.pr_url);
-  const title = run.title ?? (pull === null ? "Pull request" : `Pull request #${pull.number}`);
+  const title = titleOf(run);
   // A draft on GitHub shows the same chip as a stored draft reason, whatever reason is stored.
   const kind = draft ? "TODO" : (wait?.kind ?? "REVIEW");
 
@@ -295,13 +341,19 @@ function InboxRow({ run, now, state, onMerge, onRetry }: RowProps) {
   const normal = state === undefined || (state.status === "failed" && !state.retry);
   const blockedControl = normal && (blocked || unread);
   // A merging or blocked pill is aria-disabled, not disabled, so it keeps the focus through a
-  // re-read and stays in the tab order, where its reason is read as its description.
+  // re-read and its reason is read as its description. The arrow keys pass over it.
   const ariaDisabled = state?.status === "merging" || blockedControl;
   if (ariaDisabled) {
     onPill = undefined;
   }
   if (state === undefined && blocked) {
     tone = "text-ink";
+  }
+  // A merged row has no pill, so a stop left on it falls back to the row.
+  const rowStop = stop === "row" || (stop === "pill" && merged);
+
+  function handleOpen() {
+    onOpen(run);
   }
 
   return (
@@ -315,11 +367,27 @@ function InboxRow({ run, now, state, onMerge, onRetry }: RowProps) {
     // baseline 22 under the first and the title 9.7 under its box; the hit area's bottom 8px
     // overlaps that line, as the drawing's does.
     // A merged row keeps an empty slot the pill's size, so it is as tall as before the merge.
-    <li className="@container border-t border-hair pt-[13.8px] pb-[20.9px] first:border-t-0">
+    <li className="@container relative border-t border-hair pt-[13.8px] pb-[20.9px] first:border-t-0">
+      {/* The row is the target that opens its sheet: a button laid over the whole row, out to the
+          card's edges, under the pill, which is positioned after it and so painted above it. Its
+          ring is the drawing's 3px, centred 6px inside the row, as the card's tile radius. */}
+      <button
+        type="button"
+        tabIndex={rowStop ? 0 : -1}
+        {...cellAttrs(run.run, "row")}
+        aria-haspopup="dialog"
+        aria-labelledby={`${ticketId} ${titleId}`}
+        aria-describedby={reason === undefined ? undefined : reasonId}
+        onClick={handleOpen}
+        className="absolute inset-y-0 -inset-x-padx cursor-pointer rounded-tile focus-visible:outline-offset-[-7.5px]!"
+      />
       <div className="grid min-h-11 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 @min-[23.5rem]:grid-cols-[auto_minmax(0,1fr)_auto] @min-[23.5rem]:gap-x-2">
         <div className="col-start-1 row-start-1 flex items-center gap-3">
           <span className={`${chipClass} ${kindFill[kind]}`}>{kind}</span>
-          <span className="font-mono text-micro font-semibold tracking-[0.6px] text-ink2">
+          <span
+            id={ticketId}
+            className="font-mono text-micro font-semibold tracking-[0.6px] text-ink2"
+          >
             {run.ticket}
           </span>
         </div>
@@ -327,9 +395,7 @@ function InboxRow({ run, now, state, onMerge, onRetry }: RowProps) {
           <span aria-hidden="true" className="hidden @min-[23.5rem]:inline">
             /
           </span>
-          <span title={run.repo} className="min-w-0 truncate tracking-[0.4px]">
-            {run.repo}
-          </span>
+          <span className="min-w-0 truncate tracking-[0.4px]">{run.repo}</span>
           <span aria-hidden="true">/</span>
           <span className="shrink-0">{ago(run.updated_at, now, "")}</span>
         </p>
@@ -340,52 +406,73 @@ function InboxRow({ run, now, state, onMerge, onRetry }: RowProps) {
             className="h-11 min-w-11 font-mono text-micro"
           />
         ) : (
-          <SmallPill
-            kind="primary"
-            width={MERGE_PILL_WIDTH}
-            label={pillLabel}
-            aria-disabled={ariaDisabled || undefined}
-            aria-label={pillName}
-            aria-describedby={
-              reason !== undefined && (blockedControl || state !== undefined) ? reasonId : undefined
-            }
-            onClick={onPill}
-          />
+          <span className="relative flex">
+            <SmallPill
+              kind="primary"
+              width={MERGE_PILL_WIDTH}
+              label={pillLabel}
+              tabIndex={stop === "pill" ? 0 : -1}
+              {...cellAttrs(run.run, "pill")}
+              aria-disabled={ariaDisabled || undefined}
+              aria-label={pillName}
+              aria-describedby={
+                reason !== undefined && (blockedControl || state !== undefined)
+                  ? reasonId
+                  : undefined
+              }
+              onClick={onPill}
+            />
+          </span>
         )}
       </div>
-      <p
-        title={run.title}
-        className="mt-[9.7px] line-clamp-2 text-head leading-5.5 font-semibold wrap-break-word text-ink @min-[23.5rem]:-mt-[4.4px] @min-[23.5rem]:line-clamp-none"
-      >
-        {title}
-      </p>
-      {reason !== undefined && (
-        <p id={reasonId} className={`mt-[4.5px] text-label leading-4 wrap-break-word ${tone}`}>
-          {reason}
-        </p>
-      )}
+      {/* The title and reason take the row's width less the chevron and its 13px gap; the chevron's
+          tip sits on the content's right edge, its top at the title's first baseline. */}
+      <div className="mt-[9.7px] flex gap-3.25 @min-[23.5rem]:-mt-[4.4px]">
+        <div className="min-w-0 flex-1">
+          <p
+            id={titleId}
+            className="line-clamp-2 text-head leading-5.5 font-semibold wrap-break-word text-ink @min-[23.5rem]:line-clamp-none"
+          >
+            {title}
+          </p>
+          {reason !== undefined && (
+            <p id={reasonId} className={`mt-[4.5px] text-label leading-4 wrap-break-word ${tone}`}>
+              {reason}
+            </p>
+          )}
+        </div>
+        <Chevron className="mt-[16.4px] -mr-px" />
+      </div>
     </li>
   );
 }
 
+// One opening of a row's dialog. Each is a new object, so the same row opened again is a change.
+type Opened = { run: InboxRun };
+
+// Marks the dialogs the list opens, which hand the focus back to it when they close.
+const LIST_DIALOG_ATTR = "data-inbox-dialog";
+const listDialog = { [LIST_DIALOG_ATTR]: "" };
+
 type DialogProps = {
-  run: InboxRun | null;
+  opened: Opened | null;
   onClose: () => void;
   onConfirm: (run: InboxRun) => void;
 };
 
-// MergeDialog confirms one merge. It opens when `run` is set; MERGE PR hands the run to onConfirm
-// and closes it, and Escape and BACK close it without one.
-function MergeDialog({ run, onClose, onConfirm }: DialogProps) {
+// MergeDialog confirms one merge. It opens when `opened` is set; MERGE PR hands the run to
+// onConfirm and closes it, and Escape and BACK close it without one.
+function MergeDialog({ opened, onClose, onConfirm }: DialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const titleId = useId();
+  const run = opened?.run ?? null;
 
   useEffect(() => {
     const dialog = dialogRef.current;
     if (dialog === null) {
       return;
     }
-    if (run === null) {
+    if (opened === null) {
       if (dialog.open) {
         dialog.close();
       }
@@ -394,7 +481,15 @@ function MergeDialog({ run, onClose, onConfirm }: DialogProps) {
     if (!dialog.open) {
       dialog.showModal();
     }
-  }, [run]);
+  }, [opened]);
+
+  // The close event is queued after the dialog closes, so it can land after the row opened the
+  // dialog again; only a close that left the dialog shut is one.
+  function handleClose() {
+    if (dialogRef.current?.open !== true) {
+      onClose();
+    }
+  }
 
   function back() {
     dialogRef.current?.close();
@@ -414,9 +509,10 @@ function MergeDialog({ run, onClose, onConfirm }: DialogProps) {
   return createPortal(
     <dialog
       ref={dialogRef}
+      {...listDialog}
       aria-labelledby={titleId}
-      onClose={onClose}
-      className="m-auto max-h-dvh w-full max-w-[min(28.75rem,calc(100dvw-2rem))] overflow-auto rounded-card border border-hair bg-card px-6.25 pt-7.25 pb-5.25 text-ink backdrop:bg-ink/40"
+      onClose={handleClose}
+      className="m-auto max-h-dvh w-full max-w-[min(28.75rem,calc(100dvw-2rem))] overflow-auto rounded-card border border-hair bg-card px-6.25 pt-7.25 pb-5.25 text-ink backdrop:bg-ink/45"
     >
       {run !== null && (
         <>
@@ -488,6 +584,171 @@ function MergeDialog({ run, onClose, onConfirm }: DialogProps) {
   );
 }
 
+// One action of a row's sheet, a 68px row under a rule: the label at its 28px baseline, the detail
+// at 48, the chevron from 30 to 42. A later action takes the same class and body on a button.
+const sheetActionClass = "flex min-h-[67px] gap-3.5 rounded-tile pt-[11.9px] pb-4";
+
+type SheetActionBodyProps = {
+  label: string;
+  detail: string;
+};
+
+function SheetActionBody({ label, detail }: SheetActionBodyProps) {
+  return (
+    <>
+      <span className="min-w-0 flex-1">
+        <span className="block text-body leading-5 wrap-break-word text-ink">{label}</span>
+        <span className="mt-[3.1px] block text-cap leading-4 wrap-break-word text-muted">
+          {detail}
+        </span>
+      </span>
+      <Chevron className="mt-[16.6px] mr-px" />
+    </>
+  );
+}
+
+type SheetProps = {
+  opened: Opened | null;
+  onClose: () => void;
+};
+
+// RowSheet is a row's actions, opened by the row. It opens when `opened` is set with the focus on
+// its first action, or on the close control when the row has no pull request to open; an action,
+// the close control, Escape and a press on the scrim close it, and the dialog hands the focus back
+// to the row.
+function RowSheet({ opened, onClose }: SheetProps) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const firstRef = useRef<HTMLAnchorElement>(null);
+  const titleId = useId();
+  const descriptionId = useId();
+  const run = opened?.run ?? null;
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (dialog === null) {
+      return;
+    }
+    if (opened === null) {
+      if (dialog.open) {
+        dialog.close();
+      }
+      return;
+    }
+    if (!dialog.open) {
+      dialog.showModal();
+      firstRef.current?.focus();
+    }
+  }, [opened]);
+
+  function close() {
+    dialogRef.current?.close();
+  }
+
+  // The close event is queued after the dialog closes, so it can land after the row opened the sheet
+  // again; only a close that left the dialog shut is one.
+  function handleClose() {
+    if (dialogRef.current?.open !== true) {
+      onClose();
+    }
+  }
+
+  // A press on the dialog itself lands on its padding or, outside its box, on the scrim.
+  function handleClick(event: React.MouseEvent<HTMLDialogElement>) {
+    if (event.target !== event.currentTarget) {
+      return;
+    }
+    const box = event.currentTarget.getBoundingClientRect();
+    const inside =
+      event.clientX >= box.left &&
+      event.clientX <= box.right &&
+      event.clientY >= box.top &&
+      event.clientY <= box.bottom;
+    if (!inside) {
+      close();
+    }
+  }
+
+  const pull = run === null ? null : parsePull(run.pr_url);
+
+  // From the drawing: the repository's capitals on a 36px baseline, the ticket's on 60, the title's
+  // on 82, the first action's rule at 104 and the sheet's end 14 under the last; the close control's
+  // 44px circle 16 from the top and on the content's right edge, so the lines beside it stop short.
+  return createPortal(
+    <dialog
+      ref={dialogRef}
+      {...listDialog}
+      aria-labelledby={titleId}
+      aria-describedby={descriptionId}
+      onClose={handleClose}
+      onClick={handleClick}
+      className="m-auto max-h-dvh w-full max-w-[min(28.75rem,calc(100dvw-2rem))] overflow-auto rounded-card border border-hair bg-card px-6.25 pt-[22.1px] pb-3.25 text-ink backdrop:bg-ink/45"
+    >
+      {run !== null && (
+        <>
+          <p className="pr-14 font-mono text-label leading-4 font-semibold tracking-[1.4px] wrap-break-word text-muted uppercase">
+            {pull === null ? run.repo : pull.repository}
+          </p>
+          <h2 id={titleId} className="mt-[2.5px] pr-14 text-head leading-6 font-semibold">
+            {run.ticket}
+          </h2>
+          <p
+            id={descriptionId}
+            className="mt-[3.9px] text-cap leading-4 wrap-break-word text-muted"
+          >
+            {titleOf(run)}
+          </p>
+          {pull === null ? (
+            <p className="mt-[18.5px] border-t border-hair pt-3 text-label leading-5 text-muted">
+              {run.pr_url === ""
+                ? "This run has no pull request to open."
+                : "This pull request's link cannot be opened here."}
+            </p>
+          ) : (
+            <ul className="mt-[18.5px]">
+              <li className="border-t border-hair">
+                <a
+                  ref={firstRef}
+                  href={run.pr_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={close}
+                  className={sheetActionClass}
+                >
+                  <SheetActionBody label="Open pull request" detail="Review the diff on GitHub" />
+                  <span className="sr-only"> (opens in a new tab)</span>
+                </a>
+              </li>
+            </ul>
+          )}
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={close}
+            className="absolute top-3.75 right-6.25 flex size-11 cursor-pointer items-center justify-center rounded-full border border-hair bg-ground text-ink2 transition-colors duration-150 hover:bg-track"
+          >
+            <svg
+              aria-hidden="true"
+              width="11"
+              height="11"
+              viewBox="0 0 11 11"
+              className="overflow-visible"
+            >
+              <path
+                d="M0 0l11 11M11 0l-11 11"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+        </>
+      )}
+    </dialog>,
+    document.body,
+  );
+}
+
 type Merges = {
   // Each row's merge state, keyed by run, so a response only ever writes its own row.
   rows: Record<string, RowState>;
@@ -495,8 +756,6 @@ type Merges = {
   announcement: string;
   merge: (run: InboxRun, sha: string) => Promise<void>;
   clearRefusal: (run: InboxRun) => void;
-  // The Actions heading, which takes focus as a merged row leaves, while the Overview is open.
-  headingRef: React.RefObject<HTMLHeadingElement | null>;
 };
 
 // useMerges holds the merges made from the list beside the read itself, so a merge in flight and
@@ -506,7 +765,6 @@ function useMerges(refresh: () => void): Merges {
   const [announcement, setAnnouncement] = useState("");
   const sending = useRef(new Set<string>());
   const holds = useRef(new Map<string, ReturnType<typeof setTimeout>>());
-  const headingRef = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
     const timers = holds.current;
@@ -551,14 +809,12 @@ function useMerges(refresh: () => void): Merges {
         if (response.ok) {
           settle({ status: "merged" });
           setAnnouncement(`Merged ${where}.`);
-          // The merged row has no control and leaves with the re-read, so focus moves to the
-          // heading as the list is read again.
+          // The merged row leaves with the re-read; the list moves the focus it held.
           holds.current.set(
             run.run,
             setTimeout(() => {
               holds.current.delete(run.run);
               refresh();
-              headingRef.current?.focus();
             }, MERGED_HOLD_MS),
           );
           return;
@@ -579,7 +835,7 @@ function useMerges(refresh: () => void): Merges {
     [refresh],
   );
 
-  return { rows, announcement, merge, clearRefusal, headingRef };
+  return { rows, announcement, merge, clearRefusal };
 }
 
 type InboxProviderProps = {
@@ -596,12 +852,47 @@ export function InboxProvider({ children }: InboxProviderProps) {
   return <InboxContext value={{ ...read, ...merges }}>{children}</InboxContext>;
 }
 
-// InboxSection is the inbox's ACTIONS section: the PRs that wait on the owner, each with a
-// MERGE PR that opens its confirm and then shows the merge on the row.
+// Where focus sits in the list: a row's run, and which of its cells.
+type Position = { run: string; cell: Cell };
+
+function positionOf(target: EventTarget | null): Position | null {
+  if (!(target instanceof HTMLElement)) {
+    return null;
+  }
+  const run = target.getAttribute(RUN_ATTR);
+  const cell = target.getAttribute(CELL_ATTR);
+  if (run === null || (cell !== "row" && cell !== "pill")) {
+    return null;
+  }
+  return { run, cell };
+}
+
+function cellIn(list: HTMLElement | null, run: string, cell: Cell): HTMLElement | null {
+  return (
+    list?.querySelector<HTMLElement>(
+      `[${RUN_ATTR}="${CSS.escape(run)}"][${CELL_ATTR}="${cell}"]`,
+    ) ?? null
+  );
+}
+
+// InboxSection is the inbox's ACTIONS section: the PRs that wait on the owner. A row opens its
+// sheet of actions; its MERGE PR opens its confirm and then shows the merge on the row.
+//
+// The list is one tab stop, the APG layout grid: the arrow keys move between the rows and from a row
+// to its MERGE PR and back, Home and End to the first and last row, and the stop stays on the cell
+// last focused.
 export function InboxSection() {
-  const { state, refresh, retry, rows, announcement, merge, clearRefusal, headingRef } = useInbox();
-  const [target, setTarget] = useState<InboxRun | null>(null);
+  const { state, refresh, retry, rows, announcement, merge, clearRefusal } = useInbox();
+  const [target, setTarget] = useState<Opened | null>(null);
+  const [sheet, setSheet] = useState<Opened | null>(null);
+  const [active, setActive] = useState<Position | null>(null);
   const headingId = useId();
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+  // Whether the list holds the focus, or lent it to a dialog it opened.
+  const holdsFocus = useRef(false);
+  // The active row's place in the list as last rendered, for when it leaves.
+  const activeIndex = useRef(0);
 
   // The list is read once for the whole app, so the Overview reads it again each time it opens,
   // unless that first read is still under way.
@@ -612,19 +903,137 @@ export function InboxSection() {
     }
   }, [refresh]);
 
+  const runs = state.status === "ready" ? state.runs : [];
+  const activeAt = runs.findIndex((run) => run.run === active?.run);
+  const first = runs[0];
+  let stop: Position | null = null;
+  if (active !== null && activeAt >= 0) {
+    stop = active;
+  } else if (first !== undefined) {
+    stop = { run: first.run, cell: "row" };
+  }
+
+  // When the focused cell leaves (a merged row's pill, or the row on the re-read after it), the focus
+  // goes to that row, else the row now in its place, else the one above, else the heading, never to
+  // the page.
+  useEffect(() => {
+    if (activeAt >= 0) {
+      activeIndex.current = activeAt;
+    }
+    if (state.status !== "ready" || !holdsFocus.current || active === null) {
+      return;
+    }
+    const focused = document.activeElement;
+    if (focused !== null && focused !== document.body) {
+      return;
+    }
+    const run =
+      activeAt >= 0 ? runs[activeAt] : runs[Math.min(activeIndex.current, runs.length - 1)];
+    if (run === undefined) {
+      holdsFocus.current = false;
+      headingRef.current?.focus();
+      return;
+    }
+    cellIn(listRef.current, run.run, "row")?.focus();
+  });
+
+  function handleFocus(event: React.FocusEvent<HTMLUListElement>) {
+    const at = positionOf(event.target);
+    if (at === null) {
+      return;
+    }
+    holdsFocus.current = true;
+    setActive((previous) =>
+      previous?.run === at.run && previous.cell === at.cell ? previous : at,
+    );
+  }
+
+  // Focus moving into a dialog the list opened comes back to it on close, so the list still holds
+  // it. Focus lost with no new holder is the list's only while the cell that had it is gone.
+  function handleBlur(event: React.FocusEvent<HTMLUListElement>) {
+    const to = event.relatedTarget;
+    if (
+      to instanceof Element &&
+      (event.currentTarget.contains(to) || to.closest(`[${LIST_DIALOG_ATTR}]`) !== null)
+    ) {
+      return;
+    }
+    if (to === null) {
+      const left = event.target;
+      requestAnimationFrame(() => {
+        if (left.isConnected) {
+          holdsFocus.current = false;
+        }
+      });
+      return;
+    }
+    holdsFocus.current = false;
+  }
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLUListElement>) {
+    const at = positionOf(event.target);
+    if (at === null || event.altKey || event.ctrlKey || event.metaKey) {
+      return;
+    }
+    const index = runs.findIndex((run) => run.run === at.run);
+    let next: Position | null = null;
+    const row = (i: number): Position | null => {
+      const run = runs[i];
+      return run === undefined ? null : { run: run.run, cell: "row" };
+    };
+    switch (event.key) {
+      case "ArrowDown":
+        next = row(index + 1);
+        break;
+      case "ArrowUp":
+        next = row(index - 1);
+        break;
+      case "Home":
+        next = row(0);
+        break;
+      case "End":
+        next = row(runs.length - 1);
+        break;
+      case "ArrowRight":
+        next = at.cell === "row" ? { run: at.run, cell: "pill" } : null;
+        break;
+      case "ArrowLeft":
+        next = at.cell === "pill" ? { run: at.run, cell: "row" } : null;
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+    if (next === null) {
+      return;
+    }
+    const cell = cellIn(listRef.current, next.run, next.cell);
+    if (cell !== null && cell.getAttribute("aria-disabled") !== "true") {
+      cell.focus();
+    }
+  }
+
   function handleClose() {
     setTarget(null);
   }
 
-  function handleOpen(run: InboxRun) {
+  function handleMerge(run: InboxRun) {
     clearRefusal(run);
-    setTarget(run);
+    setTarget({ run });
   }
 
   function handleConfirm(run: InboxRun) {
     if (run.head_sha !== undefined) {
       void merge(run, run.head_sha);
     }
+  }
+
+  function handleSheetOpen(run: InboxRun) {
+    setSheet({ run });
+  }
+
+  function handleSheetClose() {
+    setSheet(null);
   }
 
   return (
@@ -672,14 +1081,16 @@ export function InboxSection() {
             {state.runs.length === 0 ? (
               <p className="flex min-h-13 items-center text-body">No PR waits on you.</p>
             ) : (
-              <ul>
+              <ul ref={listRef} onKeyDown={handleKeyDown} onFocus={handleFocus} onBlur={handleBlur}>
                 {state.runs.map((run) => (
                   <InboxRow
                     key={run.run}
                     run={run}
                     now={state.readAt}
                     state={rows[run.run]}
-                    onMerge={handleOpen}
+                    stop={stop?.run === run.run ? stop.cell : undefined}
+                    onOpen={handleSheetOpen}
+                    onMerge={handleMerge}
                     onRetry={merge}
                   />
                 ))}
@@ -688,7 +1099,8 @@ export function InboxSection() {
           </div>
         </>
       )}
-      <MergeDialog run={target} onClose={handleClose} onConfirm={handleConfirm} />
+      <MergeDialog opened={target} onClose={handleClose} onConfirm={handleConfirm} />
+      <RowSheet opened={sheet} onClose={handleSheetClose} />
     </section>
   );
 }
