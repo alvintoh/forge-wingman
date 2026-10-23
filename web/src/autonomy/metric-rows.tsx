@@ -1,6 +1,6 @@
 import { ROW_CAP } from "./axis";
 import { captionClass } from "./chart-card";
-import { SPLIT_KINDS, countWords, noAgentNote, percent, splitOf, whole } from "./format";
+import { SPLIT_KINDS, countWords, noAgentNote, servedRate, splitOf, whole } from "./format";
 import { Diamond, Segment, Swatch } from "./marks";
 import type { SplitSegment } from "./marks";
 import type { Group } from "./types";
@@ -18,6 +18,10 @@ const AXIS = [0, 0.2, 0.4, 0.6, 0.8];
 // The scale a bar column too narrow for five labels carries.
 const AXIS_SPARSE = [0, 0.4, 0.8];
 const BAR_H = 14;
+// The value column of a phone row, and the gap between it and its bar: the scale
+// above the bars stops short of both so its labels sit over the bars.
+const VALUE_COL = "7.4rem";
+const VALUE_GAP = "0.75rem";
 
 function axisLeft(tick: number): string {
   return `${(tick / ROW_CAP) * 100}%`;
@@ -169,7 +173,7 @@ function WideRow({ row, split }: Omit<RowProps, "wide">) {
       <div>
         <p className="flex flex-wrap items-baseline gap-x-3">
           <span className="text-body font-semibold text-ink">{row.name}</span>
-          <span className="text-label text-ink2">{countWords(group.prs)}</span>
+          <span className="text-label text-ink2">{countWords(group)}</span>
         </p>
         {split && group.owner_lines > 0 && <SplitWords group={group} column={false} />}
       </div>
@@ -194,7 +198,9 @@ function WideRow({ row, split }: Omit<RowProps, "wide">) {
           <>
             <p className="flex items-baseline gap-x-1.5">
               {off && <OffScale />}
-              <span className="font-mono text-body font-semibold text-ink">{percent(rate)}</span>
+              <span className="font-mono text-body font-semibold text-ink">
+                {servedRate(group.rate, rate, "no rate")}
+              </span>
               <span className="text-label text-ink2">{off ? "pooled, off scale" : "pooled"}</span>
             </p>
             {group.median !== null && group.p90 !== null && (
@@ -217,23 +223,26 @@ function CompactRow({ row, split }: Omit<RowProps, "wide">) {
     <li className="py-3" data-row={row.name}>
       <p className="flex flex-wrap items-baseline justify-between gap-x-3">
         <span className="text-body font-semibold text-ink">{row.name}</span>
-        <span className="text-cap text-ink2">{countWords(group.prs)}</span>
+        <span className="text-cap text-ink2">{countWords(group)}</span>
       </p>
       {row.recorded && rate !== null ? (
-        <div className="mt-2 grid grid-cols-[minmax(0,1fr)_7.4rem] items-center gap-x-3 gap-y-2">
+        <div
+          className="mt-2 grid items-center gap-y-2"
+          style={{ gridTemplateColumns: `minmax(0, 1fr) ${VALUE_COL}`, columnGap: VALUE_GAP }}
+        >
           <PooledBar group={group} height={12} split={split} />
           <p className="flex items-baseline gap-x-1.5">
             {off && <OffScale />}
-            <span className="font-mono text-body font-semibold text-ink">{percent(rate)}</span>
+            <span className="font-mono text-body font-semibold text-ink">
+              {servedRate(group.rate, rate, "no rate")}
+            </span>
             {!off && <span className="text-label text-ink2">pooled</span>}
           </p>
           {group.median_value !== null && (
             <>
               <MedianBar group={group} />
               <p className="flex items-baseline gap-x-1.5">
-                <span className="font-mono text-body font-semibold text-ink">
-                  {percent(group.median_value)}
-                </span>
+                <span className="font-mono text-body font-semibold text-ink">{group.median}</span>
                 <span className="text-label text-ink2">median</span>
               </p>
             </>
@@ -253,7 +262,8 @@ function CompactRow({ row, split }: Omit<RowProps, "wide">) {
 }
 
 type MetricPanelProps = {
-  title: string;
+  // The panel's own caption, where the chart's header is not it.
+  title?: string;
   rows: RowSpec[];
   split: boolean;
   wide: boolean;
@@ -292,11 +302,11 @@ export function MetricPanel({
             : ""
         }
       >
-        <h4 className={captionClass}>{title}</h4>
+        {title === undefined ? <div /> : <h4 className={captionClass}>{title}</h4>}
         {wide && <AxisLabels ticks={AXIS} />}
       </div>
       {!wide && (
-        <div className="mt-2 mr-[calc(7.4rem+0.75rem)]">
+        <div className="mt-2" style={{ marginRight: `calc(${VALUE_COL} + ${VALUE_GAP})` }}>
           <AxisLabels ticks={sparse ? AXIS_SPARSE : AXIS} />
         </div>
       )}

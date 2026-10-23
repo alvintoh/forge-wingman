@@ -1,7 +1,9 @@
+import { useEffect } from "react";
 import { ByModel } from "./by-model";
 import { ByRepo, RepoMultiples } from "./by-repo";
 import { BySize } from "./by-size";
 import { DataDisclosure } from "./data-table";
+import { isRewrite } from "./guard";
 import { PatternDefs } from "./marks";
 import { Tiles } from "./tiles";
 import { TrendCard } from "./trend-chart";
@@ -17,6 +19,29 @@ function StateCard({ title, words }: { title: string; words: string }) {
   );
 }
 
+// RewriteFigures draws the rewrite section from what the endpoint answered under
+// "rewrite", or says it could not read it, so a document of another shape costs
+// the page that section and not the auto-merge state above it.
+export function RewriteFigures({ figures }: { figures: unknown }) {
+  const readable = isRewrite(figures);
+  useEffect(() => {
+    if (!readable) {
+      console.error(
+        "rewriteNotRead",
+        "the autonomy endpoint answered rewrite figures of another shape",
+      );
+    }
+  }, [readable]);
+  if (!isRewrite(figures)) {
+    return (
+      <p role="alert" className="mt-6">
+        The rewrite figures could not be read.
+      </p>
+    );
+  }
+  return <RewriteSection rewrite={figures} />;
+}
+
 type RewriteSectionProps = { rewrite: RewriteView };
 
 // RewriteSection is the rewrite rate as a dashboard: the figures, the trend with
@@ -30,6 +55,9 @@ export function RewriteSection({ rewrite }: RewriteSectionProps) {
   const bar = rewrite.bars.rollback;
   const trended = rewrite.by_repo.filter((repo) => repo.series.length > 0);
   const partial = first !== undefined && first.prs.length < first.asked;
+  // Nothing to divide only where no PR in the read has agent lines: the newest ten
+  // having none leaves older ones, and the charts and tables are drawn from them.
+  const nothingToDivide = rewrite.by_size.every((size) => size.agent_lines === 0);
   const tiles = (
     <Tiles tiles={rewrite.tiles} prs={rewrite.prs} bar={bar} bleed={!partial} stacked={partial} />
   );
@@ -45,7 +73,7 @@ export function RewriteSection({ rewrite }: RewriteSectionProps) {
           <StateCard title="no measured PRs" words="Rates appear once a runner PR has merged." />
         </div>
       )}
-      {rewrite.prs.length > 0 && first !== undefined && first.agent_lines === 0 && (
+      {rewrite.prs.length > 0 && nothingToDivide && (
         <div className="mt-4">
           <StateCard
             title="no agent lines"
@@ -53,7 +81,7 @@ export function RewriteSection({ rewrite }: RewriteSectionProps) {
           />
         </div>
       )}
-      {rewrite.prs.length > 0 && first !== undefined && first.agent_lines > 0 && (
+      {rewrite.prs.length > 0 && first !== undefined && !nothingToDivide && (
         <div className="mt-4 space-y-6">
           {!partial && tiles}
           {trended.length > 1 && <RepoMultiples repos={trended} bar={bar} />}

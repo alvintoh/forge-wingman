@@ -31,9 +31,11 @@ export type Tile = {
   trend: TrendDirection;
 };
 
-// Point is one point of the rolling series: the merge its window ends at. A
-// window with no agent lines has no rate to plot.
+// Point is one point of the rolling series: the merge its window ends at, which
+// a PR's number names only within its repository. A window with no agent lines
+// has no rate to plot.
 export type Point = {
+  repo: string;
   pr: number;
   merged_at: string;
   rate: string;
@@ -82,7 +84,10 @@ export type SizeRow = Group & { size: string };
 
 export type ModelRow = Group & { model: string };
 
-export type Phase = "plan" | "build" | "review";
+// The three phases a run's model is recorded for, in the order a run takes them.
+export const PHASES = ["plan", "build", "review"] as const;
+
+export type Phase = (typeof PHASES)[number];
 
 export type RepoRow = {
   repo: string;
@@ -101,9 +106,10 @@ export type RewriteView = {
   bars: { rollback: number };
 };
 
-// AutonomyView is what the autonomy page reads from the endpoint: the
-// auto-merge state over the measured merges, and the rewrite figures behind it.
+// AutonomyView is what the autonomy page reads from the endpoint: the auto-merge
+// state, and the rewrite figures behind it, which are checked on their own so a
+// document without them still shows the state.
 export type AutonomyView = {
   auto_merge: MergeState;
-  rewrite: RewriteView;
+  rewrite?: unknown;
 };

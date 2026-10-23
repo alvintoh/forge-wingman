@@ -1,4 +1,4 @@
-import { RewriteSection } from "../autonomy/rewrite-section";
+import { RewriteFigures } from "../autonomy/rewrite-section";
 import { isAutonomy } from "../autonomy/guard";
 import { useRead } from "../stats/use-read";
 
@@ -31,7 +31,7 @@ export function Autonomy() {
             {`Rate over the trailing ${read.body.auto_merge.window} merged PRs: ${read.body.auto_merge.rate_value} (bar ${read.body.auto_merge.limit}).`}
           </p>
           <p className="mt-2 text-body text-ink2">{reasonText(read.body.auto_merge.reason)}</p>
-          <RewriteSection rewrite={read.body.rewrite} />
+          <RewriteFigures figures={read.body.rewrite} />
         </>
       )}
     </section>

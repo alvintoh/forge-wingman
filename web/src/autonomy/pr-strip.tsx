@@ -1,18 +1,30 @@
-import { BAND_H, BAND_LABEL, CAP, PLOT_TOP, bandLabelSide, dotRadius, radiiFor, yOf } from "./axis";
+import {
+  BAND_H,
+  BAND_LABEL,
+  CAP,
+  PLOT_TOP,
+  TREND_TICKS,
+  bandLabelSide,
+  dotRadius,
+  prKey,
+  radiiFor,
+  yOf,
+} from "./axis";
 import type { Axis, Radii } from "./axis";
 import { ChartHeader } from "./chart-card";
 import { UNKNOWN_MODEL, count, phaseWord, textWidth, whole, wrap } from "./format";
 import { Dot, Triangle } from "./marks";
+import { PHASES } from "./types";
 import type { Phase, PR } from "./types";
 
 const PLOT_H = 100;
 const LANE_H = 28;
 const LANE_LINE = 13;
-const PHASES: { phase: Phase; label: string; pick: (pr: PR) => string }[] = [
-  { phase: "plan", label: "plan model", pick: (pr) => pr.plan_model },
-  { phase: "build", label: "build", pick: (pr) => pr.build_model },
-  { phase: "review", label: "review", pick: (pr) => pr.review_model },
-];
+const LANE_LABEL: Record<Phase, string> = { plan: "plan model", build: "build", review: "review" };
+
+function modelOf(pr: PR, phase: Phase): string {
+  return { plan: pr.plan_model, build: pr.build_model, review: pr.review_model }[phase];
+}
 
 type Placed = { pr: PR; x: number };
 
@@ -40,15 +52,14 @@ const MAX_LEVELS = 3;
 function layoutLane(
   axis: Axis,
   placed: Placed[],
-  index: Map<number, number>,
-  label: string,
+  index: Map<string, number>,
   phase: Phase,
-  pick: (pr: PR) => string,
 ): Lane | null {
+  const label = LANE_LABEL[phase];
   const runs: { model: string; first: number; last: number }[] = [];
   for (const { pr } of placed) {
-    const slot = index.get(pr.pr);
-    const model = pick(pr);
+    const slot = index.get(prKey(pr.repo, pr.pr));
+    const model = modelOf(pr, phase);
     const last = runs[runs.length - 1];
     if (
       slot !== undefined &&
@@ -133,11 +144,11 @@ type PrStripProps = {
 export function PrStrip({ axis, prs, width, padx, compact, alone }: PrStripProps) {
   const placed: Placed[] = prs
     .flatMap((pr) => {
-      const x = axis.xOfPR(pr.pr);
+      const x = axis.xOfPR(pr.repo, pr.pr);
       return x === undefined ? [] : [{ pr, x }];
     })
     .sort((a, b) => a.x - b.x);
-  const index = new Map(axis.slots.map((slot, i) => [slot.pr, i]));
+  const index = new Map(axis.slots.map((slot, i) => [prKey(slot.repo, slot.pr), i]));
   const radii: Radii = compact ? { max: 6.5, min: 2.5 } : radiiFor(axis.step);
   const rMax = radii.max;
   const mostLines = Math.max(0, ...prs.map((pr) => pr.agent_lines));
@@ -170,9 +181,7 @@ export function PrStrip({ axis, prs, width, padx, compact, alone }: PrStripProps
     cy += 2 * rMax + 14;
   }
   const lanes =
-    compact || alone
-      ? []
-      : PHASES.map((p) => layoutLane(axis, placed, index, p.label, p.phase, p.pick));
+    compact || alone ? [] : PHASES.map((phase) => layoutLane(axis, placed, index, phase));
   const drawLanes = lanes.length > 0 && lanes.every((lane) => lane !== null);
   const laneTops: number[] = [];
   if (drawLanes) {
@@ -219,7 +228,7 @@ export function PrStrip({ axis, prs, width, padx, compact, alone }: PrStripProps
               )}
             </>
           )}
-          {[0, 0.1, 0.2, 0.3].map((tick) => (
+          {TREND_TICKS.map((tick) => (
             <g key={tick}>
               <line x1={axis.x0} x2={axis.x1} y1={y(tick)} y2={y(tick)} className="stroke-hair" />
               <text x={axis.x0 - 8} y={y(tick) + 4} textAnchor="end" className="fill-ink2 text-cap">
@@ -241,7 +250,7 @@ export function PrStrip({ axis, prs, width, padx, compact, alone }: PrStripProps
                 <rect x={keyX} y={top + 14} width={keyWidth} height={72} className="fill-card" />
               )}
               {samples.map((lines, i) => (
-                <g key={lines}>
+                <g key={i}>
                   <Dot
                     cx={keyX + (keyWidth / 3) * (i + 0.5)}
                     cy={top + 38}
@@ -268,22 +277,24 @@ export function PrStrip({ axis, prs, width, padx, compact, alone }: PrStripProps
             }
             return pr.rate_value > CAP ? (
               <Triangle
-                key={pr.pr}
+                key={prKey(pr.repo, pr.pr)}
                 cx={x}
                 cy={BAND_H / 2 + 1}
                 className="fill-accent"
                 data-mark="strip-dot"
+                data-repo={pr.repo}
                 data-pr={pr.pr}
                 data-rate={pr.rate_value}
                 data-clipped=""
               />
             ) : (
               <Dot
-                key={pr.pr}
+                key={prKey(pr.repo, pr.pr)}
                 cx={x}
                 cy={y(pr.rate_value)}
                 r={dotRadius(pr.agent_lines, mostLines, radii)}
                 data-mark="strip-dot"
+                data-repo={pr.repo}
                 data-pr={pr.pr}
                 data-rate={pr.rate_value}
               />
@@ -291,7 +302,7 @@ export function PrStrip({ axis, prs, width, padx, compact, alone }: PrStripProps
           })}
           <line x1={axis.x0} x2={axis.x1} y1={base} y2={base} className="stroke-ink2" />
           {placed.map(({ pr, x }) => (
-            <g key={pr.pr}>
+            <g key={prKey(pr.repo, pr.pr)}>
               <line x1={x} x2={x} y1={base} y2={base + 4} className="stroke-ink2" />
               <text
                 x={x}
@@ -318,7 +329,7 @@ export function PrStrip({ axis, prs, width, padx, compact, alone }: PrStripProps
               {samples.map((lines, i) => {
                 const x = axis.x0 + keyPitch * i;
                 return (
-                  <g key={lines}>
+                  <g key={i}>
                     <Dot cx={x + rMax} cy={keyRowY + rMax} r={dotRadius(lines, mostLines, radii)} />
                     <text
                       x={x + rMax * 2 + 6}

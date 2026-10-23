@@ -1,5 +1,5 @@
 import { parsePull } from "../inbox/run";
-import { count, isRed, rateOrWords, tileWords, trendWords } from "./format";
+import { count, isRed, tileWords, trendWords } from "./format";
 import { TrendArrow } from "./marks";
 import { useWidth } from "./use-width";
 import type { PR, Tile } from "./types";
@@ -78,9 +78,10 @@ function TileCard({ label, tile, index, bar, prs, beside, roomy }: TileCardProps
   const number = (
     <span
       className={`font-mono text-hero font-semibold ${hot ? "text-defer" : "text-ink"}`}
+      data-number=""
       data-rate={tile.rate_value ?? undefined}
     >
-      {rateOrWords(tile.rate_value, tile.rate)}
+      {tile.rate}
     </span>
   );
   const link = lastPR === undefined ? null : <PRLink pr={lastPR} prs={prs} beside={beside} />;
@@ -159,7 +160,10 @@ function TrendLines({ words }: { words: string }) {
 // address is checked before it is a link, and a PR the list does not carry is
 // plain text.
 function PRLink({ pr, prs, beside }: { pr: number; prs: PR[]; beside: boolean }) {
-  const url = prs.find((entry) => entry.pr === pr)?.pr_url ?? "";
+  // The newest PR leads the list, whatever repository it is in: a number alone
+  // does not say which.
+  const newest = prs[0];
+  const url = newest?.pr === pr ? newest.pr_url : "";
   if (parsePull(url) === null) {
     return <span className="text-body font-semibold text-ink2">#{pr}</span>;
   }

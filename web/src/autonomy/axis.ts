@@ -22,28 +22,36 @@ export const TRIANGLE_R = 6;
 // The width of the column the y labels sit in, left of the plot.
 export const Y_LABEL_W = 34;
 
+// prKey names a merged PR across repositories: its number is its own only within
+// its repository, so two repositories' PRs of one number are two PRs.
+export function prKey(repo: string, pr: number): string {
+  return `${repo}#${pr}`;
+}
+
 // A slot is one merged PR on the merge axis.
-type Slot = { pr: number; at: number };
+type Slot = { repo: string; pr: number; at: number };
 
 // mergeSlots is the one merge axis of the trend and the strip: every PR either
 // draws, oldest to newest, the newest 25 kept. The trend draws a point only where
 // the series has one and the strip a dot only where a PR is listed, so a dot is
 // never off its PR's slot, at any history length.
 export function mergeSlots(series: Point[], prs: PR[]): Slot[] {
-  const at = new Map<number, number>();
+  const slots = new Map<string, Slot>();
   for (const point of series) {
-    at.set(point.pr, Date.parse(point.merged_at));
+    slots.set(prKey(point.repo, point.pr), {
+      repo: point.repo,
+      pr: point.pr,
+      at: Date.parse(point.merged_at),
+    });
   }
   // The PRs are listed newest first; the sort is stable, so ties keep merge order.
   for (const pr of [...prs].reverse()) {
-    if (!at.has(pr.pr)) {
-      at.set(pr.pr, Date.parse(pr.merged_at));
+    const key = prKey(pr.repo, pr.pr);
+    if (!slots.has(key)) {
+      slots.set(key, { repo: pr.repo, pr: pr.pr, at: Date.parse(pr.merged_at) });
     }
   }
-  return [...at]
-    .map(([pr, time]) => ({ pr, at: time }))
-    .sort((a, b) => a.at - b.at)
-    .slice(-MAX_SLOTS);
+  return [...slots.values()].sort((a, b) => a.at - b.at).slice(-MAX_SLOTS);
 }
 
 type AxisOptions = {
@@ -66,7 +74,7 @@ export type Axis = {
   step: number;
   // x of the n-th slot, or of the PR's own slot, undefined where it has none.
   xOfIndex: (index: number) => number;
-  xOfPR: (pr: number) => number | undefined;
+  xOfPR: (repo: string, pr: number) => number | undefined;
 };
 
 export function buildAxis(slots: Slot[], options: AxisOptions): Axis {
@@ -76,7 +84,7 @@ export function buildAxis(slots: Slot[], options: AxisOptions): Axis {
   const x1 = options.width - options.padx - options.gutter;
   const steps = Math.max(slots.length + 2 * blank - 1, 1);
   const step = (x1 - x0) / steps;
-  const index = new Map(slots.map((slot, i) => [slot.pr, i]));
+  const index = new Map(slots.map((slot, i) => [prKey(slot.repo, slot.pr), i]));
   const xOfIndex = (i: number) => x0 + (i + blank) * step;
   return {
     slots,
@@ -85,8 +93,8 @@ export function buildAxis(slots: Slot[], options: AxisOptions): Axis {
     x1,
     step,
     xOfIndex,
-    xOfPR: (pr) => {
-      const i = index.get(pr);
+    xOfPR: (repo, pr) => {
+      const i = index.get(prKey(repo, pr));
       return i === undefined ? undefined : xOfIndex(i);
     },
   };
@@ -220,9 +228,9 @@ export function bandLabelSide(
   xs: number[],
   x0: number,
   x1: number,
-  size = 12,
+  label = BAND_LABEL,
 ): "start" | "end" | null {
-  const room = textWidth(BAND_LABEL, size) + 16;
+  const room = textWidth(label, 12) + 16;
   if (xs.every((x) => x - x0 - 8 > room)) {
     return "start";
   }
@@ -235,6 +243,19 @@ export const COMPACT_W = 520;
 // The width from which the trend keeps its reference label and its measured note
 // in a gutter beside the plot; under it they sit beneath the plot.
 export const SIDE_W = 940;
-export function padxFor(width: number): number {
-  return width < COMPACT_W ? 16 : 26;
+export function isCompact(width: number): boolean {
+  return width < COMPACT_W;
 }
+
+// The side padding of a chart card: the phone's, and the desktop's design padding.
+export function padxFor(width: number): number {
+  return isCompact(width) ? 16 : 26;
+}
+
+// The width from which a row of the model and repository bars is drawn across
+// three columns, and under which its scale carries three labels, not five.
+export const WIDE_ROWS = 640;
+export const SPARSE_W = 380;
+
+// The ticks of the trend and the strip, on the 0 to 30% axis.
+export const TREND_TICKS = [0, 0.1, 0.2, 0.3];

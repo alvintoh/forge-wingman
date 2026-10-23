@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { parsePull } from "../inbox/run";
+import { prKey } from "./axis";
 import {
   count,
   isRed,
@@ -8,16 +9,16 @@ import {
   percent,
   phaseWord,
   prsWord,
-  rateOrWords,
-  spreadOrFew,
+  servedRate,
+  spreadText,
   trendWords,
   utcDay,
   whole,
 } from "./format";
+import { PHASES } from "./types";
 import type { Group, ModelRow, Phase, PR, RewriteView, SizeRow } from "./types";
 
 const TILE_ROWS = ["trailing 10", "last 5", "last PR"];
-const PHASE_ROWS: Phase[] = ["plan", "build", "review"];
 
 type Column<T> = {
   head: string;
@@ -99,12 +100,25 @@ function Figure({ on, children }: { on: boolean | undefined; children: ReactNode
   return <span className={figure ? "font-mono" : undefined}>{children}</span>;
 }
 
-// Rate prints a rate, red beside a triangle when it is above the bar.
-function Rate({ value, words, bar }: { value: number | null; words: string; bar: number }) {
+// Rate prints a rate as the endpoint printed it, red beside a triangle when it is
+// above the bar; the triangle is a picture, so its words follow it for a reader of
+// the text.
+function Rate({
+  value,
+  text,
+  words,
+  bar,
+}: {
+  value: number | null;
+  text: string | null;
+  words: string;
+  bar: number;
+}) {
+  const printed = servedRate(text, value, words);
   if (!isRed(value, bar)) {
     return (
       <span className={value === null ? "font-semibold" : "font-mono font-semibold"}>
-        {rateOrWords(value, words)}
+        {printed}
       </span>
     );
   }
@@ -113,25 +127,37 @@ function Rate({ value, words, bar }: { value: number | null; words: string; bar:
       <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true" className="shrink-0">
         <polygon points="5,0.5 0,9.5 10,9.5" className="fill-stop" />
       </svg>
-      {percent(value ?? 0)}
+      {printed}
+      <span className="sr-only"> (above {whole(bar)})</span>
     </span>
   );
 }
 
-function PRNumber({ pr }: { pr: PR }) {
+function PRNumber({ pr, showRepo }: { pr: PR; showRepo: boolean }) {
+  const repo = showRepo ? (
+    <span className="block font-mono text-micro text-ink2">{pr.repo}</span>
+  ) : null;
   if (parsePull(pr.pr_url) === null) {
-    return <span className="font-mono font-semibold">#{pr.pr}</span>;
+    return (
+      <>
+        <span className="font-mono font-semibold">#{pr.pr}</span>
+        {repo}
+      </>
+    );
   }
   return (
-    <a
-      href={pr.pr_url}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="inline-flex min-h-11 min-w-11 items-center font-mono font-semibold text-accent underline"
-    >
-      #{pr.pr}
-      <span className="sr-only"> (opens in a new tab)</span>
-    </a>
+    <>
+      <a
+        href={pr.pr_url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex min-h-11 min-w-11 items-center font-mono font-semibold text-accent underline"
+      >
+        #{pr.pr}
+        <span className="sr-only"> (opens in a new tab)</span>
+      </a>
+      {repo}
+    </>
   );
 }
 
@@ -153,11 +179,11 @@ function groupColumns(bar: number): Column<Group>[] {
     { head: "Agent lines", render: (g) => count(g.agent_lines), figure: true },
     {
       head: "Pooled",
-      render: (g) => <Rate value={g.rate_value} words="no rate" bar={bar} />,
+      render: (g) => <Rate value={g.rate_value} text={g.rate} words="no rate" bar={bar} />,
       figure: true,
     },
-    { head: "Median PR", render: (g) => spreadOrFew(g.median_value), figure: true },
-    { head: "p90 PR", render: (g) => spreadOrFew(g.p90_value), figure: true },
+    { head: "Median PR", render: (g) => spreadText(g.median, g), figure: true },
+    { head: "p90 PR", render: (g) => spreadText(g.p90, g), figure: true },
   ];
 }
 
@@ -172,7 +198,7 @@ function joinNames(names: string[]): string {
 // figure the PRs account for, however many groups hold them.
 function noAgentNotes(rewrite: RewriteView): string[] {
   const named: { name: string; group: Group }[] = [
-    ...PHASE_ROWS.flatMap((phase) =>
+    ...PHASES.flatMap((phase) =>
       rewrite.by_model[phase].map((row) => ({ name: phaseWord(phase, row.model), group: row })),
     ),
     ...rewrite.by_repo.map((repo) => ({ name: repo.repo, group: repo.average })),
@@ -208,12 +234,16 @@ type DataDisclosureProps = { rewrite: RewriteView };
 export function DataDisclosure({ rewrite }: DataDisclosureProps) {
   const bar = rewrite.bars.rollback;
   const sizes = rewrite.by_size.filter((size) => size.prs > 0);
-  const models: ModelTableRow[] = PHASE_ROWS.flatMap((phase) =>
+  const models: ModelTableRow[] = PHASES.flatMap((phase) =>
     rewrite.by_model[phase].map((row) => ({ phase, row })),
   );
   const tileRows = rewrite.tiles.map((tile, i) => ({ tile, label: TILE_ROWS[i] ?? "" }));
   const lastPR = rewrite.tiles[2]?.prs[0];
   const notes = noAgentNotes(rewrite);
+  // A PR's number names it only within its repository, so rows show the repository
+  // where the lists span more than one.
+  const manyRepos = new Set(rewrite.prs.map((pr) => pr.repo)).size > 1;
+  const pointRepos = new Set(rewrite.series.map((point) => point.repo)).size;
   return (
     <details className="group rounded-tile border border-hair bg-card" data-disclosure>
       <summary className="flex min-h-14 cursor-pointer list-none items-center gap-x-3 px-padx py-2 [&::-webkit-details-marker]:hidden">
@@ -246,9 +276,9 @@ export function DataDisclosure({ rewrite }: DataDisclosureProps) {
         <DataTable<PR>
           title="Per PR, newest first"
           rows={rewrite.prs}
-          rowKey={(pr) => String(pr.pr)}
+          rowKey={(pr) => prKey(pr.repo, pr.pr)}
           columns={[
-            { head: "PR", render: (pr) => <PRNumber pr={pr} /> },
+            { head: "PR", render: (pr) => <PRNumber pr={pr} showRepo={manyRepos} /> },
             { head: "Title", render: (pr) => pr.title, long: true },
             { head: "Run", render: (pr) => pr.run, figure: true },
             { head: "Size", render: (pr) => pr.size, figure: true },
@@ -256,7 +286,9 @@ export function DataDisclosure({ rewrite }: DataDisclosureProps) {
             { head: "Owner lines", render: (pr) => count(pr.owner_lines), figure: true },
             {
               head: "Rate",
-              render: (pr) => <Rate value={pr.rate_value} words={pr.rate} bar={bar} />,
+              render: (pr) => (
+                <Rate value={pr.rate_value} text={pr.rate} words={pr.rate} bar={bar} />
+              ),
               figure: true,
             },
           ]}
@@ -264,13 +296,26 @@ export function DataDisclosure({ rewrite }: DataDisclosureProps) {
         <DataTable
           title="Trailing 10 after each merged PR, newest first, UTC dates"
           rows={[...rewrite.series].reverse()}
-          rowKey={(point) => String(point.pr)}
+          rowKey={(point) => prKey(point.repo, point.pr)}
           columns={[
-            { head: "After PR", render: (point) => `#${point.pr}`, figure: true },
+            {
+              head: "After PR",
+              render: (point) => (
+                <>
+                  #{point.pr}
+                  {pointRepos > 1 && (
+                    <span className="block font-mono text-micro text-ink2">{point.repo}</span>
+                  )}
+                </>
+              ),
+              figure: true,
+            },
             { head: "Date", render: (point) => utcDay(point.merged_at), figure: true },
             {
               head: "Trailing 10",
-              render: (point) => <Rate value={point.rate_value} words={point.rate} bar={bar} />,
+              render: (point) => (
+                <Rate value={point.rate_value} text={point.rate} words={point.rate} bar={bar} />
+              ),
               figure: true,
             },
           ]}
@@ -284,11 +329,13 @@ export function DataDisclosure({ rewrite }: DataDisclosureProps) {
             { head: "PRs", render: (size) => size.prs, figure: true },
             {
               head: "Pooled",
-              render: (size) => <Rate value={size.rate_value} words="no rate" bar={bar} />,
+              render: (size) => (
+                <Rate value={size.rate_value} text={size.rate} words="no rate" bar={bar} />
+              ),
               figure: true,
             },
-            { head: "Median PR", render: (size) => spreadOrFew(size.median_value), figure: true },
-            { head: "p90 PR", render: (size) => spreadOrFew(size.p90_value), figure: true },
+            { head: "Median PR", render: (size) => spreadText(size.median, size), figure: true },
+            { head: "p90 PR", render: (size) => spreadText(size.p90, size), figure: true },
           ]}
         />
         <div>
@@ -306,7 +353,7 @@ export function DataDisclosure({ rewrite }: DataDisclosureProps) {
               },
               {
                 head: "Now",
-                render: (entry) => rateOrWords(entry.tile.rate_value, entry.tile.rate),
+                render: (entry) => entry.tile.rate,
                 figure: true,
               },
               {
@@ -391,9 +438,20 @@ export function DataDisclosure({ rewrite }: DataDisclosureProps) {
         <DataTable
           title="Models per PR, newest first"
           rows={rewrite.prs}
-          rowKey={(pr) => String(pr.pr)}
+          rowKey={(pr) => prKey(pr.repo, pr.pr)}
           columns={[
-            { head: "PR", render: (pr) => `#${pr.pr}`, figure: true },
+            {
+              head: "PR",
+              render: (pr) => (
+                <>
+                  #{pr.pr}
+                  {manyRepos && (
+                    <span className="block font-mono text-micro text-ink2">{pr.repo}</span>
+                  )}
+                </>
+              ),
+              figure: true,
+            },
             { head: "Plan", long: true, render: (pr) => modelCell("plan", pr.plan_model) },
             { head: "Build", long: true, render: (pr) => modelCell("build", pr.build_model) },
             { head: "Review", long: true, render: (pr) => modelCell("review", pr.review_model) },

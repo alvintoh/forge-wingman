@@ -1,7 +1,6 @@
-import { buildAxis, mergeSlots, padxFor } from "./axis";
-import { ChartCard, captionClass } from "./chart-card";
-import { percent, prsWord, rateOrWords, seriesLabel } from "./format";
-import { SPARSE_W, WIDE_ROWS } from "./by-model";
+import { SPARSE_W, WIDE_ROWS, buildAxis, mergeSlots, padxFor } from "./axis";
+import { ChartCard, ChartHeader, captionClass } from "./chart-card";
+import { prsWord, seriesLabel, servedRate } from "./format";
 import { MetricPanel } from "./metric-rows";
 import type { RowSpec } from "./metric-rows";
 import { TrendPlot } from "./trend-chart";
@@ -22,8 +21,8 @@ export function ByRepo({ repos }: { repos: RepoRow[] }) {
         const padx = padxFor(width);
         return (
           <div>
+            <ChartHeader title="by repository" padx={padx} />
             <MetricPanel
-              title="by repository"
               rows={rows}
               split={false}
               wide={width >= WIDE_ROWS}
@@ -89,7 +88,7 @@ export function RepoMultiples({ repos, bar }: RepoMultiplesProps) {
                       <h3 className={captionClass}>{repo.repo}</h3>
                       {columns === 1 && (
                         <p className="text-cap text-ink2">
-                          average {rateOrWords(average.rate_value, "no rate")},{" "}
+                          average {servedRate(average.rate, average.rate_value, "no rate")},{" "}
                           {prsWord(average.prs)}
                         </p>
                       )}
@@ -109,7 +108,7 @@ export function RepoMultiples({ repos, bar }: RepoMultiplesProps) {
                         <div className="absolute top-8" style={{ left: axis.x1 + 12 }}>
                           <p className="text-cap font-semibold text-ink2">average</p>
                           <p className="mt-3 font-mono text-head font-semibold text-ink">
-                            {average.rate_value === null ? "no rate" : percent(average.rate_value)}
+                            {servedRate(average.rate, average.rate_value, "no rate")}
                           </p>
                           <p className="text-label text-ink2">{prsWord(average.prs)}</p>
                         </div>

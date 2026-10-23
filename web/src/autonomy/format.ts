@@ -1,9 +1,5 @@
 import type { Group, Phase, Point, Tile } from "./types";
 
-// The PR count a median and p90 need, as the endpoint gates them; the page words
-// a smaller group "few PRs".
-const SPREAD_MIN_PRS = 10;
-
 // The model the endpoint names a phase that ran none, or more than one.
 export const UNKNOWN_MODEL = "unknown";
 
@@ -22,9 +18,18 @@ const MODEL_NAMES: Record<string, string> = {
   "command-code/meta/muse-spark-1.3-contributor": "Muse Spark 1.3 Contributor",
 };
 
-// percent prints a fraction as the endpoint prints a rate: 0.122 is "12.2%".
+// percent prints a fraction as the endpoint prints a rate, to one decimal, a tie
+// to the even tenth: 0.0625 is "6.2%", as the endpoint's own text for it is. The
+// page prints the endpoint's text wherever it has one; this words a figure the
+// endpoint serves only as a number.
 export function percent(fraction: number): string {
-  return `${(fraction * 100).toFixed(1)}%`;
+  const points = fraction * 100;
+  // A double's exact decimal expansion shows a tie as a 5 and then only zeros.
+  const tie = /^(\d+\.)(\d)50*$/.exec(points.toFixed(20));
+  if (tie?.[1] !== undefined && tie[2] !== undefined && Number(tie[2]) % 2 === 0) {
+    return `${tie[1]}${tie[2]}%`;
+  }
+  return `${points.toFixed(1)}%`;
 }
 
 // whole prints a bar's fraction without a decimal it does not have: "10%".
@@ -32,14 +37,19 @@ export function whole(fraction: number): string {
   return `${Math.round(fraction * 1000) / 10}%`;
 }
 
-// rateOrWords is a rate's figure, or the endpoint's own words for it when it has none.
-export function rateOrWords(value: number | null, words: string): string {
-  return value === null ? words : percent(value);
+// servedRate is a rate as the endpoint prints it, or the page's words where the
+// figure is null: a group of no PRs, or a window with no agent lines.
+export function servedRate(text: string | null, value: number | null, words: string): string {
+  return text === null || value === null ? words : text;
 }
 
-// spreadOrFew is a median or p90, or "few PRs" where the endpoint withheld it.
-export function spreadOrFew(value: number | null): string {
-  return value === null ? "few PRs" : percent(value);
+// spreadText is a group's median or p90 as the endpoint prints it. Where it
+// served none, the group is too small for one, or has no rate to take one from.
+export function spreadText(text: string | null, group: Group): string {
+  if (text !== null) {
+    return text;
+  }
+  return group.agent_lines > 0 ? "few PRs" : "no rate";
 }
 
 export function count(value: number): string {
@@ -51,9 +61,10 @@ export function prsWord(prs: number): string {
   return `${prs} PR${prs === 1 ? "" : "s"}`;
 }
 
-// countWords is a group's PR count, with the words that say it is too small for a spread.
-export function countWords(prs: number): string {
-  return prs < SPREAD_MIN_PRS ? `${prsWord(prs)}, few PRs` : prsWord(prs);
+// countWords is a group's PR count, with the words that say it has no spread yet.
+export function countWords(group: Group): string {
+  const words = prsWord(group.prs);
+  return group.median === null && group.agent_lines > 0 ? `${words}, few PRs` : words;
 }
 
 // utcDay is the UTC date of a timestamp, month then day: "10-17".
@@ -159,6 +170,6 @@ export function referenceLabel(bar: number): string {
 // table lists every figure.
 export function seriesLabel(series: Point[]): string {
   const last = series[series.length - 1];
-  const latest = last?.rate_value == null ? "" : `, latest ${percent(last.rate_value)}`;
+  const latest = last === undefined || last.rate_value === null ? "" : `, latest ${last.rate}`;
   return `Rolling rewrite rate after each of the last ${series.length} merged PRs${latest}. The Data table lists every figure.`;
 }

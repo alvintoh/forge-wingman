@@ -5,7 +5,10 @@ import {
   CAP,
   PLOT_TOP,
   SIDE_W,
+  TREND_TICKS,
+  isCompact,
   padxFor,
+  prKey,
   bandLabelSide,
   clippedPaths,
   dateGroups,
@@ -24,7 +27,6 @@ import type { PR, Point } from "./types";
 const GUTTER = 168;
 // The gutter the strip keeps right of its plot for its size key, with no trend above it.
 const KEY_GUTTER = 140;
-const TICKS = [0, 0.1, 0.2, 0.3];
 const MEASURED_HEAD = "How this is measured";
 const MEASURED =
   "The rewrite rate is the lines changed by anyone other than the runner after it opened a PR, over the lines the runner wrote, pooled over the last ten merged PRs. It measures human effort, not code quality.";
@@ -67,8 +69,8 @@ function boxOf(plot: number, clipped: boolean, dates: boolean): Box {
 // rate is a gap.
 export function TrendPlot(props: TrendPlotProps) {
   const { axis, width, series, bar, height, dates, sample, label } = props;
-  const byPR = new Map(series.map((point) => [point.pr, point]));
-  const values = axis.slots.map((slot) => byPR.get(slot.pr)?.rate_value ?? null);
+  const byPR = new Map(series.map((point) => [prKey(point.repo, point.pr), point]));
+  const values = axis.slots.map((slot) => byPR.get(prKey(slot.repo, slot.pr))?.rate_value ?? null);
   const clippedIndexes = values.flatMap((v, i) => (v !== null && v > CAP ? [i] : []));
   const box = boxOf(height, clippedIndexes.length > 0, dates);
   const y = (value: number) => yOf(value, box.top, height, CAP);
@@ -117,7 +119,7 @@ export function TrendPlot(props: TrendPlotProps) {
             )}
           </>
         )}
-        {TICKS.map((tick) => (
+        {TREND_TICKS.map((tick) => (
           <g key={tick}>
             <line x1={axis.x0} x2={axis.x1} y1={y(tick)} y2={y(tick)} className="stroke-hair" />
             <text x={axis.x0 - 8} y={y(tick) + 4} textAnchor="end" className="fill-ink2 text-cap">
@@ -153,22 +155,24 @@ export function TrendPlot(props: TrendPlotProps) {
           }
           return value > CAP ? (
             <Triangle
-              key={slot.pr}
+              key={prKey(slot.repo, slot.pr)}
               cx={axis.xOfIndex(i)}
               cy={BAND_H / 2 + 1}
               className="fill-accent"
               data-mark="trend-dot"
+              data-repo={slot.repo}
               data-pr={slot.pr}
               data-rate={value}
               data-clipped=""
             />
           ) : (
             <Dot
-              key={slot.pr}
+              key={prKey(slot.repo, slot.pr)}
               cx={axis.xOfIndex(i)}
               cy={y(value)}
               r={dotR}
               data-mark="trend-dot"
+              data-repo={slot.repo}
               data-pr={slot.pr}
               data-rate={value}
             />
@@ -177,7 +181,7 @@ export function TrendPlot(props: TrendPlotProps) {
         <line x1={axis.x0} x2={axis.x1} y1={box.base} y2={box.base} className="stroke-ink2" />
         {axis.slots.map((slot, i) => (
           <line
-            key={slot.pr}
+            key={prKey(slot.repo, slot.pr)}
             x1={axis.xOfIndex(i)}
             x2={axis.xOfIndex(i)}
             y1={box.base}
@@ -248,7 +252,7 @@ export function TrendCard({ series, prs, bar, aside, lead }: TrendCardProps) {
     <ChartCard>
       {(width) => {
         const padx = padxFor(width);
-        const compact = padx === 16;
+        const compact = isCompact(width);
         const side = width >= SIDE_W;
         const hasTrend = series.length > 0;
         const slots = mergeSlots(series, prs);

@@ -60,6 +60,7 @@ const isTile = shape<Tile>({
 });
 
 const isPoint = shape<Point>({
+  repo: isString,
   pr: isNumber,
   merged_at: isTimestamp,
   rate: isString,
@@ -121,7 +122,8 @@ const isByModel = shape<RewriteView["by_model"]>({
   review: listOf(isModelRow),
 });
 
-const isRewrite = shape<RewriteView>({
+// isRewrite narrows the rewrite figures to every field a chart or table reads.
+export const isRewrite = shape<RewriteView>({
   tiles: listOf(isTile),
   series: listOf(isPoint),
   prs: listOf(isPR),
@@ -131,11 +133,14 @@ const isRewrite = shape<RewriteView>({
   bars: isBars,
 });
 
-// isAutonomy narrows the endpoint's answer to the whole of what the page reads:
-// the auto-merge state and every figure the rewrite charts draw. It is strict, so
-// an older endpoint, which serves no such figures, reads as a document of another
-// shape and shows the page's error state.
-export const isAutonomy = shape<AutonomyView>({
-  auto_merge: isMergeState,
-  rewrite: isRewrite,
-});
+// isAutonomy narrows the endpoint's answer to the auto-merge state, which the
+// page's first block reads: a document without it is of another shape and shows
+// the page's error. The rewrite figures are checked apart, by isRewrite.
+export function isAutonomy(body: unknown): body is AutonomyView {
+  return (
+    typeof body === "object" &&
+    body !== null &&
+    "auto_merge" in body &&
+    isMergeState(body.auto_merge)
+  );
+}

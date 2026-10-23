@@ -88,6 +88,7 @@ export function Triangle({ cx, cy, r = TRIANGLE_R, className, ...data }: Triangl
 
 // The chart values a mark carries on the page, so a check reads them off the DOM.
 type DataProps = {
+  "data-repo"?: string;
   "data-pr"?: number;
   "data-rate"?: number;
   "data-clipped"?: "";

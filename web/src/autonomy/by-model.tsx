@@ -1,21 +1,13 @@
 import { ChartCard, ChartHeader } from "./chart-card";
-import { padxFor } from "./axis";
+import { SPARSE_W, WIDE_ROWS, padxFor } from "./axis";
 import { SPLIT_KINDS, phaseWord, UNKNOWN_MODEL } from "./format";
 import { Diamond, Swatch } from "./marks";
 import { MetricPanel } from "./metric-rows";
 import type { RowSpec } from "./metric-rows";
+import { PHASES } from "./types";
 import type { ModelRow, Phase } from "./types";
 
-// The width from which a row is drawn across three columns.
-export const WIDE_ROWS = 640;
-// Under this width a bar column has no room for five scale labels.
-export const SPARSE_W = 380;
-
-const PHASES: { phase: Phase; title: string }[] = [
-  { phase: "plan", title: "plan model" },
-  { phase: "build", title: "build" },
-  { phase: "review", title: "review" },
-];
+const PHASE_TITLE: Record<Phase, string> = { plan: "plan model", build: "build", review: "review" };
 
 function specsOf(phase: Phase, rows: ModelRow[]): RowSpec[] {
   // A phase whose only group is the unknown one has no model recorded at all.
@@ -41,14 +33,14 @@ export function ByModel({ byModel }: ByModelProps) {
       {(width) => {
         const padx = padxFor(width);
         const wide = width >= WIDE_ROWS;
-        const phases = PHASES.filter(({ phase }) => byModel[phase].length > 0);
+        const phases = PHASES.filter((phase) => byModel[phase].length > 0);
         return (
           <div>
             <ChartHeader title="by model" aside="bar = pooled rate" padx={padx} />
-            {phases.map(({ phase, title }, i) => (
+            {phases.map((phase, i) => (
               <div key={phase} className={i === 0 ? "mt-3" : "mt-3 border-t border-hair pt-3"}>
                 <MetricPanel
-                  title={title}
+                  title={PHASE_TITLE[phase]}
                   rows={specsOf(phase, byModel[phase])}
                   split
                   wide={wide}
