@@ -14,6 +14,7 @@ type DialogProps = {
 // onConfirm and closes it, and Escape and BACK close it without one.
 export function CancelDialog({ opened, onClose, onConfirm }: DialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const backRef = useRef<HTMLButtonElement>(null);
   const titleId = useId();
   const run = opened?.run ?? null;
 
@@ -31,6 +32,8 @@ export function CancelDialog({ opened, onClose, onConfirm }: DialogProps) {
     if (!dialog.open) {
       dialog.showModal();
     }
+    // Under 600px the pair stacks with the action first, so the browser's pick would be CANCEL RUN.
+    backRef.current?.focus();
   }, [opened]);
 
   // The close event is queued after the dialog closes, so it can land after the sheet opened the
@@ -72,7 +75,7 @@ export function CancelDialog({ opened, onClose, onConfirm }: DialogProps) {
           </p>
           <ButtonPair
             margin="mt-2"
-            back={<ActionButton kind="secondary" label="BACK" onClick={back} />}
+            back={<ActionButton ref={backRef} kind="secondary" label="BACK" onClick={back} />}
             action={<ActionButton kind="destructive" label="CANCEL RUN" onClick={confirm} />}
           />
         </>

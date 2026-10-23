@@ -34,6 +34,8 @@ type SheetProps = {
   onClose: () => void;
   onRetry: (run: InboxRun) => void;
   onCancel: (run: InboxRun) => void;
+  // Whether a merge or a cancel of the opened run is under way, which a cancel would race.
+  busy: boolean;
 };
 
 // RowSheet is a row's actions, opened by the row: retry with a note when the run can be retried, open
@@ -41,7 +43,7 @@ type SheetProps = {
 // is set with the focus on its first action, or on the close control when the row has none; an
 // action, the close control, Escape and a press on the scrim close it, and the dialog hands the focus
 // back to the row.
-export function RowSheet({ opened, onClose, onRetry, onCancel }: SheetProps) {
+export function RowSheet({ opened, onClose, onRetry, onCancel, busy }: SheetProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const firstRef = useRef<HTMLElement | null>(null);
   const setFirst = useCallback((action: HTMLElement | null) => {
@@ -115,7 +117,7 @@ export function RowSheet({ opened, onClose, onRetry, onCancel }: SheetProps) {
   const pull = run === null ? null : parsePull(run.pr_url);
   const retryable = run?.retryable === true;
   // Only a run waiting on the owner's merge can be cancelled; a stopped one is retried instead.
-  const cancellable = run !== null && !isStopped(run);
+  const cancellable = run !== null && !isStopped(run) && !busy;
 
   // From the drawing: the repository's capitals on a 36px baseline, the ticket's on 60, the title's
   // on 82, the first action's rule at 104 and the sheet's end 14 under the last; the close control's

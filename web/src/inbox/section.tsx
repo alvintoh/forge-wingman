@@ -266,6 +266,11 @@ export function InboxSection() {
     refresh();
   }
 
+  const sheetRun = sheet?.run.run;
+  const busy =
+    sheetRun !== undefined &&
+    (rows[sheetRun]?.status === "merging" || cancels[sheetRun]?.status === "sending");
+
   // However the sheet closed, focus goes back to the row that opened it.
   function handleSheetClose() {
     const run = sheet?.run;
@@ -362,6 +367,7 @@ export function InboxSection() {
         onClose={handleSheetClose}
         onRetry={handleSheetCompose}
         onCancel={handleCancel}
+        busy={busy}
       />
     </section>
   );

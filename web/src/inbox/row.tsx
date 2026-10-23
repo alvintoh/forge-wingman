@@ -223,7 +223,8 @@ export function InboxRow({
               aria-disabled={ariaDisabled || undefined}
               aria-label={pillName}
               aria-describedby={
-                reason !== undefined && (blockedControl || state !== undefined)
+                reason !== undefined &&
+                (blockedControl || state !== undefined || cancel !== undefined)
                   ? reasonId
                   : undefined
               }
