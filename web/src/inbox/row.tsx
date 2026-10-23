@@ -119,9 +119,10 @@ export function InboxRow({
   // computed from the row as last read.
   const normal = state === undefined || (state.status === "failed" && !state.retry);
   const blockedControl = normal && (blocked || unread);
-  // A merging or blocked pill is aria-disabled, not disabled, so it keeps the focus through a
+  // A merging, cancelling or blocked pill is aria-disabled, not disabled, so it keeps the focus through a
   // re-read and its reason is read as its description. The arrow keys pass over it.
-  const ariaDisabled = state?.status === "merging" || blockedControl;
+  const ariaDisabled =
+    state?.status === "merging" || cancel?.status === "sending" || blockedControl;
   if (ariaDisabled) {
     onPill = undefined;
   }
