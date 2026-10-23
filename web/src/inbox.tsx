@@ -363,9 +363,9 @@ function InboxRow({ run, now, state, stop, onOpen, onMerge, onRetry }: RowProps)
     // row's end. Each margin below is that gap less the line box around the baseline: 22px for
     // the title (baseline 17.4 down), 16px for the 11px meta line (12.1) and the 13px reason
     // (12.9). pt: 22.8, less the 8px between the hit area and the pill, less the 1px rule or edge.
-    // Where the row is under 376px wide the repository and age wrap to a second line, its
-    // baseline 22 under the first and the title 9.7 under its box; the hit area's bottom 8px
-    // overlaps that line, as the drawing's does.
+    // Where the row is under 376px wide the repository and age wrap to a second line, below the
+    // pill's 44px hit area rather than under its bottom 8px, so a tap on the age opens the row's
+    // sheet and never the merge; the title sits 9.7 under that line's box.
     // A merged row keeps an empty slot the pill's size, so it is as tall as before the merge.
     <li className="@container relative border-t border-hair pt-[13.8px] pb-[20.9px] first:border-t-0">
       {/* The row is the target that opens its sheet: a button laid over the whole row, out to the
@@ -391,7 +391,7 @@ function InboxRow({ run, now, state, stop, onOpen, onMerge, onRetry }: RowProps)
             {run.ticket}
           </span>
         </div>
-        <p className="col-span-2 row-start-2 -mt-[8.1px] flex min-w-0 items-center gap-2 font-mono text-micro leading-4 text-muted @min-[23.5rem]:col-span-1 @min-[23.5rem]:col-start-2 @min-[23.5rem]:row-start-1 @min-[23.5rem]:mt-0">
+        <p className="col-span-2 row-start-2 flex min-w-0 items-center gap-2 font-mono text-micro leading-4 text-muted @min-[23.5rem]:col-span-1 @min-[23.5rem]:col-start-2 @min-[23.5rem]:row-start-1">
           <span aria-hidden="true" className="hidden @min-[23.5rem]:inline">
             /
           </span>
@@ -441,7 +441,7 @@ function InboxRow({ run, now, state, stop, onOpen, onMerge, onRetry }: RowProps)
             </p>
           )}
         </div>
-        <Chevron className="mt-[16.4px] -mr-px" />
+        <Chevron className="mt-[16.4px]" />
       </div>
     </li>
   );
