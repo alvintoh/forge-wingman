@@ -1,0 +1,497 @@
+{
+  "auto_merge": {
+    "switch_on": true,
+    "rate_allows": false,
+    "rate_value": "12.2%",
+    "limit": "10.0%",
+    "window": 10,
+    "effective": false,
+    "reason": "rate-above-bar"
+  },
+  "rewrite": {
+    "tiles": [
+      {
+        "prs": [175, 173, 170, 168, 161, 160, 159, 158, 157, 150],
+        "asked": 10,
+        "agent_lines": 5879,
+        "owner_lines": 719,
+        "rate": "12.2%"
+      },
+      {
+        "prs": [175, 173, 170, 168, 161],
+        "asked": 5,
+        "agent_lines": 2377,
+        "owner_lines": 59,
+        "rate": "2.5%"
+      },
+      {
+        "prs": [175],
+        "asked": 1,
+        "agent_lines": 283,
+        "owner_lines": 0,
+        "rate": "0.0%"
+      }
+    ],
+    "series": [
+      {
+        "pr": 74,
+        "merged_at": "2026-10-08T12:00:00Z",
+        "rate": "6.0%"
+      },
+      {
+        "pr": 90,
+        "merged_at": "2026-10-09T12:00:00Z",
+        "rate": "5.4%"
+      },
+      {
+        "pr": 109,
+        "merged_at": "2026-10-12T12:00:00Z",
+        "rate": "10.1%"
+      },
+      {
+        "pr": 122,
+        "merged_at": "2026-10-13T12:00:00Z",
+        "rate": "10.1%"
+      },
+      {
+        "pr": 124,
+        "merged_at": "2026-10-13T12:01:00Z",
+        "rate": "10.2%"
+      },
+      {
+        "pr": 130,
+        "merged_at": "2026-10-14T12:00:00Z",
+        "rate": "9.1%"
+      },
+      {
+        "pr": 135,
+        "merged_at": "2026-10-14T12:01:00Z",
+        "rate": "11.4%"
+      },
+      {
+        "pr": 136,
+        "merged_at": "2026-10-14T12:02:00Z",
+        "rate": "10.8%"
+      },
+      {
+        "pr": 139,
+        "merged_at": "2026-10-14T12:03:00Z",
+        "rate": "14.9%"
+      },
+      {
+        "pr": 140,
+        "merged_at": "2026-10-14T12:04:00Z",
+        "rate": "18.5%"
+      },
+      {
+        "pr": 143,
+        "merged_at": "2026-10-15T12:00:00Z",
+        "rate": "18.9%"
+      },
+      {
+        "pr": 142,
+        "merged_at": "2026-10-15T12:01:00Z",
+        "rate": "29.2%"
+      },
+      {
+        "pr": 141,
+        "merged_at": "2026-10-15T12:02:00Z",
+        "rate": "110.4%"
+      },
+      {
+        "pr": 148,
+        "merged_at": "2026-10-15T12:03:00Z",
+        "rate": "103.0%"
+      },
+      {
+        "pr": 146,
+        "merged_at": "2026-10-15T12:04:00Z",
+        "rate": "95.6%"
+      },
+      {
+        "pr": 150,
+        "merged_at": "2026-10-15T12:05:00Z",
+        "rate": "92.4%"
+      },
+      {
+        "pr": 157,
+        "merged_at": "2026-10-15T12:06:00Z",
+        "rate": "89.6%"
+      },
+      {
+        "pr": 158,
+        "merged_at": "2026-10-15T12:07:00Z",
+        "rate": "92.1%"
+      },
+      {
+        "pr": 159,
+        "merged_at": "2026-10-15T12:08:00Z",
+        "rate": "94.7%"
+      },
+      {
+        "pr": 160,
+        "merged_at": "2026-10-15T12:09:00Z",
+        "rate": "95.8%"
+      },
+      {
+        "pr": 161,
+        "merged_at": "2026-10-15T12:10:00Z",
+        "rate": "96.0%"
+      },
+      {
+        "pr": 168,
+        "merged_at": "2026-10-16T12:00:00Z",
+        "rate": "94.8%"
+      },
+      {
+        "pr": 170,
+        "merged_at": "2026-10-16T12:01:00Z",
+        "rate": "15.0%"
+      },
+      {
+        "pr": 173,
+        "merged_at": "2026-10-16T12:02:00Z",
+        "rate": "14.1%"
+      },
+      {
+        "pr": 175,
+        "merged_at": "2026-10-17T12:00:00Z",
+        "rate": "12.2%"
+      }
+    ],
+    "prs": [
+      {
+        "pr": 175,
+        "run": "FRG-152",
+        "repo": "alvintoh/forge-wingman",
+        "size": "M",
+        "title": "fix(store): FRG-152 settle a dispatchable row that already ended",
+        "agent_lines": 283,
+        "owner_lines": 0,
+        "rate": "0.0%",
+        "merged_at": "2026-10-17T12:00:00Z",
+        "pr_url": "https://github.com/alvintoh/forge-wingman/pull/175"
+      },
+      {
+        "pr": 173,
+        "run": "FRG-132",
+        "repo": "alvintoh/forge-wingman",
+        "size": "M",
+        "title": "feat(dispatcher): FRG-132 requeue a run stopped on a transient fault",
+        "agent_lines": 860,
+        "owner_lines": 50,
+        "rate": "5.8%",
+        "merged_at": "2026-10-16T12:02:00Z",
+        "pr_url": "https://github.com/alvintoh/forge-wingman/pull/173"
+      },
+      {
+        "pr": 170,
+        "run": "FRG-142",
+        "repo": "alvintoh/forge-wingman",
+        "size": "S",
+        "title": "docs(runner): FRG-142 state the single free rung and review vendor",
+        "agent_lines": 19,
+        "owner_lines": 9,
+        "rate": "47.4%",
+        "merged_at": "2026-10-16T12:01:00Z",
+        "pr_url": "https://github.com/alvintoh/forge-wingman/pull/170"
+      },
+      {
+        "pr": 168,
+        "run": "FRG-139",
+        "repo": "alvintoh/forge-wingman",
+        "size": "S",
+        "title": "fix(runner): FRG-139 report the plan smoke's stderr on failure",
+        "agent_lines": 65,
+        "owner_lines": 0,
+        "rate": "0.0%",
+        "merged_at": "2026-10-16T12:00:00Z",
+        "pr_url": "https://github.com/alvintoh/forge-wingman/pull/168"
+      },
+      {
+        "pr": 161,
+        "run": "FRG-135",
+        "repo": "alvintoh/forge-wingman",
+        "size": "M",
+        "title": "fix(dispatcher): FRG-135 read the settled run history once a poll",
+        "agent_lines": 1150,
+        "owner_lines": 0,
+        "rate": "0.0%",
+        "merged_at": "2026-10-15T12:10:00Z",
+        "pr_url": "https://github.com/alvintoh/forge-wingman/pull/161"
+      },
+      {
+        "pr": 160,
+        "run": "FRG-147",
+        "repo": "alvintoh/forge-wingman",
+        "size": "M",
+        "title": "feat(runner): FRG-147 check the diff mechanically before the PR",
+        "agent_lines": 1411,
+        "owner_lines": 141,
+        "rate": "10.0%",
+        "merged_at": "2026-10-15T12:09:00Z",
+        "pr_url": "https://github.com/alvintoh/forge-wingman/pull/160"
+      },
+      {
+        "pr": 159,
+        "run": "FRG-149",
+        "repo": "alvintoh/forge-wingman",
+        "size": "S",
+        "title": "feat(comparison): FRG-149 credit each run to the model that built it",
+        "agent_lines": 342,
+        "owner_lines": 107,
+        "rate": "31.3%",
+        "merged_at": "2026-10-15T12:08:00Z",
+        "pr_url": "https://github.com/alvintoh/forge-wingman/pull/159"
+      },
+      {
+        "pr": 158,
+        "run": "FRG-148",
+        "repo": "alvintoh/forge-wingman",
+        "size": "S",
+        "title": "feat(projection): FRG-148 give the build agent the stack packs",
+        "agent_lines": 172,
+        "owner_lines": 43,
+        "rate": "25.0%",
+        "merged_at": "2026-10-15T12:07:00Z",
+        "pr_url": "https://github.com/alvintoh/forge-wingman/pull/158"
+      },
+      {
+        "pr": 157,
+        "run": "FRG-95",
+        "repo": "alvintoh/forge-wingman",
+        "size": "M",
+        "title": "feat(surface): FRG-95 show the peak window and switch the mode",
+        "agent_lines": 787,
+        "owner_lines": 151,
+        "rate": "19.2%",
+        "merged_at": "2026-10-15T12:06:00Z",
+        "pr_url": "https://github.com/alvintoh/forge-wingman/pull/157"
+      },
+      {
+        "pr": 150,
+        "run": "FRG-127",
+        "repo": "alvintoh/forge-wingman",
+        "size": "M",
+        "title": "feat(store): FRG-127 the surface shows the autonomy level, its evidence and its history",
+        "agent_lines": 790,
+        "owner_lines": 218,
+        "rate": "27.6%",
+        "merged_at": "2026-10-15T12:05:00Z",
+        "pr_url": "https://github.com/alvintoh/forge-wingman/pull/150"
+      }
+    ],
+    "by_size": [
+      {
+        "size": "S",
+        "prs": 15,
+        "rate": "16.2%",
+        "median": "5.1%",
+        "p90": "33.3%"
+      },
+      {
+        "size": "M",
+        "prs": 16,
+        "rate": "18.0%",
+        "median": "8.3%",
+        "p90": "29.6%"
+      },
+      {
+        "size": "L",
+        "prs": 3,
+        "rate": "125.3%",
+        "median": null,
+        "p90": null
+      },
+      {
+        "size": "unsized",
+        "prs": 0,
+        "rate": null,
+        "median": null,
+        "p90": null
+      }
+    ],
+    "by_repo": [
+      {
+        "repo": "alvintoh/forge-wingman",
+        "tiles": [
+          {
+            "prs": [175, 173, 170, 168, 161, 160, 159, 158, 157, 150],
+            "asked": 10,
+            "agent_lines": 5879,
+            "owner_lines": 719,
+            "rate": "12.2%"
+          },
+          {
+            "prs": [175, 173, 170, 168, 161],
+            "asked": 5,
+            "agent_lines": 2377,
+            "owner_lines": 59,
+            "rate": "2.5%"
+          },
+          {
+            "prs": [175],
+            "asked": 1,
+            "agent_lines": 283,
+            "owner_lines": 0,
+            "rate": "0.0%"
+          }
+        ],
+        "series": [
+          {
+            "pr": 74,
+            "merged_at": "2026-10-08T12:00:00Z",
+            "rate": "6.0%"
+          },
+          {
+            "pr": 90,
+            "merged_at": "2026-10-09T12:00:00Z",
+            "rate": "5.4%"
+          },
+          {
+            "pr": 109,
+            "merged_at": "2026-10-12T12:00:00Z",
+            "rate": "10.1%"
+          },
+          {
+            "pr": 122,
+            "merged_at": "2026-10-13T12:00:00Z",
+            "rate": "10.1%"
+          },
+          {
+            "pr": 124,
+            "merged_at": "2026-10-13T12:01:00Z",
+            "rate": "10.2%"
+          },
+          {
+            "pr": 130,
+            "merged_at": "2026-10-14T12:00:00Z",
+            "rate": "9.1%"
+          },
+          {
+            "pr": 135,
+            "merged_at": "2026-10-14T12:01:00Z",
+            "rate": "11.4%"
+          },
+          {
+            "pr": 136,
+            "merged_at": "2026-10-14T12:02:00Z",
+            "rate": "10.8%"
+          },
+          {
+            "pr": 139,
+            "merged_at": "2026-10-14T12:03:00Z",
+            "rate": "14.9%"
+          },
+          {
+            "pr": 140,
+            "merged_at": "2026-10-14T12:04:00Z",
+            "rate": "18.5%"
+          },
+          {
+            "pr": 143,
+            "merged_at": "2026-10-15T12:00:00Z",
+            "rate": "18.9%"
+          },
+          {
+            "pr": 142,
+            "merged_at": "2026-10-15T12:01:00Z",
+            "rate": "29.2%"
+          },
+          {
+            "pr": 141,
+            "merged_at": "2026-10-15T12:02:00Z",
+            "rate": "110.4%"
+          },
+          {
+            "pr": 148,
+            "merged_at": "2026-10-15T12:03:00Z",
+            "rate": "103.0%"
+          },
+          {
+            "pr": 146,
+            "merged_at": "2026-10-15T12:04:00Z",
+            "rate": "95.6%"
+          },
+          {
+            "pr": 150,
+            "merged_at": "2026-10-15T12:05:00Z",
+            "rate": "92.4%"
+          },
+          {
+            "pr": 157,
+            "merged_at": "2026-10-15T12:06:00Z",
+            "rate": "89.6%"
+          },
+          {
+            "pr": 158,
+            "merged_at": "2026-10-15T12:07:00Z",
+            "rate": "92.1%"
+          },
+          {
+            "pr": 159,
+            "merged_at": "2026-10-15T12:08:00Z",
+            "rate": "94.7%"
+          },
+          {
+            "pr": 160,
+            "merged_at": "2026-10-15T12:09:00Z",
+            "rate": "95.8%"
+          },
+          {
+            "pr": 161,
+            "merged_at": "2026-10-15T12:10:00Z",
+            "rate": "96.0%"
+          },
+          {
+            "pr": 168,
+            "merged_at": "2026-10-16T12:00:00Z",
+            "rate": "94.8%"
+          },
+          {
+            "pr": 170,
+            "merged_at": "2026-10-16T12:01:00Z",
+            "rate": "15.0%"
+          },
+          {
+            "pr": 173,
+            "merged_at": "2026-10-16T12:02:00Z",
+            "rate": "14.1%"
+          },
+          {
+            "pr": 175,
+            "merged_at": "2026-10-17T12:00:00Z",
+            "rate": "12.2%"
+          }
+        ]
+      },
+      {
+        "repo": "unattributed",
+        "tiles": [
+          {
+            "prs": [99, 98],
+            "asked": 10,
+            "agent_lines": 2315,
+            "owner_lines": 10,
+            "rate": "0.4%"
+          },
+          {
+            "prs": [99, 98],
+            "asked": 5,
+            "agent_lines": 2315,
+            "owner_lines": 10,
+            "rate": "0.4%"
+          },
+          {
+            "prs": [99],
+            "asked": 1,
+            "agent_lines": 1500,
+            "owner_lines": 6,
+            "rate": "0.4%"
+          }
+        ],
+        "series": []
+      }
+    ]
+  }
+}
