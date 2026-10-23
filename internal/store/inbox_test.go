@@ -226,10 +226,6 @@ func TestRecordCancelRefusesARunWithNoRow(t *testing.T) {
 	}
 }
 
-// TestRecordCancelRefusesARunThatStoppedWaiting pins what the write decides on,
-// and that a refusal changes nothing. A merge the dispatcher's poll measured sits
-// outside the record, so it is read from the row beside the owner's own merge,
-// and a merge wins over a cancel.
 func TestRecordCancelRefusesARunThatStoppedWaiting(t *testing.T) {
 	_, client := queue(t)
 	ctx := context.Background()
@@ -277,9 +273,6 @@ func TestRecordCancelRefusesARunThatStoppedWaiting(t *testing.T) {
 	}
 }
 
-// TestRecordCancelOfTwoRequestsRecordsOneAndRefusesTheOther pins that the write
-// is conditional: two cancels racing for one run cannot both record, so the
-// second owner never overwrites the first.
 func TestRecordCancelOfTwoRequestsRecordsOneAndRefusesTheOther(t *testing.T) {
 	_, client := queue(t)
 	ctx := context.Background()

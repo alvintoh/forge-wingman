@@ -47,7 +47,9 @@ means for an open pull request was decided by the owner on 2026-10-23: leave it.
 ## Consequences
 
 - A cancelled run's pull request is still open on GitHub, so it is closed or merged by hand; the
-  surface offers no action on it.
+  surface offers no action on it. Until then it counts as an open agent PR toward the dispatcher's
+  review WIP limit (`internal/dispatcher/github.go`, `OpenAgentPRs`), so a cancel does not free a
+  slot for the next run.
 - The cancel needs no new credential: it writes one Firestore document, as the merge records its
   own, and it is owner-only behind IAP (`adr/0007`).
 - A cancelled run can be built again only by a retry, which clears the cancel; there is no

@@ -150,6 +150,30 @@ func TestMergeRefusesWhatTheOwnerMayNotMerge(t *testing.T) {
 	}
 }
 
+func TestMergeOfACancelledRunAnswersWhatLaterHappenedToItsPR(t *testing.T) {
+	cancelled := func(r *runner.Record) { r.CancelledByOwnerAt = measuredAt() }
+	for name, tt := range map[string]struct {
+		state dispatcher.PullStatus
+		code  int
+		body  string
+	}{
+		"merged by hand": {dispatcher.PullStatus{Merged: true, HeadSHA: "abc123"}, http.StatusOK, "{\"status\":\"already-merged\"}\n"},
+		"closed by hand": {dispatcher.PullStatus{HeadSHA: "abc123"}, http.StatusConflict, "{\"reason\":\"cancelled\"}\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			merger, runs := readyToMerge(), mergeRows(cancelled)
+			merger.state = tt.state
+			rec := postMerge(t, Deps{Merger: merger, Runs: runs}, "r1", "application/json", mergeBody)
+			if rec.Code != tt.code || rec.Body.String() != tt.body {
+				t.Fatalf("answer = %d %s, want %d %s", rec.Code, rec.Body.String(), tt.code, tt.body)
+			}
+			if len(merger.merged) != 0 || len(runs.merges) != 0 {
+				t.Fatalf("merged %v, recorded %v, want neither", merger.merged, runs.merges)
+			}
+		})
+	}
+}
+
 func TestMergeIsNotHeldByAWaitReasonThatNeverBlocks(t *testing.T) {
 	merger := readyToMerge()
 	runs := mergeRows(func(r *runner.Record) { r.WaitReason = runner.WaitFrontEnd })

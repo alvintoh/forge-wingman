@@ -112,9 +112,6 @@ func TestCancelWithoutAJSONBodyIsRefused(t *testing.T) {
 	}
 }
 
-// TestCancelOfARunThatStoppedWaitingChangesNothing pins what a cancel answers a
-// run that no longer waits, as the store reports it. A merge wins over a cancel,
-// because the run history draws the run as merged either way.
 func TestCancelOfARunThatStoppedWaitingChangesNothing(t *testing.T) {
 	for name, tt := range map[string]struct {
 		refusal error
