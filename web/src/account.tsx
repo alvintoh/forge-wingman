@@ -16,11 +16,19 @@ const CLEAR_LOGIN_URL = "/?gcp-iap-mode=CLEAR_LOGIN_COOKIE";
 const LANDING_URL = "https://forge-wingman.web.app/";
 
 // Signing out clears the session behind a request, then opens the landing
-// page. If the clearing cannot be sent, the whole navigation through IAP's
-// own sign-in runs instead, so the visitor is never sent away still signed in.
+// page. IAP answers a clear with a redirect; any other answer, or none, runs
+// the whole navigation through IAP's own sign-in instead, so the visitor is
+// never sent away still signed in.
 async function signOut() {
   try {
-    await fetch(CLEAR_LOGIN_URL, { redirect: "manual" });
+    const response = await fetch(CLEAR_LOGIN_URL, {
+      redirect: "manual",
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    if (response.type !== "opaqueredirect") {
+      throw new Error(`the clear-login request answered ${response.status}`);
+    }
   } catch (err) {
     console.error("signOutNotCleared", err);
     window.location.assign(CLEAR_LOGIN_URL);
