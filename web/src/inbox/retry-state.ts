@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { postJSON } from "../post-json";
+import { isRefusal } from "./merge-state";
 import type { InboxRun } from "./run";
 
 // Why a retry the server refused with 409 (or 503) cannot go ahead; sending it again cannot change them.
@@ -21,23 +22,14 @@ const refusalWords: Record<string, string> = {
 const REFUSED_WORDS = "The retry was refused.";
 const NOT_SENT_WORDS = "The retry could not be sent. Your note is kept.";
 
-function reasonOf(body: unknown): string | null {
-  return typeof body === "object" &&
-    body !== null &&
-    "reason" in body &&
-    typeof body.reason === "string"
-    ? body.reason
-    : null;
-}
-
 // failureOf words a retry that was not queued.
 async function failureOf(response: Response): Promise<string> {
   if (response.status !== 409 && response.status !== 503) {
     return NOT_SENT_WORDS;
   }
-  const reason = reasonOf(await response.json().catch(() => null));
-  if (reason !== null) {
-    return refusalWords[reason] ?? REFUSED_WORDS;
+  const body: unknown = await response.json().catch(() => null);
+  if (isRefusal(body)) {
+    return refusalWords[body.reason] ?? REFUSED_WORDS;
   }
   return response.status === 409 ? REFUSED_WORDS : NOT_SENT_WORDS;
 }

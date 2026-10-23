@@ -124,21 +124,11 @@ func (q *Queue) RetryWithNote(ctx context.Context, runID string, req RetryReques
 			if _, err := requeueState(row); err != nil {
 				return "", nil, err
 			}
-			var pr any = firestore.Delete
-			if req.SupersedePR > 0 {
-				pr = req.SupersedePR
-			}
-			cost, _ := row[settledProviderCostField].(int64)
-			minutes, _ := row[settledRunnerMinutesField].(int64)
-			return stateQueued, []firestore.Update{
+			return stateQueued, append([]firestore.Update{
 				{Path: operatorNoteField, Value: req.Note},
 				{Path: operatorAssistedField, Value: true},
 				{Path: retriedByField, Value: req.Actor},
-				{Path: supersededAttemptField, Value: attempt - 1},
-				{Path: supersededPRField, Value: pr},
-				{Path: priorSettledCostField, Value: cost},
-				{Path: priorSettledMinutesField, Value: minutes},
-			}, nil
+			}, supersedeUpdates(row, attempt, req.SupersedePR, true)...), nil
 		})
 	if errors.Is(err, errRetryApplied) {
 		return RetryResult{Attempt: req.ExpectedAttempt + 1, Already: true}, nil
@@ -157,17 +147,6 @@ func (q *Queue) OperatorNote(ctx context.Context, runID string) (string, error) 
 		return "", err
 	}
 	return str(row, operatorNoteField), nil
-}
-
-// OperatorAssisted reports whether runID's current attempt is an owner's retry,
-// which words the PR it opens.
-func (q *Queue) OperatorAssisted(ctx context.Context, runID string) (bool, error) {
-	row, err := q.row(ctx, runID)
-	if err != nil {
-		return false, err
-	}
-	assisted, _ := row[operatorAssistedField].(bool)
-	return assisted, nil
 }
 
 // row reads runID's whole row.

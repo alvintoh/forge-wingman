@@ -35,9 +35,6 @@ func TestRunWorkflowWordsTheSupersededPRsCloseByWhyItWasReplaced(t *testing.T) {
 	for _, want := range []string{
 		"if: needs.pr-meta.outputs.superseded_pr != ''",
 		"RETRY: ${{ needs.pr-meta.outputs.superseded_by_retry }}",
-		`[ "$RETRY" = true ]`,
-		`why="the owner retried this run with a note"`,
-		`why="the owner chose a different option"`,
 		`--json state --jq .state)" = OPEN ]`,
 		`gh pr close "$OLD" --comment "Superseded by $NEW: $why."`,
 	} {
@@ -47,6 +44,11 @@ func TestRunWorkflowWordsTheSupersededPRsCloseByWhyItWasReplaced(t *testing.T) {
 	}
 	if !strings.Contains(string(yml), "superseded_by_retry: ${{ steps.meta.outputs.superseded_by_retry }}") {
 		t.Error("run.yml's pr-meta job does not pass superseded_by_retry on")
+	}
+	// Each reason is the one chosen by RETRY, so a swap of the two wordings is caught too.
+	if flat := strings.Join(strings.Fields(step), " "); !strings.Contains(flat,
+		`if [ "$RETRY" = true ]; then why="the owner retried this run with a note" else why="the owner chose a different option" fi`) {
+		t.Errorf("run.yml's close step does not word a retry by RETRY and an option by its absence: %s", flat)
 	}
 	if _, script, _ := strings.Cut(step, "run: |"); strings.Contains(script, "${{") {
 		t.Error("the close step interpolates an expression into its script; it reads $OLD, $NEW and $RETRY")

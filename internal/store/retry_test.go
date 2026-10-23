@@ -252,7 +252,7 @@ func TestRetryWithNoteRecordsTheSupersededPRAndCarriesSpendForward(t *testing.T)
 	}
 }
 
-func TestOperatorNoteAndAssistedReadWhatTheRetryWrote(t *testing.T) {
+func TestOperatorNoteReadsWhatTheRetryWrote(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
 	id := fresh("retry-read")
@@ -260,19 +260,56 @@ func TestOperatorNoteAndAssistedReadWhatTheRetryWrote(t *testing.T) {
 	if note, err := q.OperatorNote(ctx, id); err != nil || note != "" {
 		t.Fatalf("note before a retry = %q, %v, want none", note, err)
 	}
-	if assisted, err := q.OperatorAssisted(ctx, id); err != nil || assisted {
-		t.Fatalf("assisted before a retry = %v, %v, want false", assisted, err)
-	}
 	if _, err := q.RetryWithNote(ctx, id, retryReq(nil), queueAt.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if note, err := q.OperatorNote(ctx, id); err != nil || note != "Keep the old flag name." {
 		t.Fatalf("note = %q, %v, want the owner's", note, err)
 	}
-	if assisted, err := q.OperatorAssisted(ctx, id); err != nil || !assisted {
-		t.Fatalf("assisted = %v, %v, want true", assisted, err)
-	}
 	if _, err := q.OperatorNote(ctx, fresh("retry-read-absent")); !errors.Is(err, runner.ErrRecordNotFound) {
+		t.Fatalf("err = %v, want ErrRecordNotFound", err)
+	}
+}
+
+// The PR a retry replaced keeps its wording for as long as the row names it: the
+// note is dropped by the next requeue, the number and the reason it was replaced are not.
+func TestSupersededByRetryLivesAsLongAsTheSupersededPR(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	id := fresh("retry-wording")
+	seedRow(t, client, id, retryRow(nil))
+	if retried, err := q.SupersededByRetry(ctx, id); err != nil || retried {
+		t.Fatalf("before a retry = %v, %v, want false", retried, err)
+	}
+	if _, err := q.RetryWithNote(ctx, id, retryReq(nil), queueAt.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Collection(runsCollection).Doc(id).Update(ctx, []firestore.Update{
+		{Path: outcomeField, Value: string(runner.OutcomeStopped)}, {Path: stopReasonField, Value: string(runner.StopRebaseConflict)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.Requeue(ctx, id, queueAt.Add(2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if note, _ := q.OperatorNote(ctx, id); note != "" {
+		t.Fatalf("note = %q after the owner's requeue, want it dropped", note)
+	}
+	pr, _ := q.SupersededPR(ctx, id)
+	if retried, err := q.SupersededByRetry(ctx, id); err != nil || pr != 141 || !retried {
+		t.Fatalf("superseded PR %d, by retry %v, %v after the owner's requeue, want 141 still worded as the retry's", pr, retried, err)
+	}
+
+	// A retry that replaces no PR leaves neither the number nor its reason behind.
+	none := fresh("retry-wording-none")
+	seedRow(t, client, none, retryRow(map[string]any{prURLField: "", supersededPRField: int64(7), supersededByRetryField: true}))
+	if _, err := q.RetryWithNote(ctx, none, retryReq(func(r *RetryRequest) { r.SupersedePR = 0 }), queueAt.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if retried, err := q.SupersededByRetry(ctx, none); err != nil || retried {
+		t.Fatalf("by retry = %v, %v, want false once no PR is replaced", retried, err)
+	}
+	if _, err := q.SupersededByRetry(ctx, fresh("retry-wording-absent")); !errors.Is(err, runner.ErrRecordNotFound) {
 		t.Fatalf("err = %v, want ErrRecordNotFound", err)
 	}
 }

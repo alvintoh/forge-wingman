@@ -109,12 +109,13 @@ func TestRetryRefusesWhatItCannotAct(t *testing.T) {
 		want        int
 	}{
 		"no run store":            {Deps{Retries: &stubRetries{}}, "application/json", retryBody, http.StatusServiceUnavailable},
-		"no retry store":          {Deps{Runs: mergeRows(nil)}, "application/json", retryBody, http.StatusServiceUnavailable},
+		"no retry store":          {Deps{Runs: mergeRows(nil), Merger: openDraft()}, "application/json", retryBody, http.StatusServiceUnavailable},
 		"a body that is not JSON": {Deps{Retries: &stubRetries{}, Runs: mergeRows(nil)}, "text/plain", retryBody, http.StatusUnsupportedMediaType},
 		"no body":                 {Deps{Retries: &stubRetries{}, Runs: mergeRows(nil)}, "application/json", ``, http.StatusBadRequest},
 		"no note":                 {Deps{Retries: &stubRetries{}, Runs: mergeRows(nil)}, "application/json", `{"expected_attempt":2}`, http.StatusBadRequest},
 		"a blank note":            {Deps{Retries: &stubRetries{}, Runs: mergeRows(nil)}, "application/json", `{"note":" \n ","expected_attempt":2}`, http.StatusBadRequest},
 		"a note over the limit":   {Deps{Retries: &stubRetries{}, Runs: mergeRows(nil)}, "application/json", `{"note":"` + long + `","expected_attempt":2}`, http.StatusBadRequest},
+		"a body over the cap":     {Deps{Retries: &stubRetries{}, Runs: mergeRows(nil)}, "application/json", `{"note":"x","expected_attempt":2,"pad":"` + strings.Repeat("a", maxRetryBodyBytes) + `"}`, http.StatusBadRequest},
 		"a note with a NUL":       {Deps{Retries: &stubRetries{}, Runs: mergeRows(nil)}, "application/json", `{"note":"a\u0000b","expected_attempt":2}`, http.StatusBadRequest},
 		"no attempt":              {Deps{Retries: &stubRetries{}, Runs: mergeRows(nil)}, "application/json", `{"note":"x"}`, http.StatusBadRequest},
 		"a negative attempt":      {Deps{Retries: &stubRetries{}, Runs: mergeRows(nil)}, "application/json", `{"note":"x","expected_attempt":-1}`, http.StatusBadRequest},
@@ -230,5 +231,17 @@ func TestRetryOfARunWithNoPRNeverReadsGitHub(t *testing.T) {
 	rec = postRetry(t, Deps{Retries: retries, Runs: runs}, owner(), "r1", "application/json", retryBody)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want a run with no PR retried without the merge token", rec.Code)
+	}
+}
+
+// A note of the longest length whose every byte JSON escapes to six bytes is the largest body a retry
+// may send, and the cap on the body must let it through.
+func TestRetryAcceptsTheLargestNoteEscapedInTheBody(t *testing.T) {
+	note := strings.Repeat(`\u0001`, runner.MaxNoteBytes)
+	retries := &stubRetries{result: store.RetryResult{Attempt: 3}}
+	rec := postRetry(t, Deps{Retries: retries, Runs: mergeRows(nil), Merger: openDraft()}, owner(), "r1", "application/json",
+		`{"note":"`+note+`","expected_attempt":2}`)
+	if rec.Code != http.StatusOK || len(retries.calls) != 1 || len(retries.calls[0].Note) != runner.MaxNoteBytes {
+		t.Fatalf("answer = %d, retried %d notes, want the %d byte note sent on", rec.Code, len(retries.calls), runner.MaxNoteBytes)
 	}
 }

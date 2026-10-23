@@ -93,9 +93,9 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	if err != nil {
 		logger.Warn("supersededPRUnread", "run", *runID, "err", err.Error())
 	}
-	retried, err := store.NewQueue(fsc).OperatorAssisted(ctx, *runID)
+	retried, err := store.NewQueue(fsc).SupersededByRetry(ctx, *runID)
 	if err != nil {
-		logger.Warn("operatorAssistedUnread", "run", *runID, "err", err.Error())
+		logger.Warn("supersededByRetryUnread", "run", *runID, "err", err.Error())
 	}
 	sum := buildSummary(logger, *summary, buildAttempt(logger, *attemptID, e), rec.Ticket(), time.Now())
 	changed, err := runner.Bundle{Path: *bundle, Repo: workRepo, Branch: *branch, Base: mainRef,

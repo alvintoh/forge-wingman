@@ -14,7 +14,7 @@ const refusalWords: Record<string, string> = {
   "checks-not-green": "The checks are not green.",
 };
 
-function isRefusal(body: unknown): body is { reason: string; detail?: string } {
+export function isRefusal(body: unknown): body is { reason: string; detail?: string } {
   return (
     typeof body === "object" &&
     body !== null &&

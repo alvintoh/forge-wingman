@@ -600,7 +600,11 @@ func TestPRMetaWordsASupersedeByWhyTheOwnerMadeIt(t *testing.T) {
 		wantNotBody string
 	}{
 		"a retry": {
-			map[string]any{"superseded_pr": int64(141), "operator_assisted": true, "operator_note": "Keep the old flag name."},
+			map[string]any{"superseded_pr": int64(141), "superseded_by_retry": true, "operator_assisted": true, "operator_note": "Keep the old flag name."},
+			"superseded_by_retry=true\n", "Supersedes #141: the owner retried this run with a note.", "chose a different option",
+		},
+		"a requeue after a retry": {
+			map[string]any{"superseded_pr": int64(141), "superseded_by_retry": true},
 			"superseded_by_retry=true\n", "Supersedes #141: the owner retried this run with a note.", "chose a different option",
 		},
 		"a chosen option": {

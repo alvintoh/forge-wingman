@@ -1496,9 +1496,9 @@ type requeueOptions struct {
 	archive bool
 }
 
-// requeue is the transaction Requeue and RequeueAfterConflict share: decide
-// names the state the run returns to, given the row and the attempt it would be
-// put back as, with any fields to write beside the common ones, or the refusal.
+// requeue is the transaction every requeue shares: decide names the state the
+// run returns to, given the row and the attempt it would be put back as, with any
+// fields to write beside the common ones, or the refusal.
 func (q *Queue) requeue(ctx context.Context, runID string, at time.Time, opts requeueOptions,
 	decide func(row map[string]any, attempt int) (string, []firestore.Update, error)) (RequeueResult, error) {
 	rowRef := q.client.Collection(runsCollection).Doc(runID)

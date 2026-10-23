@@ -930,7 +930,7 @@ func TestClearProvisionalReplyDropsTheMarkOnlyForTheReplyThePollRead(t *testing.
 	}
 }
 
-func TestSupersedeDropsTheOwnersNoteFromTheEndedAttempt(t *testing.T) {
+func TestSupersedeDropsTheOwnersRetryFromTheEndedAttempt(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
 	id := postedProvisionalRun(t, q, client)
@@ -942,6 +942,7 @@ func TestSupersedeDropsTheOwnersNoteFromTheEndedAttempt(t *testing.T) {
 		{Path: operatorNoteField, Value: "Keep the old flag name."},
 		{Path: operatorAssistedField, Value: true},
 		{Path: retriedByField, Value: "owner@example.test"},
+		{Path: supersededByRetryField, Value: true},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -949,9 +950,9 @@ func TestSupersedeDropsTheOwnersNoteFromTheEndedAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	data := readRow(t, client, id)
-	for _, field := range []string{operatorNoteField, operatorAssistedField, retriedByField} {
+	for _, field := range []string{operatorNoteField, operatorAssistedField, retriedByField, supersededByRetryField} {
 		if v, held := data[field]; held {
-			t.Errorf("%s = %v survived the supersede: the note was for the attempt it replaced", field, v)
+			t.Errorf("%s = %v survived the supersede: it was for the attempt it replaced", field, v)
 		}
 	}
 }
