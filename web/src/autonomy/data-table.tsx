@@ -43,8 +43,9 @@ function DataTable<T>({ title, columns, rows, rowKey }: TableProps<T>) {
   if (first === undefined) {
     return null;
   }
+  // The 5px at the left keeps a link's 3px focus ring and its 2px offset inside the scroller.
   return (
-    <div className="overflow-x-auto">
+    <div className="-ml-[5px] overflow-x-auto pl-[5px]">
       <table className="w-full text-label max-md:block">
         <caption className="pb-1 text-left text-cap font-semibold text-ink2 max-md:block">
           {title}

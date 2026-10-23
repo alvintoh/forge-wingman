@@ -30,7 +30,9 @@ export function RewriteSection({ rewrite }: RewriteSectionProps) {
   const bar = rewrite.bars.rollback;
   const trended = rewrite.by_repo.filter((repo) => repo.series.length > 0);
   const partial = first !== undefined && first.prs.length < first.asked;
-  const tiles = <Tiles tiles={rewrite.tiles} prs={rewrite.prs} bar={bar} />;
+  const tiles = (
+    <Tiles tiles={rewrite.tiles} prs={rewrite.prs} bar={bar} bleed={!partial} stacked={partial} />
+  );
   return (
     <section aria-labelledby="rewrite-title" className="mt-10">
       <h2 id="rewrite-title" className="text-head font-semibold text-ink">

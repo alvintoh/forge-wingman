@@ -29,9 +29,9 @@ export function PatternDefs() {
           <rect width="6" height="6" className="fill-card" />
           <line x1="3" y1="0" x2="3" y2="6" strokeWidth="3" className="stroke-accent" />
         </pattern>
-        <pattern id={DOTS_ID} width="5" height="5" patternUnits="userSpaceOnUse">
-          <rect width="5" height="5" className="fill-card" />
-          <circle cx="2.5" cy="2.5" r="1.2" className="fill-accent" />
+        <pattern id={DOTS_ID} width="4" height="4" patternUnits="userSpaceOnUse">
+          <rect width="4" height="4" className="fill-card" />
+          <circle cx="2" cy="2" r="1.5" className="fill-accent" />
         </pattern>
       </defs>
     </svg>

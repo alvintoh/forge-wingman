@@ -121,13 +121,16 @@ type PrStripProps = {
   width: number;
   padx: number;
   compact: boolean;
+  // Whether no trend is drawn above, so the strip stands alone: its size key sits in
+  // the gutter at its right and it draws no model lanes.
+  alone: boolean;
 };
 
 // PrStrip draws each PR's own rate as a dot on the trend's merge axis: its area is
 // the PR's agent lines on one scale across the strip, its size letter and number
 // sit under it, and a rate above 30% is a triangle in a labelled band. Under it,
 // where the room allows, the models each PR ran as one pill per run of equal ones.
-export function PrStrip({ axis, prs, width, padx, compact }: PrStripProps) {
+export function PrStrip({ axis, prs, width, padx, compact, alone }: PrStripProps) {
   const placed: Placed[] = prs
     .flatMap((pr) => {
       const x = axis.xOfPR(pr.pr);
@@ -148,8 +151,12 @@ export function PrStrip({ axis, prs, width, padx, compact }: PrStripProps) {
   const numbers = !compact && widest * 11 * 0.6 + 3 <= axis.step;
   const firstX = placed[0]?.x ?? axis.x1;
   const samples = keySamples(mostLines);
-  const keyWidth = firstX - rMax - 8 - axis.x0 - 4;
-  const keyLeft = keyWidth >= 3 * (textWidth(count(mostLines), 11, true) + 8);
+  // A figure is mono, so its width is exact: three of them, each with room beside it.
+  const keyFit = 3 * (count(mostLines).length * 11 * 0.6 + 8);
+  const keyRight = alone && width - padx - (axis.x1 + 12) >= keyFit;
+  const keyWidth = keyRight ? width - padx - (axis.x1 + 12) : firstX - rMax - 8 - axis.x0 - 4;
+  const keyLeft = keyRight || (!alone && keyWidth >= keyFit);
+  const keyX = keyRight ? axis.x1 + 12 : axis.x0 + 4;
   const labelSide = bandLabelSide(
     clipped.map(({ x }) => x),
     axis.x0,
@@ -162,9 +169,10 @@ export function PrStrip({ axis, prs, width, padx, compact }: PrStripProps) {
   if (!keyLeft && placed.length > 0) {
     cy += 2 * rMax + 14;
   }
-  const lanes = compact
-    ? []
-    : PHASES.map((p) => layoutLane(axis, placed, index, p.label, p.phase, p.pick));
+  const lanes =
+    compact || alone
+      ? []
+      : PHASES.map((p) => layoutLane(axis, placed, index, p.label, p.phase, p.pick));
   const drawLanes = lanes.length > 0 && lanes.every((lane) => lane !== null);
   const laneTops: number[] = [];
   if (drawLanes) {
@@ -229,22 +237,18 @@ export function PrStrip({ axis, prs, width, padx, compact }: PrStripProps) {
           />
           {keyLeft && placed.length > 0 && (
             <g data-mark="key">
-              <rect
-                x={axis.x0 + 4}
-                y={top + 14}
-                width={keyWidth}
-                height={72}
-                className="fill-card"
-              />
+              {!keyRight && (
+                <rect x={keyX} y={top + 14} width={keyWidth} height={72} className="fill-card" />
+              )}
               {samples.map((lines, i) => (
                 <g key={lines}>
                   <Dot
-                    cx={axis.x0 + 4 + (keyWidth / 3) * (i + 0.5)}
+                    cx={keyX + (keyWidth / 3) * (i + 0.5)}
                     cy={top + 38}
                     r={dotRadius(lines, mostLines, radii)}
                   />
                   <text
-                    x={axis.x0 + 4 + (keyWidth / 3) * (i + 0.5)}
+                    x={keyX + (keyWidth / 3) * (i + 0.5)}
                     y={top + 70}
                     textAnchor="middle"
                     className="fill-ink2 font-mono text-micro font-semibold"
@@ -253,7 +257,7 @@ export function PrStrip({ axis, prs, width, padx, compact }: PrStripProps) {
                   </text>
                 </g>
               ))}
-              <text x={axis.x0 + 8} y={top + 84} className="fill-ink2 text-micro font-semibold">
+              <text x={keyX + 4} y={top + 84} className="fill-ink2 text-micro font-semibold">
                 agent lines
               </text>
             </g>

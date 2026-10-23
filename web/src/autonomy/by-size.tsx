@@ -10,6 +10,8 @@ const BAR_W = 56;
 const SLOT = 160;
 // A fourth column, for PRs of no size, takes a narrower slot beside the legend.
 const SLOT_FOUR = 120;
+// Below the legend-right width the plot takes the room it has, to this slot.
+const SLOT_MAX = 300;
 // The width from which the legend sits right of the chart.
 const LEGEND_RIGHT_W = 900;
 
@@ -32,7 +34,7 @@ export function BySize({ sizes, bar }: BySizeProps) {
         const right = width >= LEGEND_RIGHT_W;
         const x0 = padx + Y_LABEL_W;
         const slot = Math.min(
-          right && shown.length > 3 ? SLOT_FOUR : SLOT,
+          right ? (shown.length > 3 ? SLOT_FOUR : SLOT) : SLOT_MAX,
           (width - padx - x0) / shown.length,
         );
         const x1 = x0 + slot * shown.length;

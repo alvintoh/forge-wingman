@@ -22,6 +22,8 @@ import { PrStrip } from "./pr-strip";
 import type { PR, Point } from "./types";
 
 const GUTTER = 168;
+// The gutter the strip keeps right of its plot for its size key, with no trend above it.
+const KEY_GUTTER = 140;
 const TICKS = [0, 0.1, 0.2, 0.3];
 const MEASURED_HEAD = "How this is measured";
 const MEASURED =
@@ -250,7 +252,7 @@ export function TrendCard({ series, prs, bar, aside, lead }: TrendCardProps) {
         const side = width >= SIDE_W;
         const hasTrend = series.length > 0;
         const slots = mergeSlots(series, prs);
-        const gutter = side ? GUTTER : 0;
+        const gutter = hasTrend ? (side ? GUTTER : 0) : KEY_GUTTER;
         const axis = buildAxis(slots, {
           width,
           padx,
@@ -336,7 +338,14 @@ export function TrendCard({ series, prs, bar, aside, lead }: TrendCardProps) {
               </p>
             )}
             <hr className="mt-4 border-hair" style={{ marginInline: padx }} />
-            <PrStrip axis={axis} prs={prs} width={width} padx={padx} compact={compact} />
+            <PrStrip
+              axis={axis}
+              prs={prs}
+              width={width}
+              padx={padx}
+              compact={compact}
+              alone={!hasTrend}
+            />
           </>
         );
       }}
