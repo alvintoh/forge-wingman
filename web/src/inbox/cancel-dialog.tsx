@@ -2,7 +2,7 @@ import { useEffect, useId, useRef } from "react";
 import { createPortal } from "react-dom";
 import { ActionButton, ButtonPair } from "../action-button";
 import { type Opened, listDialog } from "./keyboard";
-import { type InboxRun, parsePull } from "./run";
+import type { InboxRun } from "./run";
 
 type DialogProps = {
   opened: Opened | null;
@@ -52,8 +52,6 @@ export function CancelDialog({ opened, onClose, onConfirm }: DialogProps) {
     dialogRef.current?.close();
   }
 
-  const pull = run === null ? null : parsePull(run.pr_url);
-
   // In the body, so the inbox section moving between columns never takes an open modal with it.
   return createPortal(
     <dialog
@@ -69,36 +67,13 @@ export function CancelDialog({ opened, onClose, onConfirm }: DialogProps) {
             Cancel this run?
           </h2>
           <p className="mt-1.75 text-label leading-5 font-semibold wrap-break-word">{run.ticket}</p>
-          <p className="mt-0.5 text-cap leading-4 wrap-break-word text-muted">
-            {pull === null ? run.repo : `${pull.repository} #${pull.number}`}
+          <p className="mt-2 text-label leading-4.5 text-ink2">
+            The pull request is left as it is.
           </p>
-          {run.title !== undefined && (
-            <p className="mt-0.5 text-cap leading-4 wrap-break-word text-muted">{run.title}</p>
-          )}
-          <ul className="mt-2 text-label leading-4">
-            <li className="flex min-h-7.5 gap-3.5 border-t border-hair pt-[4.6px]">
-              <span
-                aria-hidden="true"
-                className="mt-1.5 ml-0.5 size-1.5 shrink-0 rounded-full bg-ink2"
-              />
-              <span className="min-w-0 wrap-break-word">
-                Stops the run and records that you cancelled it
-              </span>
-            </li>
-            <li className="flex min-h-7.5 gap-3.5 border-t border-hair pt-[4.6px]">
-              <span
-                aria-hidden="true"
-                className="mt-1.5 ml-0.5 size-1.5 shrink-0 rounded-full bg-ink2"
-              />
-              <span className="min-w-0 wrap-break-word">
-                The pull request is left as it is: not closed, commented on or marked
-              </span>
-            </li>
-          </ul>
           <ButtonPair
             margin="mt-2"
             back={<ActionButton kind="secondary" label="BACK" onClick={back} />}
-            action={<ActionButton kind="primary" label="CANCEL RUN" onClick={confirm} />}
+            action={<ActionButton kind="destructive" label="CANCEL RUN" onClick={confirm} />}
           />
         </>
       )}
