@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -85,41 +86,47 @@ func (r *Records) RecordMerge(ctx context.Context, id, sha string, at time.Time)
 	return nil
 }
 
+// The reasons RecordCancel refuses, beside ErrRunMerged: a run whose cancel is
+// already recorded, and one whose PR does not wait on the owner.
+var (
+	ErrRunCancelled  = errors.New("run was already cancelled")
+	ErrRunNotWaiting = errors.New("run's PR does not wait on the owner")
+)
+
 // RecordCancel sets when, and by which signed-in address, the owner cancelled
-// run id from its inbox row, keeping every other field.
+// run id from its inbox row, keeping every other field. The row is read and
+// written in one transaction, so a merge or a cancel that lands between is seen:
+// a merged run answers ErrRunMerged before anything else, a cancelled one
+// ErrRunCancelled, and one whose PR was never opened or has since been requeued
+// ErrRunNotWaiting. An absent run is runner.ErrRecordNotFound.
 func (r *Records) RecordCancel(ctx context.Context, id, by string, at time.Time) error {
-	_, err := r.client.Collection(runsCollection).Doc(id).Update(ctx, []firestore.Update{
-		{Path: cancelledByOwnerAtField, Value: at},
-		{Path: cancelledByField, Value: by},
+	ref := r.client.Collection(runsCollection).Doc(id)
+	err := r.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		snap, err := tx.Get(ref)
+		if status.Code(err) == codes.NotFound {
+			return fmt.Errorf("%s: %w", id, runner.ErrRecordNotFound)
+		}
+		if err != nil {
+			return err
+		}
+		row := snap.Data()
+		switch {
+		case settledMerged(row):
+			return ErrRunMerged
+		case cancelledRow(row):
+			return ErrRunCancelled
+		case str(row, outcomeField) != string(runner.OutcomePROpened):
+			return ErrRunNotWaiting
+		}
+		return tx.Update(ref, []firestore.Update{
+			{Path: cancelledByOwnerAtField, Value: at},
+			{Path: cancelledByField, Value: by},
+		})
 	})
 	if err != nil {
 		return fmt.Errorf("recording run %s's cancel: %w", id, err)
 	}
 	return nil
-}
-
-// CancelTarget is what a cancel decides on: how the run ended, when the owner
-// cancelled it, and whether its PR was merged — by the owner through the surface
-// or by a merge the dispatcher's poll measured, which sits outside the record.
-type CancelTarget struct {
-	Outcome            runner.Outcome
-	CancelledByOwnerAt time.Time
-	Merged             bool
-}
-
-// CancelTarget reads the run a cancel acts on, or runner.ErrRecordNotFound.
-func (r *Records) CancelTarget(ctx context.Context, id string) (CancelTarget, error) {
-	snap, err := r.client.Collection(runsCollection).Doc(id).Get(ctx)
-	if status.Code(err) == codes.NotFound {
-		return CancelTarget{}, fmt.Errorf("%s: %w", id, runner.ErrRecordNotFound)
-	}
-	if err != nil {
-		return CancelTarget{}, err
-	}
-	row := snap.Data()
-	target := CancelTarget{Outcome: runner.Outcome(str(row, outcomeField)), Merged: settledMerged(row)}
-	target.CancelledByOwnerAt, _ = row[cancelledByOwnerAtField].(time.Time)
-	return target, nil
 }
 
 // GetPlan reads the plan stage's fields from run id. A run whose plan stage has

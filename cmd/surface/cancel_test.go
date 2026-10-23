@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -17,37 +18,28 @@ import (
 	"github.com/alvintoh/forge-wingman/internal/store"
 )
 
-// stubCancels holds what a cancel reads of each run and records the cancels it
-// is told of.
+// stubCancels answers a cancel as the store does: each known run is cancelled
+// unless the error it holds refuses it, and an unknown run is absent.
 type stubCancels struct {
-	runs      map[string]store.CancelTarget
-	readErr   error
-	recordErr error
-	cancels   []string
-}
-
-func (s *stubCancels) CancelTarget(_ context.Context, id string) (store.CancelTarget, error) {
-	if s.readErr != nil {
-		return store.CancelTarget{}, s.readErr
-	}
-	target, ok := s.runs[id]
-	if !ok {
-		return store.CancelTarget{}, runner.ErrRecordNotFound
-	}
-	return target, nil
+	runs    map[string]error
+	cancels []string
 }
 
 func (s *stubCancels) RecordCancel(_ context.Context, id, by string, _ time.Time) error {
-	if s.recordErr != nil {
-		return s.recordErr
+	err, ok := s.runs[id]
+	if !ok {
+		return runner.ErrRecordNotFound
+	}
+	if err != nil {
+		return err
 	}
 	s.cancels = append(s.cancels, id+"@"+by)
 	return nil
 }
 
-// waitingTarget is what a cancel reads of a run whose PR waits on the owner.
-func waitingTarget() store.CancelTarget {
-	return store.CancelTarget{Outcome: runner.OutcomePROpened}
+// waiting is a run whose PR waits on the owner, which a cancel records.
+func waiting() map[string]error {
+	return map[string]error{"r1": nil}
 }
 
 // postCancel sends a cancel for run as email, signed out when email is empty.
@@ -69,7 +61,7 @@ func postCancel(t *testing.T, d Deps, run, contentType, body, email string) *htt
 const cancelBody = `{}`
 
 func TestCancelRecordsTheRunAndTheSignedInOwner(t *testing.T) {
-	cancels := &stubCancels{runs: map[string]store.CancelTarget{"r1": waitingTarget()}}
+	cancels := &stubCancels{runs: waiting()}
 	rec := postCancel(t, Deps{Cancels: cancels}, "r1", "application/json", cancelBody, "owner@example.com")
 	if rec.Code != http.StatusOK || rec.Body.String() != "{\"status\":\"cancelled\"}\n" {
 		t.Fatalf("answer = %d %s, want the cancel recorded", rec.Code, rec.Body.String())
@@ -80,7 +72,7 @@ func TestCancelRecordsTheRunAndTheSignedInOwner(t *testing.T) {
 }
 
 func TestCancelRecordsTheAssertionsOwnerNotTheBodys(t *testing.T) {
-	cancels := &stubCancels{runs: map[string]store.CancelTarget{"r1": waitingTarget()}}
+	cancels := &stubCancels{runs: waiting()}
 	rec := postCancel(t, Deps{Cancels: cancels}, "r1", "application/json",
 		`{"by":"someone@evil.example"}`, "owner@example.com")
 	if rec.Code != http.StatusOK {
@@ -92,7 +84,7 @@ func TestCancelRecordsTheAssertionsOwnerNotTheBodys(t *testing.T) {
 }
 
 func TestCancelWithoutASignedInOwnerIsRefusedAndWritesNothing(t *testing.T) {
-	cancels := &stubCancels{runs: map[string]store.CancelTarget{"r1": waitingTarget()}}
+	cancels := &stubCancels{runs: waiting()}
 	rec := postCancel(t, Deps{Cancels: cancels}, "r1", "application/json",
 		`{"by":"owner@example.com"}`, "")
 	if rec.Code != http.StatusUnauthorized || len(cancels.cancels) != 0 {
@@ -100,8 +92,20 @@ func TestCancelWithoutASignedInOwnerIsRefusedAndWritesNothing(t *testing.T) {
 	}
 }
 
+func TestCancelWithABlankOwnerIsRefusedAndWritesNothing(t *testing.T) {
+	cancels := &stubCancels{runs: waiting()}
+	d := Deps{Cancels: cancels, SPA: fstest.MapFS{}, Logger: discardLogger()}
+	req := withEmail(httptest.NewRequest(http.MethodPost, "/api/runs/r1/cancel", strings.NewReader(cancelBody)), "")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	newMux(d).ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized || len(cancels.cancels) != 0 {
+		t.Fatalf("answer = %d %s, cancels %v, want a 401 and no cancel", rec.Code, rec.Body.String(), cancels.cancels)
+	}
+}
+
 func TestCancelWithoutAJSONBodyIsRefused(t *testing.T) {
-	cancels := &stubCancels{runs: map[string]store.CancelTarget{"r1": waitingTarget()}}
+	cancels := &stubCancels{runs: waiting()}
 	rec := postCancel(t, Deps{Cancels: cancels}, "r1", "application/x-www-form-urlencoded", "", "owner@example.com")
 	if rec.Code != http.StatusUnsupportedMediaType || len(cancels.cancels) != 0 {
 		t.Fatalf("answer = %d %s, cancels %v, want a 415 and no cancel", rec.Code, rec.Body.String(), cancels.cancels)
@@ -109,21 +113,19 @@ func TestCancelWithoutAJSONBodyIsRefused(t *testing.T) {
 }
 
 // TestCancelOfARunThatStoppedWaitingChangesNothing pins what a cancel answers a
-// run that no longer waits. A merge wins over a cancel, because the run history
-// draws the run as merged either way.
+// run that no longer waits, as the store reports it. A merge wins over a cancel,
+// because the run history draws the run as merged either way.
 func TestCancelOfARunThatStoppedWaitingChangesNothing(t *testing.T) {
 	for name, tt := range map[string]struct {
-		edit func(*store.CancelTarget)
-		want string
+		refusal error
+		want    string
 	}{
-		"already cancelled":     {func(r *store.CancelTarget) { r.CancelledByOwnerAt = measuredAt() }, "already-cancelled"},
-		"already merged":        {func(r *store.CancelTarget) { r.Merged = true }, "already-merged"},
-		"merged after a cancel": {func(r *store.CancelTarget) { r.CancelledByOwnerAt, r.Merged = measuredAt(), true }, "already-merged"},
+		"already cancelled":             {store.ErrRunCancelled, "already-cancelled"},
+		"already merged":                {store.ErrRunMerged, "already-merged"},
+		"wrapped as the store wraps it": {fmt.Errorf("recording run r1's cancel: %w", store.ErrRunMerged), "already-merged"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			target := waitingTarget()
-			tt.edit(&target)
-			cancels := &stubCancels{runs: map[string]store.CancelTarget{"r1": target}}
+			cancels := &stubCancels{runs: map[string]error{"r1": tt.refusal}}
 			answer := postCancel(t, Deps{Cancels: cancels}, "r1", "application/json", cancelBody, "owner@example.com")
 			if answer.Code != http.StatusOK || answer.Body.String() != "{\"status\":\""+tt.want+"\"}\n" {
 				t.Fatalf("answer = %d %s, want %s", answer.Code, answer.Body.String(), tt.want)
@@ -136,9 +138,7 @@ func TestCancelOfARunThatStoppedWaitingChangesNothing(t *testing.T) {
 }
 
 func TestCancelOfARunThatIsNotWaitingIsRefused(t *testing.T) {
-	target := waitingTarget()
-	target.Outcome = runner.OutcomeBuilt
-	cancels := &stubCancels{runs: map[string]store.CancelTarget{"r1": target}}
+	cancels := &stubCancels{runs: map[string]error{"r1": store.ErrRunNotWaiting}}
 	answer := postCancel(t, Deps{Cancels: cancels}, "r1", "application/json", cancelBody, "owner@example.com")
 	if answer.Code != http.StatusConflict || answer.Body.String() != "{\"reason\":\"not-waiting\"}\n" {
 		t.Fatalf("answer = %d %s, want a not-waiting refusal", answer.Code, answer.Body.String())
@@ -162,22 +162,13 @@ func TestCancelWithoutAStoreIsUnavailable(t *testing.T) {
 	}
 }
 
-func TestCancelReportsAStoreItCannotReadOrWrite(t *testing.T) {
-	for name, tt := range map[string]struct {
-		cancels *stubCancels
-		line    string
-	}{
-		"a record it cannot read":  {&stubCancels{readErr: errors.New("firestore unreachable")}, "ownerCancelRunNotRead"},
-		"a cancel it cannot write": {&stubCancels{runs: map[string]store.CancelTarget{"r1": waitingTarget()}, recordErr: errors.New("firestore unreachable")}, "ownerCancelNotRecorded"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			var log strings.Builder
-			rec := postCancel(t, Deps{Cancels: tt.cancels, Logger: slog.New(slog.NewTextHandler(&log, nil))},
-				"r1", "application/json", cancelBody, "owner@example.com")
-			if rec.Code != http.StatusInternalServerError || !strings.Contains(log.String(), tt.line) {
-				t.Fatalf("answer = %d %s, log = %q, want a 500 naming %q", rec.Code, rec.Body.String(), log.String(), tt.line)
-			}
-		})
+func TestCancelReportsAStoreItCannotWrite(t *testing.T) {
+	var log strings.Builder
+	cancels := &stubCancels{runs: map[string]error{"r1": errors.New("firestore unreachable")}}
+	rec := postCancel(t, Deps{Cancels: cancels, Logger: slog.New(slog.NewTextHandler(&log, nil))},
+		"r1", "application/json", cancelBody, "owner@example.com")
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(log.String(), "ownerCancelNotRecorded") {
+		t.Fatalf("answer = %d %s, log = %q, want a 500 naming ownerCancelNotRecorded", rec.Code, rec.Body.String(), log.String())
 	}
 }
 

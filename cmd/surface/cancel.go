@@ -11,9 +11,9 @@ import (
 	"github.com/alvintoh/forge-wingman/internal/store"
 )
 
-// CancelRuns reads what a cancel decides on and records the cancel on the run.
+// CancelRuns records the owner's cancel on a run, refusing one that no longer
+// waits on the owner in the same write.
 type CancelRuns interface {
-	CancelTarget(ctx context.Context, id string) (store.CancelTarget, error)
 	RecordCancel(ctx context.Context, id, by string, at time.Time) error
 }
 
@@ -50,7 +50,7 @@ type cancelRefusal struct {
 // pull requests (adr/0017).
 func (d Deps) cancelRun(w http.ResponseWriter, r *http.Request) {
 	owner := requestEmail(r)
-	if owner == nil {
+	if owner == nil || *owner == "" {
 		http.Error(w, "a cancel is made by a signed-in owner", http.StatusUnauthorized)
 		return
 	}
@@ -68,41 +68,30 @@ func (d Deps) cancelRun(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), cancelTimeout)
 	defer cancel()
 	run := r.PathValue("run")
-	target, err := d.Cancels.CancelTarget(ctx, run)
-	if errors.Is(err, runner.ErrRecordNotFound) {
-		http.Error(w, "no such run", http.StatusNotFound)
-		return
-	}
-	if err != nil {
-		d.Logger.Error("ownerCancelRunNotRead", "run", run, "err", err.Error())
-		http.Error(w, "reading the run", http.StatusInternalServerError)
-		return
-	}
-	// Merged is answered first, whatever else the run carries: a merge taken
-	// outside the surface, or after a cancel, is the later fact, and the run
-	// history draws the run as merged.
+	// Merged is answered before cancelled, whatever else the run carries: a merge
+	// taken outside the surface, or after a cancel, is the later fact, and the run
+	// history draws the run as merged. The store decides it in the write itself, so
+	// a merge or a cancel landing meanwhile is seen.
+	err := d.Cancels.RecordCancel(ctx, run, *owner, time.Now())
 	switch {
-	case target.Merged:
+	case err == nil:
+		d.Logger.Info("ownerCancelledRun", "run", run, "by", *owner)
+		writeJSON(w, http.StatusOK, cancelStatus{Status: statusCancelled})
+	case errors.Is(err, runner.ErrRecordNotFound):
+		http.Error(w, "no such run", http.StatusNotFound)
+	case errors.Is(err, store.ErrRunMerged):
 		d.Logger.Info("ownerCancelSkipped", "run", run, "reason", statusAlreadyMerged)
 		writeJSON(w, http.StatusOK, cancelStatus{Status: statusAlreadyMerged})
-		return
-	case !target.CancelledByOwnerAt.IsZero():
+	case errors.Is(err, store.ErrRunCancelled):
 		d.Logger.Info("ownerCancelSkipped", "run", run, "reason", statusAlreadyCancelled)
 		writeJSON(w, http.StatusOK, cancelStatus{Status: statusAlreadyCancelled})
-		return
-	case target.Outcome != runner.OutcomePROpened:
+	case errors.Is(err, store.ErrRunNotWaiting):
 		// Only a run whose PR waits on the owner can be stopped here; an in-flight
 		// run needs its workflow stopped, which no endpoint of this surface does.
 		d.Logger.Info("ownerCancelRefused", "run", run, "reason", refusedNotWaiting)
 		writeJSON(w, http.StatusConflict, cancelRefusal{Reason: refusedNotWaiting})
-		return
-	}
-	at := time.Now()
-	if err := d.Cancels.RecordCancel(ctx, run, *owner, at); err != nil {
+	default:
 		d.Logger.Error("ownerCancelNotRecorded", "run", run, "err", err.Error())
 		http.Error(w, "recording the cancel", http.StatusInternalServerError)
-		return
 	}
-	d.Logger.Info("ownerCancelledRun", "run", run, "by", *owner)
-	writeJSON(w, http.StatusOK, cancelStatus{Status: statusCancelled})
 }
