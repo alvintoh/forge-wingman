@@ -15,7 +15,8 @@ import (
 )
 
 // ticket writes the run record's ticket to the file -out names — carrying the
-// plan stage's file list when one is recorded, so the build skips planning —
+// plan stage's file list when one is recorded, so the build skips planning, and
+// the owner's note when this attempt is a retry —
 // and fails when the identity does not match, the record is missing or its
 // ticket cannot be built.
 func ticket(ctx context.Context, logger *slog.Logger, e env, args []string) error {
@@ -48,11 +49,16 @@ func ticket(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		return err
 	}
 	t.PlanFiles = plan.Files
-	answered, err := store.NewQueue(fsc).Decisions(ctx, *runID)
+	queue := store.NewQueue(fsc)
+	answered, err := queue.Decisions(ctx, *runID)
 	if err != nil {
 		return err
 	}
 	t.Decisions = answered
+	t.Note, err = queue.OperatorNote(ctx, *runID)
+	if err != nil {
+		return err
+	}
 	return writeTicket(*out, e.output, t, rec.RunModels())
 }
 

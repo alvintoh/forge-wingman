@@ -579,3 +579,45 @@ func TestSupersededOutputIsEmptyUnlessAPRIsReplaced(t *testing.T) {
 		t.Fatalf("supersededOutput(0) = %q, want empty", got)
 	}
 }
+
+func TestRetriedOutputIsSetOnlyWhenARetryReplacedAPR(t *testing.T) {
+	for _, tt := range []struct {
+		superseded int
+		retried    bool
+		want       string
+	}{{141, true, "true"}, {141, false, ""}, {0, true, ""}, {0, false, ""}} {
+		if got := retriedOutput(tt.superseded, tt.retried); got != tt.want {
+			t.Errorf("retriedOutput(%d, %v) = %q, want %q", tt.superseded, tt.retried, got, tt.want)
+		}
+	}
+}
+
+func TestPRMetaWordsASupersedeByWhyTheOwnerMadeIt(t *testing.T) {
+	for name, tt := range map[string]struct {
+		fields      map[string]any
+		wantOutput  string
+		wantInBody  string
+		wantNotBody string
+	}{
+		"a retry": {
+			map[string]any{"superseded_pr": int64(141), "operator_assisted": true, "operator_note": "Keep the old flag name."},
+			"superseded_by_retry=true\n", "Supersedes #141: the owner retried this run with a note.", "chose a different option",
+		},
+		"a chosen option": {
+			map[string]any{"superseded_pr": int64(141)},
+			"superseded_by_retry=\n", "Supersedes #141: the owner chose a different option.", "retried this run",
+		},
+		"a retry that replaced no PR": {
+			map[string]any{"operator_assisted": true, "operator_note": "Keep the old flag name."},
+			"superseded_by_retry=\n", "", "Supersedes",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, runID, jobs := retriedRun(t, tt.fields)
+			out := jobs("pr-meta", "-run-id", runID, "-repository", "octo/scratch", "-template", filepath.Join("..", "..", runner.DefaultPRTemplate))
+			if !strings.Contains(out, tt.wantOutput) || !strings.Contains(out, tt.wantInBody) || strings.Contains(out, tt.wantNotBody) {
+				t.Fatalf("outputs = %q, want %q and %q, and not %q", out, tt.wantOutput, tt.wantInBody, tt.wantNotBody)
+			}
+		})
+	}
+}

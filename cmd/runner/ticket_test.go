@@ -7,10 +7,15 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"cloud.google.com/go/firestore"
 
 	"github.com/alvintoh/forge-wingman/internal/runner"
+	"github.com/alvintoh/forge-wingman/internal/store"
 )
 
 func TestTicketAndPRMetaRefuseAMismatchedIdentity(t *testing.T) {
@@ -116,5 +121,66 @@ func TestWriteTicketNeedsAnOutPath(t *testing.T) {
 	output := filepath.Join(t.TempDir(), "out")
 	if err := writeTicket("", output, runner.Ticket{ID: "ABC-1", Title: "t", Size: "S", Body: "b"}, runner.ModelLabels{}); err == nil {
 		t.Fatal("wrote a ticket with no -out path")
+	}
+}
+
+// retriedRun seeds a run record on the emulator with the fields a retry leaves on
+// its row beside it, and returns the run id and a way to read its job outputs.
+func retriedRun(t *testing.T, fields map[string]any) (ctx context.Context, runID string, jobs func(args ...string) string) {
+	t.Helper()
+	if os.Getenv("FIRESTORE_EMULATOR_HOST") == "" {
+		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
+	}
+	ctx = context.Background()
+	client, err := firestore.NewClient(ctx, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID = "retried-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	t.Cleanup(func() {
+		_, _ = client.Collection("runs").Doc(runID).Delete(context.Background())
+		_ = client.Close()
+	})
+	if err := store.NewRecords(client).PutRecord(ctx, runID, runner.NewRecord(runID, prRecord.Ticket(), time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Collection("runs").Doc(runID).Set(ctx, fields, firestore.MergeAll); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	output := filepath.Join(dir, "output")
+	env := map[string]string{"GOOGLE_CLOUD_PROJECT": "p", "RUNNER_TEMP": dir, "GITHUB_RUN_ID": "42", "GITHUB_RUN_ATTEMPT": "1",
+		"WINGMAN_ACCOUNT": "octo", "GITHUB_REPOSITORY_OWNER": "octo", "GITHUB_OUTPUT": output}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return ctx, runID, func(args ...string) string {
+		t.Helper()
+		if err := run(ctx, logger, args, func(k string) string { return env[k] }); err != nil {
+			t.Fatal(err)
+		}
+		out, _ := os.ReadFile(output)
+		return string(out)
+	}
+}
+
+func TestTicketJobCarriesTheOwnersNoteOfARetryAndNoneOtherwise(t *testing.T) {
+	for name, tt := range map[string]struct {
+		fields map[string]any
+		want   string
+	}{
+		"a retry":  {map[string]any{"operator_note": "Keep the old flag name.", "operator_assisted": true}, "Keep the old flag name."},
+		"no retry": {map[string]any{}, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, runID, jobs := retriedRun(t, tt.fields)
+			path := filepath.Join(t.TempDir(), "ticket.json")
+			jobs("ticket", "-run-id", runID, "-out", path)
+			got, err := readTicket(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Note != tt.want {
+				t.Fatalf("ticket.json note = %q, want %q", got.Note, tt.want)
+			}
+		})
 	}
 }

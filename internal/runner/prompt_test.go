@@ -26,6 +26,26 @@ func TestRenderPromptParts(t *testing.T) {
 		}
 	})
 
+	t.Run("a note changes the ticket half and never the rules head", func(t *testing.T) {
+		projection := "# Rules\n\nbe careful\n\n" + ticketSentinel + "\n"
+		noted := ticket
+		noted.Note = "Keep the old flag name."
+		plain, plainTicket, err := RenderPromptParts(projection, ticket)
+		if err != nil {
+			t.Fatal(err)
+		}
+		withNote, notedTicket, err := RenderPromptParts(projection, noted)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plain != withNote {
+			t.Fatalf("rules head = %q with a note, want %q: the rule stack is the run's, not the attempt's", withNote, plain)
+		}
+		if strings.Contains(withNote, noted.Note) || !strings.Contains(notedTicket, noted.Note) || strings.Contains(plainTicket, noted.Note) {
+			t.Fatal("the note is not in the ticket half alone")
+		}
+	})
+
 	for _, tt := range []struct {
 		name       string
 		projection string

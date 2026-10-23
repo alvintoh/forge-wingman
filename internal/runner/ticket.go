@@ -19,6 +19,8 @@ const (
 	// maxEncodedTicketBytes keeps the model job's ticket input under Linux's 128 KiB
 	// limit on one environment string, however much the body's escaping grows it.
 	maxEncodedTicketBytes = 96 << 10
+	// MaxNoteBytes bounds the owner's note on a retry, which rides in the ticket.
+	MaxNoteBytes = 4 << 10
 )
 
 // FrontEndLabel is the Linear label that marks a ticket as front-end work.
@@ -56,6 +58,15 @@ type Ticket struct {
 	Decisions []Answer `json:"decisions,omitempty"`
 	// FrontEnd is whether the owner labelled the ticket as front-end work.
 	FrontEnd bool `json:"front_end,omitempty"`
+	// Note is what the owner wrote when retrying this run, a criterion for this
+	// attempt alone. Empty on every other attempt.
+	Note string `json:"note,omitempty"`
+}
+
+// ValidNote reports whether note fits in a ticket: within MaxNoteBytes, UTF-8
+// and free of NUL.
+func ValidNote(note string) bool {
+	return len(note) <= MaxNoteBytes && utf8.ValidString(note) && !strings.ContainsRune(note, 0)
 }
 
 // Validate reports whether the ticket has an id, a one-line title, a size of S, M
@@ -83,6 +94,9 @@ func (t Ticket) Validate() error {
 		if err := checkAnswer(a); err != nil {
 			return fmt.Errorf("%w: %w", ErrTicketInvalid, err)
 		}
+	}
+	if !ValidNote(t.Note) {
+		return fmt.Errorf("%w: note is over %d bytes, not UTF-8 or holds a NUL", ErrTicketInvalid, MaxNoteBytes)
 	}
 	if raw, err := t.Encode(); err != nil || len(raw) > maxEncodedTicketBytes {
 		return fmt.Errorf("%w: encoded ticket is over %d bytes", ErrTicketInvalid, maxEncodedTicketBytes)
@@ -115,7 +129,8 @@ func (t Ticket) Subject() string {
 }
 
 // Text renders the ticket as it appears at the end of the prompt, naming its
-// size when it has one and the decisions the owner has already made.
+// size when it has one, the decisions the owner has already made and the note
+// the owner wrote for this attempt.
 func (t Ticket) Text() string {
 	head := "## " + t.ID + ": " + t.Title
 	if t.Size != "" {
@@ -127,6 +142,9 @@ func (t Ticket) Text() string {
 		for _, a := range t.Decisions {
 			text += "\n- " + a.Question + ": " + a.Choice
 		}
+	}
+	if t.Note != "" {
+		text += "\n\n## Owner's note for this attempt\n\n" + t.Note
 	}
 	return text
 }

@@ -9,6 +9,7 @@ import (
 	"cloud.google.com/go/firestore"
 	"google.golang.org/api/iterator"
 
+	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
@@ -18,8 +19,9 @@ const (
 	mergedSHAField       = "merged_sha"
 )
 
-// InboxRun is one run whose PR is open and waiting to be merged, as the inbox
-// lists it.
+// InboxRun is one run waiting on the owner, as the inbox lists it: one whose PR
+// is open and waiting to be merged, or one that stopped with no PR. Attempt is
+// the attempt the row is on, which a retry names to say which it saw.
 type InboxRun struct {
 	Run        string
 	Ticket     string
@@ -27,12 +29,18 @@ type InboxRun struct {
 	Size       string
 	PRURL      string
 	WaitReason runner.WaitReason
-	UpdatedAt  time.Time
+	Attempt    int
+	Outcome    string
+	StopReason string
+	// Stopped is set for a run that ended with no PR, which waits for a retry.
+	Stopped   bool
+	UpdatedAt time.Time
 }
 
 // Inbox returns the runs updated since whose PR is open and not merged, and
-// that either name a wait reason or were not marked for auto-merge, newest
-// first, up to limit.
+// that either name a wait reason or were not marked for auto-merge, and the
+// runs that stopped with no PR and no automatic requeue due, newest first, up
+// to limit.
 //
 // A PR closed unmerged on GitHub is not known here, so it stays listed until
 // the owner's merge attempt finds it closed.
@@ -41,7 +49,8 @@ func (r *Records) Inbox(ctx context.Context, since time.Time, limit int) ([]Inbo
 		Where(updatedAtField, ">", since).
 		OrderBy(updatedAtField, firestore.Desc).
 		Select(repoField, sizeField, prURLField, autoMergeField, outcomeField, ticketIDField, updatedAtField,
-			waitReasonField, mergedByOwnerAtField, rewriteMergedAtField).
+			waitReasonField, mergedByOwnerAtField, rewriteMergedAtField, stateField, stopReasonField, attemptField,
+			settledAtField, claimedAtField, transientField, transientRequeuesField).
 		Documents(ctx)
 	defer iter.Stop()
 	var out []InboxRun
@@ -70,11 +79,42 @@ func inboxRun(id string, row map[string]any) (InboxRun, bool) {
 		Size:       str(row, sizeField),
 		PRURL:      str(row, prURLField),
 		WaitReason: runner.WaitReason(str(row, waitReasonField)),
+		Attempt:    rowAttempt(row),
+		Outcome:    str(row, outcomeField),
+		StopReason: str(row, stopReasonField),
 	}
 	run.UpdatedAt, _ = row[updatedAtField].(time.Time)
-	_, merged := row[rewriteMergedAtField].(time.Time)
-	// Finalize writes the owner's merge time as the zero time until a merge sets it.
-	mergedByOwner, _ := row[mergedByOwnerAtField].(time.Time)
-	open := run.PRURL != "" && str(row, outcomeField) == string(runner.OutcomePROpened) && !merged && mergedByOwner.IsZero()
+	if stoppedWithoutPR(row) {
+		run.Stopped = true
+		return run, true
+	}
+	open := run.PRURL != "" && run.Outcome == string(runner.OutcomePROpened) && !mergedRow(row)
 	return run, open && (run.WaitReason != "" || !autoMerged)
+}
+
+// mergedRow reports whether row's PR was merged, by the owner or by a poll.
+func mergedRow(row map[string]any) bool {
+	if _, merged := row[rewriteMergedAtField].(time.Time); merged {
+		return true
+	}
+	// Finalize writes the owner's merge time as the zero time until a merge sets it.
+	at, _ := row[mergedByOwnerAtField].(time.Time)
+	return !at.IsZero()
+}
+
+// stoppedWithoutPR reports whether row is a run that ended with no PR and waits
+// for the owner to retry it. A run that made no changes has nothing a note could
+// change, and one a poll will requeue by itself is not the owner's yet.
+func stoppedWithoutPR(row map[string]any) bool {
+	if _, _, finished := finishedClaim(row); !finished && str(row, stateField) != stateStopped {
+		return false
+	}
+	return str(row, outcomeField) != string(runner.OutcomeNoChanges) && !mergedRow(row) && !requeueDue(row)
+}
+
+// requeueDue reports whether a poll will requeue row by itself: it stopped on a
+// transient fault the dispatcher knows and has automatic requeues left.
+func requeueDue(row map[string]any) bool {
+	class := runner.TransientClass(str(row, transientField))
+	return class.Listed() && len(transientRequeues(row)) < dispatcher.DefaultTransientRequeues
 }

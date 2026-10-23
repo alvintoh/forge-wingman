@@ -63,6 +63,9 @@ func TestInboxListsOpenPRsWaitingOnTheOwnerNewestFirst(t *testing.T) {
 		t.Fatalf("inbox = %v, want %v", names, want)
 	}
 	first := got[0]
+	if first.Stopped {
+		t.Fatalf("first = %+v, want a PR row not marked as a stopped run", first)
+	}
 	if first.Ticket != "ABC-1" || first.Repo != "octo/scratch" || first.Size != "M" || first.WaitReason != runner.WaitFrontEnd ||
 		first.PRURL != "https://github.com/octo/scratch/pull/7" || !first.UpdatedAt.Equal(inboxBase.Add(-time.Hour)) {
 		t.Fatalf("first = %+v, want the row's ticket, repo, size, PR and reason", first)
@@ -71,6 +74,61 @@ func TestInboxListsOpenPRsWaitingOnTheOwnerNewestFirst(t *testing.T) {
 	capped, err := NewRecords(client).Inbox(ctx, inboxBase.Add(-24*time.Hour), 1)
 	if err != nil || len(capped) != 1 || capped[0].Run != got[0].Run {
 		t.Fatalf("capped = %v, %v, want the newest alone", capped, err)
+	}
+}
+
+func TestInboxListsRunsThatStoppedWithNoPRUnlessThereIsNothingForTheOwnerToRetry(t *testing.T) {
+	_, client := queue(t)
+	ctx := context.Background()
+	prefix := fmt.Sprintf("inbox-stopped-%d", time.Now().UnixNano())
+	row := func(age time.Duration, extra map[string]any) map[string]any {
+		r := map[string]any{
+			"ticket_id": "ABC-1", "repo": "octo/scratch", "size": "M", "state": "claimed", "attempt": int64(2),
+			"outcome": string(runner.OutcomeAgentFailed), "stop_reason": "agent-exit",
+			"settled_at": inboxBase.Add(-age), "claimed_at": inboxBase.Add(-age - time.Hour), "updated_at": inboxBase.Add(-age),
+		}
+		for k, v := range extra {
+			r[k] = v
+		}
+		return r
+	}
+	requeued := []any{map[string]any{"class": "module-proxy", "at": inboxBase}}
+	rows := map[string]map[string]any{
+		"finished claim":      row(time.Hour, nil),
+		"stopped state":       row(2*time.Hour, map[string]any{"state": "stopped", "outcome": "stopped", "stop_reason": "waiting-on-owner"}),
+		"retry exhausted":     row(3*time.Hour, map[string]any{"transient": string(runner.TransientModuleProxy), "transient_requeues": append(requeued, requeued...)}),
+		"requeue due":         row(4*time.Hour, map[string]any{"transient": string(runner.TransientModuleProxy), "transient_requeues": requeued}),
+		"made no changes":     row(5*time.Hour, map[string]any{"outcome": string(runner.OutcomeNoChanges), "stop_reason": ""}),
+		"abandoned":           row(6*time.Hour, map[string]any{"state": "abandoned"}),
+		"claimed again":       row(7*time.Hour, map[string]any{"claimed_at": inboxBase}),
+		"queued":              row(8*time.Hour, map[string]any{"state": "queued"}),
+		"merged by the owner": row(9*time.Hour, map[string]any{"outcome": string(runner.OutcomeBuilt), "merged_by_owner_at": inboxBase}),
+		"opened a PR":         row(10*time.Hour, map[string]any{"pr_url": "https://github.com/octo/scratch/pull/7"}),
+	}
+	var ids []string
+	for name, data := range rows {
+		id := prefix + "-" + name
+		ids = append(ids, id)
+		if _, err := client.Collection(runsCollection).Doc(id).Set(ctx, data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	forget(t, client, ids...)
+
+	got, err := NewRecords(client).Inbox(ctx, inboxBase.Add(-24*time.Hour), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, r := range got {
+		names = append(names, r.Run[len(prefix)+1:])
+	}
+	if want := []string{"finished claim", "stopped state", "retry exhausted"}; !slices.Equal(names, want) {
+		t.Fatalf("inbox = %v, want %v", names, want)
+	}
+	first := got[0]
+	if !first.Stopped || first.Attempt != 2 || first.Outcome != string(runner.OutcomeAgentFailed) || first.StopReason != "agent-exit" || first.PRURL != "" {
+		t.Fatalf("first = %+v, want the attempt, outcome and stop reason, and no PR", first)
 	}
 }
 

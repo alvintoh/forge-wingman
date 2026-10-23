@@ -571,7 +571,7 @@ func (q *Queue) ClearProvisionalReply(ctx context.Context, runID string, replied
 // acted on wraps dispatcher.ErrReplyUnusable. A reply since replaced by a newer
 // one is a no-op, left for the next poll.
 func (q *Queue) Supersede(ctx context.Context, runID string, index int, repliedAt time.Time, answer string, at time.Time) error {
-	_, err := q.requeue(ctx, runID, at, func(row map[string]any, attempt int) (string, []firestore.Update, error) {
+	_, err := q.requeue(ctx, runID, at, requeueOptions{}, func(row map[string]any, attempt int) (string, []firestore.Update, error) {
 		if str(row, stateField) == stateAbandoned {
 			return "", nil, fmt.Errorf("%w: %w", dispatcher.ErrReplyUnusable, ErrRunAbandoned)
 		}

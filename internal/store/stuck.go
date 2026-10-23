@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"cloud.google.com/go/firestore"
@@ -53,18 +54,9 @@ func (q *Queue) StuckRuns(ctx context.Context, before, since time.Time) ([]dispa
 	finished := runs.Where(outcomeField, "in", noPROutcomes).
 		Select(ticketIDField, stateField, outcomeField, stopReasonField, prURLField, settledAtField, claimedAtField).Documents(ctx)
 	err = eachRow(finished, func(id string, row map[string]any) {
-		reason := str(row, stopReasonField)
-		if reason == "" {
-			reason = str(row, outcomeField)
+		if reason, at, ok := finishedClaim(row); ok {
+			addEnded(id, row, dispatcher.StuckStopped, reason, at)
 		}
-		if str(row, stateField) != stateClaimed || str(row, prURLField) != "" {
-			return
-		}
-		at, _ := row[settledAtField].(time.Time)
-		if claimed, _ := row[claimedAtField].(time.Time); claimed.After(at) {
-			return
-		}
-		addEnded(id, row, dispatcher.StuckStopped, reason, at)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing finished runs: %w", err)
@@ -73,22 +65,46 @@ func (q *Queue) StuckRuns(ctx context.Context, before, since time.Time) ([]dispa
 	ended := runs.Where(stateField, "in", []string{stateStopped, stateAbandoned}).
 		Select(ticketIDField, stateField, stopReasonField, abandonedReasonField, abandonedAtField, settledAtField, updatedAtField).Documents(ctx)
 	err = eachRow(ended, func(id string, row map[string]any) {
-		state, reason := dispatcher.StuckStopped, str(row, stopReasonField)
-		if str(row, stateField) == stateAbandoned {
-			state, reason = dispatcher.StuckAbandoned, str(row, abandonedReasonField)
-		}
-		var at time.Time
-		for _, field := range []string{abandonedAtField, settledAtField, updatedAtField} {
-			if at, _ = row[field].(time.Time); !at.IsZero() {
-				break
-			}
-		}
+		state, reason, at := endedState(row)
 		addEnded(id, row, state, reason, at)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing ended runs: %w", err)
 	}
 	return out, nil
+}
+
+// finishedClaim reports whether row is a claim that finished and opened no PR,
+// with the reason it names and when it settled. A claim made after it settled is
+// a later attempt still running, so it is not one.
+func finishedClaim(row map[string]any) (reason string, settledAt time.Time, ok bool) {
+	if str(row, stateField) != stateClaimed || str(row, prURLField) != "" || !slices.Contains(noPROutcomes, str(row, outcomeField)) {
+		return "", time.Time{}, false
+	}
+	at, _ := row[settledAtField].(time.Time)
+	if claimed, _ := row[claimedAtField].(time.Time); claimed.After(at) {
+		return "", time.Time{}, false
+	}
+	reason = str(row, stopReasonField)
+	if reason == "" {
+		reason = str(row, outcomeField)
+	}
+	return reason, at, true
+}
+
+// endedState reads a row the queue holds stopped or abandoned as the state and
+// reason StuckRuns names it by, and when it ended.
+func endedState(row map[string]any) (state, reason string, at time.Time) {
+	state, reason = dispatcher.StuckStopped, str(row, stopReasonField)
+	if str(row, stateField) == stateAbandoned {
+		state, reason = dispatcher.StuckAbandoned, str(row, abandonedReasonField)
+	}
+	for _, field := range []string{abandonedAtField, settledAtField, updatedAtField} {
+		if at, _ = row[field].(time.Time); !at.IsZero() {
+			break
+		}
+	}
+	return state, reason, at
 }
 
 // eachRow calls fn for every document iter yields.

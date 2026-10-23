@@ -60,7 +60,7 @@ func TestInboxListsEachWaitingRunWithoutTicketText(t *testing.T) {
 	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "private, max-age=30" {
 		t.Fatalf("status = %d, cache = %q", rec.Code, rec.Header().Get("Cache-Control"))
 	}
-	want := `{"runs":[{"run":"r1","ticket":"ABC-1","repo":"octo/scratch","size":"L","pr_url":"https://github.com/octo/scratch/pull/7","wait_reason":"size-l","updated_at":"2026-10-18T09:00:00Z"}]}` + "\n"
+	want := `{"runs":[{"run":"r1","ticket":"ABC-1","repo":"octo/scratch","size":"L","pr_url":"https://github.com/octo/scratch/pull/7","wait_reason":"size-l","updated_at":"2026-10-18T09:00:00Z","attempt":0,"retryable":false}]}` + "\n"
 	if rec.Body.String() != want {
 		t.Fatalf("body = %s, want %s", rec.Body.String(), want)
 	}
@@ -287,5 +287,54 @@ func TestInboxShowsChecksNotGreenAboveTheReasonsThatNeverBlock(t *testing.T) {
 func TestInboxPageFitsOneBatchedGitHubRead(t *testing.T) {
 	if inboxLimit > dispatcher.MaxSummaryRefs {
 		t.Fatalf("inboxLimit %d exceeds the %d pull requests one GitHub read holds, so no row would show its checks", inboxLimit, dispatcher.MaxSummaryRefs)
+	}
+}
+
+func TestInboxListsAStoppedRunWithItsAttemptAndNoPRRead(t *testing.T) {
+	inbox := &stubInbox{runs: []store.InboxRun{
+		{Run: "stopped", Ticket: "ABC-1", Stopped: true, Attempt: 2, Outcome: "agent-failed", StopReason: "agent-exit", UpdatedAt: measuredAt()},
+	}}
+	pulls := &stubPulls{}
+	rec := getInbox(newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Inbox: inbox, Pulls: pulls, AutoMerge: &stubAutoMerge{}}))
+	want := `{"runs":[{"run":"stopped","ticket":"ABC-1","repo":"","size":"","pr_url":"","wait_reason":"","updated_at":"2026-10-18T09:00:00Z",` +
+		`"attempt":2,"outcome":"agent-failed","stop_reason":"agent-exit","retryable":true}]}` + "\n"
+	if rec.Body.String() != want {
+		t.Fatalf("body = %s, want %s: no wait reason though the auto-merge switch is off", rec.Body.String(), want)
+	}
+	if len(pulls.refs) != 0 {
+		t.Fatalf("GitHub was asked about %v for a run with no PR", pulls.refs)
+	}
+}
+
+// A draft is the owner's to retry and a ready PR is theirs to merge, and GitHub's reading of which it is
+// outranks the reason the row recorded when the PR opened.
+func TestInboxMarksAPRRetryableOnlyWhileItIsADraft(t *testing.T) {
+	const pr = "https://github.com/octo/scratch/pull/7"
+	ref := dispatcher.PullRef{Repo: "octo/scratch", Number: 7}
+	for name, tt := range map[string]struct {
+		stored  runner.WaitReason
+		summary map[dispatcher.PullRef]dispatcher.PullSummary
+		want    bool
+	}{
+		"a draft GitHub reports":                  {"", map[dispatcher.PullRef]dispatcher.PullSummary{ref: {State: dispatcher.PullStateOpen, Draft: true}}, true},
+		"a draft the row said was ready":          {runner.WaitSizeL, map[dispatcher.PullRef]dispatcher.PullSummary{ref: {State: dispatcher.PullStateOpen, Draft: true}}, true},
+		"a ready PR the row said was a draft":     {runner.WaitDraft, map[dispatcher.PullRef]dispatcher.PullSummary{ref: {State: dispatcher.PullStateOpen}}, false},
+		"a ready PR":                              {runner.WaitSizeL, map[dispatcher.PullRef]dispatcher.PullSummary{ref: {State: dispatcher.PullStateOpen}}, false},
+		"a draft the row names, GitHub unread":    {runner.WaitDraft, nil, true},
+		"a ready PR the row names, GitHub unread": {runner.WaitSizeL, nil, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			inbox := &stubInbox{runs: []store.InboxRun{{Run: "r1", PRURL: pr, WaitReason: tt.stored}}}
+			rec := getInbox(newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Inbox: inbox, Pulls: &stubPulls{summaries: tt.summary}, AutoMerge: &stubAutoMerge{enabled: true}}))
+			var got struct {
+				Runs []map[string]any `json:"runs"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || len(got.Runs) != 1 {
+				t.Fatalf("body = %s, %v", rec.Body.String(), err)
+			}
+			if got.Runs[0]["retryable"] != tt.want {
+				t.Fatalf("retryable = %v, want %v", got.Runs[0]["retryable"], tt.want)
+			}
+		})
 	}
 }

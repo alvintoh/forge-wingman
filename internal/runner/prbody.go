@@ -37,8 +37,9 @@ var errTemplate = errors.New("pull request template lacks the ticket line, summa
 // pre-open review found and how the run left it, listed in the notes and empty
 // for a run whose review found nothing. provisional are the decisions auto-pilot
 // took the recommended option on, empty for a run that took none. supersedes is
-// the number of the PR an owner's choice replaced, zero when none.
-func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail, overlap string, outOfPlan []string, writeSetUnread bool, frontEnd []string, noPlan bool, review []ReviewFinding, provisional []Provisional, supersedes int) (string, error) {
+// the number of the PR an owner's choice replaced, zero when none, and retried
+// says that choice was a retry with a note.
+func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail, overlap string, outOfPlan []string, writeSetUnread bool, frontEnd []string, noPlan bool, review []ReviewFinding, provisional []Provisional, supersedes int, retried bool) (string, error) {
 	summary := plainText(prSummary)
 	if summary == "" {
 		summary = "`" + t.ID + "`: " + t.Title
@@ -93,7 +94,7 @@ func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail
 				notes = append(notes, "", "**No recorded plan:** not eligible for auto-merge, so this waits for the owner — no plan stage recorded a write set for this run, so nothing it changed could be checked against one")
 			}
 			if supersedes > 0 {
-				notes = append(notes, "", "Supersedes #"+strconv.Itoa(supersedes)+": the owner chose a different option.")
+				notes = append(notes, "", "Supersedes #"+strconv.Itoa(supersedes)+": "+supersedeReason(retried))
 			}
 			if len(provisional) > 0 {
 				notes = append(notes, "", "**Provisional decisions:** auto-pilot took the recommended option on each, so this waits for the owner")
@@ -118,6 +119,15 @@ func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail
 		return "", errTemplate
 	}
 	return strings.Join(out, "\n"), nil
+}
+
+// supersedeReason is why the owner replaced a PR: a retry with a note, or a
+// different option chosen on a decision.
+func supersedeReason(retried bool) string {
+	if retried {
+		return "the owner retried this run with a note."
+	}
+	return "the owner chose a different option."
 }
 
 // commentEnds reports whether line i closes the first HTML comment of its section.

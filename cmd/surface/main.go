@@ -60,6 +60,7 @@ func run(logger *slog.Logger) error {
 	var inbox InboxStore
 	var runs MergeRuns
 	var history RunHistoryReader
+	var retries RunRetries
 	if project := os.Getenv("GOOGLE_CLOUD_PROJECT"); project != "" {
 		fsc, err := firestore.NewClient(context.Background(), project)
 		if err != nil {
@@ -79,6 +80,7 @@ func run(logger *slog.Logger) error {
 		}
 		defer func() { _ = owner.Close() }()
 		phases, queue, reaches := store.NewPhases(owner), store.NewQueue(fsc), store.NewReaches(fsc)
+		retries = queue
 		projects = ProjectStores{
 			Projects: phases, Snapshots: store.NewPhaseSnapshots(fsc), Reaches: reaches,
 			Loads: queue, Activity: queue, Starts: phases, Pauses: phases,
@@ -107,6 +109,7 @@ func run(logger *slog.Logger) error {
 		Inbox:         inbox,
 		Runs:          runs,
 		History:       history,
+		Retries:       retries,
 		Merger:        merger,
 		Pulls:         pulls,
 	}
@@ -159,6 +162,7 @@ type Deps struct {
 	Inbox         InboxStore
 	Runs          MergeRuns
 	History       RunHistoryReader
+	Retries       RunRetries
 	Merger        PRMerger
 	Pulls         PullLister
 }
@@ -187,6 +191,7 @@ func newMux(d Deps) *http.ServeMux {
 	var inboxFlight singleflight.Group
 	mux.HandleFunc("GET /api/inbox", d.inbox(&inboxFlight))
 	mux.HandleFunc("POST /api/runs/{run}/merge", d.mergeRun)
+	mux.HandleFunc("POST /api/runs/{run}/retry", d.retryRun)
 	mux.Handle("GET /api/", http.NotFoundHandler())
 	mux.Handle("GET /", spaHandler(d.SPA))
 

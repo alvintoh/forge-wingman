@@ -1,7 +1,9 @@
 # The identity the surface runs under: the Cloud Run service serving the SPA and
-# the JSON views. It reads the store for those views and writes only the settings
-# its pages switch — `dispatch/auto-merge`, `dispatch/peak-mode` beside it, and in
-# the owner database a project's pause and start request and the project it adds.
+# the JSON views. It reads the store for those views and writes only what its
+# pages act on — `dispatch/auto-merge`, `dispatch/peak-mode` beside it, a run's
+# merge mark and, on a retry, the run row, its archived attempt and the ledger
+# reservations; and in the owner database a project's pause and start request and
+# the project it adds.
 resource "google_service_account" "surface" {
   account_id   = "surface"
   display_name = "Forge Wingman surface"

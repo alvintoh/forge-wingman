@@ -1381,12 +1381,13 @@ var (
 // an operator asking that its ticket be attempted again: the row returns to
 // planned when its plan still stands and queued otherwise, with its claim, wait
 // and outcome fields cleared and its ledger reservations dropped, and records
-// the attempt it was put back as.
+// the attempt it was put back as. The owner's note from a retry is dropped, since
+// it was written for the attempt that ended.
 //
 // It refuses a run that is still to be dispatched, parked on a decision, or
 // still running, so a retry is never anything but the operator's own action.
 func (q *Queue) Requeue(ctx context.Context, runID string, at time.Time) (RequeueResult, error) {
-	return q.requeue(ctx, runID, at, func(row map[string]any, _ int) (string, []firestore.Update, error) {
+	return q.requeue(ctx, runID, at, requeueOptions{}, func(row map[string]any, _ int) (string, []firestore.Update, error) {
 		state, err := requeueState(row)
 		return state, nil, err
 	})
@@ -1401,9 +1402,10 @@ var ErrRetriesExhausted = errors.New("run has no automatic retries left")
 // next attempt, and carries what the failed attempt settled into the row's
 // prior-settled fields for the next record to add to its own. It refuses the
 // runs Requeue refuses, an abandoned run, which only an operator's Requeue
-// returns, and a run whose next attempt would pass maxAttempts.
+// returns, and a run whose next attempt would pass maxAttempts. A retry's note
+// stays, since this is the same attempt tried again.
 func (q *Queue) RequeueAfterConflict(ctx context.Context, runID string, at time.Time, maxAttempts int) (RequeueResult, error) {
-	return q.requeue(ctx, runID, at, func(row map[string]any, attempt int) (string, []firestore.Update, error) {
+	return q.requeue(ctx, runID, at, requeueOptions{keepNote: true}, func(row map[string]any, attempt int) (string, []firestore.Update, error) {
 		if str(row, stateField) == stateAbandoned {
 			return "", nil, ErrRunAbandoned
 		}
@@ -1462,9 +1464,10 @@ func (q *Queue) TransientStops(ctx context.Context) ([]dispatcher.TransientStop,
 //
 // It returns the run to the queue and nothing more: the claim that follows it
 // is admitted like any other, so a budget ceiling, the review WIP limit or a
-// tripped breaker holds a retry exactly as it holds a first attempt.
+// tripped breaker holds a retry exactly as it holds a first attempt. An owner's
+// note from a retry stays, as the attempt is the same one tried again.
 func (q *Queue) RequeueTransient(ctx context.Context, runID string, at time.Time, class runner.TransientClass, max int) (dispatcher.TransientRequeue, error) {
-	res, err := q.requeue(ctx, runID, at, func(row map[string]any, _ int) (string, []firestore.Update, error) {
+	res, err := q.requeue(ctx, runID, at, requeueOptions{keepNote: true}, func(row map[string]any, _ int) (string, []firestore.Update, error) {
 		state, err := requeueState(row)
 		if err != nil {
 			return "", nil, err
@@ -1482,10 +1485,21 @@ func (q *Queue) RequeueTransient(ctx context.Context, runID string, at time.Time
 	return dispatcher.TransientRequeue{Attempt: res.Attempt, TicketState: res.TicketState}, nil
 }
 
+// requeueOptions is what a requeue does beside the clears every one makes. The
+// zero value is the owner's plain requeue: it drops the note a retry left.
+type requeueOptions struct {
+	// keepNote leaves the owner's note fields as they are, for an automatic
+	// requeue of a retry, which keeps its note, and for the retry itself, which
+	// writes its own.
+	keepNote bool
+	// archive first copies the ended attempt's row to runs/<run>/attempts/<n>.
+	archive bool
+}
+
 // requeue is the transaction Requeue and RequeueAfterConflict share: decide
 // names the state the run returns to, given the row and the attempt it would be
 // put back as, with any fields to write beside the common ones, or the refusal.
-func (q *Queue) requeue(ctx context.Context, runID string, at time.Time,
+func (q *Queue) requeue(ctx context.Context, runID string, at time.Time, opts requeueOptions,
 	decide func(row map[string]any, attempt int) (string, []firestore.Update, error)) (RequeueResult, error) {
 	rowRef := q.client.Collection(runsCollection).Doc(runID)
 	ledgerRef := q.ledgerRef()
@@ -1508,7 +1522,7 @@ func (q *Queue) requeue(ctx context.Context, runID string, at time.Time,
 		if err != nil {
 			return err
 		}
-		if err := tx.Update(rowRef, append([]firestore.Update{
+		updates := []firestore.Update{
 			{Path: stateField, Value: state},
 			{Path: updatedAtField, Value: at},
 			{Path: claimedAtField, Value: firestore.Delete},
@@ -1525,7 +1539,16 @@ func (q *Queue) requeue(ctx context.Context, runID string, at time.Time,
 			{Path: queuedAtField, Value: at},
 			{Path: attemptField, Value: attempt},
 			{Path: decisionModeField, Value: firestore.Delete},
-		}, extra...)); err != nil {
+		}
+		if !opts.keepNote {
+			updates = append(updates, clearNote()...)
+		}
+		if opts.archive {
+			if err := tx.Set(archiveRef(rowRef, rowAttempt(row)), archivedAttempt(row, attempt, at)); err != nil {
+				return err
+			}
+		}
+		if err := tx.Update(rowRef, append(updates, extra...)); err != nil {
 			return err
 		}
 		result = RequeueResult{State: state, Attempt: attempt, TicketState: str(row, ticketStateField)}

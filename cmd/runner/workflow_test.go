@@ -25,6 +25,34 @@ func TestRunWorkflowPassesTheBuildSummaryToPRMeta(t *testing.T) {
 	}
 }
 
+func TestRunWorkflowWordsTheSupersededPRsCloseByWhyItWasReplaced(t *testing.T) {
+	yml, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "run.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, step, _ := strings.Cut(string(yml), "      - name: Close the superseded PR\n")
+	step, _, _ = strings.Cut(step, "\n      # The label only marks")
+	for _, want := range []string{
+		"if: needs.pr-meta.outputs.superseded_pr != ''",
+		"RETRY: ${{ needs.pr-meta.outputs.superseded_by_retry }}",
+		`[ "$RETRY" = true ]`,
+		`why="the owner retried this run with a note"`,
+		`why="the owner chose a different option"`,
+		`--json state --jq .state)" = OPEN ]`,
+		`gh pr close "$OLD" --comment "Superseded by $NEW: $why."`,
+	} {
+		if !strings.Contains(step, want) {
+			t.Errorf("run.yml's close step lacks %q", want)
+		}
+	}
+	if !strings.Contains(string(yml), "superseded_by_retry: ${{ steps.meta.outputs.superseded_by_retry }}") {
+		t.Error("run.yml's pr-meta job does not pass superseded_by_retry on")
+	}
+	if _, script, _ := strings.Cut(step, "run: |"); strings.Contains(script, "${{") {
+		t.Error("the close step interpolates an expression into its script; it reads $OLD, $NEW and $RETRY")
+	}
+}
+
 func TestRunWorkflowMarksAutoMergeEligibilityOnlyOnPRMetasDecision(t *testing.T) {
 	yml, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "run.yml"))
 	if err != nil {

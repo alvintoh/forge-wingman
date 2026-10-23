@@ -3009,3 +3009,59 @@ func TestTryClaimRecordsAnOwnerPauseAsWhatTheRowWaitsOn(t *testing.T) {
 		t.Fatalf("claim after the resume = %v, %q, %v; want it claimed", ok, why, err)
 	}
 }
+
+// notedRow is a run that ended on attempt 1 carrying the owner's note from a retry.
+func notedRow(extra map[string]any) map[string]any {
+	row := map[string]any{
+		stateField:            stateStopped,
+		outcomeField:          string(runner.OutcomeInfraFailure),
+		stopReasonField:       string(runner.StopRebaseConflict),
+		attemptField:          int64(1),
+		operatorNoteField:     "Keep the old flag name.",
+		operatorAssistedField: true,
+		retriedByField:        "owner@example.test",
+	}
+	for k, v := range extra {
+		row[k] = v
+	}
+	return row
+}
+
+// A note belongs to the attempt it was written for: the owner's own requeue
+// drops it, and the automatic requeue of a retry keeps it for the same attempt.
+func TestRequeuesDropTheOwnersNoteExceptTheAutomaticOnes(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	for _, tt := range []struct {
+		name string
+		do   func(id string) error
+		kept bool
+	}{
+		{"the owner's requeue", func(id string) error { _, err := q.Requeue(ctx, id, queueAt); return err }, false},
+		{"a requeue after a rebase conflict", func(id string) error {
+			_, err := q.RequeueAfterConflict(ctx, id, queueAt, 3)
+			return err
+		}, true},
+		{"a requeue after a transient fault", func(id string) error {
+			_, err := q.RequeueTransient(ctx, id, queueAt, runner.TransientModuleProxy, 2)
+			return err
+		}, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			id := fresh("queue-note")
+			seedRow(t, client, id, notedRow(nil))
+			if err := tt.do(id); err != nil {
+				t.Fatal(err)
+			}
+			data := readRow(t, client, id)
+			for _, field := range []string{operatorNoteField, operatorAssistedField, retriedByField} {
+				if _, held := data[field]; held != tt.kept {
+					t.Errorf("%s held = %v after %s, want %v", field, held, tt.name, tt.kept)
+				}
+			}
+			if tt.kept && data[operatorNoteField] != "Keep the old flag name." {
+				t.Errorf("note = %v, want the owner's kept word for word", data[operatorNoteField])
+			}
+		})
+	}
+}

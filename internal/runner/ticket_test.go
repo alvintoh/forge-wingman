@@ -41,6 +41,9 @@ func TestTicketValidateRejects(t *testing.T) {
 		"a decision with no question": func(tk *Ticket) {
 			tk.Decisions = []Answer{{Question: " ", Choice: "reuse"}}
 		},
+		"a note over the limit":   func(tk *Ticket) { tk.Note = strings.Repeat("a", MaxNoteBytes+1) },
+		"a note that is not UTF8": func(tk *Ticket) { tk.Note = "a\xffb" },
+		"a note holding a NUL":    func(tk *Ticket) { tk.Note = "a\x00b" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			tk := testTicket
@@ -96,6 +99,46 @@ func TestTicketTextCarriesTheAnsweredDecisions(t *testing.T) {
 		"## Decisions the owner has already made\n\n- Which flag?: Reuse the existing flag"
 	if got := tk.Text(); got != want {
 		t.Fatalf("text = %q, want %q", got, want)
+	}
+}
+
+// TestTicketTextCarriesTheNoteAfterTheDecisions: the note is a criterion for this
+// attempt, read after what the owner already decided.
+func TestTicketTextCarriesTheNoteAfterTheDecisions(t *testing.T) {
+	tk := testTicket
+	tk.Decisions = []Answer{{Question: "Which flag?", Choice: "Reuse the existing flag"}}
+	tk.Note = "Keep the old flag name."
+	want := "## ABC-12: feat(x): add a file (size S)\n\nAdd a file.\n\n" +
+		"## Decisions the owner has already made\n\n- Which flag?: Reuse the existing flag\n\n" +
+		"## Owner's note for this attempt\n\nKeep the old flag name."
+	if got := tk.Text(); got != want {
+		t.Fatalf("text = %q, want %q", got, want)
+	}
+	tk.Note = strings.Repeat("a", MaxNoteBytes)
+	if err := tk.Validate(); err != nil {
+		t.Fatalf("a note at the limit: %v", err)
+	}
+}
+
+func TestTicketTextWithNoNoteIsUnchanged(t *testing.T) {
+	if got := testTicket.Text(); strings.Contains(got, "note") {
+		t.Fatalf("text = %q, want no note section", got)
+	}
+}
+
+func TestTicketNoteSurvivesTheTicketFile(t *testing.T) {
+	tk := testTicket
+	tk.Note = "Keep the old flag name."
+	raw, err := tk.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParseTicket(raw)
+	if err != nil || got.Note != tk.Note {
+		t.Fatalf("parsed note = %q, %v, want %q", got.Note, err, tk.Note)
+	}
+	if plain, _ := testTicket.Encode(); strings.Contains(plain, "note") {
+		t.Fatalf("a ticket with no note encodes %q, want the field omitted", plain)
 	}
 }
 
