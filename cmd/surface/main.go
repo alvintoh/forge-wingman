@@ -490,10 +490,13 @@ type inboxChecks struct {
 	Summary string `json:"summary"`
 }
 
-// readInbox lists the runs waiting on the owner. A PR whose checks are not green
-// shows checks-not-green unless a draft or an unconfirmed decision, which block
-// the merge first, names it; a run whose PR no reason holds shows auto-merge-off
-// while the switch is off, so a change to the switch shows without a new run.
+// readInbox lists the runs waiting on the owner. A run whose PR GitHub reports
+// closed or merged is left out, since the run's record can lag a PR closed or
+// merged outside the surface; one whose PR was not read stays. A PR whose checks
+// are not green shows checks-not-green unless a draft or an unconfirmed decision,
+// which block the merge first, names it; a run whose PR no reason holds shows
+// auto-merge-off while the switch is off, so a change to the switch shows
+// without a new run.
 func (d Deps) readInbox(ctx context.Context, now time.Time) (inboxResponse, error) {
 	runs, err := d.Inbox.Inbox(ctx, now.Add(-runner.TrailingWindow), inboxLimit)
 	if err != nil {
@@ -508,6 +511,9 @@ func (d Deps) readInbox(ctx context.Context, now time.Time) (inboxResponse, erro
 			PRURL: r.PRURL, UpdatedAt: r.UpdatedAt}
 		if repo, number, err := parsePullURL(r.PRURL); err == nil {
 			if p, ok := pulls[dispatcher.PullRef{Repo: repo, Number: number}]; ok {
+				if p.State == dispatcher.PullStateClosed || p.State == dispatcher.PullStateMerged {
+					continue
+				}
 				row.Title, row.HeadSHA, row.Draft = p.Title, p.HeadSHA, &p.Draft
 				row.Checks = &inboxChecks{State: p.Checks, Summary: p.ChecksSummary}
 				if p.Checks != dispatcher.CheckGreen && reason != runner.WaitUnconfirmedDecision && reason != runner.WaitDraft {

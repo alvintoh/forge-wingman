@@ -397,12 +397,22 @@ const (
 	CheckPending = "pending"
 )
 
+// States of a pull request, in GitHub's GraphQL PullRequestState words.
+const (
+	PullStateClosed = "CLOSED"
+	PullStateMerged = "MERGED"
+	PullStateOpen   = "OPEN"
+)
+
 // PullSummary is what a list of pull requests shows of one: its title, whether
-// it is a draft, the commit its head is at, and how that commit's checks stand.
+// it is open and a draft, the commit its head is at, and how that commit's
+// checks stand.
 type PullSummary struct {
 	Title   string
 	Draft   bool
 	HeadSHA string
+	// State is one of PullStateOpen, PullStateClosed and PullStateMerged.
+	State string
 	// Checks is one of CheckGreen, CheckFailing and CheckPending; a head with
 	// no check yet is pending.
 	Checks string
@@ -420,15 +430,15 @@ const (
 )
 
 // pullSummaryFields is read from every pull request of a batched read.
-var pullSummaryFields = fmt.Sprintf(`title isDraft headRefOid
+var pullSummaryFields = fmt.Sprintf(`title state isDraft headRefOid
 commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: %d) { nodes {
 __typename
 ... on CheckRun { name status conclusion }
 ... on StatusContext { context state }
 } } } } } }`, summaryContexts)
 
-// PullSummaries reads title, draft, head and check state of every pull request
-// in refs with ONE GraphQL request. A pull request GitHub does not return is
+// PullSummaries reads title, state, draft, head and check state of every pull
+// request in refs with ONE GraphQL request. A pull request GitHub does not return is
 // absent from the result. It is a read for display: a merge reads the pull
 // request again.
 func (g GitHub) PullSummaries(ctx context.Context, refs []PullRef) (map[PullRef]PullSummary, error) {
@@ -462,6 +472,7 @@ func (g GitHub) PullSummaries(ctx context.Context, refs []PullRef) (map[PullRef]
 		Data map[string]*struct {
 			PullRequest *struct {
 				Title      string `json:"title"`
+				State      string `json:"state"`
 				IsDraft    bool   `json:"isDraft"`
 				HeadRefOid string `json:"headRefOid"`
 				Commits    struct {
@@ -495,7 +506,7 @@ func (g GitHub) PullSummaries(ctx context.Context, refs []PullRef) (map[PullRef]
 			continue
 		}
 		pr := repo.PullRequest
-		sum := PullSummary{Title: pr.Title, Draft: pr.IsDraft, HeadSHA: pr.HeadRefOid, Checks: CheckPending, ChecksSummary: "no checks yet"}
+		sum := PullSummary{Title: pr.Title, State: pr.State, Draft: pr.IsDraft, HeadSHA: pr.HeadRefOid, Checks: CheckPending, ChecksSummary: "no checks yet"}
 		if len(pr.Commits.Nodes) > 0 && pr.Commits.Nodes[0].Commit.Rollup != nil {
 			rollup := pr.Commits.Nodes[0].Commit.Rollup
 			sum.Checks = rollupChecks(rollup.State)
