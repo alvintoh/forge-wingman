@@ -1,7 +1,13 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { RouterProvider, createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
-import { Autonomy, Inbox, Peak, Providers, Root, Run, Stats } from "./pages";
+import { Autonomy } from "./pages/autonomy";
+import { Inbox } from "./pages/overview";
+import { Peak } from "./pages/peak";
+import { Providers } from "./pages/providers";
+import { Root } from "./pages/root";
+import { Run } from "./pages/run";
+import { Stats } from "./pages/stats";
 import { Projects } from "./projects";
 import "./index.css";
 

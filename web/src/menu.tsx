@@ -11,9 +11,9 @@ const MENU_ID = "app-menu";
 const MENU_COLUMN = "(min-width: 64rem)";
 
 // The width from which the expanded menu leaves the Overview its two columns: their 51.25rem (the
-// container query in pages.tsx), the 15rem menu and 1rem for a scrollbar. Narrower, a menu with no
-// saved choice starts as the rail, as a sidebar collapses in a narrow window, so the columns never
-// stack between two widths where they sit side by side.
+// container query in pages/overview.tsx), the 15rem menu and 1rem for a scrollbar. Narrower, a menu
+// with no saved choice starts as the rail, as a sidebar collapses in a narrow window, so the columns
+// never stack between two widths where they sit side by side.
 const MENU_ROOM = "(min-width: 67.25rem)";
 
 const MENU_WIDTH_KEY = "forge-wingman.menu-width";
