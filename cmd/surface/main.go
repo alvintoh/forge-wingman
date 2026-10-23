@@ -47,8 +47,8 @@ func run(logger *slog.Logger) error {
 		port = "8080"
 	}
 
-	// The comparison, providers, autonomy and peak endpoints read past runs,
-	// the owner's plan records, the measured merges and the peak mode, so they
+	// The comparison, run history, providers, autonomy and peak endpoints read
+	// past runs, the owner's plan records, the measured merges and the peak mode, so they
 	// need the store. A local run without GOOGLE_CLOUD_PROJECT has none and
 	// serves the SPA alone, answering those endpoints with 503.
 	var comparison ComparisonReader
@@ -59,6 +59,7 @@ func run(logger *slog.Logger) error {
 	var projects ProjectStores
 	var inbox InboxStore
 	var runs MergeRuns
+	var history RunHistoryReader
 	if project := os.Getenv("GOOGLE_CLOUD_PROJECT"); project != "" {
 		fsc, err := firestore.NewClient(context.Background(), project)
 		if err != nil {
@@ -66,7 +67,7 @@ func run(logger *slog.Logger) error {
 		}
 		defer func() { _ = fsc.Close() }()
 		records := store.NewRecords(fsc)
-		comparison, inbox, runs = records, records, records
+		comparison, inbox, runs, history = records, records, records, records
 		providerPlans = store.NewProviderPlans(fsc)
 		measured = store.NewRewrites(fsc)
 		peak = store.NewPeakModes(fsc)
@@ -105,6 +106,7 @@ func run(logger *slog.Logger) error {
 		Projects:      projects,
 		Inbox:         inbox,
 		Runs:          runs,
+		History:       history,
 		Merger:        merger,
 		Pulls:         pulls,
 	}
@@ -156,6 +158,7 @@ type Deps struct {
 	Projects      ProjectStores
 	Inbox         InboxStore
 	Runs          MergeRuns
+	History       RunHistoryReader
 	Merger        PRMerger
 	Pulls         PullLister
 }
@@ -170,6 +173,7 @@ func newMux(d Deps) *http.ServeMux {
 	mux.HandleFunc("GET /api/me", me)
 	mux.HandleFunc("GET /api/comparison", d.comparison)
 	mux.HandleFunc("GET /api/providers", d.providers)
+	mux.HandleFunc("GET /api/run-history", d.runHistory)
 	mux.HandleFunc("GET /api/autonomy", d.autonomy)
 	mux.HandleFunc("GET /api/peak", d.peak)
 	mux.HandleFunc("POST /api/peak", d.setPeak)

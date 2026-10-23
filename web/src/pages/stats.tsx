@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { Allowance } from "../stats/allowance";
+import { RunHistory } from "../stats/run-history";
 
 type RunCache = {
   run_id: string;
@@ -58,6 +60,11 @@ export function Stats() {
   return (
     <section className="mx-auto max-w-desk px-padx pt-4 pb-band">
       <h1 className="text-title font-semibold text-ink">Statistics</h1>
+      {/* The band splits on the seam the Overview's columns do. */}
+      <div className="mt-4 mb-8 grid grid-cols-1 gap-y-6 @[51.25rem]:grid-cols-[minmax(0,1fr)_23rem] @[51.25rem]:gap-x-8">
+        <RunHistory />
+        <Allowance />
+      </div>
       <p className="mt-2 text-body text-ink2">
         Each run's cached share per phase, its first request then its whole phase.
       </p>
