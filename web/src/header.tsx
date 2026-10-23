@@ -22,8 +22,9 @@ export function PageHeader({ menu }: PageHeaderProps) {
           centres them on the title's capitals, which sit 0.026em below the row's
           middle in this font, so the title is lifted by that much. Under lg the
           menu button's 32px tile takes the icon's place (the drawer shows the
-          icon), mirroring the avatar tile at the row's other end. A phone under
-          400px takes the 22px title rather than cutting the name short. The
+          icon), mirroring the avatar tile at the row's other end. The name is the 22px
+          title on every phone width and the 34px hero from md (the tablet, 768px) up
+          (the hero is too wide beside the menu button and the avatar on a phone). The
           title's line box is 1.25 tall, not 1: truncate clips at that box, and a
           1.0 box cut the g's descenders off. */}
       <div className="relative flex h-11 items-center justify-between gap-3">
@@ -33,7 +34,7 @@ export function PageHeader({ menu }: PageHeaderProps) {
             <img src="/icon.svg" alt="" width={32} height={32} className="size-8 shrink-0" />
           )}
           <Title
-            className={`relative -top-[0.026em] truncate ${menu === null ? "ml-3" : "ml-1.5"} font-sans text-title leading-tight font-semibold min-[400px]:text-hero`}
+            className={`relative -top-[0.026em] truncate ${menu === null ? "ml-3" : "ml-1.5"} font-sans text-title leading-tight font-semibold md:text-hero`}
           >
             Forge Wingman
           </Title>
