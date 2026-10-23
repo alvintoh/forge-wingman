@@ -152,7 +152,12 @@ func TestRollingSeriesIsEachWindowsOwnPooledRate(t *testing.T) {
 	// lines, so every window's pooled rate is its own.
 	var samples []Sample
 	for pr := 12; pr >= 1; pr-- {
+		repo := "octo/one"
+		if pr%2 == 0 {
+			repo = "octo/two"
+		}
 		samples = append(samples, Sample{
+			Repo:     repo,
 			PR:       pr,
 			MergedAt: at.Add(-time.Duration(12-pr) * time.Hour),
 			Rewrite:  Rewrite{AgentLines: 100, OwnerLines: int64(pr)},
@@ -168,11 +173,12 @@ func TestRollingSeriesIsEachWindowsOwnPooledRate(t *testing.T) {
 	}
 	// Oldest first, each point the rate pooled over its own ten PRs.
 	for i, want := range []struct {
+		repo string
 		pr   int
 		rate float64
-	}{{10, 55.0 / 1000.0}, {11, 65.0 / 1000.0}, {12, 75.0 / 1000.0}} {
-		if points[i].PR != want.pr || points[i].Rate != want.rate || points[i].AgentLines != 1000 {
-			t.Fatalf("point %d = %+v, want PR %d at %v", i, points[i], want.pr, want.rate)
+	}{{"octo/two", 10, 55.0 / 1000.0}, {"octo/one", 11, 65.0 / 1000.0}, {"octo/two", 12, 75.0 / 1000.0}} {
+		if points[i].Repo != want.repo || points[i].PR != want.pr || points[i].Rate != want.rate || points[i].AgentLines != 1000 {
+			t.Fatalf("point %d = %+v, want PR %d of %s at %v", i, points[i], want.pr, want.repo, want.rate)
 		}
 	}
 	if !points[0].MergedAt.Before(points[2].MergedAt) {
@@ -466,10 +472,10 @@ func TestTilesTrendComparesTheWindowWithItsPredecessors(t *testing.T) {
 		"a latest rise of exactly 0.5 points":           {prs(110, 105, 100), TrendUp, true},
 		"an earlier move of none":                       {prs(100, 105, 105), TrendFlat, true},
 		"one PR has no predecessor":                     {prs(100), TrendFlat, false},
-		"two PRs have no second move":                   {prs(100, 106), TrendFlat, true},
+		"two PRs have no second move":                   {prs(100, 106), TrendFlat, false},
 		"a predecessor with no agent lines":             {append(prs(100), Sample{Rewrite: Rewrite{OwnerLines: 4}}, prs(112)[0]), TrendFlat, false},
-		"an earlier PR with no agent lines":             {append(prs(100, 106), Sample{Rewrite: Rewrite{OwnerLines: 4}}), TrendFlat, true},
-		"a rise over an earlier PR with no agent lines": {append(prs(112, 106), Sample{Rewrite: Rewrite{OwnerLines: 4}}), TrendFlat, true},
+		"an earlier PR with no agent lines":             {append(prs(100, 106), Sample{Rewrite: Rewrite{OwnerLines: 4}}), TrendFlat, false},
+		"a rise over an earlier PR with no agent lines": {append(prs(112, 106), Sample{Rewrite: Rewrite{OwnerLines: 4}}), TrendFlat, false},
 		"a latest PR with no agent lines":               {append([]Sample{{Rewrite: Rewrite{OwnerLines: 4}}}, prs(106, 112)...), TrendFlat, false},
 	} {
 		w := Tiles(tt.samples)[2]
@@ -482,9 +488,11 @@ func TestTilesTrendComparesTheWindowWithItsPredecessors(t *testing.T) {
 		t.Errorf("previous = %v, want the rate one PR earlier, 0.106", w.Previous)
 	}
 
-	// The trailing window needs ten PRs before it has a predecessor and eleven
-	// before the predecessor has one: the owners run newest first, each PR 1000
-	// agent lines, 200 owner lines in the newest and 100 in every other.
+	// The trailing window serves a previous rate only when its trend is
+	// computable, which takes twelve PRs: ten for the window, one for the
+	// window before it and one more for the window before that. The owners run
+	// newest first, each PR 1000 agent lines, 200 owner lines in the newest and
+	// 100 in every other.
 	owners := func(n int) []Sample {
 		out := []int64{200}
 		for len(out) < n {
@@ -495,13 +503,13 @@ func TestTilesTrendComparesTheWindowWithItsPredecessors(t *testing.T) {
 	if w := Tiles(owners(10))[0]; w.HasPrevious || w.Trend != TrendFlat || len(w.PRs) != 10 {
 		t.Errorf("ten PRs: trailing = %+v, want no predecessor, as a window of nine is not a full one", w)
 	}
-	if w := Tiles(owners(11))[0]; !w.HasPrevious || w.Previous != 0.1 || w.Rate != 1100.0/10000.0 || w.Trend != TrendFlat {
-		t.Errorf("eleven PRs: trailing = %+v, want its rate against the full ten after the newest and no trend yet", w)
+	// Eleven PRs have a full window before the newest, but the one before that is
+	// a PR short: a previous rate would read as "flat" where there is no trend yet.
+	if w := Tiles(owners(11))[0]; w.HasPrevious || w.Trend != TrendFlat {
+		t.Errorf("eleven PRs: trailing = %+v, want no previous rate while the trend is not computable", w)
 	}
-	// Eleven PRs leave the third window one PR short: owner lines 160 in the
-	// oldest would read as a fall against it, were it compared.
-	if w := Tiles(prs(100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 160))[0]; !w.HasPrevious || w.Trend != TrendFlat {
-		t.Errorf("eleven PRs: trailing = %+v, want its previous rate and no trend over a short third window", w)
+	if w := Tiles(owners(12))[0]; !w.HasPrevious || w.Previous != 0.1 || w.Rate != 1100.0/10000.0 || w.Trend != TrendFlat {
+		t.Errorf("twelve PRs: trailing = %+v, want its rate against the full ten after the newest, flat as the earlier move is none", w)
 	}
 	// Twelve PRs have three full windows: owner lines 100 in the ten newest and
 	// 160 in the two oldest move the rate down by 0.6 points twice.

@@ -246,7 +246,8 @@ type RateWindow struct {
 	// than a mean of the PRs' own rates.
 	Rate float64
 	// Previous is the rate of the same window ending one PR earlier; HasPrevious
-	// needs both windows full and with agent lines.
+	// needs the trend to be computable: three full windows, each with agent
+	// lines. Without it there is no trend yet, which TrendFlat does not say.
 	Previous    float64
 	HasPrevious bool
 	// Trend is TrendFlat unless three full windows with agent lines show an arrow.
@@ -286,20 +287,16 @@ func Tiles(samples []Sample) []RateWindow {
 func trendedWindow(samples []Sample, n int) RateWindow {
 	w := WindowRate(samples, n)
 	w.Trend = TrendFlat
-	if w.Lines.AgentLines <= 0 || len(samples) < n+1 {
+	if w.Lines.AgentLines <= 0 || len(samples) < n+2 {
 		return w
 	}
 	prev := WindowRate(samples[1:], n)
-	if prev.Lines.AgentLines <= 0 {
+	before := WindowRate(samples[2:], n)
+	if prev.Lines.AgentLines <= 0 || before.Lines.AgentLines <= 0 {
 		return w
 	}
 	w.Previous, w.HasPrevious = prev.Rate, true
-	if len(samples) < n+2 {
-		return w
-	}
-	if before := WindowRate(samples[2:], n); before.Lines.AgentLines > 0 {
-		w.Trend = trendOf(w.Rate, prev.Rate, before.Rate)
-	}
+	w.Trend = trendOf(w.Rate, prev.Rate, before.Rate)
 	return w
 }
 
@@ -332,7 +329,9 @@ func printedTenths(rate float64) int {
 // SeriesPoint is one point of the rolling rate: the merge the window ends at and
 // the rate pooled over that window.
 type SeriesPoint struct {
-	// PR and MergedAt are the merge the window ends at, the newest PR in it.
+	// Repo, PR and MergedAt are the merge the window ends at, the newest PR in it;
+	// a PR's number is only its own within Repo.
+	Repo     string
 	PR       int
 	MergedAt time.Time
 	// AgentLines is the window's agent lines: with none the rate has no figure.
@@ -355,6 +354,7 @@ func RollingSeries(samples []Sample, n, points int) []SeriesPoint {
 	for i := len(samples) - n; i >= 0; i-- {
 		lines := Lines(samples[i : i+n])
 		out = append(out, SeriesPoint{
+			Repo:       samples[i].Repo,
 			PR:         samples[i].PR,
 			MergedAt:   samples[i].MergedAt,
 			AgentLines: lines.AgentLines,
