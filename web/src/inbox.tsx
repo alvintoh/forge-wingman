@@ -619,6 +619,7 @@ type SheetProps = {
 function RowSheet({ opened, onClose }: SheetProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const firstRef = useRef<HTMLAnchorElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
   const titleId = useId();
   const descriptionId = useId();
   const run = opened?.run ?? null;
@@ -636,8 +637,9 @@ function RowSheet({ opened, onClose }: SheetProps) {
     }
     if (!dialog.open) {
       dialog.showModal();
-      firstRef.current?.focus();
     }
+    // Each opening, a reopen included, starts on the first action, or on Close when there is none.
+    (firstRef.current ?? closeRef.current)?.focus();
   }, [opened]);
 
   function close() {
@@ -721,6 +723,7 @@ function RowSheet({ opened, onClose }: SheetProps) {
             </ul>
           )}
           <button
+            ref={closeRef}
             type="button"
             aria-label="Close"
             onClick={close}
@@ -1032,8 +1035,13 @@ export function InboxSection() {
     setSheet({ run });
   }
 
+  // However the sheet closed, focus goes back to the row that opened it.
   function handleSheetClose() {
+    const run = sheet?.run;
     setSheet(null);
+    if (run !== undefined) {
+      cellIn(listRef.current, run.run, "row")?.focus();
+    }
   }
 
   return (
