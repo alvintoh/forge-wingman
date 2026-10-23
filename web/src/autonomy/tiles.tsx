@@ -1,5 +1,5 @@
 import { parsePull } from "../inbox/run";
-import { count, isRed, tileWords, trendWords } from "./format";
+import { count, isRed, lastPrRepo, tileWords, trendWords } from "./format";
 import { TrendArrow } from "./marks";
 import { useWidth } from "./use-width";
 import type { PR, Tile } from "./types";
@@ -164,17 +164,28 @@ function PRLink({ pr, prs, beside }: { pr: number; prs: PR[]; beside: boolean })
   // does not say which.
   const newest = prs[0];
   const url = newest?.pr === pr ? newest.pr_url : "";
+  const repo = lastPrRepo(prs, pr);
+  const where =
+    repo === null ? null : (
+      <span className="block font-mono text-micro font-normal wrap-break-word">{repo}</span>
+    );
   if (parsePull(url) === null) {
-    return <span className="text-body font-semibold text-ink2">#{pr}</span>;
+    return (
+      <span className="text-body font-semibold text-ink2">
+        #{pr}
+        {where}
+      </span>
+    );
   }
   return (
     <a
       href={url}
       target="_blank"
       rel="noopener noreferrer"
-      className={`inline-flex min-h-11 min-w-11 items-center justify-center rounded-control text-body font-semibold text-accent underline ${beside ? "-my-3 ml-auto" : "-ml-1"}`}
+      className={`inline-flex min-h-11 min-w-11 max-w-full flex-col items-start justify-center rounded-control text-body font-semibold text-accent underline ${beside ? "-my-3 ml-auto" : "-ml-1"}`}
     >
       #{pr}
+      {where}
       <span className="sr-only"> (opens in a new tab)</span>
     </a>
   );

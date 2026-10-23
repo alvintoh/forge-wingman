@@ -1,4 +1,4 @@
-import type { Group, Phase, Point, Tile } from "./types";
+import type { Group, Phase, Point, PR, Tile } from "./types";
 
 // The model the endpoint names a phase that ran none, or more than one.
 export const UNKNOWN_MODEL = "unknown";
@@ -172,4 +172,14 @@ export function seriesLabel(series: Point[]): string {
   const last = series[series.length - 1];
   const latest = last === undefined || last.rate_value === null ? "" : `, latest ${last.rate}`;
   return `Rolling rewrite rate after each of the last ${series.length} merged PRs${latest}. The Data table lists every figure.`;
+}
+
+// lastPrRepo names the repository of the last-PR tile's PR where the merged PRs span
+// more than one, since its number alone does not say which. The newest PR leads the list.
+export function lastPrRepo(prs: PR[], pr: number): string | null {
+  const newest = prs[0];
+  if (newest?.pr !== pr || new Set(prs.map((merged) => merged.repo)).size < 2) {
+    return null;
+  }
+  return newest.repo;
 }

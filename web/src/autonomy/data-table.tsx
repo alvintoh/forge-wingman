@@ -4,6 +4,7 @@ import { prKey } from "./axis";
 import {
   count,
   isRed,
+  lastPrRepo,
   modelName,
   noAgentNote,
   percent,
@@ -239,6 +240,7 @@ export function DataDisclosure({ rewrite }: DataDisclosureProps) {
   );
   const tileRows = rewrite.tiles.map((tile, i) => ({ tile, label: TILE_ROWS[i] ?? "" }));
   const lastPR = rewrite.tiles[2]?.prs[0];
+  const lastRepo = lastPR === undefined ? null : lastPrRepo(rewrite.prs, lastPR);
   const notes = noAgentNotes(rewrite);
   // A PR's number names it only within its repository, so rows show the repository
   // where the lists span more than one.
@@ -348,7 +350,7 @@ export function DataDisclosure({ rewrite }: DataDisclosureProps) {
                 head: "Tile",
                 render: (entry) =>
                   entry.label === "last PR" && lastPR !== undefined
-                    ? `last PR #${lastPR}`
+                    ? `last PR ${lastRepo === null ? "" : `${lastRepo} `}#${lastPR}`
                     : entry.label,
               },
               {
