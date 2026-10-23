@@ -75,15 +75,20 @@ comment. Values are authored in px because the surfaces are drawn in px; they sh
 in rem so the type respects a reader's browser setting, which NFR-8's AA bar
 expects.
 
-## Two deliberate absences
+## What the CSS carries, and the one thing it does not
 
-**No radius tokens in the CSS — the scale lives in `tokens.py`.** `RADII` declares
-four steps for the drawn surfaces and `sheetcheck.radii()` enforces them; two values
-are RULES rather than steps — a **pill** or bar cap is `min(w, h) / 2`, and the app
-icon's tile corner is `ICON_CORNER`, a fixed fraction of its size. `theme.css` emits
-no `--radius` until a component reads one, and the generator **asserts** none leaked
-in. *(Corrected 2026-09-23: this said no scale was declared and consolidation was a
-follow-up — true on 2026-09-21, superseded the same day by `RADII`.)*
+**Radius tokens are in the CSS, and a component must use them.** `RADII` declares four
+steps for the drawn surfaces and `sheetcheck.radii()` enforces them; `theme.css` emits
+them as `--radius-tag` (3px, a tag block or gauge bar), `--radius-tile` (10px),
+`--radius-card` (16px, a card or modal sheet) and `--radius-frame` (20px), so Tailwind
+gives `rounded-tag`, `rounded-tile`, `rounded-card` and `rounded-frame`. Two values are
+RULES rather than steps and have no token: a **pill** or bar cap is `min(w, h) / 2`
+(`rounded-full`), and the app icon's tile corner is `ICON_CORNER`, a fixed fraction of
+its size. The generator **asserts** every `RADII` step reaches the CSS. *(Corrected
+2026-10-21: this said `theme.css` emits no `--radius` until a component reads one.
+~~Superseded~~ The first component to read them, the Projects view, was built with square
+corners because the tokens were absent, so the absence was the defect; the scale is now
+projected.)*
 
 **No contrast figures.** They appear in neither `tokens.py` nor here. `gen_tokens.py`
 re-measures every ratio when it draws the sheet, so each has exactly one home. A
