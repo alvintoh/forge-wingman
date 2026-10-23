@@ -1,4 +1,4 @@
-# 0020 — Cancelling a waiting run records it, and GitHub is left alone
+# 0021 — Cancelling a waiting run records it, and GitHub is left alone
 
 - **Date:** 2026-10-23
 - **Status:** accepted — the inbox row sheet offers it as Cancel run
