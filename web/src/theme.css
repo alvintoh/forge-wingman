@@ -46,6 +46,10 @@
   --color-ink2: #4B5563;              /* ids, and the second level */
   --color-muted: #6B7280;             /* metadata, captions, the separator */
   --color-accent: #4F46E5;            /* the ONE accent: links, primary CTA, gauges, focus */
+  --color-control: #F6F8FA;           /* an icon button's fill (Primer) */
+  --color-control-hover: #EFF2F5;     /* its fill on hover */
+  --color-control-edge: #D1D9E0;      /* its border - DECORATIVE */
+  --color-control-icon: #59636E;      /* its glyph */
   --color-stop: #DC2626;              /* severity: a run stopped and needs me */
   --color-defer: #C2410C;             /* severity: waiting, or unchecked boxes */
   --color-review: #2563EB;            /* severity: ready, no action forced */
@@ -75,6 +79,7 @@
 
   /* ---- corners: a pill is `rounded-full` (radius = height / 2), never a token ---- */
   --radius-tag: 3px;                  /* a tag block, a gauge bar */
+  --radius-control: 6px;              /* a header icon button */
   --radius-tile: 10px;                /* an inner tile or row */
   --radius-card: 16px;                /* a card, a toast or a modal sheet */
   --radius-frame: 20px;               /* the panel or phone frame */

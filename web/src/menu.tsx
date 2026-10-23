@@ -21,7 +21,7 @@ const MENU_WIDTH_KEY = "forge-wingman.menu-width";
 type MenuWidth = "expanded" | "rail";
 
 type Screen = {
-  to: "/" | "/projects" | "/stats" | "/autonomy" | "/peak" | "/providers";
+  to: "/" | "/stats" | "/autonomy" | "/peak" | "/providers";
   label: string;
   // The icon's path in a 24px box, stroked 2px and drawn at 22px.
   icon: string;
@@ -32,11 +32,6 @@ const RUN_SCREENS: readonly Screen[] = [
     to: "/",
     label: "Overview",
     icon: "M6 5H18A3 3 0 0 1 21 8V16A3 3 0 0 1 18 19H6A3 3 0 0 1 3 16V8A3 3 0 0 1 6 5ZM3 9h18",
-  },
-  {
-    to: "/projects",
-    label: "Projects",
-    icon: "M6 4H18A2 2 0 0 1 20 6V8A2 2 0 0 1 18 10H6A2 2 0 0 1 4 8V6A2 2 0 0 1 6 4ZM6 14H18A2 2 0 0 1 20 16V18A2 2 0 0 1 18 20H6A2 2 0 0 1 4 18V16A2 2 0 0 1 6 14Z",
   },
   { to: "/stats", label: "Statistics", icon: "M4 20V10M10 20V4M16 20v-8M22 20H2" },
 ];
@@ -89,9 +84,10 @@ type AppShellProps = {
 };
 
 /**
- * AppShell is every page's frame: the menu, and beside it the header and the page in one box. From
- * lg the menu is a full-height column, folded to a rail of icons and back by the row at its foot, and
- * the choice is kept in this browser; under lg it is a drawer from the header's menu button.
+ * AppShell is every page's frame: the header across the top, and below it the menu and the page.
+ * From lg the menu is a column left of the page, folded to a rail of icons and back by the row at its
+ * foot, and the choice is kept in this browser; under lg it is a drawer from the header's menu
+ * button.
  */
 export function AppShell({ children }: AppShellProps) {
   const column = useMedia(MENU_COLUMN);
@@ -131,51 +127,41 @@ export function AppShell({ children }: AppShellProps) {
       aria-expanded={drawerOpen}
       aria-controls={MENU_ID}
       onClick={toggleDrawer}
-      className="-ml-1.5 inline-flex size-11 shrink-0 cursor-pointer items-center justify-center text-ink2"
+      className="group -ml-1.5 inline-flex size-11 shrink-0 cursor-pointer items-center justify-center text-control-icon"
     >
-      <span className="grid size-8 place-items-center rounded-tile border border-muted">
-        <svg
-          aria-hidden="true"
-          width="18"
-          height="12"
-          viewBox="-1 -1 18 12"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-        >
-          <path d="M0 0h16M0 5h16M0 10h16" />
+      <span className="grid size-8 place-items-center rounded-control border border-control-edge bg-control transition-colors duration-150 group-hover:bg-control-hover">
+        {/* Octicons' three-bars-16, the glyph GitHub's own menu button carries. */}
+        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M1 2.75A.75.75 0 0 1 1.75 2h12.5a.75.75 0 0 1 0 1.5H1.75A.75.75 0 0 1 1 2.75Zm0 5A.75.75 0 0 1 1.75 7h12.5a.75.75 0 0 1 0 1.5H1.75A.75.75 0 0 1 1 7.75ZM1.75 12h12.5a.75.75 0 0 1 0 1.5H1.75a.75.75 0 0 1 0-1.5Z" />
         </svg>
       </span>
     </button>
   );
 
   return (
-    <div className="flex min-h-dvh">
-      {column && (
-        // The column runs the page's full height and its inner box sticks to the viewport, so the
-        // collapse row always sits at the viewport's foot and the items scroll above it.
-        <div className={`shrink-0 border-r border-hair ${rail ? "w-18" : "w-60"}`}>
-          <div className="sticky top-0 flex h-dvh flex-col">
-            <div className="min-h-0 flex-1 overflow-y-auto">
+    // The whole frame is capped and centred: the header across its top, the menu below it on the
+    // left and the page beside the menu, so the avatar stands over the page's right edge at every
+    // width (the 15rem menu plus the 70rem page).
+    <div className="mx-auto flex min-h-dvh max-w-[85rem] flex-col">
+      <PageHeader menu={button} />
+      <div className="flex flex-1">
+        {column && (
+          // The column fills the rest of the page's height; its items stick to the viewport's top
+          // and its collapse row to the viewport's foot, so both stay in view however far the page
+          // scrolls.
+          <div className={`flex shrink-0 flex-col border-r border-hair ${rail ? "w-18" : "w-60"}`}>
+            <div className="sticky top-0 max-h-[calc(100dvh-69px)] overflow-y-auto">
               <Menu rail={rail} />
             </div>
-            <div className={`pb-3 ${rail ? "px-3.5" : "px-3"}`}>
+            <div className={`sticky bottom-0 mt-auto bg-ground pb-3 ${rail ? "px-3.5" : "px-3"}`}>
               <div className={`border-t border-hair ${rail ? "" : "mx-2"}`} />
               <div className="pt-3">
                 <CollapseButton rail={rail} onToggle={toggleWidth} />
               </div>
             </div>
           </div>
-        </div>
-      )}
-      {/* The header and the page share one width, centred beside the menu, so the avatar stands
-          over the page's right edge and every page starts under the header's left edge. */}
-      <div className="min-w-0 flex-1">
-        <div className="mx-auto max-w-desk">
-          <PageHeader menu={button} />
-          <main className="@container">{children}</main>
-        </div>
+        )}
+        <main className="@container min-w-0 flex-1">{children}</main>
       </div>
       {!column && <MenuDrawer open={drawerOpen} onClose={closeDrawer} onNavigate={closeDrawer} />}
     </div>
