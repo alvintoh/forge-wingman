@@ -117,7 +117,7 @@ export function Stats() {
   }, []);
 
   return (
-    <section className="mx-auto max-w-desk px-padx py-band">
+    <section className="mx-auto max-w-desk px-padx pt-4 pb-band">
       <h1 className="text-title font-semibold text-ink">Statistics</h1>
       <p className="mt-2 text-body text-ink2">
         Each run's cached share per phase, its first request then its whole phase.
@@ -237,7 +237,7 @@ export function Providers() {
   }, []);
 
   return (
-    <section className="mx-auto max-w-desk px-padx py-band">
+    <section className="mx-auto max-w-desk px-padx pt-4 pb-band">
       <h1 className="text-title font-semibold text-ink">Providers</h1>
       <p className="mt-2 text-body text-ink2">
         Listed in the order a run walks them. Order and models are changed in configuration.
@@ -452,7 +452,7 @@ export function Peak() {
   }
 
   return (
-    <section className="mx-auto max-w-desk px-padx py-band">
+    <section className="mx-auto max-w-desk px-padx pt-4 pb-band">
       <h1 className="text-title font-semibold text-ink">Peak hours</h1>
       <p className="mt-2 text-body text-ink2">
         A run waits out its model's peak-price hours while the mode is off-peak only.
@@ -657,7 +657,7 @@ export function Autonomy() {
   const merge = state.view.auto_merge;
 
   return (
-    <section className="mx-auto max-w-desk px-padx py-band">
+    <section className="mx-auto max-w-desk px-padx pt-4 pb-band">
       <h1 className="text-title font-semibold text-ink">Autonomy</h1>
       <p className="mt-2 text-body text-ink2">Whether an eligible PR merges itself.</p>
       {state.status === "loading" && (

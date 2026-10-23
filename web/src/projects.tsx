@@ -784,7 +784,7 @@ export function ProjectsSection() {
 export function Projects() {
   const { state, refresh, retry } = useProjects();
   return (
-    <section className="mx-auto max-w-desk px-padx py-band">
+    <section className="mx-auto max-w-desk px-padx pt-4 pb-band">
       <h1 className="text-title font-semibold text-ink">Projects</h1>
       <ProjectsPanels state={state} retry={retry}>
         <ProjectsCard
