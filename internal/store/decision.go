@@ -53,11 +53,37 @@ const provisionalUnpostedField = "provisional_unposted"
 const provisionalRepliedField = "provisional_replied"
 
 // The fields a supersede records on the run row, outside runner.Record so
-// Finalize leaves them: the PR the superseded attempt opened, and the attempt.
+// Finalize leaves them: the PR the superseded attempt opened, the attempt, and
+// whether an owner's retry replaced it, which words the PR that follows. The last
+// lives exactly as long as the PR number it explains.
 const (
 	supersededPRField      = "superseded_pr"
 	supersededAttemptField = "superseded_attempt"
+	supersededByRetryField = "superseded_by_retry"
 )
+
+// supersedeUpdates are the fields a requeue that replaces attempt-1 writes beside
+// the common ones: the attempt and the PR it opened (none when pr is zero), that
+// attempt's settled spend carried forward, and whether the owner's retry made the
+// replacement. Supersede and RetryWithNote both write them, so they stay one set.
+func supersedeUpdates(row map[string]any, attempt, pr int, byRetry bool) []firestore.Update {
+	var prValue, retryValue any = firestore.Delete, firestore.Delete
+	if pr > 0 {
+		prValue = pr
+		if byRetry {
+			retryValue = true
+		}
+	}
+	cost, _ := row[settledProviderCostField].(int64)
+	minutes, _ := row[settledRunnerMinutesField].(int64)
+	return []firestore.Update{
+		{Path: supersededAttemptField, Value: attempt - 1},
+		{Path: supersededPRField, Value: prValue},
+		{Path: supersededByRetryField, Value: retryValue},
+		{Path: priorSettledCostField, Value: cost},
+		{Path: priorSettledMinutesField, Value: minutes},
+	}
+}
 
 // decisionsRow is the row fields the decision surface reads: the decisions
 // themselves, the state and outcome that decide whether a run still waits, the
@@ -571,7 +597,7 @@ func (q *Queue) ClearProvisionalReply(ctx context.Context, runID string, replied
 // acted on wraps dispatcher.ErrReplyUnusable. A reply since replaced by a newer
 // one is a no-op, left for the next poll.
 func (q *Queue) Supersede(ctx context.Context, runID string, index int, repliedAt time.Time, answer string, at time.Time) error {
-	_, err := q.requeue(ctx, runID, at, func(row map[string]any, attempt int) (string, []firestore.Update, error) {
+	_, err := q.requeue(ctx, runID, at, requeueOptions{}, func(row map[string]any, attempt int) (string, []firestore.Update, error) {
 		if str(row, stateField) == stateAbandoned {
 			return "", nil, fmt.Errorf("%w: %w", dispatcher.ErrReplyUnusable, ErrRunAbandoned)
 		}
@@ -601,20 +627,9 @@ func (q *Queue) Supersede(ctx context.Context, runID string, index int, repliedA
 		settled["answer"] = answer
 		settled["provisional"] = false
 		decisions[i] = settled
-		var pr any = firestore.Delete
-		if n := pullNumber(str(row, prURLField)); n > 0 {
-			pr = n
-		}
-		cost, _ := row[settledProviderCostField].(int64)
-		minutes, _ := row[settledRunnerMinutesField].(int64)
 		// The plan stood on the option the owner rejected, so it is made again.
-		updates := []firestore.Update{
-			{Path: decisionsField, Value: decisions},
-			{Path: supersededAttemptField, Value: attempt - 1},
-			{Path: supersededPRField, Value: pr},
-			{Path: priorSettledCostField, Value: cost},
-			{Path: priorSettledMinutesField, Value: minutes},
-		}
+		updates := append([]firestore.Update{{Path: decisionsField, Value: decisions}},
+			supersedeUpdates(row, attempt, pullNumber(str(row, prURLField)), false)...)
 		if !holdsUnhandledReply(decisions) {
 			updates = append(updates, firestore.Update{Path: provisionalRepliedField, Value: firestore.Delete})
 		}
@@ -663,15 +678,23 @@ func pullNumber(url string) int {
 // SupersededPR reads the number of the PR a supersede of runID replaces, zero
 // when the run records none.
 func (q *Queue) SupersededPR(ctx context.Context, runID string) (int, error) {
-	snap, err := q.client.Collection(runsCollection).Doc(runID).Get(ctx)
-	if status.Code(err) == codes.NotFound {
-		return 0, fmt.Errorf("%s: %w", runID, runner.ErrRecordNotFound)
-	}
+	row, err := q.row(ctx, runID)
 	if err != nil {
 		return 0, err
 	}
-	n, _ := snap.Data()[supersededPRField].(int64)
+	n, _ := row[supersededPRField].(int64)
 	return int(n), nil
+}
+
+// SupersededByRetry reports whether the PR runID's supersede replaces was replaced
+// by the owner's retry rather than by a decision, which words the PR that follows.
+func (q *Queue) SupersededByRetry(ctx context.Context, runID string) (bool, error) {
+	row, err := q.row(ctx, runID)
+	if err != nil {
+		return false, err
+	}
+	retried, _ := row[supersededByRetryField].(bool)
+	return retried, nil
 }
 
 // ProvisionalDecisions reads the decisions auto-pilot settled on runID, in the

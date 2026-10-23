@@ -5,9 +5,9 @@ import { SmallPill } from "../pill-button";
 import { Chevron } from "./chevron";
 import { type Cell, cellAttrs } from "./keyboard";
 import type { RowState } from "./merge-state";
-import { type InboxRun, titleOf } from "./run";
+import { type InboxRun, isStopped, stopReasonOf, titleOf } from "./run";
 
-type Kind = "FORK" | "TODO" | "REVIEW";
+type Kind = "FORK" | "TODO" | "REVIEW" | "STOPPED";
 
 type Wait = { words: string; blocks: boolean; kind: Kind };
 
@@ -28,15 +28,22 @@ const kindFill: Record<Kind, string> = {
   FORK: "bg-stop",
   TODO: "bg-defer",
   REVIEW: "bg-review",
+  STOPPED: "bg-stop",
 };
 
 const UNREAD_WORDS = "GitHub could not be read";
 const MERGING_WORDS = "squash in progress";
 const MERGED_WORDS = "Merged. Squashed, branch deleted.";
 
-// The merge pill takes RETRY MERGE's width, the set the drawing sizes it from.
+// The merge pill takes RETRY MERGE's width, the set the drawing sizes it from; a stopped run's RETRY
+// pill takes the same width.
 const MERGING_LABEL = "MERGING...";
 const MERGE_PILL_WIDTH = pillSetWidth(["MERGE PR", MERGING_LABEL, "RETRY MERGE"]);
+
+// Under 17rem (272px) of row the chip, the ticket and the pill (about 252px with the widest chip)
+// no longer fit one line, so the pill takes a line of its own under the meta line.
+const pillSlot =
+  "col-span-2 row-start-3 justify-self-end @min-[17rem]:col-span-1 @min-[17rem]:col-start-2 @min-[17rem]:row-start-1 @min-[17rem]:justify-self-auto @min-[23.5rem]:col-start-3";
 
 const chipClass =
   "inline-flex h-5.5 shrink-0 items-center rounded-full px-2.5 font-mono text-micro font-semibold tracking-[1.2px] text-card";
@@ -50,9 +57,10 @@ type RowProps = {
   onOpen: (run: InboxRun) => void;
   onMerge: (run: InboxRun) => void;
   onRetry: (run: InboxRun, sha: string) => void;
+  onCompose: (run: InboxRun) => void;
 };
 
-export function InboxRow({ run, now, state, stop, onOpen, onMerge, onRetry }: RowProps) {
+export function InboxRow({ run, now, state, stop, onOpen, onMerge, onRetry, onCompose }: RowProps) {
   const reasonId = useId();
   const ticketId = useId();
   const titleId = useId();
@@ -61,8 +69,9 @@ export function InboxRow({ run, now, state, stop, onOpen, onMerge, onRetry }: Ro
   const blocked = wait?.blocks === true || draft;
   const unread = run.head_sha === undefined;
   const title = titleOf(run);
+  const stopped = isStopped(run);
   // A draft on GitHub shows the same chip as a stored draft reason, whatever reason is stored.
-  const kind = draft ? "TODO" : (wait?.kind ?? "REVIEW");
+  const kind: Kind = stopped ? "STOPPED" : draft ? "TODO" : (wait?.kind ?? "REVIEW");
 
   const plainReason = run.wait_reason.replaceAll("-", " ");
   let reason = draft
@@ -106,11 +115,20 @@ export function InboxRow({ run, now, state, stop, onOpen, onMerge, onRetry }: Ro
   if (state === undefined && blocked) {
     tone = "text-ink";
   }
+  // A stopped run waits for a retry, not a merge: its reason is why it stopped, whatever PR it names.
+  if (stopped) {
+    reason = stopReasonOf(run);
+    tone = "text-stop";
+  }
   // A merged row has no pill, so a stop left on it falls back to the row.
   const rowStop = stop === "row" || (stop === "pill" && merged);
 
   function handleOpen() {
     onOpen(run);
+  }
+
+  function handleCompose() {
+    onCompose(run);
   }
 
   return (
@@ -138,8 +156,8 @@ export function InboxRow({ run, now, state, stop, onOpen, onMerge, onRetry }: Ro
         onClick={handleOpen}
         className="absolute inset-y-0 -inset-x-padx cursor-pointer rounded-tile focus-visible:outline-offset-[-7.5px]!"
       />
-      <div className="grid min-h-11 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 @min-[23.5rem]:grid-cols-[auto_minmax(0,1fr)_auto] @min-[23.5rem]:gap-x-2">
-        <div className="col-start-1 row-start-1 flex items-center gap-3">
+      <div className="grid min-h-11 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 @min-[17rem]:gap-y-0 @min-[23.5rem]:grid-cols-[auto_minmax(0,1fr)_auto] @min-[23.5rem]:gap-x-2">
+        <div className="col-span-2 row-start-1 flex items-center gap-3 @min-[17rem]:col-span-1">
           <span className={`${chipClass} ${kindFill[kind]}`}>{kind}</span>
           <span
             id={ticketId}
@@ -160,10 +178,23 @@ export function InboxRow({ run, now, state, stop, onOpen, onMerge, onRetry }: Ro
           <span
             aria-hidden="true"
             style={MERGE_PILL_WIDTH}
-            className="h-11 min-w-11 font-mono text-micro"
+            className={`h-11 min-w-11 font-mono text-micro ${pillSlot}`}
           />
+        ) : stopped ? (
+          <span className={`relative flex ${pillSlot}`}>
+            <SmallPill
+              kind="secondary"
+              width={MERGE_PILL_WIDTH}
+              label="RETRY"
+              tabIndex={stop === "pill" ? 0 : -1}
+              {...cellAttrs(run.run, "pill")}
+              aria-haspopup="dialog"
+              aria-label={`Retry ${run.ticket} in ${run.repo} with a note`}
+              onClick={handleCompose}
+            />
+          </span>
         ) : (
-          <span className="relative flex">
+          <span className={`relative flex ${pillSlot}`}>
             <SmallPill
               kind="primary"
               width={MERGE_PILL_WIDTH}

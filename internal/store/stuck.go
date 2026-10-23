@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"cloud.google.com/go/firestore"
@@ -53,18 +54,9 @@ func (q *Queue) StuckRuns(ctx context.Context, before, since time.Time) ([]dispa
 	finished := runs.Where(outcomeField, "in", noPROutcomes).
 		Select(ticketIDField, stateField, outcomeField, stopReasonField, prURLField, settledAtField, claimedAtField).Documents(ctx)
 	err = eachRow(finished, func(id string, row map[string]any) {
-		reason := str(row, stopReasonField)
-		if reason == "" {
-			reason = str(row, outcomeField)
+		if reason, at, ok := finishedClaim(row); ok {
+			addEnded(id, row, dispatcher.StuckStopped, reason, at)
 		}
-		if str(row, stateField) != stateClaimed || str(row, prURLField) != "" {
-			return
-		}
-		at, _ := row[settledAtField].(time.Time)
-		if claimed, _ := row[claimedAtField].(time.Time); claimed.After(at) {
-			return
-		}
-		addEnded(id, row, dispatcher.StuckStopped, reason, at)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing finished runs: %w", err)
@@ -89,6 +81,24 @@ func (q *Queue) StuckRuns(ctx context.Context, before, since time.Time) ([]dispa
 		return nil, fmt.Errorf("listing ended runs: %w", err)
 	}
 	return out, nil
+}
+
+// finishedClaim reports whether row is a claim that finished and opened no PR,
+// with the reason it names and when it settled. A claim made after it settled is
+// a later attempt still running, so it is not one.
+func finishedClaim(row map[string]any) (reason string, settledAt time.Time, ok bool) {
+	if str(row, stateField) != stateClaimed || str(row, prURLField) != "" || !slices.Contains(noPROutcomes, str(row, outcomeField)) {
+		return "", time.Time{}, false
+	}
+	at, _ := row[settledAtField].(time.Time)
+	if claimed, _ := row[claimedAtField].(time.Time); claimed.After(at) {
+		return "", time.Time{}, false
+	}
+	reason = str(row, stopReasonField)
+	if reason == "" {
+		reason = str(row, outcomeField)
+	}
+	return reason, at, true
 }
 
 // eachRow calls fn for every document iter yields.

@@ -55,8 +55,9 @@ const (
 	mergeTimeout = 30 * time.Second
 )
 
-// inboxResponse is the inbox endpoint's wire shape. It carries no ticket text,
-// for the reason the comparison does not; the PR title is GitHub's, not the ticket's.
+// inboxResponse is the inbox endpoint's wire shape. It carries no ticket body. A PR
+// row's title is GitHub's; a stopped run, which has no PR to name it, carries the
+// ticket's title and the reason it stopped for the page to word.
 type inboxResponse struct {
 	Runs []inboxRun `json:"runs"`
 }
@@ -71,10 +72,21 @@ type inboxRun struct {
 	// switch or a failed gate holds.
 	WaitReason string    `json:"wait_reason"`
 	UpdatedAt  time.Time `json:"updated_at"`
+	// Attempt is the attempt the row is on, from 0, which a retry sends back to say
+	// which it saw. Outcome and StopReason are how that attempt ended, Stopped says
+	// it ended and waits for a retry whatever PR the row still names, and Retryable
+	// whether the owner may retry it: a stopped run, or one whose PR is a draft.
+	Attempt    int    `json:"attempt"`
+	Outcome    string `json:"outcome,omitempty"`
+	StopReason string `json:"stop_reason,omitempty"`
+	Stopped    bool   `json:"stopped,omitempty"`
+	Retryable  bool   `json:"retryable"`
+	// Title is GitHub's title for a PR row, absent where the read failed, and the
+	// ticket's title for a stopped run.
+	Title string `json:"title,omitempty"`
 	// The rest is GitHub's view of the PR as of the cached read, and is absent
 	// where the read failed or the surface holds no merge token. The merge route
 	// never trusts it: it reads the PR again.
-	Title   string       `json:"title,omitempty"`
 	HeadSHA string       `json:"head_sha,omitempty"`
 	Draft   *bool        `json:"draft,omitempty"`
 	Checks  *inboxChecks `json:"checks,omitempty"`
@@ -105,13 +117,23 @@ func (d Deps) readInbox(ctx context.Context, now time.Time) (inboxResponse, erro
 	for _, r := range runs {
 		reason := r.WaitReason
 		row := inboxRun{Run: r.Run, Ticket: r.Ticket, Repo: r.Repo, Size: r.Size,
-			PRURL: r.PRURL, UpdatedAt: r.UpdatedAt}
+			PRURL: r.PRURL, UpdatedAt: r.UpdatedAt, Attempt: r.Attempt, Outcome: r.Outcome, StopReason: r.StopReason}
+		if r.Stopped {
+			// A stopped run waits for a retry, not for a merge, so no switch or check holds it.
+			row.Stopped, row.Retryable, row.Title = true, true, r.Title
+			out.Runs = append(out.Runs, row)
+			continue
+		}
+		// GitHub's reading decides whether the PR is still a draft; the row's reason
+		// stands in for it where the read failed.
+		row.Retryable = r.WaitReason == runner.WaitDraft
 		if repo, number, err := parsePullURL(r.PRURL); err == nil {
 			if p, ok := pulls[dispatcher.PullRef{Repo: repo, Number: number}]; ok {
 				if p.State == dispatcher.PullStateClosed || p.State == dispatcher.PullStateMerged {
 					continue
 				}
 				row.Title, row.HeadSHA, row.Draft = p.Title, p.HeadSHA, &p.Draft
+				row.Retryable = p.Draft
 				row.Checks = &inboxChecks{State: p.Checks, Summary: p.ChecksSummary}
 				if p.Checks != dispatcher.CheckGreen && reason != runner.WaitUnconfirmedDecision && reason != runner.WaitDraft {
 					reason = runner.WaitChecksNotGreen
@@ -136,6 +158,9 @@ func (d Deps) pullSummaries(ctx context.Context, runs []store.InboxRun) map[disp
 	}
 	var refs []dispatcher.PullRef
 	for _, r := range runs {
+		if r.Stopped {
+			continue
+		}
 		if repo, number, err := parsePullURL(r.PRURL); err == nil {
 			refs = append(refs, dispatcher.PullRef{Repo: repo, Number: number})
 		}

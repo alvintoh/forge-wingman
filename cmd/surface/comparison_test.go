@@ -91,7 +91,7 @@ func TestComparisonReportsEachModelAndProviderAndEveryDriftedRun(t *testing.T) {
 		t.Errorf("drifted cost = %v, want %v", got, want)
 	}
 	// The run records this reads hold the ticket's own title and body, and
-	// this endpoint is public, so nothing of them may reach it.
+	// this endpoint serves neither: only the inbox serves a title, for a stopped run.
 	for _, banned := range []string{"ticket_title", "ticket_body"} {
 		if strings.Contains(rec.Body.String(), banned) {
 			t.Fatalf("body carries %s: %s", banned, rec.Body.String())

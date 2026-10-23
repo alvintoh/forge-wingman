@@ -14,7 +14,7 @@ const refusalWords: Record<string, string> = {
   "checks-not-green": "The checks are not green.",
 };
 
-function isRefusal(body: unknown): body is { reason: string; detail?: string } {
+export function isRefusal(body: unknown): body is { reason: string; detail?: string } {
   return (
     typeof body === "object" &&
     body !== null &&
@@ -70,6 +70,8 @@ export type Merges = {
   rows: Record<string, RowState>;
   // The words the live region tells, so a row that leaves with its merge still announces it.
   announcement: string;
+  // Tells the live region something; the retries share it.
+  announce: (words: string) => void;
   merge: (run: InboxRun, sha: string) => Promise<void>;
   clearRefusal: (run: InboxRun) => void;
 };
@@ -151,5 +153,5 @@ export function useMerges(refresh: () => void): Merges {
     [refresh],
   );
 
-  return { rows, announcement, merge, clearRefusal };
+  return { rows, announcement, announce: setAnnouncement, merge, clearRefusal };
 }

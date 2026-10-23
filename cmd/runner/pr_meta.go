@@ -93,6 +93,10 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	if err != nil {
 		logger.Warn("supersededPRUnread", "run", *runID, "err", err.Error())
 	}
+	retried, err := store.NewQueue(fsc).SupersededByRetry(ctx, *runID)
+	if err != nil {
+		logger.Warn("supersededByRetryUnread", "run", *runID, "err", err.Error())
+	}
 	sum := buildSummary(logger, *summary, buildAttempt(logger, *attemptID, e), rec.Ticket(), time.Now())
 	changed, err := runner.Bundle{Path: *bundle, Repo: workRepo, Branch: *branch, Base: mainRef,
 		RunID: e.runID}.ChangedFiles(ctx)
@@ -109,6 +113,7 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		Provisional:       provisional,
 		ProvisionalUnread: unreadProvisional,
 		Supersedes:        superseded,
+		Retried:           retried,
 	}
 	// A workflow file in the write set is refused from the write set the
 	// branch carries — the run's own App cannot push one — and falls back to
@@ -140,6 +145,8 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		"auto_merge":     strconv.FormatBool(merge),
 		"draft":          strconv.FormatBool(draft),
 		"superseded_pr":  supersededOutput(check.Supersedes),
+		// superseded_by_retry words the close comment, so it is set only when a PR is superseded.
+		"superseded_by_retry": retriedOutput(check.Supersedes, check.Retried),
 	}); err != nil {
 		return err
 	}
@@ -152,6 +159,15 @@ func supersededOutput(n int) string {
 		return ""
 	}
 	return strconv.Itoa(n)
+}
+
+// retriedOutput is the step output saying the superseded PR was replaced by an
+// owner's retry, empty otherwise.
+func retriedOutput(superseded int, retried bool) string {
+	if superseded > 0 && retried {
+		return "true"
+	}
+	return ""
 }
 
 // prCheck is what pr-meta establishes about a run's write set beyond what its
@@ -179,6 +195,8 @@ type prCheck struct {
 	ProvisionalUnread bool
 	// Supersedes is the number of the PR the owner's choice replaced, zero when none.
 	Supersedes int
+	// Retried is set when the owner replaced it by retrying the run with a note.
+	Retried bool
 }
 
 // unconfirmed reports whether auto-pilot took an option the owner has not confirmed,
@@ -399,7 +417,7 @@ func buildSummary(logger *slog.Logger, raw, attemptID string, t runner.Ticket, n
 // report is part of the body whether or not they kept it a draft.
 func renderPR(tmpl string, rec runner.Record, sum runner.Summary, failedGate, runURL, loopDetail string, check prCheck) (title, body string, err error) {
 	t := rec.Ticket()
-	body, err = runner.PRBody(tmpl, t, sum.PRSummary, failedGate, runURL, loopDetail, check.Overlap, check.OutOfPlan, check.Unread, check.FrontEnd, !check.Planned, sum.ReviewFindings, check.Provisional, check.Supersedes)
+	body, err = runner.PRBody(tmpl, t, sum.PRSummary, failedGate, runURL, loopDetail, check.Overlap, check.OutOfPlan, check.Unread, check.FrontEnd, !check.Planned, sum.ReviewFindings, check.Provisional, check.Supersedes, check.Retried)
 	if err != nil {
 		return "", "", err
 	}

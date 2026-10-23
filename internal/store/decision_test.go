@@ -930,6 +930,33 @@ func TestClearProvisionalReplyDropsTheMarkOnlyForTheReplyThePollRead(t *testing.
 	}
 }
 
+func TestSupersedeDropsTheOwnersRetryFromTheEndedAttempt(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	id := postedProvisionalRun(t, q, client)
+	if _, err := q.Reply(ctx, id, "session-1", "new", queueAt.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	endRun(t, client, id, "https://github.com/o/r/pull/141")
+	if _, err := client.Collection(runsCollection).Doc(id).Update(ctx, []firestore.Update{
+		{Path: operatorNoteField, Value: "Keep the old flag name."},
+		{Path: operatorAssistedField, Value: true},
+		{Path: retriedByField, Value: "owner@example.test"},
+		{Path: supersededByRetryField, Value: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Supersede(ctx, id, 1, repliedAtOf(t, client, id, 1), "Add a new flag", queueAt.Add(5*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	data := readRow(t, client, id)
+	for _, field := range []string{operatorNoteField, operatorAssistedField, retriedByField, supersededByRetryField} {
+		if v, held := data[field]; held {
+			t.Errorf("%s = %v survived the supersede: it was for the attempt it replaced", field, v)
+		}
+	}
+}
+
 func TestSupersedeCarriesTheEndedAttemptsSpendForward(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()

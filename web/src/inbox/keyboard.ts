@@ -1,6 +1,7 @@
 import type { InboxRun } from "./run";
 
-// The two focusable cells of a row: the row itself, which opens its sheet, and its MERGE PR pill.
+// The two focusable cells of a row: the row itself, which opens its sheet, and its pill (MERGE PR, or
+// RETRY on a stopped run).
 export type Cell = "row" | "pill";
 
 // The attributes a cell carries, which the list's keys read back to find where the focus is.

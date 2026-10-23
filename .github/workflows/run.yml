@@ -297,6 +297,7 @@ jobs:
       body: ${{ steps.meta.outputs.body }}
       auto_merge: ${{ steps.meta.outputs.auto_merge }}
       superseded_pr: ${{ steps.meta.outputs.superseded_pr }}
+      superseded_by_retry: ${{ steps.meta.outputs.superseded_by_retry }}
       # draft is the PR's own draft decision (FR-5), which the pr job opens it
       # with: the pre-PR loop's, an edit outside the run's plan, or a
       # concurrent run's plan these files touch.
@@ -462,9 +463,15 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           OLD: ${{ needs.pr-meta.outputs.superseded_pr }}
           NEW: ${{ steps.open.outputs.url }}
+          RETRY: ${{ needs.pr-meta.outputs.superseded_by_retry }}
         run: |
           if [ "$(gh pr view "$OLD" --json state --jq .state)" = OPEN ]; then
-            gh pr close "$OLD" --comment "Superseded by $NEW: the owner chose a different option."
+            if [ "$RETRY" = true ]; then
+              why="the owner retried this run with a note"
+            else
+              why="the owner chose a different option"
+            fi
+            gh pr close "$OLD" --comment "Superseded by $NEW: $why."
           fi
 
       # The label only marks the PR eligible: pr-review.yml requests auto-merge once its
