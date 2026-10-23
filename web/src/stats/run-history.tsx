@@ -34,6 +34,8 @@ const captionClass = "font-mono text-label font-semibold tracking-[1.4px] text-m
 
 // RunHistory draws the latest settled runs as one bar each, oldest to newest,
 // with the merged count and, under it, the runs that did not merge in words.
+// While it loads, its line keeps the height of the strip and one legend line
+// (26px, the 12px gap, 16px), so the ready state does not push the page down.
 export function RunHistory() {
   const read = useRead("/api/run-history", isHistory, "runHistoryNotRead");
   const runs = read.status === "ready" ? read.body.runs : [];
@@ -48,7 +50,7 @@ export function RunHistory() {
         )}
       </div>
       {read.status === "loading" && (
-        <p role="status" className="mt-3 text-label text-ink2">
+        <p role="status" className="mt-3 min-h-[54px] text-label text-ink2">
           Reading the run history…
         </p>
       )}
@@ -81,11 +83,13 @@ export function RunHistory() {
   );
 }
 
+// title names the runs drawn, and only when there are some: while the history is
+// loading, unread or empty the caption says what the panel is, not a count.
 function title(count: number): string {
-  if (count === 1) {
-    return "Last run";
+  if (count === 0) {
+    return "Run history";
   }
-  return `Last ${count > 0 ? count : 20} runs`;
+  return count === 1 ? "Last run" : `Last ${count} runs`;
 }
 
 // Legend counts the runs that did not merge by their words, in the order each

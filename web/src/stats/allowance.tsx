@@ -22,7 +22,8 @@ const NEARLY_SPENT = 0.8;
 const captionClass = "font-mono text-label font-semibold tracking-[1.4px] text-muted uppercase";
 
 // Allowance draws the first plan that reports allowance windows, one gauge each
-// with what is spent and what the limit is.
+// with what is spent and what the limit is. While it loads, its line keeps the
+// height of one gauge, so the ready state does not push the page down.
 export function Allowance() {
   const read = useRead("/api/providers", isProviders, "allowanceNotRead");
   const windows = read.status === "ready" ? firstWindows(read.body.plans) : [];
@@ -32,7 +33,7 @@ export function Allowance() {
         Allowance
       </h2>
       {read.status === "loading" && (
-        <p role="status" className="mt-3 text-label text-ink2">
+        <p role="status" className="mt-4 min-h-[54px] text-label text-ink2">
           Reading the allowance…
         </p>
       )}
@@ -86,7 +87,14 @@ function Gauge({ usage }: { usage: WindowUsage }) {
         <span
           className={`min-w-0 text-right font-semibold ${nearlySpent ? "text-defer" : stated ? "text-ink" : "text-ink2"}`}
         >
-          {stated ? `${percent}%` : "limit not stated"}
+          {stated ? (
+            `${percent}%`
+          ) : (
+            <>
+              <span aria-hidden="true">no limit</span>
+              <span className="sr-only">limit not stated</span>
+            </>
+          )}
         </span>
       </div>
       <div
@@ -96,7 +104,7 @@ function Gauge({ usage }: { usage: WindowUsage }) {
         aria-valuemax={stated ? usage.limit_usd : undefined}
         aria-valuenow={stated ? Math.min(usage.used_usd, usage.limit_usd) : undefined}
         aria-valuetext={stated ? `${amount}, ${percent}%` : undefined}
-        className="mt-1.5 h-1.5 overflow-hidden rounded-tag bg-track"
+        className="mt-1.5 h-[5px] overflow-hidden rounded-tag bg-track"
       >
         {usage.used_usd > 0 && stated && (
           <div
