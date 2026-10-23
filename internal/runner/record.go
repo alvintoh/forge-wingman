@@ -669,6 +669,23 @@ func (r Record) RunModels() ModelLabels {
 	return r.ModelLabels
 }
 
+// PhaseModel is the one model the steps of phase ran on: empty when no step of
+// the phase names a model, and when they name more than one, as after a fallback
+// took over part way.
+func PhaseModel(steps []Step, phase Phase) string {
+	model := ""
+	for _, step := range steps {
+		if step.Phase != phase || step.Model == "" {
+			continue
+		}
+		if model != "" && step.Model != model {
+			return ""
+		}
+		model = step.Model
+	}
+	return model
+}
+
 // Succeeded reports whether a run ended where it should: a PR opened, or nothing to change.
 func (r Record) Succeeded() bool {
 	return r.Outcome == OutcomePROpened || r.Outcome == OutcomeNoChanges

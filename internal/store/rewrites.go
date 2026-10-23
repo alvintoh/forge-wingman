@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
+	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
 // The rewrite measurement the dispatcher writes onto a run row, beside
@@ -37,6 +38,8 @@ const (
 	branchesField           = "branches"
 	autoMergeField          = "auto_merge"
 	prURLField              = "pr_url"
+	planModelField          = "plan_model"
+	stepsField              = "steps"
 )
 
 // Rewrites records each merged agent PR's measured lines on its run row and
@@ -180,12 +183,17 @@ func (r *Rewrites) Recent(ctx context.Context, limit int) ([]dispatcher.Sample, 
 }
 
 // recentSamples reads the rows a rewrite measurement sits on, newest merge
-// first. The measurement fields are the store's own, so the range filter is what
-// tells a measured row from one no merge has reached.
+// first, projected to the fields a sample reads and the steps its phase models
+// come from. The measurement fields are the store's own, so the range filter is
+// what tells a measured row from one no merge has reached.
 func recentSamples(ctx context.Context, client *firestore.Client, limit int) ([]dispatcher.Sample, error) {
 	iter := client.Collection(runsCollection).
 		Where(rewriteMergedAtField, ">", time.Time{}).
 		OrderBy(rewriteMergedAtField, firestore.Desc).
+		Select(sizeField, repoField, prURLField, prTitleField, autoMergeField, prNumberField,
+			rewriteMergedAtField, rewriteRevertedField, rewriteAgentLinesField, rewriteOwnerLinesField,
+			rewriteReviewFoundField, rewriteOwnerChangeField, rewriteUnlabelledField, rewriteUnmeasuredField,
+			planModelField, stepsField).
 		Limit(limit).Documents(ctx)
 	defer iter.Stop()
 	var out []dispatcher.Sample
@@ -197,23 +205,33 @@ func recentSamples(ctx context.Context, client *firestore.Client, limit int) ([]
 		if err != nil {
 			return nil, fmt.Errorf("listing the measured runs: %w", err)
 		}
-		out = append(out, sample(snap.Ref.ID, snap.Data()))
+		var run struct {
+			Steps []runner.Step `firestore:"steps"`
+		}
+		if err := snap.DataTo(&run); err != nil {
+			return nil, fmt.Errorf("decoding the steps of run %s: %w", snap.Ref.ID, err)
+		}
+		out = append(out, sample(snap.Ref.ID, snap.Data(), run.Steps))
 	}
 	return out, nil
 }
 
-// sample reads one measured row, id, as the auto-merge rule reads it.
-func sample(id string, row map[string]any) dispatcher.Sample {
+// sample reads one measured row, id, as the auto-merge rule reads it; steps are
+// the row's own, which the build and review models come from.
+func sample(id string, row map[string]any, steps []runner.Step) dispatcher.Sample {
 	autoMerged, _ := row[autoMergeField].(bool)
 	reverted, _ := row[rewriteRevertedField].(bool)
 	s := dispatcher.Sample{
-		Run:        id,
-		Size:       str(row, sizeField),
-		Repo:       str(row, repoField),
-		PRURL:      str(row, prURLField),
-		Title:      str(row, prTitleField),
-		AutoMerged: autoMerged,
-		Reverted:   reverted,
+		Run:         id,
+		Size:        str(row, sizeField),
+		Repo:        str(row, repoField),
+		PRURL:       str(row, prURLField),
+		Title:       str(row, prTitleField),
+		PlanModel:   str(row, planModelField),
+		BuildModel:  runner.PhaseModel(steps, runner.PhaseBuild),
+		ReviewModel: runner.PhaseModel(steps, runner.PhaseReview),
+		AutoMerged:  autoMerged,
+		Reverted:    reverted,
 	}
 	if at, ok := row[rewriteMergedAtField].(time.Time); ok {
 		s.MergedAt = at

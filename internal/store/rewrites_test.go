@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -244,6 +245,77 @@ func TestRecentReturnsTheMeasuredMergesNewestFirst(t *testing.T) {
 	}
 }
 
+// Recent projects each row to the fields a sample reads, so a row carrying more
+// than that reads the same, and the phase models come off its steps and its
+// plan_model.
+func TestRecentReadsTheModelsAndTheWholeProjection(t *testing.T) {
+	_, client := queue(t)
+	ctx := context.Background()
+	whole, switched := fresh("rewrites-whole"), fresh("rewrites-switched")
+	at := time.Now().UTC().Add(time.Hour).Truncate(time.Millisecond)
+	seedRow(t, client, whole, map[string]any{
+		sizeField: "M", repoField: "octo/scratch", prURLField: "https://github.com/octo/scratch/pull/7",
+		prTitleField: "feat: add the widget", autoMergeField: true, prNumberField: int64(7),
+		rewriteMergedAtField: at, rewriteRevertedField: true,
+		rewriteAgentLinesField: int64(100), rewriteOwnerLinesField: int64(20),
+		rewriteReviewFoundField: int64(15), rewriteOwnerChangeField: int64(3), rewriteUnlabelledField: int64(2),
+		rewriteUnmeasuredField: int64(1), planModelField: "p/plan",
+		stepsField: []runner.Step{
+			{Phase: runner.PhaseBuild, Model: "p/build"},
+			{Phase: runner.PhaseBuild, Round: 2, Model: "p/build"},
+			{Phase: runner.PhaseReview, Model: "p/review"},
+		},
+		"ticket_body": strings.Repeat("a long body the sample never reads ", 100),
+	})
+	// A run whose build moved to another model part way has no one build model.
+	seedRow(t, client, switched, map[string]any{
+		rewriteMergedAtField: at.Add(-time.Minute), prNumberField: int64(6),
+		stepsField: []runner.Step{
+			{Phase: runner.PhaseBuild, Model: "p/build"},
+			{Phase: runner.PhaseBuild, Round: 2, Model: "p/fallback"},
+		},
+	})
+
+	got, err := NewRewrites(client).Recent(ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Run != whole || got[1].Run != switched {
+		t.Fatalf("Recent(2) = %+v, want the two rows this test seeded, newest first", got)
+	}
+	if !got[0].MergedAt.Equal(at) {
+		t.Fatalf("merged at = %v, want %v", got[0].MergedAt, at)
+	}
+	want := dispatcher.Sample{
+		Run: whole, Size: "M", Repo: "octo/scratch", PRURL: "https://github.com/octo/scratch/pull/7",
+		MergedAt: got[0].MergedAt, PR: 7, Title: "feat: add the widget",
+		PlanModel: "p/plan", BuildModel: "p/build", ReviewModel: "p/review",
+		Rewrite: dispatcher.Rewrite{
+			AgentLines: 100, OwnerLines: 20, ReviewFoundLines: 15, OwnerChangeLines: 3, UnlabelledLines: 2,
+			UnmeasuredCommits: 1,
+		},
+		AutoMerged: true, Reverted: true,
+	}
+	if !reflect.DeepEqual(got[0], want) {
+		t.Fatalf("sample = %+v, want %+v", got[0], want)
+	}
+	if got[1].BuildModel != "" || got[1].PlanModel != "" || got[1].ReviewModel != "" {
+		t.Fatalf("switched = %+v, want no phase model for a build that moved models", got[1])
+	}
+}
+
+// A row carrying no plan_model and no steps reads every phase model as empty,
+// and the plan model never stands in for another phase's.
+func TestSampleReadsTheModelsOffTheRow(t *testing.T) {
+	if s := sample("run-1", map[string]any{}, nil); s.PlanModel != "" || s.BuildModel != "" || s.ReviewModel != "" {
+		t.Fatalf("sample = %+v, want no model on a row that names none", s)
+	}
+	s := sample("run-2", map[string]any{planModelField: "p/plan"}, nil)
+	if s.PlanModel != "p/plan" || s.BuildModel != "" || s.ReviewModel != "" {
+		t.Fatalf("sample = %+v, want the plan model on the plan phase alone", s)
+	}
+}
+
 // A newly measured PR's title is written on its run row as pr_title, on one
 // line.
 func TestRewritesRecordsThePRTitleOnTheRunRow(t *testing.T) {
@@ -264,12 +336,12 @@ func TestRewritesRecordsThePRTitleOnTheRunRow(t *testing.T) {
 // measured before the title was kept reads as an empty one.
 func TestSampleReadsThePRTitleOffTheRow(t *testing.T) {
 	row := map[string]any{prTitleField: "feat(runner): FRG-1 add the widget"}
-	if got, want := sample("run-1", row).Title, "feat(runner): FRG-1 add the widget"; got != want {
+	if got, want := sample("run-1", row, nil).Title, "feat(runner): FRG-1 add the widget"; got != want {
 		t.Fatalf("title = %q, want %q", got, want)
 	}
 	// A row measured before this change carries the measurement and no title.
 	before := map[string]any{rewriteMergedAtField: mergeAt, rewriteAgentLinesField: int64(3)}
-	if got := sample("run-old", before).Title; got != "" {
+	if got := sample("run-old", before, nil).Title; got != "" {
 		t.Fatalf("title = %q, want a row with no pr_title read as empty", got)
 	}
 }

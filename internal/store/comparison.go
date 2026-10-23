@@ -305,18 +305,13 @@ type modelTotal struct {
 // record with no build step at all (a run that stopped before its build) falls
 // back to the label the ticket named, empty when it named none.
 func creditedModel(rec runner.Record) string {
-	built := ""
-	for _, step := range rec.Steps {
-		if step.Phase != runner.PhaseBuild || step.Model == "" {
-			continue
-		}
-		if built != "" && step.Model != built {
-			return ""
-		}
-		built = step.Model
-	}
-	if built != "" {
+	if built := runner.PhaseModel(rec.Steps, runner.PhaseBuild); built != "" {
 		return built
+	}
+	// A build that named models but no one of them is no model's, so it must not
+	// fall back to the ticket's label.
+	if slices.ContainsFunc(rec.Steps, func(s runner.Step) bool { return s.Phase == runner.PhaseBuild && s.Model != "" }) {
+		return ""
 	}
 	return rec.RunModels().Build
 }
