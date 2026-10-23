@@ -694,6 +694,25 @@ func TestFinalizeRecordsTheSampleAndTheAutoMergeRequest(t *testing.T) {
 	}
 }
 
+func TestPhaseModelIsTheOneModelOfThePhase(t *testing.T) {
+	for name, tt := range map[string]struct {
+		steps []Step
+		want  string
+	}{
+		"one model on every round":           {[]Step{{Phase: PhaseBuild, Model: "p/a"}, {Phase: PhaseBuild, Round: 2, Model: "p/a"}}, "p/a"},
+		"two models, as after a fallback":    {[]Step{{Phase: PhaseBuild, Model: "p/a"}, {Phase: PhaseBuild, Round: 2, Model: "p/b"}}, ""},
+		"no step of the phase":               {[]Step{{Phase: PhaseReview, Model: "p/r"}}, ""},
+		"steps of another phase are ignored": {[]Step{{Phase: PhasePlan, Model: "p/p"}, {Phase: PhaseBuild, Model: "p/a"}, {Phase: PhaseReview, Model: "p/r"}}, "p/a"},
+		"a step with no model is skipped":    {[]Step{{Phase: PhaseBuild}, {Phase: PhaseBuild, Round: 2, Model: "p/a"}}, "p/a"},
+		"a later step with no model":         {[]Step{{Phase: PhaseBuild, Model: "p/a"}, {Phase: PhaseBuild, Round: 2}}, "p/a"},
+		"no steps":                           {nil, ""},
+	} {
+		if got := PhaseModel(tt.steps, PhaseBuild); got != tt.want {
+			t.Errorf("%s: PhaseModel = %q, want %q", name, got, tt.want)
+		}
+	}
+}
+
 func TestRunModelsAreTheFreeTiersOnlyOnAFreeTierClaim(t *testing.T) {
 	named, free := ModelLabels{Build: "p/paid"}, ModelLabels{Build: "p/free"}
 	if got := (Record{ModelLabels: named, LastResortModels: free}).RunModels(); got.Build != "p/paid" {

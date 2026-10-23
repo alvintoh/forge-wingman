@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -241,6 +242,123 @@ func TestRecentReturnsTheMeasuredMergesNewestFirst(t *testing.T) {
 	}
 	if one, err := r.Recent(ctx, 1); err != nil || len(one) != 1 || one[0].AgentLines != 102 {
 		t.Fatalf("Recent(1) = %+v, %v, want the newest merge alone", one, err)
+	}
+}
+
+// Recent projects each row to the fields a sample reads, so a row carrying more
+// than that reads the same, and the phase models come off its steps and its
+// plan_model.
+func TestRecentReadsTheModelsAndTheWholeProjection(t *testing.T) {
+	_, client := queue(t)
+	ctx := context.Background()
+	whole, switched := fresh("rewrites-whole"), fresh("rewrites-switched")
+	at := time.Now().UTC().Add(time.Hour).Truncate(time.Millisecond)
+	seedRow(t, client, whole, map[string]any{
+		sizeField: "M", repoField: "octo/scratch", prURLField: "https://github.com/octo/scratch/pull/7",
+		prTitleField: "feat: add the widget", autoMergeField: true, prNumberField: int64(7),
+		rewriteMergedAtField: at, rewriteRevertedField: true,
+		rewriteAgentLinesField: int64(100), rewriteOwnerLinesField: int64(20),
+		rewriteReviewFoundField: int64(15), rewriteOwnerChangeField: int64(3), rewriteUnlabelledField: int64(2),
+		rewriteUnmeasuredField: int64(1), planModelField: "p/plan",
+		stepsField: []runner.Step{
+			{Phase: runner.PhaseBuild, Model: "p/build"},
+			{Phase: runner.PhaseBuild, Round: 2, Model: "p/build"},
+			{Phase: runner.PhaseReview, Model: "p/review"},
+		},
+		"ticket_body": strings.Repeat("a long body the sample never reads ", 100),
+	})
+	// A run whose build moved to another model part way has no one build model.
+	seedRow(t, client, switched, map[string]any{
+		rewriteMergedAtField: at.Add(-time.Minute), prNumberField: int64(6),
+		stepsField: []runner.Step{
+			{Phase: runner.PhaseBuild, Model: "p/build"},
+			{Phase: runner.PhaseBuild, Round: 2, Model: "p/fallback"},
+		},
+	})
+
+	got, err := NewRewrites(client).Recent(ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Run != whole || got[1].Run != switched {
+		t.Fatalf("Recent(2) = %+v, want the two rows this test seeded, newest first", got)
+	}
+	if !got[0].MergedAt.Equal(at) {
+		t.Fatalf("merged at = %v, want %v", got[0].MergedAt, at)
+	}
+	want := dispatcher.Sample{
+		Run: whole, Size: "M", Repo: "octo/scratch", PRURL: "https://github.com/octo/scratch/pull/7",
+		MergedAt: got[0].MergedAt, PR: 7, Title: "feat: add the widget",
+		PlanModel: "p/plan", BuildModel: "p/build", ReviewModel: "p/review",
+		Rewrite: dispatcher.Rewrite{
+			AgentLines: 100, OwnerLines: 20, ReviewFoundLines: 15, OwnerChangeLines: 3, UnlabelledLines: 2,
+			UnmeasuredCommits: 1,
+		},
+		AutoMerged: true, Reverted: true,
+	}
+	if !reflect.DeepEqual(got[0], want) {
+		t.Fatalf("sample = %+v, want %+v", got[0], want)
+	}
+	if got[1].BuildModel != "" || got[1].PlanModel != "" || got[1].ReviewModel != "" {
+		t.Fatalf("switched = %+v, want no phase model for a build that moved models", got[1])
+	}
+}
+
+// A malformed step costs a measured PR its model and nothing else: the read
+// succeeds, and a field the models do not use cannot spoil them.
+func TestRecentReadsAMalformedStepAsNoModel(t *testing.T) {
+	_, client := queue(t)
+	ctx := context.Background()
+	at := time.Now().UTC().Add(time.Hour)
+	build := map[string]any{"phase": "build", "model": "p/build"}
+	with := func(field string, value any) map[string]any {
+		step := map[string]any{"phase": "build", "model": "p/build"}
+		step[field] = value
+		return step
+	}
+	cases := []struct {
+		name  string
+		steps any
+		want  string
+	}{
+		{"steps a string", "not a list", ""},
+		{"a step that is not an object", []any{"x", int64(5)}, ""},
+		{"a model that is a number", []any{with("model", int64(7))}, ""},
+		{"a phase that is a number", []any{with("phase", int64(9))}, ""},
+		{"a fractional round", []any{with("round", 1.5)}, "p/build"},
+		{"a fractional duration_ms", []any{with("duration_ms", 12.5)}, "p/build"},
+		{"tokens a string", []any{with("tokens", "x")}, "p/build"},
+		{"one bad step beside a good one", []any{"x", build}, "p/build"},
+	}
+	for i, tc := range cases {
+		id := fresh("rewrites-malformed")
+		seedRow(t, client, id, map[string]any{
+			rewriteMergedAtField: at.Add(-time.Duration(i) * time.Minute), stepsField: tc.steps,
+		})
+	}
+	got, err := NewRewrites(client).Recent(ctx, len(cases))
+	if err != nil {
+		t.Fatalf("Recent = %v, want a malformed step never to fail the read", err)
+	}
+	if len(got) != len(cases) {
+		t.Fatalf("Recent = %+v, want the %d rows this test seeded", got, len(cases))
+	}
+	for i, tc := range cases {
+		if got[i].BuildModel != tc.want {
+			t.Errorf("%s: build model = %q, want %q", tc.name, got[i].BuildModel, tc.want)
+		}
+	}
+}
+
+// A row carrying no plan_model and no steps reads every phase model as empty,
+// and the plan model never stands in for another phase's.
+func TestSampleReadsTheModelsOffTheRow(t *testing.T) {
+	if s := sample("run-1", map[string]any{}); s.PlanModel != "" || s.BuildModel != "" || s.ReviewModel != "" {
+		t.Fatalf("sample = %+v, want no model on a row that names none", s)
+	}
+	s := sample("run-2", map[string]any{planModelField: "p/plan"})
+	if s.PlanModel != "p/plan" || s.BuildModel != "" || s.ReviewModel != "" {
+		t.Fatalf("sample = %+v, want the plan model on the plan phase alone", s)
 	}
 }
 

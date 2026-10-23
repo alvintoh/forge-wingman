@@ -302,6 +302,23 @@ func TestComparisonSkipsABuildStepThatNamesNoModel(t *testing.T) {
 	}
 }
 
+func TestCreditedModelFallsBackToTheTicketsLabelOnlyForABuildThatNamedNoModel(t *testing.T) {
+	label := runner.ModelLabels{Build: "p/label"}
+	for name, tt := range map[string]struct {
+		steps []runner.Step
+		want  string
+	}{
+		"one build model":                   {[]runner.Step{{Phase: runner.PhaseBuild, Model: "p/a"}}, "p/a"},
+		"a build that moved models":         {[]runner.Step{{Phase: runner.PhaseBuild, Model: "p/a"}, {Phase: runner.PhaseBuild, Round: 2, Model: "p/b"}}, ""},
+		"a build step naming no model":      {[]runner.Step{{Phase: runner.PhaseBuild}}, "p/label"},
+		"a run that stopped before a build": {[]runner.Step{{Phase: runner.PhasePlan, Model: "p/plan"}}, "p/label"},
+	} {
+		if got := creditedModel(runner.Record{ModelLabels: label, Steps: tt.steps}); got != tt.want {
+			t.Errorf("%s: creditedModel = %q, want %q", name, got, tt.want)
+		}
+	}
+}
+
 func TestComparisonCreditsNoModelForABuildThatSwitchedModel(t *testing.T) {
 	_, client := queue(t)
 	plan, fallback, id := fresh("credit-switch"), fresh("credit-switch-fallback"), fresh("credit-switch-run")
