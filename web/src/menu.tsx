@@ -10,6 +10,12 @@ const MENU_ID = "app-menu";
 // From Tailwind's lg the menu is a column beside the page; under it, a drawer from the menu button.
 const MENU_COLUMN = "(min-width: 64rem)";
 
+// The width from which the expanded menu leaves the Overview its two columns: their 51.25rem (the
+// container query in pages.tsx), the 15rem menu and 1rem for a scrollbar. Narrower, a menu with no
+// saved choice starts as the rail, as a sidebar collapses in a narrow window, so the columns never
+// stack between two widths where they sit side by side.
+const MENU_ROOM = "(min-width: 67.25rem)";
+
 const MENU_WIDTH_KEY = "forge-wingman.menu-width";
 
 type MenuWidth = "expanded" | "rail";
@@ -48,25 +54,25 @@ const SETTINGS_SCREENS: readonly Screen[] = [
 // A screen is current only on its own path, so a run's page marks no item.
 const EXACT = { exact: true } as const;
 
-function subscribeColumn(notify: () => void) {
-  const query = window.matchMedia(MENU_COLUMN);
-  query.addEventListener("change", notify);
-  return () => query.removeEventListener("change", notify);
-}
-
-function useMenuColumn() {
+function useMedia(query: string) {
   return useSyncExternalStore(
-    subscribeColumn,
-    () => window.matchMedia(MENU_COLUMN).matches,
+    (notify) => {
+      const list = window.matchMedia(query);
+      list.addEventListener("change", notify);
+      return () => list.removeEventListener("change", notify);
+    },
+    () => window.matchMedia(query).matches,
     () => false,
   );
 }
 
-function readMenuWidth(): MenuWidth {
+// The saved choice, or null when the owner has not made one here.
+function readMenuWidth(): MenuWidth | null {
   try {
-    return window.localStorage.getItem(MENU_WIDTH_KEY) === "rail" ? "rail" : "expanded";
+    const saved = window.localStorage.getItem(MENU_WIDTH_KEY);
+    return saved === "rail" || saved === "expanded" ? saved : null;
   } catch {
-    return "expanded";
+    return null;
   }
 }
 
@@ -88,8 +94,9 @@ type AppShellProps = {
  * the choice is kept in this browser; under lg it is a drawer from the header's menu button.
  */
 export function AppShell({ children }: AppShellProps) {
-  const column = useMenuColumn();
-  const [width, setWidth] = useState(readMenuWidth);
+  const column = useMedia(MENU_COLUMN);
+  const room = useMedia(MENU_ROOM);
+  const [saved, setSaved] = useState(readMenuWidth);
   const pathname = useLocation({ select: (location) => location.pathname });
   // The path the drawer was opened on: it is open only while that is still the path, so any
   // navigation closes it.
@@ -99,11 +106,11 @@ export function AppShell({ children }: AppShellProps) {
     setDrawerPath(null);
   }
   const drawerOpen = !column && drawerPath === pathname;
-  const rail = width === "rail";
+  const rail = (saved ?? (room ? "expanded" : "rail")) === "rail";
 
   function toggleWidth() {
     const next = rail ? "expanded" : "rail";
-    setWidth(next);
+    setSaved(next);
     writeMenuWidth(next);
   }
 
@@ -321,7 +328,7 @@ function MenuItem({ screen, count, rail, onNavigate }: MenuItemProps) {
         to={screen.to}
         activeOptions={EXACT}
         onClick={onNavigate}
-        aria-label={rail ? name : undefined}
+        aria-label={name}
         title={rail ? screen.label : undefined}
         className={`group flex h-11 items-center rounded-full text-label text-ink transition-colors duration-150 hover:bg-track/60 aria-[current=page]:bg-track aria-[current=page]:font-semibold ${rail ? "w-11 justify-center" : "gap-3 px-3.5"}`}
       >
@@ -352,10 +359,8 @@ function MenuItem({ screen, count, rail, onNavigate }: MenuItemProps) {
         </span>
         {!rail && <span className="min-w-0 flex-1 truncate">{screen.label}</span>}
         {!rail && count > 0 && (
-          <span className="font-mono text-micro font-semibold text-ink2">
-            <span className="sr-only">, </span>
+          <span aria-hidden="true" className="font-mono text-micro font-semibold text-ink2">
             {count}
-            <span className="sr-only"> {actions}</span>
           </span>
         )}
       </Link>

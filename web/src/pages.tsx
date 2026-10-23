@@ -43,13 +43,12 @@ export function Inbox() {
   const grid = useRef<HTMLDivElement>(null);
   const twoColumns = useTwoColumns(grid);
   return (
-    // Two columns once the page's width holds the 368px Projects card, the 32px gap, the insets and
-    // an Actions card at least as wide as Projects: 53rem. The right inset is the header's 26px
-    // gutter, so the Projects card ends under the avatar; the left one is the same gutter, and 16px
-    // more beside the menu column (lg), which takes the cards off the menu's edge.
+    // Two columns once the page's width holds the 368px Projects card, the 32px gap, the header's
+    // 26px gutter on both sides and an Actions card at least as wide as Projects: 51.25rem
+    // (`MENU_ROOM` in menu.tsx adds the expanded menu to this). The cards' edges are the header's.
     <div
       ref={grid}
-      className="grid grid-cols-1 gap-y-[calc(var(--spacing-band)*2)] px-padx py-band @[53rem]:grid-cols-[minmax(0,1fr)_23rem] @[53rem]:gap-x-8 lg:@[53rem]:pl-[calc(var(--spacing-padx)+1rem)]"
+      className="grid grid-cols-1 gap-y-[calc(var(--spacing-band)*2)] px-padx py-band @[51.25rem]:grid-cols-[minmax(0,1fr)_23rem] @[51.25rem]:gap-x-8"
     >
       {twoColumns ? sections : [...sections].reverse()}
     </div>
