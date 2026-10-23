@@ -479,14 +479,14 @@ function ProjectEntry({ project, now, refresh }: EntryProps) {
             {view.lines.map((l, i) => (
               <p
                 key={i}
-                className={`${l.keep ? "" : "hidden md:block"} ${i === view.lines.length - 1 ? "md:text-muted" : ""}`}
+                className={`${l.keep ? "" : "hidden @md:block"} ${i === view.lines.length - 1 ? "@md:text-muted" : ""}`}
               >
                 {l.text}
               </p>
             ))}
           </div>
           {/* Details only while a phase runs, drains or is held: it opens the tickets in flight, and
-              on the phone the status lines its card leaves out (owner, 2026-10-22). */}
+              on a compact card the status lines it leaves out (owner, 2026-10-22). */}
           {(view.pill === "RUNNING" || view.pill === "STOPPING" || view.pill === "STOPPED") && (
             <button
               type="button"
@@ -528,7 +528,7 @@ function ProjectEntry({ project, now, refresh }: EntryProps) {
 
       {readable !== null && open && (
         <div id={detailId} className="mt-4 border-t border-hair pt-3">
-          <div className="mb-3 text-cap text-ink2 md:hidden">
+          <div className="mb-3 text-cap text-ink2 @md:hidden">
             {view.lines
               .filter((l) => !l.keep)
               .map((l, i) => (
@@ -657,7 +657,10 @@ function ProjectsCard({ projects, total, now, stale, seeAll, refresh }: CardProp
           The list could not be refreshed; showing the last read.
         </p>
       )}
-      <div className="card-frame mt-4">
+      {/* The card is compact while its content is narrower than 28rem: on a phone and in the
+          Overview's sidebar at every width. A wider card, on the full page of projects or the
+          stacked Overview of a tablet, keeps its full rows. */}
+      <div className="card-frame @container mt-4">
         {projects.length > 0 && (
           <ul>
             {projects.map((project) => (
@@ -781,7 +784,7 @@ export function ProjectsSection() {
 export function Projects() {
   const { state, refresh, retry } = useProjects();
   return (
-    <section className="mx-auto max-w-desk px-padx py-band md:px-pad">
+    <section className="mx-auto max-w-desk px-padx pt-4 pb-band">
       <h1 className="text-title font-semibold text-ink">Projects</h1>
       <ProjectsPanels state={state} retry={retry}>
         <ProjectsCard

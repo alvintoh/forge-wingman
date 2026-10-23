@@ -1,4 +1,4 @@
-import { kindClass, type PillWidth } from "./button-style";
+import { disabledEdge, kindClass, type PillWidth } from "./button-style";
 
 type SmallPillProps = React.ComponentProps<"button"> & {
   label: string;
@@ -36,7 +36,7 @@ export function SmallPill({ label, kind, width, ...rest }: SmallPillProps) {
     >
       <span
         style={width}
-        className={`inline-flex h-7 items-center justify-center rounded-full border font-mono text-micro font-semibold tracking-[1.2px] group-disabled:border-hair group-disabled:bg-track group-disabled:text-muted group-aria-disabled:border-hair group-aria-disabled:bg-track group-aria-disabled:text-muted group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-accent ${kindClass[kind]}`}
+        className={`inline-flex h-7 items-center justify-center rounded-full border font-mono text-micro font-semibold tracking-[1.2px] group-disabled:bg-track group-disabled:text-muted group-aria-disabled:bg-track group-aria-disabled:text-muted group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-accent ${kindClass[kind]} ${disabledEdge[kind].group}`}
       >
         <span className="-mr-[1.2px]">{label}</span>
       </span>

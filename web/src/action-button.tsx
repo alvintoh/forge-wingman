@@ -1,4 +1,4 @@
-import { kindClass } from "./button-style";
+import { disabledEdge, kindClass } from "./button-style";
 
 type ActionButtonProps = React.ComponentProps<"button"> & {
   label: string;
@@ -15,7 +15,7 @@ export function ActionButton({ label, kind, ...rest }: ActionButtonProps) {
   return (
     <button
       type="button"
-      className={`inline-flex h-11 min-w-[102.4px] cursor-pointer items-center justify-center rounded-full border px-5 font-mono text-micro font-semibold tracking-[1.2px] disabled:cursor-not-allowed disabled:border-hair disabled:bg-track disabled:text-muted ${kindClass[kind]}`}
+      className={`inline-flex h-11 min-w-[102.4px] cursor-pointer items-center justify-center rounded-full border px-5 font-mono text-micro font-semibold tracking-[1.2px] disabled:cursor-not-allowed disabled:bg-track disabled:text-muted ${kindClass[kind]} ${disabledEdge[kind].self}`}
       {...rest}
     >
       {/* The tracking trails the last letter too; taking it back centres the ink. */}
