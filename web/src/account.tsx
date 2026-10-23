@@ -9,12 +9,33 @@ type Me = {
 type MeState = { status: "loading" } | { status: "error" } | { status: "ready"; email: string };
 
 // IAP clears its own session cookie on this query and sends the browser back
-// through Google's sign-in, which is both switching account and signing out.
+// through Google's sign-in, which is how an account is switched.
 const CLEAR_LOGIN_URL = "/?gcp-iap-mode=CLEAR_LOGIN_COOKIE";
 
+// The public page that signing out leaves on.
+const LANDING_URL = "https://forge-wingman.web.app/";
+
+// Signing out clears the session behind a request, then opens the landing
+// page. If the clearing cannot be sent, the whole navigation through IAP's
+// own sign-in runs instead, so the visitor is never sent away still signed in.
+async function signOut() {
+  try {
+    await fetch(CLEAR_LOGIN_URL, { redirect: "manual" });
+  } catch (err) {
+    console.error("signOutNotCleared", err);
+    window.location.assign(CLEAR_LOGIN_URL);
+    return;
+  }
+  window.location.assign(LANDING_URL);
+}
+
+function switchAccount() {
+  window.location.assign(CLEAR_LOGIN_URL);
+}
+
 const ACCOUNT_ACTIONS = [
-  { key: "switch", label: "SWITCH ACCOUNT" },
-  { key: "sign-out", label: "SIGN OUT" },
+  { key: "switch", label: "SWITCH ACCOUNT", run: switchAccount },
+  { key: "sign-out", label: "SIGN OUT", run: signOut },
 ] as const;
 
 function isMe(body: unknown): body is Me {
@@ -168,7 +189,7 @@ function AccountMenu({ email }: AccountMenuProps) {
               ref={i === 0 ? firstActionRef : undefined}
               kind="secondary"
               label={action.label}
-              onClick={() => window.location.assign(CLEAR_LOGIN_URL)}
+              onClick={action.run}
             />
           ))}
         </div>
