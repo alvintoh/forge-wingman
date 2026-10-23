@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -117,4 +120,41 @@ func hasES256Signature(token string) bool {
 	}
 	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
 	return err == nil && len(sig) == es256SignatureSize
+}
+
+// localDevEmail is the account local development acts as when
+// WINGMAN_LOCAL_DEV_EMAIL names none.
+const localDevEmail = "dev@localhost"
+
+// gate puts IAP's assertion check in front of every route, unless
+// WINGMAN_LOCAL_DEV is 1, where no IAP fronts the process and every request
+// passes as WINGMAN_LOCAL_DEV_EMAIL, or localDevEmail. Outside local
+// development the audience must be set, so a missing setting stops the process
+// rather than serving unchecked.
+func gate(ctx context.Context, logger *slog.Logger, mux http.Handler) (http.Handler, error) {
+	if os.Getenv("WINGMAN_LOCAL_DEV") == "1" {
+		email := os.Getenv("WINGMAN_LOCAL_DEV_EMAIL")
+		if email == "" {
+			email = localDevEmail
+		}
+		logger.Warn("iapCheckOff", "reason", "local-dev", "email", email)
+		return signedInAs(email, mux), nil
+	}
+	audience := os.Getenv("WINGMAN_IAP_AUDIENCE")
+	if audience == "" {
+		return nil, errors.New("WINGMAN_IAP_AUDIENCE is unset and WINGMAN_LOCAL_DEV is not 1")
+	}
+	validator, err := idtoken.NewValidator(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("IAP assertion validator: %w", err)
+	}
+	return requireIAP(validator, audience, logger, mux), nil
+}
+
+// me serves GET /api/me: the signed-in account's email.
+func me(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(struct {
+		Email *string `json:"email"`
+	}{requestEmail(r)})
 }
