@@ -9,6 +9,7 @@ import { type InboxRun, isStopped, stopReasonOf, titleOf } from "./run";
 // trimmed note, which a multibyte note can pass first.
 const MAX_NOTE_CHARS = 2000;
 const MAX_NOTE_BYTES = 4096;
+const SENDING_LABEL = "SENDING...";
 const TOO_LONG_WORDS = "The note is too long to send.";
 
 const labelClass = "block font-mono text-label leading-4 font-semibold tracking-[1.4px] text-ink2";
@@ -84,7 +85,7 @@ function RetryForm({ run, state, draftOf, onDraft, onConfirm, onBack }: FormProp
         placeholder="What should the agent do differently?"
         aria-describedby={helpId}
         onChange={handleChange}
-        className="mt-1.5 block min-h-28 w-full resize-none rounded-tile border border-ink2 bg-ground px-3.5 py-3 text-head leading-6 field-sizing-content text-ink placeholder:text-muted"
+        className="mt-1.5 block max-h-[max(7rem,calc(100dvh-29rem))] min-h-28 w-full resize-none rounded-tile border border-ink2 bg-ground px-3.5 py-3 text-head leading-6 field-sizing-content text-ink placeholder:text-muted"
       />
       <div className="mt-2 flex items-start justify-between gap-3 text-cap leading-4 text-muted">
         <p id={helpId}>For this retry only. The rules are unchanged.</p>
@@ -102,7 +103,7 @@ function RetryForm({ run, state, draftOf, onDraft, onConfirm, onBack }: FormProp
         action={
           <ActionButton
             kind="primary"
-            label="RETRY"
+            label={sending ? SENDING_LABEL : "RETRY"}
             aria-disabled={blocked || undefined}
             aria-describedby={words === undefined ? undefined : alertId}
             onClick={confirm}

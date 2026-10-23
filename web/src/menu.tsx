@@ -1,8 +1,9 @@
 import { Link, useLocation } from "@tanstack/react-router";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { PageHeader } from "./header";
 import { useInbox } from "./inbox-context";
+import { useMedia } from "./use-media";
 
 // The id of the menu, which the drawer's menu button and the column's collapse button control.
 const MENU_ID = "app-menu";
@@ -48,18 +49,6 @@ const SETTINGS_SCREENS: readonly Screen[] = [
 
 // A screen is current only on its own path, so a run's page marks no item.
 const EXACT = { exact: true } as const;
-
-function useMedia(query: string) {
-  return useSyncExternalStore(
-    (notify) => {
-      const list = window.matchMedia(query);
-      list.addEventListener("change", notify);
-      return () => list.removeEventListener("change", notify);
-    },
-    () => window.matchMedia(query).matches,
-    () => false,
-  );
-}
 
 // The saved choice, or null when the owner has not made one here.
 function readMenuWidth(): MenuWidth | null {

@@ -40,6 +40,11 @@ const MERGED_WORDS = "Merged. Squashed, branch deleted.";
 const MERGING_LABEL = "MERGING...";
 const MERGE_PILL_WIDTH = pillSetWidth(["MERGE PR", MERGING_LABEL, "RETRY MERGE"]);
 
+// Under 17rem (272px) of row the chip, the ticket and the pill (about 252px with the widest chip)
+// no longer fit one line, so the pill takes a line of its own under the meta line.
+const pillSlot =
+  "col-span-2 row-start-3 justify-self-end @min-[17rem]:col-span-1 @min-[17rem]:col-start-2 @min-[17rem]:row-start-1 @min-[17rem]:justify-self-auto @min-[23.5rem]:col-start-3";
+
 const chipClass =
   "inline-flex h-5.5 shrink-0 items-center rounded-full px-2.5 font-mono text-micro font-semibold tracking-[1.2px] text-card";
 
@@ -151,8 +156,8 @@ export function InboxRow({ run, now, state, stop, onOpen, onMerge, onRetry, onCo
         onClick={handleOpen}
         className="absolute inset-y-0 -inset-x-padx cursor-pointer rounded-tile focus-visible:outline-offset-[-7.5px]!"
       />
-      <div className="grid min-h-11 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 @min-[23.5rem]:grid-cols-[auto_minmax(0,1fr)_auto] @min-[23.5rem]:gap-x-2">
-        <div className="col-start-1 row-start-1 flex items-center gap-3">
+      <div className="grid min-h-11 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 @min-[17rem]:gap-y-0 @min-[23.5rem]:grid-cols-[auto_minmax(0,1fr)_auto] @min-[23.5rem]:gap-x-2">
+        <div className="col-span-2 row-start-1 flex items-center gap-3 @min-[17rem]:col-span-1">
           <span className={`${chipClass} ${kindFill[kind]}`}>{kind}</span>
           <span
             id={ticketId}
@@ -173,10 +178,10 @@ export function InboxRow({ run, now, state, stop, onOpen, onMerge, onRetry, onCo
           <span
             aria-hidden="true"
             style={MERGE_PILL_WIDTH}
-            className="h-11 min-w-11 font-mono text-micro"
+            className={`h-11 min-w-11 font-mono text-micro ${pillSlot}`}
           />
         ) : stopped ? (
-          <span className="relative flex">
+          <span className={`relative flex ${pillSlot}`}>
             <SmallPill
               kind="secondary"
               width={MERGE_PILL_WIDTH}
@@ -189,7 +194,7 @@ export function InboxRow({ run, now, state, stop, onOpen, onMerge, onRetry, onCo
             />
           </span>
         ) : (
-          <span className="relative flex">
+          <span className={`relative flex ${pillSlot}`}>
             <SmallPill
               kind="primary"
               width={MERGE_PILL_WIDTH}
