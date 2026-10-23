@@ -1521,8 +1521,8 @@ func TestInboxCarriesGitHubsViewOfEachPRFromOneRead(t *testing.T) {
 		{Run: "r3", Repo: "octo/scratch", PRURL: "https://github.com/octo/scratch/pull/9"},
 	}}
 	pulls := &stubPulls{summaries: map[dispatcher.PullRef]dispatcher.PullSummary{
-		{Repo: "octo/scratch", Number: 7}: {Title: "feat: a", HeadSHA: "abc123", Checks: dispatcher.CheckGreen, ChecksSummary: "go and web"},
-		{Repo: "octo/scratch", Number: 8}: {Title: "fix: b", Draft: true, HeadSHA: "def456", Checks: dispatcher.CheckFailing, ChecksSummary: "web"},
+		{Repo: "octo/scratch", Number: 7}: {Title: "feat: a", State: dispatcher.PullStateOpen, HeadSHA: "abc123", Checks: dispatcher.CheckGreen, ChecksSummary: "go and web"},
+		{Repo: "octo/scratch", Number: 8}: {Title: "fix: b", State: dispatcher.PullStateOpen, Draft: true, HeadSHA: "def456", Checks: dispatcher.CheckFailing, ChecksSummary: "web"},
 	}}
 	rec := getInbox(newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Inbox: inbox, Pulls: pulls, AutoMerge: &stubAutoMerge{enabled: true}}))
 	var got struct {
@@ -1546,6 +1546,39 @@ func TestInboxCarriesGitHubsViewOfEachPRFromOneRead(t *testing.T) {
 		if _, ok := three[k]; ok {
 			t.Errorf("third has %q though GitHub did not return its PR: %v", k, three)
 		}
+	}
+}
+
+func TestInboxLeavesOutRunsWhosePRIsClosedOrMerged(t *testing.T) {
+	inbox := &stubInbox{runs: []store.InboxRun{
+		{Run: "open", PRURL: "https://github.com/octo/scratch/pull/7"},
+		{Run: "closed", PRURL: "https://github.com/octo/scratch/pull/8"},
+		{Run: "merged", PRURL: "https://github.com/octo/scratch/pull/9"},
+		{Run: "unknown", PRURL: "https://github.com/octo/scratch/pull/11"},
+		{Run: "unread", PRURL: "https://github.com/octo/scratch/pull/10"},
+	}}
+	pulls := &stubPulls{summaries: map[dispatcher.PullRef]dispatcher.PullSummary{
+		{Repo: "octo/scratch", Number: 7}:  {Title: "feat: a", State: dispatcher.PullStateOpen, HeadSHA: "abc123", Checks: dispatcher.CheckGreen, ChecksSummary: "go"},
+		{Repo: "octo/scratch", Number: 8}:  {Title: "fix: b", State: dispatcher.PullStateClosed, HeadSHA: "def456", Checks: dispatcher.CheckGreen, ChecksSummary: "go"},
+		{Repo: "octo/scratch", Number: 9}:  {Title: "chore: c", State: dispatcher.PullStateMerged, HeadSHA: "0a0a0a", Checks: dispatcher.CheckGreen, ChecksSummary: "go"},
+		{Repo: "octo/scratch", Number: 11}: {Title: "docs: d", HeadSHA: "1b1b1b", Checks: dispatcher.CheckGreen, ChecksSummary: "go"},
+	}}
+	rec := getInbox(newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Inbox: inbox, Pulls: pulls, AutoMerge: &stubAutoMerge{enabled: true}}))
+	var got struct {
+		Runs []map[string]any `json:"runs"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); rec.Code != http.StatusOK || err != nil {
+		t.Fatalf("status %d, body %s, %v", rec.Code, rec.Body.String(), err)
+	}
+	var listed []string
+	for _, r := range got.Runs {
+		listed = append(listed, r["run"].(string))
+	}
+	if !reflect.DeepEqual(listed, []string{"open", "unknown", "unread"}) {
+		t.Fatalf("listed %v, want the open PR, the one whose state GitHub did not say and the one it did not return", listed)
+	}
+	if got.Runs[0]["title"] != "feat: a" || got.Runs[0]["head_sha"] != "abc123" {
+		t.Errorf("open row = %v, want GitHub's title and head", got.Runs[0])
 	}
 }
 
@@ -1937,7 +1970,7 @@ func TestInboxShowsChecksNotGreenAboveTheReasonsThatNeverBlock(t *testing.T) {
 		"checks GitHub did not return are not made up": {"", "", true, true, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
-			pulls := &stubPulls{summaries: map[dispatcher.PullRef]dispatcher.PullSummary{ref: {Checks: tt.checks}}}
+			pulls := &stubPulls{summaries: map[dispatcher.PullRef]dispatcher.PullSummary{ref: {State: dispatcher.PullStateOpen, Checks: tt.checks}}}
 			if tt.unread {
 				pulls.summaries = nil
 			}

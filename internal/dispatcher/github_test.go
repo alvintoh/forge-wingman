@@ -716,18 +716,18 @@ func TestGitHubPullSummariesReadsEveryPullInOneGraphQLRequest(t *testing.T) {
 			t.Errorf("decoding the request: %v", err)
 		}
 		_, _ = io.WriteString(w, `{"data":{
-		"r0":{"pullRequest":{"title":"feat: a","isDraft":false,"headRefOid":"abc123","commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS","contexts":{"nodes":[
+		"r0":{"pullRequest":{"title":"feat: a","state":"OPEN","isDraft":false,"headRefOid":"abc123","commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS","contexts":{"nodes":[
 			{"__typename":"CheckRun","name":"go","status":"COMPLETED","conclusion":"SUCCESS"},
 			{"__typename":"CheckRun","name":"web","status":"COMPLETED","conclusion":"SKIPPED"}]}}}}]}}},
-		"r1":{"pullRequest":{"title":"fix: b","isDraft":true,"headRefOid":"def456","commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE","contexts":{"nodes":[
+		"r1":{"pullRequest":{"title":"fix: b","state":"OPEN","isDraft":true,"headRefOid":"def456","commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE","contexts":{"nodes":[
 			{"__typename":"CheckRun","name":"go","status":"COMPLETED","conclusion":"SUCCESS"},
 			{"__typename":"CheckRun","name":"web","status":"COMPLETED","conclusion":"FAILURE"},
 			{"__typename":"StatusContext","context":"lint","state":"ERROR"}]}}}}]}}},
-		"r4":{"pullRequest":{"title":"feat: d","isDraft":false,"headRefOid":"9f9f9f","commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"PENDING","contexts":{"nodes":[
+		"r4":{"pullRequest":{"title":"feat: d","state":"MERGED","isDraft":false,"headRefOid":"9f9f9f","commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"PENDING","contexts":{"nodes":[
 			{"__typename":"CheckRun","name":"go","status":"IN_PROGRESS","conclusion":null},
 			{"__typename":"StatusContext","context":"lint","state":"PENDING"},
 			{"__typename":"CheckRun","name":"web","status":"COMPLETED","conclusion":"SUCCESS"}]}}}}]}}},
-		"r2":{"pullRequest":{"title":"chore: c","isDraft":false,"headRefOid":"0a0a0a","commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}},
+		"r2":{"pullRequest":{"title":"chore: c","state":"CLOSED","isDraft":false,"headRefOid":"0a0a0a","commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}},
 		"r3":null}}`)
 	}))
 	defer srv.Close()
@@ -743,11 +743,14 @@ func TestGitHubPullSummariesReadsEveryPullInOneGraphQLRequest(t *testing.T) {
 	if req.Variables["o2"] != "octo" || req.Variables["n2"] != "other" || req.Variables["p2"] != float64(9) || strings.Contains(req.Query, "octo") {
 		t.Fatalf("variables = %v, query %q, want the repository passed as variables", req.Variables, req.Query)
 	}
+	if !regexp.MustCompile(`pullRequest\(number: \$p0\) \{[^{]*\bstate\b`).MatchString(req.Query) {
+		t.Fatalf("query %q, want the pull request's own state read", req.Query)
+	}
 	want := map[PullRef]PullSummary{
-		{"octo/scratch", 7}:  {Title: "feat: a", HeadSHA: "abc123", Checks: CheckGreen, ChecksSummary: "go and web"},
-		{"octo/scratch", 8}:  {Title: "fix: b", Draft: true, HeadSHA: "def456", Checks: CheckFailing, ChecksSummary: "web and lint"},
-		{"octo/scratch", 10}: {Title: "feat: d", HeadSHA: "9f9f9f", Checks: CheckPending, ChecksSummary: "go and lint"},
-		{"octo/other", 9}:    {Title: "chore: c", HeadSHA: "0a0a0a", Checks: CheckPending, ChecksSummary: "no checks yet"},
+		{"octo/scratch", 7}:  {Title: "feat: a", State: "OPEN", HeadSHA: "abc123", Checks: CheckGreen, ChecksSummary: "go and web"},
+		{"octo/scratch", 8}:  {Title: "fix: b", State: "OPEN", Draft: true, HeadSHA: "def456", Checks: CheckFailing, ChecksSummary: "web and lint"},
+		{"octo/scratch", 10}: {Title: "feat: d", State: "MERGED", HeadSHA: "9f9f9f", Checks: CheckPending, ChecksSummary: "go and lint"},
+		{"octo/other", 9}:    {Title: "chore: c", State: "CLOSED", HeadSHA: "0a0a0a", Checks: CheckPending, ChecksSummary: "no checks yet"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("summaries = %+v, want %+v", got, want)
