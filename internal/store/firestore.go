@@ -85,6 +85,43 @@ func (r *Records) RecordMerge(ctx context.Context, id, sha string, at time.Time)
 	return nil
 }
 
+// RecordCancel sets when, and by which signed-in address, the owner cancelled
+// run id from its inbox row, keeping every other field.
+func (r *Records) RecordCancel(ctx context.Context, id, by string, at time.Time) error {
+	_, err := r.client.Collection(runsCollection).Doc(id).Update(ctx, []firestore.Update{
+		{Path: cancelledByOwnerAtField, Value: at},
+		{Path: cancelledByField, Value: by},
+	})
+	if err != nil {
+		return fmt.Errorf("recording run %s's cancel: %w", id, err)
+	}
+	return nil
+}
+
+// CancelTarget is what a cancel decides on: how the run ended, when the owner
+// cancelled it, and whether its PR was merged — by the owner through the surface
+// or by a merge the dispatcher's poll measured, which sits outside the record.
+type CancelTarget struct {
+	Outcome            runner.Outcome
+	CancelledByOwnerAt time.Time
+	Merged             bool
+}
+
+// CancelTarget reads the run a cancel acts on, or runner.ErrRecordNotFound.
+func (r *Records) CancelTarget(ctx context.Context, id string) (CancelTarget, error) {
+	snap, err := r.client.Collection(runsCollection).Doc(id).Get(ctx)
+	if status.Code(err) == codes.NotFound {
+		return CancelTarget{}, fmt.Errorf("%s: %w", id, runner.ErrRecordNotFound)
+	}
+	if err != nil {
+		return CancelTarget{}, err
+	}
+	row := snap.Data()
+	target := CancelTarget{Outcome: runner.Outcome(str(row, outcomeField)), Merged: settledMerged(row)}
+	target.CancelledByOwnerAt, _ = row[cancelledByOwnerAtField].(time.Time)
+	return target, nil
+}
+
 // GetPlan reads the plan stage's fields from run id. A run whose plan stage has
 // not run yet reads as the zero PlanRecord.
 func (r *Records) GetPlan(ctx context.Context, id string) (runner.PlanRecord, error) {

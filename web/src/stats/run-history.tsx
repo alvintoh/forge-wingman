@@ -18,6 +18,7 @@ type HistoryResponse = {
 // reasons with. Two pairs share a colour, so the words carry which one a bar is.
 const kindFill: Record<string, string> = {
   allowance: "bg-defer",
+  cancelled: "bg-muted",
   credential: "bg-stop",
   decision: "bg-stop",
   draft: "bg-defer",

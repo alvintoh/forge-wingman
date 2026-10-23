@@ -38,6 +38,7 @@ func (d Deps) runHistory(w http.ResponseWriter, r *http.Request) {
 // words say what the colour alone cannot, since two kinds can share one.
 const (
 	kindAllowance  = "allowance"
+	kindCancelled  = "cancelled"
 	kindCredential = "credential"
 	kindDecision   = "decision"
 	kindDraft      = "draft"
@@ -87,6 +88,9 @@ func renderRunHistory(runs []store.SettledRun) historyResponse {
 func runKind(run store.SettledRun) (kind, words string) {
 	if run.Merged {
 		return kindMerged, "merged"
+	}
+	if run.Cancelled {
+		return kindCancelled, "cancelled by you"
 	}
 	if run.Outcome == runner.OutcomePROpened {
 		if run.WaitReason == runner.WaitUnconfirmedDecision {

@@ -40,6 +40,7 @@ func TestInboxListsOpenPRsWaitingOnTheOwnerNewestFirst(t *testing.T) {
 		"merged by a poll":  row(6*time.Hour, map[string]any{"rewrite_merged_at": inboxBase, "wait_reason": "size-l"}),
 		"no PR":             row(7*time.Hour, map[string]any{"pr_url": "", "wait_reason": "draft"}),
 		"stopped":           row(8*time.Hour, map[string]any{"outcome": string(runner.OutcomeInfraFailure), "wait_reason": "draft"}),
+		"cancelled":         row(9*time.Hour, map[string]any{"cancelled_by_owner_at": inboxBase, "cancelled_by": "owner@example.com", "wait_reason": "draft"}),
 		"too old to review": row(400*24*time.Hour, map[string]any{"wait_reason": "size-l"}),
 	}
 	var ids []string
@@ -181,6 +182,85 @@ func TestRecordMergeRefusesARunWithNoRow(t *testing.T) {
 	}
 	if snap, _ := client.Collection(runsCollection).Doc(id).Get(context.Background()); snap != nil && snap.Exists() {
 		t.Fatal("a row now exists")
+	}
+}
+
+func TestRecordCancelKeepsTheRestOfTheRow(t *testing.T) {
+	_, client := queue(t)
+	ctx := context.Background()
+	id := fmt.Sprintf("cancel-%d", time.Now().UnixNano())
+	forget(t, client, id)
+	doc := client.Collection(runsCollection).Doc(id)
+	if _, err := doc.Set(ctx, map[string]any{"ticket_id": "ABC-1", "wait_reason": "size-l"}); err != nil {
+		t.Fatal(err)
+	}
+
+	at := time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC)
+	if err := NewRecords(client).RecordCancel(ctx, id, "owner@example.com", at); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := doc.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := snap.Data()
+	if data["ticket_id"] != "ABC-1" || data["wait_reason"] != "size-l" {
+		t.Errorf("a field the cancel does not name was lost: %v", data)
+	}
+	if data["cancelled_by"] != "owner@example.com" || !data["cancelled_by_owner_at"].(time.Time).Equal(at) {
+		t.Errorf("row = %v, want the cancel and its owner recorded", data)
+	}
+}
+
+func TestRecordCancelRefusesARunWithNoRow(t *testing.T) {
+	_, client := queue(t)
+	id := fmt.Sprintf("absent-cancel-%d", time.Now().UnixNano())
+	forget(t, client, id)
+	if err := NewRecords(client).RecordCancel(context.Background(), id, "owner@example.com", time.Now()); err == nil {
+		t.Fatal("RecordCancel created a row for a run that has none")
+	}
+	if snap, _ := client.Collection(runsCollection).Doc(id).Get(context.Background()); snap != nil && snap.Exists() {
+		t.Fatal("a row now exists")
+	}
+}
+
+// TestCancelTargetReadsWhatTheCancelDecidesOn pins the fields a cancel decides
+// on. A merge the dispatcher's poll measured sits outside the record, so the
+// cancel reads it from the row beside the owner's own merge.
+func TestCancelTargetReadsWhatTheCancelDecidesOn(t *testing.T) {
+	_, client := queue(t)
+	ctx := context.Background()
+	id := fmt.Sprintf("cancel-target-%d", time.Now().UnixNano())
+	forget(t, client, id)
+	doc := client.Collection(runsCollection).Doc(id)
+	at := time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC)
+	waiting := string(runner.OutcomePROpened)
+	for _, tt := range []struct {
+		name string
+		row  map[string]any
+		want CancelTarget
+	}{
+		{name: "waiting", row: map[string]any{outcomeField: waiting}, want: CancelTarget{Outcome: runner.OutcomePROpened}},
+		{name: "cancelled", row: map[string]any{outcomeField: waiting, cancelledByOwnerAtField: at}, want: CancelTarget{Outcome: runner.OutcomePROpened, CancelledByOwnerAt: at}},
+		{name: "merged by the owner", row: map[string]any{outcomeField: waiting, mergedByOwnerAtField: at}, want: CancelTarget{Outcome: runner.OutcomePROpened, Merged: true}},
+		{name: "merged by a poll", row: map[string]any{outcomeField: waiting, rewriteMergedAtField: at}, want: CancelTarget{Outcome: runner.OutcomePROpened, Merged: true}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := doc.Set(ctx, tt.row); err != nil {
+				t.Fatal(err)
+			}
+			got, err := NewRecords(client).CancelTarget(ctx, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Outcome != tt.want.Outcome || got.Merged != tt.want.Merged ||
+				!got.CancelledByOwnerAt.Equal(tt.want.CancelledByOwnerAt) {
+				t.Fatalf("= %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+	if _, err := NewRecords(client).CancelTarget(ctx, id+"-absent"); !errors.Is(err, runner.ErrRecordNotFound) {
+		t.Fatalf("absent run: err = %v, want ErrRecordNotFound", err)
 	}
 }
 

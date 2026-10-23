@@ -21,7 +21,9 @@ type SettledRun struct {
 	StopReason runner.StopReason
 	WaitReason runner.WaitReason
 	Merged     bool
-	SettledAt  time.Time
+	// Cancelled is whether the owner cancelled the run from its inbox row.
+	Cancelled bool
+	SettledAt time.Time
 }
 
 // RecentSettled returns the limit most recently settled runs, newest first. A
@@ -32,7 +34,7 @@ func (r *Records) RecentSettled(ctx context.Context, limit int) ([]SettledRun, e
 		OrderBy(settledAtField, firestore.Desc).
 		Limit(limit).
 		Select(ticketIDField, outcomeField, stopReasonField, waitReasonField, settledAtField,
-			mergedByOwnerAtField, rewriteMergedAtField).
+			mergedByOwnerAtField, rewriteMergedAtField, cancelledByOwnerAtField).
 		Documents(ctx)
 	defer iter.Stop()
 	var out []SettledRun
@@ -60,6 +62,8 @@ func historyRun(id string, row map[string]any) SettledRun {
 		Merged:     settledMerged(row),
 	}
 	run.SettledAt, _ = row[settledAtField].(time.Time)
+	cancelled, _ := row[cancelledByOwnerAtField].(time.Time)
+	run.Cancelled = !cancelled.IsZero()
 	return run
 }
 

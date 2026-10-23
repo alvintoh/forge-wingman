@@ -47,6 +47,8 @@ func TestRunKindPlacesEveryOutcomeInOneKindWithItsWords(t *testing.T) {
 	}{
 		{"merged", store.SettledRun{Merged: true, Outcome: runner.OutcomePROpened}, "merged", "merged"},
 		{"merged beats a wait reason", store.SettledRun{Merged: true, Outcome: runner.OutcomePROpened, WaitReason: runner.WaitDraft}, "merged", "merged"},
+		{"merged beats the owner's cancel", store.SettledRun{Merged: true, Cancelled: true, Outcome: runner.OutcomePROpened}, "merged", "merged"},
+		{"cancelled by the owner", store.SettledRun{Outcome: runner.OutcomePROpened, WaitReason: runner.WaitSizeL, Cancelled: true}, "cancelled", "cancelled by you"},
 		{"open PR on an unconfirmed decision", store.SettledRun{Outcome: runner.OutcomePROpened, WaitReason: runner.WaitUnconfirmedDecision}, "decision", "stopped at an unconfirmed decision"},
 		{"open draft PR", store.SettledRun{Outcome: runner.OutcomePROpened, WaitReason: runner.WaitDraft}, "draft", "draft PR with open boxes"},
 		{"open PR waiting for review", store.SettledRun{Outcome: runner.OutcomePROpened, WaitReason: runner.WaitSizeL}, "pr-open", "PR open, waiting on you"},

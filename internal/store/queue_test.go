@@ -2619,6 +2619,38 @@ func TestRequeueReturnsAStoppedRunToTheQueue(t *testing.T) {
 	}
 }
 
+func TestRequeueClearsTheOwnersCancel(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	run := queuedRun(fresh("queue-requeue-cancel"), 1)
+	forget(t, client, run.RunID)
+	resetLedger(t, client, 1)
+	if err := q.Enqueue(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	// A finished run whose PR waits on the owner, cancelled from its inbox row.
+	if _, err := client.Collection(runsCollection).Doc(run.RunID).Update(ctx, []firestore.Update{
+		{Path: outcomeField, Value: string(runner.OutcomePROpened)},
+		{Path: prURLField, Value: "https://github.com/octo/scratch/pull/7"},
+		{Path: cancelledByOwnerAtField, Value: queueAt},
+		{Path: cancelledByField, Value: "owner@example.com"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.Requeue(ctx, run.RunID, queueAt.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	data := readRow(t, client, run.RunID)
+	for _, field := range []string{cancelledByOwnerAtField, cancelledByField} {
+		if _, ok := data[field]; ok {
+			t.Errorf("field %s survived the requeue: %v", field, data[field])
+		}
+	}
+	if data[stateField] != stateQueued {
+		t.Fatalf("state = %v, want %s", data[stateField], stateQueued)
+	}
+}
+
 func TestRequeueReturnsAStoppedRunWithASettledPlanToPlanned(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()

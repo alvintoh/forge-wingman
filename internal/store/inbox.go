@@ -14,10 +14,12 @@ import (
 )
 
 const (
-	waitReasonField      = "wait_reason"
-	mergedByOwnerAtField = "merged_by_owner_at"
-	mergedSHAField       = "merged_sha"
-	ticketTitleField     = "ticket_title"
+	waitReasonField         = "wait_reason"
+	mergedByOwnerAtField    = "merged_by_owner_at"
+	mergedSHAField          = "merged_sha"
+	ticketTitleField        = "ticket_title"
+	cancelledByOwnerAtField = "cancelled_by_owner_at"
+	cancelledByField        = "cancelled_by"
 )
 
 // InboxRun is one run waiting on the owner, as the inbox lists it: one whose PR
@@ -42,9 +44,10 @@ type InboxRun struct {
 	UpdatedAt time.Time
 }
 
-// Inbox returns the runs updated since whose PR is open and not merged, and
-// that either name a wait reason or were not marked for auto-merge, and the
-// runs that stopped and have no automatic requeue due, newest first, up to limit.
+// Inbox returns the runs updated since whose PR is open and not merged, that
+// the owner has not cancelled, and that either name a wait reason or were not
+// marked for auto-merge, and the runs that stopped and have no automatic requeue
+// due, newest first, up to limit.
 //
 // A PR closed unmerged on GitHub is not known here, so it stays listed until
 // the owner's merge attempt finds it closed.
@@ -54,7 +57,8 @@ func (r *Records) Inbox(ctx context.Context, since time.Time, limit int) ([]Inbo
 		OrderBy(updatedAtField, firestore.Desc).
 		Select(repoField, sizeField, prURLField, autoMergeField, outcomeField, ticketIDField, updatedAtField,
 			waitReasonField, mergedByOwnerAtField, rewriteMergedAtField, stateField, stopReasonField, attemptField,
-			settledAtField, claimedAtField, transientField, transientRequeuesField, ticketTitleField).
+			settledAtField, claimedAtField, transientField, transientRequeuesField, ticketTitleField,
+			cancelledByOwnerAtField).
 		Documents(ctx)
 	defer iter.Stop()
 	var out []InboxRun
@@ -88,6 +92,9 @@ func inboxRun(id string, row map[string]any) (InboxRun, bool) {
 		StopReason: str(row, stopReasonField),
 	}
 	run.UpdatedAt, _ = row[updatedAtField].(time.Time)
+	if cancelledRow(row) {
+		return run, false
+	}
 	if stoppedRun(row) {
 		run.Stopped = true
 		run.Title = str(row, ticketTitleField)
@@ -95,6 +102,14 @@ func inboxRun(id string, row map[string]any) (InboxRun, bool) {
 	}
 	open := run.PRURL != "" && run.Outcome == string(runner.OutcomePROpened) && !mergedRow(row)
 	return run, open && (run.WaitReason != "" || !autoMerged)
+}
+
+// cancelledRow reports whether the owner cancelled row's run. Finalize writes the
+// cancel time as the zero time until a cancel sets it. A cancelled run is neither
+// waiting nor stopped for the owner, so the inbox drops it whatever else the row says.
+func cancelledRow(row map[string]any) bool {
+	at, _ := row[cancelledByOwnerAtField].(time.Time)
+	return !at.IsZero()
 }
 
 // mergedRow reports whether row's PR was merged, by the owner or by a poll.

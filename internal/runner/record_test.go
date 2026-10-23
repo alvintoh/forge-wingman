@@ -674,6 +674,22 @@ func TestFinalizeKeepsTheWaitReasonAndTheOwnersMerge(t *testing.T) {
 	}
 }
 
+func TestFinalizeKeepsTheOwnersCancel(t *testing.T) {
+	store := seeded(t)
+	rec := store[testRunID]
+	rec.CancelledByOwnerAt, rec.CancelledBy = finalizeNow, "owner@example.com"
+	store[testRunID] = rec
+	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: "",
+		RunResult: "failure", PRResult: "skipped"}
+	if _, err := Finalize(context.Background(), store, &fakeLedger{}, nil, in, finalizeNow); err != nil {
+		t.Fatal(err)
+	}
+	got := store[testRunID]
+	if got.CancelledBy != "owner@example.com" || !got.CancelledByOwnerAt.Equal(finalizeNow) {
+		t.Fatalf("cancelled by %q at %v, want both carried through finalize", got.CancelledBy, got.CancelledByOwnerAt)
+	}
+}
+
 func TestFinalizeRecordsTheSampleAndTheAutoMergeRequest(t *testing.T) {
 	for _, tt := range []struct {
 		runID              string

@@ -3,6 +3,7 @@ import { ago } from "../ago";
 import { pillSetWidth } from "../button-style";
 import { SmallPill } from "../pill-button";
 import { Chevron } from "./chevron";
+import type { CancelState } from "./cancel-state";
 import { type Cell, cellAttrs } from "./keyboard";
 import type { RowState } from "./merge-state";
 import { type InboxRun, isStopped, stopReasonOf, titleOf } from "./run";
@@ -52,6 +53,8 @@ type RowProps = {
   run: InboxRun;
   now: number;
   state: RowState | undefined;
+  // What a cancel from the row's sheet is doing, or why it did not go through.
+  cancel: CancelState | undefined;
   // Which of the row's cells is the list's one tab stop, if the stop is on this row.
   stop: Cell | undefined;
   onOpen: (run: InboxRun) => void;
@@ -60,7 +63,17 @@ type RowProps = {
   onCompose: (run: InboxRun) => void;
 };
 
-export function InboxRow({ run, now, state, stop, onOpen, onMerge, onRetry, onCompose }: RowProps) {
+export function InboxRow({
+  run,
+  now,
+  state,
+  cancel,
+  stop,
+  onOpen,
+  onMerge,
+  onRetry,
+  onCompose,
+}: RowProps) {
   const reasonId = useId();
   const ticketId = useId();
   const titleId = useId();
@@ -119,6 +132,11 @@ export function InboxRow({ run, now, state, stop, onOpen, onMerge, onRetry, onCo
   if (stopped) {
     reason = stopReasonOf(run);
     tone = "text-stop";
+  }
+  // A cancel says where it stands on its own row: under way, or why it did not go through.
+  if (cancel !== undefined) {
+    reason = cancel.status === "sending" ? "Cancelling…" : `Not cancelled. ${cancel.words}`;
+    tone = cancel.status === "sending" ? "text-ink2" : "text-stop";
   }
   // A merged row has no pill, so a stop left on it falls back to the row.
   const rowStop = stop === "row" || (stop === "pill" && merged);

@@ -242,6 +242,11 @@ type Record struct {
 	// MergedByOwnerAt and MergedSHA are when, and as what, the owner merged it.
 	MergedByOwnerAt time.Time `firestore:"merged_by_owner_at"`
 	MergedSHA       string    `firestore:"merged_sha"`
+	// CancelledByOwnerAt and CancelledBy are when, and by which signed-in
+	// address, the owner cancelled the run from its inbox row. A retry clears
+	// them, since the run is live again.
+	CancelledByOwnerAt time.Time `firestore:"cancelled_by_owner_at"`
+	CancelledBy        string    `firestore:"cancelled_by"`
 	// DecisionMode is how the run's plan decisions were settled when it was claimed, empty for a run claimed before it was recorded.
 	DecisionMode DecisionMode `firestore:"decision_mode"`
 	// CommitSubject is the subject the build committed with, and the PR's title.
@@ -490,6 +495,7 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, reader Prov
 	rec.MovedFrom, rec.PlanModels = existing.MovedFrom, existing.PlanModels
 	rec.DecisionMode = existing.DecisionMode
 	rec.WaitReason, rec.MergedByOwnerAt, rec.MergedSHA = existing.WaitReason, existing.MergedByOwnerAt, existing.MergedSHA
+	rec.CancelledByOwnerAt, rec.CancelledBy = existing.CancelledByOwnerAt, existing.CancelledBy
 	identityErr := in.Identity.CheckAccount()
 	sum, err := ParseSummary(in.Summary, in.AttemptID, t, now)
 	switch {

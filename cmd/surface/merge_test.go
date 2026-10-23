@@ -127,6 +127,7 @@ func TestMergeRefusesWhatTheOwnerMayNotMerge(t *testing.T) {
 	}{
 		"a row with no PR page":                     {func(r *runner.Record) { r.PRURL = "" }, nil, "no-pull-request"},
 		"a PR in another repository than the run's": {func(r *runner.Record) { r.PRURL = "https://github.com/octo/other/pull/7" }, nil, "no-pull-request"},
+		"a run the owner cancelled":                 {func(r *runner.Record) { r.CancelledByOwnerAt = measuredAt() }, nil, "cancelled"},
 		"a closed PR":                               {nil, func(m *stubMerger) { m.state.Open = false }, "not-open"},
 		"a draft":                                   {nil, func(m *stubMerger) { m.state.Draft = true }, "draft"},
 		"a head that moved":                         {nil, func(m *stubMerger) { m.state.HeadSHA = "moved99" }, "head-moved"},
@@ -266,6 +267,7 @@ func TestParsePullURLReadsOnlyAGitHubPullRequestPage(t *testing.T) {
 
 func TestMergeRefusalReasonsAreTheStringsThePageSwitchesOn(t *testing.T) {
 	for got, want := range map[string]string{
+		refusedCancelled:      "cancelled",
 		refusedChecksNotGreen: "checks-not-green",
 		refusedDraft:          "draft",
 		refusedGitHub:         "github-refused",

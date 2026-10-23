@@ -6,6 +6,7 @@ const MERGED_HOLD_MS = 3_000;
 
 // Why a merge the server refused with 409 cannot go ahead; a retry cannot change any of them.
 const refusalWords: Record<string, string> = {
+  cancelled: "This run was cancelled.",
   "no-pull-request": "This run has no pull request to merge.",
   "not-open": "The pull request is no longer open.",
   draft: "The pull request is still a draft.",

@@ -1379,10 +1379,10 @@ var (
 // Requeue returns a run that has ended — stopped, abandoned, or carrying a
 // recorded outcome, whether a claim or a manual run left it — to the queue, for
 // an operator asking that its ticket be attempted again: the row returns to
-// planned when its plan still stands and queued otherwise, with its claim, wait
-// and outcome fields cleared and its ledger reservations dropped, and records
-// the attempt it was put back as. The owner's note from a retry is dropped, since
-// it was written for the attempt that ended.
+// planned when its plan still stands and queued otherwise, with its claim, wait,
+// cancel and outcome fields cleared and its ledger reservations dropped, and
+// records the attempt it was put back as. The owner's note from a retry is dropped,
+// since it was written for the attempt that ended.
 //
 // It refuses a run that is still to be dispatched, parked on a decision, or
 // still running, so a retry is never anything but the operator's own action.
@@ -1532,6 +1532,8 @@ func (q *Queue) requeue(ctx context.Context, runID string, at time.Time, opts re
 			{Path: stopReasonField, Value: firestore.Delete},
 			{Path: stopDetailField, Value: firestore.Delete},
 			{Path: transientField, Value: firestore.Delete},
+			{Path: cancelledByOwnerAtField, Value: firestore.Delete},
+			{Path: cancelledByField, Value: firestore.Delete},
 			{Path: retriedAtField, Value: at},
 			{Path: abandonedReasonField, Value: firestore.Delete},
 			{Path: abandonedAtField, Value: firestore.Delete},
