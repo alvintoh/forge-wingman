@@ -9,7 +9,7 @@ import { type InboxRun, isStopped, stopReasonOf, titleOf } from "./run";
 // trimmed note, which a multibyte note can pass first.
 const MAX_NOTE_CHARS = 2000;
 const MAX_NOTE_BYTES = 4096;
-const SENDING_LABEL = "SENDING...";
+const SENDING_LABEL = "SENDING";
 const TOO_LONG_WORDS = "The note is too long to send.";
 
 const labelClass = "block font-mono text-label leading-4 font-semibold tracking-[1.4px] text-ink2";
