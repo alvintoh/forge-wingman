@@ -397,7 +397,7 @@ function InboxRow({ run, now, state, stop, onOpen, onMerge, onRetry }: RowProps)
           </span>
           <span className="min-w-0 truncate tracking-[0.4px]">{run.repo}</span>
           <span aria-hidden="true">/</span>
-          <span className="shrink-0">{ago(run.updated_at, now, "")}</span>
+          <span className="shrink-0">{ago(run.updated_at, now)}</span>
         </p>
         {merged ? (
           <span
