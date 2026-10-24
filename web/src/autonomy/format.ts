@@ -37,6 +37,12 @@ export function whole(fraction: number): string {
   return `${Math.round(fraction * 1000) / 10}%`;
 }
 
+// barOf is the bar a rate is compared to, as a fraction, from the endpoint's own text for it:
+// "10.0%" is 0.1.
+export function barOf(limit: string): number {
+  return Number.parseFloat(limit) / 100;
+}
+
 // servedRate is a rate as the endpoint prints it, or the page's words where the
 // figure is null: a group of no PRs, or a window with no agent lines.
 export function servedRate(text: string | null, value: number | null, words: string): string {
@@ -79,6 +85,31 @@ export function modelName(id: string): string {
 // phaseWord is what a phase's group is called: the model, or the words for a phase that has none.
 export function phaseWord(phase: Phase, model: string): string {
   return model === UNKNOWN_MODEL ? NO_MODEL_WORD[phase] : modelName(model);
+}
+
+// reasonText is why auto-merge is on or off, as the view words the endpoint's
+// own reason tokens.
+export function reasonText(reason: string): string {
+  switch (reason) {
+    case "on":
+      return "The rate allows it and the switch is on.";
+    case "switch-off":
+      return "The owner's switch is off.";
+    case "switch-unread":
+      return "The switch could not be read, so auto-merge is off.";
+    case "too-few-measured":
+      return "Fewer merged PRs than the window holds are measured, or one carries an unmeasured commit.";
+    case "no-agent-lines":
+      return "The measured PRs carry no agent lines, so there is no rate.";
+    case "rate-above-bar":
+      return "The trailing rate is above the bar.";
+    case "reverted":
+      return "An auto-merged PR of the window was reverted.";
+    case "evidence-unread":
+      return "The measured merges could not be read.";
+    default:
+      return reason;
+  }
 }
 
 // isRed is whether a rate is strictly above the bar, which the page draws in red

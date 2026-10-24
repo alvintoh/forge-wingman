@@ -1,9 +1,6 @@
 import type { ReactNode } from "react";
+import { captionClass } from "../caption";
 import { useWidth } from "./use-width";
-
-// The caption of a chart or a group of rows, in the page's mono capitals.
-export const captionClass =
-  "font-mono text-label font-semibold tracking-[1.4px] text-ink2 uppercase";
 
 // Under this width a chart has no room to be drawn, so none is, as a card measured
 // mid-layout would otherwise draw one.
@@ -46,7 +43,7 @@ export function ChartHeader({ title, aside, padx }: ChartHeaderProps) {
       className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1"
       style={{ paddingInline: padx }}
     >
-      <h3 className={captionClass}>{title}</h3>
+      <h3 className={`${captionClass} text-ink2`}>{title}</h3>
       {aside !== undefined && <p className="text-cap text-muted">{aside}</p>}
     </div>
   );

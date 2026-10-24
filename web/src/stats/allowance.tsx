@@ -1,3 +1,4 @@
+import { captionClass } from "../caption";
 import { useRead } from "./use-read";
 
 type WindowUsage = {
@@ -19,8 +20,6 @@ type ProvidersResponse = {
 // Past this share of its limit a window is drawn as nearly spent.
 const NEARLY_SPENT = 0.8;
 
-const captionClass = "font-mono text-label font-semibold tracking-[1.4px] text-muted uppercase";
-
 // Allowance draws the first plan that reports allowance windows, one gauge each
 // with what is spent and what the limit is. While it loads, its line keeps the
 // height of one gauge, so the ready state does not push the page down.
@@ -29,7 +28,7 @@ export function Allowance() {
   const windows = read.status === "ready" ? firstWindows(read.body.plans) : [];
   return (
     <section aria-labelledby="allowance-title">
-      <h2 id="allowance-title" className={captionClass}>
+      <h2 id="allowance-title" className={`${captionClass} text-muted`}>
         Allowance
       </h2>
       {read.status === "loading" && (
@@ -38,12 +37,14 @@ export function Allowance() {
         </p>
       )}
       {read.status === "error" && (
-        <p role="alert" className="mt-3 text-label text-ink2">
+        <p role="alert" className="mt-4 min-h-[54px] text-label text-ink2">
           The allowance could not be read.
         </p>
       )}
       {read.status === "ready" && windows.length === 0 && (
-        <p className="mt-3 text-label text-ink2">No provider reports an allowance window.</p>
+        <p className="mt-4 min-h-[54px] text-label text-ink2">
+          No provider reports an allowance window.
+        </p>
       )}
       {windows.length > 0 && (
         <ul className="mt-4 grid grid-cols-3 gap-3">
