@@ -54,8 +54,8 @@ type Limits struct {
 // DefaultLimits are the owner-tunable defaults a zero Config.Limits stands for.
 var DefaultLimits = Limits{PlatformCap: 20, LargeCap: 1, ReviewWIP: 3}
 
-// orDefault fills every zero field from DefaultLimits.
-func (l Limits) orDefault() Limits {
+// OrDefault fills every zero field from DefaultLimits.
+func (l Limits) OrDefault() Limits {
 	l.PlatformCap = cmp.Or(l.PlatformCap, DefaultLimits.PlatformCap)
 	l.LargeCap = cmp.Or(l.LargeCap, DefaultLimits.LargeCap)
 	l.ReviewWIP = cmp.Or(l.ReviewWIP, DefaultLimits.ReviewWIP)

@@ -622,7 +622,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 	}
 	tripped := breakerTripped(ctx, d)
 	paused := readPaused(ctx, d)
-	limits := c.Limits.orDefault()
+	limits := c.Limits.OrDefault()
 	var mode PeakMode
 	if len(candidates) > 0 {
 		mode = readPeakMode(ctx, d)
