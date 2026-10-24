@@ -33,10 +33,7 @@ const ROWS: readonly Row[] = [
   },
   {
     label: "Poll every",
-    value: (view) => {
-      const minutes = view.concurrency.poll_minutes;
-      return `${minutes} minute${minutes === 1 ? "" : "s"}`;
-    },
+    value: (view) => `${view.concurrency.poll_minutes} minutes`,
   },
 ];
 

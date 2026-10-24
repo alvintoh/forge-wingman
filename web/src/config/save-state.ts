@@ -1,10 +1,11 @@
 import { useState } from "react";
+import { isBoolean, shape } from "../autonomy/guard";
 import { postJSON } from "../post-json";
-import { PEAK_MODE, isPeakView } from "./types";
+import { PEAK_MODE, avoidsPeak, isPeakView } from "./types";
 import type { PeakView } from "./types";
 
 /** The page's two switches; a staged value is one the owner set and has not saved. */
-export type Staged = { autoMerge?: boolean; avoidPeak?: boolean };
+type Staged = { autoMerge?: boolean; avoidPeak?: boolean };
 
 type Setting = keyof Staged;
 
@@ -21,43 +22,28 @@ type Saved = {
 };
 
 type Answers = {
-  // The switch the auto-merge endpoint answered last, so the page reads it before the state reloads.
+  // The switch the auto-merge endpoint answered last, shown until the state reloads.
   autoMerge: boolean | null;
   peak: PeakView | null;
 };
 
-function isEnabled(body: unknown): body is { enabled: boolean } {
-  return (
-    typeof body === "object" &&
-    body !== null &&
-    "enabled" in body &&
-    typeof body.enabled === "boolean"
-  );
-}
+const isEnabled = shape<{ enabled: boolean }>({ enabled: isBoolean });
 
-async function postAutoMerge(enabled: boolean): Promise<boolean> {
-  const response = await postJSON("/api/auto-merge", { enabled });
+// post sends body to path and returns the answer once guard has checked it.
+async function post<T>(
+  path: string,
+  body: Record<string, string | number | boolean>,
+  guard: (answer: unknown) => answer is T,
+): Promise<T> {
+  const response = await postJSON(path, body);
   if (!response.ok) {
-    throw new Error(`/api/auto-merge answered ${response.status}`);
+    throw new Error(`${path} answered ${response.status}`);
   }
-  const body: unknown = await response.json();
-  if (!isEnabled(body)) {
-    throw new Error("/api/auto-merge answered a document of another shape");
+  const answer: unknown = await response.json();
+  if (!guard(answer)) {
+    throw new Error(`${path} answered a document of another shape`);
   }
-  return body.enabled;
-}
-
-async function postPeak(avoid: boolean): Promise<PeakView> {
-  const mode = avoid ? PEAK_MODE.offPeakOnly : PEAK_MODE.always;
-  const response = await postJSON("/api/peak", { mode });
-  if (!response.ok) {
-    throw new Error(`/api/peak answered ${response.status}`);
-  }
-  const body: unknown = await response.json();
-  if (!isPeakView(body)) {
-    throw new Error("/api/peak answered a document of another shape");
-  }
-  return body;
+  return answer;
 }
 
 // failureWords names what did not save and, where something did, what did.
@@ -68,7 +54,7 @@ function failureWords(failed: Setting[], saved: Setting[]): string {
 }
 
 /**
- * useConfigSave holds the switches the owner staged and saves them: only what differs from the saved
+ * useConfigSave holds the switches the owner staged and saves only what differs from the saved
  * value, one endpoint after the other in page order. A success adopts the endpoint's answer and
  * clears that value; a failure keeps it staged and the words name it. onAutoMergeSaved re-reads
  * the auto-merge state.
@@ -81,8 +67,7 @@ export function useConfigSave(saved: Saved, onAutoMergeSaved: () => void) {
 
   const current: Saved = {
     autoMerge: answers.autoMerge ?? saved.autoMerge,
-    avoidPeak:
-      answers.peak === null ? saved.avoidPeak : answers.peak.mode === PEAK_MODE.offPeakOnly,
+    avoidPeak: answers.peak === null ? saved.avoidPeak : avoidsPeak(answers.peak.mode),
   };
   const changed = SAVE_ORDER.some((setting) => staged[setting] !== undefined);
 
@@ -128,11 +113,12 @@ export function useConfigSave(saved: Saved, onAutoMergeSaved: () => void) {
       }
       try {
         if (setting === "autoMerge") {
-          const enabled = await postAutoMerge(value);
+          const { enabled } = await post("/api/auto-merge", { enabled: value }, isEnabled);
           setAnswers((was) => ({ ...was, autoMerge: enabled }));
           onAutoMergeSaved();
         } else {
-          const view = await postPeak(value);
+          const mode = value ? PEAK_MODE.offPeakOnly : PEAK_MODE.always;
+          const view = await post("/api/peak", { mode }, isPeakView);
           setAnswers((was) => ({ ...was, peak: view }));
         }
         clear(setting);
@@ -144,12 +130,6 @@ export function useConfigSave(saved: Saved, onAutoMergeSaved: () => void) {
     }
     setSaving(false);
     setFailure(failed.length === 0 ? null : failureWords(failed, done));
-  }
-
-  // discard drops every staged value.
-  function discard() {
-    setStaged({});
-    setFailure(null);
   }
 
   return {
@@ -164,6 +144,5 @@ export function useConfigSave(saved: Saved, onAutoMergeSaved: () => void) {
     failure,
     toggle,
     save,
-    discard,
   };
 }

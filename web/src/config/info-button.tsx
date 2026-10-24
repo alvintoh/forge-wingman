@@ -7,9 +7,9 @@ type InfoButtonProps = {
 
 /**
  * InfoButton is a 10px "i" set as a superscript 3px right of a row's value, in a 44x44 target that
- * ends on the card's edge, and the popover it discloses above it. It sits in its row's value, the row
- * positioned and its value at its right end. Click, tap or keyboard focus opens it; a second press, Escape, leaving it
- * or a press elsewhere closes it, and it never opens on hover alone.
+ * ends on the card's edge, and the popover it discloses above it; its row is positioned and its
+ * value sits at the row's right end. Click, tap or keyboard focus opens it; a second press, Escape,
+ * leaving it or a press elsewhere closes it, and hover alone never opens it.
  */
 export function InfoButton({ name, text }: InfoButtonProps) {
   const [open, setOpen] = useState(false);

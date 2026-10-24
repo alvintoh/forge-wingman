@@ -7,7 +7,7 @@ import { AutoMergeSection } from "../config/auto-merge-section";
 import { ConcurrencySection } from "../config/concurrency-section";
 import { ModelsSection } from "../config/models-section";
 import { useConfigSave } from "../config/save-state";
-import { PEAK_MODE, isConfigView, isPeakView } from "../config/types";
+import { avoidsPeak, isConfigView, isPeakView } from "../config/types";
 import { useRead } from "../stats/use-read";
 
 /**
@@ -22,7 +22,7 @@ export function Configuration() {
   const form = useConfigSave(
     {
       autoMerge: autonomy.status === "ready" ? autonomy.body.auto_merge.switch_on : null,
-      avoidPeak: peak.status === "ready" ? peak.body.mode === PEAK_MODE.offPeakOnly : null,
+      avoidPeak: peak.status === "ready" ? avoidsPeak(peak.body.mode) : null,
     },
     autonomy.reload,
   );
@@ -44,7 +44,6 @@ export function Configuration() {
   }
 
   function back() {
-    form.discard();
     if (canGoBack) {
       router.history.back();
     } else {

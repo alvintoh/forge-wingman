@@ -22,10 +22,9 @@ export type PeakModel = {
   priced: boolean;
 };
 
-/** PeakView is the peak endpoint's answer; holding is whether a peak window is open now. */
+/** PeakView is what the page reads of the peak endpoint's answer: the mode runs wait under. */
 export type PeakView = {
   mode: string;
-  holding: boolean;
 };
 
 type ConfigPhase = {
@@ -36,7 +35,6 @@ type ConfigPhase = {
 type Concurrency = {
   review_wip: number;
   platform_cap: number;
-  two_stage: boolean;
   poll_minutes: number;
 };
 
@@ -53,6 +51,14 @@ export type ConfigView = {
  */
 export const PEAK_MODE = { offPeakOnly: "off-peak-only", always: "always" } as const;
 
+/**
+ * avoidsPeak is whether runs wait out their model's peak hours under mode: every mode but always
+ * does, as the dispatcher holds a mode it cannot name like the default (readPeakMode).
+ */
+export function avoidsPeak(mode: string): boolean {
+  return mode !== PEAK_MODE.always;
+}
+
 const isPeakWindow = shape<PeakWindow>({
   multiplier: isNumber,
   hours: listOf(shape<PeakHour>({ from: isNumber, to: isNumber })),
@@ -65,7 +71,7 @@ const isPeakModel = shape<PeakModel>({
 });
 
 /** isPeakView narrows the peak endpoint's answer to the fields the page reads. */
-export const isPeakView = shape<PeakView>({ mode: isString, holding: isBoolean });
+export const isPeakView = shape<PeakView>({ mode: isString });
 
 /** isConfigView narrows the configuration endpoint's answer to every field the page reads. */
 export const isConfigView = shape<ConfigView>({
@@ -73,7 +79,6 @@ export const isConfigView = shape<ConfigView>({
   concurrency: shape<Concurrency>({
     review_wip: isNumber,
     platform_cap: isNumber,
-    two_stage: isBoolean,
     poll_minutes: isNumber,
   }),
   peak_windows: listOf(isPeakModel),

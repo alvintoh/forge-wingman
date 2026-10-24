@@ -12,7 +12,7 @@ import type {
 } from "./types";
 
 /** A check that a value read off the wire holds what a field declares. */
-export type Check = (value: unknown) => boolean;
+type Check = (value: unknown) => boolean;
 
 export const isNumber: Check = (value) => typeof value === "number";
 export const isString: Check = (value) => typeof value === "string";
