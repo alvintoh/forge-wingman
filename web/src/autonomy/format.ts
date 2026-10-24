@@ -49,10 +49,11 @@ export function servedRate(text: string | null, value: number | null, words: str
   return text === null || value === null ? words : text;
 }
 
-// tooFewForSpread is whether a group with no median or p90 lacks them for want of
-// PRs, not for want of a rate to take them from.
+export const NO_RATE = "no rate";
+
+// tooFewForSpread is whether a group has a rate but no median, for want of PRs.
 export function tooFewForSpread(group: Group): boolean {
-  return group.agent_lines > 0;
+  return group.median === null && group.agent_lines > 0;
 }
 
 // spreadText is a group's median or p90 as the endpoint prints it. Where it
@@ -61,7 +62,7 @@ export function spreadText(text: string | null, group: Group): string {
   if (text !== null) {
     return text;
   }
-  return tooFewForSpread(group) ? prsWord(group.prs) : "no rate";
+  return tooFewForSpread(group) ? prsWord(group.prs) : NO_RATE;
 }
 
 export function count(value: number): string {

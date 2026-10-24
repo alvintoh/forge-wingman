@@ -1,6 +1,6 @@
 import { ChartCard, ChartHeader } from "./chart-card";
 import { COMPACT_W, SIZE_CAP, TRIANGLE_R, Y_LABEL_W, bandLabelSide, padxFor, yOf } from "./axis";
-import { prsWord, referenceLabel, servedRate, textWidth, tooFewForSpread, whole } from "./format";
+import { prsWord, referenceLabel, servedRate, textWidth, whole } from "./format";
 import { Diamond, RefLine } from "./marks";
 import type { SizeRow } from "./types";
 
@@ -203,18 +203,17 @@ export function BySize({ sizes, bar }: BySizeProps) {
                     const p90Above = medianOn && p90On && y(median) - y(p90) < 18;
                     return (
                       <g key={size.size} data-size={size.size}>
-                        {!spread ? (
-                          !tooFewForSpread(size) && (
-                            <text
-                              x={cx}
-                              y={pooledOn ? Math.min(base - 14, y(pooled) - 12) : base - 14}
-                              textAnchor="middle"
-                              className="fill-ink2 text-label"
-                            >
-                              no rate
-                            </text>
-                          )
-                        ) : (
+                        {!spread && pooled === null && (
+                          <text
+                            x={cx}
+                            y={base - 14}
+                            textAnchor="middle"
+                            className="fill-ink2 text-label"
+                          >
+                            no rate
+                          </text>
+                        )}
+                        {spread && (
                           <>
                             <rect
                               x={cx - BAR_W / 2}

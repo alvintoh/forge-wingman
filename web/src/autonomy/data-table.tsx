@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { parsePull } from "../inbox/run";
 import { prKey } from "./axis";
 import {
+  NO_RATE,
   count,
   isPrsWord,
   isRed,
@@ -95,14 +96,21 @@ function DataTable<T>({ title, columns, rows, rowKey }: TableProps<T>) {
   );
 }
 
-// Figure sets a number in mono, and leaves words, which are not figures, as they are: a PR
-// count, "2 PRs", is words.
+// Figure sets a number in mono, and leaves words, which are not figures, as they are. A PR
+// count and "no rate" are dimmed words, and a count says it is under ten to a reader of the text.
 function Figure({ on, children }: { on: boolean | undefined; children: ReactNode }) {
+  const count = typeof children === "string" && isPrsWord(children);
   const figure =
     on &&
     (typeof children === "number" ||
-      (typeof children === "string" && /\d/.test(children) && !isPrsWord(children)));
-  return <span className={figure ? "font-mono" : undefined}>{children}</span>;
+      (typeof children === "string" && /\d/.test(children) && !count));
+  const dim = count || children === NO_RATE;
+  return (
+    <span className={figure ? "font-mono" : dim ? "text-ink2" : undefined}>
+      {children}
+      {count && <span className="sr-only"> (under ten PRs)</span>}
+    </span>
+  );
 }
 
 // Rate prints a rate as the endpoint printed it, red beside a triangle when it is

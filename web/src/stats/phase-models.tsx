@@ -17,13 +17,13 @@ import { captionClass } from "../caption";
 
 type RowProps = { phase: Phase; row: ModelRow; bar: number };
 
-// One model: its name, its median PR on the right (none under ten PRs, which the line beneath
-// counts), the pooled rate and PR count beneath, and a thin bar for the median on the 0 to 30% axis
-// the charts share.
+// One model: its name, its median PR on the right, the pooled rate and PR count beneath, and a thin
+// bar for the median on the 0 to 30% axis the charts share. A model with a rate and under ten PRs has
+// no right-hand cell: the count beneath is the only place it prints.
 function ModelLine({ phase, row, bar }: RowProps) {
   const above = isRed(row.median_value, bar);
   const tone = above ? "text-defer" : "text-ink";
-  const counted = row.median === null && tooFewForSpread(row);
+  const counted = tooFewForSpread(row);
   return (
     <li className="mt-3">
       <div className="flex items-baseline justify-between gap-3">
