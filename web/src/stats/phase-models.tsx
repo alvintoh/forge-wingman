@@ -12,7 +12,7 @@ import {
 import { isRewrite } from "../autonomy/guard";
 import { PHASES } from "../autonomy/types";
 import type { ModelRow, Phase } from "../autonomy/types";
-import { captionClass } from "./caption";
+import { captionClass } from "../caption";
 
 type RowProps = { phase: Phase; row: ModelRow; bar: number };
 

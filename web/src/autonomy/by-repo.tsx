@@ -1,5 +1,6 @@
+import { captionClass } from "../caption";
 import { SPARSE_W, WIDE_ROWS, buildAxis, mergeSlots, padxFor } from "./axis";
-import { ChartCard, ChartHeader, captionClass } from "./chart-card";
+import { ChartCard, ChartHeader } from "./chart-card";
 import { prsWord, seriesLabel, servedRate } from "./format";
 import { MetricPanel } from "./metric-rows";
 import type { RowSpec } from "./metric-rows";
@@ -85,7 +86,7 @@ export function RepoMultiples({ repos, bar }: RepoMultiplesProps) {
                       className="flex flex-wrap items-baseline justify-between gap-x-4"
                       style={{ paddingInline: padx }}
                     >
-                      <h3 className={captionClass}>{repo.repo}</h3>
+                      <h3 className={`${captionClass} text-ink2`}>{repo.repo}</h3>
                       {columns === 1 && (
                         <p className="text-cap text-ink2">
                           average {servedRate(average.rate, average.rate_value, "no rate")},{" "}

@@ -1,4 +1,4 @@
-import { captionClass } from "./caption";
+import { captionClass } from "../caption";
 import { useRead } from "./use-read";
 
 type HistoryRun = {

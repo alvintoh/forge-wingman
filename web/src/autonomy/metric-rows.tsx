@@ -1,5 +1,5 @@
+import { captionClass } from "../caption";
 import { ROW_CAP } from "./axis";
-import { captionClass } from "./chart-card";
 import { SPLIT_KINDS, countWords, noAgentNote, servedRate, splitOf, whole } from "./format";
 import { Diamond, Segment, Swatch } from "./marks";
 import type { SplitSegment } from "./marks";
@@ -302,7 +302,7 @@ export function MetricPanel({
             : ""
         }
       >
-        {title === undefined ? <div /> : <h4 className={captionClass}>{title}</h4>}
+        {title === undefined ? <div /> : <h4 className={`${captionClass} text-ink2`}>{title}</h4>}
         {wide && <AxisLabels ticks={AXIS} />}
       </div>
       {!wide && (

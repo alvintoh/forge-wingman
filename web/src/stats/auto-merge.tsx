@@ -1,7 +1,7 @@
 import { barOf, reasonText, whole } from "../autonomy/format";
 import { isAutonomy } from "../autonomy/guard";
 import type { MergeState } from "../autonomy/types";
-import { captionClass } from "./caption";
+import { captionClass } from "../caption";
 import { PhaseModels } from "./phase-models";
 import { useRead } from "./use-read";
 
