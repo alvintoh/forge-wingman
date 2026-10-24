@@ -2,7 +2,7 @@ import { barOf, isRed, reasonText, whole } from "../autonomy/format";
 import { isAutonomy } from "../autonomy/guard";
 import type { MergeState } from "../autonomy/types";
 import { captionClass } from "../caption";
-import { PhaseModels } from "./phase-models";
+import { PhaseModels, PhaseSlots } from "./phase-models";
 import { useRead } from "./use-read";
 
 type Status = "on" | "off" | "held";
@@ -79,28 +79,38 @@ function StatusMark({ status }: { status: Status }) {
   );
 }
 
-// Summary is the state in words: the status as a shape and a word, the rate line, and who merges what.
-function Summary({ merge }: { merge: MergeState }) {
+// Status is the state as a shape and a word, then the rate line.
+function Status({ merge }: { merge: MergeState }) {
   const status = statusOf(merge);
   return (
     <>
-      <div className="mt-1 flex items-center gap-2">
-        <StatusMark status={status} />
-        <p
-          role="status"
-          className={`text-title leading-6 font-semibold ${status === "on" ? "text-ok" : "text-ink"}`}
-        >
-          {STATUS_WORD[status]}
-        </p>
-      </div>
-      <p className="mt-1.5 text-label leading-4.5 text-ink2">{rateLine(merge)}</p>
-      <ul className="mt-3 list-disc space-y-1.5 pl-3.5 text-label leading-4.5 text-ink2 marker:text-ink">
-        <li>
-          {`Merges itself: size S and M PRs while the trailing ${merge.window} is ${whole(barOf(merge.limit))} or less.`}
-        </li>
-        <li>You merge: front-end changes, size L and sampled PRs.</li>
-      </ul>
+      <StatusMark status={status} />
+      <p
+        role="status"
+        className={`text-title leading-6 font-semibold ${status === "on" ? "text-ok" : "text-ink"}`}
+      >
+        {STATUS_WORD[status]}
+      </p>
     </>
+  );
+}
+
+// A figure's place while it loads, about as wide as the figure, so the line wraps where it will.
+function Blank({ width }: { width: string }) {
+  return <span className={`inline-block ${width}`} />;
+}
+
+// Rules says who merges what; the window and the bar are the endpoint's, blank while they load.
+function Rules({ merge }: { merge: MergeState | null }) {
+  return (
+    <ul className="mt-3 list-disc space-y-1.5 pl-3.5 text-label leading-4.5 text-ink2 marker:text-ink">
+      <li>
+        Merges itself: size S and M PRs while the trailing{" "}
+        {merge === null ? <Blank width="w-[2ch]" /> : merge.window} is{" "}
+        {merge === null ? <Blank width="w-[3ch]" /> : whole(barOf(merge.limit))} or less.
+      </li>
+      <li>You merge: front-end changes, size L and sampled PRs.</li>
+    </ul>
   );
 }
 
@@ -131,30 +141,39 @@ export function AutoMerge() {
   const read = useRead("/api/autonomy", isAutonomy, "autonomyNotRead");
   const view = read.status === "ready" ? read.body : null;
 
+  // The card's words and headings draw at once and the figures' places are held while they
+  // load, so their arrival does not push the page below down.
   return (
-    <section aria-labelledby="auto-merge-title" className="card-frame py-4">
+    <section
+      aria-labelledby="auto-merge-title"
+      aria-busy={read.status === "loading"}
+      className="card-frame py-4"
+    >
       <div className="flex min-h-11 items-center justify-between gap-3">
         <h2 id="auto-merge-title" className={`${captionClass} text-ink2`}>
           auto-merge
         </h2>
-        {view !== null && <SettingsPill />}
+        <SettingsPill />
       </div>
-      {read.status === "loading" && (
-        <p role="status" className="text-label text-ink2">
-          Reading the auto-merge state…
-        </p>
-      )}
-      {read.status === "error" && (
-        <p role="alert" className="text-label text-ink2">
-          The auto-merge state could not be read.
-        </p>
-      )}
-      {view !== null && (
-        <>
-          <Summary merge={view.auto_merge} />
-          <PhaseModels figures={view.rewrite} bar={barOf(view.auto_merge.limit)} />
-        </>
-      )}
+      <div className="mt-1 flex min-h-6 items-center gap-2">
+        {read.status === "loading" && (
+          <p role="status" className="text-label leading-6 text-ink2">
+            Reading the auto-merge state…
+          </p>
+        )}
+        {read.status === "error" && (
+          <p role="alert" className="text-label leading-6 text-ink2">
+            The auto-merge state could not be read.
+          </p>
+        )}
+        {view !== null && <Status merge={view.auto_merge} />}
+      </div>
+      <p className="mt-1.5 min-h-4.5 text-label leading-4.5 text-ink2">
+        {view !== null && rateLine(view.auto_merge)}
+      </p>
+      {read.status !== "error" && <Rules merge={view === null ? null : view.auto_merge} />}
+      {read.status === "loading" && <PhaseSlots />}
+      {view !== null && <PhaseModels figures={view.rewrite} bar={barOf(view.auto_merge.limit)} />}
     </section>
   );
 }

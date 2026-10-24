@@ -37,12 +37,14 @@ export function Allowance() {
         </p>
       )}
       {read.status === "error" && (
-        <p role="alert" className="mt-3 text-label text-ink2">
+        <p role="alert" className="mt-4 min-h-[54px] text-label text-ink2">
           The allowance could not be read.
         </p>
       )}
       {read.status === "ready" && windows.length === 0 && (
-        <p className="mt-3 text-label text-ink2">No provider reports an allowance window.</p>
+        <p className="mt-4 min-h-[54px] text-label text-ink2">
+          No provider reports an allowance window.
+        </p>
       )}
       {windows.length > 0 && (
         <ul className="mt-4 grid grid-cols-3 gap-3">

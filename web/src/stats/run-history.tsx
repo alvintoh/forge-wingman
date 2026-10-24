@@ -55,12 +55,12 @@ export function RunHistory() {
         </p>
       )}
       {read.status === "error" && (
-        <p role="alert" className="mt-3 text-label text-ink2">
+        <p role="alert" className="mt-3 min-h-[26px] text-label text-ink2">
           The run history could not be read.
         </p>
       )}
       {read.status === "ready" && runs.length === 0 && (
-        <p className="mt-3 text-label text-ink2">No run has settled yet.</p>
+        <p className="mt-3 min-h-[26px] text-label text-ink2">No run has settled yet.</p>
       )}
       {read.status === "ready" && runs.length > 0 && (
         <ol aria-label="The latest settled runs, oldest first" className="mt-3 flex gap-[5px]">
