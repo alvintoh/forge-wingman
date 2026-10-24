@@ -87,7 +87,8 @@ export const isConfigView = shape<ConfigView>({
 /**
  * peakText is a model's peak pricing in words: the hours it covers on weekdays (UTC) and what they
  * cost, the words for a model priced the same at every hour, or the words for one the plan prices
- * nowhere. Hours are whole hours, printed as a clock reads them.
+ * nowhere. Hours are whole hours, printed as a clock reads them. The price clause is joined with
+ * no-break spaces, so a line that wraps carries it whole to the next line.
  */
 export function peakText(model: PeakModel): string {
   if (model.peak === null) {
@@ -96,5 +97,5 @@ export function peakText(model: PeakModel): string {
   const hours = model.peak.hours
     .map(({ from, to }) => [from, to].map((hour) => `${hour}:00`.padStart(5, "0")).join("–"))
     .join(", ");
-  return `${hours} UTC on weekdays, ×${model.peak.multiplier} the price`;
+  return `${hours} UTC on weekdays, ×${model.peak.multiplier}\u00a0the\u00a0price`;
 }
