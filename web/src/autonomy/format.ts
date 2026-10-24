@@ -49,13 +49,19 @@ export function servedRate(text: string | null, value: number | null, words: str
   return text === null || value === null ? words : text;
 }
 
+// tooFewForSpread is whether a group with no median or p90 lacks them for want of
+// PRs, not for want of a rate to take them from.
+export function tooFewForSpread(group: Group): boolean {
+  return group.agent_lines > 0;
+}
+
 // spreadText is a group's median or p90 as the endpoint prints it. Where it
-// served none, the group is too small for one, or has no rate to take one from.
+// served none, the cell counts the group's PRs if it has a rate, else says it has none.
 export function spreadText(text: string | null, group: Group): string {
   if (text !== null) {
     return text;
   }
-  return group.agent_lines > 0 ? "few PRs" : "no rate";
+  return tooFewForSpread(group) ? prsWord(group.prs) : "no rate";
 }
 
 export function count(value: number): string {
@@ -67,10 +73,9 @@ export function prsWord(prs: number): string {
   return `${prs} PR${prs === 1 ? "" : "s"}`;
 }
 
-// countWords is a group's PR count, with the words that say it has no spread yet.
-export function countWords(group: Group): string {
-  const words = prsWord(group.prs);
-  return group.median === null && group.agent_lines > 0 ? `${words}, few PRs` : words;
+// isPrsWord is whether a text is a PR count as prsWord words it.
+export function isPrsWord(text: string): boolean {
+  return text === prsWord(Number.parseInt(text, 10));
 }
 
 // utcDay is the UTC date of a timestamp, month then day: "10-17".

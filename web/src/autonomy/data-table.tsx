@@ -3,6 +3,7 @@ import { parsePull } from "../inbox/run";
 import { prKey } from "./axis";
 import {
   count,
+  isPrsWord,
   isRed,
   lastPrRepo,
   modelName,
@@ -94,10 +95,13 @@ function DataTable<T>({ title, columns, rows, rowKey }: TableProps<T>) {
   );
 }
 
-// Figure sets a number in mono, and leaves words, which are not figures, as they are.
+// Figure sets a number in mono, and leaves words, which are not figures, as they are: a PR
+// count, "2 PRs", is words.
 function Figure({ on, children }: { on: boolean | undefined; children: ReactNode }) {
   const figure =
-    on && (typeof children === "number" || (typeof children === "string" && /\d/.test(children)));
+    on &&
+    (typeof children === "number" ||
+      (typeof children === "string" && /\d/.test(children) && !isPrsWord(children)));
   return <span className={figure ? "font-mono" : undefined}>{children}</span>;
 }
 

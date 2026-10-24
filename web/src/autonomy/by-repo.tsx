@@ -44,9 +44,9 @@ export function ByRepo({ repos }: { repos: RepoRow[] }) {
 function restNote(rest: RowSpec[]): string {
   const first = rest[0];
   if (rest.length === 1 && first !== undefined) {
-    return `Another repository, ${first.name}, has ${prsWord(first.group.prs)}: few PRs, so it shows no median.`;
+    return `Another repository, ${first.name}, has ${prsWord(first.group.prs)}, under ten, so no median.`;
   }
-  return `${rest.length} other repositories have under ten PRs: few PRs, so they show no median.`;
+  return `${rest.length} other repositories have under ten PRs, so they show no median.`;
 }
 
 const AVERAGE_GUTTER = 120;

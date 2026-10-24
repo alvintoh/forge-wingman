@@ -1,6 +1,6 @@
 import { ChartCard, ChartHeader } from "./chart-card";
 import { COMPACT_W, SIZE_CAP, TRIANGLE_R, Y_LABEL_W, bandLabelSide, padxFor, yOf } from "./axis";
-import { prsWord, referenceLabel, servedRate, spreadText, textWidth, whole } from "./format";
+import { prsWord, referenceLabel, servedRate, textWidth, tooFewForSpread, whole } from "./format";
 import { Diamond, RefLine } from "./marks";
 import type { SizeRow } from "./types";
 
@@ -107,10 +107,10 @@ type BySizeProps = { sizes: SizeRow[]; bar: number };
 
 // BySize is the pooled rate of each size as a diamond, with the median PR's rate
 // as a bar and the p90's as a whisker, on its own 0 to 40% axis. A size under ten
-// PRs has no median or p90 and says so. A pooled rate, median or p90 above the
-// axis is clamped to it and drawn as a triangle in a band over the plot, with its
-// value; the Data table lists every figure. A size with no PRs is not drawn. The
-// phone leaves this chart to the Data table, as the drawing does.
+// PRs has no bar or whisker; its PR count is under the axis. A pooled rate, median
+// or p90 above the axis is clamped to it and drawn as a triangle in a band over
+// the plot, with its value; the Data table lists every figure. A size with no PRs
+// is not drawn. The phone leaves this chart to the Data table, as the drawing does.
 export function BySize({ sizes, bar }: BySizeProps) {
   const shown = sizes.filter((size) => size.prs > 0);
   if (shown.length === 0) {
@@ -204,14 +204,16 @@ export function BySize({ sizes, bar }: BySizeProps) {
                     return (
                       <g key={size.size} data-size={size.size}>
                         {!spread ? (
-                          <text
-                            x={cx}
-                            y={pooledOn ? Math.min(base - 14, y(pooled) - 12) : base - 14}
-                            textAnchor="middle"
-                            className="fill-ink2 text-label"
-                          >
-                            {spreadText(null, size)}
-                          </text>
+                          !tooFewForSpread(size) && (
+                            <text
+                              x={cx}
+                              y={pooledOn ? Math.min(base - 14, y(pooled) - 12) : base - 14}
+                              textAnchor="middle"
+                              className="fill-ink2 text-label"
+                            >
+                              no rate
+                            </text>
+                          )
                         ) : (
                           <>
                             <rect
