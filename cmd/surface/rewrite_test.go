@@ -190,6 +190,7 @@ func TestAutonomyReportsTheRollingRateOverTheMerges(t *testing.T) {
 	measured := make([]dispatcher.Sample, 0, 10)
 	for i := range 10 {
 		measured = append(measured, dispatcher.Sample{
+			Repo:     "octo/scratch",
 			PR:       110 - i,
 			MergedAt: at.Add(-time.Duration(i) * time.Hour),
 			Rewrite:  dispatcher.Rewrite{AgentLines: 100, OwnerLines: int64(i + 1)},
@@ -203,10 +204,10 @@ func TestAutonomyReportsTheRollingRateOverTheMerges(t *testing.T) {
 	if !ok {
 		t.Fatalf("point = %v, want an object", series[0])
 	}
-	if got, want := slices.Sorted(maps.Keys(point)), []string{"merged_at", "pr", "rate", "rate_value"}; !slices.Equal(got, want) {
+	if got, want := slices.Sorted(maps.Keys(point)), []string{"merged_at", "pr", "rate", "rate_value", "repo"}; !slices.Equal(got, want) {
 		t.Errorf("point keys = %v, want %v", got, want)
 	}
-	if point["pr"] != 110.0 || point["rate"] != "5.5%" || point["merged_at"] != "2026-10-15T09:00:00Z" {
+	if point["repo"] != "octo/scratch" || point["pr"] != 110.0 || point["rate"] != "5.5%" || point["merged_at"] != "2026-10-15T09:00:00Z" {
 		t.Errorf("point = %v, want the newest merge at its own window's pooled rate", point)
 	}
 
@@ -549,6 +550,38 @@ func TestAutonomyTilesCarryTheirTrend(t *testing.T) {
 	tiles, _ := rewriteFigures(t, merges[:1])["tiles"].([]any)
 	if only, _ := tiles[2].(map[string]any); only["trend"] != "flat" || only["previous_rate_value"] != nil {
 		t.Errorf("one-PR tile = %v, want flat with no previous rate", tiles[2])
+	}
+
+	// Eleven merges have a window before the trailing one but none before that,
+	// so its trend is not computable and it serves no previous rate, which flat
+	// would otherwise read as a measured one.
+	tiles, _ = rewriteFigures(t, merges[:11])["tiles"].([]any)
+	if trailing, _ := tiles[0].(map[string]any); trailing["trend"] != "flat" || trailing["previous_rate_value"] != nil {
+		t.Errorf("eleven-PR trailing tile = %v, want flat with no previous rate", tiles[0])
+	}
+}
+
+// A PR's number is its own only within its repository, so two repositories'
+// PRs of one number are two points of the series, each naming its repository.
+func TestAutonomyNamesTheRepositoryOfEachSeriesPoint(t *testing.T) {
+	at := time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC)
+	var merges []dispatcher.Sample
+	for i := range 11 {
+		repo := "octo/one"
+		if i%2 == 1 {
+			repo = "octo/two"
+		}
+		merges = append(merges, dispatcher.Sample{Repo: repo, PR: 50 - i/2, MergedAt: at.Add(-time.Duration(i) * time.Hour),
+			Rewrite: dispatcher.Rewrite{AgentLines: 100, OwnerLines: 10}})
+	}
+	series := seriesOf(t, getAutonomy(t, &stubMeasured{merges: merges}))
+	if len(series) != 2 {
+		t.Fatalf("series = %v, want a point for each of the two merges with ten measured up to it", series)
+	}
+	first, _ := series[0].(map[string]any)
+	last, _ := series[1].(map[string]any)
+	if first["repo"] != "octo/two" || first["pr"] != 50.0 || last["repo"] != "octo/one" || last["pr"] != 50.0 {
+		t.Errorf("series = %v, want PR 50 of octo/two then PR 50 of octo/one", series)
 	}
 }
 

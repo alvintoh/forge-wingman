@@ -45,6 +45,7 @@ type rewriteTile struct {
 // rewritePoint is one point of the rolling series: the merge the window ends at
 // and the rate pooled over that window.
 type rewritePoint struct {
+	Repo      string    `json:"repo"`
 	PR        int       `json:"pr"`
 	MergedAt  time.Time `json:"merged_at"`
 	Rate      string    `json:"rate"`
@@ -162,7 +163,7 @@ func renderTiles(windows []dispatcher.RateWindow) []rewriteTile {
 func renderSeries(points []dispatcher.SeriesPoint) []rewritePoint {
 	out := make([]rewritePoint, 0, len(points))
 	for _, p := range points {
-		out = append(out, rewritePoint{PR: p.PR, MergedAt: p.MergedAt, Rate: linesRateText(p.AgentLines, p.Rate), RateValue: linesRateNumber(p.AgentLines, p.Rate)})
+		out = append(out, rewritePoint{Repo: p.Repo, PR: p.PR, MergedAt: p.MergedAt, Rate: linesRateText(p.AgentLines, p.Rate), RateValue: linesRateNumber(p.AgentLines, p.Rate)})
 	}
 	return out
 }

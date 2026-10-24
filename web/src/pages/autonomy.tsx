@@ -1,121 +1,40 @@
-import { useEffect, useState } from "react";
-
-// MergeState is the auto-merge state the endpoint serves: the owner's switch
-// beside the rate's verdict over the trailing window, the bar it is compared to
-// and the reason the pair gives.
-type MergeState = {
-  switch_on: boolean;
-  rate_allows: boolean;
-  rate_value: string;
-  limit: string;
-  // Window is how many trailing merged PRs the rate covers.
-  window: number;
-  effective: boolean;
-  // Reason is why auto-merge is or is not effective: one of the endpoint's own
-  // stable tokens, which reasonText words.
-  reason: string;
-};
-
-// AutonomyView is what the autonomy page reads from the endpoint: the
-// auto-merge state over the measured merges.
-type AutonomyView = {
-  auto_merge: MergeState;
-};
-
-type AutonomyState = {
-  status: "loading" | "error" | "ready";
-  view: AutonomyView;
-};
-
-// noView is what the section holds before the state is read and after a read
-// that failed; it renders in neither state.
-const noView: AutonomyView = {
-  auto_merge: {
-    switch_on: false,
-    rate_allows: false,
-    rate_value: "",
-    limit: "",
-    window: 0,
-    effective: false,
-    reason: "",
-  },
-};
+import { RewriteFigures } from "../autonomy/rewrite-section";
+import { isAutonomy } from "../autonomy/guard";
+import { useRead } from "../stats/use-read";
 
 // Autonomy shows whether an eligible pull request merges itself: the state over
-// the trailing window, the rate behind it and the reason. The switch is the
-// owner's setting, set with `runner auto-merge`.
+// the trailing window, the rate behind it and the reason, then the rewrite rate
+// as charts. The switch is the owner's setting, set with `runner auto-merge`.
 export function Autonomy() {
-  const [state, setState] = useState<AutonomyState>({ status: "loading", view: noView });
-
-  useEffect(() => {
-    const controller = new AbortController();
-
-    async function read() {
-      const response = await fetch("/api/autonomy", { signal: controller.signal });
-      if (!response.ok) {
-        throw new Error(`the autonomy endpoint answered ${response.status}`);
-      }
-      const body: unknown = await response.json();
-      if (!isAutonomy(body)) {
-        throw new Error("the autonomy endpoint answered no auto-merge state");
-      }
-      if (controller.signal.aborted) {
-        return;
-      }
-      setState({ status: "ready", view: body });
-    }
-
-    read().catch((err: unknown) => {
-      if (controller.signal.aborted) {
-        return;
-      }
-      console.error("autonomyNotRead", err);
-      setState({ status: "error", view: noView });
-    });
-
-    return () => controller.abort();
-  }, []);
-
-  const merge = state.view.auto_merge;
+  const read = useRead("/api/autonomy", isAutonomy, "autonomyNotRead");
 
   return (
     <section className="mx-auto max-w-desk px-padx pt-4 pb-band">
       <h1 className="text-title font-semibold text-ink">Autonomy</h1>
       <p className="mt-2 text-body text-ink2">Whether an eligible PR merges itself.</p>
-      {state.status === "loading" && (
+      {read.status === "loading" && (
         <p role="status" className="mt-6">
           Reading the auto-merge state…
         </p>
       )}
-      {state.status === "error" && (
+      {read.status === "error" && (
         <p role="alert" className="mt-6">
           The auto-merge state could not be read.
         </p>
       )}
-      {state.status === "ready" && (
+      {read.status === "ready" && (
         <>
           <p className="mt-6 text-title font-semibold text-ink">
-            {merge.effective ? "Auto-merge is on" : "Auto-merge is off"}
+            {read.body.auto_merge.effective ? "Auto-merge is on" : "Auto-merge is off"}
           </p>
           <p className="mt-1 text-body text-ink2">
-            {`Rate over the trailing ${merge.window} merged PRs: ${merge.rate_value} (bar ${merge.limit}).`}
+            {`Rate over the trailing ${read.body.auto_merge.window} merged PRs: ${read.body.auto_merge.rate_value} (bar ${read.body.auto_merge.limit}).`}
           </p>
-          <p className="mt-2 text-body text-ink2">{reasonText(merge.reason)}</p>
+          <p className="mt-2 text-body text-ink2">{reasonText(read.body.auto_merge.reason)}</p>
+          <RewriteFigures figures={read.body.rewrite} />
         </>
       )}
     </section>
-  );
-}
-
-// isAutonomy narrows the endpoint's answer to the one thing this view can check
-// about a document it did not build: that it carries an auto-merge state.
-function isAutonomy(body: unknown): body is AutonomyView {
-  return (
-    typeof body === "object" &&
-    body !== null &&
-    "auto_merge" in body &&
-    typeof body.auto_merge === "object" &&
-    body.auto_merge !== null
   );
 }
 
