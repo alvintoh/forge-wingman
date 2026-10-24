@@ -60,6 +60,7 @@ type historyResponse struct {
 type historyRun struct {
 	Run       string    `json:"run"`
 	Ticket    string    `json:"ticket"`
+	Repo      string    `json:"repo"`
 	Kind      string    `json:"kind"`
 	Words     string    `json:"words"`
 	SettledAt time.Time `json:"settled_at"`
@@ -76,7 +77,7 @@ func renderRunHistory(runs []store.SettledRun) historyResponse {
 			out.Merged++
 		}
 		out.Runs = append(out.Runs, historyRun{
-			Run: run.Run, Ticket: run.Ticket, Kind: kind, Words: words, SettledAt: run.SettledAt,
+			Run: run.Run, Ticket: run.Ticket, Repo: run.Repo, Kind: kind, Words: words, SettledAt: run.SettledAt,
 		})
 	}
 	return out
