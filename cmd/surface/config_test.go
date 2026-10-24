@@ -36,7 +36,7 @@ func decodeConfig(t *testing.T, rec *httptest.ResponseRecorder) configResponse {
 
 func TestConfigServesTheDefaultsForAnEmptyEnvironment(t *testing.T) {
 	got := decodeConfig(t, getConfig(t, nil)).Concurrency
-	if want := (configConcurrency{ReviewWIP: 3, PlatformCap: 20, TwoStage: false, PollMinutes: 15}); got != want {
+	if want := (configConcurrency{ReviewWIP: 3, PlatformCap: 20, PollMinutes: 15}); got != want {
 		t.Fatalf("concurrency = %+v, want %+v", got, want)
 	}
 }
@@ -55,12 +55,6 @@ func TestConfigReadsTheProcessEnvironmentWithoutAnInjectedReader(t *testing.T) {
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/config", nil))
 	if got := decodeConfig(t, rec).Concurrency.ReviewWIP; got != 7 {
 		t.Fatalf("review WIP = %d, want 7 from the process environment", got)
-	}
-}
-
-func TestConfigShowsTheTwoStageSwitch(t *testing.T) {
-	if got := decodeConfig(t, getConfig(t, map[string]string{"WINGMAN_TWO_STAGE": "on"})).Concurrency; !got.TwoStage {
-		t.Fatalf("concurrency = %+v, want two-stage on", got)
 	}
 }
 

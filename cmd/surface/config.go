@@ -29,8 +29,7 @@ type configConcurrency struct {
 	// ReviewWIP is how many open agent PRs may await review before a run starts.
 	ReviewWIP int `json:"review_wip"`
 	// PlatformCap is the concurrent jobs the platform allows one account.
-	PlatformCap int  `json:"platform_cap"`
-	TwoStage    bool `json:"two_stage"`
+	PlatformCap int `json:"platform_cap"`
 	// PollMinutes is the dispatcher's scheduled poll period.
 	PollMinutes int `json:"poll_minutes"`
 }
@@ -60,7 +59,6 @@ func (d Deps) config(w http.ResponseWriter, _ *http.Request) {
 		Concurrency: configConcurrency{
 			ReviewWIP:   limits.ReviewWIP,
 			PlatformCap: limits.PlatformCap,
-			TwoStage:    dispatcher.TwoStage(getenv),
 			PollMinutes: int(dispatcher.PollInterval / time.Minute),
 		},
 		PeakWindows: peakModels(),
