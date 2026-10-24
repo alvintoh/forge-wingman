@@ -39,7 +39,7 @@ func TestRecentSettledListsTheNewestSettledRunsWithHowEachEnded(t *testing.T) {
 			"outcome": string(runner.OutcomeBudgetStop), "stop_reason": string(runner.StopAllowanceExhausted),
 		}),
 		"never settled":      {"ticket_id": "ABC-2", "outcome": string(runner.OutcomeStopped), "settled_at": time.Time{}},
-		"oldest":             settled(5*time.Hour, nil),
+		"oldest":             settled(5*time.Hour, map[string]any{"cancelled_by_owner_at": historyBase}),
 		"older than the cap": settled(6*time.Hour, nil),
 	}
 	var ids []string
@@ -68,6 +68,9 @@ func TestRecentSettledListsTheNewestSettledRunsWithHowEachEnded(t *testing.T) {
 		if r.Merged != wantMerged[i] {
 			t.Errorf("%s merged = %t, want %t", names[i], r.Merged, wantMerged[i])
 		}
+	}
+	if !got[4].Cancelled || got[2].Cancelled {
+		t.Errorf("cancelled = %t and %t, want the owner's cancel read on the oldest and nowhere else", got[4].Cancelled, got[2].Cancelled)
 	}
 	if got[2].WaitReason != runner.WaitDraft || got[2].Ticket != "ABC-1" || got[2].Outcome != runner.OutcomePROpened {
 		t.Errorf("open draft = %+v, want its ticket, outcome and wait reason", got[2])

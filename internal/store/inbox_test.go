@@ -40,6 +40,7 @@ func TestInboxListsOpenPRsWaitingOnTheOwnerNewestFirst(t *testing.T) {
 		"merged by a poll":  row(6*time.Hour, map[string]any{"rewrite_merged_at": inboxBase, "wait_reason": "size-l"}),
 		"no PR":             row(7*time.Hour, map[string]any{"pr_url": "", "wait_reason": "draft"}),
 		"stopped":           row(8*time.Hour, map[string]any{"outcome": string(runner.OutcomeInfraFailure), "wait_reason": "draft"}),
+		"cancelled":         row(9*time.Hour, map[string]any{"cancelled_by_owner_at": inboxBase, "cancelled_by": "owner@example.com", "wait_reason": "draft"}),
 		"too old to review": row(400*24*time.Hour, map[string]any{"wait_reason": "size-l"}),
 	}
 	var ids []string
@@ -106,6 +107,7 @@ func TestInboxListsStoppedRunsUnlessThereIsNothingForTheOwnerToRetry(t *testing.
 		"claimed again":       row(7*time.Hour, map[string]any{"claimed_at": inboxBase}),
 		"queued":              row(8*time.Hour, map[string]any{"state": "queued"}),
 		"merged by the owner": row(9*time.Hour, map[string]any{"outcome": string(runner.OutcomeBuilt), "merged_by_owner_at": inboxBase}),
+		"cancelled":           row(11*time.Hour, map[string]any{"outcome": string(runner.OutcomePROpened), "pr_url": "https://github.com/octo/scratch/pull/8", "cancelled_by_owner_at": inboxBase, "cancelled_by": "owner@example.com"}),
 		"opened a PR":         row(10*time.Hour, map[string]any{"pr_url": "https://github.com/octo/scratch/pull/7"}),
 	}
 	var ids []string
@@ -181,6 +183,123 @@ func TestRecordMergeRefusesARunWithNoRow(t *testing.T) {
 	}
 	if snap, _ := client.Collection(runsCollection).Doc(id).Get(context.Background()); snap != nil && snap.Exists() {
 		t.Fatal("a row now exists")
+	}
+}
+
+func TestRecordCancelKeepsTheRestOfTheRow(t *testing.T) {
+	_, client := queue(t)
+	ctx := context.Background()
+	id := fmt.Sprintf("cancel-%d", time.Now().UnixNano())
+	forget(t, client, id)
+	doc := client.Collection(runsCollection).Doc(id)
+	if _, err := doc.Set(ctx, map[string]any{"ticket_id": "ABC-1", "wait_reason": "size-l", outcomeField: string(runner.OutcomePROpened)}); err != nil {
+		t.Fatal(err)
+	}
+
+	at := time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC)
+	if err := NewRecords(client).RecordCancel(ctx, id, "owner@example.com", at); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := doc.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := snap.Data()
+	if data["ticket_id"] != "ABC-1" || data["wait_reason"] != "size-l" {
+		t.Errorf("a field the cancel does not name was lost: %v", data)
+	}
+	if data["cancelled_by"] != "owner@example.com" || !data["cancelled_by_owner_at"].(time.Time).Equal(at) {
+		t.Errorf("row = %v, want the cancel and its owner recorded", data)
+	}
+}
+
+func TestRecordCancelRefusesARunWithNoRow(t *testing.T) {
+	_, client := queue(t)
+	id := fmt.Sprintf("absent-cancel-%d", time.Now().UnixNano())
+	forget(t, client, id)
+	err := NewRecords(client).RecordCancel(context.Background(), id, "owner@example.com", time.Now())
+	if !errors.Is(err, runner.ErrRecordNotFound) {
+		t.Fatalf("err = %v, want ErrRecordNotFound", err)
+	}
+	if snap, _ := client.Collection(runsCollection).Doc(id).Get(context.Background()); snap != nil && snap.Exists() {
+		t.Fatal("a row now exists")
+	}
+}
+
+func TestRecordCancelRefusesARunThatStoppedWaiting(t *testing.T) {
+	_, client := queue(t)
+	ctx := context.Background()
+	at := time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC)
+	waiting := string(runner.OutcomePROpened)
+	for _, tt := range []struct {
+		name string
+		row  map[string]any
+		want error
+	}{
+		{"waiting", map[string]any{outcomeField: waiting}, nil},
+		{"cancelled", map[string]any{outcomeField: waiting, cancelledByOwnerAtField: at, cancelledByField: "first@example.com"}, ErrRunCancelled},
+		{"merged by the owner", map[string]any{outcomeField: waiting, mergedByOwnerAtField: at}, ErrRunMerged},
+		{"merged by a poll", map[string]any{outcomeField: waiting, rewriteMergedAtField: at}, ErrRunMerged},
+		{"merged after a cancel", map[string]any{outcomeField: waiting, cancelledByOwnerAtField: at, rewriteMergedAtField: at}, ErrRunMerged},
+		{"stopped", map[string]any{outcomeField: string(runner.OutcomeAgentFailed)}, ErrRunNotWaiting},
+		{"in flight", map[string]any{stateField: stateClaimed}, ErrRunNotWaiting},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			id := fmt.Sprintf("cancel-refuse-%d", time.Now().UnixNano())
+			forget(t, client, id)
+			doc := client.Collection(runsCollection).Doc(id)
+			if _, err := doc.Set(ctx, tt.row); err != nil {
+				t.Fatal(err)
+			}
+			err := NewRecords(client).RecordCancel(ctx, id, "second@example.com", at.Add(time.Hour))
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("err = %v, want %v", err, tt.want)
+			}
+			snap, getErr := doc.Get(ctx)
+			if getErr != nil {
+				t.Fatal(getErr)
+			}
+			data := snap.Data()
+			if tt.want == nil {
+				if data[cancelledByField] != "second@example.com" {
+					t.Fatalf("row = %v, want the cancel recorded", data)
+				}
+				return
+			}
+			if data[cancelledByField] == "second@example.com" || len(data) != len(tt.row) {
+				t.Fatalf("row = %v, want the refused cancel to write nothing", data)
+			}
+		})
+	}
+}
+
+func TestRecordCancelOfTwoRequestsRecordsOneAndRefusesTheOther(t *testing.T) {
+	_, client := queue(t)
+	ctx := context.Background()
+	id := fmt.Sprintf("cancel-race-%d", time.Now().UnixNano())
+	forget(t, client, id)
+	doc := client.Collection(runsCollection).Doc(id)
+	if _, err := doc.Set(ctx, map[string]any{outcomeField: string(runner.OutcomePROpened)}); err != nil {
+		t.Fatal(err)
+	}
+	records := NewRecords(client)
+	errs := make(chan error, 2)
+	for _, by := range []string{"a@example.com", "b@example.com"} {
+		go func() { errs <- records.RecordCancel(ctx, id, by, time.Now()) }()
+	}
+	var recorded, refused int
+	for range 2 {
+		switch err := <-errs; {
+		case err == nil:
+			recorded++
+		case errors.Is(err, ErrRunCancelled):
+			refused++
+		default:
+			t.Fatalf("err = %v", err)
+		}
+	}
+	if recorded != 1 || refused != 1 {
+		t.Fatalf("recorded %d, refused %d, want one of each", recorded, refused)
 	}
 }
 

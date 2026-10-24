@@ -4,7 +4,7 @@ import { useMedia } from "./use-media";
 
 type ActionButtonProps = React.ComponentProps<"button"> & {
   label: string;
-  kind: "primary" | "secondary";
+  kind: "primary" | "secondary" | "destructive";
 };
 
 /**

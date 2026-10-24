@@ -127,6 +127,7 @@ func TestMergeRefusesWhatTheOwnerMayNotMerge(t *testing.T) {
 	}{
 		"a row with no PR page":                     {func(r *runner.Record) { r.PRURL = "" }, nil, "no-pull-request"},
 		"a PR in another repository than the run's": {func(r *runner.Record) { r.PRURL = "https://github.com/octo/other/pull/7" }, nil, "no-pull-request"},
+		"a run the owner cancelled":                 {func(r *runner.Record) { r.CancelledByOwnerAt = measuredAt() }, nil, "cancelled"},
 		"a closed PR":                               {nil, func(m *stubMerger) { m.state.Open = false }, "not-open"},
 		"a draft":                                   {nil, func(m *stubMerger) { m.state.Draft = true }, "draft"},
 		"a head that moved":                         {nil, func(m *stubMerger) { m.state.HeadSHA = "moved99" }, "head-moved"},
@@ -141,6 +142,30 @@ func TestMergeRefusesWhatTheOwnerMayNotMerge(t *testing.T) {
 			rec := postMerge(t, Deps{Merger: merger, Runs: runs}, "r1", "application/json", mergeBody)
 			if rec.Code != http.StatusConflict || rec.Body.String() != fmt.Sprintf("{\"reason\":%q}\n", tt.reason) {
 				t.Fatalf("answer = %d %s, want a %s refusal", rec.Code, rec.Body.String(), tt.reason)
+			}
+			if len(merger.merged) != 0 || len(runs.merges) != 0 {
+				t.Fatalf("merged %v, recorded %v, want neither", merger.merged, runs.merges)
+			}
+		})
+	}
+}
+
+func TestMergeOfACancelledRunAnswersWhatLaterHappenedToItsPR(t *testing.T) {
+	cancelled := func(r *runner.Record) { r.CancelledByOwnerAt = measuredAt() }
+	for name, tt := range map[string]struct {
+		state dispatcher.PullStatus
+		code  int
+		body  string
+	}{
+		"merged by hand": {dispatcher.PullStatus{Merged: true, HeadSHA: "abc123"}, http.StatusOK, "{\"status\":\"already-merged\"}\n"},
+		"closed by hand": {dispatcher.PullStatus{HeadSHA: "abc123"}, http.StatusConflict, "{\"reason\":\"cancelled\"}\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			merger, runs := readyToMerge(), mergeRows(cancelled)
+			merger.state = tt.state
+			rec := postMerge(t, Deps{Merger: merger, Runs: runs}, "r1", "application/json", mergeBody)
+			if rec.Code != tt.code || rec.Body.String() != tt.body {
+				t.Fatalf("answer = %d %s, want %d %s", rec.Code, rec.Body.String(), tt.code, tt.body)
 			}
 			if len(merger.merged) != 0 || len(runs.merges) != 0 {
 				t.Fatalf("merged %v, recorded %v, want neither", merger.merged, runs.merges)
@@ -266,6 +291,7 @@ func TestParsePullURLReadsOnlyAGitHubPullRequestPage(t *testing.T) {
 
 func TestMergeRefusalReasonsAreTheStringsThePageSwitchesOn(t *testing.T) {
 	for got, want := range map[string]string{
+		refusedCancelled:      "cancelled",
 		refusedChecksNotGreen: "checks-not-green",
 		refusedDraft:          "draft",
 		refusedGitHub:         "github-refused",

@@ -36,6 +36,7 @@ type PRMerger interface {
 
 // The reasons a merge is refused, each answered with status 409.
 const (
+	refusedCancelled      = "cancelled"
 	refusedChecksNotGreen = "checks-not-green"
 	refusedDraft          = "draft"
 	refusedGitHub         = "github-refused"
@@ -113,6 +114,9 @@ func (d Deps) mergeRun(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case state.Merged:
 		writeJSON(w, http.StatusOK, mergeStatus{Status: "already-merged"})
+		return
+	case !rec.CancelledByOwnerAt.IsZero():
+		d.refuseMerge(w, run, refusedCancelled, "")
 		return
 	case !state.Open:
 		d.refuseMerge(w, run, refusedNotOpen, "")

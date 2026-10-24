@@ -1,6 +1,10 @@
-/** The fill, border and ink of the app's two button kinds, shared by ActionButton and SmallPill. */
+/**
+ * The fill, border and ink of the app's button kinds, shared by ActionButton and SmallPill.
+ * `destructive` is the stop colour filled, for the one action that ends something for good.
+ */
 export const kindClass = {
   primary: "border-accent bg-accent text-card",
+  destructive: "border-stop bg-stop text-card",
   secondary: "border-ink2 bg-card text-ink",
 } as const;
 
@@ -11,6 +15,10 @@ export const kindClass = {
  */
 export const disabledEdge = {
   primary: {
+    self: "disabled:border-track aria-disabled:border-track",
+    group: "group-disabled:border-track group-aria-disabled:border-track",
+  },
+  destructive: {
     self: "disabled:border-track aria-disabled:border-track",
     group: "group-disabled:border-track group-aria-disabled:border-track",
   },

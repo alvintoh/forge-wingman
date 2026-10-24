@@ -59,6 +59,7 @@ func run(logger *slog.Logger) error {
 	var projects ProjectStores
 	var inbox InboxStore
 	var runs MergeRuns
+	var cancels CancelRuns
 	var history RunHistoryReader
 	var retries RunRetries
 	if project := os.Getenv("GOOGLE_CLOUD_PROJECT"); project != "" {
@@ -69,6 +70,7 @@ func run(logger *slog.Logger) error {
 		defer func() { _ = fsc.Close() }()
 		records := store.NewRecords(fsc)
 		comparison, inbox, runs, history = records, records, records, records
+		cancels = records
 		providerPlans = store.NewProviderPlans(fsc)
 		measured = store.NewRewrites(fsc)
 		peak = store.NewPeakModes(fsc)
@@ -108,6 +110,7 @@ func run(logger *slog.Logger) error {
 		Projects:      projects,
 		Inbox:         inbox,
 		Runs:          runs,
+		Cancels:       cancels,
 		History:       history,
 		Retries:       retries,
 		Merger:        merger,
@@ -161,6 +164,7 @@ type Deps struct {
 	Projects      ProjectStores
 	Inbox         InboxStore
 	Runs          MergeRuns
+	Cancels       CancelRuns
 	History       RunHistoryReader
 	Retries       RunRetries
 	Merger        PRMerger
@@ -192,6 +196,7 @@ func newMux(d Deps) *http.ServeMux {
 	mux.HandleFunc("GET /api/inbox", d.inbox(&inboxFlight))
 	mux.HandleFunc("POST /api/runs/{run}/merge", d.mergeRun)
 	mux.HandleFunc("POST /api/runs/{run}/retry", d.retryRun)
+	mux.HandleFunc("POST /api/runs/{run}/cancel", d.cancelRun)
 	mux.Handle("GET /api/", http.NotFoundHandler())
 	mux.Handle("GET /", spaHandler(d.SPA))
 
