@@ -49,6 +49,7 @@ func TestConcurrencySettingsRefusesUnusableValues(t *testing.T) {
 		"a negative cap":                          {"WINGMAN_LARGE_CAP": "-1"},
 		"a cap that is not a number":              {"WINGMAN_REVIEW_WIP": "many"},
 		"a fractional count":                      {"WINGMAN_STABLE_RUNS": "2.5"},
+		"a count beyond the int range":            {"WINGMAN_REVIEW_WIP": "99999999999999999999"},
 		"a zero rise band":                        {"WINGMAN_RISE_WITHIN": "0"},
 		"a rise band that is not a number":        {"WINGMAN_RISE_WITHIN": "NaN"},
 		"an infinite fall band":                   {"WINGMAN_HALVE_BEYOND": "Inf"},

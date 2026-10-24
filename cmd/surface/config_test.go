@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"testing/fstest"
 
@@ -47,6 +48,16 @@ func TestConfigServesAnOverriddenSetting(t *testing.T) {
 	}
 }
 
+func TestConfigReadsTheProcessEnvironmentWithoutAnInjectedReader(t *testing.T) {
+	t.Setenv("WINGMAN_REVIEW_WIP", "7")
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger()})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	if got := decodeConfig(t, rec).Concurrency.ReviewWIP; got != 7 {
+		t.Fatalf("review WIP = %d, want 7 from the process environment", got)
+	}
+}
+
 func TestConfigShowsTheTwoStageSwitch(t *testing.T) {
 	if got := decodeConfig(t, getConfig(t, map[string]string{"WINGMAN_TWO_STAGE": "on"})).Concurrency; !got.TwoStage {
 		t.Fatalf("concurrency = %+v, want two-stage on", got)
@@ -72,6 +83,15 @@ func TestConfigNamesEachPhasesDefaultModel(t *testing.T) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("phases = %+v, want %+v", got, want)
+		}
+	}
+}
+
+func TestConfigHasAPeakWindowEntryForEachPhasesModel(t *testing.T) {
+	got := decodeConfig(t, getConfig(t, nil))
+	for _, phase := range got.Phases {
+		if !slices.ContainsFunc(got.PeakWindows, func(m peakModel) bool { return m.Model == phase.Model }) {
+			t.Errorf("no peak window entry for the %s phase's model %s", phase.Phase, phase.Model)
 		}
 	}
 }
