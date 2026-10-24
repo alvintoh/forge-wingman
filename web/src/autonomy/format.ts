@@ -1,4 +1,4 @@
-import type { Group, MergeState, Phase, Point, PR, Tile } from "./types";
+import type { Group, Phase, Point, PR, Tile } from "./types";
 
 // The model the endpoint names a phase that ran none, or more than one.
 export const UNKNOWN_MODEL = "unknown";
@@ -41,12 +41,6 @@ export function whole(fraction: number): string {
 // "10.0%" is 0.1.
 export function barOf(limit: string): number {
   return Number.parseFloat(limit) / 100;
-}
-
-// trailingWords is the rate over the trailing window against the bar, in words: "trailing 10 is
-// 9.8%; limit 10%".
-export function trailingWords(merge: MergeState): string {
-  return `trailing ${merge.window} is ${merge.rate_value}; limit ${whole(barOf(merge.limit))}`;
 }
 
 // servedRate is a rate as the endpoint prints it, or the page's words where the

@@ -1,4 +1,4 @@
-import { barOf, reasonText, trailingWords, whole } from "../autonomy/format";
+import { barOf, reasonText, whole } from "../autonomy/format";
 import { isAutonomy } from "../autonomy/guard";
 import type { MergeState } from "../autonomy/types";
 import { captionClass } from "./caption";
@@ -20,6 +20,20 @@ function statusOf(merge: MergeState): Status {
     return "on";
   }
   return merge.switch_on ? "held" : "off";
+}
+
+// rateLine is the rate's verdict in words, apart from the status: the figure against the bar
+// where there is one, else the endpoint's reason.
+function rateLine(merge: MergeState): string {
+  const trailing = `trailing ${merge.window} is ${merge.rate_value}`;
+  const bar = whole(barOf(merge.limit));
+  if (merge.rate_allows) {
+    return `can be on: ${trailing}; limit ${bar}`;
+  }
+  if (merge.reason === "rate-above-bar") {
+    return `held: ${trailing}, above ${bar}`;
+  }
+  return reasonText(merge.reason);
 }
 
 // The status as a shape beside its word: a tick in a disc, a bar in a ring, a pause mark in a ring.
@@ -69,9 +83,7 @@ function Summary({ merge }: { merge: MergeState }) {
           {STATUS_WORD[status]}
         </p>
       </div>
-      <p className="mt-1.5 text-label leading-4.5 text-ink2">
-        {merge.rate_allows ? `can be on: ${trailingWords(merge)}` : reasonText(merge.reason)}
-      </p>
+      <p className="mt-1.5 text-label leading-4.5 text-ink2">{rateLine(merge)}</p>
       <ul className="mt-3 list-disc space-y-1.5 pl-3.5 text-label leading-4.5 text-ink2 marker:text-ink">
         <li>
           {`Merges itself: size S and M PRs while the trailing ${merge.window} is ${whole(barOf(merge.limit))} or less.`}
