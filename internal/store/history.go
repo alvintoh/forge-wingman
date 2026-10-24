@@ -15,8 +15,11 @@ import (
 // SettledRun is one settled run as the run history lists it: how it ended and
 // whether its PR was merged. It carries no ticket text.
 type SettledRun struct {
-	Run        string
-	Ticket     string
+	Run    string
+	Ticket string
+	// Repo is the repository the run was queued for as owner/name; empty when
+	// the row records none.
+	Repo       string
 	Outcome    runner.Outcome
 	StopReason runner.StopReason
 	WaitReason runner.WaitReason
@@ -33,7 +36,7 @@ func (r *Records) RecentSettled(ctx context.Context, limit int) ([]SettledRun, e
 		Where(settledAtField, ">", time.Time{}).
 		OrderBy(settledAtField, firestore.Desc).
 		Limit(limit).
-		Select(ticketIDField, outcomeField, stopReasonField, waitReasonField, settledAtField,
+		Select(ticketIDField, repoField, outcomeField, stopReasonField, waitReasonField, settledAtField,
 			mergedByOwnerAtField, rewriteMergedAtField, cancelledByOwnerAtField).
 		Documents(ctx)
 	defer iter.Stop()
@@ -56,6 +59,7 @@ func historyRun(id string, row map[string]any) SettledRun {
 	run := SettledRun{
 		Run:        id,
 		Ticket:     str(row, ticketIDField),
+		Repo:       str(row, repoField),
 		Outcome:    runner.Outcome(str(row, outcomeField)),
 		StopReason: runner.StopReason(str(row, stopReasonField)),
 		WaitReason: runner.WaitReason(str(row, waitReasonField)),

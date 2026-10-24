@@ -28,7 +28,7 @@ func TestRecentSettledListsTheNewestSettledRunsWithHowEachEnded(t *testing.T) {
 		return r
 	}
 	rows := map[string]map[string]any{
-		"merged by owner": settled(time.Hour, map[string]any{"merged_by_owner_at": historyBase}),
+		"merged by owner": settled(time.Hour, map[string]any{"merged_by_owner_at": historyBase, "repo": "octo/scratch"}),
 		"merged by a poll": settled(2*time.Hour, map[string]any{
 			"rewrite_merged_at": historyBase, "merged_by_owner_at": time.Time{},
 		}),
@@ -37,6 +37,7 @@ func TestRecentSettledListsTheNewestSettledRunsWithHowEachEnded(t *testing.T) {
 		}),
 		"stopped": settled(4*time.Hour, map[string]any{
 			"outcome": string(runner.OutcomeBudgetStop), "stop_reason": string(runner.StopAllowanceExhausted),
+			"repo": "octo/other",
 		}),
 		"never settled":      {"ticket_id": "ABC-2", "outcome": string(runner.OutcomeStopped), "settled_at": time.Time{}},
 		"oldest":             settled(5*time.Hour, map[string]any{"cancelled_by_owner_at": historyBase}),
@@ -80,6 +81,29 @@ func TestRecentSettledListsTheNewestSettledRunsWithHowEachEnded(t *testing.T) {
 	}
 	if !got[0].SettledAt.Equal(historyBase.Add(-time.Hour)) {
 		t.Errorf("newest settled at %v, want %v", got[0].SettledAt, historyBase.Add(-time.Hour))
+	}
+	if got[0].Repo != "octo/scratch" || got[3].Repo != "octo/other" || got[2].Repo != "" {
+		t.Errorf("repositories = %q, %q and %q, want the recorded ones and none for the row that records none", got[0].Repo, got[3].Repo, got[2].Repo)
+	}
+}
+
+func TestHistoryRunReadsTheRepositoryTheRowRecords(t *testing.T) {
+	tests := []struct {
+		name string
+		row  map[string]any
+		want string
+	}{
+		{"a recorded repository", map[string]any{"repo": "octo/scratch"}, "octo/scratch"},
+		{"no repository field", map[string]any{}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.row["ticket_id"] = "ABC-1"
+			got := historyRun("r", tt.row)
+			if got.Repo != tt.want || got.Ticket != "ABC-1" {
+				t.Errorf("historyRun = repo %q, ticket %q, want repo %q and ticket ABC-1", got.Repo, got.Ticket, tt.want)
+			}
+		})
 	}
 }
 

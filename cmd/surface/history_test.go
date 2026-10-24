@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -80,8 +82,8 @@ func TestRunKindPlacesEveryOutcomeInOneKindWithItsWords(t *testing.T) {
 func TestRunHistoryListsTheRunsOldestFirstWithKindWordsAndTheMergedCount(t *testing.T) {
 	at := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
 	reader := &stubHistory{runs: []store.SettledRun{
-		{Run: "run-3", Ticket: "ABC-3", Outcome: runner.OutcomePROpened, Merged: true, SettledAt: at.Add(2 * time.Hour)},
-		{Run: "run-2", Ticket: "ABC-2", Outcome: runner.OutcomeBudgetStop, SettledAt: at.Add(time.Hour)},
+		{Run: "run-3", Ticket: "ABC-3", Repo: "octo/scratch", Outcome: runner.OutcomePROpened, Merged: true, SettledAt: at.Add(2 * time.Hour)},
+		{Run: "run-2", Ticket: "ABC-2", Repo: "octo/other", Outcome: runner.OutcomeBudgetStop, SettledAt: at.Add(time.Hour)},
 		{Run: "run-1", Ticket: "ABC-1", Outcome: runner.OutcomePROpened, Merged: true, SettledAt: at},
 	}}
 	rec := httptest.NewRecorder()
@@ -103,20 +105,43 @@ func TestRunHistoryListsTheRunsOldestFirstWithKindWordsAndTheMergedCount(t *test
 	if body.Merged != 2 {
 		t.Errorf("merged = %d, want 2", body.Merged)
 	}
-	var order []string
+	var order, repos []string
 	for _, run := range body.Runs {
 		order = append(order, fmt.Sprint(run["run"], ":", run["kind"], ":", run["words"]))
+		repos = append(repos, fmt.Sprint(run["repo"]))
 	}
 	want := "run-1:merged:merged run-2:allowance:stopped, allowance spent run-3:merged:merged"
 	if got := strings.Join(order, " "); got != want {
 		t.Errorf("runs = %q, want %q", got, want)
 	}
+	if wantRepos := []string{"", "octo/other", "octo/scratch"}; !slices.Equal(repos, wantRepos) {
+		t.Errorf("repos = %q, want %q", repos, wantRepos)
+	}
 	if body.Runs[0]["ticket"] != "ABC-1" || body.Runs[0]["settled_at"] != "2026-10-20T09:00:00Z" {
 		t.Errorf("first run = %v, want its ticket and settlement time", body.Runs[0])
 	}
 	// Only these keys can reach a reader; ticket text is not among them.
-	if len(body.Runs[0]) != 5 {
-		t.Errorf("run keys = %v, want run, ticket, kind, words and settled_at", body.Runs[0])
+	for _, run := range body.Runs {
+		if gotKeys, wantKeys := slices.Sorted(maps.Keys(run)), []string{"kind", "repo", "run", "settled_at", "ticket", "words"}; !slices.Equal(gotKeys, wantKeys) {
+			t.Errorf("run keys = %v, want %v", gotKeys, wantKeys)
+		}
+	}
+}
+
+// TestRunHistoryServesAnEmptyRepoForARowThatRecordsNone asserts a run with no
+// repository is still listed, carrying an empty repo rather than no key.
+func TestRunHistoryServesAnEmptyRepoForARowThatRecordsNone(t *testing.T) {
+	reader := &stubHistory{runs: []store.SettledRun{
+		{Run: "r1", Ticket: "ABC-1", Outcome: runner.OutcomeNoChanges, SettledAt: time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)},
+	}}
+	rec := httptest.NewRecorder()
+	historyMux(reader).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/run-history", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	want := `{"runs":[{"run":"r1","ticket":"ABC-1","repo":"","kind":"no-changes","words":"ended with no changes","settled_at":"2026-10-20T09:00:00Z"}],"merged":0}` + "\n"
+	if got := rec.Body.String(); got != want {
+		t.Errorf("body = %s, want %s", got, want)
 	}
 }
 
