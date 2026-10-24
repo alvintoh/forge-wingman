@@ -1,3 +1,4 @@
+import { captionClass } from "./caption";
 import { useRead } from "./use-read";
 
 type HistoryRun = {
@@ -31,8 +32,6 @@ const kindFill: Record<string, string> = {
 
 const OTHER_FILL = "bg-muted";
 
-const captionClass = "font-mono text-label font-semibold tracking-[1.4px] text-muted uppercase";
-
 // RunHistory draws the latest settled runs as one bar each, oldest to newest,
 // with the merged count; each bar's words are read out, not drawn.
 // While it loads, its line keeps the height of the strip (26px), so the ready
@@ -43,7 +42,7 @@ export function RunHistory() {
   return (
     <section aria-labelledby="run-history-title" className="border-b border-hair pb-5">
       <div className="flex items-baseline justify-between gap-4">
-        <h2 id="run-history-title" className={captionClass}>
+        <h2 id="run-history-title" className={`${captionClass} text-muted`}>
           {title(runs.length)}
         </h2>
         {read.status === "ready" && runs.length > 0 && (
