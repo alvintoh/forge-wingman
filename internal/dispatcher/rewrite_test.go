@@ -326,6 +326,38 @@ func TestByRepoSeparatesTheRepositoriesAndTheUnattributedRows(t *testing.T) {
 	}
 }
 
+func TestForRepoKeepsOneRepositorysSamplesInOrderAndLeavesTheInputAlone(t *testing.T) {
+	samples := []Sample{
+		{Repo: "octo/scratch", PR: 141},
+		{Repo: "octo/other", PR: 140},
+		{Repo: "octo/scratch", PR: 139},
+		{PR: 138},
+		{Repo: "Octo/Scratch", PR: 137},
+	}
+	before := slices.Clone(samples)
+
+	prs := func(repo string) []int {
+		var out []int
+		for _, s := range ForRepo(samples, repo) {
+			out = append(out, s.PR)
+		}
+		return out
+	}
+	// The mixed-case spelling is the same repository, and the order given stays.
+	if got := prs("octo/scratch"); !slices.Equal(got, []int{141, 139, 137}) {
+		t.Errorf("octo/scratch = %v, want its three samples in the order given", got)
+	}
+	if got := prs("OCTO/SCRATCH"); !slices.Equal(got, []int{141, 139, 137}) {
+		t.Errorf("OCTO/SCRATCH = %v, want the same repository", got)
+	}
+	if got := ForRepo(samples, "octo/missing"); got == nil || len(got) != 0 {
+		t.Errorf("octo/missing = %#v, want an empty slice that is not nil", got)
+	}
+	if !slices.Equal(samples, before) {
+		t.Errorf("samples = %+v, want the input left as it was %+v", samples, before)
+	}
+}
+
 func TestGroupOfCarriesTheSplitAndTheNoAgentFigures(t *testing.T) {
 	g := GroupOf([]Sample{
 		{Rewrite: Rewrite{AgentLines: 100, OwnerLines: 10, ReviewFoundLines: 6, OwnerChangeLines: 3, UnlabelledLines: 1}},

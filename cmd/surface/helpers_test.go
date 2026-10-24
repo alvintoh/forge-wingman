@@ -34,15 +34,28 @@ func (s *stubMeasured) Recent(_ context.Context, limit int) ([]dispatcher.Sample
 	return s.merges, nil
 }
 
-func getAutonomy(t *testing.T, reader *stubMeasured) *httptest.ResponseRecorder {
-	t.Helper()
-	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Measured: reader})
+// serveAutonomy serves target through the mux and leaves the status to the caller.
+func serveAutonomy(reader MeasuredReader, switches AutoMergeStore, target string) *httptest.ResponseRecorder {
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Measured: reader, AutoMerge: switches})
 	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/autonomy", nil))
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+	return rec
+}
+
+// getAutonomyAt serves target and fails unless it answers 200.
+func getAutonomyAt(t *testing.T, reader MeasuredReader, switches AutoMergeStore, target string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := serveAutonomy(reader, switches, target)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+		t.Fatalf("%s = %d, want %d: %s", target, rec.Code, http.StatusOK, rec.Body.String())
 	}
 	return rec
+}
+
+// getAutonomy serves the unscoped endpoint and fails unless it answers 200.
+func getAutonomy(t *testing.T, reader *stubMeasured) *httptest.ResponseRecorder {
+	t.Helper()
+	return getAutonomyAt(t, reader, nil, "/api/autonomy")
 }
 
 // stubAutoMerge is an AutoMergeStore that answers with the switch it holds,
