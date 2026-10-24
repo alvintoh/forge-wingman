@@ -2,7 +2,7 @@ import { modelName } from "../autonomy/format";
 import type { Read } from "../stats/use-read";
 import { SwitchRow } from "./switch";
 import { peakText } from "./types";
-import type { ConfigView, PeakModel, PeakView } from "./types";
+import type { ConfigView, PeakView } from "./types";
 
 type ModelsSectionProps = {
   config: Read<ConfigView>;
@@ -13,23 +13,9 @@ type ModelsSectionProps = {
   onToggle: () => void;
 };
 
-type ModelLine = {
-  model: string;
-  phases: string;
-  window: PeakModel | undefined;
-};
-
-// Each model once, in the order its first phase runs, with every phase it serves.
-function modelLines(view: ConfigView): ModelLine[] {
-  const phases = new Map<string, string[]>();
-  for (const { phase, model } of view.phases) {
-    phases.set(model, [...(phases.get(model) ?? []), phase]);
-  }
-  return [...phases].map(([model, served]) => ({
-    model,
-    phases: served.join(", "),
-    window: view.peak_windows.find((priced) => priced.model === model),
-  }));
+function peakLine(view: ConfigView, model: string): string {
+  const priced = view.peak_windows.find((entry) => entry.model === model);
+  return priced === undefined ? "No peak window is known" : peakText(priced);
 }
 
 const PEAK_SENTENCE = {
@@ -38,8 +24,8 @@ const PEAK_SENTENCE = {
 } as const;
 
 /**
- * ModelsSection lists each model by its full name with the phases it serves and its peak window,
- * then the Avoid peak hours switch that acts on those windows.
+ * ModelsSection lists the phases in the order they run, each with its model's full name and that
+ * model's peak window, then the Avoid peak hours switch that acts on those windows.
  */
 export function ModelsSection({ config, peak, avoidPeak, disabled, onToggle }: ModelsSectionProps) {
   return (
@@ -54,30 +40,28 @@ export function ModelsSection({ config, peak, avoidPeak, disabled, onToggle }: M
       >
         Models
       </h2>
-      {/* While the models load their place holds two models' lines. */}
+      {/* While the models load their place holds the three phases' rows. */}
       {config.status === "loading" && (
-        <p role="status" className="min-h-21 text-label leading-5 text-ink2">
+        <p role="status" className="min-h-33 text-label leading-5 text-ink2">
           Reading the models…
         </p>
       )}
       {config.status === "error" && (
-        <p role="alert" className="min-h-21 text-label leading-5 text-ink2">
+        <p role="alert" className="min-h-33 text-label leading-5 text-ink2">
           The models could not be read.
         </p>
       )}
       {config.status === "ready" && (
-        <ul className="space-y-2">
-          {modelLines(config.body).map((line) => (
-            <li key={line.model} className="text-label leading-4.5">
+        <ul className="space-y-3">
+          {config.body.phases.map(({ phase, model }) => (
+            <li key={phase} className="text-label leading-4.5">
               <div className="flex items-baseline justify-between gap-4">
-                <p className="min-w-0 font-semibold wrap-break-word text-ink">
-                  {modelName(line.model)}
+                <p className="shrink-0 text-ink2 capitalize">{phase}</p>
+                <p className="min-w-0 text-right font-semibold wrap-break-word text-ink">
+                  {modelName(model)}
                 </p>
-                <p className="shrink-0 text-ink2">{line.phases}</p>
               </div>
-              <p className="text-ink2">
-                {line.window === undefined ? "No peak window is known" : peakText(line.window)}
-              </p>
+              <p className="text-ink2">{peakLine(config.body, model)}</p>
             </li>
           ))}
         </ul>
