@@ -40,33 +40,34 @@ export function ModelsSection({ config, peak, avoidPeak, disabled, onToggle }: M
       >
         Models
       </h2>
-      {/* While the models load their place holds the three phases' rows. */}
+      {/* A loading place holds the three rows: 168px while peak lines wrap, 132px from 451px. */}
       {config.status === "loading" && (
-        <p role="status" className="min-h-33 text-label leading-5 text-ink2">
+        <p role="status" className="min-h-42 text-label leading-5 text-ink2 min-[451px]:min-h-33">
           Reading the models…
         </p>
       )}
       {config.status === "error" && (
-        <p role="alert" className="min-h-33 text-label leading-5 text-ink2">
+        <p role="alert" className="min-h-42 text-label leading-5 text-ink2 min-[451px]:min-h-33">
           The models could not be read.
         </p>
       )}
       {config.status === "ready" && (
-        <ul className="space-y-3">
+        <dl className="space-y-3">
           {config.body.phases.map(({ phase, model }) => (
-            <li key={phase} className="text-label leading-4.5">
-              <div className="flex items-baseline justify-between gap-4">
-                <p className="shrink-0 text-ink2 capitalize">{phase}</p>
-                <p className="min-w-0 text-right font-semibold wrap-break-word text-ink">
-                  {modelName(model)}
-                </p>
-              </div>
-              <p className="text-ink2">{peakLine(config.body, model)}</p>
-            </li>
+            <div
+              key={phase}
+              className="grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-4 text-label leading-4.5"
+            >
+              <dt className="text-ink2 capitalize">{phase}</dt>
+              <dd className="text-right font-semibold wrap-break-word text-ink">
+                {modelName(model)}
+              </dd>
+              <dd className="col-span-2 text-ink2">{peakLine(config.body, model)}</dd>
+            </div>
           ))}
-        </ul>
+        </dl>
       )}
-      <div className="mt-2">
+      <div className="mt-1">
         <SwitchRow
           name="Avoid peak hours"
           level="h3"

@@ -52,7 +52,7 @@ export function Configuration() {
   }
 
   return (
-    <section aria-labelledby="config-title" className="px-padx pt-4 pb-band">
+    <section aria-labelledby="config-title" className="px-padx pt-4 pb-band lg:pl-4">
       <div className="mx-auto max-w-[37.375rem]">
         <h1 id="config-title" className={`${captionClass} py-2 text-ink2`}>
           configuration
