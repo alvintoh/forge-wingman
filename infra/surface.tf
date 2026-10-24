@@ -98,6 +98,15 @@ resource "google_cloud_run_v2_service" "surface" {
         name  = "WINGMAN_IAP_AUDIENCE"
         value = "/projects/${data.google_project.this.number}/locations/${var.region}/services/${local.surface_name}"
       }
+
+      # The configuration view shows the settings the dispatcher runs under.
+      dynamic "env" {
+        for_each = var.dispatcher_settings
+        content {
+          name  = env.key
+          value = env.value
+        }
+      }
     }
   }
 
