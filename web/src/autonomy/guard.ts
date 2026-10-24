@@ -11,26 +11,27 @@ import type {
   Tile,
 } from "./types";
 
-type Check = (value: unknown) => boolean;
+/** A check that a value read off the wire holds what a field declares. */
+export type Check = (value: unknown) => boolean;
 
-const isNumber: Check = (value) => typeof value === "number";
-const isString: Check = (value) => typeof value === "string";
-const isBoolean: Check = (value) => typeof value === "boolean";
+export const isNumber: Check = (value) => typeof value === "number";
+export const isString: Check = (value) => typeof value === "string";
+export const isBoolean: Check = (value) => typeof value === "boolean";
 const isTimestamp: Check = (value) => typeof value === "string" && !Number.isNaN(Date.parse(value));
 const isDirection: Check = (value) => value === "up" || value === "down" || value === "flat";
 
-function nullable(check: Check): Check {
+export function nullable(check: Check): Check {
   return (value) => value === null || check(value);
 }
 
-function listOf(check: Check): Check {
+export function listOf(check: Check): Check {
   return (value) => Array.isArray(value) && value.every(check);
 }
 
 // shape checks a document field by field: each key the type names must be there
 // and hold what the check says, and the type's own keys are what the checks are
 // keyed by, so a field added to a type is a compile error here until it is read.
-function shape<T>(checks: { [K in keyof T]-?: Check }): (value: unknown) => value is T {
+export function shape<T>(checks: { [K in keyof T]-?: Check }): (value: unknown) => value is T {
   const entries = Object.entries<Check>(checks);
   return (value): value is T =>
     typeof value === "object" &&

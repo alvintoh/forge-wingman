@@ -1,4 +1,4 @@
-import type { Group, Phase, Point, PR, Tile } from "./types";
+import type { Group, MergeState, Phase, Point, PR, Tile } from "./types";
 
 // The model the endpoint names a phase that ran none, or more than one.
 export const UNKNOWN_MODEL = "unknown";
@@ -110,6 +110,32 @@ export function reasonText(reason: string): string {
     default:
       return reason;
   }
+}
+
+/**
+ * rateLine is the rate's verdict in words, apart from the switch: the figure against the bar where
+ * there is one, else the endpoint's reason. Switched off, the endpoint's reason is the switch, so
+ * whether the rate is above the bar is read from the figures.
+ */
+export function rateLine(merge: MergeState): string {
+  const trailing = `trailing ${merge.window} is ${merge.rate_value}`;
+  const bar = whole(barOf(merge.limit));
+  if (merge.reason === "switch-off") {
+    if (merge.rate_allows) {
+      return "off: switched off by you; the rate would allow it";
+    }
+    if (isRed(barOf(merge.rate_value), barOf(merge.limit))) {
+      return `off: switched off by you; ${trailing}, above ${bar}`;
+    }
+    return "off: switched off by you; the rate would not allow it";
+  }
+  if (merge.rate_allows) {
+    return `Recommended: ${trailing}; limit ${bar}`;
+  }
+  if (merge.reason === "rate-above-bar") {
+    return `held: ${trailing}, above ${bar}`;
+  }
+  return reasonText(merge.reason);
 }
 
 // isRed is whether a rate is strictly above the bar, which the page draws in red
