@@ -1,4 +1,4 @@
-import { useLocation } from "@tanstack/react-router";
+import { Link, useLocation } from "@tanstack/react-router";
 import { Account } from "./account";
 
 type PageHeaderProps = {
@@ -7,8 +7,8 @@ type PageHeaderProps = {
 };
 
 /**
- * PageHeader is every page's header: the menu button under lg, the app's icon and name,
- * with the signed-in account at the right end of the title row. The name is the
+ * PageHeader is every page's header: the menu button under lg, the app's icon and name
+ * (one link to Overview), with the signed-in account at the right end of the title row. The name is the
  * page's heading only on the inbox, which has no title of its own; every other
  * page keeps its own h1 below it.
  */
@@ -30,14 +30,16 @@ export function PageHeader({ menu }: PageHeaderProps) {
       <div className="relative flex h-11 items-center justify-between gap-3">
         <div className="flex min-w-0 items-center text-ink">
           {menu}
-          {menu === null && (
-            <img src="/icon.svg" alt="" width={32} height={32} className="size-8 shrink-0" />
-          )}
-          <Title
-            className={`relative -top-[0.026em] truncate ${menu === null ? "ml-3" : "ml-1.5"} font-sans text-title leading-tight font-semibold md:text-hero`}
-          >
-            Forge Wingman
-          </Title>
+          <Link to="/" className="flex h-11 min-w-0 items-center">
+            {menu === null && (
+              <img src="/icon.svg" alt="" width={32} height={32} className="size-8 shrink-0" />
+            )}
+            <Title
+              className={`relative -top-[0.026em] truncate ${menu === null ? "ml-3" : "ml-1.5"} font-sans text-title leading-tight font-semibold md:text-hero`}
+            >
+              Forge Wingman
+            </Title>
+          </Link>
         </div>
         <Account />
       </div>
