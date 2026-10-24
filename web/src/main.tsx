@@ -1,10 +1,15 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { RouterProvider, createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
+import {
+  RouterProvider,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  redirect,
+} from "@tanstack/react-router";
 import { Autonomy } from "./pages/autonomy";
+import { Configuration } from "./pages/config";
 import { Inbox } from "./pages/overview";
-import { Peak } from "./pages/peak";
-import { Providers } from "./pages/providers";
 import { Root } from "./pages/root";
 import { Run } from "./pages/run";
 import { Stats } from "./pages/stats";
@@ -31,16 +36,27 @@ const statsRoute = createRoute({
   component: Stats,
 });
 
+const configRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/config",
+  component: Configuration,
+});
+
+// The settings pages Configuration replaced send an old link on to it.
+function toConfig(): never {
+  throw redirect({ to: "/config", replace: true });
+}
+
 const providersRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/providers",
-  component: Providers,
+  beforeLoad: toConfig,
 });
 
 const peakRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/peak",
-  component: Peak,
+  beforeLoad: toConfig,
 });
 
 const autonomyRoute = createRoute({
@@ -60,6 +76,7 @@ const router = createRouter({
     inboxRoute,
     runRoute,
     statsRoute,
+    configRoute,
     providersRoute,
     peakRoute,
     autonomyRoute,

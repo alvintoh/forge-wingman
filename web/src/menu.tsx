@@ -22,7 +22,7 @@ const MENU_WIDTH_KEY = "forge-wingman.menu-width";
 type MenuWidth = "expanded" | "rail";
 
 type Screen = {
-  to: "/" | "/stats" | "/autonomy" | "/peak" | "/providers";
+  to: "/" | "/stats" | "/autonomy" | "/config";
   label: string;
   // The icon's path in a 24px box, stroked 2px and drawn at 22px.
   icon: string;
@@ -39,11 +39,11 @@ const RUN_SCREENS: readonly Screen[] = [
 
 const SETTINGS_SCREENS: readonly Screen[] = [
   { to: "/autonomy", label: "Autonomy", icon: "M20 12a8 8 0 1 1-16 0a8 8 0 1 1 16 0ZM12 8v4l3 2" },
-  { to: "/peak", label: "Peak hours", icon: "M3 18l6-8 4 5 3-4 5 7z" },
   {
-    to: "/providers",
-    label: "Providers",
-    icon: "M5 4H19A2 2 0 0 1 21 6V8A2 2 0 0 1 19 10H5A2 2 0 0 1 3 8V6A2 2 0 0 1 5 4ZM5 14H19A2 2 0 0 1 21 16V18A2 2 0 0 1 19 20H5A2 2 0 0 1 3 18V16A2 2 0 0 1 5 14ZM7 7h.01M7 17h.01",
+    to: "/config",
+    label: "Configuration",
+    // Lucide's settings gear (ISC), the cog and its centre ring.
+    icon: "M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2ZM15 12a3 3 0 1 1-6 0a3 3 0 1 1 6 0Z",
   },
 ];
 

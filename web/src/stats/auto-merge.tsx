@@ -1,4 +1,5 @@
-import { barOf, isRed, reasonText, whole } from "../autonomy/format";
+import { Link } from "@tanstack/react-router";
+import { barOf, rateLine, whole } from "../autonomy/format";
 import { isAutonomy } from "../autonomy/guard";
 import type { MergeState } from "../autonomy/types";
 import { captionClass } from "../caption";
@@ -20,30 +21,6 @@ function statusOf(merge: MergeState): Status {
     return "on";
   }
   return merge.switch_on ? "held" : "off";
-}
-
-// rateLine is the rate's verdict in words, apart from the status: the figure against the bar
-// where there is one, else the endpoint's reason. Switched off, the endpoint's reason is the
-// switch, so whether the rate is above the bar is read from the figures.
-function rateLine(merge: MergeState): string {
-  const trailing = `trailing ${merge.window} is ${merge.rate_value}`;
-  const bar = whole(barOf(merge.limit));
-  if (merge.reason === "switch-off") {
-    if (merge.rate_allows) {
-      return "off: switched off by you; the rate would allow it";
-    }
-    if (isRed(barOf(merge.rate_value), barOf(merge.limit))) {
-      return `off: switched off by you; ${trailing}, above ${bar}`;
-    }
-    return "off: switched off by you; the rate would not allow it";
-  }
-  if (merge.rate_allows) {
-    return `can be on: ${trailing}; limit ${bar}`;
-  }
-  if (merge.reason === "rate-above-bar") {
-    return `held: ${trailing}, above ${bar}`;
-  }
-  return reasonText(merge.reason);
 }
 
 // The status as a shape beside its word: a tick in a disc, a bar in a ring, a pause mark in a ring.
@@ -117,8 +94,8 @@ function Rules({ merge }: { merge: MergeState | null }) {
 // The outlined pill that links to the settings: 44x28 to the eye, 44x44 to the finger.
 function SettingsPill() {
   return (
-    <a
-      href="/config"
+    <Link
+      to="/config"
       aria-label="Auto-merge settings"
       className="group inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center focus-visible:outline-none!"
     >
@@ -129,7 +106,7 @@ function SettingsPill() {
           <circle cx="18.5" cy="2.5" r="2.5" />
         </svg>
       </span>
-    </a>
+    </Link>
   );
 }
 
