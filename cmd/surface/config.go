@@ -26,7 +26,7 @@ type configPhase struct {
 }
 
 type configConcurrency struct {
-	// ReviewWIP is how many open agent PRs may await review before another run starts.
+	// ReviewWIP is how many open agent PRs may await review before a run starts.
 	ReviewWIP int `json:"review_wip"`
 	// PlatformCap is the concurrent jobs the platform allows one account.
 	PlatformCap int  `json:"platform_cap"`
