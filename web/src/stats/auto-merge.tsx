@@ -1,4 +1,4 @@
-import { barOf, reasonText, whole } from "../autonomy/format";
+import { barOf, isRed, reasonText, whole } from "../autonomy/format";
 import { isAutonomy } from "../autonomy/guard";
 import type { MergeState } from "../autonomy/types";
 import { captionClass } from "../caption";
@@ -23,10 +23,20 @@ function statusOf(merge: MergeState): Status {
 }
 
 // rateLine is the rate's verdict in words, apart from the status: the figure against the bar
-// where there is one, else the endpoint's reason.
+// where there is one, else the endpoint's reason. Switched off, the endpoint's reason is the
+// switch, so whether the rate is above the bar is read from the figures.
 function rateLine(merge: MergeState): string {
   const trailing = `trailing ${merge.window} is ${merge.rate_value}`;
   const bar = whole(barOf(merge.limit));
+  if (merge.reason === "switch-off") {
+    if (merge.rate_allows) {
+      return "off: switched off by you; the rate would allow it";
+    }
+    if (isRed(barOf(merge.rate_value), barOf(merge.limit))) {
+      return `off: switched off by you; ${trailing}, above ${bar}`;
+    }
+    return "off: switched off by you; the rate would not allow it";
+  }
   if (merge.rate_allows) {
     return `can be on: ${trailing}; limit ${bar}`;
   }
