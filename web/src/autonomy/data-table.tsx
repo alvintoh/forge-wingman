@@ -106,7 +106,7 @@ function Figure({ on, children }: { on: boolean | undefined; children: ReactNode
       (typeof children === "string" && /\d/.test(children) && !count));
   const dim = count || children === NO_RATE;
   return (
-    <span className={figure ? "font-mono" : dim ? "text-ink2" : undefined}>
+    <span className={figure ? "font-mono" : dim ? "text-ink2 lg:whitespace-nowrap" : undefined}>
       {children}
       {count && <span className="sr-only"> (under ten PRs)</span>}
     </span>
