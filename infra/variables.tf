@@ -61,9 +61,11 @@ variable "linear_delegate" {
   type = string
 }
 
-# Optional settings the dispatcher reads from its own environment; a key left
-# out keeps its default. The allowed keys are the WINGMAN_ variables
-# cmd/dispatcher/main.go reads, and change with it.
+# Optional settings the dispatcher reads from its own environment, which the
+# surface is given too so its Configuration page shows them; a key left out keeps
+# its default. The allowed keys are the WINGMAN_ variables
+# internal/dispatcher/settings.go and cmd/dispatcher/main.go read, and change
+# with them.
 variable "dispatcher_settings" {
   type    = map(string)
   default = {}

@@ -169,8 +169,7 @@ type Deps struct {
 	Retries       RunRetries
 	Merger        PRMerger
 	Pulls         PullLister
-	// Getenv reads the dispatcher settings the config endpoint shows; nil reads the process environment.
-	Getenv func(string) string
+	Getenv        func(string) string
 }
 
 // newMux claims /api/ explicitly so an unknown endpoint 404s instead of

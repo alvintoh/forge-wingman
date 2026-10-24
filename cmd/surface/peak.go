@@ -14,8 +14,9 @@ import (
 
 // PeakModeStore reads and sets what the peak view shows: whether a run waits out
 // its model's peak-price hours. Unlike the readers above it writes, since the
-// view's control sets the mode; the service sits behind IAP, whose only
-// authorised principal is the owner, so those are the owner's changes alone.
+// Configuration page's Avoid peak hours switch sets the mode; the service sits
+// behind IAP, whose only authorised principal is the owner, so those are the
+// owner's changes alone.
 type PeakModeStore interface {
 	Mode(ctx context.Context) (dispatcher.PeakMode, error)
 	Set(ctx context.Context, mode dispatcher.PeakMode, at time.Time) error

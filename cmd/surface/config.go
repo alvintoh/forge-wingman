@@ -16,7 +16,7 @@ import (
 type configResponse struct {
 	Phases      []configPhase     `json:"phases"`
 	Concurrency configConcurrency `json:"concurrency"`
-	// PeakWindows has the peak view's model shape, so both views word it alike.
+	// PeakWindows has the shape of the models GET /api/peak serves.
 	PeakWindows []peakModel `json:"peak_windows"`
 }
 
@@ -36,7 +36,8 @@ type configConcurrency struct {
 }
 
 // config serves GET /api/config. The concurrency settings are the dispatcher's
-// own WINGMAN_ variables, which this service is deployed with too.
+// own WINGMAN_ variables, which this service is deployed with too; a nil Getenv
+// reads the process environment.
 func (d Deps) config(w http.ResponseWriter, _ *http.Request) {
 	getenv := d.Getenv
 	if getenv == nil {

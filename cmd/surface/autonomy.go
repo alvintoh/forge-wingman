@@ -19,8 +19,8 @@ type MeasuredReader interface {
 
 // AutoMergeStore reads and sets the auto-merge switch: the dispatch/auto-merge
 // document the runner's pr-meta reads and the runner auto-merge command sets.
-// Like the peak mode's, the view's control sets it and the service sits behind
-// IAP, whose only authorised principal is the owner.
+// Like the peak mode's, the Configuration page's switch sets it and the service
+// sits behind IAP, whose only authorised principal is the owner.
 type AutoMergeStore interface {
 	Enabled(ctx context.Context) (bool, error)
 	Set(ctx context.Context, enabled bool, at time.Time) error
