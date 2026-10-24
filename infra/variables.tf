@@ -63,7 +63,9 @@ variable "linear_delegate" {
 
 # Optional settings the dispatcher reads from its own environment; a key left
 # out keeps its default. The allowed keys are the WINGMAN_ variables
-# cmd/dispatcher/main.go reads, and change with it.
+# cmd/dispatcher/main.go reads, and change with it. The surface is given
+# WINGMAN_PLATFORM_CAP too when it is set, to show the GitHub job limit its
+# Config settings modal reports.
 variable "dispatcher_settings" {
   type    = map(string)
   default = {}

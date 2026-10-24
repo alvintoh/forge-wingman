@@ -82,6 +82,17 @@ resource "google_cloud_run_v2_service" "surface" {
         value = var.project_id
       }
 
+      # Set only when the dispatcher's own settings name it: unset, the surface
+      # falls back to dispatcher.DefaultLimits.PlatformCap, the Go constant that
+      # keeps the modal's job limit in step with admission.
+      dynamic "env" {
+        for_each = compact([lookup(var.dispatcher_settings, "WINGMAN_PLATFORM_CAP", "")])
+        content {
+          name  = "WINGMAN_PLATFORM_CAP"
+          value = env.value
+        }
+      }
+
       env {
         name = "WINGMAN_MERGE_TOKEN"
         value_source {

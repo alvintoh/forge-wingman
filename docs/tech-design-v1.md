@@ -183,8 +183,9 @@ One Go binary entrypoint (`cmd/dispatcher`). Per poll:
    classifier decides only the remainder, and a manual Linear label always overrides.
 4. **Enqueue or reject** — a ticket above L is rejected with the reason recorded.
 5. **Admit** runs in Linear priority order, oldest-queued first among equals, while every FR-22 and FR-27 condition
-   holds — budget reservations, size, interference, the review WIP limit, platform
-   caps, the circuit breaker — up to N in flight. A run that waits records the
+   holds — budget reservations, size, write-set interference, the per-repository
+   cap the owner sets in Config settings, the review WIP limit, platform caps,
+   the circuit breaker — up to N in flight. A run that waits records the
    *binding* condition.
 6. **Requeue a run stopped on a transient fault** (FRG-132). A run's stop carries a
    class when its recorded detail — or, for a stop that means a job failed outside the
@@ -384,6 +385,14 @@ FR-20 requires each write action be performed *as me, not as the runner*.
 *"never proxy bytes through the app — issue a signed URL and let the client talk to
 the bucket directly."* The surface issues a short-lived signed URL for a
 completion; the browser fetches it from Cloud Storage.
+
+**Config settings — *Added (2026-10-24)*.** The surface's settings modal holds the
+auto-merge switch, the owner's runs-per-repo cap and the read-only GitHub job
+limit. The cap is stored at `dispatch/runs-per-repo` and read by every dispatcher
+poll; a value that cannot be read is 5, never no cap. A run whose plan has
+recorded no write set holds one slot of it rather than the whole repository,
+while two recorded write sets that share a path still never run together. The job
+limit is the platform cap (`WINGMAN_PLATFORM_CAP`), which CI shares.
 
 **Which gates apply to the surface is settled by FR-20 and not re-derived here:**
 FR-8 and FR-11 bind whoever acts, so they apply. FR-7, FR-9 and FR-10 gate the

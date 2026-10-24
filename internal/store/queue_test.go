@@ -1243,7 +1243,7 @@ func TestTryClaimCountsSettledCostWithinTheWindow(t *testing.T) {
 	}
 }
 
-func TestTryClaimAdmitsOneRunPerRepositoryAndRecordsWhyTheOtherWaits(t *testing.T) {
+func TestTryClaimHoldsARunAtItsRepositoryCapAndRecordsWhyItWaits(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
 	first := queuedRun(fresh("queue-repo-a"), 1)
@@ -1255,11 +1255,13 @@ func TestTryClaimAdmitsOneRunPerRepositoryAndRecordsWhyTheOtherWaits(t *testing.
 			t.Fatal(err)
 		}
 	}
+	capped := openFacts
+	capped.Limits.RepoCap = 1
 	res := dispatcher.Reservation{ProviderCost: money.Dollar}
-	if ok, _, err := q.TryClaim(ctx, first.RunID, queueAt, generousBudget, openFacts, res); err != nil || !ok {
+	if ok, _, err := q.TryClaim(ctx, first.RunID, queueAt, generousBudget, capped, res); err != nil || !ok {
 		t.Fatalf("first claim: ok %v, err %v", ok, err)
 	}
-	ok, binding, err := q.TryClaim(ctx, second.RunID, queueAt, generousBudget, openFacts, res)
+	ok, binding, err := q.TryClaim(ctx, second.RunID, queueAt, generousBudget, capped, res)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1276,7 +1278,7 @@ func TestTryClaimAdmitsOneRunPerRepositoryAndRecordsWhyTheOtherWaits(t *testing.
 	if err := q.Settle(ctx, first.RunID, attemptOf(0)); err != nil {
 		t.Fatal(err)
 	}
-	if ok, _, err := q.TryClaim(ctx, second.RunID, queueAt, generousBudget, openFacts, res); err != nil || !ok {
+	if ok, _, err := q.TryClaim(ctx, second.RunID, queueAt, generousBudget, capped, res); err != nil || !ok {
 		t.Fatalf("second claim after the first settled: ok %v, err %v", ok, err)
 	}
 	snap, err = client.Collection(runsCollection).Doc(second.RunID).Get(ctx)
@@ -1310,8 +1312,7 @@ func buildInFlight(t *testing.T, q *Queue, client *firestore.Client, running, wa
 
 // TestTryClaimAdmitsAPlanStageBesideABuildInItsRepository asserts a claim's own
 // stage reaches admission: a plan stage writes nothing, so a build in flight in
-// the same repository does not hold it. Without the stage on the candidate its
-// empty write set reads as unknown and the build holds it.
+// the same repository does not hold it.
 func TestTryClaimAdmitsAPlanStageBesideABuildInItsRepository(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
@@ -1327,34 +1328,28 @@ func TestTryClaimAdmitsAPlanStageBesideABuildInItsRepository(t *testing.T) {
 	}
 }
 
-// TestTryClaimHoldsASingleStageClaimBesideABuildInItsRepository asserts an S
-// run — never plan-staged, and recording no write set of its own — is still
-// held while a build runs in its repository.
-func TestTryClaimHoldsASingleStageClaimBesideABuildInItsRepository(t *testing.T) {
+// TestTryClaimAdmitsASingleStageClaimBesideABuildWithinTheRepositoryCap asserts
+// an S run — never plan-staged, and recording no write set of its own — shares
+// its repository with a build up to the cap, instead of colliding with every
+// run there.
+func TestTryClaimAdmitsASingleStageClaimBesideABuildWithinTheRepositoryCap(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
 	running := queuedRun(fresh("queue-s-running"), 1)
-	sized := queuedRun(fresh("queue-s-held"), 2)
+	sized := queuedRun(fresh("queue-s-admitted"), 2)
 	sized.Ticket.Size = "S"
 	buildInFlight(t, q, client, running, sized, []string{"a.go"})
 	ok, binding, err := q.TryClaim(ctx, sized.RunID, queueAt, generousBudget, openFacts,
 		dispatcher.Reservation{ProviderCost: money.Dollar})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ok || binding != dispatcher.ConditionRepoBusy {
-		t.Fatalf("ok = %v, binding = %q, want the repository held by the build", ok, binding)
-	}
-	if held := readRow(t, client, sized.RunID)[waitingOnField]; held != dispatcher.ConditionRepoBusy {
-		t.Fatalf("waiting on %v, want the binding condition recorded on the row", held)
+	if err != nil || !ok || binding != "" {
+		t.Fatalf("ok = %v, binding = %q, err = %v, want the unknown write set admitted within the cap", ok, binding, err)
 	}
 }
 
-// TestTryClaimHoldsABuildStageClaimBesideABuildInItsRepository asserts the plan
-// stage's exemption is the stage's alone: a build stage whose plan recorded no
-// write set is still held by a build in its repository, where a claim exempted
-// on its file list alone would be admitted.
-func TestTryClaimHoldsABuildStageClaimBesideABuildInItsRepository(t *testing.T) {
+// TestTryClaimAdmitsABuildWithNoRecordedFilesWithinTheRepositoryCap asserts a
+// build stage whose plan recorded no write set shares its repository with a
+// build up to the cap: the cap, not the missing set, bounds the repository.
+func TestTryClaimAdmitsABuildWithNoRecordedFilesWithinTheRepositoryCap(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
 	running := queuedRun(fresh("queue-build-stage-running"), 1)
@@ -1370,11 +1365,8 @@ func TestTryClaimHoldsABuildStageClaimBesideABuildInItsRepository(t *testing.T) 
 	}
 	ok, binding, err := q.TryClaim(ctx, planned.RunID, queueAt, generousBudget, openFacts,
 		dispatcher.Reservation{ProviderCost: money.Dollar, Stage: dispatcher.StageBuild})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ok || binding != dispatcher.ConditionRepoBusy {
-		t.Fatalf("ok = %v, binding = %q, want the build stage held beside a build", ok, binding)
+	if err != nil || !ok || binding != "" {
+		t.Fatalf("ok = %v, binding = %q, err = %v, want the build admitted within the cap", ok, binding, err)
 	}
 }
 
@@ -1431,7 +1423,7 @@ func TestTryClaimCapsTheRunsOfTheLargeSizeInFlight(t *testing.T) {
 	}
 }
 
-func TestRacingClaimsForOneRepositoryAdmitOne(t *testing.T) {
+func TestRacingClaimsForOneRepositoryAtItsCapAdmitOne(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
 	runs := []dispatcher.Queued{queuedRun(fresh("queue-same-repo-a"), 1), queuedRun(fresh("queue-same-repo-b"), 2)}
@@ -1442,7 +1434,9 @@ func TestRacingClaimsForOneRepositoryAdmitOne(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	won, fails := raceClaims(q, runs, generousBudget)
+	capped := openFacts
+	capped.Limits.RepoCap = 1
+	won, fails := raceClaims(q, runs, generousBudget, capped)
 	if won != 1 || len(fails) > 0 {
 		t.Fatalf("%d claims won, failures %v, want exactly one claim for the repository", won, fails)
 	}
@@ -1471,7 +1465,7 @@ func TestRacingClaimsNeverPushTheReservedTotalPastTheCeiling(t *testing.T) {
 		Cash:            dispatcher.Window{Name: dispatcher.CeilingCash, Calendar: true, Limit: 1000 * money.Dollar},
 		Runner:          dispatcher.RunnerMinutes{FreeMinutes: 1_000_000},
 	}
-	won, fails := raceClaims(q, runs, tight)
+	won, fails := raceClaims(q, runs, tight, openFacts)
 	if won != 2 || len(fails) > 0 {
 		t.Fatalf("%d claims won, failures %v, want the $2 window to fit exactly two $1 runs", won, fails)
 	}
@@ -1482,7 +1476,7 @@ func TestRacingClaimsNeverPushTheReservedTotalPastTheCeiling(t *testing.T) {
 
 // raceClaims claims every run at once, each with a one-dollar reservation, and
 // reports how many won and which failed outright.
-func raceClaims(q *Queue, runs []dispatcher.Queued, cfg dispatcher.BudgetConfig) (won int, fails []error) {
+func raceClaims(q *Queue, runs []dispatcher.Queued, cfg dispatcher.BudgetConfig, facts dispatcher.Facts) (won int, fails []error) {
 	var (
 		wg sync.WaitGroup
 		mu sync.Mutex
@@ -1491,7 +1485,7 @@ func raceClaims(q *Queue, runs []dispatcher.Queued, cfg dispatcher.BudgetConfig)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ok, _, err := q.TryClaim(context.Background(), r.RunID, queueAt, cfg, openFacts,
+			ok, _, err := q.TryClaim(context.Background(), r.RunID, queueAt, cfg, facts,
 				dispatcher.Reservation{ProviderCost: money.Dollar})
 			mu.Lock()
 			defer mu.Unlock()
@@ -2386,8 +2380,8 @@ func TestPlannedListsTheRunsAWriteSetIsKnownFor(t *testing.T) {
 
 // claimBoth enqueues two runs in one repository, records second's plan, then
 // claims first's build writing firstFiles and second's writing secondFiles, and
-// returns what second's claim logged.
-func claimBoth(t *testing.T, prefix string, firstFiles, secondFiles []string) (first, second dispatcher.Queued, logged string) {
+// returns what second's claim decided.
+func claimBoth(t *testing.T, prefix string, firstFiles, secondFiles []string) (first, second dispatcher.Queued, ok bool, binding string) {
 	t.Helper()
 	q, client := queue(t)
 	ctx := context.Background()
@@ -2408,35 +2402,25 @@ func claimBoth(t *testing.T, prefix string, firstFiles, secondFiles []string) (f
 		dispatcher.Reservation{ProviderCost: money.Dollar, Stage: dispatcher.StageBuild, Files: firstFiles}); err != nil || !ok {
 		t.Fatalf("first claim: ok %v, err %v", ok, err)
 	}
-	var buf bytes.Buffer
-	ok, binding, err := q.WithLogger(slog.New(slog.NewJSONHandler(&buf, nil))).TryClaim(ctx, second.RunID, queueAt, generousBudget, openFacts,
+	ok, binding, err := q.TryClaim(ctx, second.RunID, queueAt, generousBudget, openFacts,
 		dispatcher.Reservation{ProviderCost: money.Dollar, Stage: dispatcher.StageBuild, Files: secondFiles})
-	if err != nil || !ok {
-		t.Fatalf("second claim: ok %v, binding %q, err %v, want both runs admitted together", ok, binding, err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return first, second, buf.String()
+	return first, second, ok, binding
 }
 
 func TestTryClaimAdmitsTwoRunsInOneRepositoryWithDisjointWriteSets(t *testing.T) {
-	_, _, logged := claimBoth(t, "queue-disjoint", []string{"a.go"}, []string{"b.go"})
-	if strings.Contains(logged, "admittedOverlapping") {
-		t.Fatalf("log = %q, want no overlap logged for disjoint write sets", logged)
+	_, _, ok, binding := claimBoth(t, "queue-disjoint", []string{"a.go"}, []string{"b.go"})
+	if !ok {
+		t.Fatalf("second claim: ok %v, binding %q, want both runs admitted together", ok, binding)
 	}
 }
 
-func TestTryClaimAdmitsAndLogsTwoRunsWhoseWriteSetsOverlap(t *testing.T) {
-	first, second, logged := claimBoth(t, "queue-overlap", []string{"a.go"}, []string{"a.go", "b.go"})
-	var line struct {
-		Level    string   `json:"level"`
-		Msg      string   `json:"msg"`
-		Run      string   `json:"run"`
-		Overlaps []string `json:"overlaps"`
-	}
-	if err := json.Unmarshal([]byte(logged), &line); err != nil {
-		t.Fatalf("log = %q: %v", logged, err)
-	}
-	if line.Level != "INFO" || line.Msg != "admittedOverlapping" || line.Run != second.RunID || !slices.Equal(line.Overlaps, []string{first.RunID}) {
-		t.Fatalf("logged %+v, want INFO admittedOverlapping run %s overlaps [%s]", line, second.RunID, first.RunID)
+func TestTryClaimHoldsTwoRunsWhoseWriteSetsOverlap(t *testing.T) {
+	_, _, ok, binding := claimBoth(t, "queue-overlap", []string{"a.go"}, []string{"a.go", "b.go"})
+	if ok || binding != dispatcher.ConditionRepoBusy {
+		t.Fatalf("ok = %v, binding = %q, want the overlapping write set held", ok, binding)
 	}
 }
 

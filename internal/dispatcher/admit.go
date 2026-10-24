@@ -49,22 +49,36 @@ type Limits struct {
 	// ReviewWIP is how many open agent PRs may await review across every
 	// allowlisted repository before another run starts.
 	ReviewWIP int
+	// RepoCap is how many runs one repository may hold in flight at once,
+	// counting every run there whatever its planned write set.
+	RepoCap int
 }
 
 // DefaultLimits are the owner-tunable defaults a zero Config.Limits stands for.
-var DefaultLimits = Limits{PlatformCap: 20, LargeCap: 1, ReviewWIP: 3}
+var DefaultLimits = Limits{PlatformCap: 20, LargeCap: 1, ReviewWIP: 3, RepoCap: 5}
+
+// The bounds of the owner's runs-per-repository cap, which the surface offers
+// and the dispatcher applies.
+const (
+	MinRunsPerRepo = 1
+	MaxRunsPerRepo = 20
+)
+
+// ValidRunsPerRepo reports whether n is a cap the owner may set.
+func ValidRunsPerRepo(n int) bool { return n >= MinRunsPerRepo && n <= MaxRunsPerRepo }
 
 // orDefault fills every zero field from DefaultLimits.
 func (l Limits) orDefault() Limits {
 	l.PlatformCap = cmp.Or(l.PlatformCap, DefaultLimits.PlatformCap)
 	l.LargeCap = cmp.Or(l.LargeCap, DefaultLimits.LargeCap)
 	l.ReviewWIP = cmp.Or(l.ReviewWIP, DefaultLimits.ReviewWIP)
+	l.RepoCap = cmp.Or(l.RepoCap, DefaultLimits.RepoCap)
 	return l
 }
 
-// InFlight is one run whose planned write set is known and whose run is in
-// flight: the ledger holds a reservation for a claimed one, and a run whose
-// plan stage has settled waits in planned for its build with none.
+// InFlight is one run in flight: the ledger holds a reservation for a claimed
+// one, and a run whose plan stage has settled waits in planned for its build
+// with none.
 type InFlight struct {
 	Ticket string
 	Repo   string
@@ -177,19 +191,18 @@ type AdmitInput struct {
 // Admit reports whether the candidate may start now, and otherwise the first
 // condition that withholds it, checked in this order: the circuit breaker,
 // owner pause, provider halt, peak hours, platform cap, N, the concurrent-L cap,
-// one run per repository, a blocker, review WIP, then the budget ceilings. It
-// does no IO.
+// the repository's cap, an overlapping write set in the repository, a blocker,
+// review WIP, then the budget ceilings. It does no IO.
 //
 // The blocker condition holds a candidate back while a blocked-by issue Linear
 // has not completed or canceled still holds it, or while a run in flight bears
 // a blocking relation to it in either direction.
 //
-// The one-run-per-repository condition holds a candidate back only where an
-// in-flight run in its repository has an unknown write set, or the candidate
-// does, and neither holds a plan-stage claim: a plan stage writes nothing, its
-// agent holding edit and shell denied. Runs whose write sets are both known
-// share the repository whether or not the sets intersect, and the runner
-// requeues a run whose merge conflicts.
+// The repository's cap counts every run in flight in it, a run whose plan has
+// recorded no write set included. Within that cap a plan-stage claim shares the
+// repository with anything, since it writes nothing, an unknown write set
+// collides with nothing, and two known sets collide only where they share a
+// path.
 //
 // When the open-PR count could not be read, a candidate is admitted only if
 // nothing is in flight.
@@ -211,6 +224,7 @@ func Admit(in AdmitInput) (ok bool, binding string) {
 func HeldBeforeBudget(in AdmitInput) string {
 	in.N = max(in.N, 1)
 	running := len(in.InFlight)
+	repoCap := cmp.Or(in.Facts.Limits.RepoCap, DefaultLimits.RepoCap)
 	switch {
 	case in.Facts.BreakerTripped:
 		return ConditionCircuitBreaker
@@ -226,6 +240,8 @@ func HeldBeforeBudget(in AdmitInput) string {
 		return ConditionConcurrency
 	case in.Candidate.Size == largeSize && countSize(in.InFlight, largeSize) >= in.Facts.Limits.LargeCap:
 		return ConditionLargeCap
+	case repoRuns(in.InFlight, in.Candidate.Repo) >= repoCap:
+		return ConditionRepoBusy
 	case slices.ContainsFunc(in.InFlight, func(f InFlight) bool {
 		return f.Repo == in.Candidate.Repo && writeSetsCollide(f, in.Candidate)
 	}):
@@ -249,33 +265,30 @@ func countSize(runs []InFlight, size string) int {
 	return n
 }
 
-// writeSetsCollide reports whether an in-flight run's write set and the
-// candidate's rule out sharing one repository. A plan-stage claim collides with
-// nothing, on either side: it writes nothing, its agent holding edit and shell
-// denied. An unknown write set — no plan recorded, which is every run before
-// two-stage dispatch — collides with any candidate, which is the interim
-// one-run-per-repository rule; two known sets never collide.
+// repoRuns counts the in-flight runs in repo, whatever each one's write set: a
+// run whose plan has recorded no files holds a slot of the repository's cap.
+func repoRuns(runs []InFlight, repo string) int {
+	n := 0
+	for _, r := range runs {
+		if r.Repo == repo {
+			n++
+		}
+	}
+	return n
+}
+
+// writeSetsCollide reports whether an in-flight run's recorded write set and the
+// candidate's rule out sharing one repository: two known sets collide where they
+// share a path, an unknown set collides with nothing, and a plan-stage claim
+// collides with nothing, on either side, since it writes nothing.
 func writeSetsCollide(f InFlight, c Subject) bool {
 	if f.Stage == StagePlan || c.Stage == StagePlan {
 		return false
 	}
-	return len(f.Files) == 0 || len(c.Files) == 0
-}
-
-// OverlappingRuns names the tickets of the in-flight runs in the candidate's
-// repository whose known write set shares a path with the candidate's. It does
-// no IO.
-func OverlappingRuns(in AdmitInput) []string {
-	var tickets []string
-	for _, f := range in.InFlight {
-		if f.Repo != in.Candidate.Repo {
-			continue
-		}
-		if slices.ContainsFunc(f.Files, func(name string) bool { return slices.Contains(in.Candidate.Files, name) }) {
-			tickets = append(tickets, f.Ticket)
-		}
+	if len(f.Files) == 0 || len(c.Files) == 0 {
+		return false
 	}
-	return tickets
+	return slices.ContainsFunc(f.Files, func(name string) bool { return slices.Contains(c.Files, name) })
 }
 
 // blocked reports a blocker of the candidate: a blocked-by issue Linear still

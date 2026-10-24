@@ -206,6 +206,25 @@ func concurrencySettings(getenv func(string) string) (dispatcher.Limits, dispatc
 	return l, t, nil
 }
 
+// runsPerRepoReader is the store's runs-per-repo setting, read once per poll.
+type runsPerRepoReader interface {
+	RunsPerRepo(ctx context.Context) (int, error)
+}
+
+// readRepoCap reads the owner's cap on runs in one repository, bounded by
+// requestTimeout like every other external read a poll makes. A read that fails
+// is the default, never no cap.
+func readRepoCap(ctx context.Context, settings runsPerRepoReader, logger *slog.Logger) int {
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+	n, err := settings.RunsPerRepo(ctx)
+	if err != nil {
+		logger.Warn("runsPerRepoUnread", "err", err.Error())
+		return dispatcher.DefaultLimits.RepoCap
+	}
+	return n
+}
+
 // repositoryLister is the owner's project allowlist as the dispatcher reads it.
 type repositoryLister interface {
 	Repositories(ctx context.Context) ([]string, error)
@@ -275,6 +294,9 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		return fmt.Errorf("firestore client: %w", err)
 	}
 	defer func() { _ = fsc.Close() }()
+	// The cap on runs in one repository is the owner's, stored rather than
+	// configured, so the surface can change it without a deploy.
+	c.limits.RepoCap = readRepoCap(ctx, store.NewSettings(fsc), logger)
 	tokens := linear.NewPollSource(creds)
 	defer func() {
 		start := time.Now()

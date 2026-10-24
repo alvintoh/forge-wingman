@@ -56,6 +56,7 @@ func run(logger *slog.Logger) error {
 	var measured MeasuredReader
 	var peak PeakModeStore
 	var autoMerge AutoMergeStore
+	var settings SettingsStore
 	var projects ProjectStores
 	var inbox InboxStore
 	var runs MergeRuns
@@ -75,6 +76,7 @@ func run(logger *slog.Logger) error {
 		measured = store.NewRewrites(fsc)
 		peak = store.NewPeakModes(fsc)
 		autoMerge = store.NewAutoMergeSwitches(fsc)
+		settings = store.NewSettings(fsc)
 		// A project's phase is requested, and a project added, in the owner database.
 		owner, err := firestore.NewClientWithDatabase(context.Background(), project, store.OwnerDatabase)
 		if err != nil {
@@ -107,6 +109,8 @@ func run(logger *slog.Logger) error {
 		Measured:      measured,
 		Peak:          peak,
 		AutoMerge:     autoMerge,
+		Settings:      settings,
+		PlatformCap:   platformCap(os.Getenv),
 		Projects:      projects,
 		Inbox:         inbox,
 		Runs:          runs,
@@ -161,6 +165,7 @@ type Deps struct {
 	Measured      MeasuredReader
 	Peak          PeakModeStore
 	AutoMerge     AutoMergeStore
+	Settings      SettingsStore
 	Projects      ProjectStores
 	Inbox         InboxStore
 	Runs          MergeRuns
@@ -169,6 +174,9 @@ type Deps struct {
 	Retries       RunRetries
 	Merger        PRMerger
 	Pulls         PullLister
+	// PlatformCap is the GitHub job limit the Config settings modal shows; zero
+	// takes the default.
+	PlatformCap int
 }
 
 // newMux claims /api/ explicitly so an unknown endpoint 404s instead of
@@ -186,6 +194,8 @@ func newMux(d Deps) *http.ServeMux {
 	mux.HandleFunc("GET /api/peak", d.peak)
 	mux.HandleFunc("POST /api/peak", d.setPeak)
 	mux.HandleFunc("POST /api/auto-merge", d.setAutoMerge)
+	mux.HandleFunc("GET /api/settings", d.settings)
+	mux.HandleFunc("POST /api/settings/runs-per-repo", d.setRunsPerRepo)
 	mux.HandleFunc("GET /api/projects", d.projects)
 	mux.HandleFunc("POST /api/projects/start", d.startProject)
 	mux.HandleFunc("POST /api/projects/stop", d.stopProject)

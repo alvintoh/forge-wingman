@@ -1,5 +1,6 @@
 import { useLocation } from "@tanstack/react-router";
 import { Account } from "./account";
+import { SettingsButton } from "./config-settings";
 
 type PageHeaderProps = {
   // The menu button, under lg only: from lg the menu's own foot folds it.
@@ -8,9 +9,9 @@ type PageHeaderProps = {
 
 /**
  * PageHeader is every page's header: the menu button under lg, the app's icon and name,
- * with the signed-in account at the right end of the title row. The name is the
- * page's heading only on the inbox, which has no title of its own; every other
- * page keeps its own h1 below it.
+ * the settings button and the signed-in account at the right end of the title row. The
+ * name is the page's heading only on the inbox, which has no title of its own; every
+ * other page keeps its own h1 below it.
  */
 export function PageHeader({ menu }: PageHeaderProps) {
   const onInbox = useLocation({ select: (location) => location.pathname === "/" });
@@ -39,7 +40,10 @@ export function PageHeader({ menu }: PageHeaderProps) {
             Forge Wingman
           </Title>
         </div>
-        <Account />
+        <div className="flex shrink-0 items-center gap-1">
+          <SettingsButton />
+          <Account />
+        </div>
       </div>
       <div className="mt-6 border-b border-hair" />
     </header>

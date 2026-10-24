@@ -647,8 +647,8 @@ type reservationEntry struct {
 }
 
 // inFlight lists the runs the ledger holds a reservation for, with the stage
-// and write set each reservation carries for the one-run-per-repository
-// condition's overlap check.
+// and write set each reservation carries for the repository's cap and
+// write-set checks.
 func inFlight(doc ledgerDoc) []dispatcher.InFlight {
 	out := make([]dispatcher.InFlight, 0, len(doc.Reservations))
 	for _, r := range doc.Reservations {
@@ -833,11 +833,10 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 	ledgerRef := q.ledgerRef()
 	var binding string
 	var claimed bool
-	var overlaps []string
 	var settledRow bool
 	var endedOutcome string
 	err := q.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
-		binding, claimed, overlaps, settledRow, endedOutcome = "", false, nil, false, ""
+		binding, claimed, settledRow, endedOutcome = "", false, false, ""
 		row, err := tx.Get(rowRef)
 		if status.Code(err) == codes.NotFound {
 			return nil
@@ -957,7 +956,6 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 			return err
 		}
 		claimed = true
-		overlaps = dispatcher.OverlappingRuns(input)
 		return nil
 	})
 	if err != nil {
@@ -965,9 +963,6 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 	}
 	if settledRow {
 		q.logger.Warn("queuedRowSettled", "run", runID, "outcome", endedOutcome)
-	}
-	if claimed && len(overlaps) > 0 {
-		q.logger.Info("admittedOverlapping", "run", runID, "overlaps", overlaps)
 	}
 	return claimed, binding, nil
 }

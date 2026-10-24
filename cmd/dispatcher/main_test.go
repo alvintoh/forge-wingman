@@ -65,6 +65,41 @@ func TestLoadConfigLeavesUnsetConcurrencySettingsToTheirDefaults(t *testing.T) {
 	}
 }
 
+// stubRepoCap is a runsPerRepoReader that answers with the cap or the error it
+// holds, and records whether the read carried a deadline.
+type stubRepoCap struct {
+	n        int
+	err      error
+	deadline bool
+}
+
+func (s *stubRepoCap) RunsPerRepo(ctx context.Context) (int, error) {
+	_, s.deadline = ctx.Deadline()
+	return s.n, s.err
+}
+
+func TestReadRepoCapUsesTheStoredCapBoundedByTheRequestTimeout(t *testing.T) {
+	settings := &stubRepoCap{n: 8}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if got := readRepoCap(context.Background(), settings, logger); got != 8 {
+		t.Fatalf("readRepoCap = %d, want the stored 8", got)
+	}
+	if !settings.deadline {
+		t.Fatalf("the read ran without a deadline")
+	}
+}
+
+func TestReadRepoCapFallsBackToTheDefaultWhenTheReadFails(t *testing.T) {
+	settings := &stubRepoCap{err: errors.New("unreachable")}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if got := readRepoCap(context.Background(), settings, logger); got != dispatcher.DefaultLimits.RepoCap {
+		t.Fatalf("readRepoCap = %d, want the default %d", got, dispatcher.DefaultLimits.RepoCap)
+	}
+	if !settings.deadline {
+		t.Fatalf("the read ran without a deadline")
+	}
+}
+
 // TestLoadConfigIgnoresALeftoverDailyRunCap: a WINGMAN_DAILY_RUNS still set in
 // the job's environment is not read, even when it is not a number.
 func TestLoadConfigIgnoresALeftoverDailyRunCap(t *testing.T) {

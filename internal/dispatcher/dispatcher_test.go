@@ -1443,7 +1443,7 @@ func TestPollAdmitsWithAnUnknownOpenPRCountWhenTheReadFails(t *testing.T) {
 
 func TestPollPassesTheLimitsAdmissionHoldsToTheQueue(t *testing.T) {
 	q := &fakeQueue{candidates: []Candidate{{RunID: "run-a", Repo: "octo/a", Priority: 1}}}
-	custom := Limits{PlatformCap: 4, LargeCap: 2, ReviewWIP: 6}
+	custom := Limits{PlatformCap: 4, LargeCap: 2, ReviewWIP: 6, RepoCap: 4}
 	partial := Limits{ReviewWIP: 6}
 	for name, tt := range map[string]struct {
 		cfg  Limits
@@ -1452,7 +1452,7 @@ func TestPollPassesTheLimitsAdmissionHoldsToTheQueue(t *testing.T) {
 		"the zero value means the defaults": {want: DefaultLimits},
 		"a configured value is kept":        {cfg: custom, want: custom},
 		"a partial value defaults only the fields it leaves out": {cfg: partial,
-			want: Limits{PlatformCap: DefaultLimits.PlatformCap, LargeCap: DefaultLimits.LargeCap, ReviewWIP: 6}},
+			want: Limits{PlatformCap: DefaultLimits.PlatformCap, LargeCap: DefaultLimits.LargeCap, ReviewWIP: 6, RepoCap: DefaultLimits.RepoCap}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			q.tryClaims = nil

@@ -1,14 +1,13 @@
 package dispatcher
 
 import (
-	"slices"
 	"testing"
 	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/money"
 )
 
-var admitLimits = Limits{PlatformCap: 5, LargeCap: 1, ReviewWIP: 3}
+var admitLimits = Limits{PlatformCap: 5, LargeCap: 1, ReviewWIP: 3, RepoCap: 2}
 
 // admittable is a candidate every condition lets start, with two other runs in
 // flight and room under each limit; each case breaks exactly one condition.
@@ -17,7 +16,7 @@ func admittable() AdmitInput {
 		Facts: Facts{Limits: admitLimits, OpenPRs: 1, OpenPRsKnown: true},
 		N:     3,
 		InFlight: []InFlight{
-			{Ticket: "run-1", Repo: "octo/one", Size: "M"},
+			{Ticket: "run-1", Repo: "octo/two", Size: "M"},
 			{Ticket: "run-2", Repo: "octo/two", Size: "L"},
 		},
 		Candidate: Subject{Ticket: "run-9", Repo: "octo/scratch", Size: "S"},
@@ -50,7 +49,7 @@ func TestAdmitNamesTheConditionThatWithholdsACandidate(t *testing.T) {
 		"the large cap is reached": {func(in *AdmitInput) {
 			in.Candidate.Size = largeSize
 		}, ConditionLargeCap},
-		"the repository already has a run": {func(in *AdmitInput) { in.Candidate.Repo = "octo/two" }, ConditionRepoBusy},
+		"the repository cap is reached":    {func(in *AdmitInput) { in.Candidate.Repo = "octo/two" }, ConditionRepoBusy},
 		"it is blocked by a run in flight": {func(in *AdmitInput) { in.Candidate.BlockedBy = []string{"run-1"} }, ConditionBlocked},
 		"it blocks a run in flight":        {func(in *AdmitInput) { in.Candidate.Blocks = []string{"run-2"} }, ConditionBlocked},
 		"the review WIP is reached":        {func(in *AdmitInput) { in.Facts.OpenPRs = 3 }, ConditionReviewWIP},
@@ -196,7 +195,7 @@ func TestAdmitReportsTheEarlierOfTwoConditionsThatWithhold(t *testing.T) {
 		}, ConditionConcurrency},
 		"the large cap before the repository": {func(in *AdmitInput) {
 			in.Candidate.Size = largeSize
-			in.Candidate.Repo = "octo/one"
+			in.Candidate.Repo = "octo/two"
 		}, ConditionLargeCap},
 		"the repository before a blocking relation": {func(in *AdmitInput) {
 			in.Candidate.Repo = "octo/two"
@@ -221,12 +220,11 @@ func TestAdmitReportsTheEarlierOfTwoConditionsThatWithhold(t *testing.T) {
 	}
 }
 
-// TestAdmitSharesARepositoryBetweenKnownWriteSets checks that two runs in one
-// repository whose plans are both recorded are admitted together whether or not
-// their files intersect, while either side's unknown write set keeps the
-// interim one-run-per-repository rule. The plan stage's agent writes nothing, so a
-// plan-stage run collides with no candidate on either side of the test.
-func TestAdmitSharesARepositoryBetweenKnownWriteSets(t *testing.T) {
+// TestAdmitSharesARepositoryWithinItsCap checks how runs in one repository
+// share it under the cap: two known write sets are held apart where they share
+// a path, an unknown set collides with nothing (the cap bounds it instead), and
+// a plan-stage claim writes nothing, so it collides with nothing on either side.
+func TestAdmitSharesARepositoryWithinItsCap(t *testing.T) {
 	planned := func(files ...string) Subject {
 		return Subject{Ticket: "run-9", Repo: "octo/scratch", Size: "M", Stage: StageBuild, Files: files}
 	}
@@ -240,25 +238,25 @@ func TestAdmitSharesARepositoryBetweenKnownWriteSets(t *testing.T) {
 			[]InFlight{{Ticket: "run-1", Repo: "octo/scratch", Size: "M", Stage: StageBuild, Files: []string{"c.go"}}},
 			true,
 		},
-		"intersecting write sets share the repository": {
+		"intersecting write sets are held apart": {
 			planned("a.go", "b.go"),
 			[]InFlight{{Ticket: "run-1", Repo: "octo/scratch", Size: "M", Stage: StageBuild, Files: []string{"b.go", "z.go"}}},
-			true,
+			false,
 		},
-		"a candidate with no plan holds the interim rule": {
+		"a candidate with no plan shares within the cap": {
 			Subject{Ticket: "run-9", Repo: "octo/scratch", Size: "M", Stage: StageBuild},
 			[]InFlight{{Ticket: "run-1", Repo: "octo/scratch", Size: "M", Stage: StageBuild, Files: []string{"c.go"}}},
-			false,
+			true,
 		},
-		"an in-flight run with no plan holds the interim rule": {
+		"an in-flight run with no plan shares within the cap": {
 			planned("a.go"),
 			[]InFlight{{Ticket: "run-1", Repo: "octo/scratch", Size: "M", Stage: StageBuild}},
-			false,
+			true,
 		},
-		"a single-stage in-flight run holds the interim rule": {
+		"a single-stage in-flight run shares within the cap": {
 			planned("a.go"),
 			[]InFlight{{Ticket: "run-1", Repo: "octo/scratch", Size: "M"}},
-			false,
+			true,
 		},
 		"a plan-stage run collides with nothing": {
 			planned("a.go"),
@@ -286,39 +284,6 @@ func TestAdmitSharesARepositoryBetweenKnownWriteSets(t *testing.T) {
 			}
 			if !ok && binding != ConditionRepoBusy {
 				t.Fatalf("binding = %q, want %s", binding, ConditionRepoBusy)
-			}
-		})
-	}
-}
-
-func TestOverlappingRunsNamesTheRunsWhoseWriteSetsIntersect(t *testing.T) {
-	candidate := Subject{Ticket: "run-9", Repo: "octo/scratch", Size: "M", Stage: StageBuild, Files: []string{"a.go", "b.go"}}
-	for name, tt := range map[string]struct {
-		inFlight []InFlight
-		want     []string
-	}{
-		"an intersecting run is named": {
-			[]InFlight{
-				{Ticket: "run-1", Repo: "octo/scratch", Stage: StageBuild, Files: []string{"b.go", "z.go"}},
-				{Ticket: "run-2", Repo: "octo/scratch", Stage: StageBuild, Files: []string{"c.go"}},
-			},
-			[]string{"run-1"},
-		},
-		"disjoint sets name nothing": {
-			[]InFlight{{Ticket: "run-1", Repo: "octo/scratch", Stage: StageBuild, Files: []string{"c.go"}}},
-			nil,
-		},
-		"a run in another repository is not named": {
-			[]InFlight{{Ticket: "run-1", Repo: "octo/other", Stage: StageBuild, Files: []string{"a.go"}}},
-			nil,
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			in := admittable()
-			in.Candidate = candidate
-			in.InFlight = tt.inFlight
-			if got := OverlappingRuns(in); !slices.Equal(got, tt.want) {
-				t.Fatalf("OverlappingRuns = %v, want %v", got, tt.want)
 			}
 		})
 	}
