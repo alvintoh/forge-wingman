@@ -169,6 +169,8 @@ type Deps struct {
 	Retries       RunRetries
 	Merger        PRMerger
 	Pulls         PullLister
+	// Getenv reads the dispatcher settings the config endpoint shows; nil reads the process environment.
+	Getenv func(string) string
 }
 
 // newMux claims /api/ explicitly so an unknown endpoint 404s instead of
@@ -183,6 +185,7 @@ func newMux(d Deps) *http.ServeMux {
 	mux.HandleFunc("GET /api/providers", d.providers)
 	mux.HandleFunc("GET /api/run-history", d.runHistory)
 	mux.HandleFunc("GET /api/autonomy", d.autonomy)
+	mux.HandleFunc("GET /api/config", d.config)
 	mux.HandleFunc("GET /api/peak", d.peak)
 	mux.HandleFunc("POST /api/peak", d.setPeak)
 	mux.HandleFunc("POST /api/auto-merge", d.setAutoMerge)

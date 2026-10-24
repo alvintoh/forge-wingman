@@ -24,6 +24,7 @@ func TestMux(t *testing.T) {
 		{"health check", "/healthz", http.StatusOK, ""},
 		{"built asset", "/assets/app.js", http.StatusOK, "console.log(1)"},
 		{"client route falls back to the shell", "/runs/abc", http.StatusOK, "shell"},
+		{"the configuration page is the shell", "/config", http.StatusOK, "shell"},
 		{"unknown api endpoint is not the shell", "/api/nope", http.StatusNotFound, ""},
 		{"missing asset is not the shell", "/favicon.ico", http.StatusNotFound, ""},
 	}
