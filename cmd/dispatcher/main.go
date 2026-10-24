@@ -16,14 +16,11 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -131,10 +128,10 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, fmt.Errorf("missing environment: %v", missing)
 	}
 	var err error
-	if c.limits, c.tuning, err = concurrencySettings(getenv); err != nil {
+	if c.limits, c.tuning, err = dispatcher.ConcurrencySettings(getenv); err != nil {
 		return config{}, err
 	}
-	c.twoStage = strings.EqualFold(strings.TrimSpace(getenv("WINGMAN_TWO_STAGE")), "on")
+	c.twoStage = dispatcher.TwoStage(getenv)
 	if raw := strings.TrimSpace(getenv("WINGMAN_DECISION_TIMEOUT")); raw != "" {
 		d, err := time.ParseDuration(raw)
 		if err != nil || d <= 0 {
@@ -146,64 +143,6 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, fmt.Errorf("WINGMAN_DECISIONS: %w", err)
 	}
 	return c, nil
-}
-
-// positiveInt reads a WINGMAN_ setting that must be a positive whole number,
-// leaving into as it was for one the environment does not set.
-func positiveInt(getenv func(string) string, key string, into *int) error {
-	raw := strings.TrimSpace(getenv(key))
-	if raw == "" {
-		return nil
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n < 1 {
-		return fmt.Errorf("%s = %q is not a positive whole number", key, raw)
-	}
-	*into = n
-	return nil
-}
-
-// concurrencySettings reads the optional limits and tuning the WINGMAN_*
-// variables name. An unset one is zero, so its default applies; one that is set
-// must be positive, and the fall band must lie above the rise band. The names
-// are the keys infra/variables.tf allows in dispatcher_settings.
-func concurrencySettings(getenv func(string) string) (dispatcher.Limits, dispatcher.Tuning, error) {
-	var l dispatcher.Limits
-	var t dispatcher.Tuning
-	for _, s := range []struct {
-		key  string
-		into *int
-	}{
-		{"WINGMAN_PLATFORM_CAP", &l.PlatformCap},
-		{"WINGMAN_LARGE_CAP", &l.LargeCap},
-		{"WINGMAN_REVIEW_WIP", &l.ReviewWIP},
-		{"WINGMAN_STABLE_RUNS", &t.StableRuns},
-	} {
-		if err := positiveInt(getenv, s.key, s.into); err != nil {
-			return l, t, err
-		}
-	}
-	for _, s := range []struct {
-		key  string
-		into *float64
-	}{
-		{"WINGMAN_RISE_WITHIN", &t.RiseWithin},
-		{"WINGMAN_HALVE_BEYOND", &t.HalveBeyond},
-	} {
-		raw := strings.TrimSpace(getenv(s.key))
-		if raw == "" {
-			continue
-		}
-		f, err := strconv.ParseFloat(raw, 64)
-		if err != nil || !(f > 0) || math.IsInf(f, 0) {
-			return l, t, fmt.Errorf("%s = %q is not a positive number", s.key, raw)
-		}
-		*s.into = f
-	}
-	if eff := t.OrDefault(); eff.HalveBeyond <= eff.RiseWithin {
-		return l, t, errors.New("WINGMAN_HALVE_BEYOND must exceed WINGMAN_RISE_WITHIN")
-	}
-	return l, t, nil
 }
 
 // repositoryLister is the owner's project allowlist as the dispatcher reads it.

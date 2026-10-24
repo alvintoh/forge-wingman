@@ -12,7 +12,7 @@ import (
 // still live in check or pr. Build: ticket 10 + model 90 + check 30 + pr-meta 10
 // + pr 10 + record 10 = 160. Plan: ticket 10 + model 90 + record-plan-stage 10
 // = 110. Each adds 30 minutes for Actions queueing; detection lags by up to
-// pollInterval on top.
+// PollInterval on top.
 const (
 	buildAbandonWindow = 190 * time.Minute
 	planAbandonWindow  = 140 * time.Minute

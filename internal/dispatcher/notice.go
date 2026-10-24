@@ -14,11 +14,11 @@ import (
 	"time"
 )
 
-// pollInterval is the scheduled poll's period in infra/dispatcher.tf, the
+// PollInterval is the scheduled poll's period in infra/dispatcher.tf, the
 // latest the next poll comes; noticeLease must outlast the job's 600s timeout,
 // so a live poll's claim is never taken from it.
 const (
-	pollInterval      = 15 * time.Minute
+	PollInterval      = 15 * time.Minute
 	noticeLease       = 15 * time.Minute
 	deferralClass     = "deferral:"
 	deferralNoticeKey = "deferral-"
@@ -124,7 +124,7 @@ func noticeDeferral(ctx context.Context, d Deps, cfg BudgetConfig, model string,
 	if !ok || link == "" {
 		return false
 	}
-	reserved, settled, err := d.Queue.Spend(ctx, cfg, model, at.Add(pollInterval), history)
+	reserved, settled, err := d.Queue.Spend(ctx, cfg, model, at.Add(PollInterval), history)
 	if err != nil {
 		d.Logger.Warn("deferralSpendUnread", "ceiling", ceiling, "err", err.Error())
 		return false

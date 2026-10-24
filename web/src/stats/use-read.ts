@@ -1,17 +1,20 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 // What one of the page's reads holds: nothing yet, a failure, or the answer.
 export type Read<T> = { status: "loading" } | { status: "error" } | { status: "ready"; body: T };
 
-// useRead reads url once and returns the answer once guard has checked it, so a
+// useRead reads url and returns the answer once guard has checked it, so a
 // read that fails, or answers something else, shows as an error and never as
-// an empty answer. token names the failure in the console.
+// an empty answer. token names the failure in the console. reload reads it
+// again and keeps the answer it holds until the new one arrives.
 export function useRead<T>(
   url: string,
   guard: (body: unknown) => body is T,
   token: string,
-): Read<T> {
+): Read<T> & { reload: () => void } {
   const [state, setState] = useState<Read<T>>({ status: "loading" });
+  const [attempt, setAttempt] = useState(0);
+  const reload = useCallback(() => setAttempt((count) => count + 1), []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -40,7 +43,7 @@ export function useRead<T>(
     });
 
     return () => controller.abort();
-  }, [url, guard, token]);
+  }, [url, guard, token, attempt]);
 
-  return state;
+  return { ...state, reload };
 }

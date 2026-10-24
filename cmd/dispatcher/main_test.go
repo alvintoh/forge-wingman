@@ -39,58 +39,18 @@ func configEnv(extra map[string]string) func(string) string {
 	return envOf(kv)
 }
 
-func TestLoadConfigReadsTheConcurrencySettings(t *testing.T) {
-	c, err := loadConfig(configEnv(map[string]string{
-		"WINGMAN_PLATFORM_CAP": " 8 ", "WINGMAN_LARGE_CAP": "2", "WINGMAN_REVIEW_WIP": "4",
-		"WINGMAN_STABLE_RUNS": "3", "WINGMAN_RISE_WITHIN": " 1.1 ", "WINGMAN_HALVE_BEYOND": "1.8",
-	}))
+// TestLoadConfigReadsTheDispatchSettings: the concurrency settings and the
+// two-stage switch reach the poll's config, and an unusable one fails the load.
+func TestLoadConfigReadsTheDispatchSettings(t *testing.T) {
+	c, err := loadConfig(configEnv(map[string]string{"WINGMAN_REVIEW_WIP": "4", "WINGMAN_RISE_WITHIN": "1.1", "WINGMAN_TWO_STAGE": "on"}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (dispatcher.Limits{PlatformCap: 8, LargeCap: 2, ReviewWIP: 4}); c.limits != want {
-		t.Fatalf("limits = %+v, want %+v", c.limits, want)
+	if c.limits.ReviewWIP != 4 || c.tuning.RiseWithin != 1.1 || !c.twoStage {
+		t.Fatalf("config = %+v, want review WIP 4, rise band 1.1 and two-stage on", c)
 	}
-	if want := (dispatcher.Tuning{StableRuns: 3, RiseWithin: 1.1, HalveBeyond: 1.8}); c.tuning != want {
-		t.Fatalf("tuning = %+v, want %+v", c.tuning, want)
-	}
-}
-
-func TestLoadConfigLeavesUnsetConcurrencySettingsToTheirDefaults(t *testing.T) {
-	c, err := loadConfig(configEnv(nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.limits != (dispatcher.Limits{}) || c.tuning != (dispatcher.Tuning{}) {
-		t.Fatalf("limits %+v tuning %+v, want zero so the defaults apply", c.limits, c.tuning)
-	}
-}
-
-// TestLoadConfigIgnoresALeftoverDailyRunCap: a WINGMAN_DAILY_RUNS still set in
-// the job's environment is not read, even when it is not a number.
-func TestLoadConfigIgnoresALeftoverDailyRunCap(t *testing.T) {
-	if _, err := loadConfig(configEnv(map[string]string{"WINGMAN_DAILY_RUNS": "many"})); err != nil {
-		t.Fatalf("a leftover WINGMAN_DAILY_RUNS failed the load: %v", err)
-	}
-}
-
-func TestLoadConfigRefusesUnusableConcurrencySettings(t *testing.T) {
-	for name, kv := range map[string]map[string]string{
-		"a zero cap":                              {"WINGMAN_PLATFORM_CAP": "0"},
-		"a negative cap":                          {"WINGMAN_LARGE_CAP": "-1"},
-		"a cap that is not a number":              {"WINGMAN_REVIEW_WIP": "many"},
-		"a fractional count":                      {"WINGMAN_STABLE_RUNS": "2.5"},
-		"a zero rise band":                        {"WINGMAN_RISE_WITHIN": "0"},
-		"a rise band that is not a number":        {"WINGMAN_RISE_WITHIN": "NaN"},
-		"an infinite fall band":                   {"WINGMAN_HALVE_BEYOND": "Inf"},
-		"a fall band under the default rise band": {"WINGMAN_HALVE_BEYOND": "1.2"},
-		"a rise band over the default fall band":  {"WINGMAN_RISE_WITHIN": "2"},
-		"equal bands":                             {"WINGMAN_RISE_WITHIN": "1.4", "WINGMAN_HALVE_BEYOND": "1.4"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if _, err := loadConfig(configEnv(kv)); err == nil {
-				t.Fatalf("%v was accepted", kv)
-			}
-		})
+	if _, err := loadConfig(configEnv(map[string]string{"WINGMAN_REVIEW_WIP": "many"})); err == nil {
+		t.Fatal("an unusable WINGMAN_REVIEW_WIP was accepted")
 	}
 }
 
@@ -220,29 +180,6 @@ func TestLastResortPlansFollowTheConfiguredOrder(t *testing.T) {
 		if want := providers.LastResortModels(plan); !slices.Equal(rungs[i], want) {
 			t.Errorf("rung %d = %v, want %s's %v", i, rungs[i], plan, want)
 		}
-	}
-}
-
-func TestLoadConfigReadsTheTwoStageSwitch(t *testing.T) {
-	for name, tt := range map[string]struct {
-		value string
-		want  bool
-	}{
-		"on":              {"on", true},
-		"ON with padding": {"  On ", true},
-		"unset":           {"", false},
-		"off":             {"off", false},
-		"anything else":   {"someday", false},
-	} {
-		t.Run(name, func(t *testing.T) {
-			c, err := loadConfig(configEnv(map[string]string{"WINGMAN_TWO_STAGE": tt.value}))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if c.twoStage != tt.want {
-				t.Fatalf("twoStage = %v for %q, want %v", c.twoStage, tt.value, tt.want)
-			}
-		})
 	}
 }
 
