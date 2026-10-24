@@ -1,4 +1,5 @@
 import { RewriteFigures } from "../autonomy/rewrite-section";
+import { reasonText } from "../autonomy/format";
 import { isAutonomy } from "../autonomy/guard";
 import { useRead } from "../stats/use-read";
 
@@ -36,29 +37,4 @@ export function Autonomy() {
       )}
     </section>
   );
-}
-
-// reasonText is why auto-merge is on or off, as the view words the endpoint's
-// own reason tokens.
-function reasonText(reason: string): string {
-  switch (reason) {
-    case "on":
-      return "The rate allows it and the switch is on.";
-    case "switch-off":
-      return "The owner's switch is off.";
-    case "switch-unread":
-      return "The switch could not be read, so auto-merge is off.";
-    case "too-few-measured":
-      return "Fewer merged PRs than the window holds are measured, or one carries an unmeasured commit.";
-    case "no-agent-lines":
-      return "The measured PRs carry no agent lines, so there is no rate.";
-    case "rate-above-bar":
-      return "The trailing rate is above the bar.";
-    case "reverted":
-      return "An auto-merged PR of the window was reverted.";
-    case "evidence-unread":
-      return "The measured merges could not be read.";
-    default:
-      return reason;
-  }
 }

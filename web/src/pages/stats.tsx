@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Allowance } from "../stats/allowance";
+import { AutoMerge } from "../stats/auto-merge";
 import { RunHistory } from "../stats/run-history";
 
 type RunCache = {
@@ -64,6 +65,7 @@ export function Stats() {
       <div className="mt-4 mb-8 grid grid-cols-1 gap-y-6 @[51.25rem]:grid-cols-[minmax(0,1fr)_23rem] @[51.25rem]:gap-x-8">
         <RunHistory />
         <Allowance />
+        <AutoMerge />
       </div>
       <p className="mt-2 text-body text-ink2">
         Each run's cached share per phase, its first request then its whole phase.
