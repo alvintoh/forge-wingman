@@ -4,6 +4,8 @@ type SmallPillProps = React.ComponentProps<"button"> & {
   label: string;
   kind: "primary" | "secondary";
   width: PillWidth;
+  // A tick before the label, for a pill that is on, so it is not told by colour alone.
+  ticked?: boolean;
 };
 
 /** TryAgainPill is the outlined TRY AGAIN pill a failed read offers, with a 44px hit area around it. */
@@ -27,7 +29,7 @@ export function TryAgainPill(props: React.ComponentProps<"button">) {
  * muted label while disabled. The label's trailing tracking is cancelled (-mr) so the glyphs, not
  * the glyphs plus 1.2px, sit centred.
  */
-export function SmallPill({ label, kind, width, ...rest }: SmallPillProps) {
+export function SmallPill({ label, kind, width, ticked = false, ...rest }: SmallPillProps) {
   return (
     <button
       type="button"
@@ -36,9 +38,27 @@ export function SmallPill({ label, kind, width, ...rest }: SmallPillProps) {
     >
       <span
         style={width}
-        className={`inline-flex h-7 items-center justify-center rounded-full border font-mono text-micro font-semibold tracking-[1.2px] group-disabled:bg-track group-disabled:text-muted group-aria-disabled:bg-track group-aria-disabled:text-muted group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-accent ${kindClass[kind]} ${disabledEdge[kind].group}`}
+        className={`relative inline-flex h-7 items-center justify-center rounded-full border font-mono text-micro font-semibold tracking-[1.2px] group-disabled:bg-track group-disabled:text-muted group-aria-disabled:bg-track group-aria-disabled:text-muted group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-accent ${kindClass[kind]} ${disabledEdge[kind].group}`}
       >
-        <span className="-mr-[1.2px]">{label}</span>
+        {ticked && (
+          <svg
+            aria-hidden="true"
+            width="8.5"
+            height="6.5"
+            viewBox="0 0 8.5 6.5"
+            className="absolute left-[11px] overflow-visible"
+          >
+            <path
+              d="M0 3.5l3 3l5.5 -6.5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        )}
+        <span className={`-mr-[1.2px] ${ticked ? "pl-3.5" : ""}`}>{label}</span>
       </span>
     </button>
   );

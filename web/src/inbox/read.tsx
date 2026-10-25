@@ -4,6 +4,10 @@ import { type Merges, useMerges } from "./merge-state";
 import { type Retries, useRetries } from "./retry-state";
 import { type InboxRun, isInbox } from "./run";
 
+// The server gives up on its own read at 10 seconds, so a read still open at 15 has stalled: it
+// ends in the error state and its TRY AGAIN rather than reading forever.
+const READ_DEADLINE_MS = 15_000;
+
 type InboxState = {
   status: "loading" | "error" | "ready";
   runs: InboxRun[];
@@ -39,7 +43,7 @@ function useInboxRead(): InboxRead {
 
     async function read() {
       const response = await fetch("/api/inbox", {
-        signal: controller.signal,
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(READ_DEADLINE_MS)]),
         cache: attempt === 0 ? "default" : "reload",
       });
       if (!response.ok) {

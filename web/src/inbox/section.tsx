@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useInbox } from "../inbox-context";
 import { TryAgainPill } from "../pill-button";
+import { useProjectFilter } from "../project-filter";
 import { CancelDialog } from "./cancel-dialog";
 import { type CancelState, announcementOf, sendCancel } from "./cancel-state";
 import {
@@ -11,11 +12,15 @@ import {
   cellIn,
   positionOf,
 } from "./keyboard";
+import { type KindChip, emptyWords, filterRuns, selectionWords, shownWords } from "./kind";
+import { KindChips } from "./kind-chips";
 import { MergeDialog } from "./merge-dialog";
 import { type Composing, RetryDialog } from "./retry-dialog";
 import { InboxRow } from "./row";
 import { RowSheet } from "./row-sheet";
 import type { InboxRun } from "./run";
+
+type SectionProps = { className: string };
 
 // InboxSection is the inbox's ACTIONS section: the PRs that wait on the owner, and the runs that
 // stopped. A row opens its sheet of actions; its MERGE PR opens its confirm and then shows
@@ -24,8 +29,9 @@ import type { InboxRun } from "./run";
 //
 // The list is one tab stop, the APG layout grid: the arrow keys move between the rows and from a row
 // to its pill and back, Home and End to the first and last row, and the stop stays on the cell
-// last focused.
-export function InboxSection() {
+// last focused. The list shows the runs of the project chosen in the URL and of the kind chosen above
+// it.
+export function InboxSection({ className }: SectionProps) {
   const {
     state,
     refresh,
@@ -49,6 +55,8 @@ export function InboxSection() {
   const [cancelAnnouncement, setCancelAnnouncement] = useState("");
   const sendingCancel = useRef(new Set<string>());
   const [active, setActive] = useState<Position | null>(null);
+  const { project } = useProjectFilter();
+  const [chip, setChip] = useState<KindChip | null>(null);
   const headingId = useId();
   const headingRef = useRef<HTMLHeadingElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
@@ -66,7 +74,8 @@ export function InboxSection() {
     }
   }, [refresh]);
 
-  const runs = state.status === "ready" ? state.runs : [];
+  const runs = state.status === "ready" ? filterRuns(state.runs, project, chip) : [];
+  const filtering = project !== null || chip !== null;
   const activeAt = runs.findIndex((run) => run.run === active?.run);
   const first = runs[0];
   let stop: Position | null = null;
@@ -280,95 +289,125 @@ export function InboxSection() {
     }
   }
 
+  // The count is spoken once a choice has been made on this visit, so a plain load stays quiet.
+  const [choiceMade, setChoiceMade] = useState(filtering);
+  if (filtering && !choiceMade) {
+    setChoiceMade(true);
+  }
+  const shown =
+    state.status === "ready" && choiceMade
+      ? shownWords(runs.length, state.runs.length, project, chip)
+      : "";
+
   return (
-    <section aria-labelledby={headingId} className="min-w-0">
-      <div className="flex items-center justify-between gap-4">
+    <section aria-labelledby={headingId} className={`min-w-0 ${className}`}>
+      <div className="flex min-h-6.5 items-start justify-between gap-4">
         <h2
           id={headingId}
           ref={headingRef}
           tabIndex={-1}
-          className="font-mono text-label font-semibold text-ink2"
+          className="min-w-0 py-[3.25px] font-mono text-label font-semibold text-ink2 uppercase wrap-break-word"
         >
-          ACTIONS
+          {["actions", ...selectionWords(project, chip)].join(", ")}
         </h2>
         {state.status === "ready" && (
-          <span className="inline-flex h-6.5 items-center rounded-full bg-track px-2.5 text-body font-semibold text-ink">
+          <span className="inline-flex h-6.5 shrink-0 items-center rounded-full bg-track px-2.5 text-body font-semibold text-ink">
             <span className="sr-only">Waiting: </span>
-            {state.runs.length}
+            {runs.length}
           </span>
         )}
       </div>
-      <p role="status" className="sr-only">
-        {announcement}
-      </p>
-      <p role="status" className="sr-only">
-        {cancelAnnouncement}
-      </p>
-      {state.status === "loading" && (
-        <p role="status" className="mt-4 text-body">
-          Reading the inbox…
+      {/* The second row of the Overview's subgrid: everything under the heading, as one child. */}
+      <div>
+        <p role="status" className="sr-only">
+          {announcement}
         </p>
-      )}
-      {state.status === "error" && (
-        <div className="mt-4">
-          <p role="alert" className="text-body">
-            The inbox could not be read.
+        <p role="status" className="sr-only">
+          {cancelAnnouncement}
+        </p>
+        <p role="status" className="sr-only">
+          {shown}
+        </p>
+        {state.status === "loading" && (
+          <p role="status" className="mt-4 text-body">
+            Reading the inbox…
           </p>
-          <TryAgainPill onClick={retry} />
-        </div>
-      )}
-      {state.status === "ready" && (
-        <>
-          {state.stale && (
-            <p role="status" className="mt-4 text-cap text-defer">
-              The list could not be refreshed; showing the last read.
+        )}
+        {state.status === "error" && (
+          <div className="mt-4">
+            <p role="alert" className="text-body">
+              The inbox could not be read.
             </p>
-          )}
-          <div className="card-frame mt-4">
-            {state.runs.length === 0 ? (
-              <p className="flex min-h-13 items-center text-body">No PR waits on you.</p>
-            ) : (
-              <ul ref={listRef} onKeyDown={handleKeyDown} onFocus={handleFocus} onBlur={handleBlur}>
-                {state.runs.map((run) => (
-                  <InboxRow
-                    key={run.run}
-                    run={run}
-                    now={state.readAt}
-                    state={rows[run.run]}
-                    cancel={cancels[run.run]}
-                    stop={stop?.run === run.run ? stop.cell : undefined}
-                    onOpen={handleSheetOpen}
-                    onMerge={handleMerge}
-                    onRetry={merge}
-                    onCompose={handlePillCompose}
-                  />
-                ))}
-              </ul>
-            )}
+            <TryAgainPill onClick={retry} />
           </div>
-        </>
-      )}
-      <MergeDialog opened={target} onClose={handleClose} onConfirm={handleConfirm} />
-      <RetryDialog
-        opened={composing}
-        state={composing === null ? undefined : retries[composing.run.run]}
-        draftOf={draftOf}
-        onDraft={setDraft}
-        onClose={handleComposeClose}
-        onConfirm={handleRetryConfirm}
-      />
-      <CancelDialog
-        opened={cancelling}
-        onClose={handleCancelClose}
-        onConfirm={handleCancelConfirm}
-      />
-      <RowSheet
-        opened={sheet}
-        onClose={handleSheetClose}
-        onRetry={handleSheetCompose}
-        onCancel={handleCancel}
-        busy={busy}
-      />
+        )}
+        {state.status === "ready" && (
+          <>
+            {state.stale && (
+              <p role="status" className="mt-4 text-cap text-defer">
+                The list could not be refreshed; showing the last read.
+              </p>
+            )}
+            <div className="card-frame mt-4">
+              <div className="flex min-h-13 items-center border-b border-hair">
+                <KindChips chip={chip} onChange={setChip} />
+              </div>
+              {runs.length > 0 && (
+                <ul
+                  ref={listRef}
+                  onKeyDown={handleKeyDown}
+                  onFocus={handleFocus}
+                  onBlur={handleBlur}
+                >
+                  {runs.map((run) => (
+                    <InboxRow
+                      key={run.run}
+                      run={run}
+                      now={state.readAt}
+                      state={rows[run.run]}
+                      cancel={cancels[run.run]}
+                      stop={stop?.run === run.run ? stop.cell : undefined}
+                      onOpen={handleSheetOpen}
+                      onMerge={handleMerge}
+                      onRetry={merge}
+                      onCompose={handlePillCompose}
+                    />
+                  ))}
+                </ul>
+              )}
+              {runs.length === 0 && !filtering && (
+                <p className="flex min-h-13 items-center text-body">No PR waits on you.</p>
+              )}
+              {runs.length === 0 && filtering && (
+                <p className="flex min-h-18 items-center text-body font-semibold">
+                  {emptyWords(project, chip)}
+                </p>
+              )}
+            </div>
+          </>
+        )}
+        <MergeDialog opened={target} onClose={handleClose} onConfirm={handleConfirm} />
+        <RetryDialog
+          opened={composing}
+          state={composing === null ? undefined : retries[composing.run.run]}
+          draftOf={draftOf}
+          onDraft={setDraft}
+          onClose={handleComposeClose}
+          onConfirm={handleRetryConfirm}
+        />
+        <CancelDialog
+          opened={cancelling}
+          onClose={handleCancelClose}
+          onConfirm={handleCancelConfirm}
+        />
+        <RowSheet
+          opened={sheet}
+          onClose={handleSheetClose}
+          onRetry={handleSheetCompose}
+          onCancel={handleCancel}
+          busy={busy}
+        />
+      </div>
     </section>
   );
 }

@@ -47,8 +47,8 @@ const SETTINGS_SCREENS: readonly Screen[] = [
   },
 ];
 
-// A screen is current only on its own path, so a run's page marks no item.
-const EXACT = { exact: true } as const;
+// A screen is current only on its own path, whatever its search, so a run's page marks no item.
+const EXACT = { exact: true, includeSearch: false } as const;
 
 // The saved choice, or null when the owner has not made one here.
 function readMenuWidth(): MenuWidth | null {

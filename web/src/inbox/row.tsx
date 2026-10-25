@@ -5,25 +5,9 @@ import { SmallPill } from "../pill-button";
 import { Chevron } from "./chevron";
 import type { CancelState } from "./cancel-state";
 import { type Cell, cellAttrs } from "./keyboard";
+import { DRAFT_WORDS, type Kind, type Wait, kindOf, waits } from "./kind";
 import type { RowState } from "./merge-state";
 import { type InboxRun, isStopped, stopReasonOf, titleOf } from "./run";
-
-type Kind = "FORK" | "TODO" | "REVIEW" | "STOPPED";
-
-type Wait = { words: string; blocks: boolean; kind: Kind };
-
-const DRAFT_WORDS = "still a draft";
-
-// Why a PR waits on the owner. The first three also block the merge.
-const waits: Record<string, Wait> = {
-  "unconfirmed-decision": { words: "unconfirmed decision", blocks: true, kind: "FORK" },
-  draft: { words: DRAFT_WORDS, blocks: true, kind: "TODO" },
-  "checks-not-green": { words: "checks not green", blocks: true, kind: "REVIEW" },
-  "front-end": { words: "front-end change", blocks: false, kind: "REVIEW" },
-  "size-l": { words: "size L", blocks: false, kind: "REVIEW" },
-  sampled: { words: "sampled", blocks: false, kind: "REVIEW" },
-  "auto-merge-off": { words: "auto-merge is off", blocks: false, kind: "REVIEW" },
-};
 
 const kindFill: Record<Kind, string> = {
   FORK: "bg-stop",
@@ -83,8 +67,7 @@ export function InboxRow({
   const unread = run.head_sha === undefined;
   const title = titleOf(run);
   const stopped = isStopped(run);
-  // A draft on GitHub shows the same chip as a stored draft reason, whatever reason is stored.
-  const kind: Kind = stopped ? "STOPPED" : draft ? "TODO" : (wait?.kind ?? "REVIEW");
+  const kind = kindOf(run);
 
   const plainReason = run.wait_reason.replaceAll("-", " ");
   let reason = draft
