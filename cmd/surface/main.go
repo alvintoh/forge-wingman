@@ -47,12 +47,11 @@ func run(logger *slog.Logger) error {
 		port = "8080"
 	}
 
-	// The comparison, run history, providers, autonomy and peak endpoints read
-	// past runs, the owner's plan records, the measured merges and the peak mode, so they
-	// need the store. A local run without GOOGLE_CLOUD_PROJECT has none and
-	// serves the SPA alone, answering those endpoints with 503.
+	// The comparison, run history, autonomy and peak endpoints read past runs,
+	// the measured merges and the peak mode, so they need the store. A local run
+	// without GOOGLE_CLOUD_PROJECT has none and serves the SPA alone, answering
+	// those endpoints with 503.
 	var comparison ComparisonReader
-	var providerPlans ProviderPlansReader
 	var measured MeasuredReader
 	var peak PeakModeStore
 	var autoMerge AutoMergeStore
@@ -71,7 +70,6 @@ func run(logger *slog.Logger) error {
 		records := store.NewRecords(fsc)
 		comparison, inbox, runs, history = records, records, records, records
 		cancels = records
-		providerPlans = store.NewProviderPlans(fsc)
 		measured = store.NewRewrites(fsc)
 		peak = store.NewPeakModes(fsc)
 		autoMerge = store.NewAutoMergeSwitches(fsc)
@@ -100,21 +98,20 @@ func run(logger *slog.Logger) error {
 	}
 
 	deps := Deps{
-		SPA:           spa,
-		Logger:        logger,
-		Comparison:    comparison,
-		ProviderPlans: providerPlans,
-		Measured:      measured,
-		Peak:          peak,
-		AutoMerge:     autoMerge,
-		Projects:      projects,
-		Inbox:         inbox,
-		Runs:          runs,
-		Cancels:       cancels,
-		History:       history,
-		Retries:       retries,
-		Merger:        merger,
-		Pulls:         pulls,
+		SPA:        spa,
+		Logger:     logger,
+		Comparison: comparison,
+		Measured:   measured,
+		Peak:       peak,
+		AutoMerge:  autoMerge,
+		Projects:   projects,
+		Inbox:      inbox,
+		Runs:       runs,
+		Cancels:    cancels,
+		History:    history,
+		Retries:    retries,
+		Merger:     merger,
+		Pulls:      pulls,
 	}
 
 	handler, err := gate(context.Background(), logger, newMux(deps))
@@ -154,22 +151,21 @@ func run(logger *slog.Logger) error {
 // JSON endpoints, and where it reports. A nil store serves every endpoint but
 // its own, which answers 503 for want of one.
 type Deps struct {
-	SPA           fs.FS
-	Logger        *slog.Logger
-	Comparison    ComparisonReader
-	ProviderPlans ProviderPlansReader
-	Measured      MeasuredReader
-	Peak          PeakModeStore
-	AutoMerge     AutoMergeStore
-	Projects      ProjectStores
-	Inbox         InboxStore
-	Runs          MergeRuns
-	Cancels       CancelRuns
-	History       RunHistoryReader
-	Retries       RunRetries
-	Merger        PRMerger
-	Pulls         PullLister
-	Getenv        func(string) string
+	SPA        fs.FS
+	Logger     *slog.Logger
+	Comparison ComparisonReader
+	Measured   MeasuredReader
+	Peak       PeakModeStore
+	AutoMerge  AutoMergeStore
+	Projects   ProjectStores
+	Inbox      InboxStore
+	Runs       MergeRuns
+	Cancels    CancelRuns
+	History    RunHistoryReader
+	Retries    RunRetries
+	Merger     PRMerger
+	Pulls      PullLister
+	Getenv     func(string) string
 }
 
 // newMux claims /api/ explicitly so an unknown endpoint 404s instead of
@@ -181,7 +177,6 @@ func newMux(d Deps) *http.ServeMux {
 	mux.HandleFunc("GET /api/version", version)
 	mux.HandleFunc("GET /api/me", me)
 	mux.HandleFunc("GET /api/comparison", d.comparison)
-	mux.HandleFunc("GET /api/providers", d.providers)
 	mux.HandleFunc("GET /api/run-history", d.runHistory)
 	mux.HandleFunc("GET /api/autonomy", d.autonomy)
 	mux.HandleFunc("GET /api/config", d.config)

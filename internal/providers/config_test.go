@@ -499,35 +499,6 @@ func TestEmbeddedConfigNamesTheFreeTierOrder(t *testing.T) {
 	}
 }
 
-// TestEmbeddedConfigWalksItsPlansPaidFirstThenFree asserts the dispatch order
-// names each plan once: the paid plan a ticket starts on first, then the
-// free-tier fallback, so a plan listed in both is not walked twice.
-func TestEmbeddedConfigWalksItsPlansPaidFirstThenFree(t *testing.T) {
-	if got, want := DispatchOrder(), []string{"command-code", "gemini"}; !slices.Equal(got, want) {
-		t.Fatalf("DispatchOrder() = %v, want %v", got, want)
-	}
-}
-
-// TestDispatchOrderIsThePaidPlansThenTheLastResortPlansTheDispatcherWalks asserts
-// the providers view's order is the one the dispatcher reads from PaidPlans and
-// LastResortPlans, each plan named once even when both list it.
-func TestDispatchOrderIsThePaidPlansThenTheLastResortPlansTheDispatcherWalks(t *testing.T) {
-	saved := embeddedConfig
-	t.Cleanup(func() { embeddedConfig = saved })
-	embeddedConfig.PaidPlans = []string{"b", "a"}
-	embeddedConfig.LastResortPlans = []string{"c", "a", "d"}
-
-	var walked []string
-	for _, plan := range append(PaidPlans(), LastResortPlans()...) {
-		if !slices.Contains(walked, plan) {
-			walked = append(walked, plan)
-		}
-	}
-	if got := DispatchOrder(); !slices.Equal(got, walked) || !slices.Equal(got, []string{"b", "a", "c", "d"}) {
-		t.Errorf("DispatchOrder() = %v, dispatcher walks %v", got, walked)
-	}
-}
-
 // TestEmbeddedGeminiIsAFreeTierPlan asserts the second plan is configuration
 // alone: its OpenAI-compatible base URL, its own key secret, its omp
 // harness and its free models priced $0, all read through the accessors the

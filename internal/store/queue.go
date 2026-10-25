@@ -996,26 +996,6 @@ func (q *Queue) Spend(ctx context.Context, cfg dispatcher.BudgetConfig, model st
 	return reserved, settled, nil
 }
 
-// PlanWindows is what each of plan's own allowance windows holds spent at at,
-// one figure per window in the order given, read in one read-only transaction.
-func (q *Queue) PlanWindows(ctx context.Context, plan string, windows []dispatcher.Window, at time.Time) ([]money.Micros, error) {
-	spend := make([]money.Micros, len(windows))
-	err := q.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
-		for i, window := range windows {
-			spent, err := q.windowSpend(tx, window, plan, at)
-			if err != nil {
-				return err
-			}
-			spend[i] = spent
-		}
-		return nil
-	}, firestore.ReadOnly)
-	if err != nil {
-		return nil, fmt.Errorf("reading plan %s's window spend at %s: %w", plan, at, err)
-	}
-	return spend, nil
-}
-
 // settledFor is the settled spend a caller's ceilings are checked against: the
 // poll's own snapshot of the settled history where the caller carries one — read
 // once for the whole poll, however many candidates it walks and however many

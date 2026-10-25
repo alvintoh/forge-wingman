@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { Allowance } from "../stats/allowance";
 import { AutoMerge } from "../stats/auto-merge";
 import { RunHistory } from "../stats/run-history";
 
@@ -61,11 +60,12 @@ export function Stats() {
   return (
     <section className="mx-auto max-w-desk px-padx pt-4 pb-band">
       <h1 className="text-title font-semibold text-ink">Statistics</h1>
-      {/* The band splits on the seam the Overview's columns do. */}
+      {/* The cards stack in the main column. The band splits on the seam the Overview's columns do, and the second track is the sidebar's, empty so the main column keeps its width. */}
       <div className="mt-4 mb-8 grid grid-cols-1 gap-y-6 @[51.25rem]:grid-cols-[minmax(0,1fr)_23rem] @[51.25rem]:gap-x-8">
-        <RunHistory />
-        <Allowance />
-        <AutoMerge />
+        <div className="flex flex-col gap-y-6">
+          <RunHistory />
+          <AutoMerge />
+        </div>
       </div>
       <p className="mt-2 text-body text-ink2">
         Each run's cached share per phase, its first request then its whole phase.
