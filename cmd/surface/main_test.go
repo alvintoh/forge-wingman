@@ -26,6 +26,7 @@ func TestMux(t *testing.T) {
 		{"client route falls back to the shell", "/runs/abc", http.StatusOK, "shell"},
 		{"the configuration page is the shell", "/config", http.StatusOK, "shell"},
 		{"unknown api endpoint is not the shell", "/api/nope", http.StatusNotFound, ""},
+		{"the providers path answers the api's own 404, not the shell", "/api/providers", http.StatusNotFound, "404 page not found"},
 		{"missing asset is not the shell", "/favicon.ico", http.StatusNotFound, ""},
 	}
 	for _, tt := range tests {
