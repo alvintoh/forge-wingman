@@ -7,6 +7,7 @@ import {
   prsWord,
   servedRate,
   spreadText,
+  tooFewForSpread,
   whole,
 } from "../autonomy/format";
 import { isRewrite } from "../autonomy/guard";
@@ -16,22 +17,26 @@ import { captionClass } from "../caption";
 
 type RowProps = { phase: Phase; row: ModelRow; bar: number };
 
-// One model: its name, its median PR on the right (in words under ten PRs), the pooled rate and
-// PR count beneath, and a thin bar for the median on the 0 to 30% axis the charts share.
+// One model: its name, its median PR on the right, the pooled rate and PR count beneath, and a thin
+// bar for the median on the 0 to 30% axis the charts share. A model with a rate and under ten PRs has
+// no right-hand cell: the count beneath is the only place it prints.
 function ModelLine({ phase, row, bar }: RowProps) {
   const above = isRed(row.median_value, bar);
   const tone = above ? "text-defer" : "text-ink";
+  const counted = tooFewForSpread(row);
   return (
     <li className="mt-3">
       <div className="flex items-baseline justify-between gap-3">
         <p className="min-w-0 text-label leading-4 font-semibold wrap-break-word">
           {phaseWord(phase, row.model)}
         </p>
-        <p
-          className={`shrink-0 font-mono font-semibold ${row.median === null ? "text-label" : "text-title"} ${tone}`}
-        >
-          {spreadText(row.median, row)}
-        </p>
+        {!counted && (
+          <p
+            className={`shrink-0 font-mono font-semibold ${row.median === null ? "text-label" : "text-title"} ${tone}`}
+          >
+            {spreadText(row.median, row)}
+          </p>
+        )}
       </div>
       <div className="mt-0.5 flex justify-between gap-3 text-micro leading-4">
         <p className="min-w-0 text-muted">

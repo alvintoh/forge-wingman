@@ -20,7 +20,7 @@ function specsOf(phase: Phase, rows: ModelRow[]): RowSpec[] {
   }));
 }
 
-const restNote = () => "Other models have under ten PRs: few PRs.";
+const restNote = () => "Other models have under ten PRs, so no median.";
 
 type ByModelProps = { byModel: Record<Phase, ModelRow[]> };
 

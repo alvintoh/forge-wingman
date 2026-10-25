@@ -1,6 +1,6 @@
 import { captionClass } from "../caption";
 import { ROW_CAP } from "./axis";
-import { SPLIT_KINDS, countWords, noAgentNote, servedRate, splitOf, whole } from "./format";
+import { SPLIT_KINDS, noAgentNote, prsWord, servedRate, splitOf, whole } from "./format";
 import { Diamond, Segment, Swatch } from "./marks";
 import type { SplitSegment } from "./marks";
 import type { Group } from "./types";
@@ -173,7 +173,7 @@ function WideRow({ row, split }: Omit<RowProps, "wide">) {
       <div>
         <p className="flex flex-wrap items-baseline gap-x-3">
           <span className="text-body font-semibold text-ink">{row.name}</span>
-          <span className="text-label text-ink2">{countWords(group)}</span>
+          <span className="text-label text-ink2">{prsWord(group.prs)}</span>
         </p>
         {split && group.owner_lines > 0 && <SplitWords group={group} column={false} />}
       </div>
@@ -223,7 +223,7 @@ function CompactRow({ row, split }: Omit<RowProps, "wide">) {
     <li className="py-3" data-row={row.name}>
       <p className="flex flex-wrap items-baseline justify-between gap-x-3">
         <span className="text-body font-semibold text-ink">{row.name}</span>
-        <span className="text-cap text-ink2">{countWords(group)}</span>
+        <span className="text-cap text-ink2">{prsWord(group.prs)}</span>
       </p>
       {row.recorded && rate !== null ? (
         <div
