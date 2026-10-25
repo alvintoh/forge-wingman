@@ -5,8 +5,11 @@ import { ActionButton, ButtonPair } from "./action-button";
 import { AddProjectDialog } from "./add-project";
 import { ago } from "./ago";
 import { pillSetWidth } from "./button-style";
+import { AllProjectsRow, RadioChoice } from "./filter-radio";
+import { useInbox } from "./inbox-context";
 import { SmallPill, TryAgainPill } from "./pill-button";
 import { postJSON } from "./post-json";
+import { sameRepository, useProjectFilter } from "./project-filter";
 
 type PhaseProgress = {
   name: string;
@@ -312,16 +315,26 @@ function heldSentence(n: number): string {
     : `${n} queued tickets stay delegated and wait until you resume.`;
 }
 
+// The Overview's choice of one project to narrow the Actions to: the repository chosen as served, or
+// null for all of them.
+type ProjectFilter = {
+  selected: string | null;
+  onChoose: (repository: string | null) => void;
+};
+
 type EntryProps = {
   project: Project;
   now: number;
   refresh: () => void;
+  // Makes the whole entry a radio of the filter.
+  filter?: ProjectFilter;
 };
 
-function ProjectEntry({ project, now, refresh }: EntryProps) {
+function ProjectEntry({ project, now, refresh, filter }: EntryProps) {
   const view = describe(project, now);
   const { readable, phase } = view;
   const detailId = useId();
+  const nameId = useId();
   const noticeId = useId();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const stopRef = useRef<HTMLDialogElement>(null);
@@ -432,13 +445,29 @@ function ProjectEntry({ project, now, refresh }: EntryProps) {
     // under the last baseline. Each margin below is that gap less the 16px line box around the
     // baseline (its baseline sits 12px down). pt: 22.8, less the 8px between the 44px hit area and
     // the 28px pill, less the 1px rule or card edge. pb: 20, less the 4px under a last line's
-    // baseline.
-    <li className="border-t border-hair pt-[13.8px] pb-4 first:border-t-0">
+    // baseline. Beside the Overview's 32px gutter, a card under 17rem (272px) wide leaves the name
+    // under 8 characters between the chip and the pill, so the pill takes a line of its own.
+    <li
+      role={filter && "none"}
+      className={`border-t border-hair pt-[13.8px] pb-4 first:border-t-0 ${filter ? "relative pl-8" : ""}`}
+    >
+      {filter && (
+        <RadioChoice
+          labelledBy={nameId}
+          checked={project.repository === filter.selected}
+          onChoose={() => filter.onChoose(project.repository)}
+          title={project.repository}
+          bulletClass="top-[25.8px]"
+        />
+      )}
       <div className="min-w-0">
         <div className="min-w-0">
-          <div className="flex min-h-11 items-center justify-between gap-3">
-            <div className="flex min-w-0 items-center gap-2.5">
+          <div
+            className={`flex min-h-11 items-center justify-between gap-x-3 ${filter ? "flex-wrap @min-[17rem]:flex-nowrap" : ""}`}
+          >
+            <div className="flex min-h-11 min-w-0 items-center gap-2.5">
               <h3
+                id={nameId}
                 title={project.repository}
                 className="min-w-0 truncate text-body leading-5 font-semibold text-ink"
               >
@@ -452,7 +481,7 @@ function ProjectEntry({ project, now, refresh }: EntryProps) {
                 </span>
               )}
             </div>
-            {control}
+            {control && <span className="relative ml-auto flex">{control}</span>}
           </div>
           {readable !== null && phase !== null && (
             <div className="mt-[3.2px] flex items-baseline justify-between gap-4 text-label leading-4 font-semibold text-ink">
@@ -493,7 +522,7 @@ function ProjectEntry({ project, now, refresh }: EntryProps) {
               aria-expanded={open}
               aria-controls={detailId}
               aria-label={`${open ? "Hide details" : "Details"}: what is running in ${project.repository}`}
-              className="-mb-3.5 -ml-1 -mt-1.5 flex w-fit min-h-11 min-w-11 cursor-pointer items-center px-1 text-label leading-4 text-accent"
+              className="relative -mb-3.5 -ml-1 -mt-1.5 flex w-fit min-h-11 min-w-11 cursor-pointer items-center px-1 text-label leading-4 text-accent"
               onClick={() => setOpen((v) => !v)}
             >
               {open ? "Hide details" : "Details"}
@@ -507,7 +536,9 @@ function ProjectEntry({ project, now, refresh }: EntryProps) {
           <p role="status" className="text-cap text-ink2">
             The phases could not be read at {new Date(project.snapshot.at).toLocaleTimeString()}.
           </p>
-          <TryAgainPill onClick={refresh} />
+          <span className="relative flex">
+            <TryAgainPill onClick={refresh} />
+          </span>
         </div>
       )}
       {view.notice !== null && (
@@ -642,12 +673,14 @@ type CardProps = {
   // Offers the full list, which the page of every project does not.
   seeAll: boolean;
   refresh: () => void;
+  // Lists the projects as the radios of a filter, after one for all of them.
+  filter?: ProjectFilter;
 };
 
 // ProjectsCard is ONE elevated card: each project a section split from the next by a rule, then
 // the footer row with SEE ALL at the left and the ADD pill at the right. With no project listed
 // the card is the footer alone.
-function ProjectsCard({ projects, total, now, stale, seeAll, refresh }: CardProps) {
+function ProjectsCard({ projects, total, now, stale, seeAll, refresh, filter }: CardProps) {
   const [adding, setAdding] = useState(false);
   const addRef = useRef<HTMLButtonElement>(null);
   return (
@@ -662,13 +695,22 @@ function ProjectsCard({ projects, total, now, stale, seeAll, refresh }: CardProp
           stacked Overview of a tablet, keeps its full rows. */}
       <div className="card-frame @container mt-4">
         {projects.length > 0 && (
-          <ul>
+          <ul role={filter && "radiogroup"} aria-label={filter && "Project filter"}>
+            {filter && (
+              <li role="none">
+                <AllProjectsRow
+                  checked={filter.selected === null}
+                  onChoose={() => filter.onChoose(null)}
+                />
+              </li>
+            )}
             {projects.map((project) => (
               <ProjectEntry
                 key={project.repository}
                 project={project}
                 now={now}
                 refresh={refresh}
+                filter={filter}
               />
             ))}
           </ul>
@@ -755,27 +797,57 @@ function ProjectsPanels({ state, retry, children }: PanelsProps) {
   return children;
 }
 
-// ProjectsSection is the inbox's PROJECTS section: the newest three, then a
-// link to the rest.
-export function ProjectsSection() {
+type SectionProps = { className: string };
+
+// ProjectsSection is the inbox's PROJECTS section: the newest three, then a link to the rest, as the
+// radios that narrow the Actions to one project. A project chosen by a link shows alone, whatever
+// rank it holds. The whole section waits for the inbox's first read, settled or failed, so the
+// Actions list does not push it down when it arrives.
+export function ProjectsSection({ className }: SectionProps) {
   const { state, refresh, retry } = useProjects();
+  const { state: inbox } = useInbox();
+  const [released, setReleased] = useState(inbox.status !== "loading");
+  if (!released && inbox.status !== "loading") {
+    setReleased(true);
+  }
+  const { project, choose } = useProjectFilter();
+  const known =
+    project === null
+      ? undefined
+      : state.projects.find((candidate) => sameRepository(candidate.repository, project));
+  const unknown = state.status === "ready" && project !== null && known === undefined;
+  // A link to a project the list does not hold falls back to All and is cleaned from the URL.
+  useEffect(() => {
+    if (unknown) {
+      choose(null);
+    }
+  }, [unknown, choose]);
+  if (!released) {
+    return null;
+  }
   return (
-    <section aria-labelledby="projects-heading" className="min-w-0">
-      <div className="flex min-h-6.5 items-center">
-        <h2 id="projects-heading" className="font-mono text-label font-semibold text-ink2">
+    <section aria-labelledby="projects-heading" className={`min-w-0 ${className}`}>
+      <div className="flex min-h-6.5 items-start">
+        <h2
+          id="projects-heading"
+          className="py-[3.25px] font-mono text-label font-semibold text-ink2"
+        >
           PROJECTS
         </h2>
       </div>
-      <ProjectsPanels state={state} retry={retry}>
-        <ProjectsCard
-          projects={state.projects.slice(0, SECTION_PROJECTS)}
-          total={state.total}
-          now={state.readAt}
-          stale={state.stale}
-          seeAll={state.total > SECTION_PROJECTS}
-          refresh={refresh}
-        />
-      </ProjectsPanels>
+      <div>
+        <ProjectsPanels state={state} retry={retry}>
+          <ProjectsCard
+            projects={known === undefined ? state.projects.slice(0, SECTION_PROJECTS) : [known]}
+            total={state.total}
+            now={state.readAt}
+            stale={state.stale}
+            seeAll={state.total > SECTION_PROJECTS}
+            refresh={refresh}
+            filter={{ selected: known?.repository ?? null, onChoose: choose }}
+          />
+        </ProjectsPanels>
+      </div>
     </section>
   );
 }

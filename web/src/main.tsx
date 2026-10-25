@@ -13,6 +13,7 @@ import { Inbox } from "./pages/overview";
 import { Root } from "./pages/root";
 import { Run } from "./pages/run";
 import { Stats } from "./pages/stats";
+import { validateProjectSearch } from "./project-filter";
 import { Projects } from "./projects";
 import "./index.css";
 
@@ -21,6 +22,7 @@ const rootRoute = createRootRoute({ component: Root });
 const inboxRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
+  validateSearch: validateProjectSearch,
   component: Inbox,
 });
 

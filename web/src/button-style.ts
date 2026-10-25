@@ -33,10 +33,10 @@ export type PillWidth = { readonly width: string };
 
 /**
  * pillSetWidth gives every pill of a set the width of the set's longest label: its glyphs of 1ch,
- * the 1.2px tracking after each, and 12px a side. RESUME is 70.8px and RETRY MERGE 109.8px in IBM
- * Plex Mono.
+ * the 1.2px tracking after each, and 12px a side, plus `extra` px for what a pill carries beside its
+ * label. RESUME is 70.8px and RETRY MERGE 109.8px in IBM Plex Mono.
  */
-export function pillSetWidth(labels: readonly string[]): PillWidth {
+export function pillSetWidth(labels: readonly string[], extra = 0): PillWidth {
   const glyphs = Math.max(...labels.map((label) => label.length));
-  return { width: `calc(${glyphs}ch + ${(glyphs * 1.2).toFixed(1)}px + 24px)` };
+  return { width: `calc(${glyphs}ch + ${(glyphs * 1.2).toFixed(1)}px + ${24 + extra}px)` };
 }
