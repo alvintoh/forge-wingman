@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
+	"github.com/alvintoh/forge-wingman/internal/store"
 )
 
 // MeasuredReader reads the measured merges the autonomy view's figures are
@@ -26,10 +29,16 @@ type AutoMergeStore interface {
 	Set(ctx context.Context, enabled bool, at time.Time) error
 }
 
-// autonomy serves GET /api/autonomy.
+// autonomy serves GET /api/autonomy: the auto-merge state, and the rewrite
+// figures, which a repo parameter scopes to one repository.
 func (d Deps) autonomy(w http.ResponseWriter, r *http.Request) {
 	if d.Measured == nil {
 		http.Error(w, "the autonomy view needs a store", http.StatusServiceUnavailable)
+		return
+	}
+	repo, err := scopeRepo(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	measured, err := d.Measured.Recent(r.Context(), measuredShown)
@@ -40,7 +49,26 @@ func (d Deps) autonomy(w http.ResponseWriter, r *http.Request) {
 	}
 	switchOn, switchRead := d.autoMergeSwitch(r.Context())
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(renderAutonomy(measured, switchOn, switchRead))
+	_ = json.NewEncoder(w).Encode(renderAutonomy(measured, repo, switchOn, switchRead))
+}
+
+// scopeRepo reads the repository a request scopes the figures to: empty when the
+// request has no repo parameter, and an error when it names anything but one
+// owner/name repository, an empty or repeated parameter included. A query that
+// does not parse is an error too, since the pair it drops may be the repo.
+func scopeRepo(r *http.Request) (string, error) {
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		return "", errors.New("the query does not parse")
+	}
+	values, named := query["repo"]
+	if !named {
+		return "", nil
+	}
+	if len(values) != 1 || len(values[0]) > maxRepository || !store.ValidRepository(values[0]) {
+		return "", errors.New("repo is not one owner/name repository")
+	}
+	return values[0], nil
 }
 
 // setAutoMerge serves POST /api/auto-merge. Setting the switch is this
@@ -77,29 +105,37 @@ func (d Deps) setAutoMerge(w http.ResponseWriter, r *http.Request) {
 
 // measuredShown is how many measured merges the autonomy view reads, newest
 // first: enough for the tiles, the rolling series and the split by size, model
-// and repository a page draws.
+// and repository a page draws. A repository's scoped figures filter this same
+// read, so they cover only its merges among these.
 const measuredShown = 200
 
 // autonomyResponse is the autonomy endpoint's wire shape: whether auto-merge is
 // on, with the rate's verdict and the reason, and the rewrite figures of the
-// measured merges. It carries no ticket text and no credential — the evidence is
-// counts, PR numbers and links, run ids and repository names — and no field of it
-// sets anything; the switch is set through its own endpoint.
+// measured merges, or of one repository's when the request names it. It carries
+// no ticket text and no credential — the evidence is counts, PR numbers and
+// links, run ids and repository names — and no field of it sets anything; the
+// switch is set through its own endpoint.
 type autonomyResponse struct {
 	// AutoMerge is the owner's switch beside the rate's verdict, the two facts
 	// the effective state needs both of.
 	AutoMerge autoMergeState `json:"auto_merge"`
-	// Rewrite is the measured merges' own figures: the rates a page draws.
+	// Rewrite is the measured merges' own figures, the rates a page draws, or
+	// one repository's alone when the request names it.
 	Rewrite rewriteView `json:"rewrite"`
 }
 
 // renderAutonomy renders the auto-merge state and the rewrite figures of the
-// measured merges as JSON. switchRead is false for a switch that could not be
-// read, which reports off whatever switchOn holds.
-func renderAutonomy(samples []dispatcher.Sample, switchOn, switchRead bool) autonomyResponse {
+// measured merges as JSON. A repo scopes the rewrite figures to its merges and
+// never the auto-merge rate, which reads every merge given. switchRead is false
+// for a switch that could not be read, which reports off whatever switchOn holds.
+func renderAutonomy(samples []dispatcher.Sample, repo string, switchOn, switchRead bool) autonomyResponse {
+	shown := samples
+	if repo != "" {
+		shown = dispatcher.ForRepo(samples, repo)
+	}
 	return autonomyResponse{
 		AutoMerge: renderAutoMerge(samples, switchOn, switchRead),
-		Rewrite:   renderRewrite(samples),
+		Rewrite:   renderRewrite(shown),
 	}
 }
 

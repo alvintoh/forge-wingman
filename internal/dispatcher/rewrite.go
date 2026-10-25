@@ -582,3 +582,16 @@ func ByRepo(samples []Sample) []RepoRow {
 	}
 	return rows
 }
+
+// ForRepo returns the samples that merged into repo, compared without regard to
+// case, in the order given. It returns a new slice and never changes samples,
+// which other readers share.
+func ForRepo(samples []Sample, repo string) []Sample {
+	out := []Sample{}
+	for _, s := range samples {
+		if strings.EqualFold(s.Repo, repo) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
