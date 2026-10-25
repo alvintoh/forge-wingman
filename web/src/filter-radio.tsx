@@ -5,9 +5,10 @@ type RadioChoiceProps = {
   labelledBy: string;
   checked: boolean;
   onChoose: () => void;
-  title?: string;
   // Where the bullet sits in the row, which is positioned.
   bulletClass: string;
+  // What the radio holds over its row, such as a tooltip for the name it covers.
+  children?: React.ReactNode;
 };
 
 /**
@@ -22,8 +23,8 @@ export function RadioChoice({
   labelledBy,
   checked,
   onChoose,
-  title,
   bulletClass,
+  children,
 }: RadioChoiceProps) {
   return (
     <>
@@ -32,10 +33,11 @@ export function RadioChoice({
         role="radio"
         aria-checked={checked}
         aria-labelledby={labelledBy}
-        title={title}
         onClick={onChoose}
         className="absolute inset-y-0 -inset-x-padx cursor-pointer rounded-tile focus-visible:outline-offset-[-7.5px]!"
-      />
+      >
+        {children}
+      </button>
       <span
         aria-hidden="true"
         className={`pointer-events-none absolute left-0 flex size-5 items-center justify-center rounded-full border-2 bg-card ${checked ? "border-accent" : "border-ink2"} ${bulletClass}`}

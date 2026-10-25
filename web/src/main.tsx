@@ -13,7 +13,7 @@ import { Inbox } from "./pages/overview";
 import { Root } from "./pages/root";
 import { Run } from "./pages/run";
 import { Stats } from "./pages/stats";
-import { validateProjectSearch } from "./project-filter";
+import { validateProjectSearch } from "./project-search";
 import { Projects } from "./projects";
 import "./index.css";
 

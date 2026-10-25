@@ -9,7 +9,8 @@ import { AllProjectsRow, RadioChoice } from "./filter-radio";
 import { useInbox } from "./inbox-context";
 import { SmallPill, TryAgainPill } from "./pill-button";
 import { postJSON } from "./post-json";
-import { sameRepository, useProjectFilter } from "./project-filter";
+import { useProjectFilter } from "./project-filter";
+import { sameRepository } from "./project-search";
 
 type PhaseProgress = {
   name: string;
@@ -445,8 +446,9 @@ function ProjectEntry({ project, now, refresh, filter }: EntryProps) {
     // under the last baseline. Each margin below is that gap less the 16px line box around the
     // baseline (its baseline sits 12px down). pt: 22.8, less the 8px between the 44px hit area and
     // the 28px pill, less the 1px rule or card edge. pb: 20, less the 4px under a last line's
-    // baseline. Beside the Overview's 32px gutter, a card under 17rem (272px) wide leaves the name
-    // under 8 characters between the chip and the pill, so the pill takes a line of its own.
+    // baseline. Beside the Overview's 32px gutter, a card whose content box is under 17rem (272px),
+    // about 326px of card with its 26px padding and 1px border a side, leaves the name under 8
+    // characters between the chip and the pill, so the pill takes a line of its own.
     <li
       role={filter && "none"}
       className={`border-t border-hair pt-[13.8px] pb-4 first:border-t-0 ${filter ? "relative pl-8" : ""}`}
@@ -456,9 +458,15 @@ function ProjectEntry({ project, now, refresh, filter }: EntryProps) {
           labelledBy={nameId}
           checked={project.repository === filter.selected}
           onChoose={() => filter.onChoose(project.repository)}
-          title={project.repository}
           bulletClass="top-[25.8px]"
-        />
+        >
+          {/* The name's tooltip, in the radio over it: on the radio it would be read twice. */}
+          <span
+            aria-hidden="true"
+            title={project.repository}
+            className="absolute top-[13.8px] right-padx left-[calc(var(--spacing-padx)+2rem)] h-11"
+          />
+        </RadioChoice>
       )}
       <div className="min-w-0">
         <div className="min-w-0">
@@ -815,13 +823,17 @@ export function ProjectsSection({ className }: SectionProps) {
     project === null
       ? undefined
       : state.projects.find((candidate) => sameRepository(candidate.repository, project));
-  const unknown = state.status === "ready" && project !== null && known === undefined;
-  // A link to a project the list does not hold falls back to All and is cleaned from the URL.
+  // A link's project is cleaned in the URL: one the list does not hold falls back to All, and one
+  // spelt in another case takes the spelling the list serves.
+  const corrected =
+    state.status === "ready" && project !== null && known?.repository !== project
+      ? (known?.repository ?? null)
+      : undefined;
   useEffect(() => {
-    if (unknown) {
-      choose(null);
+    if (corrected !== undefined) {
+      choose(corrected);
     }
-  }, [unknown, choose]);
+  }, [corrected, choose]);
   if (!released) {
     return null;
   }
@@ -835,6 +847,7 @@ export function ProjectsSection({ className }: SectionProps) {
           PROJECTS
         </h2>
       </div>
+      {/* The second row of the Overview's subgrid: everything under the heading, as one child. */}
       <div>
         <ProjectsPanels state={state} retry={retry}>
           <ProjectsCard

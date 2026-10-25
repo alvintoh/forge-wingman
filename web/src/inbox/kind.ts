@@ -1,4 +1,4 @@
-import { sameRepository } from "../project-filter";
+import { sameRepository } from "../project-search";
 import { type InboxRun, isStopped } from "./run";
 
 export type Kind = "FORK" | "TODO" | "REVIEW" | "STOPPED";
@@ -76,6 +76,21 @@ export function selectionWords(project: string | null, chip: KindChip | null): s
     words.push(KIND_WORDS[chip]);
   }
   return words;
+}
+
+/** shownWords says what the list shows after a choice: how many of the inbox, and for what. */
+export function shownWords(
+  shown: number,
+  total: number,
+  project: string | null,
+  chip: KindChip | null,
+): string {
+  const choices = selectionWords(project, chip);
+  if (choices.length === 0) {
+    return "Showing every action";
+  }
+  const actions = total === 1 ? "action" : "actions";
+  return `Showing ${shown} of ${total} ${actions} for ${choices.join(", ")}`;
 }
 
 /** emptyWords is what the list says when the choices leave no action. */

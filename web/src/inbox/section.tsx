@@ -12,7 +12,7 @@ import {
   cellIn,
   positionOf,
 } from "./keyboard";
-import { type KindChip, emptyWords, filterRuns, selectionWords } from "./kind";
+import { type KindChip, emptyWords, filterRuns, selectionWords, shownWords } from "./kind";
 import { KindChips } from "./kind-chips";
 import { MergeDialog } from "./merge-dialog";
 import { type Composing, RetryDialog } from "./retry-dialog";
@@ -289,9 +289,14 @@ export function InboxSection({ className }: SectionProps) {
     }
   }
 
+  // The count is spoken once a choice has been made on this visit, so a plain load stays quiet.
+  const [choiceMade, setChoiceMade] = useState(filtering);
+  if (filtering && !choiceMade) {
+    setChoiceMade(true);
+  }
   const shown =
-    state.status === "ready" && filtering
-      ? `Showing ${runs.length} of ${state.runs.length} actions`
+    state.status === "ready" && choiceMade
+      ? shownWords(runs.length, state.runs.length, project, chip)
       : "";
 
   return (
@@ -312,6 +317,7 @@ export function InboxSection({ className }: SectionProps) {
           </span>
         )}
       </div>
+      {/* The second row of the Overview's subgrid: everything under the heading, as one child. */}
       <div>
         <p role="status" className="sr-only">
           {announcement}
