@@ -53,6 +53,11 @@ func TestAdmitNamesTheConditionThatWithholdsACandidate(t *testing.T) {
 			in.Facts.Limits.RepoCap = 1
 			in.Candidate.Repo = "octo/two"
 		}, ConditionRepoCap},
+		"a plan-stage run holds one of the repository's slots": {func(in *AdmitInput) {
+			in.Facts.Limits.RepoCap = 1
+			in.Candidate.Repo = "octo/two"
+			in.InFlight[1].Stage = StagePlan
+		}, ConditionRepoCap},
 		"a planned write set overlaps one in flight": {func(in *AdmitInput) {
 			in.Candidate.Repo, in.Candidate.Stage, in.Candidate.Files =
 				"octo/two", StageBuild, []string{"a.go", "b.go"}
@@ -239,10 +244,10 @@ func TestAdmitReportsTheEarlierOfTwoConditionsThatWithhold(t *testing.T) {
 }
 
 // TestAdmitSharesARepositoryBelowTheCapUnlessTheWriteSetsOverlap checks the
-// repository rule that replaced the interim one-run rule: a run below the cap is
-// admitted whatever its neighbours' write sets are unknown, and a candidate
-// whose planned files share a path with a run in flight is withheld. A
-// plan-stage claim writes nothing, so it overlaps nothing on either side.
+// repository rule: a run below the cap is admitted whether or not its
+// neighbours' write sets are known, and a candidate whose planned files share a
+// path with a run in flight is withheld. A plan-stage claim writes nothing, so it
+// overlaps nothing on either side.
 func TestAdmitSharesARepositoryBelowTheCapUnlessTheWriteSetsOverlap(t *testing.T) {
 	planned := func(files ...string) Subject {
 		return Subject{Ticket: "run-9", Repo: "octo/scratch", Size: "M", Stage: StageBuild, Files: files}
@@ -277,13 +282,13 @@ func TestAdmitSharesARepositoryBelowTheCapUnlessTheWriteSetsOverlap(t *testing.T
 			[]InFlight{{Ticket: "run-1", Repo: "octo/scratch", Size: "M"}},
 			true,
 		},
-		"a plan-stage run overlaps nothing": {
+		"a plan-stage run overlaps nothing, whatever files it carries": {
 			planned("a.go"),
-			[]InFlight{{Ticket: "run-1", Repo: "octo/scratch", Size: "M", Stage: StagePlan}},
+			[]InFlight{{Ticket: "run-1", Repo: "octo/scratch", Size: "M", Stage: StagePlan, Files: []string{"a.go"}}},
 			true,
 		},
-		"a plan-stage candidate overlaps nothing": {
-			Subject{Ticket: "run-9", Repo: "octo/scratch", Size: "M", Stage: StagePlan},
+		"a plan-stage candidate overlaps nothing, whatever files its row carries": {
+			Subject{Ticket: "run-9", Repo: "octo/scratch", Size: "M", Stage: StagePlan, Files: []string{"a.go"}},
 			[]InFlight{{Ticket: "run-1", Repo: "octo/scratch", Size: "M", Stage: StageBuild, Files: []string{"a.go"}}},
 			true,
 		},

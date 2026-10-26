@@ -87,8 +87,8 @@ func TestRunsPerRepoServesTheSavedCap(t *testing.T) {
 
 func TestRunsPerRepoServesADefaultedCap(t *testing.T) {
 	store := &stubRunsPerRepo{n: dispatcher.DefaultRunsPerRepo}
-	if got := decodeCap(t, getRunsPerRepo(t, store)); got != dispatcher.DefaultRunsPerRepo {
-		t.Fatalf("runs per repo = %d, want the default %d", got, dispatcher.DefaultRunsPerRepo)
+	if got := decodeCap(t, getRunsPerRepo(t, store)); got != 5 {
+		t.Fatalf("runs per repo = %d, want the default 5", got)
 	}
 }
 

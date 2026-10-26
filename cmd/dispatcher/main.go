@@ -180,7 +180,9 @@ type runsPerRepoReader interface {
 }
 
 // ownerRunsPerRepo reads the cap once, for the poll that follows. A cap that
-// cannot be read is the default, never no cap at all.
+// cannot be read is the default, never no cap at all, and one read outside the
+// setting's range is held to the nearest end of it, so the cap is never lifted
+// past the maximum nor lowered past the minimum.
 func ownerRunsPerRepo(ctx context.Context, logger *slog.Logger, reader runsPerRepoReader) int {
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
@@ -189,7 +191,11 @@ func ownerRunsPerRepo(ctx context.Context, logger *slog.Logger, reader runsPerRe
 		logger.Warn("runsPerRepoNotRead", "err", err.Error(), "runs_per_repo", dispatcher.DefaultRunsPerRepo)
 		return dispatcher.DefaultRunsPerRepo
 	}
-	return n
+	held := min(max(n, dispatcher.MinRunsPerRepo), dispatcher.MaxRunsPerRepo)
+	if held != n {
+		logger.Warn("runsPerRepoOutOfRange", "runs_per_repo", n, "held_to", held)
+	}
+	return held
 }
 
 // slackPoster opens the Slack poster from the webhook secret, trimmed of the

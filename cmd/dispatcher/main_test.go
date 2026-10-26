@@ -253,10 +253,45 @@ func TestOwnerRunsPerRepoFallsBackToTheDefaultWhenItCannotBeRead(t *testing.T) {
 	var logs strings.Builder
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
 	got := ownerRunsPerRepo(context.Background(), logger, stubRunsPerRepo{err: errors.New("no document")})
-	if got != dispatcher.DefaultRunsPerRepo {
-		t.Fatalf("cap = %d, want the default %d", got, dispatcher.DefaultRunsPerRepo)
+	if got != 5 {
+		t.Fatalf("cap = %d, want the default 5", got)
 	}
 	if !strings.Contains(logs.String(), "runsPerRepoNotRead") {
 		t.Fatalf("no runsPerRepoNotRead line in:\n%s", logs.String())
+	}
+}
+
+// TestOwnerRunsPerRepoHoldsAnOutOfRangeCapToTheSettingsRange is the read that
+// succeeds with a value the setting cannot hold: clamped to 1..20 rather than
+// passed on, so no reader can lift the cap past 20 or leave it at zero or below.
+func TestOwnerRunsPerRepoHoldsAnOutOfRangeCapToTheSettingsRange(t *testing.T) {
+	for name, tt := range map[string]struct{ read, want int }{
+		"zero":            {0, 1},
+		"below the range": {-3, 1},
+		"above the range": {21, 20},
+		"far above":       {1000, 20},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var logs strings.Builder
+			logger := slog.New(slog.NewTextHandler(&logs, nil))
+			if got := ownerRunsPerRepo(context.Background(), logger, stubRunsPerRepo{value: tt.read}); got != tt.want {
+				t.Fatalf("cap = %d for a read of %d, want %d", got, tt.read, tt.want)
+			}
+			if !strings.Contains(logs.String(), "runsPerRepoOutOfRange") {
+				t.Fatalf("no runsPerRepoOutOfRange line in:\n%s", logs.String())
+			}
+		})
+	}
+}
+
+// TestOwnerRunsPerRepoLeavesAnInRangeCapAlone checks the ends of the range pass
+// through unlogged.
+func TestOwnerRunsPerRepoLeavesAnInRangeCapAlone(t *testing.T) {
+	for _, n := range []int{1, 20} {
+		var logs strings.Builder
+		logger := slog.New(slog.NewTextHandler(&logs, nil))
+		if got := ownerRunsPerRepo(context.Background(), logger, stubRunsPerRepo{value: n}); got != n || logs.Len() != 0 {
+			t.Fatalf("cap = %d for a read of %d, log %q, want it unchanged and silent", got, n, logs.String())
+		}
 	}
 }
