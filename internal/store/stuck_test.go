@@ -86,6 +86,37 @@ func TestStuckRunsReturnsEachStuckRowShapeAndSkipsTheRest(t *testing.T) {
 	}
 }
 
+func TestStuckRunsSkipsAStoppedRunTheOwnerCancelled(t *testing.T) {
+	q, client := queue(t)
+	cancel := func(row map[string]any) map[string]any {
+		row[cancelledByOwnerAtField], row[cancelledByField] = stuckInside, "owner@example.com"
+		return row
+	}
+	finished := func() map[string]any {
+		return map[string]any{stateField: stateClaimed, outcomeField: "agent-failed", stopReasonField: "agent-exit", settledAtField: stuckInside}
+	}
+	stopped := func() map[string]any {
+		return map[string]any{stateField: stateStopped, stopReasonField: "waiting-on-owner", updatedAtField: stuckInside}
+	}
+	unset := finished()
+	unset[cancelledByOwnerAtField] = time.Time{}
+	ids := stuckRows(t, client, map[string]map[string]any{
+		"finished":           finished(),
+		"finished-cancelled": cancel(finished()),
+		"finished-unset":     unset,
+		"stopped":            stopped(),
+		"stopped-cancelled":  cancel(stopped()),
+	})
+	got := stuckByID(t, q)
+	for name, listed := range map[string]bool{
+		"finished": true, "finished-cancelled": false, "finished-unset": true, "stopped": true, "stopped-cancelled": false,
+	} {
+		if _, found := got[ids[name]]; found != listed {
+			t.Errorf("%s: listed = %v, want %v", name, found, listed)
+		}
+	}
+}
+
 func TestStuckRunsChangesNoRow(t *testing.T) {
 	q, client := queue(t)
 	ids := stuckRows(t, client, map[string]map[string]any{

@@ -57,6 +57,7 @@ var retryRefusals = []struct {
 	{store.ErrRunDispatchable, refusedAlreadyQueue},
 	{store.ErrRunAbandoned, refusedAbandoned},
 	{store.ErrRunMerged, refusedMerged},
+	{store.ErrRunCancelled, refusedCancelled},
 	{store.ErrRunNoChanges, refusedNoChanges},
 }
 
@@ -108,7 +109,9 @@ func (d Deps) retryRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	supersedes := 0
-	if rec.PRURL != "" {
+	// The store refuses a cancelled run, saying merged first when a poll merged it
+	// since, so GitHub is not read for one.
+	if rec.PRURL != "" && rec.CancelledByOwnerAt.IsZero() {
 		var ok bool
 		if supersedes, ok = d.draftToSupersede(ctx, w, run, rec.PRURL); !ok {
 			return

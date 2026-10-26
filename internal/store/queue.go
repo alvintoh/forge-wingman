@@ -1407,7 +1407,7 @@ func (q *Queue) RequeueAfterConflict(ctx context.Context, runID string, at time.
 // TransientStops lists every run that ended carrying a transient fault class,
 // which is what a poll requeues on. It reads the classes one at a time: they
 // are a closed list, so the queries are too, and a row carrying anything else
-// is never listed.
+// is never listed. A run the owner cancelled is left out.
 func (q *Queue) TransientStops(ctx context.Context) ([]dispatcher.TransientStop, error) {
 	var out []dispatcher.TransientStop
 	for _, class := range runner.TransientClasses() {
@@ -1422,6 +1422,9 @@ func (q *Queue) TransientStops(ctx context.Context) ([]dispatcher.TransientStop,
 				return nil, fmt.Errorf("listing the runs stopped on %s: %w", class, err)
 			}
 			row := snap.Data()
+			if cancelledRow(row) {
+				continue
+			}
 			out = append(out, dispatcher.TransientStop{
 				RunID:    snap.Ref.ID,
 				Ticket:   str(row, ticketIDField),

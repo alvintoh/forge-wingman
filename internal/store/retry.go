@@ -95,10 +95,11 @@ type RetryResult struct {
 // first, in the same transaction, and the new one is queued rather than planned,
 // so its plan is made again with the note in view.
 //
-// It refuses what Requeue refuses, and an abandoned run, a merged one, one that
-// made no changes and one that has moved off req.ExpectedAttempt. Repeating a
-// retry already applied (same attempt, note and actor) reports it as such, so a
-// request the owner's client sent twice moves the run once.
+// It refuses what Requeue refuses, and an abandoned run, a merged one, one the
+// owner cancelled, one that made no changes and one that has moved off
+// req.ExpectedAttempt. Repeating a retry already applied (same attempt, note and
+// actor) reports it as such, so a request the owner's client sent twice moves the
+// run once.
 func (q *Queue) RetryWithNote(ctx context.Context, runID string, req RetryRequest, at time.Time) (RetryResult, error) {
 	if strings.TrimSpace(req.Note) == "" || !runner.ValidNote(req.Note) {
 		return RetryResult{}, ErrNoteInvalid
@@ -116,6 +117,8 @@ func (q *Queue) RetryWithNote(ctx context.Context, runID string, req RetryReques
 				return "", nil, ErrAttemptMoved
 			case mergedRow(row):
 				return "", nil, ErrRunMerged
+			case cancelledRow(row):
+				return "", nil, ErrRunCancelled
 			case str(row, outcomeField) == string(runner.OutcomeNoChanges):
 				return "", nil, ErrRunNoChanges
 			case str(row, stateField) == stateAbandoned:

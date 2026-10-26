@@ -1,7 +1,7 @@
 # 0021 — Cancelling a waiting run records it, and GitHub is left alone
 
 - **Date:** 2026-10-23
-- **Status:** accepted — the inbox row sheet offers it as Cancel run
+- **Status:** accepted — the inbox row sheet offers it as Cancel run. **Updated (2026-10-26):** a stopped run is cancelled the same way, and a retry of a cancelled run is refused.
 
 ## Context
 
@@ -20,11 +20,23 @@ means for an open pull request was decided by the owner on 2026-10-23: leave it.
   cannot send cross-origin without a preflight, so it keeps a page that is not the surface from
   cancelling a run with the session cookie IAP establishes.
 - **Recorded on the run row:** `cancelled_by_owner_at` and `cancelled_by`, the signed-in address.
-  `Finalize` carries both through a re-run of the record job; a requeue — the retry of FR-24 —
-  clears them, because the run is live again.
-- **Only a run whose pull request waits on the owner is cancelled.** One that is still building, or
+  `Finalize` carries both through a re-run of the record job; ~~a requeue — the retry of FR-24 —
+  clears them, because the run is live again~~. **Updated (2026-10-26):** an operator's requeue
+  clears them, because the run is live again; the owner's retry does not (see the refusal below).
+- ~~**Only a run whose pull request waits on the owner is cancelled.** One that is still building, or
   stopped short of a PR, is refused with 409 `not-waiting` and nothing is written: stopping a
-  workflow is not something this surface does.
+  workflow is not something this surface does.~~ **Updated (2026-10-26): only a run the inbox
+  lists is cancelled**: one whose pull request waits on the owner, or one that stopped and waits
+  for a retry (the inbox's own test for a stopped run, so the list and the cancel agree). One that
+  is still building, that made no changes, or that a poll will requeue by itself is refused with
+  409 `not-waiting` and nothing is written: stopping a workflow is not something this surface
+  does. A stopped run's confirm says the run is left as it is.
+- **A retry of a cancelled run is refused** (Updated 2026-10-26) with 409 `cancelled`, the word
+  merge uses. A cancel leaves the row out of the inbox, so a retry can only come from a stale tab,
+  and honouring it would spend a run against a decision the owner recorded. The handler does not read
+  GitHub for a cancelled record and takes the store's answer, which checks merged before cancelled in
+  its transaction: a run a poll merged after the cancel answers `merged`, and a cancelled run with a
+  ready PR answers `cancelled`, not `pr-ready`.
 - **The inbox leaves the row out**, so the cancel is what stops the run waiting on the owner, and
   the run history draws it as "cancelled by you" rather than "PR open, waiting on you".
 - **Nothing on GitHub changes.** The pull request is not closed, commented on or marked, and the
@@ -52,5 +64,6 @@ means for an open pull request was decided by the owner on 2026-10-23: leave it.
   slot for the next run.
 - The cancel needs no new credential: it writes one Firestore document, as the merge records its
   own, and it is owner-only behind IAP (`adr/0007`).
-- A cancelled run can be built again only by a retry, which clears the cancel; there is no
-  un-cancel short of that.
+- ~~A cancelled run can be built again only by a retry, which clears the cancel; there is no
+  un-cancel short of that.~~ **Updated (2026-10-26):** a cancelled run can be built again only by
+  an operator's requeue, which clears the cancel; the owner's retry refuses it.

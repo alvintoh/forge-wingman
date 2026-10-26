@@ -243,8 +243,8 @@ type Record struct {
 	MergedByOwnerAt time.Time `firestore:"merged_by_owner_at"`
 	MergedSHA       string    `firestore:"merged_sha"`
 	// CancelledByOwnerAt and CancelledBy are when, and by which signed-in
-	// address, the owner cancelled the run from its inbox row. A retry clears
-	// them, since the run is live again.
+	// address, the owner cancelled the run from its inbox row. The operator's
+	// requeue clears them, since the run is live again.
 	CancelledByOwnerAt time.Time `firestore:"cancelled_by_owner_at"`
 	CancelledBy        string    `firestore:"cancelled_by"`
 	// DecisionMode is how the run's plan decisions were settled when it was claimed, empty for a run claimed before it was recorded.

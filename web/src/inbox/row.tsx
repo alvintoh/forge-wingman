@@ -3,7 +3,7 @@ import { ago } from "../ago";
 import { pillSetWidth } from "../button-style";
 import { SmallPill } from "../pill-button";
 import { Chevron } from "./chevron";
-import type { CancelState } from "./cancel-state";
+import { type CancelState, isCancelHeld } from "./cancel-state";
 import { type Cell, cellAttrs } from "./keyboard";
 import { DRAFT_WORDS, type Kind, type Wait, kindOf, waits } from "./kind";
 import type { RowState } from "./merge-state";
@@ -98,14 +98,14 @@ export function InboxRow({
     }
   }
   const merged = state?.status === "merged";
+  const cancelHeld = isCancelHeld(cancel);
   // A row with no merge under way, or whose refusal a retry cannot change, has its normal control,
   // computed from the row as last read.
   const normal = state === undefined || (state.status === "failed" && !state.retry);
   const blockedControl = normal && (blocked || unread);
-  // A merging, cancelling or blocked pill is aria-disabled, not disabled, so it keeps the focus through a
+  // A merging, cancelled or blocked pill is aria-disabled, not disabled, so it keeps the focus through a
   // re-read and its reason is read as its description. The arrow keys pass over it.
-  const ariaDisabled =
-    state?.status === "merging" || cancel?.status === "sending" || blockedControl;
+  const ariaDisabled = state?.status === "merging" || cancelHeld || blockedControl;
   if (ariaDisabled) {
     onPill = undefined;
   }
@@ -117,10 +117,13 @@ export function InboxRow({
     reason = stopReasonOf(run);
     tone = "text-stop";
   }
-  // A cancel says where it stands on its own row: under way, or why it did not go through.
-  if (cancel !== undefined) {
-    reason = cancel.status === "sending" ? "Cancelling…" : `Not cancelled. ${cancel.words}`;
-    tone = cancel.status === "sending" ? "text-ink2" : "text-stop";
+  // A cancel says where it stands on its own row: under way, made, or why it did not go through.
+  if (cancel?.status === "failed") {
+    reason = `Not cancelled. ${cancel.words}`;
+    tone = "text-stop";
+  } else if (cancel !== undefined) {
+    reason = cancel.status === "sending" ? "Cancelling…" : "Cancelled.";
+    tone = "text-ink2";
   }
   // A merged row has no pill, so a stop left on it falls back to the row.
   const rowStop = stop === "row" || (stop === "pill" && merged);
@@ -191,8 +194,10 @@ export function InboxRow({
               tabIndex={stop === "pill" ? 0 : -1}
               {...cellAttrs(run.run, "pill")}
               aria-haspopup="dialog"
+              aria-disabled={cancelHeld || undefined}
               aria-label={`Retry ${run.ticket} in ${run.repo} with a note`}
-              onClick={handleCompose}
+              aria-describedby={cancel === undefined ? undefined : reasonId}
+              onClick={cancelHeld ? undefined : handleCompose}
             />
           </span>
         ) : (

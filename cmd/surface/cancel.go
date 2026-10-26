@@ -11,8 +11,8 @@ import (
 	"github.com/alvintoh/forge-wingman/internal/store"
 )
 
-// CancelRuns records the owner's cancel on a run, refusing one that no longer
-// waits on the owner in the same write.
+// CancelRuns records the owner's cancel on a run, refusing one that neither
+// waits on the owner nor has stopped for the owner in the same write.
 type CancelRuns interface {
 	RecordCancel(ctx context.Context, id, by string, at time.Time) error
 }
@@ -25,8 +25,8 @@ const (
 	statusCancelled        = "cancelled"
 	statusAlreadyCancelled = "already-cancelled"
 	statusAlreadyMerged    = "already-merged"
-	// refusedNotWaiting answers a run whose PR does not wait on the owner, with
-	// status 409.
+	// refusedNotWaiting answers a run that neither has a PR waiting on the owner
+	// nor has stopped for the owner, with status 409.
 	refusedNotWaiting = "not-waiting"
 )
 
@@ -86,8 +86,9 @@ func (d Deps) cancelRun(w http.ResponseWriter, r *http.Request) {
 		d.Logger.Info("ownerCancelSkipped", "run", run, "reason", statusAlreadyCancelled)
 		writeJSON(w, http.StatusOK, cancelStatus{Status: statusAlreadyCancelled})
 	case errors.Is(err, store.ErrRunNotWaiting):
-		// Only a run whose PR waits on the owner can be stopped here; an in-flight
-		// run needs its workflow stopped, which no endpoint of this surface does.
+		// Only a run whose PR waits on the owner, or that has stopped for the owner,
+		// can be cancelled here; an in-flight run needs its workflow stopped, which
+		// no endpoint of this surface does.
 		d.Logger.Info("ownerCancelRefused", "run", run, "reason", refusedNotWaiting)
 		writeJSON(w, http.StatusConflict, cancelRefusal{Reason: refusedNotWaiting})
 	default:
