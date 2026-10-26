@@ -1311,15 +1311,21 @@ func buildInFlight(t *testing.T, q *Queue, client *firestore.Client, running, wa
 }
 
 // TestTryClaimAdmitsAPlanStageBesideABuildInItsRepository asserts a claim's own
-// stage reaches admission: a plan stage writes nothing, so a build in flight in
-// the same repository does not hold it. Without the stage on the candidate its
-// empty write set reads as unknown and the build holds it.
+// stage reaches admission: a plan stage writes nothing, so a build in flight on
+// the files its row still carries from an earlier plan does not hold it. Without
+// the stage on the candidate those files read as its write set and the build
+// withholds it on repo-overlap.
 func TestTryClaimAdmitsAPlanStageBesideABuildInItsRepository(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
 	running := queuedRun(fresh("queue-plan-stage-running"), 1)
 	plan := queuedRun(fresh("queue-plan-stage"), 2)
 	buildInFlight(t, q, client, running, plan, []string{"a.go"})
+	if _, err := client.Collection(runsCollection).Doc(plan.RunID).Update(ctx, []firestore.Update{
+		{Path: planFilesField, Value: []string{"a.go"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	// The claim the dispatcher makes for an unplanned M or L ticket: its plan
 	// stage, carrying no write set of its own.
 	ok, binding, err := q.TryClaim(ctx, plan.RunID, queueAt, generousBudget, openFacts,
@@ -1427,7 +1433,10 @@ func TestTryClaimCapsTheRunsOfTheLargeSizeInFlight(t *testing.T) {
 	}
 }
 
-func TestRacingClaimsForOneRepositoryAdmitOne(t *testing.T) {
+// TestRacingClaimsNeverPushARepositoryPastItsCap races two claims for runs in
+// one repository whose cap is one: the claims are transactions on the ledger, so
+// one reads the other's reservation, and exactly one wins.
+func TestRacingClaimsNeverPushARepositoryPastItsCap(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
 	runs := []dispatcher.Queued{queuedRun(fresh("queue-same-repo-a"), 1), queuedRun(fresh("queue-same-repo-b"), 2)}
@@ -1438,9 +1447,11 @@ func TestRacingClaimsForOneRepositoryAdmitOne(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	won, fails := raceClaims(q, runs, generousBudget)
+	capped := openFacts
+	capped.Limits.RepoCap = 1
+	won, fails := raceClaims(q, runs, generousBudget, capped)
 	if won != 1 || len(fails) > 0 {
-		t.Fatalf("%d claims won, failures %v, want exactly one claim for the repository", won, fails)
+		t.Fatalf("%d claims won, failures %v, want exactly one claim for a repository capped at 1", won, fails)
 	}
 }
 
@@ -1467,7 +1478,7 @@ func TestRacingClaimsNeverPushTheReservedTotalPastTheCeiling(t *testing.T) {
 		Cash:            dispatcher.Window{Name: dispatcher.CeilingCash, Calendar: true, Limit: 1000 * money.Dollar},
 		Runner:          dispatcher.RunnerMinutes{FreeMinutes: 1_000_000},
 	}
-	won, fails := raceClaims(q, runs, tight)
+	won, fails := raceClaims(q, runs, tight, openFacts)
 	if won != 2 || len(fails) > 0 {
 		t.Fatalf("%d claims won, failures %v, want the $2 window to fit exactly two $1 runs", won, fails)
 	}
@@ -1476,9 +1487,9 @@ func TestRacingClaimsNeverPushTheReservedTotalPastTheCeiling(t *testing.T) {
 	}
 }
 
-// raceClaims claims every run at once, each with a one-dollar reservation, and
-// reports how many won and which failed outright.
-func raceClaims(q *Queue, runs []dispatcher.Queued, cfg dispatcher.BudgetConfig) (won int, fails []error) {
+// raceClaims claims every run at once under facts, each with a one-dollar
+// reservation, and reports how many won and which failed outright.
+func raceClaims(q *Queue, runs []dispatcher.Queued, cfg dispatcher.BudgetConfig, facts dispatcher.Facts) (won int, fails []error) {
 	var (
 		wg sync.WaitGroup
 		mu sync.Mutex
@@ -1487,7 +1498,7 @@ func raceClaims(q *Queue, runs []dispatcher.Queued, cfg dispatcher.BudgetConfig)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ok, _, err := q.TryClaim(context.Background(), r.RunID, queueAt, cfg, openFacts,
+			ok, _, err := q.TryClaim(context.Background(), r.RunID, queueAt, cfg, facts,
 				dispatcher.Reservation{ProviderCost: money.Dollar})
 			mu.Lock()
 			defer mu.Unlock()
