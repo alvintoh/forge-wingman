@@ -13,9 +13,18 @@ import (
 // ticket's own lane tag. [INFRA] and [OPS] never match.
 var delegateLane = regexp.MustCompile(`(?i)^\[(BE|FE|SLICE)\]`)
 
-// workflowPath is the repository path a ticket's body must not name, since no
-// run may edit the workflow it is dispatched by.
+// workflowPath is the repository path a ticket's body must not name outside
+// workflowConstraint, since no run may edit the workflow it is dispatched by.
 const workflowPath = ".github/workflows/"
+
+// workflowConstraint matches the constraint sentence tickets carry, "Do not edit
+// anything under `.github/workflows/`.": case-sensitive, from a word boundary,
+// backticks optional, ASCII whitespace between the words (a non-breaking space or
+// a vertical tab leaves a ticket ineligible, the safe direction), ending at a
+// period followed by whitespace or the end of the body. Any other mention of the
+// path, a longer prohibition included, still holds a ticket back.
+var workflowConstraint = regexp.MustCompile(`\bDo\s+not\s+edit\s+anything\s+under\s+` +
+	"`?" + regexp.QuoteMeta(workflowPath) + "`?" + `\.(?:\s|$)`)
 
 // holdLabel takes a ticket out of every start: the owner's hold.
 const holdLabel = "wingman:hold"
@@ -312,15 +321,17 @@ func phaseProgress(issues []Issue) (progress []PhaseProgress, current string) {
 
 // phaseEligible reports whether a start may delegate issue: a code-lane ticket
 // with a size and the project's repository label, that nobody has begun, whose
-// body names no workflow path and no hold label, with no delegate yet and no run
-// row that has ended, is queued or is in flight.
+// body names no workflow path outside the constraint sentence and no hold label,
+// with no delegate yet and no run row that has ended, is queued or is in flight.
 func phaseEligible(issue Issue, repo string, run TicketRun) bool {
 	if !delegateLane.MatchString(issue.Title) ||
 		// An unknown state reads as started.
 		!slices.Contains(unstartedStates, issue.StateType) ||
-		strings.Contains(issue.Body, workflowPath) ||
 		issue.DelegatedTo != "" || run.Ended || run.Queued || run.Stage != "" ||
-		slices.ContainsFunc(issue.Labels, func(l string) bool { return strings.EqualFold(l, holdLabel) }) {
+		slices.ContainsFunc(issue.Labels, func(l string) bool { return strings.EqualFold(l, holdLabel) }) ||
+		// A space, not nothing, replaces the sentence, so the text either side of
+		// it cannot join into a path.
+		strings.Contains(workflowConstraint.ReplaceAllLiteralString(issue.Body, " "), workflowPath) {
 		return false
 	}
 	if _, reason, _ := repository(issue.Labels, []string{repo}); reason != "" {
