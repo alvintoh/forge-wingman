@@ -68,7 +68,7 @@ type ProviderComparison struct {
 
 // RunCache is one settled run's own prompt-cache share, read from the input and
 // cache-read tokens the record already holds, with each phase's own figures as a
-// view prints them.
+// view prints them and as the fractions behind them.
 type RunCache struct {
 	RunID    string
 	Provider string
@@ -81,6 +81,10 @@ type RunCache struct {
 	// that stands in for a share the run recorded none of.
 	BuildCache string
 	PlanCache  string
+	// The shares are the fractions behind those two cells, each between 0 and 1,
+	// and nil wherever the cell prints a word.
+	BuildFirstShare, BuildPhaseShare *float64
+	PlanFirstShare, PlanPhaseShare   *float64
 }
 
 // DriftedRun is one recent run whose settled cost was flagged as sitting above
@@ -198,10 +202,14 @@ func (r *Records) Comparison(ctx context.Context, since time.Time) (Comparison, 
 		// A run that read no input at all has no share to report, so it is left
 		// out rather than printed as a cold one.
 		if rec.Tokens.Input+rec.Tokens.CacheRead > 0 {
+			buildFirst, buildPhase := runner.PhaseCacheShares(rec.Cache, runner.PhaseBuild)
+			planFirst, planPhase := runner.PhaseCacheShares(rec.Cache, runner.PhasePlan)
 			runs = append(runs, RunCache{RunID: rec.RunID, Provider: rec.Plan, Model: model,
-				CachedShare: rec.CachedShare(),
-				BuildCache:  runner.PhaseCacheCell(rec.Cache, runner.PhaseBuild),
-				PlanCache:   runner.PhaseCacheCell(rec.Cache, runner.PhasePlan)})
+				CachedShare:     rec.CachedShare(),
+				BuildCache:      runner.PhaseCacheCell(rec.Cache, runner.PhaseBuild),
+				PlanCache:       runner.PhaseCacheCell(rec.Cache, runner.PhasePlan),
+				BuildFirstShare: buildFirst, BuildPhaseShare: buildPhase,
+				PlanFirstShare: planFirst, PlanPhaseShare: planPhase})
 		}
 	}
 	slices.Reverse(drifted)

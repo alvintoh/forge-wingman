@@ -109,7 +109,9 @@ func TestComparisonReportsEachModelAndProviderAndEveryDriftedRun(t *testing.T) {
 func TestComparisonReportsEachRunsPromptCacheShare(t *testing.T) {
 	reader := &stubComparison{cmp: store.Comparison{
 		Runs: []store.RunCache{{RunID: "run-1", Provider: "command-code", Model: "command-code/x", CachedShare: 0.75,
-			BuildCache: "90% first, 75% phase", PlanCache: "50% first, 25% phase"}},
+			BuildCache: "90% first, 75% phase", PlanCache: "50% first, 25% phase",
+			BuildFirstShare: share(0.9), BuildPhaseShare: share(0.75),
+			PlanFirstShare: share(0.5), PlanPhaseShare: share(0.25)}},
 	}}
 	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Comparison: reader})
 
@@ -128,7 +130,7 @@ func TestComparisonReportsEachRunsPromptCacheShare(t *testing.T) {
 	if len(body.Runs) != 1 {
 		t.Fatalf("body = %s, want one run", rec.Body.String())
 	}
-	if got, want := slices.Sorted(maps.Keys(body.Runs[0])), []string{"build_cache", "cached_share", "model", "plan_cache", "provider", "run_id"}; !slices.Equal(got, want) {
+	if got, want := slices.Sorted(maps.Keys(body.Runs[0])), []string{"build_cache", "build_first_share", "build_phase_share", "cached_share", "model", "plan_cache", "plan_first_share", "plan_phase_share", "provider", "run_id"}; !slices.Equal(got, want) {
 		t.Errorf("run keys = %v, want %v", got, want)
 	}
 	if got, want := body.Runs[0]["cached_share"], 0.75; got != want {
@@ -142,6 +144,106 @@ func TestComparisonReportsEachRunsPromptCacheShare(t *testing.T) {
 	}
 	if got, want := body.Runs[0]["plan_cache"], "50% first, 25% phase"; got != want {
 		t.Errorf("plan cache = %v, want %v", got, want)
+	}
+	if got, want := body.Runs[0]["build_first_share"], 0.9; got != want {
+		t.Errorf("build first share = %v, want %v", got, want)
+	}
+	if got, want := body.Runs[0]["build_phase_share"], 0.75; got != want {
+		t.Errorf("build phase share = %v, want %v", got, want)
+	}
+	if got, want := body.Runs[0]["plan_first_share"], 0.5; got != want {
+		t.Errorf("plan first share = %v, want %v", got, want)
+	}
+	if got, want := body.Runs[0]["plan_phase_share"], 0.25; got != want {
+		t.Errorf("plan phase share = %v, want %v", got, want)
+	}
+}
+
+// TestComparisonServesEachPhasesSharesAsNumbersOrNull asserts a run's four
+// shares are always keys of its object, a number between 0 and 1 where the run
+// recorded the phase and a JSON null where it did not, and that the two words
+// stay distinguishable through the strings beside them while both read as null.
+// The recorded run's four numbers differ, so a share read into the wrong key
+// shows (AC1, AC2, AC5).
+func TestComparisonServesEachPhasesSharesAsNumbersOrNull(t *testing.T) {
+	tests := []struct {
+		name string
+		run  store.RunCache
+		want map[string]any
+	}{
+		{"a recorded run",
+			store.RunCache{RunID: "run-1", BuildCache: "90% first, 75% phase", PlanCache: "50% first, 25% phase",
+				BuildFirstShare: share(0.9), BuildPhaseShare: share(0.75), PlanFirstShare: share(0.5), PlanPhaseShare: share(0.25)},
+			map[string]any{"build_cache": "90% first, 75% phase", "plan_cache": "50% first, 25% phase",
+				"build_first_share": 0.9, "build_phase_share": 0.75, "plan_first_share": 0.5, "plan_phase_share": 0.25}},
+		{"a run with no plan stage",
+			store.RunCache{RunID: "run-2", BuildCache: "40% first, 20% phase", PlanCache: runner.PhaseCacheNone,
+				BuildFirstShare: share(0.4), BuildPhaseShare: share(0.2)},
+			map[string]any{"build_cache": "40% first, 20% phase", "plan_cache": "none",
+				"build_first_share": 0.4, "build_phase_share": 0.2, "plan_first_share": nil, "plan_phase_share": nil}},
+		{"a run with no cache map",
+			store.RunCache{RunID: "run-3", BuildCache: runner.PhaseCacheNotRecorded, PlanCache: runner.PhaseCacheNotRecorded},
+			map[string]any{"build_cache": "not recorded", "plan_cache": "not recorded",
+				"build_first_share": nil, "build_phase_share": nil, "plan_first_share": nil, "plan_phase_share": nil}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runs := servedRuns(t, tt.run)
+			if len(runs) != 1 {
+				t.Fatalf("runs = %s, want one", runs)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(runs[0], &got); err != nil {
+				t.Fatal(err)
+			}
+			for key, want := range tt.want {
+				value, present := got[key]
+				if !present {
+					t.Errorf("%s is absent from %s, want the key always present", key, runs[0])
+					continue
+				}
+				if value != want {
+					t.Errorf("%s = %v, want %v", key, value, want)
+				}
+			}
+		})
+	}
+}
+
+// TestComparisonServesAPresentZeroShareAsZeroNotNull asserts a phase whose first
+// request read nothing from cache serves a share of 0, which the view plots as a
+// cold phase, and not the null that means no share was read.
+func TestComparisonServesAPresentZeroShareAsZeroNotNull(t *testing.T) {
+	runs := servedRuns(t, store.RunCache{RunID: "run-1", BuildCache: "0% first, 0% phase", PlanCache: runner.PhaseCacheNone,
+		BuildFirstShare: share(0), BuildPhaseShare: share(0)})
+	if len(runs) != 1 {
+		t.Fatalf("runs = %s, want one", runs)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(runs[0], &got); err != nil {
+		t.Fatal(err)
+	}
+	if first, whole := got["build_first_share"], got["build_phase_share"]; first != 0.0 || whole != 0.0 {
+		t.Errorf("build shares = %v, %v in %s, want 0 and 0, not null", first, whole, runs[0])
+	}
+}
+
+// TestComparisonServesARecordedRunsWholeObjectInItsOwnFieldOrder pins a recorded
+// run's serialised object as bytes, so a field that already existed neither
+// changes its name, its value nor its place when the shares are added after it
+// (AC4).
+func TestComparisonServesARecordedRunsWholeObjectInItsOwnFieldOrder(t *testing.T) {
+	runs := servedRuns(t, store.RunCache{RunID: "run-1", Provider: "command-code", Model: "command-code/x", CachedShare: 0.75,
+		BuildCache: "90% first, 75% phase", PlanCache: "50% first, 25% phase",
+		BuildFirstShare: share(0.9), BuildPhaseShare: share(0.75), PlanFirstShare: share(0.5), PlanPhaseShare: share(0.25)})
+	if len(runs) != 1 {
+		t.Fatalf("runs = %s, want one", runs)
+	}
+	want := `{"run_id":"run-1","provider":"command-code","model":"command-code/x","cached_share":0.75,` +
+		`"build_cache":"90% first, 75% phase","plan_cache":"50% first, 25% phase",` +
+		`"build_first_share":0.9,"build_phase_share":0.75,"plan_first_share":0.5,"plan_phase_share":0.25}`
+	if got := string(runs[0]); got != want {
+		t.Errorf("run = %s, want %s", got, want)
 	}
 }
 
@@ -238,3 +340,25 @@ func TestComparisonReportsAModelNoMergeMeasuredAsNotMeasured(t *testing.T) {
 		t.Fatalf("models = %+v, want a model with no measured run reported as not measured, not 0.0%%", got.Models)
 	}
 }
+
+// servedRuns serves runs through GET /api/comparison and returns each run's
+// object as the endpoint wrote it.
+func servedRuns(t *testing.T, runs ...store.RunCache) []json.RawMessage {
+	t.Helper()
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Comparison: &stubComparison{cmp: store.Comparison{Runs: runs}}})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/comparison", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body struct {
+		Runs []json.RawMessage `json:"runs"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	return body.Runs
+}
+
+// share is a pointer to a share, as RunCache holds one.
+func share(v float64) *float64 { return &v }
