@@ -5,6 +5,7 @@ import type { InboxRun } from "./run";
 
 // Why a retry the server refused with 409 (or 503) cannot go ahead; sending it again cannot change them.
 const refusalWords: Record<string, string> = {
+  cancelled: "This run was cancelled.",
   "attempt-moved": "This run changed since you opened it. Close and reopen it.",
   "in-flight": "This run is running again.",
   waiting: "This run is waiting on a decision.",

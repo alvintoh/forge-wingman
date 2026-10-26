@@ -2,7 +2,10 @@ import { useEffect, useId, useRef } from "react";
 import { createPortal } from "react-dom";
 import { ActionButton, ButtonPair } from "../action-button";
 import { type Opened, listDialog } from "./keyboard";
-import type { InboxRun } from "./run";
+import { type InboxRun, isStopped } from "./run";
+
+const WAITING_WORDS = "The pull request is left as it is.";
+const STOPPED_WORDS = "The run is left as it is.";
 
 type DialogProps = {
   opened: Opened | null;
@@ -16,6 +19,8 @@ export function CancelDialog({ opened, onClose, onConfirm }: DialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const backRef = useRef<HTMLButtonElement>(null);
   const titleId = useId();
+  const whoId = useId();
+  const wordsId = useId();
   const run = opened?.run ?? null;
 
   useEffect(() => {
@@ -61,6 +66,7 @@ export function CancelDialog({ opened, onClose, onConfirm }: DialogProps) {
       ref={dialogRef}
       {...listDialog}
       aria-labelledby={titleId}
+      aria-describedby={`${whoId} ${wordsId}`}
       onClose={handleClose}
       className="m-auto max-h-dvh w-full max-w-[min(28.75rem,calc(100dvw-2rem))] overflow-auto rounded-card border border-hair bg-card px-6.25 pt-7.25 pb-5.25 text-ink backdrop:bg-ink/45"
     >
@@ -69,12 +75,16 @@ export function CancelDialog({ opened, onClose, onConfirm }: DialogProps) {
           <h2 id={titleId} className="text-head leading-6 font-semibold">
             Cancel this run?
           </h2>
-          <p className="mt-1.75 text-label leading-5 font-semibold wrap-break-word">{run.ticket}</p>
-          <p className="mt-2 text-label leading-4.5 text-ink2">
-            The pull request is left as it is.
+          <p id={whoId} className="mt-1.75 text-label leading-5 font-semibold wrap-break-word">
+            {run.repo} · {run.ticket}
+          </p>
+          <p
+            id={wordsId}
+            className="mt-3.5 border-t border-hair pt-3 text-label leading-4.5 wrap-break-word text-ink2"
+          >
+            {isStopped(run) ? STOPPED_WORDS : WAITING_WORDS}
           </p>
           <ButtonPair
-            margin="mt-2"
             back={<ActionButton ref={backRef} kind="secondary" label="BACK" onClick={back} />}
             action={<ActionButton kind="destructive" label="CANCEL RUN" onClick={confirm} />}
           />

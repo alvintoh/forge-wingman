@@ -44,10 +44,10 @@ type InboxRun struct {
 	UpdatedAt time.Time
 }
 
-// Inbox returns the runs updated since whose PR is open and not merged, that
-// the owner has not cancelled, and that either name a wait reason or were not
-// marked for auto-merge, and the runs that stopped and have no automatic requeue
-// due, newest first, up to limit.
+// Inbox returns the runs updated since that the owner has not cancelled and that
+// either have an open, unmerged PR naming a wait reason or not marked for
+// auto-merge, or stopped with no automatic requeue due, newest first, up to
+// limit.
 //
 // A PR closed unmerged on GitHub is not known here, so it stays listed until
 // the owner's merge attempt finds it closed.

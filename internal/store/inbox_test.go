@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"testing"
 	"time"
 
+	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
@@ -108,6 +110,7 @@ func TestInboxListsStoppedRunsUnlessThereIsNothingForTheOwnerToRetry(t *testing.
 		"queued":              row(8*time.Hour, map[string]any{"state": "queued"}),
 		"merged by the owner": row(9*time.Hour, map[string]any{"outcome": string(runner.OutcomeBuilt), "merged_by_owner_at": inboxBase}),
 		"cancelled":           row(11*time.Hour, map[string]any{"outcome": string(runner.OutcomePROpened), "pr_url": "https://github.com/octo/scratch/pull/8", "cancelled_by_owner_at": inboxBase, "cancelled_by": "owner@example.com"}),
+		"cancelled stopped":   row(12*time.Hour, map[string]any{"cancelled_by_owner_at": inboxBase, "cancelled_by": "owner@example.com"}),
 		"opened a PR":         row(10*time.Hour, map[string]any{"pr_url": "https://github.com/octo/scratch/pull/7"}),
 	}
 	var ids []string
@@ -226,22 +229,41 @@ func TestRecordCancelRefusesARunWithNoRow(t *testing.T) {
 	}
 }
 
-func TestRecordCancelRefusesARunThatStoppedWaiting(t *testing.T) {
+func TestRecordCancelRecordsARunWaitingOrStoppedAndRefusesTheRest(t *testing.T) {
 	_, client := queue(t)
 	ctx := context.Background()
 	at := time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC)
 	waiting := string(runner.OutcomePROpened)
+	stopped := map[string]any{stateField: stateStopped, outcomeField: string(runner.OutcomeStopped), stopReasonField: string(runner.StopWaitingOnOwner)}
+	finished := map[string]any{
+		stateField: stateClaimed, outcomeField: string(runner.OutcomeAgentFailed), stopReasonField: string(runner.StopAgentExit),
+		claimedAtField: at.Add(-2 * time.Hour), settledAtField: at.Add(-time.Hour),
+	}
+	with := func(base, extra map[string]any) map[string]any {
+		row := maps.Clone(base)
+		maps.Copy(row, extra)
+		return row
+	}
+	proxyFault := string(runner.TransientModuleProxy)
+	requeue := map[string]any{"class": proxyFault, "at": at}
 	for _, tt := range []struct {
 		name string
 		row  map[string]any
 		want error
 	}{
 		{"waiting", map[string]any{outcomeField: waiting}, nil},
+		{"stopped by state", stopped, nil},
+		{"a finished claim", finished, nil},
+		{"a run whose automatic requeues ran out", with(finished, map[string]any{transientField: proxyFault, transientRequeuesField: slices.Repeat([]any{requeue}, dispatcher.DefaultTransientRequeues)}), nil},
 		{"cancelled", map[string]any{outcomeField: waiting, cancelledByOwnerAtField: at, cancelledByField: "first@example.com"}, ErrRunCancelled},
+		{"a stopped run already cancelled", with(stopped, map[string]any{cancelledByOwnerAtField: at, cancelledByField: "first@example.com"}), ErrRunCancelled},
 		{"merged by the owner", map[string]any{outcomeField: waiting, mergedByOwnerAtField: at}, ErrRunMerged},
 		{"merged by a poll", map[string]any{outcomeField: waiting, rewriteMergedAtField: at}, ErrRunMerged},
 		{"merged after a cancel", map[string]any{outcomeField: waiting, cancelledByOwnerAtField: at, rewriteMergedAtField: at}, ErrRunMerged},
-		{"stopped", map[string]any{outcomeField: string(runner.OutcomeAgentFailed)}, ErrRunNotWaiting},
+		{"a stopped run that was merged", with(stopped, map[string]any{mergedByOwnerAtField: at}), ErrRunMerged},
+		{"a run that made no changes", with(finished, map[string]any{outcomeField: string(runner.OutcomeNoChanges)}), ErrRunNotWaiting},
+		{"a run a poll will requeue", with(finished, map[string]any{transientField: proxyFault, transientRequeuesField: slices.Repeat([]any{requeue}, dispatcher.DefaultTransientRequeues-1)}), ErrRunNotWaiting},
+		{"a run claimed again", with(finished, map[string]any{claimedAtField: at}), ErrRunNotWaiting},
 		{"in flight", map[string]any{stateField: stateClaimed}, ErrRunNotWaiting},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -268,6 +290,45 @@ func TestRecordCancelRefusesARunThatStoppedWaiting(t *testing.T) {
 			}
 			if data[cancelledByField] == "second@example.com" || len(data) != len(tt.row) {
 				t.Fatalf("row = %v, want the refused cancel to write nothing", data)
+			}
+		})
+	}
+}
+
+func TestRecordCancelTakesAStoppedRunOffTheInbox(t *testing.T) {
+	_, client := queue(t)
+	ctx := context.Background()
+	records := NewRecords(client)
+	stoppedAt := inboxBase.Add(-time.Hour)
+	listed := func(id string) bool {
+		got, err := records.Inbox(ctx, inboxBase.Add(-24*time.Hour), 50)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return slices.ContainsFunc(got, func(r InboxRun) bool { return r.Run == id })
+	}
+	for _, tt := range []struct {
+		name string
+		row  map[string]any
+	}{
+		{"stopped by state", map[string]any{stateField: stateStopped, outcomeField: string(runner.OutcomeStopped), stopReasonField: string(runner.StopWaitingOnOwner)}},
+		{"a finished claim", map[string]any{stateField: stateClaimed, outcomeField: string(runner.OutcomeAgentFailed), claimedAtField: stoppedAt.Add(-time.Hour), settledAtField: stoppedAt}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			id := fmt.Sprintf("cancel-inbox-%d", time.Now().UnixNano())
+			forget(t, client, id)
+			tt.row[updatedAtField] = stoppedAt
+			if _, err := client.Collection(runsCollection).Doc(id).Set(ctx, tt.row); err != nil {
+				t.Fatal(err)
+			}
+			if !listed(id) {
+				t.Fatal("the stopped run is not in the inbox before the cancel")
+			}
+			if err := records.RecordCancel(ctx, id, "owner@example.com", inboxBase); err != nil {
+				t.Fatal(err)
+			}
+			if listed(id) {
+				t.Fatal("the cancelled run is still in the inbox")
 			}
 		})
 	}

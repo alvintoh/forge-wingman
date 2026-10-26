@@ -21,7 +21,7 @@ var noPROutcomes = []string{
 
 // StuckRuns lists a queued or planned run waiting since before before, and a
 // finished claim that opened no PR or a stopped or abandoned run that ended in
-// [since, before). It writes nothing.
+// [since, before). It skips a run the owner cancelled and writes nothing.
 func (q *Queue) StuckRuns(ctx context.Context, before, since time.Time) ([]dispatcher.Stuck, error) {
 	runs := q.client.Collection(runsCollection)
 	var out []dispatcher.Stuck
@@ -52,9 +52,9 @@ func (q *Queue) StuckRuns(ctx context.Context, before, since time.Time) ([]dispa
 	}
 
 	finished := runs.Where(outcomeField, "in", noPROutcomes).
-		Select(ticketIDField, stateField, outcomeField, stopReasonField, prURLField, settledAtField, claimedAtField).Documents(ctx)
+		Select(ticketIDField, stateField, outcomeField, stopReasonField, prURLField, settledAtField, claimedAtField, cancelledByOwnerAtField).Documents(ctx)
 	err = eachRow(finished, func(id string, row map[string]any) {
-		if reason, at, ok := finishedClaim(row); ok {
+		if reason, at, ok := finishedClaim(row); ok && !cancelledRow(row) {
 			addEnded(id, row, dispatcher.StuckStopped, reason, at)
 		}
 	})
@@ -63,8 +63,11 @@ func (q *Queue) StuckRuns(ctx context.Context, before, since time.Time) ([]dispa
 	}
 
 	ended := runs.Where(stateField, "in", []string{stateStopped, stateAbandoned}).
-		Select(ticketIDField, stateField, stopReasonField, abandonedReasonField, abandonedAtField, settledAtField, updatedAtField).Documents(ctx)
+		Select(ticketIDField, stateField, stopReasonField, abandonedReasonField, abandonedAtField, settledAtField, updatedAtField, cancelledByOwnerAtField).Documents(ctx)
 	err = eachRow(ended, func(id string, row map[string]any) {
+		if cancelledRow(row) {
+			return
+		}
 		state, reason := dispatcher.StuckStopped, str(row, stopReasonField)
 		if str(row, stateField) == stateAbandoned {
 			state, reason = dispatcher.StuckAbandoned, str(row, abandonedReasonField)

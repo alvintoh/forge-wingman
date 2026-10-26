@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -147,6 +148,30 @@ func TestTransientStopsListsOnlyTheRunsCarryingAClass(t *testing.T) {
 	}
 	if s, ok := byRun[unclassed]; ok {
 		t.Fatalf("a run carrying no class was listed: %+v", s)
+	}
+}
+
+func TestTransientStopsSkipsARunTheOwnerCancelled(t *testing.T) {
+	q, client := queue(t)
+	ranOut := func(cancelledAt time.Time) map[string]any {
+		return map[string]any{
+			stateField: stateStopped, transientField: string(runner.TransientModuleProxy), cancelledByOwnerAtField: cancelledAt,
+			transientRequeuesField: slices.Repeat([]any{transientAttempt(runner.TransientModuleProxy, queueAt)}, dispatcher.DefaultTransientRequeues),
+		}
+	}
+	kept, cancelled := fresh("transient-uncancelled"), fresh("transient-cancelled")
+	seedRow(t, client, kept, ranOut(time.Time{}))
+	seedRow(t, client, cancelled, ranOut(queueAt))
+
+	got, err := q.TransientStops(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := func(id string) bool {
+		return slices.ContainsFunc(got, func(s dispatcher.TransientStop) bool { return s.RunID == id })
+	}
+	if !listed(kept) || listed(cancelled) {
+		t.Fatalf("listed uncancelled = %v, cancelled = %v, want the uncancelled run alone", listed(kept), listed(cancelled))
 	}
 }
 

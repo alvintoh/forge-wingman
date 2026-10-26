@@ -3,7 +3,7 @@ import { useInbox } from "../inbox-context";
 import { TryAgainPill } from "../pill-button";
 import { useProjectFilter } from "../project-filter";
 import { CancelDialog } from "./cancel-dialog";
-import { type CancelState, announcementOf, sendCancel } from "./cancel-state";
+import { cancelKey, isCancelHeld } from "./cancel-state";
 import {
   type Cell,
   LIST_DIALOG_ATTR,
@@ -25,7 +25,7 @@ type SectionProps = { className: string };
 // InboxSection is the inbox's ACTIONS section: the PRs that wait on the owner, and the runs that
 // stopped. A row opens its sheet of actions; its MERGE PR opens its confirm and then shows
 // the merge on the row, its RETRY, on a stopped run, opens the note for a new attempt, and the
-// sheet's Cancel run opens its confirm and then drops the waiting run from the list.
+// sheet's Cancel run, on either kind, opens its confirm and then drops the run from the list.
 //
 // The list is one tab stop, the APG layout grid: the arrow keys move between the rows and from a row
 // to its pill and back, Home and End to the first and last row, and the stop stays on the cell
@@ -45,15 +45,13 @@ export function InboxSection({ className }: SectionProps) {
     setDraft,
     clearRetryFailure,
     sendRetry,
+    cancels,
+    cancel,
   } = useInbox();
   const [target, setTarget] = useState<Opened | null>(null);
   const [composing, setComposing] = useState<Composing | null>(null);
   const [sheet, setSheet] = useState<Opened | null>(null);
   const [cancelling, setCancelling] = useState<Opened | null>(null);
-  // What each row says about a cancel: under way, or why it did not go through.
-  const [cancels, setCancels] = useState<Record<string, CancelState>>({});
-  const [cancelAnnouncement, setCancelAnnouncement] = useState("");
-  const sendingCancel = useRef(new Set<string>());
   const [active, setActive] = useState<Position | null>(null);
   const { project } = useProjectFilter();
   const [chip, setChip] = useState<KindChip | null>(null);
@@ -246,39 +244,12 @@ export function InboxSection({ className }: SectionProps) {
     void cancel(run);
   }
 
-  // cancel posts one cancel. The row says it is under way and then either leaves with the re-read or
-  // says why it did not go through; a failure a second send cannot change re-reads the list.
-  async function cancel(run: InboxRun) {
-    if (sendingCancel.current.has(run.run)) {
-      return;
-    }
-    sendingCancel.current.add(run.run);
-    setCancels((previous) => ({ ...previous, [run.run]: { status: "sending" } }));
-    const outcome = await sendCancel(run);
-    sendingCancel.current.delete(run.run);
-    setCancelAnnouncement(announcementOf(run, outcome));
-    if (outcome.status === "failed") {
-      setCancels((previous) => ({
-        ...previous,
-        [run.run]: { status: "failed", words: outcome.words },
-      }));
-      if (!outcome.retry) {
-        refresh();
-      }
-      return;
-    }
-    setCancels((previous) => {
-      const next = { ...previous };
-      delete next[run.run];
-      return next;
-    });
-    refresh();
-  }
-
-  const sheetRun = sheet?.run.run;
+  const sheetRun = sheet?.run;
   const busy =
     sheetRun !== undefined &&
-    (rows[sheetRun]?.status === "merging" || cancels[sheetRun]?.status === "sending");
+    (rows[sheetRun.run]?.status === "merging" ||
+      isCancelHeld(cancels[cancelKey(sheetRun)]) ||
+      retries[sheetRun.run]?.status === "sending");
 
   // However the sheet closed, focus goes back to the row that opened it.
   function handleSheetClose() {
@@ -323,9 +294,6 @@ export function InboxSection({ className }: SectionProps) {
           {announcement}
         </p>
         <p role="status" className="sr-only">
-          {cancelAnnouncement}
-        </p>
-        <p role="status" className="sr-only">
           {shown}
         </p>
         {state.status === "loading" && (
@@ -365,7 +333,7 @@ export function InboxSection({ className }: SectionProps) {
                       run={run}
                       now={state.readAt}
                       state={rows[run.run]}
-                      cancel={cancels[run.run]}
+                      cancel={cancels[cancelKey(run)]}
                       stop={stop?.run === run.run ? stop.cell : undefined}
                       onOpen={handleSheetOpen}
                       onMerge={handleMerge}

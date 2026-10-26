@@ -87,7 +87,8 @@ func (r *Records) RecordMerge(ctx context.Context, id, sha string, at time.Time)
 }
 
 // The reasons RecordCancel refuses, beside ErrRunMerged: a run whose cancel is
-// already recorded, and one whose PR does not wait on the owner.
+// already recorded, and one that neither has a PR waiting on the owner nor has
+// stopped for the owner.
 var (
 	ErrRunCancelled  = errors.New("run was already cancelled")
 	ErrRunNotWaiting = errors.New("run's PR does not wait on the owner")
@@ -97,7 +98,7 @@ var (
 // run id from its inbox row, keeping every other field. The row is read and
 // written in one transaction, so a merge or a cancel that lands between is seen:
 // a merged run answers ErrRunMerged before anything else, a cancelled one
-// ErrRunCancelled, and one whose PR was never opened or has since been requeued
+// ErrRunCancelled, and one with no PR waiting that has not stopped for the owner
 // ErrRunNotWaiting. An absent run is runner.ErrRecordNotFound.
 func (r *Records) RecordCancel(ctx context.Context, id, by string, at time.Time) error {
 	ref := r.client.Collection(runsCollection).Doc(id)
@@ -115,7 +116,7 @@ func (r *Records) RecordCancel(ctx context.Context, id, by string, at time.Time)
 			return ErrRunMerged
 		case cancelledRow(row):
 			return ErrRunCancelled
-		case str(row, outcomeField) != string(runner.OutcomePROpened):
+		case str(row, outcomeField) != string(runner.OutcomePROpened) && !stoppedRun(row):
 			return ErrRunNotWaiting
 		}
 		return tx.Update(ref, []firestore.Update{

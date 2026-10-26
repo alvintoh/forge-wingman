@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useRef } from "react";
 import { createPortal } from "react-dom";
 import { Chevron } from "./chevron";
 import { type Opened, listDialog } from "./keyboard";
-import { type InboxRun, isStopped, parsePull, titleOf } from "./run";
+import { type InboxRun, parsePull, titleOf } from "./run";
 
 // One action of a row's sheet, a 68px row under a rule: the label at its 28px baseline, the detail
 // at 48, the chevron from 30 to 42. An action is a link or a button, with the same class and body.
@@ -34,15 +34,16 @@ type SheetProps = {
   onClose: () => void;
   onRetry: (run: InboxRun) => void;
   onCancel: (run: InboxRun) => void;
-  // Whether a merge or a cancel of the opened run is under way, which a cancel would race.
+  // Whether a merge, a cancel or a retry of the opened run is under way, which a retry or a cancel
+  // would race.
   busy: boolean;
 };
 
 // RowSheet is a row's actions, opened by the row: retry with a note when the run can be retried, open
-// its pull request when it has one, and cancel it while it waits on the owner. It opens when `opened`
-// is set with the focus on its first action, or on the close control when the row has none; an
-// action, the close control, Escape and a press on the scrim close it, and the dialog hands the focus
-// back to the row.
+// its pull request when it has one, and cancel the run, whether its PR waits or it stopped. It opens
+// when `opened` is set with the focus on its first action, or on the close control when the row has
+// none; an action, the close control, Escape and a press on the scrim close it, and the dialog
+// hands the focus back to the row.
 export function RowSheet({ opened, onClose, onRetry, onCancel, busy }: SheetProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const firstRef = useRef<HTMLElement | null>(null);
@@ -115,9 +116,7 @@ export function RowSheet({ opened, onClose, onRetry, onCancel, busy }: SheetProp
   }
 
   const pull = run === null ? null : parsePull(run.pr_url);
-  const retryable = run?.retryable === true;
-  // Only a run waiting on the owner's merge can be cancelled; a stopped one is retried instead.
-  const cancellable = run !== null && !isStopped(run) && !busy;
+  const retryable = run?.retryable === true && !busy;
 
   // From the drawing: the repository's capitals on a 36px baseline, the ticket's on 60, the title's
   // on 82, the first action's rule at 104 and the sheet's end 14 under the last; the close control's
@@ -184,7 +183,7 @@ export function RowSheet({ opened, onClose, onRetry, onCancel, busy }: SheetProp
                 </a>
               </li>
             )}
-            {cancellable && (
+            {!busy && (
               <li className="border-t border-hair">
                 <button
                   ref={retryable || pull !== null ? undefined : setFirst}

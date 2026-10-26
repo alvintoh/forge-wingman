@@ -57,6 +57,7 @@ var retryRefusals = []struct {
 	{store.ErrRunDispatchable, refusedAlreadyQueue},
 	{store.ErrRunAbandoned, refusedAbandoned},
 	{store.ErrRunMerged, refusedMerged},
+	{store.ErrRunCancelled, refusedCancelled},
 	{store.ErrRunNoChanges, refusedNoChanges},
 }
 
@@ -105,6 +106,15 @@ func (d Deps) retryRun(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		d.Logger.Error("ownerRetryRunNotRead", "run", run, "err", err.Error())
 		http.Error(w, "reading the run", http.StatusInternalServerError)
+		return
+	}
+	if !rec.CancelledByOwnerAt.IsZero() {
+		// Merged is answered before cancelled, as the store answers it.
+		reason := refusedCancelled
+		if !rec.MergedByOwnerAt.IsZero() {
+			reason = refusedMerged
+		}
+		d.refuseRetry(w, run, reason)
 		return
 	}
 	supersedes := 0

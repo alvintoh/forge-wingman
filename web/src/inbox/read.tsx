@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { InboxContext } from "../inbox-context";
+import { type Cancels, useCancels } from "./cancel-state";
 import { type Merges, useMerges } from "./merge-state";
 import { type Retries, useRetries } from "./retry-state";
 import { type InboxRun, isInbox } from "./run";
@@ -23,8 +24,8 @@ type InboxRead = {
   retry: () => void;
 };
 
-/** The inbox list, the ways to read it again, and the merges and retries made from it. */
-export type Inbox = InboxRead & Merges & Retries;
+/** The inbox list, the ways to read it again, and the merges, retries and cancels made from it. */
+export type Inbox = InboxRead & Merges & Retries & Cancels;
 
 // useInboxRead reads the list. refresh re-reads in place; retry shows the loading panel again
 // first, for a read that failed. A re-read skips the browser's copy: the list is cached for 30
@@ -88,12 +89,15 @@ type InboxProviderProps = {
 };
 
 /**
- * InboxProvider reads the inbox for every screen inside it and holds the merges and retries made
- * from it: the menu counts the actions and the Overview lists them.
+ * InboxProvider reads the inbox for every screen inside it and holds the merges, retries and
+ * cancels made from it: the menu counts the actions and the Overview lists them.
  */
 export function InboxProvider({ children }: InboxProviderProps) {
   const read = useInboxRead();
   const merges = useMerges(read.refresh);
   const retries = useRetries(read.refresh, merges.announce);
-  return <InboxContext value={{ ...read, ...merges, ...retries }}>{children}</InboxContext>;
+  const cancels = useCancels(read.refresh, merges.announce);
+  return (
+    <InboxContext value={{ ...read, ...merges, ...retries, ...cancels }}>{children}</InboxContext>
+  );
 }

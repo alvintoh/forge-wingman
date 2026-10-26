@@ -35,7 +35,7 @@ func (s *stubRetries) RetryWithNote(_ context.Context, runID string, req store.R
 type forbiddenMerger struct{ t *testing.T }
 
 func (f forbiddenMerger) PullState(context.Context, string, int) (dispatcher.PullStatus, error) {
-	f.t.Error("the retry read GitHub for a run that has no PR")
+	f.t.Error("the retry read the pull request")
 	return dispatcher.PullStatus{}, nil
 }
 
@@ -144,6 +144,7 @@ func TestRetryAnswersEachStoreRefusalWithItsOwnReason(t *testing.T) {
 		"a run already queued":    {store.ErrRunDispatchable, "already-queued"},
 		"an abandoned run":        {store.ErrRunAbandoned, "abandoned"},
 		"a merged run":            {store.ErrRunMerged, "merged"},
+		"a cancelled run":         {store.ErrRunCancelled, "cancelled"},
 		"a run that made nothing": {store.ErrRunNoChanges, "no-changes"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -215,6 +216,32 @@ func TestRetryReadsThePRARowNamesAndReplacesOnlyAnOpenDraft(t *testing.T) {
 			}
 			if len(retries.calls) != 1 || retries.calls[0].SupersedePR != tt.supersedePR {
 				t.Fatalf("retried %+v, want it to replace PR %d", retries.calls, tt.supersedePR)
+			}
+		})
+	}
+}
+
+func TestRetryOfACancelledRunIsRefusedBeforeGitHubOrTheStoreIsReached(t *testing.T) {
+	for name, tt := range map[string]struct {
+		edit   func(*runner.Record)
+		reason string
+	}{
+		"a run with a PR": {func(r *runner.Record) { r.CancelledByOwnerAt = measuredAt() }, "cancelled"},
+		"a stopped run with no PR": {func(r *runner.Record) {
+			r.PRURL, r.Outcome, r.StopReason, r.CancelledByOwnerAt = "", runner.OutcomeAgentFailed, runner.StopAgentExit, measuredAt()
+		}, "cancelled"},
+		"a run merged after the cancel": {func(r *runner.Record) {
+			r.CancelledByOwnerAt, r.MergedByOwnerAt = measuredAt(), measuredAt().Add(time.Hour)
+		}, "merged"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			retries := &stubRetries{result: store.RetryResult{Attempt: 3}}
+			rec := postRetry(t, Deps{Retries: retries, Runs: mergeRows(tt.edit), Merger: forbiddenMerger{t}}, owner(), "r1", "application/json", retryBody)
+			if want := `{"reason":"` + tt.reason + `"}` + "\n"; rec.Code != http.StatusConflict || rec.Body.String() != want {
+				t.Fatalf("answer = %d %s, want 409 %s", rec.Code, rec.Body.String(), want)
+			}
+			if len(retries.calls) != 0 {
+				t.Fatalf("retried %v, want nothing written", retries.calls)
 			}
 		})
 	}
