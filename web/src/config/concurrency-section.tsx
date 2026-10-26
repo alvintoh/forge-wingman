@@ -53,8 +53,9 @@ export function ConcurrencySection({ config, runsPerRepo }: ConcurrencySectionPr
     config.status === "ready" && runsPerRepo.status === "ready"
       ? { view: config.body, runsPerRepo: runsPerRepo.body.runs_per_repo }
       : null;
-  const loading = config.status === "loading" || runsPerRepo.status === "loading";
   const failed = config.status === "error" || runsPerRepo.status === "error";
+  // A failed read is the answer, even while the other is still pending.
+  const loading = !failed && (config.status === "loading" || runsPerRepo.status === "loading");
   return (
     <section
       aria-labelledby="config-concurrency"
