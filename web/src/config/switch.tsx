@@ -15,7 +15,7 @@ type SwitchProps = {
  * whose visible track ends on the card's text edge. The state is the knob's place and the word,
  * never the track's colour alone.
  */
-function Switch({ on, labelledBy, describedBy, disabled, onToggle }: SwitchProps) {
+export function Switch({ on, labelledBy, describedBy, disabled, onToggle }: SwitchProps) {
   if (on === null) {
     return <span aria-hidden="true" className="-mr-1.5 h-11 w-[5.25rem] shrink-0" />;
   }

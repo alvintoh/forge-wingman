@@ -7,7 +7,7 @@ import { AutoMergeSection } from "../config/auto-merge-section";
 import { ConcurrencySection } from "../config/concurrency-section";
 import { ModelsSection } from "../config/models-section";
 import { useConfigSave } from "../config/save-state";
-import { avoidsPeak, isConfigView, isPeakView } from "../config/types";
+import { avoidsPeak, isConfigView, isPeakView, isRunsPerRepoView } from "../config/types";
 import { useRead } from "../stats/use-read";
 
 /**
@@ -19,6 +19,7 @@ export function Configuration() {
   const autonomy = useRead("/api/autonomy", isAutonomy, "autonomyNotRead");
   const peak = useRead("/api/peak", isPeakView, "peakNotRead");
   const config = useRead("/api/config", isConfigView, "configNotRead");
+  const runsPerRepo = useRead("/api/runs-per-repo", isRunsPerRepoView, "runsPerRepoNotRead");
   const form = useConfigSave(
     {
       autoMerge: autonomy.status === "ready" ? autonomy.body.auto_merge.switch_on : null,
@@ -71,7 +72,7 @@ export function Configuration() {
             disabled={form.saving}
             onToggle={toggleAvoidPeak}
           />
-          <ConcurrencySection config={config} />
+          <ConcurrencySection config={config} runsPerRepo={runsPerRepo} />
         </div>
         <p
           id={statusId}

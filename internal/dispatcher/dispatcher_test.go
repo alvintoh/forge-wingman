@@ -1190,7 +1190,7 @@ func TestPollNamesTheConditionThatWithheldEachWaitingCandidate(t *testing.T) {
 			{RunID: "run-b", Repo: "octo/a", Priority: 2},
 			{RunID: "run-c", Repo: "octo/b", Priority: 3},
 		},
-		bindings: map[string]string{"run-b": ConditionRepoBusy, "run-c": ConditionConcurrency},
+		bindings: map[string]string{"run-b": ConditionRepoOverlap, "run-c": ConditionConcurrency},
 	}
 	res, err := Poll(context.Background(), pollDeps(fakeSource{}, q, &fakeWorkflow{}), buildConfig)
 	if err != nil {
@@ -1199,7 +1199,7 @@ func TestPollNamesTheConditionThatWithheldEachWaitingCandidate(t *testing.T) {
 	if !slices.Equal(res.Dispatched, []string{"run-a"}) {
 		t.Fatalf("dispatched %v", res.Dispatched)
 	}
-	if got := deferredCeilings(res.Deferrals); !slices.Equal(got, []string{ConditionRepoBusy, ConditionConcurrency}) {
+	if got := deferredCeilings(res.Deferrals); !slices.Equal(got, []string{ConditionRepoOverlap, ConditionConcurrency}) {
 		t.Fatalf("deferrals named %v", got)
 	}
 }
@@ -1210,7 +1210,7 @@ func TestPollLeavesAContendedRunQueuedWithNoOutcome(t *testing.T) {
 			{RunID: "run-a", Repo: "octo/a", Priority: 1},
 			{RunID: "run-b", Repo: "octo/a", Priority: 2},
 		},
-		bindings: map[string]string{"run-b": ConditionRepoBusy},
+		bindings: map[string]string{"run-b": ConditionRepoOverlap},
 	}
 	var logs strings.Builder
 	deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
@@ -1443,7 +1443,7 @@ func TestPollAdmitsWithAnUnknownOpenPRCountWhenTheReadFails(t *testing.T) {
 
 func TestPollPassesTheLimitsAdmissionHoldsToTheQueue(t *testing.T) {
 	q := &fakeQueue{candidates: []Candidate{{RunID: "run-a", Repo: "octo/a", Priority: 1}}}
-	custom := Limits{PlatformCap: 4, LargeCap: 2, ReviewWIP: 6}
+	custom := Limits{PlatformCap: 4, LargeCap: 2, ReviewWIP: 6, RepoCap: 8}
 	partial := Limits{ReviewWIP: 6}
 	for name, tt := range map[string]struct {
 		cfg  Limits
@@ -1452,7 +1452,7 @@ func TestPollPassesTheLimitsAdmissionHoldsToTheQueue(t *testing.T) {
 		"the zero value means the defaults": {want: DefaultLimits},
 		"a configured value is kept":        {cfg: custom, want: custom},
 		"a partial value defaults only the fields it leaves out": {cfg: partial,
-			want: Limits{PlatformCap: DefaultLimits.PlatformCap, LargeCap: DefaultLimits.LargeCap, ReviewWIP: 6}},
+			want: Limits{PlatformCap: DefaultLimits.PlatformCap, LargeCap: DefaultLimits.LargeCap, ReviewWIP: 6, RepoCap: DefaultLimits.RepoCap}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			q.tryClaims = nil
@@ -1594,7 +1594,7 @@ func TestPollLogsWhenEveryCandidateIsDeferred(t *testing.T) {
 	}{
 		"nothing is queued": {},
 		"every candidate is withheld": {candidates: two,
-			bindings: map[string]string{"run-a": ConditionRepoBusy, "run-b": ConditionConcurrency}, want: true},
+			bindings: map[string]string{"run-a": ConditionRepoOverlap, "run-b": ConditionConcurrency}, want: true},
 		"one candidate is claimed": {candidates: two, bindings: map[string]string{"run-b": ConditionConcurrency}},
 		"one candidate was taken by another poll": {candidates: two,
 			bindings: map[string]string{"run-b": ConditionConcurrency}, unavailable: map[string]bool{"run-a": true}},

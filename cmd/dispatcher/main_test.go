@@ -232,3 +232,31 @@ func TestLoadConfigRefusesAnUnknownDecisionMode(t *testing.T) {
 		t.Fatalf("err = %v, want ErrUnknownDecisionMode", err)
 	}
 }
+
+// stubRunsPerRepo is the owner's runs-per-repo cap as a poll reads it.
+type stubRunsPerRepo struct {
+	value int
+	err   error
+}
+
+func (s stubRunsPerRepo) Value(context.Context) (int, error) { return s.value, s.err }
+
+func TestOwnerRunsPerRepoReadsTheSavedCap(t *testing.T) {
+	if got := ownerRunsPerRepo(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)), stubRunsPerRepo{value: 8}); got != 8 {
+		t.Fatalf("cap = %d, want the saved 8", got)
+	}
+}
+
+// TestOwnerRunsPerRepoFallsBackToTheDefaultWhenItCannotBeRead is the rule that
+// an unreadable cap is the default, never no cap at all.
+func TestOwnerRunsPerRepoFallsBackToTheDefaultWhenItCannotBeRead(t *testing.T) {
+	var logs strings.Builder
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	got := ownerRunsPerRepo(context.Background(), logger, stubRunsPerRepo{err: errors.New("no document")})
+	if got != dispatcher.DefaultRunsPerRepo {
+		t.Fatalf("cap = %d, want the default %d", got, dispatcher.DefaultRunsPerRepo)
+	}
+	if !strings.Contains(logs.String(), "runsPerRepoNotRead") {
+		t.Fatalf("no runsPerRepoNotRead line in:\n%s", logs.String())
+	}
+}

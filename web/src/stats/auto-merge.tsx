@@ -3,6 +3,7 @@ import { barOf, rateLine, whole } from "../autonomy/format";
 import { isAutonomy } from "../autonomy/guard";
 import type { MergeState } from "../autonomy/types";
 import { captionClass } from "../caption";
+import { SettingsDots, settingsPillClass } from "../settings-button";
 import { PhaseModels, PhaseSlots } from "./phase-models";
 import { useRead } from "./use-read";
 
@@ -99,12 +100,8 @@ function SettingsPill() {
       aria-label="Auto-merge settings"
       className="group inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center focus-visible:outline-none!"
     >
-      <span className="inline-flex h-7 w-11 items-center justify-center rounded-full border border-ink2 bg-card text-ink2 group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-accent">
-        <svg aria-hidden="true" width="21" height="5" viewBox="0 0 21 5" fill="currentColor">
-          <circle cx="2.5" cy="2.5" r="2.5" />
-          <circle cx="10.5" cy="2.5" r="2.5" />
-          <circle cx="18.5" cy="2.5" r="2.5" />
-        </svg>
+      <span className={settingsPillClass}>
+        <SettingsDots />
       </span>
     </Link>
   );

@@ -1,6 +1,7 @@
-import { barOf, rateLine, whole } from "../autonomy/format";
-import type { AutonomyView, MergeState } from "../autonomy/types";
+import { rateLine } from "../autonomy/format";
+import type { AutonomyView } from "../autonomy/types";
 import type { Read } from "../stats/use-read";
+import { autoMergeSentence } from "./auto-merge-sentence";
 import { SwitchRow } from "./switch";
 
 type AutoMergeSectionProps = {
@@ -10,13 +11,6 @@ type AutoMergeSectionProps = {
   disabled: boolean;
   onToggle: () => void;
 };
-
-// What the shown switch does, with the window and the bar the endpoint serves.
-function sentence(on: boolean, merge: MergeState): string {
-  return on
-    ? `Size S and M PRs merge themselves while the trailing ${merge.window} is ${whole(barOf(merge.limit))} or less.`
-    : "Every PR waits for you to merge it.";
-}
 
 /**
  * AutoMergeSection is the auto-merge switch, a sentence on the value it shows, and the rate line
@@ -38,7 +32,7 @@ export function AutoMergeSection({ read, on, disabled, onToggle }: AutoMergeSect
             The auto-merge state could not be read.
           </p>
         )}
-        {merge !== null && on !== null && <p>{sentence(on, merge)}</p>}
+        {merge !== null && on !== null && <p>{autoMergeSentence(on, merge)}</p>}
       </SwitchRow>
       {merge !== null && <p className="text-label leading-5 text-ink2">{rateLine(merge)}</p>}
     </section>

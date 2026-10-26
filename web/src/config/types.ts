@@ -99,3 +99,17 @@ export function peakText(model: PeakModel): string {
     .join(", ");
   return `${hours} UTC on weekdays, ×${model.peak.multiplier}\u00a0the\u00a0price`;
 }
+
+/**
+ * RunsPerRepoView is the runs-per-repo endpoint's answer: how many runs admission allows in
+ * one repository at once, which the Config settings modal sets.
+ */
+export type RunsPerRepoView = {
+  runs_per_repo: number;
+};
+
+/** isRunsPerRepoView narrows the runs-per-repo endpoint's answer. */
+export const isRunsPerRepoView = shape<RunsPerRepoView>({ runs_per_repo: isNumber });
+
+/** isAutoMergeAnswer narrows the auto-merge endpoint's answer to the switch it now holds. */
+export const isAutoMergeAnswer = shape<{ enabled: boolean }>({ enabled: isBoolean });

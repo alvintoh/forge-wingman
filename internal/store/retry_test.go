@@ -66,7 +66,7 @@ func TestRetryWithNoteQueuesTheRunForANewAttemptWithTheNote(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
 	id := fresh("retry-queue")
-	seedRow(t, client, id, retryRow(map[string]any{waitingOnField: dispatcher.ConditionRepoBusy, transientField: "x"}))
+	seedRow(t, client, id, retryRow(map[string]any{waitingOnField: dispatcher.ConditionRepoOverlap, transientField: "x"}))
 	at := queueAt.Add(time.Hour)
 	got, err := q.RetryWithNote(ctx, id, retryReq(nil), at)
 	if err != nil {

@@ -174,6 +174,24 @@ func ownerRepositories(ctx context.Context, owner *firestore.Client) ([]string, 
 	return listedRepositories(ctx, store.NewProjects(owner))
 }
 
+// runsPerRepoReader is the owner's cap on runs in one repository as a poll reads it.
+type runsPerRepoReader interface {
+	Value(ctx context.Context) (int, error)
+}
+
+// ownerRunsPerRepo reads the cap once, for the poll that follows. A cap that
+// cannot be read is the default, never no cap at all.
+func ownerRunsPerRepo(ctx context.Context, logger *slog.Logger, reader runsPerRepoReader) int {
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+	n, err := reader.Value(ctx)
+	if err != nil {
+		logger.Warn("runsPerRepoNotRead", "err", err.Error(), "runs_per_repo", dispatcher.DefaultRunsPerRepo)
+		return dispatcher.DefaultRunsPerRepo
+	}
+	return n
+}
+
 // slackPoster opens the Slack poster from the webhook secret, trimmed of the
 // newline a value added with echo carries, which no URL parses with.
 func slackPoster(token func(context.Context, string) (string, error), client *http.Client) func(context.Context) (dispatcher.Poster, error) {
@@ -226,6 +244,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 	}
 	defer func() { _ = owner.Close() }()
 	repos, reposErr := ownerRepositories(ctx, owner)
+	c.limits.RepoCap = ownerRunsPerRepo(ctx, logger, store.NewRunsPerRepo(owner))
 	dispatcher.LogPhase(logger, "setup", started, time.Now())
 	gh := dispatcher.GitHub{Token: githubToken, Workflow: runWorkflow, Branch: runBranch, Client: client}
 	queue := store.NewQueue(fsc).WithLogger(logger)

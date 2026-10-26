@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"cmp"
 	"slices"
+	"strings"
 
 	"github.com/alvintoh/forge-wingman/internal/money"
 	"github.com/alvintoh/forge-wingman/internal/runner"
@@ -14,7 +15,12 @@ const (
 	ConditionPlatformCap = "platform-cap"
 	ConditionConcurrency = "concurrency-limit"
 	ConditionLargeCap    = "large-cap"
-	ConditionRepoBusy    = "repo-busy"
+	// ConditionRepoCap withholds a candidate whose repository already holds the
+	// owner's cap of runs in flight.
+	ConditionRepoCap = "repo-cap"
+	// ConditionRepoOverlap withholds a candidate whose planned write set shares a
+	// path with a run in flight in its repository.
+	ConditionRepoOverlap = "repo-overlap"
 	ConditionBlocked     = "blocked"
 	ConditionReviewWIP   = "review-wip"
 	// ConditionEstimateFailed withholds a candidate whose estimate could not be
@@ -30,6 +36,15 @@ const (
 
 // largeSize is the ticket size whose concurrent runs are capped separately.
 const largeSize = "L"
+
+// The owner's runs-per-repo setting: how many runs may be in flight in one
+// repository. MaxRunsPerRepo is the GitHub job limit the platform defaults to,
+// which no per-repository cap could bind above.
+const (
+	MinRunsPerRepo     = 1
+	MaxRunsPerRepo     = 20
+	DefaultRunsPerRepo = 5
+)
 
 // The stages of a run the two-stage dispatch splits it into: `plan` runs the
 // plan phase alone under the read-only profile, `build` builds from a plan
@@ -49,22 +64,26 @@ type Limits struct {
 	// ReviewWIP is how many open agent PRs may await review across every
 	// allowlisted repository before another run starts.
 	ReviewWIP int
+	// RepoCap is how many runs may be in flight in one repository at once, which
+	// the owner sets from the surface.
+	RepoCap int
 }
 
 // DefaultLimits are the owner-tunable defaults a zero Config.Limits stands for.
-var DefaultLimits = Limits{PlatformCap: 20, LargeCap: 1, ReviewWIP: 3}
+var DefaultLimits = Limits{PlatformCap: 20, LargeCap: 1, ReviewWIP: 3, RepoCap: DefaultRunsPerRepo}
 
 // OrDefault fills every zero field from DefaultLimits.
 func (l Limits) OrDefault() Limits {
 	l.PlatformCap = cmp.Or(l.PlatformCap, DefaultLimits.PlatformCap)
 	l.LargeCap = cmp.Or(l.LargeCap, DefaultLimits.LargeCap)
 	l.ReviewWIP = cmp.Or(l.ReviewWIP, DefaultLimits.ReviewWIP)
+	l.RepoCap = cmp.Or(l.RepoCap, DefaultLimits.RepoCap)
 	return l
 }
 
-// InFlight is one run whose planned write set is known and whose run is in
-// flight: the ledger holds a reservation for a claimed one, and a run whose
-// plan stage has settled waits in planned for its build with none.
+// InFlight is one run in flight: the ledger holds a reservation for a claimed
+// one, and a run whose plan stage has settled waits in planned for its build
+// with none.
 type InFlight struct {
 	Ticket string
 	Repo   string
@@ -177,19 +196,20 @@ type AdmitInput struct {
 // Admit reports whether the candidate may start now, and otherwise the first
 // condition that withholds it, checked in this order: the circuit breaker,
 // owner pause, provider halt, peak hours, platform cap, N, the concurrent-L cap,
-// one run per repository, a blocker, review WIP, then the budget ceilings. It
-// does no IO.
+// the runs-per-repo cap, a planned write set shared with a run in flight, a
+// blocker, review WIP, then the budget ceilings. It does no IO.
 //
 // The blocker condition holds a candidate back while a blocked-by issue Linear
 // has not completed or canceled still holds it, or while a run in flight bears
 // a blocking relation to it in either direction.
 //
-// The one-run-per-repository condition holds a candidate back only where an
-// in-flight run in its repository has an unknown write set, or the candidate
-// does, and neither holds a plan-stage claim: a plan stage writes nothing, its
-// agent holding edit and shell denied. Runs whose write sets are both known
-// share the repository whether or not the sets intersect, and the runner
-// requeues a run whose merge conflicts.
+// The runs-per-repo cap holds a candidate back while its repository already has
+// the owner's number of runs in flight, counting a run whose plan has recorded
+// no files as any other. A repository below the cap admits a candidate whatever
+// other runs do, unless the candidate's planned write set shares a path with
+// one of theirs, which the overlap condition withholds. A plan-stage claim
+// writes nothing, its agent holding edit and shell denied, so it overlaps
+// nothing; it counts toward the cap as any running job does.
 //
 // When the open-PR count could not be read, a candidate is admitted only if
 // nothing is in flight.
@@ -226,10 +246,12 @@ func HeldBeforeBudget(in AdmitInput) string {
 		return ConditionConcurrency
 	case in.Candidate.Size == largeSize && countSize(in.InFlight, largeSize) >= in.Facts.Limits.LargeCap:
 		return ConditionLargeCap
+	case inFlightInRepo(in.InFlight, in.Candidate.Repo) >= in.Facts.Limits.RepoCap:
+		return ConditionRepoCap
 	case slices.ContainsFunc(in.InFlight, func(f InFlight) bool {
-		return f.Repo == in.Candidate.Repo && writeSetsCollide(f, in.Candidate)
+		return strings.EqualFold(f.Repo, in.Candidate.Repo) && writeSetsOverlap(f, in.Candidate)
 	}):
-		return ConditionRepoBusy
+		return ConditionRepoOverlap
 	case blocked(in.Candidate, in.InFlight):
 		return ConditionBlocked
 	case in.Facts.OpenPRsKnown && in.Facts.OpenPRs >= in.Facts.Limits.ReviewWIP,
@@ -249,33 +271,28 @@ func countSize(runs []InFlight, size string) int {
 	return n
 }
 
-// writeSetsCollide reports whether an in-flight run's write set and the
-// candidate's rule out sharing one repository. A plan-stage claim collides with
-// nothing, on either side: it writes nothing, its agent holding edit and shell
-// denied. An unknown write set — no plan recorded, which is every run before
-// two-stage dispatch — collides with any candidate, which is the interim
-// one-run-per-repository rule; two known sets never collide.
-func writeSetsCollide(f InFlight, c Subject) bool {
+// inFlightInRepo counts the runs in flight in repo, comparing it the way GitHub
+// names a repository: case-insensitively.
+func inFlightInRepo(runs []InFlight, repo string) int {
+	n := 0
+	for _, r := range runs {
+		if strings.EqualFold(r.Repo, repo) {
+			n++
+		}
+	}
+	return n
+}
+
+// writeSetsOverlap reports whether an in-flight run's planned write set shares a
+// path with the candidate's. A plan-stage claim writes nothing, on either side:
+// its agent holds edit and shell denied. A write set with no recorded files is
+// unknown rather than empty, so it overlaps nothing: the runs-per-repo cap is
+// what bounds such a run, not the overlap rule.
+func writeSetsOverlap(f InFlight, c Subject) bool {
 	if f.Stage == StagePlan || c.Stage == StagePlan {
 		return false
 	}
-	return len(f.Files) == 0 || len(c.Files) == 0
-}
-
-// OverlappingRuns names the tickets of the in-flight runs in the candidate's
-// repository whose known write set shares a path with the candidate's. It does
-// no IO.
-func OverlappingRuns(in AdmitInput) []string {
-	var tickets []string
-	for _, f := range in.InFlight {
-		if f.Repo != in.Candidate.Repo {
-			continue
-		}
-		if slices.ContainsFunc(f.Files, func(name string) bool { return slices.Contains(in.Candidate.Files, name) }) {
-			tickets = append(tickets, f.Ticket)
-		}
-	}
-	return tickets
+	return slices.ContainsFunc(f.Files, func(name string) bool { return slices.Contains(c.Files, name) })
 }
 
 // blocked reports a blocker of the candidate: a blocked-by issue Linear still
