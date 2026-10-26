@@ -84,6 +84,8 @@ func TestPhaseEligibleTable(t *testing.T) {
 		f(&i)
 		return i
 	}
+	withBody := func(body string) Issue { return with(func(i *Issue) { i.Body = body }) }
+	const forbid = "Do not edit anything under `.github/workflows/`."
 	tests := []struct {
 		name  string
 		issue Issue
@@ -99,6 +101,20 @@ func TestPhaseEligibleTable(t *testing.T) {
 		{"started", with(func(i *Issue) { i.StateType = "started" }), TicketRun{}, false},
 		{"completed", with(func(i *Issue) { i.StateType = "completed" }), TicketRun{}, false},
 		{"names a workflow path", with(func(i *Issue) { i.Body = "edit .github/workflows/ci.yml" }), TicketRun{}, false},
+		{"only the constraint sentence", withBody(forbid), TicketRun{}, true},
+		{"the sentence without backticks", withBody("Do not edit anything under .github/workflows/."), TicketRun{}, true},
+		{"the sentence across a line break", withBody("Do not edit anything under\n`.github/workflows/`."), TicketRun{}, true},
+		{"the sentence among other sentences", withBody("Mirror the reach store. " + forbid + " Built supervised."), TicketRun{}, true},
+		{"the sentence stated twice", withBody(forbid + " " + forbid), TicketRun{}, true},
+		{"a path the sentence splits in two", withBody(".github/" + forbid + " workflows/"), TicketRun{}, true},
+		{"the directory in another sentence", withBody("Keep the checks green. Leave `.github/workflows/` alone."), TicketRun{}, false},
+		{"the sentence and a mention before it", withBody("Edit `.github/workflows/ci.yml`. " + forbid), TicketRun{}, false},
+		{"the sentence and a mention after it", withBody(forbid + " Then edit `.github/workflows/ci.yml`."), TicketRun{}, false},
+		{"a reason after a colon", withBody("Do not edit anything under `.github/workflows/`: a run may not push it."), TicketRun{}, false},
+		{"a file under the directory", withBody("Do not edit anything under `.github/workflows/ci.yml`."), TicketRun{}, false},
+		{"a hidden file under the directory", withBody("Do not edit anything under `.github/workflows/.hidden`."), TicketRun{}, false},
+		{"a lowercase start", withBody("do not edit anything under `.github/workflows/`."), TicketRun{}, false},
+		{"the sentence inside a longer word", withBody("To" + forbid), TicketRun{}, false},
 		{"held by the owner", with(func(i *Issue) { i.Labels = append([]string{"Wingman:Hold"}, i.Labels...) }), TicketRun{}, false},
 		{"already delegated", with(func(i *Issue) { i.DelegatedTo = "agent-1" }), TicketRun{}, false},
 		{"run row ended", ok, TicketRun{Ended: true}, false},
@@ -168,6 +184,39 @@ func TestStartDelegatesTheCurrentPhaseOnceAndIsIdempotent(t *testing.T) {
 	pollProjects(context.Background(), d, widgetReach)
 	if len(issues.delegated) != 1 {
 		t.Errorf("delegated %v after a second poll, want nothing more", issues.delegated)
+	}
+}
+
+func TestStartDelegatesATicketThatOnlyForbidsEditingWorkflows(t *testing.T) {
+	projects := &fakePhaseProjects{listed: []PhaseProject{widget("P1")}}
+	snaps := &fakeSnapshots{}
+	templated := phaseIssue("FRG-1", "unstarted", "P1", 1, "")
+	templated.Body = "## Constraint\n\nDo not edit anything under `.github/workflows/`.\n\n## Files\n\n- internal/dispatcher/projects.go\n"
+	crlfBlocked := phaseIssue("FRG-2", "unstarted", "P1", 1, "")
+	crlfBlocked.Body = strings.ReplaceAll(templated.Body, "\n", "\r\n")
+	crlfBlocked.BlockedByOpen = []string{"FRG-9"}
+	naming := phaseIssue("FRG-3", "unstarted", "P1", 1, "")
+	naming.Body = templated.Body + "\nAlso edit `.github/workflows/ci.yml`.\n"
+	namingBlocked := phaseIssue("FRG-4", "unstarted", "P1", 1, "")
+	namingBlocked.Body = naming.Body
+	namingBlocked.BlockedByOpen = []string{"FRG-9"}
+	issues := &fakeProjectIssues{issues: []Issue{templated, crlfBlocked, naming, namingBlocked}}
+	pollProjects(context.Background(), phaseDeps(projects, snaps, fakeRuns{}, issues), widgetReach)
+
+	if len(snaps.got) != 1 {
+		t.Fatalf("recorded %d snapshots, want 1", len(snaps.got))
+	}
+	if want := []string{"FRG-1", "FRG-2"}; !slices.Equal(snaps.got[0].Eligible, want) {
+		t.Errorf("eligible = %v, want %v", snaps.got[0].Eligible, want)
+	}
+	if got := snaps.got[0].EligibleBlocked; got != 1 {
+		t.Errorf("eligible blocked = %d, want 1: a blocked ticket naming a workflow file is not eligible", got)
+	}
+	if want := []string{"uuid-FRG-1", "uuid-FRG-2"}; !slices.Equal(issues.delegated, want) {
+		t.Errorf("delegated %v, want %v", issues.delegated, want)
+	}
+	if want := []string{"octo/widget:"}; !slices.Equal(projects.resolved, want) {
+		t.Errorf("resolved %v, want %v", projects.resolved, want)
 	}
 }
 
