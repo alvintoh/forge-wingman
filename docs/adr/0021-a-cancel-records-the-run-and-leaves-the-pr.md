@@ -33,9 +33,10 @@ means for an open pull request was decided by the owner on 2026-10-23: leave it.
   does. A stopped run's confirm says the run is left as it is.
 - **A retry of a cancelled run is refused** (Updated 2026-10-26) with 409 `cancelled`, the word
   merge uses. A cancel leaves the row out of the inbox, so a retry can only come from a stale tab,
-  and honouring it would spend a run against a decision the owner recorded. The handler reads the
-  run's record before it reads GitHub, so a cancelled run with a ready PR answers `cancelled`, not
-  `pr-ready`, and the store checks again in its transaction, where a merge still beats a cancel.
+  and honouring it would spend a run against a decision the owner recorded. The handler does not read
+  GitHub for a cancelled record and takes the store's answer, which checks merged before cancelled in
+  its transaction: a run a poll merged after the cancel answers `merged`, and a cancelled run with a
+  ready PR answers `cancelled`, not `pr-ready`.
 - **The inbox leaves the row out**, so the cancel is what stops the run waiting on the owner, and
   the run history draws it as "cancelled by you" rather than "PR open, waiting on you".
 - **Nothing on GitHub changes.** The pull request is not closed, commented on or marked, and the
