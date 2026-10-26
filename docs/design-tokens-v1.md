@@ -66,6 +66,8 @@ utilities. So the namespaces are chosen for that behaviour, not for tidiness.
 | `GAP`, `PAD`, `PADX`, `BAND`, `ROW_H` | `--spacing-*` | `p-pad`, `gap-gap` |
 | `PHONE_W`, `DESK_W` | `--container-phone`, `--container-desk` | `@container` queries |
 
+*Updated (2026-10-26):* the mobile sheet's phone frame is `PHONE_VIEW_W` in `tokens.py` (the current iPhone Pro Max, the `s` band), a separate constant that is not in `theme.css`, so `PHONE_W` and `--container-phone` are unchanged.
+
 **Names are the token's ROLE, lower-cased — never its value.** `tokens.py` records
 why: `DECIDE` and `IDENTITY` were `VIOLET` and `TEAL` until 2026-09-21, and one of
 them moved the same day, which is the naming rule's own example of what not to do.
