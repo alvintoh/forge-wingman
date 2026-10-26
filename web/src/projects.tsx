@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ActionButton, ButtonPair } from "./action-button";
 import { AddProjectDialog } from "./add-project";
@@ -9,61 +9,16 @@ import { AllProjectsRow, RadioChoice } from "./filter-radio";
 import { useInbox } from "./inbox-context";
 import { SmallPill, TryAgainPill } from "./pill-button";
 import { postJSON } from "./post-json";
-import { useProjectFilter } from "./project-filter";
-import { sameRepository } from "./project-search";
+import { useKnownProject } from "./project-filter";
+import {
+  type PhaseProgress,
+  type PhaseSnapshot,
+  type Project,
+  type ProjectsState,
+  useProjects,
+} from "./project-list";
 
-type PhaseProgress = {
-  name: string;
-  done: number;
-  total: number;
-};
-
-type PhaseTicket = {
-  id: string;
-  title: string;
-  stage: string;
-};
-
-type PhaseSnapshot = {
-  phases: PhaseProgress[];
-  current: string;
-  in_flight: PhaseTicket[];
-  queued: number;
-  queued_blocked: number;
-  eligible: string[];
-  eligible_blocked: number;
-  unreadable: boolean;
-  reason: string;
-  at: string;
-};
-
-type Project = {
-  repository: string;
-  linear_project: string;
-  added_at: string;
-  paused: boolean;
-  reach: { status: string; reason?: string };
-  snapshot: PhaseSnapshot | null;
-  queue: { in_flight: number; held: number };
-  last_activity?: string;
-  start_requested_at?: string;
-  start_refusal?: string;
-};
-
-type ProjectsResponse = {
-  total: number;
-  projects: Project[];
-};
-
-type ProjectsState = {
-  status: "loading" | "error" | "ready";
-  total: number;
-  projects: Project[];
-  // When the list was read, so every card's "ago" is against one clock.
-  readAt: number;
-  // A re-read failed while an earlier read is on screen.
-  stale: boolean;
-};
+export const NO_PROJECT_LISTED = "No project is listed.";
 
 // The section on the inbox shows this many projects, then a link to the rest.
 const SECTION_PROJECTS = 3;
@@ -86,82 +41,23 @@ const refusalWords: Record<string, string> = {
     "The last start was not carried out: the repository had not been checked yet.",
 };
 
-function isProjects(body: unknown): body is ProjectsResponse {
-  return (
-    typeof body === "object" &&
-    body !== null &&
-    "total" in body &&
-    typeof body.total === "number" &&
-    "projects" in body &&
-    Array.isArray(body.projects)
-  );
-}
-
-// useProjects reads the list. refresh re-reads in place; retry shows the
-// loading panel again first, for a read that failed.
-function useProjects() {
-  const [state, setState] = useState<ProjectsState>({
-    status: "loading",
-    total: 0,
-    projects: [],
-    readAt: 0,
-    stale: false,
-  });
-  const [attempt, setAttempt] = useState(0);
-
-  useEffect(() => {
-    const controller = new AbortController();
-
-    async function read() {
-      const response = await fetch("/api/projects", { signal: controller.signal });
-      if (!response.ok) {
-        throw new Error(`the projects endpoint answered ${response.status}`);
-      }
-      const body: unknown = await response.json();
-      if (!isProjects(body)) {
-        throw new Error("the projects endpoint answered no project list");
-      }
-      if (controller.signal.aborted) {
-        return;
-      }
-      setState({
-        status: "ready",
-        total: body.total,
-        projects: body.projects,
-        readAt: Date.now(),
-        stale: false,
-      });
-    }
-
-    read().catch((err: unknown) => {
-      if (controller.signal.aborted) {
-        return;
-      }
-      console.error("projectsNotRead", err);
-      setState((previous) =>
-        previous.status === "ready"
-          ? { ...previous, stale: true }
-          : { status: "error", total: 0, projects: [], readAt: 0, stale: false },
-      );
-    });
-
-    return () => controller.abort();
-  }, [attempt]);
-
-  const refresh = useCallback(() => setAttempt((n) => n + 1), []);
-  const retry = useCallback(() => {
-    setState({ status: "loading", total: 0, projects: [], readAt: 0, stale: false });
-    setAttempt((n) => n + 1);
-  }, []);
-
-  return { state, refresh, retry };
-}
-
 function plural(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`;
 }
 
 type StatePill = "CHECKING" | "STOPPING" | "STOPPED" | "RUNNING" | null;
+
+// The project's state word, or null while it is idle.
+function projectState({ paused, queue, reach, snapshot }: Project): StatePill {
+  if (reach.status === REACH_CHECKING) {
+    return "CHECKING";
+  }
+  if (paused) {
+    return queue.in_flight > 0 ? "STOPPING" : "STOPPED";
+  }
+  const queued = snapshot !== null && !snapshot.unreadable ? snapshot.queued : 0;
+  return queue.in_flight > 0 || queued > 0 ? "RUNNING" : null;
+}
 
 // The state chip's fill, as the design draws it: the word is in white on a solid pill.
 const chipFill: Record<Exclude<StatePill, null>, string> = {
@@ -170,6 +66,21 @@ const chipFill: Record<Exclude<StatePill, null>, string> = {
   STOPPED: "bg-muted",
   RUNNING: "bg-accent",
 };
+
+// ProjectStateChip is the project's state word on a solid pill, or nothing for an idle one.
+export function ProjectStateChip({ project }: { project: Project }) {
+  const pill = projectState(project);
+  if (pill === null) {
+    return null;
+  }
+  return (
+    <span
+      className={`inline-flex h-5.5 shrink-0 items-center rounded-full px-2.5 font-mono text-micro font-semibold tracking-[1.2px] text-card ${chipFill[pill]}`}
+    >
+      {pill}
+    </span>
+  );
+}
 
 // One status line of a card. The phone card keeps only the line marked `keep` (what is moving);
 // the others show from md up and sit behind Details on a phone.
@@ -193,14 +104,7 @@ function describe(project: Project, now: number): ProjectView {
   const queued = readable?.queued ?? 0;
   const working = queue.in_flight > 0 || queued > 0;
 
-  let pill: StatePill = null;
-  if (reach.status === REACH_CHECKING) {
-    pill = "CHECKING";
-  } else if (paused) {
-    pill = queue.in_flight > 0 ? "STOPPING" : "STOPPED";
-  } else if (working) {
-    pill = "RUNNING";
-  }
+  const pill = projectState(project);
 
   const phases = readable?.phases ?? [];
   const index = phases.findIndex((p) => p.name === readable?.current);
@@ -481,13 +385,7 @@ function ProjectEntry({ project, now, refresh, filter }: EntryProps) {
               >
                 {project.repository}
               </h3>
-              {view.pill !== null && (
-                <span
-                  className={`inline-flex h-5.5 shrink-0 items-center rounded-full px-2.5 font-mono text-micro font-semibold tracking-[1.2px] text-card ${chipFill[view.pill]}`}
-                >
-                  {view.pill}
-                </span>
-              )}
+              <ProjectStateChip project={project} />
             </div>
             {control && <span className="relative ml-auto flex">{control}</span>}
           </div>
@@ -727,7 +625,7 @@ function ProjectsCard({ projects, total, now, stale, seeAll, refresh, filter }: 
         <div className={`pb-1.25 ${projects.length > 0 ? "border-t border-hair" : ""}`}>
           <div className="flex min-h-13 items-center justify-between gap-4">
             {projects.length === 0 ? (
-              <p className="text-body">No project is listed.</p>
+              <p className="text-body">{NO_PROJECT_LISTED}</p>
             ) : seeAll ? (
               <Link
                 to="/projects"
@@ -784,7 +682,7 @@ type PanelsProps = {
 };
 
 // The loading and error panels both views share.
-function ProjectsPanels({ state, retry, children }: PanelsProps) {
+export function ProjectsPanels({ state, retry, children }: PanelsProps) {
   if (state.status === "loading") {
     return (
       <p role="status" className="mt-4 text-body">
@@ -805,6 +703,17 @@ function ProjectsPanels({ state, retry, children }: PanelsProps) {
   return children;
 }
 
+// ProjectsHeading is the PROJECTS caption over the Overview's card and the filter column.
+export function ProjectsHeading({ id }: { id: string }) {
+  return (
+    <div className="flex min-h-6.5 items-start">
+      <h2 id={id} className="py-[3.25px] font-mono text-label font-semibold text-ink2">
+        PROJECTS
+      </h2>
+    </div>
+  );
+}
+
 type SectionProps = { className: string };
 
 // ProjectsSection is the inbox's PROJECTS section: the newest three, then a link to the rest, as the
@@ -818,35 +727,13 @@ export function ProjectsSection({ className }: SectionProps) {
   if (!released && inbox.status !== "loading") {
     setReleased(true);
   }
-  const { project, choose } = useProjectFilter();
-  const known =
-    project === null
-      ? undefined
-      : state.projects.find((candidate) => sameRepository(candidate.repository, project));
-  // A link's project is cleaned in the URL: one the list does not hold falls back to All, and one
-  // spelt in another case takes the spelling the list serves.
-  const corrected =
-    state.status === "ready" && project !== null && known?.repository !== project
-      ? (known?.repository ?? null)
-      : undefined;
-  useEffect(() => {
-    if (corrected !== undefined) {
-      choose(corrected);
-    }
-  }, [corrected, choose]);
+  const { known, choose } = useKnownProject(state.projects, state.status === "ready");
   if (!released) {
     return null;
   }
   return (
     <section aria-labelledby="projects-heading" className={`min-w-0 ${className}`}>
-      <div className="flex min-h-6.5 items-start">
-        <h2
-          id="projects-heading"
-          className="py-[3.25px] font-mono text-label font-semibold text-ink2"
-        >
-          PROJECTS
-        </h2>
-      </div>
+      <ProjectsHeading id="projects-heading" />
       {/* The second row of the Overview's subgrid: everything under the heading, as one child. */}
       <div>
         <ProjectsPanels state={state} retry={retry}>

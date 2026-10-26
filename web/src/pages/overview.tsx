@@ -12,7 +12,7 @@ export function Inbox() {
     // 26px gutter on both sides and an Actions card at least as wide as Projects: 51.25rem
     // (`MENU_ROOM` in menu.tsx adds the expanded menu to this). The Projects card ends on the
     // header's right edge; beside the menu (lg) the Actions card sits 16px off it. Narrower, the
-    // sections stack with Actions first.
+    // sections stack with Actions first. pages/autonomy.tsx splits at the same width.
     <div className="grid grid-cols-1 gap-y-[calc(var(--spacing-band)*2)] px-padx pt-4 pb-band lg:pl-4 @[51.25rem]:grid-cols-[minmax(0,1fr)_23rem] @[51.25rem]:grid-rows-[auto_auto] @[51.25rem]:gap-x-8 @[51.25rem]:gap-y-0">
       <InboxSection className={COLUMN} />
       <ProjectsSection className={COLUMN} />

@@ -7,7 +7,7 @@ import { isRewrite } from "./guard";
 import { PatternDefs } from "./marks";
 import { Tiles } from "./tiles";
 import { TrendCard } from "./trend-chart";
-import type { RewriteView } from "./types";
+import type { RewriteScope, RewriteView } from "./types";
 
 // A state replaces the charts with one card saying what there is to read.
 function StateCard({ title, words }: { title: string; words: string }) {
@@ -19,30 +19,34 @@ function StateCard({ title, words }: { title: string; words: string }) {
   );
 }
 
+type RewriteFiguresProps = {
+  // What the endpoint answered under "rewrite", or null for a read already reported as failed.
+  figures: unknown;
+  scope: RewriteScope | null;
+  // The figures on screen are being replaced by another repository's.
+  busy: boolean;
+};
+
 // RewriteFigures draws the rewrite section from what the endpoint answered under
 // "rewrite", or says it could not read it, so a document of another shape costs
 // the page that section and not the auto-merge state above it.
-export function RewriteFigures({ figures }: { figures: unknown }) {
-  const readable = isRewrite(figures);
+export function RewriteFigures({ figures, scope, busy }: RewriteFiguresProps) {
+  const unreadable = figures !== null && !isRewrite(figures);
   useEffect(() => {
-    if (!readable) {
+    if (unreadable) {
       console.error(
         "rewriteNotRead",
         "the autonomy endpoint answered rewrite figures of another shape",
       );
     }
-  }, [readable]);
+  }, [unreadable]);
   if (!isRewrite(figures)) {
-    return (
-      <p role="alert" className="mt-6">
-        The rewrite figures could not be read.
-      </p>
-    );
+    return <p role="alert">The rewrite figures could not be read.</p>;
   }
-  return <RewriteSection rewrite={figures} />;
+  return <RewriteSection rewrite={figures} scope={scope} busy={busy} />;
 }
 
-type RewriteSectionProps = { rewrite: RewriteView };
+type RewriteSectionProps = { rewrite: RewriteView; scope: RewriteScope | null; busy: boolean };
 
 // RewriteSection is the rewrite rate as a dashboard: the figures, the trend with
 // its per-PR strip, the split by size, model and repository, and the numbers
@@ -50,7 +54,7 @@ type RewriteSectionProps = { rewrite: RewriteView };
 // the words around a figure. With no measured PR, or none with agent lines, it is
 // one card; under ten PRs the trend is one line and the rest is drawn from what
 // there is.
-export function RewriteSection({ rewrite }: RewriteSectionProps) {
+export function RewriteSection({ rewrite, scope, busy }: RewriteSectionProps) {
   const first = rewrite.tiles[0];
   const bar = rewrite.bars.rollback;
   const trended = rewrite.by_repo.filter((repo) => repo.series.length > 0);
@@ -61,23 +65,42 @@ export function RewriteSection({ rewrite }: RewriteSectionProps) {
   const tiles = (
     <Tiles tiles={rewrite.tiles} prs={rewrite.prs} bar={bar} bleed={!partial} stacked={partial} />
   );
+  const trendAside =
+    scope?.repo ?? (trended.length > 1 ? "gate, pools every repository" : "all repositories");
   return (
-    <section aria-labelledby="rewrite-title" className="mt-10">
-      <h2 id="rewrite-title" className="text-head font-semibold text-ink">
-        Rewrite rate
+    <section aria-labelledby="rewrite-title" aria-busy={busy}>
+      <h2 id="rewrite-title" className="text-head font-semibold break-words text-ink">
+        {scope === null ? "Rewrite rate" : `Rewrite rate, ${scope.repo}`}
       </h2>
       <p className="mt-1 text-body text-ink2">Owner lines as a share of agent lines.</p>
+      {scope !== null && scope.total > 0 && (
+        <p className="mt-0.5 text-label font-semibold break-words text-ink">
+          {scope.repo} only: {scope.measured} of the {scope.total} measured{" "}
+          {scope.total === 1 ? "PR" : "PRs"}.
+        </p>
+      )}
       <PatternDefs />
       {rewrite.prs.length === 0 && (
         <div className="mt-4">
-          <StateCard title="no measured PRs" words="Rates appear once a runner PR has merged." />
+          <StateCard
+            title="no measured PRs"
+            words={
+              scope === null
+                ? "Rates appear once a runner PR has merged."
+                : `Rates for ${scope.repo} appear once one of its runner PRs has merged.`
+            }
+          />
         </div>
       )}
       {rewrite.prs.length > 0 && nothingToDivide && (
         <div className="mt-4">
           <StateCard
             title="no agent lines"
-            words="Merged PRs carry no agent lines, so there is nothing to divide."
+            words={
+              scope === null
+                ? "Merged PRs carry no agent lines, so there is nothing to divide."
+                : `${scope.repo}'s merged PRs carry no agent lines, so there is nothing to divide.`
+            }
           />
         </div>
       )}
@@ -89,7 +112,7 @@ export function RewriteSection({ rewrite }: RewriteSectionProps) {
             series={rewrite.series}
             prs={rewrite.prs}
             bar={bar}
-            aside={trended.length > 1 ? "gate, pools every repository" : "all repositories"}
+            aside={trendAside}
             lead={partial ? tiles : undefined}
           />
           <BySize sizes={rewrite.by_size} bar={bar} />
