@@ -41,7 +41,12 @@ export function RewriteFigures({ figures, scope, busy }: RewriteFiguresProps) {
     }
   }, [unreadable]);
   if (!isRewrite(figures)) {
-    return <p role="alert">The rewrite figures could not be read.</p>;
+    // Drawn 4px higher than a heading's baseline, with 8px more under it.
+    return (
+      <p role="alert" className="-mt-1 pb-2">
+        The rewrite figures could not be read.
+      </p>
+    );
   }
   return <RewriteSection rewrite={figures} scope={scope} busy={busy} />;
 }
