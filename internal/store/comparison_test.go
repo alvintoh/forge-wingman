@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -430,8 +431,9 @@ func TestComparisonListsDriftedRunsNewestFirst(t *testing.T) {
 // TestComparisonReportsEachRunsPromptCacheShare asserts the comparison lists
 // every settled run that read input with the share of it the provider served
 // from cache, newest first, and leaves out a run that read none (AC2). Each run
-// also carries its build and plan phases' own figures as a view prints them, and
-// reads as never recorded for a run whose record holds none.
+// also carries its build and plan phases' own figures as a view prints them and
+// as the fractions behind them, and reads as never recorded, with no fractions,
+// for a run whose record holds none.
 func TestComparisonReportsEachRunsPromptCacheShare(t *testing.T) {
 	_, client := queue(t)
 	plan := fresh("cache")
@@ -454,14 +456,68 @@ func TestComparisonReportsEachRunsPromptCacheShare(t *testing.T) {
 	}
 	want := []RunCache{
 		{RunID: hot, Provider: plan, Model: "command-code/x", CachedShare: 0.99,
-			BuildCache: "90% first, 75% phase", PlanCache: "50% first, 25% phase"},
+			BuildCache: "90% first, 75% phase", PlanCache: "50% first, 25% phase",
+			BuildFirstShare: share(0.9), BuildPhaseShare: share(0.75),
+			PlanFirstShare: share(0.5), PlanPhaseShare: share(0.25)},
 		{RunID: warm, Provider: plan, Model: "command-code/x", CachedShare: 0.75,
 			BuildCache: runner.PhaseCacheNotRecorded, PlanCache: runner.PhaseCacheNotRecorded},
 		{RunID: cold, Provider: plan, Model: "command-code/x", CachedShare: 0.04,
 			BuildCache: runner.PhaseCacheNotRecorded, PlanCache: runner.PhaseCacheNotRecorded},
 	}
-	if !slices.Equal(got.Runs, want) {
+	if !reflect.DeepEqual(got.Runs, want) {
 		t.Fatalf("runs = %+v, want each run that read input, newest first, at %+v", got.Runs, want)
+	}
+}
+
+// TestComparisonServesNoPlanSharesForARunWithNoPlanStage asserts a run whose
+// record holds build and review figures and none for a plan reads its plan as
+// none with no fractions, its build as figures and fractions, and carries
+// nothing of the review phase. The phase figures are a real run's. Its token
+// totals are chosen to agree with them: the run's share lies between its two
+// phases' own, and its totals hold both phases' first requests.
+func TestComparisonServesNoPlanSharesForARunWithNoPlanStage(t *testing.T) {
+	_, client := queue(t)
+	plan, id := fresh("noplan"), fresh("noplan-run")
+	forget(t, client, id)
+	comparedRecord(t, client, id, comparedRun{plan: plan, model: "command-code/x", settledAt: queueAt,
+		input: 120000, cacheRead: 1080000, cache: map[string]runner.PhaseCache{
+			string(runner.PhaseBuild):  {FirstFresh: 1348, FirstCached: 81920, CachedShare: 0.9798857313021004},
+			string(runner.PhaseReview): {FirstFresh: 103817, FirstCached: 0, CachedShare: 0.8812872493758102},
+		}})
+
+	got, err := NewRecords(client).Comparison(context.Background(), queueAt.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []RunCache{{RunID: id, Provider: plan, Model: "command-code/x", CachedShare: 0.9,
+		BuildCache: "98% first, 98% phase", PlanCache: runner.PhaseCacheNone,
+		BuildFirstShare: share(0.9838113080655234), BuildPhaseShare: share(0.9798857313021004)}}
+	if !reflect.DeepEqual(got.Runs, want) {
+		t.Fatalf("runs = %+v, want %+v", got.Runs, want)
+	}
+}
+
+// TestComparisonServesAColdPhaseAsAShareOfZeroNotNil asserts a phase whose first
+// request read nothing from cache is a share of zero, which is a measurement,
+// and is not mistaken for a phase with no share to read.
+func TestComparisonServesAColdPhaseAsAShareOfZeroNotNil(t *testing.T) {
+	_, client := queue(t)
+	plan, id := fresh("coldphase"), fresh("coldphase-run")
+	forget(t, client, id)
+	comparedRecord(t, client, id, comparedRun{plan: plan, model: "command-code/x", settledAt: queueAt,
+		input: 500, cacheRead: 0, cache: map[string]runner.PhaseCache{
+			string(runner.PhaseBuild): {FirstFresh: 500, FirstCached: 0, CachedShare: 0},
+		}})
+
+	got, err := NewRecords(client).Comparison(context.Background(), queueAt.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []RunCache{{RunID: id, Provider: plan, Model: "command-code/x", CachedShare: 0,
+		BuildCache: "0% first, 0% phase", PlanCache: runner.PhaseCacheNone,
+		BuildFirstShare: share(0), BuildPhaseShare: share(0)}}
+	if !reflect.DeepEqual(got.Runs, want) {
+		t.Fatalf("runs = %+v, want a cold build phase as zero, not nil: %+v", got.Runs, want)
 	}
 }
 
@@ -504,6 +560,9 @@ func TestPlanCachesSumsEachPlansTrailingRunsPerPhase(t *testing.T) {
 		t.Fatalf("plan caches in a window nothing settled in = %+v, err %v", empty, err)
 	}
 }
+
+// share is a pointer to a share, as RunCache holds one.
+func share(v float64) *float64 { return &v }
 
 func findModel(models []ModelComparison, model string) (ModelComparison, bool) {
 	if at := slices.IndexFunc(models, func(m ModelComparison) bool { return m.Model == model }); at >= 0 {

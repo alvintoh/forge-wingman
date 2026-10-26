@@ -148,17 +148,42 @@ const (
 // phase at all reads PhaseCacheNotRecorded, so a view never prints a share that
 // was never read.
 func PhaseCacheCell(cache map[string]PhaseCache, phase Phase) string {
+	first, whole, word := phaseCacheFigures(cache, phase)
+	if word != "" {
+		return word
+	}
+	return fmt.Sprintf("%s first, %s phase", percentShare(first), percentShare(whole))
+}
+
+// PhaseCacheShares returns the fractions behind PhaseCacheCell: the share of the
+// phase's first request and of its whole input that came from the provider's
+// cache, each between 0 and 1. Both are nil wherever the cell prints a word, so
+// a share of zero is a cold phase and nil is no share to read.
+func PhaseCacheShares(cache map[string]PhaseCache, phase Phase) (first, whole *float64) {
+	firstShare, wholeShare, word := phaseCacheFigures(cache, phase)
+	if word != "" {
+		return nil, nil
+	}
+	return &firstShare, &wholeShare
+}
+
+// phaseCacheFigures reads phase's first-request and whole-phase shares from
+// cache, or the word that stands in for them. Both renderers read it, so the
+// cell only formats the shares and cannot disagree with them. A phase whose
+// first request read no tokens has no first share to print, and the cell prints
+// no whole-phase share beside a missing one, so it is a word too.
+func phaseCacheFigures(cache map[string]PhaseCache, phase Phase) (first, whole float64, word string) {
 	c, ok := cache[string(phase)]
 	if !ok {
 		if len(cache) == 0 {
-			return PhaseCacheNotRecorded
+			return 0, 0, PhaseCacheNotRecorded
 		}
-		return PhaseCacheNone
+		return 0, 0, PhaseCacheNone
 	}
 	if c.FirstFresh+c.FirstCached == 0 {
-		return PhaseCacheNotRecorded
+		return 0, 0, PhaseCacheNotRecorded
 	}
-	return fmt.Sprintf("%s first, %s phase", percentShare(CachedShare(c.FirstFresh, c.FirstCached)), percentShare(c.CachedShare))
+	return CachedShare(c.FirstFresh, c.FirstCached), c.CachedShare, ""
 }
 
 // percentShare renders a 0-1 share as a whole percentage.
