@@ -267,10 +267,10 @@ func outOfPlan(plan runner.PlanRecord, changed []string) []string {
 // planOverlap names the in-flight run whose planned write set the branch's
 // changed files touch, or "" when none does.
 //
-// Only an S run asks. An M or L run may share files with another run in flight,
-// but its overlap is logged when it is claimed and a conflicting merge requeues
-// it; an S run carries no write set for that claim to compare, and a run that
-// planned after it started was admitted against a repository that looked free.
+// Only an S run asks. An M or L run whose plan shares a file with one in flight
+// is withheld when it is claimed, so it never starts beside that run; an S run
+// carries no write set for that claim to compare, and a run that planned after
+// it started was admitted against a repository that looked free.
 func planOverlap(size, repository string, changed []string, flight []dispatcher.InFlight) string {
 	if size != "S" || len(changed) == 0 {
 		return ""

@@ -61,6 +61,7 @@ func run(logger *slog.Logger) error {
 	var cancels CancelRuns
 	var history RunHistoryReader
 	var retries RunRetries
+	var runsCap RunsPerRepoStore
 	if project := os.Getenv("GOOGLE_CLOUD_PROJECT"); project != "" {
 		fsc, err := firestore.NewClient(context.Background(), project)
 		if err != nil {
@@ -86,6 +87,7 @@ func run(logger *slog.Logger) error {
 			Loads: queue, Activity: queue, Starts: phases, Pauses: phases,
 			Adds: store.NewProjects(owner), Names: store.NewProjectNames(fsc),
 		}
+		runsCap = store.NewRunsPerRepo(owner)
 	}
 
 	// Merging needs the surface's own GitHub token, which no run job holds.
@@ -112,6 +114,7 @@ func run(logger *slog.Logger) error {
 		Retries:    retries,
 		Merger:     merger,
 		Pulls:      pulls,
+		RepoCap:    runsCap,
 	}
 
 	handler, err := gate(context.Background(), logger, newMux(deps))
@@ -165,6 +168,7 @@ type Deps struct {
 	Retries    RunRetries
 	Merger     PRMerger
 	Pulls      PullLister
+	RepoCap    RunsPerRepoStore
 	Getenv     func(string) string
 }
 
@@ -183,6 +187,8 @@ func newMux(d Deps) *http.ServeMux {
 	mux.HandleFunc("GET /api/peak", d.peak)
 	mux.HandleFunc("POST /api/peak", d.setPeak)
 	mux.HandleFunc("POST /api/auto-merge", d.setAutoMerge)
+	mux.HandleFunc("GET /api/runs-per-repo", d.runsPerRepo)
+	mux.HandleFunc("POST /api/runs-per-repo", d.setRunsPerRepo)
 	mux.HandleFunc("GET /api/projects", d.projects)
 	mux.HandleFunc("POST /api/projects/start", d.startProject)
 	mux.HandleFunc("POST /api/projects/stop", d.stopProject)

@@ -1,52 +1,65 @@
 import type { Read } from "../stats/use-read";
 import { InfoButton } from "./info-button";
-import type { ConfigView } from "./types";
+import type { ConfigView, RunsPerRepoView } from "./types";
 
 type ConcurrencySectionProps = {
   config: Read<ConfigView>;
+  runsPerRepo: Read<RunsPerRepoView>;
+};
+
+// The figures a row shows, once both reads have answered.
+type Limits = {
+  view: ConfigView;
+  runsPerRepo: number;
 };
 
 type Row = {
   label: string;
-  value: (view: ConfigView) => string;
+  value: (limits: Limits) => string;
   note?: string;
   about?: string;
 };
 
-// Runs per repo has no setting of its own yet: one run at a time while a run's files are unknown.
 const ROWS: readonly Row[] = [
   {
     label: "Review WIP",
-    value: (view) => `${view.concurrency.review_wip}`,
+    value: ({ view }) => `${view.concurrency.review_wip}`,
     note: "open agent PRs before new runs wait",
   },
   {
     label: "Runs per repo",
-    value: () => "1",
+    value: ({ runsPerRepo }) => `${runsPerRepo}`,
     about:
-      "One run at a time while a run's files are unknown; two-stage runs with planned files may share.",
+      "Up to this many runs in one repository at once; runs whose planned files overlap never run together.",
   },
   {
     label: "GitHub job limit",
-    value: (view) => `${view.concurrency.platform_cap}`,
+    value: ({ view }) => `${view.concurrency.platform_cap}`,
     note: "shared with CI",
   },
   {
     label: "Poll every",
-    value: (view) => `${view.concurrency.poll_minutes} minutes`,
+    value: ({ view }) => `${view.concurrency.poll_minutes} minutes`,
   },
 ];
 
 /**
- * ConcurrencySection shows the limits the dispatcher runs under, read-only: they are set on the
- * dispatcher, so the page offers no control for them.
+ * ConcurrencySection shows the limits admission runs under, read-only: the page offers no control
+ * for them. Runs per repo is the cap saved in the surface's settings, the dispatcher's default
+ * while none is saved; the rest are the dispatcher's own.
  */
-export function ConcurrencySection({ config }: ConcurrencySectionProps) {
-  const view = config.status === "ready" ? config.body : null;
+export function ConcurrencySection({ config, runsPerRepo }: ConcurrencySectionProps) {
+  const limits =
+    config.status === "ready" && runsPerRepo.status === "ready"
+      ? { view: config.body, runsPerRepo: runsPerRepo.body.runs_per_repo }
+      : null;
+  const failed = config.status === "error" || runsPerRepo.status === "error";
+  // A failed read is the answer, even while the other is still pending.
+  const loading = !failed && (config.status === "loading" || runsPerRepo.status === "loading");
   return (
     <section
       aria-labelledby="config-concurrency"
-      aria-busy={config.status === "loading"}
+      aria-busy={loading}
       className="border-t border-hair pt-3.5 pb-5 text-label leading-5"
     >
       <h2
@@ -55,25 +68,25 @@ export function ConcurrencySection({ config }: ConcurrencySectionProps) {
       >
         Concurrency
       </h2>
-      {config.status === "loading" && (
+      {loading && (
         <p role="status" className="text-ink2">
           Reading the concurrency…
         </p>
       )}
-      {config.status === "error" && (
+      {failed && (
         <p role="alert" className="text-ink2">
           The concurrency could not be read.
         </p>
       )}
-      {view !== null && <p className="text-ink2">Read-only; set on the dispatcher.</p>}
-      {config.status !== "error" && (
+      {limits !== null && <p className="text-ink2">Read-only; set on the dispatcher.</p>}
+      {!failed && (
         <dl className="mt-1.5 space-y-1.5">
           {ROWS.map((row) => (
             <div key={row.label} className="relative grid grid-cols-[minmax(0,1fr)_auto] gap-x-4">
               <dt className="text-ink2">{row.label}</dt>
               {/* A value's place is held while it loads. */}
               <dd className="min-w-[2ch] text-right font-semibold text-ink">
-                {view === null ? "" : row.value(view)}
+                {limits === null ? "" : row.value(limits)}
                 {row.about !== undefined && (
                   <InfoButton name={`About ${row.label.toLowerCase()}`} text={row.about} />
                 )}

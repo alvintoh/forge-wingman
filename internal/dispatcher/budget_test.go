@@ -206,7 +206,7 @@ func TestStillBindsAtTheNextPoll(t *testing.T) {
 		"settled cost still fills the window":        {settledWindows(10*money.Dollar+1, 0), "5h", true},
 		"exactly at the limit, so it clears":         {settledWindows(10*money.Dollar, 0), "5h", false},
 		"another ceiling binds next poll":            {settledWindows(0, 30*money.Dollar), "5h", false},
-		"a condition is never a budget ceiling here": {settledWindows(20*money.Dollar, 0), ConditionRepoBusy, false},
+		"a condition is never a budget ceiling here": {settledWindows(20*money.Dollar, 0), ConditionRepoOverlap, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := stillBinds(cfg, "", Totals{}, tt.settled, estimate, tt.ceiling); got != tt.want {
@@ -234,7 +234,7 @@ func TestCeilingStartNamesTheWindowEachCeilingMeters(t *testing.T) {
 			t.Errorf("%s: start = %v, %v; want %v", ceiling, got, ok, want)
 		}
 	}
-	if _, ok := cfg.ceilingStart(ConditionRepoBusy, at); ok {
+	if _, ok := cfg.ceilingStart(ConditionRepoOverlap, at); ok {
 		t.Error("a condition named a window")
 	}
 }

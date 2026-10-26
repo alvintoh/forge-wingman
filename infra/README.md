@@ -236,9 +236,10 @@ in Linear's Members.
 `dispatcher.tf` is the poller: a Cloud Run job that Cloud Scheduler wakes every
 fifteen minutes. One execution is one poll — admit every ticket Linear has
 delegated, then walk the queue in priority order and start every run admission
-lets start: the discovered concurrency limit, the platform cap, one run per
-repository, the large-run cap, blocking relations and the open-PR review limit
-each withhold a run until a later poll. A run the plan's own allowance window or
+lets start: the discovered concurrency limit, the platform cap, the owner's
+runs-per-repo cap (default 5, kept in the owner database), the large-run cap, a planned
+write set overlapping one in flight, blocking relations and the open-PR review
+limit each withhold a run until a later poll. A run the plan's own allowance window or
 model cap would withhold starts on the plan's free models instead, a private
 repository's only after `runner plan-optin -private`. A dispatch GitHub refuses
 releases its claim, so the next poll takes it again. A poll admits only the

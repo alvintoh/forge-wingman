@@ -183,7 +183,7 @@ One Go binary entrypoint (`cmd/dispatcher`). Per poll:
    classifier decides only the remainder, and a manual Linear label always overrides.
 4. **Enqueue or reject** — a ticket above L is rejected with the reason recorded.
 5. **Admit** runs in Linear priority order, oldest-queued first among equals, while every FR-22 and FR-27 condition
-   holds — budget reservations, size, interference, the review WIP limit, platform
+   holds — budget reservations, size, interference, the owner's runs-per-repo cap, the review WIP limit, platform
    caps, the circuit breaker — up to N in flight. A run that waits records the
    *binding* condition.
 6. **Requeue a run stopped on a transient fault** (FRG-132). A run's stop carries a

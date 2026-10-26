@@ -30,7 +30,7 @@ func TestConcurrencySettingsLeavesUnsetOnesToTheirDefaults(t *testing.T) {
 	if l != (Limits{}) || tu != (Tuning{}) {
 		t.Fatalf("limits %+v tuning %+v, want zero so the defaults apply", l, tu)
 	}
-	if got, want := l.OrDefault(), (Limits{PlatformCap: 20, LargeCap: 1, ReviewWIP: 3}); got != want {
+	if got, want := l.OrDefault(), (Limits{PlatformCap: 20, LargeCap: 1, ReviewWIP: 3, RepoCap: 5}); got != want {
 		t.Fatalf("filled limits = %+v, want %+v", got, want)
 	}
 }

@@ -235,7 +235,7 @@ func TestPollRaisesNoNoticeForADeferralThatClearsByTheNextPoll(t *testing.T) {
 }
 
 func TestPollReadsNoSpendForAConditionDeferral(t *testing.T) {
-	for _, binding := range []string{ConditionRepoBusy, CeilingProviderHalted} {
+	for _, binding := range []string{ConditionRepoOverlap, CeilingProviderHalted} {
 		q, notices, d, cfg := deferralPoll(binding, money.FromUSD(10))
 		if _, err := Poll(context.Background(), d, cfg); err != nil {
 			t.Fatal(err)
