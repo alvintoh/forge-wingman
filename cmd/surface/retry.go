@@ -108,17 +108,10 @@ func (d Deps) retryRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "reading the run", http.StatusInternalServerError)
 		return
 	}
-	if !rec.CancelledByOwnerAt.IsZero() {
-		// Merged is answered before cancelled, as the store answers it.
-		reason := refusedCancelled
-		if !rec.MergedByOwnerAt.IsZero() {
-			reason = refusedMerged
-		}
-		d.refuseRetry(w, run, reason)
-		return
-	}
 	supersedes := 0
-	if rec.PRURL != "" {
+	// The store refuses a cancelled run, saying merged first when a poll merged it
+	// since, so GitHub is not read for one.
+	if rec.PRURL != "" && rec.CancelledByOwnerAt.IsZero() {
 		var ok bool
 		if supersedes, ok = d.draftToSupersede(ctx, w, run, rec.PRURL); !ok {
 			return

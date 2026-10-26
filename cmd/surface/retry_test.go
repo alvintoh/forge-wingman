@@ -221,27 +221,28 @@ func TestRetryReadsThePRARowNamesAndReplacesOnlyAnOpenDraft(t *testing.T) {
 	}
 }
 
-func TestRetryOfACancelledRunIsRefusedBeforeGitHubOrTheStoreIsReached(t *testing.T) {
+func TestRetryOfACancelledRecordNeverReadsGitHubAndTakesTheStoresAnswer(t *testing.T) {
+	cancelled := func(r *runner.Record) { r.CancelledByOwnerAt = measuredAt() }
 	for name, tt := range map[string]struct {
 		edit   func(*runner.Record)
+		err    error
 		reason string
 	}{
-		"a run with a PR": {func(r *runner.Record) { r.CancelledByOwnerAt = measuredAt() }, "cancelled"},
+		"a run with a PR the store finds cancelled": {cancelled, store.ErrRunCancelled, "cancelled"},
+		"a run the store finds merged since":        {cancelled, store.ErrRunMerged, "merged"},
 		"a stopped run with no PR": {func(r *runner.Record) {
-			r.PRURL, r.Outcome, r.StopReason, r.CancelledByOwnerAt = "", runner.OutcomeAgentFailed, runner.StopAgentExit, measuredAt()
-		}, "cancelled"},
-		"a run merged after the cancel": {func(r *runner.Record) {
-			r.CancelledByOwnerAt, r.MergedByOwnerAt = measuredAt(), measuredAt().Add(time.Hour)
-		}, "merged"},
+			cancelled(r)
+			r.PRURL, r.Outcome, r.StopReason = "", runner.OutcomeAgentFailed, runner.StopAgentExit
+		}, store.ErrRunCancelled, "cancelled"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			retries := &stubRetries{result: store.RetryResult{Attempt: 3}}
+			retries := &stubRetries{err: errors.Join(errors.New("retrying run r1"), tt.err)}
 			rec := postRetry(t, Deps{Retries: retries, Runs: mergeRows(tt.edit), Merger: forbiddenMerger{t}}, owner(), "r1", "application/json", retryBody)
 			if want := `{"reason":"` + tt.reason + `"}` + "\n"; rec.Code != http.StatusConflict || rec.Body.String() != want {
 				t.Fatalf("answer = %d %s, want 409 %s", rec.Code, rec.Body.String(), want)
 			}
-			if len(retries.calls) != 0 {
-				t.Fatalf("retried %v, want nothing written", retries.calls)
+			if len(retries.calls) != 1 || retries.calls[0].SupersedePR != 0 {
+				t.Fatalf("retried %+v, want the store asked once and no PR to replace", retries.calls)
 			}
 		})
 	}
