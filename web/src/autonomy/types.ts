@@ -109,7 +109,8 @@ export type RewriteView = {
 // RewriteScope is the repository the rewrite section is narrowed to, with how many of the
 // total measured PRs are its own.
 export type RewriteScope = {
-  repo: string;
+  // How the page names the repository.
+  name: string;
   measured: number;
   total: number;
 };

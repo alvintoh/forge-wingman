@@ -9,8 +9,10 @@ import { useProjects } from "../project-list";
 import { ProjectsPanels } from "../projects";
 import { useRead } from "../stats/use-read";
 
-// Every @[51.25rem] on this page is the Overview's split width (pages/overview.tsx).
-const COLUMN = "min-w-0 @[51.25rem]:col-start-2 @[51.25rem]:row-start-1";
+// Every @[51.25rem] on this page is the Overview's split width (pages/overview.tsx). In one column
+// the caption's 8.75px margin puts its baseline 26px under the Data disclosure, as drawn.
+const COLUMN =
+  "mt-[8.75px] min-w-0 @[51.25rem]:col-start-2 @[51.25rem]:row-start-1 @[51.25rem]:mt-0";
 
 // Autonomy shows whether an eligible pull request merges itself: the state over
 // the trailing window, the rate behind it and the reason, then the rewrite rate
@@ -39,7 +41,7 @@ export function Autonomy() {
     <section className="mx-auto max-w-desk px-padx pt-4 pb-band">
       <h1 className="text-title font-semibold text-ink">Autonomy</h1>
       <p className="mt-2 text-body text-ink2">Whether an eligible PR merges itself.</p>
-      <div className="mt-6 grid grid-cols-1 gap-y-10 @[51.25rem]:grid-cols-[minmax(0,1fr)_23rem] @[51.25rem]:grid-rows-[auto_auto] @[51.25rem]:gap-x-8">
+      <div className="mt-6 grid grid-cols-1 @[51.25rem]:grid-cols-[minmax(0,1fr)_23rem] @[51.25rem]:grid-rows-[auto_auto] @[51.25rem]:gap-x-8">
         <div className="min-w-0 @[51.25rem]:col-start-1 @[51.25rem]:row-start-1">
           {!released && (
             <p role="status">
@@ -65,10 +67,10 @@ export function Autonomy() {
           )}
         </div>
         {mounted && (
-          <div className="min-w-0 @[51.25rem]:col-span-2 @[51.25rem]:row-start-2">
+          <div className="mt-10 min-w-0 @[51.25rem]:col-span-2 @[51.25rem]:row-start-2">
             <RewriteFigures
               figures={shown.figures}
-              scope={scopeOf(shown.repo, pooled.rewrite)}
+              scope={scopeOf(shown.repo, pooled.rewrite, list.projects)}
               busy={busy}
             />
           </div>

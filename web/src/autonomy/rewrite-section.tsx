@@ -66,16 +66,16 @@ export function RewriteSection({ rewrite, scope, busy }: RewriteSectionProps) {
     <Tiles tiles={rewrite.tiles} prs={rewrite.prs} bar={bar} bleed={!partial} stacked={partial} />
   );
   const trendAside =
-    scope?.repo ?? (trended.length > 1 ? "gate, pools every repository" : "all repositories");
+    scope?.name ?? (trended.length > 1 ? "gate, pools every repository" : "all repositories");
   return (
     <section aria-labelledby="rewrite-title" aria-busy={busy}>
       <h2 id="rewrite-title" className="text-head font-semibold break-words text-ink">
-        {scope === null ? "Rewrite rate" : `Rewrite rate, ${scope.repo}`}
+        {scope === null ? "Rewrite rate" : `Rewrite rate, ${scope.name}`}
       </h2>
       <p className="mt-1 text-body text-ink2">Owner lines as a share of agent lines.</p>
       {scope !== null && scope.total > 0 && (
         <p className="mt-0.5 text-label font-semibold break-words text-ink">
-          {scope.repo} only: {scope.measured} of the {scope.total} measured{" "}
+          {scope.name} only: {scope.measured} of the {scope.total} measured{" "}
           {scope.total === 1 ? "PR" : "PRs"}.
         </p>
       )}
@@ -87,7 +87,7 @@ export function RewriteSection({ rewrite, scope, busy }: RewriteSectionProps) {
             words={
               scope === null
                 ? "Rates appear once a runner PR has merged."
-                : `Rates for ${scope.repo} appear once one of its runner PRs has merged.`
+                : `Rates for ${scope.name} appear once one of its runner PRs has merged.`
             }
           />
         </div>
@@ -99,7 +99,7 @@ export function RewriteSection({ rewrite, scope, busy }: RewriteSectionProps) {
             words={
               scope === null
                 ? "Merged PRs carry no agent lines, so there is nothing to divide."
-                : `${scope.repo}'s merged PRs carry no agent lines, so there is nothing to divide.`
+                : `${scope.name}'s merged PRs carry no agent lines, so there is nothing to divide.`
             }
           />
         </div>

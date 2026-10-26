@@ -1,15 +1,17 @@
 import { useId } from "react";
 import { AllProjectsRow, RadioChoice } from "./filter-radio";
-import type { Project, ProjectsState } from "./project-list";
+import { displayName, type Project, type ProjectsState } from "./project-list";
 import { NO_PROJECT_LISTED, ProjectStateChip, ProjectsHeading, ProjectsPanels } from "./projects";
 
 type RowProps = {
   project: Project;
+  // How the row names the project: its tooltip and its radio's name read the same.
+  name: string;
   checked: boolean;
   onChoose: (repository: string) => void;
 };
 
-function ProjectRow({ project, checked, onChoose }: RowProps) {
+function ProjectRow({ project, name, checked, onChoose }: RowProps) {
   const nameId = useId();
   return (
     <li
@@ -25,12 +27,12 @@ function ProjectRow({ project, checked, onChoose }: RowProps) {
         {/* The name's tooltip, in the radio over it: on the radio it would be read twice. */}
         <span
           aria-hidden="true"
-          title={project.repository}
+          title={name}
           className="absolute inset-y-0 right-padx left-[calc(var(--spacing-padx)+2rem)]"
         />
       </RadioChoice>
       <span id={nameId} className="min-w-0 truncate text-body font-semibold text-ink">
-        {project.repository}
+        {name}
       </span>
       <ProjectStateChip project={project} />
     </li>
@@ -77,6 +79,7 @@ export function ProjectFilterColumn({
                 <ProjectRow
                   key={project.repository}
                   project={project}
+                  name={displayName(project.repository, state.projects)}
                   checked={known !== undefined}
                   onChoose={onChoose}
                 />

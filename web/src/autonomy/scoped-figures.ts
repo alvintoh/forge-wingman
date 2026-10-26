@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { displayName, type Project } from "../project-list";
 import { sameRepository } from "../project-search";
 import { useRead } from "../stats/use-read";
 import { isAutonomy, isRewrite } from "./guard";
@@ -35,14 +36,19 @@ export function useScopedFigures(repo: string | null, pooled: AutonomyView | nul
 
 // scopeOf says how much of the measured data repo is: its PRs against every row's in the pooled
 // figures, the unattributed ones included.
-export function scopeOf(repo: string | null, pooled: unknown): RewriteScope | null {
+export function scopeOf(
+  repo: string | null,
+  pooled: unknown,
+  projects: readonly Project[],
+): RewriteScope | null {
   if (repo === null) {
     return null;
   }
+  const name = displayName(repo, projects);
   if (!isRewrite(pooled)) {
-    return { repo, measured: 0, total: 0 };
+    return { name, measured: 0, total: 0 };
   }
   const own = pooled.by_repo.find((row) => sameRepository(row.repo, repo));
   const total = pooled.by_repo.reduce((sum, row) => sum + row.average.prs, 0);
-  return { repo, measured: own?.average.prs ?? 0, total };
+  return { name, measured: own?.average.prs ?? 0, total };
 }

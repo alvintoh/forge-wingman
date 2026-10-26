@@ -53,6 +53,18 @@ export type ProjectsState = {
   stale: boolean;
 };
 
+// displayName is how the design names a project: the part of owner/name after the slash, or the whole
+// name while another listed project shares that part.
+export function displayName(repository: string, projects: readonly Project[]): string {
+  const bare = (name: string) => name.slice(name.lastIndexOf("/") + 1);
+  const shared = projects.some(
+    (other) =>
+      other.repository !== repository &&
+      bare(other.repository).toLowerCase() === bare(repository).toLowerCase(),
+  );
+  return shared ? repository : bare(repository);
+}
+
 function isProjects(body: unknown): body is ProjectsResponse {
   return (
     typeof body === "object" &&
