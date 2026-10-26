@@ -869,8 +869,9 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 
 		running := inFlight(ledger)
 		cand := subject(data)
-		// The claim's own stage, which the row does not record: admission lets a
-		// plan-stage claim share its repository, since it writes nothing.
+		// The claim's own stage, which the row does not record: admission skips the
+		// write-set overlap check for a plan-stage claim, since it writes nothing,
+		// though its row may still carry an earlier plan's files.
 		cand.Stage = res.Stage
 		if facts.Relations.Known {
 			cand.BlockedBy, cand.Blocks = facts.Relations.BlockedBy, facts.Relations.Blocks
