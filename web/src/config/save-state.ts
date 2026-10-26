@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { saveSetting } from "./save-setting";
-import { PEAK_MODE, avoidsPeak, isAutoMergeAnswer, isPeakView } from "./types";
+import { isBoolean, shape } from "../autonomy/guard";
+import { postJSON } from "../post-json";
+import { PEAK_MODE, avoidsPeak, isPeakView } from "./types";
 import type { PeakView } from "./types";
 
 /** The page's two switches; a staged value is one the owner set and has not saved. */
@@ -25,6 +26,25 @@ type Answers = {
   autoMerge: boolean | null;
   peak: PeakView | null;
 };
+
+const isEnabled = shape<{ enabled: boolean }>({ enabled: isBoolean });
+
+// post sends body to path and returns the answer once guard has checked it.
+async function post<T>(
+  path: string,
+  body: Record<string, string | number | boolean>,
+  guard: (answer: unknown) => answer is T,
+): Promise<T> {
+  const response = await postJSON(path, body);
+  if (!response.ok) {
+    throw new Error(`${path} answered ${response.status}`);
+  }
+  const answer: unknown = await response.json();
+  if (!guard(answer)) {
+    throw new Error(`${path} answered a document of another shape`);
+  }
+  return answer;
+}
 
 // failureWords names what did not save and, where something did, what did.
 function failureWords(failed: Setting[], saved: Setting[]): string {
@@ -93,16 +113,12 @@ export function useConfigSave(saved: Saved, onAutoMergeSaved: () => void) {
       }
       try {
         if (setting === "autoMerge") {
-          const { enabled } = await saveSetting(
-            "/api/auto-merge",
-            { enabled: value },
-            isAutoMergeAnswer,
-          );
+          const { enabled } = await post("/api/auto-merge", { enabled: value }, isEnabled);
           setAnswers((was) => ({ ...was, autoMerge: enabled }));
           onAutoMergeSaved();
         } else {
           const mode = value ? PEAK_MODE.offPeakOnly : PEAK_MODE.always;
-          const view = await saveSetting("/api/peak", { mode }, isPeakView);
+          const view = await post("/api/peak", { mode }, isPeakView);
           setAnswers((was) => ({ ...was, peak: view }));
         }
         clear(setting);

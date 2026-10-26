@@ -2,7 +2,6 @@ import { useEffect, useId, useRef, useState } from "react";
 import { useInbox } from "../inbox-context";
 import { TryAgainPill } from "../pill-button";
 import { useProjectFilter } from "../project-filter";
-import { SettingsButton } from "../settings-button";
 import { CancelDialog } from "./cancel-dialog";
 import { cancelKey, isCancelHeld } from "./cancel-state";
 import {
@@ -20,7 +19,6 @@ import { type Composing, RetryDialog } from "./retry-dialog";
 import { InboxRow } from "./row";
 import { RowSheet } from "./row-sheet";
 import type { InboxRun } from "./run";
-import { SettingsDialog } from "./settings-dialog";
 
 type SectionProps = { className: string };
 
@@ -54,9 +52,7 @@ export function InboxSection({ className }: SectionProps) {
   const [composing, setComposing] = useState<Composing | null>(null);
   const [sheet, setSheet] = useState<Opened | null>(null);
   const [cancelling, setCancelling] = useState<Opened | null>(null);
-  const [settings, setSettings] = useState(false);
   const [active, setActive] = useState<Position | null>(null);
-  const settingsButton = useRef<HTMLButtonElement>(null);
   const { project } = useProjectFilter();
   const [chip, setChip] = useState<KindChip | null>(null);
   const headingId = useId();
@@ -240,12 +236,6 @@ export function InboxSection({ className }: SectionProps) {
     setCancelling({ run });
   }
 
-  // The settings modal is not a row's, so the button that opened it takes the focus back.
-  function closeSettings() {
-    setSettings(false);
-    settingsButton.current?.focus();
-  }
-
   function handleCancelClose() {
     setCancelling(null);
   }
@@ -291,15 +281,12 @@ export function InboxSection({ className }: SectionProps) {
         >
           {["actions", ...selectionWords(project, chip)].join(", ")}
         </h2>
-        <div className="flex shrink-0 items-center gap-1">
-          {state.status === "ready" && (
-            <span className="inline-flex h-6.5 shrink-0 items-center rounded-full bg-track px-2.5 text-body font-semibold text-ink">
-              <span className="sr-only">Waiting: </span>
-              {runs.length}
-            </span>
-          )}
-          <SettingsButton onClick={() => setSettings(true)} buttonRef={settingsButton} />
-        </div>
+        {state.status === "ready" && (
+          <span className="inline-flex h-6.5 shrink-0 items-center rounded-full bg-track px-2.5 text-body font-semibold text-ink">
+            <span className="sr-only">Waiting: </span>
+            {runs.length}
+          </span>
+        )}
       </div>
       {/* The second row of the Overview's subgrid: everything under the heading, as one child. */}
       <div>
@@ -388,7 +375,6 @@ export function InboxSection({ className }: SectionProps) {
           onCancel={handleCancel}
           busy={busy}
         />
-        {settings && <SettingsDialog onClose={closeSettings} />}
       </div>
     </section>
   );
