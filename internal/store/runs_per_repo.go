@@ -19,8 +19,8 @@ const (
 )
 
 // RunsPerRepo keeps the owner's runs-per-repo cap in the owner database: how
-// many runs admission allows in one repository at once, which the surface's
-// Config settings sets and every poll reads (adr/0019).
+// many runs admission allows in one repository at once, which the surface sets
+// and every poll reads (adr/0019).
 type RunsPerRepo struct {
 	client *firestore.Client
 }

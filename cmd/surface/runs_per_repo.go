@@ -12,7 +12,7 @@ import (
 )
 
 // RunsPerRepoStore reads and sets the owner's cap on the runs in flight in one
-// repository, which the Config settings modal sets.
+// repository.
 type RunsPerRepoStore interface {
 	Value(ctx context.Context) (int, error)
 	Set(ctx context.Context, n int, at time.Time) error
