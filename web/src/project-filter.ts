@@ -38,6 +38,8 @@ export function useKnownProject(projects: readonly Project[], settled: boolean) 
     project === null
       ? undefined
       : projects.find((candidate) => sameRepository(candidate.repository, project));
+  // An empty or non-string value has no project here: the route's validateSearch drops it and the
+  // router rewrites the URL without it, so only a named project needs correcting.
   const corrected =
     settled && project !== null && known?.repository !== project
       ? (known?.repository ?? null)
