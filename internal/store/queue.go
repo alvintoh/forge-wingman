@@ -120,6 +120,10 @@ const (
 	verdictField     = "provider_verdict"
 	ticketIDField    = "ticket_id"
 	outcomeField     = "outcome"
+	// ticketBodyField, sizedByField and frontEndField are Record's own ticket fields.
+	ticketBodyField = "ticket_body"
+	sizedByField    = "sized_by"
+	frontEndField   = "front_end"
 	// planField, lastResortField, lastResortModelsField, movedFromField and
 	// planModelsField are Record's own, written with the claim.
 	planField             = "plan"
@@ -335,6 +339,71 @@ func (q *Queue) UpdateQueuedPriority(ctx context.Context, runID string, rank int
 		q.logger.InfoContext(ctx, "queuedPriorityChanged", "run", runID, "from", from, "to", rank)
 	}
 	return applied, nil
+}
+
+// RefreshQueuedTicket sets a queued run's ticket title, body, size, sizing
+// source, front-end flag and blocker lists to run's, returning the names of the
+// fields it changed. A run that is not queued, already holds a plan, or does not
+// exist is left untouched, and a run already equal is not written.
+//
+// An emptied blocker list deletes its field, as Enqueue writes one only when
+// non-empty. The repository, visibility and model labels are not refreshed.
+func (q *Queue) RefreshQueuedTicket(ctx context.Context, run dispatcher.Queued) ([]string, error) {
+	rowRef := q.client.Collection(runsCollection).Doc(run.RunID)
+	var changed []string
+	err := q.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		changed = nil
+		snap, err := tx.Get(rowRef)
+		if status.Code(err) == codes.NotFound {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		row := snap.Data()
+		if str(row, stateField) != stateQueued || len(stringList(row, planFilesField)) > 0 {
+			return nil
+		}
+		var updates []firestore.Update
+		set := func(field string, same bool, value any) {
+			if !same {
+				changed = append(changed, field)
+				updates = append(updates, firestore.Update{Path: field, Value: value})
+			}
+		}
+		setList := func(field string, want []string) {
+			var value any = want
+			if len(want) == 0 {
+				value = firestore.Delete
+			}
+			set(field, sameMembers(stringList(row, field), want), value)
+		}
+		frontEnd, _ := row[frontEndField].(bool)
+		set(ticketTitleField, str(row, ticketTitleField) == run.Ticket.Title, run.Ticket.Title)
+		set(ticketBodyField, str(row, ticketBodyField) == run.Ticket.Body, run.Ticket.Body)
+		set(sizeField, str(row, sizeField) == run.Ticket.Size, run.Ticket.Size)
+		set(sizedByField, str(row, sizedByField) == run.Ticket.SizedBy, run.Ticket.SizedBy)
+		set(frontEndField, frontEnd == run.Ticket.FrontEnd, run.Ticket.FrontEnd)
+		setList(blockedByField, run.BlockedBy)
+		setList(blocksField, run.Blocks)
+		if len(updates) == 0 {
+			return nil
+		}
+		return tx.Update(rowRef, updates)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("refreshing the ticket of run %s: %w", run.RunID, err)
+	}
+	if len(changed) > 0 {
+		q.logger.InfoContext(ctx, "queuedTicketRefreshed", "run", run.RunID, "fields", strings.Join(changed, ","))
+	}
+	return changed, nil
+}
+
+// sameMembers reports whether a and b hold the same strings in any order, so a
+// relation list Linear returns in another order is not a change.
+func sameMembers(a, b []string) bool {
+	return slices.Equal(slices.Sorted(slices.Values(a)), slices.Sorted(slices.Values(b)))
 }
 
 // BackfillResult is what BackfillQueuedAt did: the rows it stamped, or with
