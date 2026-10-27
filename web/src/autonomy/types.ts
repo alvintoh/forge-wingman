@@ -106,6 +106,15 @@ export type RewriteView = {
   bars: { rollback: number };
 };
 
+// RewriteScope is the repository the rewrite section is narrowed to, with how many of the
+// total measured PRs are its own.
+export type RewriteScope = {
+  // How the page names the repository.
+  name: string;
+  measured: number;
+  total: number;
+};
+
 // AutonomyView is what the autonomy page reads from the endpoint: the auto-merge
 // state, and the rewrite figures behind it, which are checked on their own so a
 // document without them still shows the state.

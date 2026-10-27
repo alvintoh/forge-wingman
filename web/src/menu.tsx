@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { PageHeader } from "./header";
 import { useInbox } from "./inbox-context";
+import { useProjectFilter } from "./project-filter";
 import { useMedia } from "./use-media";
 
 // The id of the menu, which the drawer's menu button and the column's collapse button control.
@@ -11,10 +12,10 @@ const MENU_ID = "app-menu";
 // From Tailwind's lg the menu is a column beside the page; under it, a drawer from the menu button.
 const MENU_COLUMN = "(min-width: 64rem)";
 
-// The width from which the expanded menu leaves the Overview its two columns: their 51.25rem (the
-// container query in pages/overview.tsx), the 15rem menu and 1rem for a scrollbar. Narrower, a menu
-// with no saved choice starts as the rail, as a sidebar collapses in a narrow window, so the columns
-// never stack between two widths where they sit side by side.
+// The width from which the expanded menu leaves the Overview and Autonomy their two columns: their
+// 51.25rem (the container query in pages/overview.tsx), the 15rem menu and 1rem for a scrollbar.
+// Narrower, a menu with no saved choice starts as the rail, as a sidebar collapses in a narrow
+// window, so the columns never stack between two widths where they sit side by side.
 const MENU_ROOM = "(min-width: 67.25rem)";
 
 const MENU_WIDTH_KEY = "forge-wingman.menu-width";
@@ -26,6 +27,8 @@ type Screen = {
   label: string;
   // The icon's path in a 24px box, stroked 2px and drawn at 22px.
   icon: string;
+  // The link carries the project filter, so the screen opens on the project chosen.
+  filtered?: true;
 };
 
 const RUN_SCREENS: readonly Screen[] = [
@@ -33,12 +36,18 @@ const RUN_SCREENS: readonly Screen[] = [
     to: "/",
     label: "Overview",
     icon: "M6 5H18A3 3 0 0 1 21 8V16A3 3 0 0 1 18 19H6A3 3 0 0 1 3 16V8A3 3 0 0 1 6 5ZM3 9h18",
+    filtered: true,
   },
   { to: "/stats", label: "Statistics", icon: "M4 20V10M10 20V4M16 20v-8M22 20H2" },
 ];
 
 const SETTINGS_SCREENS: readonly Screen[] = [
-  { to: "/autonomy", label: "Autonomy", icon: "M20 12a8 8 0 1 1-16 0a8 8 0 1 1 16 0ZM12 8v4l3 2" },
+  {
+    to: "/autonomy",
+    label: "Autonomy",
+    icon: "M20 12a8 8 0 1 1-16 0a8 8 0 1 1 16 0ZM12 8v4l3 2",
+    filtered: true,
+  },
   {
     to: "/config",
     label: "Configuration",
@@ -260,6 +269,7 @@ type MenuProps = {
  */
 function Menu({ rail, onNavigate }: MenuProps) {
   const { state } = useInbox();
+  const { project } = useProjectFilter();
   const actions = state.status === "ready" ? state.runs.length : 0;
   return (
     <nav id={MENU_ID} aria-label="Menu" className={`pt-3 pb-3 ${rail ? "px-3.5" : "px-3"}`}>
@@ -269,6 +279,7 @@ function Menu({ rail, onNavigate }: MenuProps) {
             key={screen.to}
             screen={screen}
             count={screen.to === "/" ? actions : 0}
+            project={project}
             rail={rail}
             onNavigate={onNavigate}
           />
@@ -280,7 +291,14 @@ function Menu({ rail, onNavigate }: MenuProps) {
       />
       <ul className="flex flex-col gap-1">
         {SETTINGS_SCREENS.map((screen) => (
-          <MenuItem key={screen.to} screen={screen} count={0} rail={rail} onNavigate={onNavigate} />
+          <MenuItem
+            key={screen.to}
+            screen={screen}
+            count={0}
+            project={project}
+            rail={rail}
+            onNavigate={onNavigate}
+          />
         ))}
       </ul>
     </nav>
@@ -290,17 +308,20 @@ function Menu({ rail, onNavigate }: MenuProps) {
 type MenuItemProps = {
   screen: Screen;
   count: number;
+  // The project the filter is on, which a filtered screen's link carries.
+  project: string | null;
   rail: boolean;
   onNavigate?: () => void;
 };
 
-function MenuItem({ screen, count, rail, onNavigate }: MenuItemProps) {
+function MenuItem({ screen, count, project, rail, onNavigate }: MenuItemProps) {
   const actions = count === 1 ? "action" : "actions";
   const name = count > 0 ? `${screen.label}, ${count} ${actions}` : screen.label;
   return (
     <li>
       <Link
         to={screen.to}
+        search={screen.filtered && project !== null ? { project } : undefined}
         activeOptions={EXACT}
         onClick={onNavigate}
         aria-label={name}

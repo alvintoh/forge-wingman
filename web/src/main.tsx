@@ -64,6 +64,7 @@ const peakRoute = createRoute({
 const autonomyRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/autonomy",
+  validateSearch: validateProjectSearch,
   component: Autonomy,
 });
 
