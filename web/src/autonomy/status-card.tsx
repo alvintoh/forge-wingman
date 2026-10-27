@@ -122,7 +122,11 @@ type MergeStatusCardProps = {
  */
 export function MergeStatusCard({ state, merge, pooled }: MergeStatusCardProps) {
   return (
-    <section aria-labelledby="auto-merge-card" className="card-frame py-4 max-sm:-mx-2.5">
+    <section
+      aria-labelledby="auto-merge-card"
+      aria-busy={state === "loading"}
+      className="card-frame py-4 max-sm:-mx-2.5"
+    >
       <h2 id="auto-merge-card" className={`${captionClass} text-ink2`}>
         auto-merge
       </h2>

@@ -3,9 +3,6 @@ import type { Group, MergeState, Phase, Point, PR, Tile } from "./types";
 // The model the endpoint names a phase that ran none, or more than one.
 export const UNKNOWN_MODEL = "unknown";
 
-// RATE_DEFINITION is the rewrite rate's one line, drawn on the Autonomy page and on Statistics.
-export const RATE_DEFINITION = "Owner lines as a share of agent lines.";
-
 // The words of a phase with no model, and the only phase that has a different
 // word for it than its own.
 const NO_MODEL_WORD: Record<Phase, string> = {

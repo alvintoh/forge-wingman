@@ -66,6 +66,8 @@ export function Autonomy() {
               known={known}
               onChoose={choose}
               className={COLUMN}
+              headingClassName="@[51.25rem]:hidden"
+              cardClassName="@[51.25rem]:mt-0"
             />
           ) : (
             <div className={COLUMN}>
