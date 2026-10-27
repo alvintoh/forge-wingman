@@ -1,4 +1,4 @@
-import { barOf } from "../autonomy/format";
+import { barOf, whole } from "../autonomy/format";
 import { isAutonomy } from "../autonomy/guard";
 import { captionClass } from "../caption";
 import { useKnownProject } from "../project-filter";
@@ -36,7 +36,7 @@ export function RewriteRate() {
         {read.status === "error" && <p role="alert">The rewrite rate could not be read.</p>}
         {view !== null && (
           <p>
-            {`Rewrite rate over the trailing ${view.auto_merge.window} PRs is ${view.auto_merge.rate_value}; limit ${view.auto_merge.limit}`}
+            {`Rewrite rate over the trailing ${view.auto_merge.window} PRs is ${view.auto_merge.rate_value}; limit ${whole(barOf(view.auto_merge.limit))}`}
           </p>
         )}
       </div>

@@ -13,6 +13,7 @@ import { useRead } from "../stats/use-read";
 // the drawn ones: the project card's top is the auto-merge card's top, and the rewrite section is
 // 10px under the card on a phone and 14px under the lower of the two columns on a desktop.
 const COLUMN = "min-w-0 @[51.25rem]:col-start-2 @[51.25rem]:row-start-1";
+const STATUS_CELL = "min-w-0 @[51.25rem]:col-start-1 @[51.25rem]:row-start-1";
 
 // Autonomy shows whether an eligible pull request merges itself: the state over
 // the trailing window, the rate behind it and the reason, then the rewrite rate
@@ -42,12 +43,16 @@ export function Autonomy() {
       <h1 className="text-title font-semibold text-ink">Autonomy</h1>
       <p className="mt-2 text-body text-ink2">Whether an eligible PR merges itself.</p>
       <div className="mt-6 grid grid-cols-1 @[51.25rem]:grid-cols-[minmax(0,1fr)_23rem] @[51.25rem]:grid-rows-[auto_auto] @[51.25rem]:gap-x-8">
-        <div className="min-w-0 @[51.25rem]:col-start-1 @[51.25rem]:row-start-1">
-          <MergeStatusCard
-            state={read.status}
-            merge={pooled === null ? null : pooled.auto_merge}
-            pooled={shown !== null && shown.repo !== null}
-          />
+        <div className={mounted ? STATUS_CELL : `pb-[13.5px] ${STATUS_CELL}`}>
+          {!released && (
+            <p role="status">
+              {read.status === "loading"
+                ? "Reading the auto-merge state…"
+                : "Reading the rewrite figures…"}
+            </p>
+          )}
+          {read.status === "error" && <p role="alert">The auto-merge state could not be read.</p>}
+          {mounted && <MergeStatusCard merge={pooled.auto_merge} pooled={shown.repo !== null} />}
         </div>
         {mounted && (
           <div className="mt-2.5 min-w-0 @[51.25rem]:col-span-2 @[51.25rem]:row-start-2 @[51.25rem]:mt-3.5">
@@ -70,7 +75,7 @@ export function Autonomy() {
               cardClassName="@[51.25rem]:mt-0"
             />
           ) : (
-            <div className={COLUMN}>
+            <div className={`mt-[26.5px] ${COLUMN}`}>
               <ProjectsPanels state={list} retry={retry}>
                 {null}
               </ProjectsPanels>
