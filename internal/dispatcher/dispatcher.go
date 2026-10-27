@@ -312,6 +312,13 @@ type Reprioritizer interface {
 	UpdateQueuedPriority(ctx context.Context, runID string, rank int) (bool, error)
 }
 
+// TicketRefresher sets a queued run's ticket text, size, front-end flag and
+// blockers to the issue's, returning the names of the fields it changed. A run
+// that is not queued, or already holds a plan, keeps its ticket.
+type TicketRefresher interface {
+	RefreshQueuedTicket(ctx context.Context, q Queued) ([]string, error)
+}
+
 // Claimer attempts to admit a candidate and claim it, atomically with every
 // other poll that might race it (adr/0003); Release returns a claimed run
 // whose dispatch never reached GitHub.
@@ -343,6 +350,7 @@ type Queue interface {
 	Enqueuer
 	Candidater
 	Reprioritizer
+	TicketRefresher
 	Claimer
 	Rejector
 	Spender
@@ -520,9 +528,10 @@ func poll(ctx context.Context, d Deps, c Config) (Result, error) {
 // creation, and carried on the run record from then on (FR-22) — Exists skips
 // that resolution for a ticket already queued, rather than re-checking it on
 // every poll the ticket remains undispatched. A ticket already queued has its
-// rank refreshed from the issue instead, and a failed refresh is logged and
-// leaves the poll running. The models a ticket names are
-// checked at the same point, for the same reason.
+// rank, and while the run is still queued its text, size and blockers, refreshed
+// from the issue instead, and a failed refresh is logged and leaves the poll
+// running. The models a ticket names are checked at the same point, for the same
+// reason.
 //
 // A visibility-check or model-lookup failure aborts only this ticket's
 // admission, never the poll: an issue not yet enqueued is seen again next poll
@@ -542,6 +551,9 @@ func admit(ctx context.Context, d Deps, c Config, issue Issue, res *Result) erro
 		d.Logger.Info("ticketAlreadyQueued", "run", q.RunID, "repo", q.Repo, "priority", q.Priority)
 		if _, err := d.Queue.UpdateQueuedPriority(ctx, q.RunID, q.Priority); err != nil {
 			d.Logger.Warn("priorityRefreshFailed", "run", q.RunID, "priority", q.Priority, "err", err.Error())
+		}
+		if _, err := d.Queue.RefreshQueuedTicket(ctx, q); err != nil {
+			d.Logger.Warn("ticketRefreshFailed", "run", q.RunID, "err", err.Error())
 		}
 		return nil
 	}
