@@ -1,7 +1,7 @@
 import { useId } from "react";
 import { AllProjectsRow, RadioChoice } from "./filter-radio";
 import { displayName, type Project, type ProjectsState } from "./project-list";
-import { NO_PROJECT_LISTED, ProjectStateChip, ProjectsHeading, ProjectsPanels } from "./projects";
+import { NO_PROJECT_LISTED, ProjectStateChip, ProjectsPanels } from "./projects";
 
 type RowProps = {
   project: Project;
@@ -49,9 +49,9 @@ type ProjectFilterColumnProps = {
 };
 
 /**
- * ProjectFilterColumn is the PROJECTS caption over a radio list that narrows a page to one
- * project: All projects first, then one row per project. A chosen project is listed alone, under
- * the unchosen All row, which is the way back.
+ * ProjectFilterColumn is a radio list that narrows a page to one project: All projects first, then
+ * one row per project. A chosen project is listed alone, under the unchosen All row, which is the
+ * way back.
  */
 export function ProjectFilterColumn({
   state,
@@ -60,14 +60,12 @@ export function ProjectFilterColumn({
   onChoose,
   className,
 }: ProjectFilterColumnProps) {
-  const headingId = useId();
   const listed = known === undefined ? state.projects : [known];
   return (
-    <section aria-labelledby={headingId} className={className}>
-      <ProjectsHeading id={headingId} />
+    <section aria-label="Projects" className={className}>
       <ProjectsPanels state={state} retry={retry}>
         {/* The card ends 6px under its last row, less its 1px edge. */}
-        <div className="card-frame mt-4 pb-1.25 max-sm:-mx-2.5">
+        <div className="card-frame pb-1.25 max-sm:-mx-2.5">
           {listed.length === 0 ? (
             <p className="flex min-h-13 items-center text-body">{NO_PROJECT_LISTED}</p>
           ) : (

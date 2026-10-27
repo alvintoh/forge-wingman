@@ -204,6 +204,9 @@ its own check:
 cd web && bun run lint && bun run fmt:check && bun run build
 ```
 
+The frontend carries no unit tests: its check is lint, formatting and the production
+build, and a change to a surface is read in the browser instead.
+
 A run's own pre-PR check gate runs those Go gates in the checks image and, when the
 run's diff touches `web/`, the frontend check after them, so a run's verdict fails
 wherever CI's `web` job would. The checks image is the image `go.mod`'s toolchain

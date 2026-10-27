@@ -3,6 +3,7 @@ import { ByModel } from "./by-model";
 import { ByRepo, RepoMultiples } from "./by-repo";
 import { BySize } from "./by-size";
 import { DataDisclosure } from "./data-table";
+import { RATE_DEFINITION } from "./format";
 import { isRewrite } from "./guard";
 import { PatternDefs } from "./marks";
 import { Tiles } from "./tiles";
@@ -77,7 +78,7 @@ export function RewriteSection({ rewrite, scope, busy }: RewriteSectionProps) {
       <h2 id="rewrite-title" className="text-head font-semibold break-words text-ink">
         {scope === null ? "Rewrite rate" : `Rewrite rate, ${scope.name}`}
       </h2>
-      <p className="mt-1 text-body text-ink2">Owner lines as a share of agent lines.</p>
+      <p className="mt-1 text-body text-ink2">{RATE_DEFINITION}</p>
       {scope !== null && scope.total > 0 && (
         <p className="mt-0.5 text-label font-semibold break-words text-ink">
           {scope.name} only: {scope.measured} of the {scope.total} measured{" "}

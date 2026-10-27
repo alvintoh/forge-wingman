@@ -703,8 +703,8 @@ export function ProjectsPanels({ state, retry, children }: PanelsProps) {
   return children;
 }
 
-// ProjectsHeading is the PROJECTS caption over the Overview's card and the filter column.
-export function ProjectsHeading({ id }: { id: string }) {
+// ProjectsHeading is the PROJECTS caption over the Overview's card.
+function ProjectsHeading({ id }: { id: string }) {
   return (
     <div className="flex min-h-6.5 items-start">
       <h2 id={id} className="py-[3.25px] font-mono text-label font-semibold text-ink2">

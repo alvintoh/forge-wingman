@@ -1,10 +1,7 @@
 import { Link } from "@tanstack/react-router";
-import { barOf, rateLine, whole } from "../autonomy/format";
-import { isAutonomy } from "../autonomy/guard";
-import type { MergeState } from "../autonomy/types";
 import { captionClass } from "../caption";
-import { PhaseModels, PhaseSlots } from "./phase-models";
-import { useRead } from "./use-read";
+import { barOf, reasonText, whole } from "./format";
+import type { MergeState } from "./types";
 
 type Status = "on" | "off" | "held";
 
@@ -56,7 +53,7 @@ function StatusMark({ status }: { status: Status }) {
   );
 }
 
-// Status is the state as a shape and a word, then the rate line.
+// Status is the state as a shape and a word.
 function Status({ merge }: { merge: MergeState }) {
   const status = statusOf(merge);
   return (
@@ -110,47 +107,53 @@ function SettingsPill() {
   );
 }
 
-/**
- * AutoMerge is the Statistics card for auto-merge: its state as a shape and a word, the rate line,
- * who merges what, and each phase's models. The pill links to the settings page.
- */
-export function AutoMerge() {
-  const read = useRead("/api/autonomy", isAutonomy, "autonomyNotRead");
-  const view = read.status === "ready" ? read.body : null;
+type MergeStatusCardProps = {
+  // How far the auto-merge read has got.
+  state: "loading" | "error" | "ready";
+  // The state once the read has answered, and null until then.
+  merge: MergeState | null;
+  // Whether a project is chosen: the status stays pooled, and the card says so.
+  pooled: boolean;
+};
 
-  // The card's words and headings draw at once and the figures' places are held while they
-  // load, so their arrival does not push the page below down.
+/**
+ * MergeStatusCard is the Autonomy page's auto-merge card: the caption and the settings pill, the
+ * state as a shape and a word, the rate and reason behind it, and who merges what.
+ */
+export function MergeStatusCard({ state, merge, pooled }: MergeStatusCardProps) {
   return (
-    <section
-      aria-labelledby="auto-merge-title"
-      aria-busy={read.status === "loading"}
-      className="card-frame py-4"
-    >
-      <div className="flex min-h-11 items-center justify-between gap-3">
-        <h2 id="auto-merge-title" className={`${captionClass} text-ink2`}>
-          auto-merge
-        </h2>
+    <section aria-labelledby="auto-merge-card" className="card-frame py-4 max-sm:-mx-2.5">
+      <h2 id="auto-merge-card" className={`${captionClass} text-ink2`}>
+        auto-merge
+      </h2>
+      <div className="mt-1 flex min-h-11 items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          {state === "loading" && (
+            <p role="status" className="text-label leading-6 text-ink2">
+              Reading the auto-merge state…
+            </p>
+          )}
+          {state === "error" && (
+            <p role="alert" className="text-label leading-6 text-ink2">
+              The auto-merge state could not be read.
+            </p>
+          )}
+          {merge !== null && <Status merge={merge} />}
+        </div>
         <SettingsPill />
       </div>
-      <div className="mt-1 flex min-h-6 items-center gap-2">
-        {read.status === "loading" && (
-          <p role="status" className="text-label leading-6 text-ink2">
-            Reading the auto-merge state…
+      {merge !== null && (
+        <>
+          <p className="mt-1 text-body leading-5.5 text-ink2">
+            {`Rate over the trailing ${merge.window} merged PRs: ${merge.rate_value} (bar ${merge.limit}).`}
           </p>
-        )}
-        {read.status === "error" && (
-          <p role="alert" className="text-label leading-6 text-ink2">
-            The auto-merge state could not be read.
-          </p>
-        )}
-        {view !== null && <Status merge={view.auto_merge} />}
-      </div>
-      <p className="mt-1.5 min-h-4.5 text-label leading-4.5 text-ink2">
-        {view !== null && rateLine(view.auto_merge)}
-      </p>
-      {read.status !== "error" && <Rules merge={view === null ? null : view.auto_merge} />}
-      {read.status === "loading" && <PhaseSlots />}
-      {view !== null && <PhaseModels figures={view.rewrite} bar={barOf(view.auto_merge.limit)} />}
+          <p className="mt-2 text-body leading-5.5 text-ink2">{reasonText(merge.reason)}</p>
+        </>
+      )}
+      {state !== "error" && <Rules merge={merge} />}
+      {merge !== null && pooled && (
+        <p className="mt-2 text-label font-semibold text-ink">gate: all projects</p>
+      )}
     </section>
   );
 }
