@@ -81,6 +81,15 @@ this file as project memory, so the rules below reach the run.
   delegate by setting Linear's `delegate` to the agent id the job acts for (`LINEAR_DELEGATE` on
   `forge-wingman-dispatcher`). *(Judgment call. Verified 2026-10-15 on FRG-135.)*
 
+- **Write every ticket lane-neutral: the same text must work for START and for an interactive
+  `/drive-phase`.** Leave delivery wording out of the description ("Built supervised, not by the
+  runner", "held for design review"): START ignores prose and honours only the `wingman:hold` label
+  (`internal/dispatcher/projects.go:30`), an opt-out and not a setup step, and the runner reads the
+  sentence. State a blocker with Linear's blocked-by link, never as prose like "PR 255 is in
+  review". *(Owner's instruction 2026-10-27: START needs no further configuration. Single source of
+  truth is established; applying it to ticket text is a judgment call. Verified 2026-10-27: FRG-226,
+  231, 233 and 234 told the runner not to build them while START would have delegated all four.)*
+
 ## Fixing a runner PR: add commits, never rewrite the agent's
 
 Fix a runner PR with new commits on top, each with `Rework: review-found` or `Rework: owner-change`
