@@ -83,9 +83,9 @@ this file as project memory, so the rules below reach the run.
 
 - **Write every ticket lane-neutral: the same text must work for START and for an interactive
   `/drive-phase`.** Leave delivery wording out of the description ("Built supervised, not by the
-  runner", "held for design review"): START ignores prose and honours only the `wingman:hold` label
-  (`internal/dispatcher/projects.go:30`), an opt-out and not a setup step, and the runner reads the
-  sentence. State a blocker with Linear's blocked-by link, never as prose like "PR 255 is in
+  runner", "held for design review"): apart from a body naming `.github/workflows/`, START reads no
+  ticket wording and honours only the `wingman:hold` label (`internal/dispatcher/projects.go:30`), an
+  opt-out and not a setup step, while the runner reads the sentence. State a blocker with Linear's blocked-by link, never as prose like "PR 255 is in
   review". *(Owner's instruction 2026-10-27: START needs no further configuration. Single source of
   truth is established; applying it to ticket text is a judgment call. Verified 2026-10-27: FRG-226,
   231, 233 and 234 told the runner not to build them while START would have delegated all four.)*
