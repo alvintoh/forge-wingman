@@ -44,7 +44,7 @@ export function RewriteRate() {
         <p className="mt-2 text-label font-semibold text-ink">rate and models: all projects</p>
       )}
       {view !== null && (
-        <p className="mt-3.5 border-t border-hair pt-4 text-cap text-ink2">{KEY}</p>
+        <p className="mt-3.5 border-t border-hair pt-2 text-cap text-ink2">{KEY}</p>
       )}
       {read.status === "loading" && <PhaseSlots />}
       {view !== null && <PhaseModels figures={view.rewrite} bar={barOf(view.auto_merge.limit)} />}

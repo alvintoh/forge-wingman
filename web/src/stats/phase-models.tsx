@@ -61,12 +61,12 @@ function ModelLine({ phase, row, bar }: RowProps) {
 
 type PhasesProps = { byModel: Record<Phase, ModelRow[]>; bar: number };
 
-// The rule above the phases and the space between them.
-const phasesClass = "mt-5 space-y-5 border-t border-hair pt-5";
+// The space between the phases.
+const phasesClass = "space-y-5";
 
 function Phases({ byModel, bar }: PhasesProps) {
   return (
-    <div className={phasesClass}>
+    <div className={`mt-[11px] ${phasesClass}`}>
       {PHASES.map((phase) => {
         const rows = byModel[phase];
         const recorded = rows.some((row) => row.model !== UNKNOWN_MODEL);
@@ -92,7 +92,7 @@ function Phases({ byModel, bar }: PhasesProps) {
 /** PhaseSlots holds each phase's heading and one model line's height while the figures load. */
 export function PhaseSlots() {
   return (
-    <div className={phasesClass}>
+    <div className={`mt-3.5 border-t border-hair pt-[12.5px] ${phasesClass}`}>
       {PHASES.map((phase) => (
         <div key={phase}>
           <h3 className={`${captionClass} text-ink2`}>{phase}</h3>
