@@ -81,6 +81,10 @@ this file as project memory, so the rules below reach the run.
   delegate by setting Linear's `delegate` to the agent id the job acts for (`LINEAR_DELEGATE` on
   `forge-wingman-dispatcher`). *(Judgment call. Verified 2026-10-15 on FRG-135.)*
 
+- **Quote every string a drawing shows in the ticket's acceptance criteria.** The runner reads only the title and description, so a string the criteria do not quote is improvised: #259's build worded Statistics' definition and key from memory and was corrected to the drawn text. *(Judgment call. Verified 2026-10-27.)*
+
+- **Rewriting a ticket: diff the new text against the old before posting, and carry every sentence over.** FRG-234's rewrite dropped "on the phone the caption stays" and the build then removed the caption. *(Judgment call. Verified 2026-10-27.)*
+
 - **Write every ticket lane-neutral: the same text must work for START and for an interactive
   `/drive-phase`.** Leave delivery wording out of the description ("Built supervised, not by the
   runner", "held for design review"): apart from a body naming `.github/workflows/`, START reads no
