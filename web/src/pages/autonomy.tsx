@@ -52,7 +52,9 @@ export function Autonomy() {
             </p>
           )}
           {read.status === "error" && <p role="alert">The auto-merge state could not be read.</p>}
-          {mounted && <MergeStatusCard merge={pooled.auto_merge} pooled={shown.repo !== null} />}
+          {mounted && (
+            <MergeStatusCard merge={pooled.auto_merge} projectChosen={shown.repo !== null} />
+          )}
         </div>
         {mounted && (
           <div className="mt-2.5 min-w-0 @[51.25rem]:col-span-2 @[51.25rem]:row-start-2 @[51.25rem]:mt-3.5">
@@ -71,8 +73,7 @@ export function Autonomy() {
               known={known}
               onChoose={choose}
               className={COLUMN}
-              headingClassName="@[51.25rem]:hidden"
-              cardClassName="@[51.25rem]:mt-0"
+              captionless
             />
           ) : (
             <div className={`mt-[26.5px] ${COLUMN}`}>

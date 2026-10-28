@@ -74,8 +74,8 @@ function Rules({ merge }: { merge: MergeState }) {
   return (
     <ul className="mt-3 list-disc space-y-1.5 pl-3.5 text-label leading-4.5 text-ink2 marker:text-ink">
       <li>
-        Merges itself: size S and M PRs while the trailing {merge.window} is{" "}
-        {whole(barOf(merge.limit))} or less.
+        Merges itself: size S and M PRs while the rewrite rate over the trailing {merge.window} PRs
+        is {whole(barOf(merge.limit))} or less.
       </li>
       <li>You merge: front-end changes, size L and sampled PRs.</li>
     </ul>
@@ -104,7 +104,7 @@ function SettingsPill() {
 type MergeStatusCardProps = {
   merge: MergeState;
   // Whether a project is chosen: the status stays pooled, and the card says so.
-  pooled: boolean;
+  projectChosen: boolean;
 };
 
 /**
@@ -112,7 +112,7 @@ type MergeStatusCardProps = {
  * state as a shape and a word, the rate and reason behind it, and who merges what. The page draws
  * it once the state has been read; the wait and the failure are page text, not this card.
  */
-export function MergeStatusCard({ merge, pooled }: MergeStatusCardProps) {
+export function MergeStatusCard({ merge, projectChosen }: MergeStatusCardProps) {
   return (
     <section aria-labelledby="auto-merge-card" className="card-frame py-4 max-sm:-mx-2.5">
       <h2 id="auto-merge-card" className={`${captionClass} text-ink2`}>
@@ -129,7 +129,9 @@ export function MergeStatusCard({ merge, pooled }: MergeStatusCardProps) {
       </p>
       <p className="mt-2 text-body leading-5.5 text-ink2">{reasonText(merge.reason)}</p>
       <Rules merge={merge} />
-      {pooled && <p className="mt-2 text-label font-semibold text-ink">gate: all projects</p>}
+      {projectChosen && (
+        <p className="mt-2 text-label font-semibold text-ink">gate: all projects</p>
+      )}
     </section>
   );
 }
