@@ -407,9 +407,10 @@ function StageRowItem({ row }: { row: StageRow }) {
   const { group } = row;
   const rate = group.rate_value;
   const off = rate !== null && rate > ROW_CAP;
-  const spread = group.median !== null && group.p90 !== null
-    ? `median ${group.median}, p90 ${group.p90}`
-    : "under ten PRs, so no median";
+  const spread =
+    group.median !== null && group.p90 !== null
+      ? `median ${group.median}, p90 ${group.p90}`
+      : "under ten PRs, so no median";
   return (
     <li className="py-3" data-row={row.name}>
       <p className="flex flex-wrap items-baseline gap-x-3">
@@ -479,9 +480,7 @@ export function StageCard({ numeral, phase, through, total, models, width }: Sta
   return (
     <div style={{ paddingInline: padx }} data-stage={phase}>
       <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-        <span
-          className="grid h-6 w-6 shrink-0 place-items-center rounded-full border border-ink2 font-mono text-cap font-semibold text-ink2"
-        >
+        <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full border border-ink2 font-mono text-cap font-semibold text-ink2">
           {numeral}
         </span>
         <h3 className={`${captionClass} text-ink`}>{phase}</h3>
