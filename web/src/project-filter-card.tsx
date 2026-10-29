@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { useId, useState } from "react";
 import { AllProjectsRow, RadioChoice } from "./filter-radio";
 import { displayName, type Project, type ProjectsState } from "./project-list";
 import { NO_PROJECT_LISTED, ProjectStateChip, ProjectsHeading, ProjectsPanels } from "./projects";
@@ -50,14 +50,15 @@ type ProjectFilterColumnProps = {
   captionless?: boolean;
 };
 
+const FILTER_PROJECTS = 3;
 const WIDE_HIDDEN = "@[51.25rem]:hidden";
 const GAP_UNDER_CAPTION = "mt-4";
 const WIDE_NO_GAP = "@[51.25rem]:mt-0";
 
 /**
  * ProjectFilterColumn is the PROJECTS caption over a radio list that narrows a page to one
- * project: All projects first, then one row per project. A chosen project is listed alone, under
- * the unchosen All row, which is the way back.
+ * project: All projects first, then the first three projects, with a link that opens the rest in
+ * place. A chosen project is listed alone, under the unchosen All row, which is the way back.
  */
 export function ProjectFilterColumn({
   state,
@@ -69,7 +70,13 @@ export function ProjectFilterColumn({
 }: ProjectFilterColumnProps) {
   const headingId = useId();
   const gap = captionless ? `${GAP_UNDER_CAPTION} ${WIDE_NO_GAP}` : GAP_UNDER_CAPTION;
-  const listed = known === undefined ? state.projects : [known];
+  const [open, setOpen] = useState(false);
+  const folds = known === undefined && state.projects.length > FILTER_PROJECTS;
+  if (!folds && open) {
+    setOpen(false);
+  }
+  const all = known === undefined ? state.projects : [known];
+  const listed = folds && !open ? all.slice(0, FILTER_PROJECTS) : all;
   return (
     <section aria-labelledby={headingId} className={className}>
       <ProjectsHeading id={headingId} className={captionless ? WIDE_HIDDEN : undefined} />
@@ -93,6 +100,18 @@ export function ProjectFilterColumn({
                 />
               ))}
             </ul>
+          )}
+          {folds && (
+            <div className="border-t border-hair pl-8">
+              <button
+                type="button"
+                aria-expanded={open}
+                onClick={() => setOpen((was) => !was)}
+                className="flex min-h-13 w-fit items-center text-label font-semibold text-accent underline"
+              >
+                {open ? "Show fewer" : `Show all ${state.projects.length} projects`}
+              </button>
+            </div>
           )}
         </div>
       </ProjectsPanels>
