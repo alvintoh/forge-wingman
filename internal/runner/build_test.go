@@ -1163,6 +1163,296 @@ func TestPrePRLoopFeedsAFailingWebStepBackToTheBuildSession(t *testing.T) {
 	}
 }
 
+// formatterWriting is a Format fake that records each gate it is asked to fix
+// and rewrites files under dir the way a formatter would.
+func formatterWriting(gates *[]string, files ...string) Formatter {
+	return func(_ context.Context, dir, gate string) error {
+		*gates = append(*gates, gate)
+		for _, name := range files {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte("package x\n\n"), 0o600); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
+
+// failsUntilFormatted is a Checks fake that reports gate failing until the
+// formatter has been asked for it.
+func failsUntilFormatted(gate string, formatted *[]string) CheckRunner {
+	return func(context.Context, string, []string) (string, string, error) {
+		if !slices.Contains(*formatted, gate) {
+			return gate, gate + " lists version.go", nil
+		}
+		return "", "", nil
+	}
+}
+
+func TestPrePRLoopFormatsAFormattingFailureInPlaceWithoutAModelRound(t *testing.T) {
+	for _, gate := range []string{checkGofmt, checkWebFmtCheck} {
+		t.Run(gate, func(t *testing.T) {
+			agent := &fakeAgent{edit: edit("version.go", "package x\n")}
+			deps, _, reported := testDeps(validObjects(), agent)
+			var logs bytes.Buffer
+			deps.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
+			var formatted []string
+			deps.Format = formatterWriting(&formatted, "version.go")
+			deps.Checks = failsUntilFormatted(gate, &formatted)
+			c := testConfig(t, initRepo(t))
+
+			if _, err := Build(context.Background(), deps, c); err != nil {
+				t.Fatal(err)
+			}
+			if agent.calls != 1 {
+				t.Fatalf("build agent ran %d times, want 1: a formatting failure is not a model round", agent.calls)
+			}
+			if !slices.Equal(formatted, []string{gate}) {
+				t.Fatalf("formatter ran for %q, want %q once", formatted, gate)
+			}
+			rec := reported.last(t)
+			if !rec.Ready || len(rec.Steps) != 2 {
+				t.Fatalf("ready = %v with %d steps, want ready with the build round and the review pass alone", rec.Ready, len(rec.Steps))
+			}
+			if got, err := os.ReadFile(filepath.Join(c.TempDir, "wt", "version.go")); err != nil || string(got) != "package x\n\n" {
+				t.Fatalf("version.go = %q, %v, want the formatter's rewrite in the worktree", got, err)
+			}
+			wt := filepath.Join(c.TempDir, "wt")
+			if got := mustGit(t, wt, "show", "HEAD:version.go"); got != "package x\n\n" {
+				t.Fatalf("committed version.go = %q, want the formatter's rewrite in the build's commit", got)
+			}
+			if got, want := mustGit(t, wt, "log", "-1", "--format=%an <%ae>"), CommitAuthorName+" <"+CommitAuthorEmail+">\n"; got != want {
+				t.Fatalf("commit author = %q, want the runner's identity %q", got, want)
+			}
+			if !strings.Contains(logs.String(), `"msg":"formatterRan"`) || !strings.Contains(logs.String(), `"gate":"`+gate+`"`) {
+				t.Fatalf("logs = %s, want a formatterRan line naming %s", logs.String(), gate)
+			}
+		})
+	}
+}
+
+func TestPrePRLoopFormatsFirstThenHandsTheModelOnlyTheRemainingGate(t *testing.T) {
+	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
+	deps, _, _ := testDeps(validObjects(), agent)
+	var formatted []string
+	deps.Format = formatterWriting(&formatted, "version.go")
+	calls := 0
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		calls++
+		switch {
+		case len(formatted) == 0:
+			return checkGofmt, "gofmt lists version.go", nil
+		case agent.calls == 1:
+			return checkVet, "vet failed: bad format", nil
+		}
+		return "", "", nil
+	}
+
+	if _, err := Build(context.Background(), deps, testConfig(t, initRepo(t))); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 2 {
+		t.Fatalf("build agent ran %d times, want 2 (initial attempt + one rebuild for vet)", agent.calls)
+	}
+	if !strings.Contains(agent.prompts[1], checkVet) || strings.Contains(agent.prompts[1], "lists version.go") {
+		t.Fatalf("rebuild prompt = %q, want the vet failure alone", agent.prompts[1])
+	}
+	if calls != 3 {
+		t.Fatalf("checks ran %d times, want 3: gofmt, vet after formatting, then green after the rebuild", calls)
+	}
+}
+
+func TestPrePRLoopStopsWhenTheFormatterChangesAFileOutsideTheDiff(t *testing.T) {
+	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
+	deps, _, reported := testDeps(validObjects(), agent)
+	review := &fakeAgent{events: reviewEvent("")}
+	deps.ReviewAgent = review
+	var formatted []string
+	deps.Format = formatterWriting(&formatted, "version.go", "unrelated.go")
+	checks := 0
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		checks++
+		return checkGofmt, "gofmt lists version.go", nil
+	}
+
+	_, err := Build(context.Background(), deps, testConfig(t, initRepo(t)))
+	var stop *StopError
+	if !errors.As(err, &stop) || stop.Reason != StopFormatterOutsideDiff {
+		t.Fatalf("Build error = %v, want a %s stop", err, StopFormatterOutsideDiff)
+	}
+	rec := reported.last(t)
+	if rec.Outcome != OutcomeStopped || rec.Phase != PhaseBuild || !strings.Contains(rec.StopDetail, "unrelated.go") {
+		t.Fatalf("record = %s/%s at %q detail %q, want a build-stage stop naming unrelated.go", rec.Outcome, rec.StopReason, rec.Phase, rec.StopDetail)
+	}
+	if strings.Contains(rec.StopDetail, "version.go") {
+		t.Fatalf("stop detail = %q, want only the file outside the diff named", rec.StopDetail)
+	}
+	if checks != 1 || agent.calls != 1 || review.calls != 0 {
+		t.Fatalf("checks ran %d, build agent %d, review agent %d, want 1, 1 and 0: nothing runs after the stop", checks, agent.calls, review.calls)
+	}
+}
+
+func TestPrePRLoopStopsWhenTheFormatterCannotBeRun(t *testing.T) {
+	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
+	deps, _, reported := testDeps(validObjects(), agent)
+	deps.Format = func(context.Context, string, string) error { return errors.New("docker did not start") }
+	checks := 0
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		checks++
+		return checkGofmt, "gofmt lists version.go", nil
+	}
+
+	_, err := Build(context.Background(), deps, testConfig(t, initRepo(t)))
+	var stop *StopError
+	if !errors.As(err, &stop) || stop.Reason != StopChecksRun {
+		t.Fatalf("Build error = %v, want a %s stop", err, StopChecksRun)
+	}
+	rec := reported.last(t)
+	if rec.Outcome != OutcomeInfraFailure || !strings.Contains(rec.StopDetail, "docker did not start") {
+		t.Fatalf("record = %s/%s detail %q, want an infra failure carrying the formatter's error", rec.Outcome, rec.StopReason, rec.StopDetail)
+	}
+	if checks != 1 || agent.calls != 1 {
+		t.Fatalf("checks ran %d, build agent %d, want 1 and 1: no model round for a formatter that never ran", checks, agent.calls)
+	}
+}
+
+func TestPrePRLoopSendsAGateTheFormatterCannotFixToTheModelOnce(t *testing.T) {
+	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
+	deps, _, _ := testDeps(validObjects(), agent)
+	var formatted []string
+	deps.Format = formatterWriting(&formatted, "version.go")
+	failures := 0
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		failures++
+		if agent.calls == 1 && failures <= 3 {
+			return checkGofmt, "gofmt lists version.go", nil
+		}
+		return "", "", nil
+	}
+
+	if _, err := Build(context.Background(), deps, testConfig(t, initRepo(t))); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 2 || !strings.Contains(agent.prompts[1], "lists version.go") {
+		t.Fatalf("build agent ran %d times with prompt %q, want one rebuild carrying the gofmt output", agent.calls, agent.prompts)
+	}
+	if !slices.Equal(formatted, []string{checkGofmt}) {
+		t.Fatalf("formatter ran for %q, want gofmt once before the model round", formatted)
+	}
+}
+
+func TestPrePRLoopFormatsEachFormattingGateOnceInOnePass(t *testing.T) {
+	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
+	deps, _, _ := testDeps(validObjects(), agent)
+	var formatted []string
+	deps.Format = formatterWriting(&formatted, "version.go")
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		for _, gate := range []string{checkGofmt, checkWebFmtCheck} {
+			if !slices.Contains(formatted, gate) {
+				return gate, gate + " lists version.go", nil
+			}
+		}
+		return "", "", nil
+	}
+
+	if _, err := Build(context.Background(), deps, testConfig(t, initRepo(t))); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(formatted, []string{checkGofmt, checkWebFmtCheck}) {
+		t.Fatalf("formatter ran for %q, want gofmt then web-fmt-check", formatted)
+	}
+	if agent.calls != 1 {
+		t.Fatalf("build agent ran %d times, want 1: both formatting gates were fixed in place", agent.calls)
+	}
+}
+
+// TestPrePRLoopHandsTheModelAGateWhoseFormatterExitsNonZero runs the real host
+// formatter on a syntax error, which gofmt -w rejects with a non-zero exit: the
+// model still gets the gofmt gate's output, as it did before a formatter ran.
+func TestPrePRLoopHandsTheModelAGateWhoseFormatterExitsNonZero(t *testing.T) {
+	agent := &fakeAgent{}
+	agent.edit = func(dir string) error {
+		content := "package x\nfunc (\n"
+		if agent.calls > 1 {
+			content = "package x\n"
+		}
+		return os.WriteFile(filepath.Join(dir, "version.go"), []byte(content), 0o600)
+	}
+	deps, _, _ := testDeps(validObjects(), agent)
+	deps.Format = RunFormat
+	deps.Checks = func(ctx context.Context, dir string, _ []string) (string, string, error) {
+		failed, output, err := runGofmt(ctx, dir)
+		if failed {
+			return checkGofmt, output, err
+		}
+		return "", "", err
+	}
+
+	if _, err := Build(context.Background(), deps, testConfig(t, initRepo(t))); err != nil {
+		t.Fatalf("Build = %v, want a model round for the syntax error", err)
+	}
+	if agent.calls != 2 || !strings.Contains(agent.prompts[1], checkGofmt) || !strings.Contains(agent.prompts[1], "version.go") {
+		t.Fatalf("build agent ran %d times with prompts %q, want one rebuild carrying gofmt's output", agent.calls, agent.prompts)
+	}
+}
+
+// TestPrePRLoopStopsAndCommitsNothingWhenTheFixRoundFormatterLeavesTheDiff
+// holds the review stage to the same stop the check loop raises: a review
+// failure otherwise only forces a draft, and the commit would stage the file.
+func TestPrePRLoopStopsAndCommitsNothingWhenTheFixRoundFormatterLeavesTheDiff(t *testing.T) {
+	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
+	deps, _, reported := testDeps(validObjects(), agent)
+	deps.ReviewAgent = &fakeAgent{events: reviewEvent("the retry never bounds its attempts")}
+	var formatted []string
+	deps.Format = formatterWriting(&formatted, "version.go", "unrelated.go")
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		if agent.calls == 2 && len(formatted) == 0 {
+			return checkGofmt, "gofmt lists version.go", nil
+		}
+		return "", "", nil
+	}
+	c := testConfig(t, initRepo(t))
+
+	_, err := Build(context.Background(), deps, c)
+	var stop *StopError
+	if !errors.As(err, &stop) || stop.Reason != StopFormatterOutsideDiff {
+		t.Fatalf("Build error = %v, want a %s stop", err, StopFormatterOutsideDiff)
+	}
+	rec := reported.last(t)
+	if rec.Outcome != OutcomeStopped || rec.Phase != PhaseReview || !strings.Contains(rec.StopDetail, "unrelated.go") {
+		t.Fatalf("record = %s/%s at %q detail %q, want a review-stage stop naming unrelated.go", rec.Outcome, rec.StopReason, rec.Phase, rec.StopDetail)
+	}
+	if got := strings.TrimSpace(mustGit(t, filepath.Join(c.TempDir, "wt"), "rev-list", "--count", "HEAD")); got != "1" {
+		t.Fatalf("worktree has %s commits, want only the base's: nothing is committed after the stop", got)
+	}
+}
+
+func TestPrePRLoopFormatsAFormattingFailureAfterTheFixRound(t *testing.T) {
+	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
+	deps, _, reported := testDeps(validObjects(), agent)
+	deps.ReviewAgent = &fakeAgent{events: reviewEvent("the retry never bounds its attempts")}
+	var formatted []string
+	deps.Format = formatterWriting(&formatted, "version.go")
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		if agent.calls == 2 && len(formatted) == 0 {
+			return checkGofmt, "gofmt lists version.go", nil
+		}
+		return "", "", nil
+	}
+
+	if _, err := Build(context.Background(), deps, testConfig(t, initRepo(t))); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 2 {
+		t.Fatalf("build agent ran %d times, want 2 (initial attempt + the fix round)", agent.calls)
+	}
+	if !slices.Equal(formatted, []string{checkGofmt}) {
+		t.Fatalf("formatter ran for %q, want gofmt once after the fix round", formatted)
+	}
+	if rec := reported.last(t); strings.Contains(rec.LoopDetail, "failing after the fix round") {
+		t.Fatalf("loop detail = %q, want no failing check: the formatter fixed it", rec.LoopDetail)
+	}
+}
+
 func TestPrePRLoopRecordsCheckTimeAndLogsEachRound(t *testing.T) {
 	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
 	deps, _, reported := testDeps(validObjects(), agent)

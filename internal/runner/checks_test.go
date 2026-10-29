@@ -250,3 +250,61 @@ func TestRunChecksFailsClosedWithoutBunForADiffThatTouchesWeb(t *testing.T) {
 		t.Fatalf("RunChecks = %q, %v, want an error naming %s", gate, err, checkWebInstall)
 	}
 }
+
+func TestRunFormatFixesGofmtInPlaceAndRunsBunsFmtScriptInWeb(t *testing.T) {
+	t.Run("gofmt", func(t *testing.T) {
+		dir := initModule(t)
+		writeModuleFile(t, dir, "x.go", "package x\nfunc Add(a,b int) int { return a+b }\n")
+
+		if err := RunFormat(context.Background(), dir, checkGofmt); err != nil {
+			t.Fatal(err)
+		}
+		if failed, output, err := runGofmt(context.Background(), dir); err != nil || failed {
+			t.Fatalf("gofmt still lists %q after RunFormat, err %v", output, err)
+		}
+	})
+
+	t.Run("web-fmt-check", func(t *testing.T) {
+		bun := fakeBun(t, filepath.Join(t.TempDir(), "bun"))
+		t.Setenv("PATH", filepath.Dir(bun)+string(os.PathListSeparator)+os.Getenv("PATH"))
+		dir := initWebModule(t)
+
+		if err := RunFormat(context.Background(), dir, checkWebFmtCheck); err != nil {
+			t.Fatal(err)
+		}
+		calls := bunCalls(t, bun)
+		if len(calls) != 1 || calls[0][1] != filepath.Join(dir, webDir) || strings.Join(calls[0][2:], " ") != "run fmt" {
+			t.Fatalf("bun ran %v, want one `run fmt` in the web directory", calls)
+		}
+
+		bunFails(t, bun, "fmt")
+		if err := RunFormat(context.Background(), dir, checkWebFmtCheck); err != nil {
+			t.Fatalf("RunFormat = %v, want nil for a formatter that exits non-zero", err)
+		}
+	})
+
+	t.Run("a gofmt that exits non-zero on a syntax error", func(t *testing.T) {
+		dir := initModule(t)
+		writeModuleFile(t, dir, "x.go", "package x\nfunc (\n")
+
+		if err := RunFormat(context.Background(), dir, checkGofmt); err != nil {
+			t.Fatalf("RunFormat = %v, want nil: the gate's re-check reports the syntax error", err)
+		}
+	})
+
+	t.Run("a bun that cannot be found", func(t *testing.T) {
+		real := lookPath
+		lookPath = func(string) (string, error) { return "", exec.ErrNotFound }
+		t.Cleanup(func() { lookPath = real })
+
+		if err := RunFormat(context.Background(), initWebModule(t), checkWebFmtCheck); err == nil {
+			t.Fatal("RunFormat = nil, want an error for a formatter that could not be run")
+		}
+	})
+}
+
+func TestRunFormatRefusesAGateNoFormatterFixes(t *testing.T) {
+	if err := RunFormat(context.Background(), initModule(t), checkVet); err == nil {
+		t.Fatal("RunFormat accepted a gate no formatter fixes")
+	}
+}

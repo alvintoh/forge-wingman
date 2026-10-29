@@ -68,6 +68,9 @@ type BuildDeps struct {
 	ReviewAgent Agent
 	// Checks runs the repository's own quality gates for the pre-PR loop.
 	Checks CheckRunner
+	// Format fixes a failing formatting gate in place; nil leaves every gate
+	// failure to the build agent.
+	Format Formatter
 	// PackageTests runs one package's tests, which the pre-PR loop's guard
 	// probe breaks a changed guard against; nil skips the probe.
 	PackageTests PackageTestRunner
@@ -336,13 +339,16 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 
 	ready := checksOK
 	if checksOK {
-		// Unlike the check loop above, a review-phase failure never stops the
-		// build: it forces a draft naming the failure instead (FR-5).
+		// Unlike the check loop above, a review-phase failure does not stop the
+		// build: it forces a draft naming the failure instead (FR-5). The one
+		// exception is a formatter that touched a file outside the run's diff,
+		// which must stop the build before the commit stages that file.
 		reviewModels := reviewOrder(c, &sum)
 		reviewModel := ""
 		if len(reviewModels) > 0 {
 			reviewModel = reviewModels[0]
 		}
+		var formatterStop *StopError
 		_ = timed(PhaseReview, d.ReviewAgent, reviewModel, func() error {
 			var rerr error
 			ready, loopDetail, rerr = runReview(ctx, d, c, wt, &sum, rules, session, lastRound, reviewModels, &msg)
@@ -353,11 +359,17 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 				reason := StopReason("")
 				if errors.As(rerr, &s) {
 					reason = s.Reason
+					if reason == StopFormatterOutsideDiff {
+						formatterStop = s
+					}
 				}
 				d.Logger.Error("reviewFailed", "reason", string(reason), "err", truncate(detail(rerr), logErrorLimit))
 			}
 			return nil
 		})
+		if formatterStop != nil {
+			return BuildResult{}, formatterStop
+		}
 	}
 
 	sum.Ready = ready

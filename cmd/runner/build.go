@@ -39,6 +39,10 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 	if err != nil {
 		return setupFailed(logger, e.output, err)
 	}
+	format, err := checkFormatter(ctx, *checksImage, e.tempDir, repo)
+	if err != nil {
+		return setupFailed(logger, e.output, err)
+	}
 	plan := splitModels(*planModels, []string{runner.DefaultPlanModel()})
 	review := splitModels(*reviewModels, runner.DefaultReviewModels())
 	started, err := withAgents(ctx, logger, agentSettings{Image: *agentImage, Egress: *agentEgress, Model: *model, Plan: plan, Review: review},
@@ -72,6 +76,7 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 				PlanAgent:    runner.NewRouter(runner.ProfilePlan, e.harnesses...),
 				ReviewAgent:  runner.NewRouter(runner.ProfileReview, e.harnesses...),
 				Checks:       checks,
+				Format:       format,
 				PackageTests: packageTests,
 				AgentProbe:   probe,
 				Report:       func(s runner.Summary) error { return writeSummary(e.output, s) },
@@ -115,32 +120,55 @@ func checkRunners(ctx context.Context, image, tempDir, repo string) (runner.Chec
 	if image == "" {
 		return runner.RunChecks, runner.RunPackageTest, nil
 	}
+	c, err := containerChecks(ctx, image, tempDir, repo)
+	if err != nil {
+		return nil, nil, err
+	}
+	return c.Run, c.RunPackageTest, nil
+}
+
+// checkFormatter is the pre-PR loop's formatter, running where checkRunners's
+// gates do: in a container of image when one is given, else on the host.
+func checkFormatter(ctx context.Context, image, tempDir, repo string) (runner.Formatter, error) {
+	if image == "" {
+		return runner.RunFormat, nil
+	}
+	c, err := containerChecks(ctx, image, tempDir, repo)
+	if err != nil {
+		return nil, err
+	}
+	return c.Format, nil
+}
+
+// containerChecks is the validated container configuration the checks and the
+// formatter share.
+func containerChecks(ctx context.Context, image, tempDir, repo string) (runner.ContainerChecks, error) {
 	linter, err := exec.LookPath("golangci-lint")
 	if err != nil {
-		return nil, nil, fmt.Errorf("checks linter: %w", err)
+		return runner.ContainerChecks{}, fmt.Errorf("checks linter: %w", err)
 	}
 	if linter, err = filepath.Abs(linter); err != nil {
-		return nil, nil, fmt.Errorf("checks linter: %w", err)
+		return runner.ContainerChecks{}, fmt.Errorf("checks linter: %w", err)
 	}
 	// The checks image pins a Go toolchain alone, so the web gates run on the
 	// bun model.yml installs for its harnesses, mounted into their container.
 	bun, err := exec.LookPath("bun")
 	if err != nil {
-		return nil, nil, fmt.Errorf("checks bun: %w", err)
+		return runner.ContainerChecks{}, fmt.Errorf("checks bun: %w", err)
 	}
 	if bun, err = filepath.Abs(bun); err != nil {
-		return nil, nil, fmt.Errorf("checks bun: %w", err)
+		return runner.ContainerChecks{}, fmt.Errorf("checks bun: %w", err)
 	}
 	gitDir, err := runner.GitCommonDir(ctx, repo)
 	if err != nil {
-		return nil, nil, fmt.Errorf("checks git common dir: %w", err)
+		return runner.ContainerChecks{}, fmt.Errorf("checks git common dir: %w", err)
 	}
 	c := runner.ContainerChecks{Image: image, ModCache: filepath.Join(tempDir, "checks-modcache"), Linter: linter,
 		Bun: bun, BunCache: filepath.Join(tempDir, "checks-bun-cache"), GitCommonDir: gitDir}
 	if err := c.Validate(); err != nil {
-		return nil, nil, err
+		return runner.ContainerChecks{}, err
 	}
-	return c.Run, c.RunPackageTest, nil
+	return c, nil
 }
 
 // setupFailed reports a build that could not start, so the record says why.

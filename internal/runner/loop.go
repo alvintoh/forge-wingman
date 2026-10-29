@@ -197,9 +197,9 @@ func runCheckLoop(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, 
 
 	var lastGate, lastOutput string
 	for rebuildRound := 1; ; rebuildRound++ {
-		gate, output, cerr := timedChecks(ctx, d, sum, wt, round)
+		gate, output, cerr := checksFormatted(ctx, d, sum, wt, round)
 		if cerr != nil {
-			return false, "", session, round, stopWith(OutcomeInfraFailure, StopChecksRun, cerr)
+			return false, "", session, round, cerr
 		}
 		if gate == "" {
 			return true, "", session, round, nil
@@ -236,6 +236,52 @@ func timedChecks(ctx context.Context, d BuildDeps, sum *Summary, wt Worktree, ro
 	sum.DurationsMS[checksDuration] += elapsed
 	d.Logger.Info("checkRound", "round", round, "failedGate", gate, "durationMS", elapsed, "ran", err == nil)
 	return gate, output, err
+}
+
+// checksFormatted is timedChecks with a formatter pass: a failing gofmt or
+// web-fmt-check gate is fixed in place and the checks run again, spending no
+// rebuild round. A gate still failing after its pass is returned for the build
+// agent. Every error it returns is a *StopError.
+func checksFormatted(ctx context.Context, d BuildDeps, sum *Summary, wt Worktree, round int) (gate, output string, err error) {
+	formatted := map[string]bool{}
+	for {
+		gate, output, err = timedChecks(ctx, d, sum, wt, round)
+		if err != nil {
+			return "", "", stopWith(OutcomeInfraFailure, StopChecksRun, err)
+		}
+		if d.Format == nil || !isFormatGate(gate) || formatted[gate] {
+			return gate, output, nil
+		}
+		formatted[gate] = true
+		if err := formatInPlace(ctx, d, sum, wt, gate, round); err != nil {
+			return "", "", err
+		}
+	}
+}
+
+// formatInPlace runs d.Format for gate and stops the run when it left a path
+// pending that was not pending before.
+func formatInPlace(ctx context.Context, d BuildDeps, sum *Summary, wt Worktree, gate string, round int) error {
+	before, err := wt.PendingFiles(ctx)
+	if err != nil {
+		return stopWith(OutcomeInfraFailure, StopChecksRun, err)
+	}
+	start := d.Now()
+	if err := d.Format(ctx, wt.Dir, gate); err != nil {
+		return stopWith(OutcomeInfraFailure, StopChecksRun, err)
+	}
+	elapsed := d.Now().Sub(start).Milliseconds()
+	sum.DurationsMS[checksDuration] += elapsed
+	after, err := wt.PendingFiles(ctx)
+	if err != nil {
+		return stopWith(OutcomeInfraFailure, StopChecksRun, err)
+	}
+	if outside := slices.DeleteFunc(slices.Clone(after), func(p string) bool { return slices.Contains(before, p) }); len(outside) > 0 {
+		return stopWith(OutcomeStopped, StopFormatterOutsideDiff,
+			fmt.Errorf("the %s formatter changed files outside the run's diff: %s", gate, strings.Join(outside, ", ")))
+	}
+	d.Logger.Info("formatterRan", "round", round, "gate", gate, "durationMS", elapsed)
+	return nil
 }
 
 // reviewPass runs one review pass over the worktree's pending diff on models
@@ -444,9 +490,9 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 	}
 	msg.adopt(fixText, c.Ticket.ID)
 
-	gate, output, cerr := timedChecks(ctx, d, sum, wt, fixRound)
+	gate, output, cerr := checksFormatted(ctx, d, sum, wt, fixRound)
 	if cerr != nil {
-		return false, "", stopWith(OutcomeInfraFailure, StopChecksRun, cerr)
+		return false, "", cerr
 	}
 	checksDetail := ""
 	if gate != "" {

@@ -118,6 +118,9 @@ const (
 	// loop over reading is stopped by what the agent is doing rather than by
 	// the wall clock alone.
 	StopAgentNoProgress StopReason = "agent-no-progress"
+	// StopFormatterOutsideDiff reports a formatter that changed a file the run's
+	// own diff did not already contain.
+	StopFormatterOutsideDiff StopReason = "formatter-outside-diff"
 )
 
 // WaitReason names why a run's PR waits for the owner rather than merging itself.
