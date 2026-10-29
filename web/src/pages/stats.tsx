@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AutoMerge } from "../stats/auto-merge";
+import { RewriteRate } from "../stats/rewrite-rate";
 import { RunHistory } from "../stats/run-history";
 
 type RunCache = {
@@ -64,7 +64,7 @@ export function Stats() {
       <div className="mt-4 mb-8 grid grid-cols-1 gap-y-6 @[51.25rem]:grid-cols-[minmax(0,1fr)_23rem] @[51.25rem]:gap-x-8">
         <div className="flex flex-col gap-y-6">
           <RunHistory />
-          <AutoMerge />
+          <RewriteRate />
         </div>
       </div>
       <p className="mt-2 text-body text-ink2">

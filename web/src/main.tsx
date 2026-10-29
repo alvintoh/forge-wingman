@@ -35,6 +35,7 @@ const runRoute = createRoute({
 const statsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/stats",
+  validateSearch: validateProjectSearch,
   component: Stats,
 });
 

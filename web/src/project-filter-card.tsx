@@ -46,7 +46,13 @@ type ProjectFilterColumnProps = {
   known: Project | undefined;
   onChoose: (repository: string | null) => void;
   className?: string;
+  // Whether the wide layout draws no PROJECTS caption, so the column starts with its first card or sentence.
+  captionless?: boolean;
 };
+
+const WIDE_HIDDEN = "@[51.25rem]:hidden";
+const GAP_UNDER_CAPTION = "mt-4";
+const WIDE_NO_GAP = "@[51.25rem]:mt-0";
 
 /**
  * ProjectFilterColumn is the PROJECTS caption over a radio list that narrows a page to one
@@ -59,15 +65,17 @@ export function ProjectFilterColumn({
   known,
   onChoose,
   className,
+  captionless = false,
 }: ProjectFilterColumnProps) {
   const headingId = useId();
+  const gap = captionless ? `${GAP_UNDER_CAPTION} ${WIDE_NO_GAP}` : GAP_UNDER_CAPTION;
   const listed = known === undefined ? state.projects : [known];
   return (
     <section aria-labelledby={headingId} className={className}>
-      <ProjectsHeading id={headingId} />
-      <ProjectsPanels state={state} retry={retry}>
+      <ProjectsHeading id={headingId} className={captionless ? WIDE_HIDDEN : undefined} />
+      <ProjectsPanels state={state} retry={retry} className={gap}>
         {/* The card ends 6px under its last row, less its 1px edge. */}
-        <div className="card-frame mt-4 pb-1.25 max-sm:-mx-2.5">
+        <div className={`card-frame ${gap} pb-1.25 max-sm:-mx-2.5`}>
           {listed.length === 0 ? (
             <p className="flex min-h-13 items-center text-body">{NO_PROJECT_LISTED}</p>
           ) : (

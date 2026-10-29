@@ -678,21 +678,23 @@ function ProjectsCard({ projects, total, now, stale, seeAll, refresh, filter }: 
 type PanelsProps = {
   state: ProjectsState;
   retry: () => void;
+  // The margin above a panel; the default is the gap under a caption.
+  className?: string;
   children: React.ReactNode;
 };
 
 // The loading and error panels both views share.
-export function ProjectsPanels({ state, retry, children }: PanelsProps) {
+export function ProjectsPanels({ state, retry, className = "mt-4", children }: PanelsProps) {
   if (state.status === "loading") {
     return (
-      <p role="status" className="mt-4 text-body">
+      <p role="status" className={`${className} text-body`}>
         Reading the projects…
       </p>
     );
   }
   if (state.status === "error") {
     return (
-      <div className="mt-4">
+      <div className={className}>
         <p role="alert" className="text-body">
           The projects could not be read.
         </p>
@@ -704,9 +706,9 @@ export function ProjectsPanels({ state, retry, children }: PanelsProps) {
 }
 
 // ProjectsHeading is the PROJECTS caption over the Overview's card and the filter column.
-export function ProjectsHeading({ id }: { id: string }) {
+export function ProjectsHeading({ id, className = "" }: { id: string; className?: string }) {
   return (
-    <div className="flex min-h-6.5 items-start">
+    <div className={`flex min-h-6.5 items-start ${className}`}>
       <h2 id={id} className="py-[3.25px] font-mono text-label font-semibold text-ink2">
         PROJECTS
       </h2>
