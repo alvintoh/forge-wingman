@@ -392,6 +392,8 @@ person, doing the choosing they opened the surface to do.
 
 **The Autonomy statistics are computed at read time from one capped query of measured rows, with repo, size and models written onto the row when it is measured; no rollup until the revisit triggers in `adr/0016` fire.**
 
+*Updated (2026-10-28):* **the run success rate follows the same read path, and a run's CI result is written once onto its row: the runner records the agent's head sha, and the dispatcher's 15-minute poll writes `checks_result` when the required checks settle (`adr/0022`).**
+
 ### AI — TWO seams, and they are not the same shape
 
 ⚠️ **This section previously said opencode "is the whole AI layer". It is not.**
