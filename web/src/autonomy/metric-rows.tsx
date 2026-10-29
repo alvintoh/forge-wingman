@@ -484,7 +484,9 @@ export function StageCard({ numeral, phase, through, total, models, width }: Sta
           {numeral}
         </span>
         <h3 className={`${captionClass} text-ink`}>{phase}</h3>
-        <p className="text-cap text-muted">{`${through} of ${prsWord(total)}`}</p>
+        <p className="text-cap text-muted">
+          {through === 0 ? "no model recorded" : `${through} of ${prsWord(total)}`}
+        </p>
       </div>
       <div className="mt-3" style={{ marginRight: `calc(${VALUE_COL} + ${VALUE_GAP})` }}>
         <AxisLabels ticks={width < SPARSE_W ? AXIS_SPARSE : AXIS} />
