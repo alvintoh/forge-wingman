@@ -1,5 +1,15 @@
+import type { CSSProperties } from "react";
 import { captionClass } from "../caption";
-import { ROW_CAP, SPARSE_W, padxFor } from "./axis";
+import {
+  ROW_CAP,
+  SPARSE_W,
+  STAGE_COUNT_X,
+  STAGE_GAP,
+  STAGE_NAME_COL,
+  STAGE_RATE_COL,
+  WIDE_STAGE,
+  padxFor,
+} from "./axis";
 import {
   NO_RATE,
   SPLIT_KINDS,
@@ -35,6 +45,12 @@ export const FOLD_BAR_H = 6;
 // above the bars stops short of both so its labels sit over the bars.
 const VALUE_COL = "7.4rem";
 const VALUE_GAP = "0.75rem";
+// The wide stage row's columns, and the name and count inside the first.
+const STAGE_GRID: CSSProperties = {
+  gridTemplateColumns: `${STAGE_NAME_COL}px minmax(0, 1fr) ${STAGE_RATE_COL}px`,
+  columnGap: STAGE_GAP,
+};
+const STAGE_NAME_GRID: CSSProperties = { gridTemplateColumns: `${STAGE_COUNT_X}px minmax(0, 1fr)` };
 
 function axisLeft(tick: number): string {
   return `${(tick / ROW_CAP) * 100}%`;
@@ -401,16 +417,80 @@ function stageRows(phase: Phase, models: ModelRow[]): StageRow[] {
   return rows;
 }
 
-// StageRowItem is one row of a stage card: its name and PRs, its bar and its rate.
-// Only the main model's row carries the whisker and the median and p90 in words.
+function spreadWords(group: Group): string {
+  return group.median !== null && group.p90 !== null
+    ? `median ${group.median}, p90 ${group.p90}`
+    : "under ten PRs, so no median";
+}
+
+// WideStageRow is one row of a stage card across its columns: the name and PRs, the
+// bar, and the rate. Only the main model's row carries the split, the whisker and
+// the median and p90 in words; the others keep a thin bar and the rate in words.
+function WideStageRow({ row }: { row: StageRow }) {
+  const { group, main } = row;
+  const rate = group.rate_value;
+  const off = rate !== null && rate > ROW_CAP;
+  return (
+    <li className={main ? "py-3" : "py-2"} data-row={row.name}>
+      <div className={`grid ${main ? "items-start" : "items-center"}`} style={STAGE_GRID}>
+        <div>
+          <div className="grid items-baseline" style={STAGE_NAME_GRID}>
+            <span
+              className={`${main ? "text-head font-semibold text-ink" : "text-label text-ink2"} min-w-0 pr-3 break-words`}
+            >
+              {row.name}
+            </span>
+            <span className="text-label text-ink2">{prsWord(group.prs)}</span>
+          </div>
+          {main && group.owner_lines > 0 && <SplitWords group={group} column={false} />}
+        </div>
+        <div className={main ? "mt-1" : undefined}>
+          {rate === null ? (
+            <p className="text-label text-ink2">{servedRate(group.rate, rate, NO_RATE)}</p>
+          ) : (
+            <>
+              <PooledBar
+                group={group}
+                height={main ? BAR_H : FOLD_BAR_H}
+                split={main}
+                tone={row.folded ? "muted" : "accent"}
+              />
+              {main && group.median_value !== null && (
+                <div className="mt-2">
+                  <Whisker group={group} />
+                </div>
+              )}
+            </>
+          )}
+        </div>
+        <div>
+          {rate !== null && (
+            <>
+              <p className="flex items-baseline gap-x-1.5">
+                {off && <OffScale />}
+                <span
+                  className={`font-mono font-semibold ${main ? "text-body text-ink" : "text-label text-ink2"}`}
+                >
+                  {servedRate(group.rate, rate, NO_RATE)}
+                </span>
+                <span className="text-label text-ink2">{off ? "pooled, off scale" : "pooled"}</span>
+              </p>
+              {main && <p className="mt-2 text-cap text-ink2">{spreadWords(group)}</p>}
+            </>
+          )}
+        </div>
+      </div>
+    </li>
+  );
+}
+
+// StageRowItem is one row of a stage card on a narrow card: its name and PRs, its bar
+// and its rate. Only the main model's row carries the whisker and the median and p90
+// in words.
 function StageRowItem({ row }: { row: StageRow }) {
   const { group } = row;
   const rate = group.rate_value;
   const off = rate !== null && rate > ROW_CAP;
-  const spread =
-    group.median !== null && group.p90 !== null
-      ? `median ${group.median}, p90 ${group.p90}`
-      : "under ten PRs, so no median";
   return (
     <li className="py-3" data-row={row.name}>
       <p className="flex flex-wrap items-baseline gap-x-3">
@@ -448,7 +528,7 @@ function StageRowItem({ row }: { row: StageRow }) {
               <Whisker group={group} />
             </div>
           )}
-          {row.main && <p className="mt-1 text-cap text-ink2">{spread}</p>}
+          {row.main && <p className="mt-1 text-cap text-ink2">{spreadWords(group)}</p>}
         </>
       )}
     </li>
@@ -469,9 +549,11 @@ type StageCardProps = {
 };
 
 // StageCard is one stage's card: its numeral and name with how many of the
-// measured PRs ran it, its own 0 to 80% axis, and its rows.
+// measured PRs ran it, its own 0 to 80% axis, and its rows. From WIDE_STAGE the
+// axis sits over the bar column on the title's line and the rows span their columns.
 export function StageCard({ numeral, phase, through, total, models, width }: StageCardProps) {
   const padx = padxFor(width);
+  const wide = width >= WIDE_STAGE;
   const rows = stageRows(phase, models);
   const notes = rows.flatMap((row) => {
     const note = noAgentNote(row.name, row.group);
@@ -479,22 +561,31 @@ export function StageCard({ numeral, phase, through, total, models, width }: Sta
   });
   return (
     <div style={{ paddingInline: padx }} data-stage={phase}>
-      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-        <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full border border-ink2 font-mono text-cap font-semibold text-ink2">
-          {numeral}
-        </span>
-        <h3 className={`${captionClass} text-ink`}>{phase}</h3>
-        <p className="text-cap text-muted">
-          {through === 0 ? "no model recorded" : `${through} of ${prsWord(total)}`}
-        </p>
+      <div className={wide ? "grid items-center" : undefined} style={wide ? STAGE_GRID : undefined}>
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+          <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full border border-ink2 font-mono text-cap font-semibold text-ink2">
+            {numeral}
+          </span>
+          <h3 className={`${captionClass} text-ink`}>{phase}</h3>
+          <p className="text-cap text-muted">
+            {through === 0 ? "no model recorded" : `${through} of ${prsWord(total)}`}
+          </p>
+        </div>
+        {wide && <AxisLabels ticks={AXIS} />}
       </div>
-      <div className="mt-3" style={{ marginRight: `calc(${VALUE_COL} + ${VALUE_GAP})` }}>
-        <AxisLabels ticks={width < SPARSE_W ? AXIS_SPARSE : AXIS} />
-      </div>
-      <ul className="mt-1 divide-y divide-hair">
-        {rows.map((row) => (
-          <StageRowItem key={row.key} row={row} />
-        ))}
+      {!wide && (
+        <div className="mt-3" style={{ marginRight: `calc(${VALUE_COL} + ${VALUE_GAP})` }}>
+          <AxisLabels ticks={width < SPARSE_W ? AXIS_SPARSE : AXIS} />
+        </div>
+      )}
+      <ul className={`mt-1 ${wide ? "" : "divide-y divide-hair"}`}>
+        {rows.map((row) =>
+          wide ? (
+            <WideStageRow key={row.key} row={row} />
+          ) : (
+            <StageRowItem key={row.key} row={row} />
+          ),
+        )}
       </ul>
       {notes.map((note) => (
         <p key={note} className="mt-1 text-cap font-semibold text-ink2">

@@ -22,30 +22,28 @@ export function ByModel({ byModel }: ByModelProps) {
         <ChartHeader title="by model" aside="bar = pooled rate" padx={0} />
       </div>
       <div className="mt-2.5 space-y-4 lg:space-y-6">
-        <div className="grid gap-4 lg:grid-cols-3 lg:gap-6">
-          {PHASES.map((phase, i) => {
-            const rows = byModel[phase];
-            const total = rows.reduce((sum, row) => sum + row.prs, 0);
-            const through = rows.reduce(
-              (sum, row) => sum + (row.model === UNKNOWN_MODEL ? 0 : row.prs),
-              0,
-            );
-            return (
-              <ChartCard key={phase}>
-                {(width) => (
-                  <StageCard
-                    numeral={i + 1}
-                    phase={phase}
-                    through={through}
-                    total={total}
-                    models={rows}
-                    width={width}
-                  />
-                )}
-              </ChartCard>
-            );
-          })}
-        </div>
+        {PHASES.map((phase, i) => {
+          const rows = byModel[phase];
+          const total = rows.reduce((sum, row) => sum + row.prs, 0);
+          const through = rows.reduce(
+            (sum, row) => sum + (row.model === UNKNOWN_MODEL ? 0 : row.prs),
+            0,
+          );
+          return (
+            <ChartCard key={phase}>
+              {(width) => (
+                <StageCard
+                  numeral={i + 1}
+                  phase={phase}
+                  through={through}
+                  total={total}
+                  models={rows}
+                  width={width}
+                />
+              )}
+            </ChartCard>
+          );
+        })}
         <ChartCard>{(width) => <LegendCard width={width} />}</ChartCard>
       </div>
     </div>
