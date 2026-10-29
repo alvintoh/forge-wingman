@@ -247,15 +247,30 @@ export function isCompact(width: number): boolean {
   return width < COMPACT_W;
 }
 
+const DESKTOP_PADX = 26;
+
 // The side padding of a chart card: the phone's, and the desktop's design padding.
 export function padxFor(width: number): number {
-  return isCompact(width) ? 16 : 26;
+  return isCompact(width) ? 16 : DESKTOP_PADX;
 }
 
 // The width from which a row of the model and repository bars is drawn across
 // three columns, and under which its scale carries three labels, not five.
 export const WIDE_ROWS = 640;
 export const SPARSE_W = 380;
+
+// The columns of a stage card's wide row, from the drawing: the model's name and
+// its PR count (the count starts STAGE_COUNT_X in), the bar, and the rate beside
+// the spread.
+export const STAGE_NAME_COL = 424;
+export const STAGE_COUNT_X = 330;
+export const STAGE_RATE_COL = 194;
+export const STAGE_GAP = 16;
+// The narrowest bar column that keeps five scale labels apart, as the phone's.
+const STAGE_BAR_MIN = 160;
+// The card width from which a stage row is drawn across its columns.
+export const WIDE_STAGE =
+  2 * DESKTOP_PADX + STAGE_NAME_COL + STAGE_RATE_COL + 2 * STAGE_GAP + STAGE_BAR_MIN;
 
 // The ticks of the trend and the strip, on the 0 to 30% axis.
 export const TREND_TICKS = [0, 0.1, 0.2, 0.3];

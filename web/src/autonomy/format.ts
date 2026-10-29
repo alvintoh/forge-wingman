@@ -51,6 +51,10 @@ export function servedRate(text: string | null, value: number | null, words: str
 
 export const NO_RATE = "no rate";
 
+// NO_AGENT_LINES is what the endpoint prints for a rate over none of the agent's
+// lines.
+const NO_AGENT_LINES = "no agent lines";
+
 // tooFewForSpread is whether a group has a rate but no median, for want of PRs.
 export function tooFewForSpread(group: Group): boolean {
   return group.median === null && group.agent_lines > 0;
@@ -194,6 +198,42 @@ export function noAgentNote(name: string, group: Group): string | null {
     return null;
   }
   return `${name} pooled includes ${prsWord(group.no_agent_lines_prs)} with no agent lines: ${count(group.no_agent_owner_lines)} owner lines.`;
+}
+
+// sumOf is several groups' figures added together: the PR, line and split counts
+// summed, and the pooled rate over all of them. It carries no spread, which the
+// endpoint reads off the PRs' own rates.
+export function sumOf(groups: Group[]): Group {
+  const total: Group = {
+    prs: 0,
+    rate: null,
+    rate_value: null,
+    median: null,
+    median_value: null,
+    p90: null,
+    p90_value: null,
+    agent_lines: 0,
+    owner_lines: 0,
+    review_found_lines: 0,
+    owner_change_lines: 0,
+    unlabelled_lines: 0,
+    no_agent_lines_prs: 0,
+    no_agent_owner_lines: 0,
+  };
+  for (const group of groups) {
+    total.prs += group.prs;
+    total.agent_lines += group.agent_lines;
+    total.owner_lines += group.owner_lines;
+    total.review_found_lines += group.review_found_lines;
+    total.owner_change_lines += group.owner_change_lines;
+    total.unlabelled_lines += group.unlabelled_lines;
+    total.no_agent_lines_prs += group.no_agent_lines_prs;
+    total.no_agent_owner_lines += group.no_agent_owner_lines;
+  }
+  const rate = total.agent_lines > 0 ? total.owner_lines / total.agent_lines : null;
+  total.rate_value = rate;
+  total.rate = rate === null ? NO_AGENT_LINES : percent(rate);
+  return total;
 }
 
 // The width a string takes at a size in the page's own faces, estimated from the

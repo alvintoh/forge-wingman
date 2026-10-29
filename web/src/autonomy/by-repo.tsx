@@ -14,7 +14,6 @@ export function ByRepo({ repos }: { repos: RepoRow[] }) {
     key: repo.repo,
     name: repo.repo,
     group: repo.average,
-    recorded: true,
   }));
   return (
     <ChartCard>

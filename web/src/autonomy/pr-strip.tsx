@@ -20,7 +20,6 @@ import type { Phase, PR } from "./types";
 const PLOT_H = 100;
 const LANE_H = 28;
 const LANE_LINE = 13;
-const LANE_LABEL: Record<Phase, string> = { plan: "plan model", build: "build", review: "review" };
 
 function modelOf(pr: PR, phase: Phase): string {
   return { plan: pr.plan_model, build: pr.build_model, review: pr.review_model }[phase];
@@ -55,7 +54,6 @@ function layoutLane(
   index: Map<string, number>,
   phase: Phase,
 ): Lane | null {
-  const label = LANE_LABEL[phase];
   const runs: { model: string; first: number; last: number }[] = [];
   for (const { pr } of placed) {
     const slot = index.get(prKey(pr.repo, pr.pr));
@@ -77,7 +75,7 @@ function layoutLane(
     return null;
   }
   const labelX = axis.xOfIndex(firstSlot) - axis.step / 2 - 10;
-  if (labelX - textWidth(label, 12) <= axis.x0 + 6) {
+  if (labelX - textWidth(phase, 12) <= axis.x0 + 6) {
     return null;
   }
   const rows: { c: number; w: number }[][] = Array.from({ length: MAX_LEVELS }, () => []);
@@ -113,7 +111,7 @@ function layoutLane(
     });
   }
   return {
-    label,
+    label: phase,
     labelX,
     pills,
     rowHeight: LANE_LINE * most,
