@@ -392,7 +392,7 @@ person, doing the choosing they opened the surface to do.
 
 **The Autonomy statistics are computed at read time from one capped query of measured rows, with repo, size and models written onto the row when it is measured; no rollup until the revisit triggers in `adr/0016` fire.**
 
-*Updated (2026-10-28):* **the run success rate follows the same read path, and a run's CI result is written once onto its row: the runner records the agent's head sha, and the dispatcher's 15-minute poll writes `checks_result` when the required checks settle (`adr/0022`).**
+*Updated (2026-10-28):* **the run success rate follows the same read path, and a run's CI result is written once onto its row: the dispatcher's 15-minute poll finds the agent's last commit by author and writes `pr_head_sha` and `checks_result` when the required checks settle (`adr/0022`, updated 2026-10-29).**
 
 ### AI — TWO seams, and they are not the same shape
 
