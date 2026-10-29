@@ -46,6 +46,8 @@ const (
 	maxListPages = 10
 	// checkRunsPerPage is how many check runs one read of a commit holds.
 	checkRunsPerPage = 100
+	// pullCommitsCeiling is how many commits GitHub lists for one pull request.
+	pullCommitsCeiling = 250
 )
 
 // greenConclusions are the check run conclusions that do not hold a merge, as
@@ -310,31 +312,14 @@ func (g GitHub) ChecksGreen(ctx context.Context, repo, sha string) (bool, error)
 	return g.statusGreen(ctx, repo, sha)
 }
 
-// checkRunsGreen reads the commit's check runs. More runs than one page holds
-// is an error rather than a guess.
+// checkRunsGreen reports whether the commit has check runs and every one has
+// concluded green.
 func (g GitHub) checkRunsGreen(ctx context.Context, repo, sha string) (bool, error) {
-	endpoint := fmt.Sprintf("%s/repos/%s/commits/%s/check-runs?per_page=%d", g.endpoint(), repo, url.PathEscape(sha), checkRunsPerPage)
-	res, err := g.do(ctx, http.MethodGet, endpoint, nil, fmt.Sprintf("read the check runs of %s@%s", repo, sha))
-	if err != nil {
+	runs, err := g.checkRuns(ctx, repo, sha)
+	if err != nil || len(runs) == 0 {
 		return false, err
 	}
-	defer func() { _ = res.Body.Close() }()
-	var body struct {
-		Total int `json:"total_count"`
-		Runs  []struct {
-			Conclusion string `json:"conclusion"`
-		} `json:"check_runs"`
-	}
-	if err := json.NewDecoder(io.LimitReader(res.Body, maxPullsResponseBytes)).Decode(&body); err != nil {
-		return false, fmt.Errorf("decoding the check runs of %s@%s: %w", repo, sha, err)
-	}
-	if body.Total > len(body.Runs) {
-		return false, fmt.Errorf("%d check runs on %s@%s exceed the %d one read holds", body.Total, repo, sha, checkRunsPerPage)
-	}
-	if len(body.Runs) == 0 {
-		return false, nil
-	}
-	for _, run := range body.Runs {
+	for _, run := range runs {
 		if !slices.Contains(greenConclusions, run.Conclusion) {
 			return false, nil
 		}
@@ -345,20 +330,175 @@ func (g GitHub) checkRunsGreen(ctx context.Context, repo, sha string) (bool, err
 // statusGreen reads the commit's combined status, which holds the legacy
 // statuses that check runs do not include. A commit with none is green.
 func (g GitHub) statusGreen(ctx context.Context, repo, sha string) (bool, error) {
-	endpoint := fmt.Sprintf("%s/repos/%s/commits/%s/status", g.endpoint(), repo, url.PathEscape(sha))
-	res, err := g.do(ctx, http.MethodGet, endpoint, nil, fmt.Sprintf("read the status of %s@%s", repo, sha))
+	combined, err := g.combinedStatus(ctx, repo, sha)
 	if err != nil {
 		return false, err
 	}
+	return combined.Total == 0 || combined.State == "success", nil
+}
+
+// checkRun is one check run of a commit.
+type checkRun struct {
+	ID         int64  `json:"id"`
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+}
+
+// checkRuns reads the commit's check runs. More runs than one page holds is an
+// error rather than a guess.
+func (g GitHub) checkRuns(ctx context.Context, repo, sha string) ([]checkRun, error) {
+	endpoint := fmt.Sprintf("%s/repos/%s/commits/%s/check-runs?per_page=%d", g.endpoint(), repo, url.PathEscape(sha), checkRunsPerPage)
+	res, err := g.do(ctx, http.MethodGet, endpoint, nil, fmt.Sprintf("read the check runs of %s@%s", repo, sha))
+	if err != nil {
+		return nil, err
+	}
 	defer func() { _ = res.Body.Close() }()
 	var body struct {
-		State string `json:"state"`
-		Total int    `json:"total_count"`
+		Total int        `json:"total_count"`
+		Runs  []checkRun `json:"check_runs"`
 	}
 	if err := json.NewDecoder(io.LimitReader(res.Body, maxPullsResponseBytes)).Decode(&body); err != nil {
-		return false, fmt.Errorf("decoding the status of %s@%s: %w", repo, sha, err)
+		return nil, fmt.Errorf("decoding the check runs of %s@%s: %w", repo, sha, err)
 	}
-	return body.Total == 0 || body.State == "success", nil
+	if body.Total > len(body.Runs) {
+		return nil, fmt.Errorf("%d check runs on %s@%s exceed the %d one read holds", body.Total, repo, sha, checkRunsPerPage)
+	}
+	return body.Runs, nil
+}
+
+// commitStatus is the combined state of a commit's legacy statuses and the
+// latest status of each context.
+type commitStatus struct {
+	State    string `json:"state"`
+	Total    int    `json:"total_count"`
+	Statuses []struct {
+		Context string `json:"context"`
+		State   string `json:"state"`
+	} `json:"statuses"`
+}
+
+// combinedStatus reads the commit's combined status.
+func (g GitHub) combinedStatus(ctx context.Context, repo, sha string) (commitStatus, error) {
+	endpoint := fmt.Sprintf("%s/repos/%s/commits/%s/status?per_page=%d", g.endpoint(), repo, url.PathEscape(sha), checkRunsPerPage)
+	res, err := g.do(ctx, http.MethodGet, endpoint, nil, fmt.Sprintf("read the status of %s@%s", repo, sha))
+	if err != nil {
+		return commitStatus{}, err
+	}
+	defer func() { _ = res.Body.Close() }()
+	var body commitStatus
+	if err := json.NewDecoder(io.LimitReader(res.Body, maxPullsResponseBytes)).Decode(&body); err != nil {
+		return commitStatus{}, fmt.Errorf("decoding the status of %s@%s: %w", repo, sha, err)
+	}
+	return body, nil
+}
+
+// RequiredChecks lists the status check contexts the branch rules of repo
+// require on branch; a branch that requires none is an error.
+func (g GitHub) RequiredChecks(ctx context.Context, repo, branch string) ([]string, error) {
+	endpoint := fmt.Sprintf("%s/repos/%s/rules/branches/%s", g.endpoint(), repo, url.PathEscape(branch))
+	res, err := g.do(ctx, http.MethodGet, endpoint, nil, fmt.Sprintf("read the rules of %s@%s", repo, branch))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = res.Body.Close() }()
+	var rules []struct {
+		Type       string `json:"type"`
+		Parameters struct {
+			Checks []struct {
+				Context string `json:"context"`
+			} `json:"required_status_checks"`
+		} `json:"parameters"`
+	}
+	if err := json.NewDecoder(io.LimitReader(res.Body, maxPullsResponseBytes)).Decode(&rules); err != nil {
+		return nil, fmt.Errorf("decoding the rules of %s@%s: %w", repo, branch, err)
+	}
+	var contexts []string
+	for _, rule := range rules {
+		if rule.Type != "required_status_checks" {
+			continue
+		}
+		for _, c := range rule.Parameters.Checks {
+			if c.Context != "" && !slices.Contains(contexts, c.Context) {
+				contexts = append(contexts, c.Context)
+			}
+		}
+	}
+	if len(contexts) == 0 {
+		return nil, fmt.Errorf("%s@%s requires no status checks", repo, branch)
+	}
+	return contexts, nil
+}
+
+// ChecksOutcome is where the required checks of commit sha stand: CheckPending
+// until every required context has finished, then CheckFailing if any finished
+// outside greenConclusions, else CheckGreen. A context takes its newest check
+// run; one with no run takes its legacy status, and one with neither is pending.
+// An empty required list is an error rather than green.
+func (g GitHub) ChecksOutcome(ctx context.Context, repo, sha string, required []string) (string, error) {
+	if len(required) == 0 {
+		return "", fmt.Errorf("no required checks named for %s@%s", repo, sha)
+	}
+	runs, err := g.checkRuns(ctx, repo, sha)
+	if err != nil {
+		return "", err
+	}
+	states := newestRunStates(runs)
+	var unrun []string
+	for _, name := range required {
+		if _, ok := states[name]; !ok {
+			unrun = append(unrun, name)
+		}
+	}
+	if len(unrun) > 0 {
+		combined, err := g.combinedStatus(ctx, repo, sha)
+		if err != nil {
+			return "", err
+		}
+		if combined.Total > len(combined.Statuses) {
+			return "", fmt.Errorf("%d statuses on %s@%s exceed the %d one read holds", combined.Total, repo, sha, checkRunsPerPage)
+		}
+		for _, s := range combined.Statuses {
+			if _, hasRun := states[s.Context]; !hasRun {
+				states[s.Context] = rollupChecks(strings.ToUpper(s.State))
+			}
+		}
+	}
+	outcome := CheckGreen
+	for _, name := range required {
+		state, ok := states[name]
+		if !ok {
+			return CheckPending, nil
+		}
+		switch state {
+		case CheckPending:
+			return CheckPending, nil
+		case CheckFailing:
+			outcome = CheckFailing
+		}
+	}
+	return outcome, nil
+}
+
+// newestRunStates is the state of each name's newest check run.
+func newestRunStates(runs []checkRun) map[string]string {
+	newest := make(map[string]int64, len(runs))
+	states := make(map[string]string, len(runs))
+	for _, run := range runs {
+		if id, seen := newest[run.Name]; seen && id > run.ID {
+			continue
+		}
+		newest[run.Name] = run.ID
+		switch {
+		case run.Status != "completed":
+			states[run.Name] = CheckPending
+		case slices.Contains(greenConclusions, run.Conclusion):
+			states[run.Name] = CheckGreen
+		default:
+			states[run.Name] = CheckFailing
+		}
+	}
+	return states
 }
 
 // Merge squash-merges pull request number of repo if its head is still at sha,
@@ -637,15 +777,37 @@ func decodeClosedPRs(body io.Reader, repo string) ([]ClosedPR, error) {
 	return out, nil
 }
 
-// Commits returns the commits of pull request number, each with who GitHub
-// resolves its author to and how many lines it changed. The listing carries no
-// line counts, so each commit is read once. A listing cut at the page cap ends in
-// an unmeasured commit, so a window holding it measures nothing for the
-// auto-merge rule.
-func (g GitHub) Commits(ctx context.Context, repo string, number int) ([]Commit, error) {
+// PullCommit is one entry of a pull request's commit listing: the commit, who
+// GitHub resolves its author to, and the free text git recorded.
+type PullCommit struct {
+	SHA string
+	// Login is the account GitHub resolved the author to, empty when it resolved none.
+	Login   string
+	Name    string
+	Email   string
+	Message string
+}
+
+// PullCommits lists the commits of pull request number in oldest-first order,
+// failing rather than returning a listing that reaches GitHub's ceiling, which
+// may have dropped the newest.
+func (g GitHub) PullCommits(ctx context.Context, repo string, number int) ([]PullCommit, error) {
+	commits, _, err := g.listPullCommits(ctx, repo, number)
+	if err != nil {
+		return nil, err
+	}
+	if len(commits) >= pullCommitsCeiling {
+		return nil, fmt.Errorf("%s#%d lists %d commits, GitHub's ceiling, so the newest may be missing", repo, number, len(commits))
+	}
+	return commits, nil
+}
+
+// listPullCommits reads the commit listing of a pull request, and whether the
+// page cap cut it off.
+func (g GitHub) listPullCommits(ctx context.Context, repo string, number int) ([]PullCommit, bool, error) {
 	endpoint := fmt.Sprintf("%s/repos/%s/pulls/%d/commits?per_page=%d",
 		g.endpoint(), repo, number, closedPRsPerPage)
-	var out []Commit
+	var out []PullCommit
 	capped, err := g.paged(ctx, endpoint, fmt.Sprintf("list the commits of %s#%d", repo, number), func(body io.Reader) error {
 		var commits []struct {
 			SHA    string `json:"sha"`
@@ -664,18 +826,7 @@ func (g GitHub) Commits(ctx context.Context, repo string, number int) ([]Commit,
 			return fmt.Errorf("decoding the commits of %s#%d: %w", repo, number, err)
 		}
 		for _, c := range commits {
-			added, removed, measured, err := g.commitLines(ctx, repo, c.SHA)
-			if err != nil {
-				return err
-			}
-			commit := Commit{
-				Name:       c.Commit.Author.Name,
-				Email:      c.Commit.Author.Email,
-				Message:    c.Commit.Message,
-				Unmeasured: !measured,
-				Additions:  added,
-				Deletions:  removed,
-			}
+			commit := PullCommit{SHA: c.SHA, Name: c.Commit.Author.Name, Email: c.Commit.Author.Email, Message: c.Commit.Message}
 			if c.Author != nil {
 				commit.Login = c.Author.Login
 			}
@@ -684,7 +835,36 @@ func (g GitHub) Commits(ctx context.Context, repo string, number int) ([]Commit,
 		return nil
 	})
 	if err != nil {
+		return nil, false, err
+	}
+	return out, capped, nil
+}
+
+// Commits returns the commits of pull request number, each with who GitHub
+// resolves its author to and how many lines it changed. The listing carries no
+// line counts, so each commit is read once. A listing cut at the page cap ends in
+// an unmeasured commit, so a window holding it measures nothing for the
+// auto-merge rule.
+func (g GitHub) Commits(ctx context.Context, repo string, number int) ([]Commit, error) {
+	listed, capped, err := g.listPullCommits(ctx, repo, number)
+	if err != nil {
 		return nil, err
+	}
+	out := make([]Commit, 0, len(listed)+1)
+	for _, c := range listed {
+		added, removed, measured, err := g.commitLines(ctx, repo, c.SHA)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, Commit{
+			Name:       c.Name,
+			Email:      c.Email,
+			Login:      c.Login,
+			Message:    c.Message,
+			Unmeasured: !measured,
+			Additions:  added,
+			Deletions:  removed,
+		})
 	}
 	if capped {
 		out = append(out, Commit{Unmeasured: true})

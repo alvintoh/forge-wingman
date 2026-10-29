@@ -127,7 +127,7 @@ func (d Deps) readInbox(ctx context.Context, now time.Time) (inboxResponse, erro
 		// GitHub's reading decides whether the PR is still a draft; the row's reason
 		// stands in for it where the read failed.
 		row.Retryable = r.WaitReason == runner.WaitDraft
-		if repo, number, err := parsePullURL(r.PRURL); err == nil {
+		if repo, number, err := dispatcher.ParsePullURL(r.PRURL); err == nil {
 			if p, ok := pulls[dispatcher.PullRef{Repo: repo, Number: number}]; ok {
 				if p.State == dispatcher.PullStateClosed || p.State == dispatcher.PullStateMerged {
 					continue
@@ -161,7 +161,7 @@ func (d Deps) pullSummaries(ctx context.Context, runs []store.InboxRun) map[disp
 		if r.Stopped {
 			continue
 		}
-		if repo, number, err := parsePullURL(r.PRURL); err == nil {
+		if repo, number, err := dispatcher.ParsePullURL(r.PRURL); err == nil {
 			refs = append(refs, dispatcher.PullRef{Repo: repo, Number: number})
 		}
 	}

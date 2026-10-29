@@ -296,6 +296,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		// and recorded on the run rows the queue holds.
 		PullRequests: gh,
 		Rewrites:     store.NewRewrites(fsc),
+		Checks:       dispatcher.ChecksDeps{Runs: store.NewChecks(fsc), GitHub: gh, Branch: runBranch},
 		Decisions:    queue,
 		Elicit:       webhook.Linear{Tokens: tokens},
 		Logger:       logger,

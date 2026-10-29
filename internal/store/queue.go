@@ -1519,6 +1519,8 @@ func (q *Queue) requeue(ctx context.Context, runID string, at time.Time, opts re
 			{Path: queuedAtField, Value: at},
 			{Path: attemptField, Value: attempt},
 			{Path: decisionModeField, Value: firestore.Delete},
+			{Path: prHeadSHAField, Value: firestore.Delete},
+			{Path: checksResultField, Value: firestore.Delete},
 		}
 		if !opts.keepNote {
 			updates = append(updates, clearNote()...)

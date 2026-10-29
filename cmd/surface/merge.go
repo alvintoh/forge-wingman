@@ -4,17 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
-	"net/url"
-	"slices"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 	"github.com/alvintoh/forge-wingman/internal/runner"
-	"github.com/alvintoh/forge-wingman/internal/store"
 )
 
 // MergeRuns reads the run a merge acts on and records the merge on it.
@@ -91,7 +86,7 @@ func (d Deps) mergeRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "reading the run", http.StatusInternalServerError)
 		return
 	}
-	repo, number, err := parsePullURL(rec.PRURL)
+	repo, number, err := dispatcher.ParsePullURL(rec.PRURL)
 	if err != nil {
 		d.refuseMerge(w, run, refusedNoPullRequest, "")
 		return
@@ -167,25 +162,4 @@ func (d Deps) refuseMerge(w http.ResponseWriter, run, reason, detail string) {
 func (d Deps) mergeFailed(w http.ResponseWriter, run, repo string, number int, doing string, err error) {
 	d.Logger.Error("ownerMergeFailed", "run", run, "repo", repo, "number", number, "doing", doing, "err", err.Error())
 	http.Error(w, doing+" failed", http.StatusBadGateway)
-}
-
-// parsePullURL reads the repository and number out of a pull request page URL.
-func parsePullURL(raw string) (repo string, number int, err error) {
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.Host != "github.com" {
-		return "", 0, fmt.Errorf("%q is not a github.com pull request URL", raw)
-	}
-	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
-	if len(parts) != 4 || parts[2] != "pull" {
-		return "", 0, fmt.Errorf("%q is not a github.com pull request URL", raw)
-	}
-	number, err = strconv.Atoi(parts[3])
-	if err != nil || number <= 0 {
-		return "", 0, fmt.Errorf("%q names no pull request number", raw)
-	}
-	repo = parts[0] + "/" + parts[1]
-	if !store.ValidRepository(repo) || slices.Contains(parts[:2], ".") || slices.Contains(parts[:2], "..") {
-		return "", 0, fmt.Errorf("%q names no valid repository", raw)
-	}
-	return repo, number, nil
 }

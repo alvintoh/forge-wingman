@@ -111,6 +111,7 @@ func pollReadDeps(q *Queue, openPRs int) dispatcher.Deps {
 		OpenPRs:      pollOpenPRs{count: openPRs},
 		PullRequests: pollPullRequests{},
 		Rewrites:     pollRewrites{},
+		Checks:       dispatcher.ChecksDeps{Runs: pollChecksRuns{}, GitHub: pollChecksGitHub{}, Branch: "main"},
 		Workflow:     pollWorkflow{},
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Now:          func() time.Time { return pollAt },
@@ -259,6 +260,29 @@ func (pollRewrites) FlagReverted(context.Context, string) error {
 }
 func (pollRewrites) Recent(context.Context, int) ([]dispatcher.Sample, error) {
 	return nil, nil
+}
+
+// pollChecksRuns lists no run awaiting a checks result.
+type pollChecksRuns struct{}
+
+func (pollChecksRuns) UnsettledRuns(context.Context, int) ([]dispatcher.UnsettledRun, error) {
+	return nil, nil
+}
+func (pollChecksRuns) RecordChecks(context.Context, string, string, string, string) (bool, error) {
+	return false, nil
+}
+
+// pollChecksGitHub reads no pull request, as no run awaits a result.
+type pollChecksGitHub struct{}
+
+func (pollChecksGitHub) PullCommits(context.Context, string, int) ([]dispatcher.PullCommit, error) {
+	return nil, nil
+}
+func (pollChecksGitHub) RequiredChecks(context.Context, string, string) ([]string, error) {
+	return nil, nil
+}
+func (pollChecksGitHub) ChecksOutcome(context.Context, string, string, []string) (string, error) {
+	return "", nil
 }
 
 // pollWorkflow starts every run it is handed.

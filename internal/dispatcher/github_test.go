@@ -817,3 +817,216 @@ func TestNamesInStateNamesACheckOnceAndCapsTheList(t *testing.T) {
 		})
 	}
 }
+
+func TestGitHubListsThePullRequestsCommitsAcrossPages(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/octo/scratch/pulls/7/commits" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		if r.URL.Query().Get("page") == "2" {
+			_, _ = io.WriteString(w, `[{"sha":"cccc","author":null,"commit":{"message":"tidy","author":{"name":"the owner","email":"owner@example.com"}}}]`)
+			return
+		}
+		w.Header().Set("Link", fmt.Sprintf(`<%s/repos/octo/scratch/pulls/7/commits?per_page=100&page=2>; rel="next"`, srv.URL))
+		_, _ = io.WriteString(w, `[
+			{"sha":"aaaa","author":{"login":"github-actions[bot]"},"commit":{"message":"feat: add","author":{"name":"github-actions[bot]","email":"bot@example.com"}}},
+			{"sha":"bbbb","author":{"login":"alvintoh"},"commit":{"message":"fix: review","author":{"name":"the owner","email":"owner@example.com"}}}
+		]`)
+	}))
+	defer srv.Close()
+
+	commits, err := (GitHub{Endpoint: srv.URL, Token: "t", Client: srv.Client()}).PullCommits(context.Background(), "octo/scratch", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []PullCommit{
+		{SHA: "aaaa", Login: "github-actions[bot]", Name: "github-actions[bot]", Email: "bot@example.com", Message: "feat: add"},
+		{SHA: "bbbb", Login: "alvintoh", Name: "the owner", Email: "owner@example.com", Message: "fix: review"},
+		{SHA: "cccc", Name: "the owner", Email: "owner@example.com", Message: "tidy"},
+	}
+	if !reflect.DeepEqual(commits, want) {
+		t.Fatalf("commits = %+v, want %+v", commits, want)
+	}
+}
+
+func TestGitHubPullCommitsFailsAtTheCeilingGitHubLists(t *testing.T) {
+	for _, tt := range []struct {
+		total   int
+		wantErr bool
+	}{{pullCommitsCeiling - 1, false}, {pullCommitsCeiling, true}} {
+		t.Run(strconv.Itoa(tt.total), func(t *testing.T) {
+			var srv *httptest.Server
+			srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+				page = max(page, 1)
+				first, last := (page-1)*100, min(page*100, tt.total)
+				if last < tt.total {
+					w.Header().Set("Link", fmt.Sprintf(`<%s/repos/octo/scratch/pulls/7/commits?per_page=100&page=%d>; rel="next"`, srv.URL, page+1))
+				}
+				var items []string
+				for i := first; i < last; i++ {
+					items = append(items, fmt.Sprintf(`{"sha":"s%d","author":{"login":"alvintoh"},"commit":{"author":{}}}`, i))
+				}
+				_, _ = io.WriteString(w, "["+strings.Join(items, ",")+"]")
+			}))
+			defer srv.Close()
+			commits, err := (GitHub{Endpoint: srv.URL, Token: "t", Client: srv.Client()}).PullCommits(context.Background(), "octo/scratch", 7)
+			if (err != nil) != tt.wantErr || (err == nil && len(commits) != tt.total) {
+				t.Fatalf("got %d commits, %v, want %d commits and error %v", len(commits), err, tt.total, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestGitHubReadsTheStatusChecksTheBranchRulesRequire(t *testing.T) {
+	for _, tt := range []struct {
+		name, body string
+		want       []string
+		wantErr    bool
+	}{
+		{"two rulesets naming one context twice", `[
+			{"type":"pull_request","parameters":{}},
+			{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"go"},{"context":"web"}]}},
+			{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"web"},{"context":"lint"}]}}
+		]`, []string{"go", "web", "lint"}, false},
+		{"rules that require no check", `[{"type":"pull_request","parameters":{}}]`, nil, true},
+		{"another rule type naming a context", `[{"type":"workflows","parameters":{"required_status_checks":[{"context":"go"}]}}]`, nil, true},
+		{"a rule with an empty list", `[{"type":"required_status_checks","parameters":{"required_status_checks":[]}}]`, nil, true},
+		{"no rules", `[]`, nil, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/repos/octo/scratch/rules/branches/main" {
+					t.Errorf("path = %q", r.URL.Path)
+				}
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			defer srv.Close()
+			got, err := (GitHub{Endpoint: srv.URL, Token: "t", Client: srv.Client()}).RequiredChecks(context.Background(), "octo/scratch", "main")
+			if (err != nil) != tt.wantErr || !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("got %v, %v, want %v, error %v", got, err, tt.want, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestGitHubChecksOutcomeWaitsForEveryRequiredCheck(t *testing.T) {
+	const noStatus = `{"total_count":0,"statuses":[]}`
+	for _, tt := range []struct {
+		name, runs, status string
+		required           []string
+		want               string
+	}{
+		{"every check green", `{"total_count":2,"check_runs":[
+			{"id":1,"name":"go","status":"completed","conclusion":"success"},
+			{"id":2,"name":"web","status":"completed","conclusion":"skipped"}]}`, noStatus, []string{"go", "web"}, CheckGreen},
+		{"a failing run no rule requires is ignored", `{"total_count":2,"check_runs":[
+			{"id":1,"name":"go","status":"completed","conclusion":"success"},
+			{"id":2,"name":"docs","status":"completed","conclusion":"failure"}]}`, noStatus, []string{"go"}, CheckGreen},
+		{"one failing", `{"total_count":2,"check_runs":[
+			{"id":1,"name":"go","status":"completed","conclusion":"failure"},
+			{"id":2,"name":"web","status":"completed","conclusion":"success"}]}`, noStatus, []string{"go", "web"}, CheckFailing},
+		{"one missing", `{"total_count":1,"check_runs":[
+			{"id":1,"name":"go","status":"completed","conclusion":"success"}]}`, noStatus, []string{"go", "web"}, CheckPending},
+		{"one in progress", `{"total_count":2,"check_runs":[
+			{"id":1,"name":"go","status":"completed","conclusion":"success"},
+			{"id":2,"name":"web","status":"in_progress","conclusion":null}]}`, noStatus, []string{"go", "web"}, CheckPending},
+		{"pending wins over failing", `{"total_count":2,"check_runs":[
+			{"id":1,"name":"go","status":"completed","conclusion":"failure"},
+			{"id":2,"name":"web","status":"queued","conclusion":null}]}`, noStatus, []string{"go", "web"}, CheckPending},
+		{"a rerun that passed after a failure", `{"total_count":2,"check_runs":[
+			{"id":9,"name":"go","status":"completed","conclusion":"success"},
+			{"id":4,"name":"go","status":"completed","conclusion":"failure"}]}`, noStatus, []string{"go"}, CheckGreen},
+		{"a neutral conclusion is not a failure", `{"total_count":1,"check_runs":[
+			{"id":1,"name":"go","status":"completed","conclusion":"neutral"}]}`, noStatus, []string{"go"}, CheckGreen},
+		{"a context with a run and a status takes the run", `{"total_count":1,"check_runs":[
+			{"id":1,"name":"go","status":"completed","conclusion":"success"}]}`,
+			`{"total_count":2,"statuses":[{"context":"go","state":"failure"},{"context":"deploy","state":"success"}]}`, []string{"go", "deploy"}, CheckGreen},
+		{"a legacy status for a context with no run", `{"total_count":1,"check_runs":[
+			{"id":1,"name":"go","status":"completed","conclusion":"success"}]}`,
+			`{"total_count":1,"statuses":[{"context":"deploy","state":"success"}]}`, []string{"go", "deploy"}, CheckGreen},
+		{"a failing legacy status", `{"total_count":0,"check_runs":[]}`,
+			`{"total_count":1,"statuses":[{"context":"deploy","state":"failure"}]}`, []string{"deploy"}, CheckFailing},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/repos/octo/scratch/commits/abc123/check-runs":
+					_, _ = io.WriteString(w, tt.runs)
+				case "/repos/octo/scratch/commits/abc123/status":
+					_, _ = io.WriteString(w, tt.status)
+				default:
+					t.Errorf("path = %q", r.URL.Path)
+				}
+			}))
+			defer srv.Close()
+			got, err := (GitHub{Endpoint: srv.URL, Token: "t", Client: srv.Client()}).ChecksOutcome(context.Background(), "octo/scratch", "abc123", tt.required)
+			if err != nil || got != tt.want {
+				t.Fatalf("outcome = %q, %v, want %q", got, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestGitHubChecksOutcomeRefusesToCallNoRequiredChecksGreen(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls++ }))
+	defer srv.Close()
+	got, err := (GitHub{Endpoint: srv.URL, Token: "t", Client: srv.Client()}).ChecksOutcome(context.Background(), "octo/scratch", "abc123", nil)
+	if err == nil || got != "" || calls != 0 {
+		t.Fatalf("got %q, %v after %d calls, want an error before any read", got, err, calls)
+	}
+}
+
+func TestGitHubChecksOutcomeReadsStatusesOnlyForContextsWithNoRun(t *testing.T) {
+	const runs = `{"total_count":1,"check_runs":[{"id":1,"name":"go","status":"completed","conclusion":"success"}]}`
+	for _, tt := range []struct {
+		name     string
+		required []string
+		wantErr  bool
+		want     string
+	}{
+		{"every context has a run", []string{"go"}, false, CheckGreen},
+		{"a context has none", []string{"go", "deploy"}, true, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/check-runs") {
+					_, _ = io.WriteString(w, runs)
+					return
+				}
+				w.WriteHeader(http.StatusBadGateway)
+			}))
+			defer srv.Close()
+			got, err := (GitHub{Endpoint: srv.URL, Token: "t", Client: srv.Client()}).ChecksOutcome(context.Background(), "octo/scratch", "abc123", tt.required)
+			if (err != nil) != tt.wantErr || got != tt.want {
+				t.Fatalf("got %q, %v, want %q, error %v", got, err, tt.want, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestGitHubChecksOutcomeFailsWhenAReadHoldsMoreThanItsPage(t *testing.T) {
+	for name, tt := range map[string]struct{ runs, status string }{
+		"more runs than the page": {`{"total_count":150,"check_runs":[{"id":1,"name":"go","status":"completed","conclusion":"success"}]}`,
+			`{"total_count":0,"statuses":[]}`},
+		"more statuses than the page": {`{"total_count":0,"check_runs":[]}`,
+			`{"total_count":150,"statuses":[{"context":"deploy","state":"success"}]}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/check-runs") {
+					_, _ = io.WriteString(w, tt.runs)
+					return
+				}
+				_, _ = io.WriteString(w, tt.status)
+			}))
+			defer srv.Close()
+			got, err := (GitHub{Endpoint: srv.URL, Token: "t", Client: srv.Client()}).ChecksOutcome(context.Background(), "octo/scratch", "abc123", []string{"go", "deploy"})
+			if err == nil || got != "" {
+				t.Fatalf("got %q, %v, want an error and no outcome", got, err)
+			}
+		})
+	}
+}

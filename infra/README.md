@@ -309,6 +309,10 @@ cannot read leaves that count unknown, which admits only a lone run.
 `actions: write`: the dispatch is a `workflow_dispatch`, which GitHub refuses
 with 403 "Resource not accessible by personal access token" without it.
 
+The dispatcher's checks phase reads check runs, commit statuses and the branch rules of
+each listed repository with no permission beyond the two above, which works only on a public
+repository; a private one is unsupported, since fine-grained tokens have no Checks permission.
+
 `secrets.tf` creates four more, empty and readable by no identity until the code
 that reads each lands and grants its own (`notice.tf` grants the dispatcher
 `notice-webhook-url`; `linear_app.tf` grants the dispatcher and the webhook the
