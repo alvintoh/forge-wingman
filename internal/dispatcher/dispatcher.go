@@ -224,6 +224,9 @@ type Deps struct {
 	// Decisions is the store's decision surface a poll reads and writes.
 	Elicit    Elicitor
 	Decisions Decisions
+	// Checks records, on each run's row, the agent's head commit and the result
+	// of its required checks.
+	Checks ChecksDeps
 }
 
 // missing names the first dependency left unset, or "" when all are wired.
@@ -244,6 +247,7 @@ func (d Deps) missing() string {
 		{"OpenPRs", d.OpenPRs != nil},
 		{"PullRequests", d.PullRequests != nil},
 		{"Rewrites", d.Rewrites != nil},
+		{"Checks", d.Checks.ready()},
 		{"Workflow", d.Workflow != nil},
 		{"Logger", d.Logger != nil},
 		{"Now", d.Now != nil},
@@ -410,6 +414,11 @@ func Poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	rewriteErr := measureRewrites(ctx, d, c)
 	LogPhase(d.Logger, "rewrite", start, d.Now())
 	start = d.Now()
+	checksCtx, cancelChecks := context.WithTimeout(ctx, checksTimeout)
+	checksErr := settleChecks(checksCtx, d)
+	cancelChecks()
+	LogPhase(d.Logger, "checks", start, d.Now())
+	start = d.Now()
 	decideErr := postDecisions(ctx, d, c)
 	LogPhase(d.Logger, "decisions", start, d.Now())
 	start = d.Now()
@@ -418,7 +427,7 @@ func Poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	start = d.Now()
 	noticeErr := postNotices(ctx, d)
 	LogPhase(d.Logger, "notices", start, d.Now())
-	return res, errors.Join(err, sweepErr, rewriteErr, decideErr, stuckErr, noticeErr)
+	return res, errors.Join(err, sweepErr, rewriteErr, checksErr, decideErr, stuckErr, noticeErr)
 }
 
 // LogPhase logs how long one phase of a poll took, so a slow poll can be traced

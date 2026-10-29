@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -12,6 +11,8 @@ import (
 	"cloud.google.com/go/firestore"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 )
 
 // OwnerDatabase is the Firestore database the owner's controls live in — the
@@ -21,16 +22,13 @@ const OwnerDatabase = "owner"
 
 const projectsCollection = "projects"
 
-// repositoryPattern is what GitHub calls a repository: an owner and a name.
-var repositoryPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
-
 // ErrRepositoryListed reports an add whose repository is already listed.
 var ErrRepositoryListed = errors.New("repository already listed")
 
 // ValidRepository reports whether repo is written as owner/name. The Projects view
 // checks the same pattern before it posts an add.
 func ValidRepository(repo string) bool {
-	return repositoryPattern.MatchString(repo)
+	return dispatcher.ValidRepository(repo)
 }
 
 // projectDoc is one listed project: the Linear project's name, its repository,

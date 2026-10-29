@@ -450,6 +450,7 @@ func pollDeps(source Source, q *fakeQueue, w *fakeWorkflow) Deps {
 		// merged PR to see does nothing with either.
 		PullRequests: &fakePullRequests{},
 		Rewrites:     &fakeRewrites{},
+		Checks:       ChecksDeps{Runs: &fakeChecksRuns{}, GitHub: &fakeChecksGitHub{}, Branch: "main"},
 	}
 }
 

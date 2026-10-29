@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 	"github.com/alvintoh/forge-wingman/internal/runner"
 	"github.com/alvintoh/forge-wingman/internal/store"
 )
@@ -152,7 +153,7 @@ func (d Deps) draftToSupersede(ctx context.Context, w http.ResponseWriter, run, 
 		writeJSON(w, http.StatusServiceUnavailable, mergeRefusal{Reason: refusedNoMergeToken})
 		return 0, false
 	}
-	repo, number, err := parsePullURL(prURL)
+	repo, number, err := dispatcher.ParsePullURL(prURL)
 	if err != nil {
 		d.refuseRetry(w, run, refusedNoPullRequest)
 		return 0, false
