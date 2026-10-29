@@ -1,5 +1,5 @@
 import { padxFor } from "./axis";
-import { ChartCard } from "./chart-card";
+import { ChartCard, ChartHeader } from "./chart-card";
 import { SPLIT_KINDS, UNKNOWN_MODEL } from "./format";
 import { Diamond, Swatch } from "./marks";
 import { FOLD_BAR_H, StageCard } from "./metric-rows";
@@ -14,34 +14,40 @@ type ByModelProps = { byModel: Record<Phase, ModelRow[]> };
 
 // ByModel is each stage's models in a card of its own, numbered in the order a run
 // takes them, and a slim card below holding the legend and the measured-figures note.
+// Its label sits above the cards, level with the cards' content.
 export function ByModel({ byModel }: ByModelProps) {
   return (
-    <div className="space-y-4 lg:space-y-6">
-      <div className="grid gap-4 lg:grid-cols-3 lg:gap-6">
-        {PHASES.map((phase, i) => {
-          const rows = byModel[phase];
-          const total = rows.reduce((sum, row) => sum + row.prs, 0);
-          const through = rows.reduce(
-            (sum, row) => sum + (row.model === UNKNOWN_MODEL ? 0 : row.prs),
-            0,
-          );
-          return (
-            <ChartCard key={phase}>
-              {(width) => (
-                <StageCard
-                  numeral={i + 1}
-                  phase={phase}
-                  through={through}
-                  total={total}
-                  models={rows}
-                  width={width}
-                />
-              )}
-            </ChartCard>
-          );
-        })}
+    <div>
+      <div className="px-[7px] sm:px-[27px]">
+        <ChartHeader title="by model" aside="bar = pooled rate" padx={0} />
       </div>
-      <ChartCard>{(width) => <LegendCard width={width} />}</ChartCard>
+      <div className="mt-2.5 space-y-4 lg:space-y-6">
+        <div className="grid gap-4 lg:grid-cols-3 lg:gap-6">
+          {PHASES.map((phase, i) => {
+            const rows = byModel[phase];
+            const total = rows.reduce((sum, row) => sum + row.prs, 0);
+            const through = rows.reduce(
+              (sum, row) => sum + (row.model === UNKNOWN_MODEL ? 0 : row.prs),
+              0,
+            );
+            return (
+              <ChartCard key={phase}>
+                {(width) => (
+                  <StageCard
+                    numeral={i + 1}
+                    phase={phase}
+                    through={through}
+                    total={total}
+                    models={rows}
+                    width={width}
+                  />
+                )}
+              </ChartCard>
+            );
+          })}
+        </div>
+        <ChartCard>{(width) => <LegendCard width={width} />}</ChartCard>
+      </div>
     </div>
   );
 }
