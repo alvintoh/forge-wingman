@@ -531,6 +531,7 @@ function StageRowItem({ row }: { row: StageRow }) {
           {row.main && <p className="mt-1 text-cap text-ink2">{spreadWords(group)}</p>}
         </>
       )}
+      {row.main && group.owner_lines > 0 && <SplitWords group={group} column />}
     </li>
   );
 }
@@ -562,12 +563,16 @@ export function StageCard({ numeral, phase, through, total, models, width }: Sta
   return (
     <div style={{ paddingInline: padx }} data-stage={phase}>
       <div className={wide ? "grid items-center" : undefined} style={wide ? STAGE_GRID : undefined}>
-        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-          <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full border border-ink2 font-mono text-cap font-semibold text-ink2">
-            {numeral}
-          </span>
-          <h3 className={`${captionClass} text-ink`}>{phase}</h3>
-          <p className="text-cap text-muted">
+        <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1">
+          <div className="flex min-w-0 items-center gap-x-2.5">
+            <span className="grid size-5.5 shrink-0 place-items-center rounded-full border-[1.5px] border-ink2 bg-card text-label font-semibold text-ink">
+              {numeral}
+            </span>
+            <h3 className="min-w-0 text-title font-semibold break-words text-ink capitalize">
+              {phase}
+            </h3>
+          </div>
+          <p className={`text-label font-semibold text-ink2 ${wide ? "" : "ml-auto"}`}>
             {through === 0 ? "no model recorded" : `${through} of ${prsWord(total)}`}
           </p>
         </div>
