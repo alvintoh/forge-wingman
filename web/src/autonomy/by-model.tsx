@@ -24,6 +24,7 @@ export function ByModel({ byModel }: ByModelProps) {
       <div className="mt-2.5 space-y-4 lg:space-y-6">
         {PHASES.map((phase, i) => {
           const rows = byModel[phase];
+          if (rows.length === 0) return null;
           const total = rows.reduce((sum, row) => sum + row.prs, 0);
           const through = rows.reduce(
             (sum, row) => sum + (row.model === UNKNOWN_MODEL ? 0 : row.prs),

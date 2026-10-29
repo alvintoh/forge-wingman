@@ -512,7 +512,7 @@ function StageRowItem({ row }: { row: StageRow }) {
             <PooledBar
               group={group}
               height={row.folded ? FOLD_BAR_H : COMPACT_BAR_H}
-              split={!row.folded}
+              split={row.main}
               tone={row.folded ? "muted" : "accent"}
             />
             <p className="flex items-baseline gap-x-1.5">
@@ -523,7 +523,7 @@ function StageRowItem({ row }: { row: StageRow }) {
               <span className="text-label text-ink2">{off ? "pooled, off scale" : "pooled"}</span>
             </p>
           </div>
-          {row.main && group.median !== null && (
+          {row.main && group.median_value !== null && (
             <div className="mt-1" style={{ marginRight: `calc(${VALUE_COL} + ${VALUE_GAP})` }}>
               <Whisker group={group} />
             </div>
