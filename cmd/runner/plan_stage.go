@@ -82,22 +82,29 @@ func planStage(ctx context.Context, logger *slog.Logger, e env, args []string) e
 				Ticket:     t,
 				Guided:     true,
 			})
-			if err != nil {
-				// The plan stage reports no summary, so every failure is a failed run
-				// rather than a stop the record job would judge.
-				return fmt.Errorf("%w: %w", errRunFailed, err)
-			}
-			raw, err := runner.EncodePlanStage(res)
-			if err != nil {
-				return err
-			}
-			if err := os.WriteFile(*out, raw, 0o600); err != nil {
-				return fmt.Errorf("writing the plan: %w", err)
-			}
-			logger.Info("planStageDone", "files", len(res.Files), "base", res.BaseSHA)
-			return nil
+			return finishPlanStage(logger, res, err, *out)
 		})
 	return err
+}
+
+// finishPlanStage logs and returns a failed plan stage, or writes a successful
+// one's artifact to out.
+func finishPlanStage(logger *slog.Logger, res runner.PlanStageResult, err error, out string) error {
+	if err != nil {
+		logger.Error("planStageFailed", "err", err)
+		// The plan stage reports no summary, so every failure is a failed run
+		// rather than a stop the record job would judge.
+		return fmt.Errorf("%w: %w", errRunFailed, err)
+	}
+	raw, err := runner.EncodePlanStage(res)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(out, raw, 0o600); err != nil {
+		return fmt.Errorf("writing the plan: %w", err)
+	}
+	logger.Info("planStageDone", "files", len(res.Files), "base", res.BaseSHA)
+	return nil
 }
 
 // recordPlanStage is the trusted half of the two-stage dispatch: it
