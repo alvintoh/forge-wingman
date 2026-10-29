@@ -392,7 +392,7 @@ func TestParseSummaryRejectsEndingsABuildCannotReach(t *testing.T) {
 		{OutcomeInfraFailure, StopSetup, PhaseProjection},
 		{OutcomeInfraFailure, StopPanic, ""},
 		{OutcomeStopped, StopWorktree, PhaseWorktree},
-		// A review-phase failure no longer ends a build at PhaseReview: it
+		// A review-phase failure other than a formatter leaving the run's diff
 		// forces a draft and the build proceeds to PhaseCommit instead (FR-5).
 		{OutcomeStopped, StopReviewInvalid, PhaseReview},
 		{OutcomeInfraFailure, StopChecksRun, PhaseReview},

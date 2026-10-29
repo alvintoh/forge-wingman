@@ -74,6 +74,17 @@ func touchesWeb(changed []string) bool {
 // gofmtArgs is the gofmt gate's command line, run before exitGates.
 var gofmtArgs = []string{"gofmt", "-l", "."}
 
+// gofmtFixArgs is the command line that fixes what gofmtArgs lists.
+var gofmtFixArgs = []string{"gofmt", "-w", "."}
+
+// webFmtFixArgs are bun's arguments for the step that fixes what checkWebFmtCheck reports.
+var webFmtFixArgs = []string{"run", "fmt"}
+
+// isFormatGate reports whether gate is one a Formatter can fix.
+func isFormatGate(gate string) bool {
+	return gate == checkGofmt || gate == checkWebFmtCheck
+}
+
 // exitGates are the gates after gofmt, each judged by its exit status, in
 // Makefile's check order.
 var exitGates = []struct {
@@ -116,6 +127,10 @@ func checkCmdEnv() []string {
 // test that exercises the pre-PR loop's wiring without shelling out to a real
 // Go toolchain.
 type CheckRunner func(ctx context.Context, dir string, changed []string) (failedGate, output string, err error)
+
+// Formatter fixes a failing formatting gate in place under dir; gate is
+// checkGofmt or checkWebFmtCheck, and any other gate is an error.
+type Formatter func(ctx context.Context, dir, gate string) error
 
 // PackageTestRunner runs one package's tests against dir, and reports whether
 // they failed. It is ContainerChecks.RunPackageTest in production and
@@ -174,6 +189,33 @@ func RunPackageTest(ctx context.Context, dir, pkg string) (bool, string, error) 
 		return false, "", err
 	}
 	return failed, output, nil
+}
+
+// RunFormat is a Formatter that runs the gate's fixing command on the host:
+// gofmt -w for checkGofmt, and bun's fmt script in webDir for checkWebFmtCheck.
+// A formatter that exits non-zero, as gofmt does on a syntax error, is not an
+// error: the gate fails again on the same output, which the build agent gets.
+func RunFormat(ctx context.Context, dir, gate string) error {
+	var (
+		bin, workDir string
+		args         []string
+	)
+	switch gate {
+	case checkGofmt:
+		bin, args, workDir = gofmtFixArgs[0], gofmtFixArgs[1:], dir
+	case checkWebFmtCheck:
+		bun, err := lookPath("bun")
+		if err != nil {
+			return fmt.Errorf("formatting %s: %w", gate, err)
+		}
+		bin, args, workDir = bun, webFmtFixArgs, filepath.Join(dir, webDir)
+	default:
+		return fmt.Errorf("formatting %s: no formatter for this gate", gate)
+	}
+	if _, _, err := runGate(ctx, workDir, bin, args...); err != nil {
+		return fmt.Errorf("formatting %s: %w", gate, err)
+	}
+	return nil
 }
 
 // runWebSteps runs the web job's steps against dir's web directory with the

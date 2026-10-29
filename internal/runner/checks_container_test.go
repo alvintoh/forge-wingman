@@ -405,6 +405,78 @@ func imageCommands(t *testing.T, calls [][]string, image string) []string {
 	return commands
 }
 
+func TestContainerChecksFormatRunsTheFixingCommandInOneContainerWithNoNetwork(t *testing.T) {
+	tests := []struct {
+		gate    string
+		command string
+		workdir string
+		mount   string
+		absent  string
+	}{
+		{checkGofmt, "gofmt -w .", containerWorkDir, "dst=/gomodcache,readonly", ""},
+		{checkWebFmtCheck, containerBun + " run fmt", containerWebDir, "dst=" + containerBun + ",readonly", "dst=" + containerBunCache},
+	}
+	for _, tt := range tests {
+		t.Run(tt.gate, func(t *testing.T) {
+			logFile := fakeDocker(t)
+			c := testContainerChecks(t)
+			dir := initWebModule(t)
+
+			if err := c.Format(context.Background(), dir, tt.gate); err != nil {
+				t.Fatal(err)
+			}
+			calls := dockerCalls(t, logFile)
+			if got := imageCommands(t, calls, c.Image); !slices.Equal(got, []string{tt.command}) {
+				t.Fatalf("Format ran %q, want %q alone", got, tt.command)
+			}
+			args := calls[0]
+			if got := flagValues(args, "--network"); !slices.Equal(got, []string{"none"}) {
+				t.Errorf("--network %v, want none", got)
+			}
+			if got := flagValues(args, "--workdir"); !slices.Equal(got, []string{tt.workdir}) {
+				t.Errorf("--workdir %v, want %s", got, tt.workdir)
+			}
+			mounts := flagValues(args, "--mount")
+			if mounts[0] != "type=bind,src="+dir+",dst=/work" {
+				t.Errorf("mounts = %v, want the worktree writable first", mounts)
+			}
+			if !slices.ContainsFunc(mounts, func(m string) bool { return strings.HasSuffix(m, tt.mount) }) {
+				t.Errorf("mounts = %v, want one ending %s", mounts, tt.mount)
+			}
+			if tt.absent != "" && slices.ContainsFunc(mounts, func(m string) bool { return strings.HasSuffix(m, tt.absent) }) {
+				t.Errorf("mounts = %v, want none ending %s: the fmt script reads no cache", mounts, tt.absent)
+			}
+		})
+	}
+}
+
+func TestContainerChecksFormatErrorsOnlyWhenTheFormatterCannotRunAndRefusesAnUnknownGate(t *testing.T) {
+	t.Run("a formatter that exits non-zero", func(t *testing.T) {
+		fakeDocker(t)
+		t.Setenv("DOCKER_FAKE_FAIL", "-w")
+		if err := testContainerChecks(t).Format(context.Background(), initModule(t), checkGofmt); err != nil {
+			t.Fatalf("Format = %v, want nil: the gate's re-check reports what the formatter could not fix", err)
+		}
+	})
+	t.Run("docker failing to start the formatter", func(t *testing.T) {
+		fakeDocker(t)
+		t.Setenv("DOCKER_FAKE_FAIL", "-w")
+		t.Setenv("DOCKER_FAKE_CODE", "125")
+		if err := testContainerChecks(t).Format(context.Background(), initModule(t), checkGofmt); err == nil {
+			t.Fatal("Format = nil, want an error for a container docker could not start")
+		}
+	})
+	t.Run("a gate with no formatter", func(t *testing.T) {
+		logFile := fakeDocker(t)
+		if err := testContainerChecks(t).Format(context.Background(), initModule(t), checkVet); err == nil {
+			t.Fatal("Format accepted a gate no formatter fixes")
+		}
+		if _, err := os.Stat(logFile); !os.IsNotExist(err) {
+			t.Fatalf("docker ran for a gate no formatter fixes: %v", err)
+		}
+	})
+}
+
 func TestContainerChecksTreatDockerFailingToStartAGateAsAnError(t *testing.T) {
 	fakeDocker(t)
 	t.Setenv("DOCKER_FAKE_FAIL", "vet")

@@ -171,6 +171,37 @@ func (c ContainerChecks) RunPackageTest(ctx context.Context, dir, pkg string) (b
 	return failed, stdout + stderr, nil
 }
 
+// Format is a Formatter that runs the gate's fixing command in a fresh
+// container of the checks image with no network: gofmt -w for checkGofmt, the
+// host's bun running web's fmt script for checkWebFmtCheck. As RunFormat does,
+// it reports only a formatter that could not be run, not one that exited
+// non-zero.
+func (c ContainerChecks) Format(ctx context.Context, dir, gate string) error {
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return fmt.Errorf("formatting %s: %w", gate, err)
+	}
+	switch gate {
+	case checkGofmt:
+		cache, cleanup, cerr := gateCache()
+		if cerr != nil {
+			return fmt.Errorf("formatting %s: %w", gate, cerr)
+		}
+		defer cleanup()
+		_, _, _, err = c.runGate(ctx, dir, cache, gate, gofmtFixArgs...)
+	case checkWebFmtCheck:
+		_, _, _, err = c.runContainer(ctx, gate, func(name string) hardenedRun {
+			return c.webFormatRun(name, dir, append([]string{containerBun}, webFmtFixArgs...))
+		})
+	default:
+		return fmt.Errorf("formatting %s: no formatter for this gate", gate)
+	}
+	if err != nil {
+		return fmt.Errorf("formatting %s: %w", gate, err)
+	}
+	return nil
+}
+
 // gateDir prepares dir for one gate run: absolute, with the module cache
 // filled. A download that runs and fails is not an error there — the gate then
 // fails on the same missing module, with output the next round can act on.
@@ -353,6 +384,23 @@ func (c ContainerChecks) webGateRun(name, dir string, argv []string) hardenedRun
 		},
 		Image: c.Image,
 		Argv:  argv,
+	}
+}
+
+// webFormatRun is webGateRun without the bun cache, which the fmt script never
+// reads: the worktree and the host's bun alone.
+func (c ContainerChecks) webFormatRun(name, dir string, argv []string) hardenedRun {
+	return hardenedRun{
+		Name:    name,
+		Network: "none",
+		Mounts: []string{
+			bindMount(dir, containerWorkDir, false),
+			bindMount(c.Bun, containerBun, true),
+		},
+		Workdir: containerWebDir,
+		Env:     []string{"TMPDIR=/tmp", "HOME=/tmp"},
+		Image:   c.Image,
+		Argv:    argv,
 	}
 }
 

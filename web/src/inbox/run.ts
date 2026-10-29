@@ -102,6 +102,7 @@ const stopWords: Record<string, string> = {
   "rebase-conflict": "Stopped, its changes conflict with main",
   "workflow-change": "Stopped, it changed a workflow file",
   "run-budget": "Stopped, the run's time budget was spent",
+  "formatter-outside-diff": "Stopped, the formatter changed files outside the change",
 };
 
 // stopReasonOf words why a run stopped; a reason the table does not know is shown as the runner

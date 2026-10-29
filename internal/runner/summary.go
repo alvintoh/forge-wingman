@@ -231,10 +231,13 @@ var buildEndings = func() map[ending]bool {
 		{OutcomeBudgetStop, StopAllowanceExhausted, PhaseBuild}:    true,
 		{OutcomeInfraFailure, StopModelUnavailable, PhaseBuild}:    true,
 		{OutcomeInfraFailure, StopChecksRun, PhaseBuild}:           true,
+		{OutcomeStopped, StopFormatterOutsideDiff, PhaseBuild}:     true,
 		{OutcomeStopped, StopRunBudget, PhaseBuild}:                true,
-		// A review-phase failure never ends a build at PhaseReview: it forces
-		// a draft and the build proceeds to PhaseCommit instead (FR-5) — only
-		// a panic mid-review, below, can end there.
+		// A review-phase failure ends a build at PhaseReview only for a formatter
+		// that left the run's diff, and for a panic below: any other forces a
+		// draft and the build proceeds to PhaseCommit instead (FR-5).
+		{OutcomeStopped, StopFormatterOutsideDiff, PhaseReview}: true,
+
 		{OutcomeStopped, StopGitTampered, PhaseCommit}:    true,
 		{OutcomeStopped, StopHeadMoved, PhaseCommit}:      true,
 		{OutcomeInfraFailure, StopCommit, PhaseCommit}:    true,
