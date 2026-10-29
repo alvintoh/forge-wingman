@@ -38,7 +38,12 @@ const RUN_SCREENS: readonly Screen[] = [
     icon: "M6 5H18A3 3 0 0 1 21 8V16A3 3 0 0 1 18 19H6A3 3 0 0 1 3 16V8A3 3 0 0 1 6 5ZM3 9h18",
     filtered: true,
   },
-  { to: "/stats", label: "Statistics", icon: "M4 20V10M10 20V4M16 20v-8M22 20H2" },
+  {
+    to: "/stats",
+    label: "Statistics",
+    icon: "M4 20V10M10 20V4M16 20v-8M22 20H2",
+    filtered: true,
+  },
 ];
 
 const SETTINGS_SCREENS: readonly Screen[] = [

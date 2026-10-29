@@ -2,8 +2,6 @@ import { barOf, reasonText, whole } from "../autonomy/format";
 import { isAutonomy, isRewrite } from "../autonomy/guard";
 import type { MergeState } from "../autonomy/types";
 import { captionClass } from "../caption";
-import { useKnownProject } from "../project-filter";
-import { useProjects } from "../project-list";
 import { PhaseModels, PhaseSlots } from "./phase-models";
 import { useRead } from "./use-read";
 
@@ -23,13 +21,12 @@ function rateSentence(merge: MergeState): string {
 /**
  * RewriteRate is the Statistics card for the rewrite rate: what it measures, the figure over the
  * trailing window against its limit, the key to the figures under each model, and the models of
- * the three phases.
+ * the three phases. The endpoint is pooled, so a project chosen on the page leaves every figure
+ * here as All draws it and the card says so.
  */
-export function RewriteRate() {
+export function RewriteRate({ projectChosen }: { projectChosen: boolean }) {
   const read = useRead("/api/autonomy", isAutonomy, "autonomyNotRead");
   const view = read.status === "ready" ? read.body : null;
-  const { state: list } = useProjects();
-  const { known } = useKnownProject(list.projects, list.status === "ready");
   return (
     <section
       aria-labelledby="rewrite-rate-title"
@@ -45,7 +42,7 @@ export function RewriteRate() {
         {read.status === "error" && <p role="alert">The rewrite rate could not be read.</p>}
         {view !== null && <p>{rateSentence(view.auto_merge)}</p>}
       </div>
-      {view !== null && known !== undefined && (
+      {view !== null && projectChosen && (
         <p className="mt-2 text-label font-semibold text-ink">rate and models: all projects</p>
       )}
       {view !== null && isRewrite(view.rewrite) && (
