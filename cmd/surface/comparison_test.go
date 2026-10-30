@@ -111,7 +111,8 @@ func TestComparisonReportsEachRunsPromptCacheShare(t *testing.T) {
 		Runs: []store.RunCache{{RunID: "run-1", Provider: "command-code", Model: "command-code/x", CachedShare: 0.75,
 			BuildCache: "90% first, 75% phase", PlanCache: "50% first, 25% phase",
 			BuildFirstShare: share(0.9), BuildPhaseShare: share(0.75),
-			PlanFirstShare: share(0.5), PlanPhaseShare: share(0.25)}},
+			PlanFirstShare: share(0.5), PlanPhaseShare: share(0.25),
+			SettledAt: time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)}},
 	}}
 	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Comparison: reader})
 
@@ -130,8 +131,11 @@ func TestComparisonReportsEachRunsPromptCacheShare(t *testing.T) {
 	if len(body.Runs) != 1 {
 		t.Fatalf("body = %s, want one run", rec.Body.String())
 	}
-	if got, want := slices.Sorted(maps.Keys(body.Runs[0])), []string{"build_cache", "build_first_share", "build_phase_share", "cached_share", "model", "plan_cache", "plan_first_share", "plan_phase_share", "provider", "run_id"}; !slices.Equal(got, want) {
+	if got, want := slices.Sorted(maps.Keys(body.Runs[0])), []string{"build_cache", "build_first_share", "build_phase_share", "cached_share", "model", "plan_cache", "plan_first_share", "plan_phase_share", "provider", "run_id", "settled_at"}; !slices.Equal(got, want) {
 		t.Errorf("run keys = %v, want %v", got, want)
+	}
+	if got, want := body.Runs[0]["settled_at"], "2026-10-20T09:00:00Z"; got != want {
+		t.Errorf("settled at = %v, want %v", got, want)
 	}
 	if got, want := body.Runs[0]["cached_share"], 0.75; got != want {
 		t.Errorf("cached share = %v, want %v", got, want)
@@ -210,6 +214,42 @@ func TestComparisonServesEachPhasesSharesAsNumbersOrNull(t *testing.T) {
 	}
 }
 
+// TestComparisonServesEachRunsSettledTime asserts every run's row carries when
+// it settled as an RFC 3339 string, whether the run recorded both phases, a plan
+// stage or a cache map at all (AC1, AC3).
+func TestComparisonServesEachRunsSettledTime(t *testing.T) {
+	settled := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name string
+		run  store.RunCache
+	}{
+		{"a recorded run",
+			store.RunCache{RunID: "run-1", BuildCache: "90% first, 75% phase", PlanCache: "50% first, 25% phase",
+				BuildFirstShare: share(0.9), BuildPhaseShare: share(0.75), PlanFirstShare: share(0.5), PlanPhaseShare: share(0.25)}},
+		{"a run with no plan stage",
+			store.RunCache{RunID: "run-2", BuildCache: "40% first, 20% phase", PlanCache: runner.PhaseCacheNone,
+				BuildFirstShare: share(0.4), BuildPhaseShare: share(0.2)}},
+		{"a run with no cache map",
+			store.RunCache{RunID: "run-3", BuildCache: runner.PhaseCacheNotRecorded, PlanCache: runner.PhaseCacheNotRecorded}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.run.SettledAt = settled
+			runs := servedRuns(t, tt.run)
+			if len(runs) != 1 {
+				t.Fatalf("runs = %s, want one", runs)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(runs[0], &got); err != nil {
+				t.Fatal(err)
+			}
+			if want := "2026-10-20T09:00:00Z"; got["settled_at"] != want {
+				t.Errorf("settled at = %v in %s, want %s", got["settled_at"], runs[0], want)
+			}
+		})
+	}
+}
+
 // TestComparisonServesAPresentZeroShareAsZeroNotNull asserts a phase whose first
 // request read nothing from cache serves a share of 0, which the view plots as a
 // cold phase, and not the null that means no share was read.
@@ -235,13 +275,15 @@ func TestComparisonServesAPresentZeroShareAsZeroNotNull(t *testing.T) {
 func TestComparisonServesARecordedRunsWholeObjectInItsOwnFieldOrder(t *testing.T) {
 	runs := servedRuns(t, store.RunCache{RunID: "run-1", Provider: "command-code", Model: "command-code/x", CachedShare: 0.75,
 		BuildCache: "90% first, 75% phase", PlanCache: "50% first, 25% phase",
-		BuildFirstShare: share(0.9), BuildPhaseShare: share(0.75), PlanFirstShare: share(0.5), PlanPhaseShare: share(0.25)})
+		BuildFirstShare: share(0.9), BuildPhaseShare: share(0.75), PlanFirstShare: share(0.5), PlanPhaseShare: share(0.25),
+		SettledAt: time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)})
 	if len(runs) != 1 {
 		t.Fatalf("runs = %s, want one", runs)
 	}
 	want := `{"run_id":"run-1","provider":"command-code","model":"command-code/x","cached_share":0.75,` +
 		`"build_cache":"90% first, 75% phase","plan_cache":"50% first, 25% phase",` +
-		`"build_first_share":0.9,"build_phase_share":0.75,"plan_first_share":0.5,"plan_phase_share":0.25}`
+		`"build_first_share":0.9,"build_phase_share":0.75,"plan_first_share":0.5,"plan_phase_share":0.25,` +
+		`"settled_at":"2026-10-20T09:00:00Z"}`
 	if got := string(runs[0]); got != want {
 		t.Errorf("run = %s, want %s", got, want)
 	}

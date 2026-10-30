@@ -458,11 +458,14 @@ func TestComparisonReportsEachRunsPromptCacheShare(t *testing.T) {
 		{RunID: hot, Provider: plan, Model: "command-code/x", CachedShare: 0.99,
 			BuildCache: "90% first, 75% phase", PlanCache: "50% first, 25% phase",
 			BuildFirstShare: share(0.9), BuildPhaseShare: share(0.75),
-			PlanFirstShare: share(0.5), PlanPhaseShare: share(0.25)},
+			PlanFirstShare: share(0.5), PlanPhaseShare: share(0.25),
+			SettledAt: queueAt.Add(2 * time.Minute)},
 		{RunID: warm, Provider: plan, Model: "command-code/x", CachedShare: 0.75,
-			BuildCache: runner.PhaseCacheNotRecorded, PlanCache: runner.PhaseCacheNotRecorded},
+			BuildCache: runner.PhaseCacheNotRecorded, PlanCache: runner.PhaseCacheNotRecorded,
+			SettledAt: queueAt.Add(time.Minute)},
 		{RunID: cold, Provider: plan, Model: "command-code/x", CachedShare: 0.04,
-			BuildCache: runner.PhaseCacheNotRecorded, PlanCache: runner.PhaseCacheNotRecorded},
+			BuildCache: runner.PhaseCacheNotRecorded, PlanCache: runner.PhaseCacheNotRecorded,
+			SettledAt: queueAt},
 	}
 	if !reflect.DeepEqual(got.Runs, want) {
 		t.Fatalf("runs = %+v, want each run that read input, newest first, at %+v", got.Runs, want)
@@ -491,7 +494,8 @@ func TestComparisonServesNoPlanSharesForARunWithNoPlanStage(t *testing.T) {
 	}
 	want := []RunCache{{RunID: id, Provider: plan, Model: "command-code/x", CachedShare: 0.9,
 		BuildCache: "98% first, 98% phase", PlanCache: runner.PhaseCacheNone,
-		BuildFirstShare: share(0.9838113080655234), BuildPhaseShare: share(0.9798857313021004)}}
+		BuildFirstShare: share(0.9838113080655234), BuildPhaseShare: share(0.9798857313021004),
+		SettledAt: queueAt}}
 	if !reflect.DeepEqual(got.Runs, want) {
 		t.Fatalf("runs = %+v, want %+v", got.Runs, want)
 	}
@@ -515,7 +519,7 @@ func TestComparisonServesAColdPhaseAsAShareOfZeroNotNil(t *testing.T) {
 	}
 	want := []RunCache{{RunID: id, Provider: plan, Model: "command-code/x", CachedShare: 0,
 		BuildCache: "0% first, 0% phase", PlanCache: runner.PhaseCacheNone,
-		BuildFirstShare: share(0), BuildPhaseShare: share(0)}}
+		BuildFirstShare: share(0), BuildPhaseShare: share(0), SettledAt: queueAt}}
 	if !reflect.DeepEqual(got.Runs, want) {
 		t.Fatalf("runs = %+v, want a cold build phase as zero, not nil: %+v", got.Runs, want)
 	}

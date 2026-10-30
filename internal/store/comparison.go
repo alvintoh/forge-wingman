@@ -85,6 +85,9 @@ type RunCache struct {
 	// and nil wherever the cell prints a word.
 	BuildFirstShare, BuildPhaseShare *float64
 	PlanFirstShare, PlanPhaseShare   *float64
+	// SettledAt is when the run settled, which is the time the comparison
+	// windows and sorts its rows on, so every row here carries one.
+	SettledAt time.Time
 }
 
 // DriftedRun is one recent run whose settled cost was flagged as sitting above
@@ -209,7 +212,8 @@ func (r *Records) Comparison(ctx context.Context, since time.Time) (Comparison, 
 				BuildCache:      runner.PhaseCacheCell(rec.Cache, runner.PhaseBuild),
 				PlanCache:       runner.PhaseCacheCell(rec.Cache, runner.PhasePlan),
 				BuildFirstShare: buildFirst, BuildPhaseShare: buildPhase,
-				PlanFirstShare: planFirst, PlanPhaseShare: planPhase})
+				PlanFirstShare: planFirst, PlanPhaseShare: planPhase,
+				SettledAt: rec.SettledAt})
 		}
 	}
 	slices.Reverse(drifted)
