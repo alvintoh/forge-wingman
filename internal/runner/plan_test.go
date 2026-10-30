@@ -2,6 +2,7 @@ package runner
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -44,6 +45,31 @@ func TestGuidedPlanPromptNamesTheOwnerOnlyDecisions(t *testing.T) {
 	}
 	if !strings.HasSuffix(prompt, "```") {
 		t.Fatalf("the guided prompt does not end with the decision block: %q", prompt)
+	}
+}
+
+// TestGuidedPlanPromptStatesEveryBound: the guided prompt states each bound the
+// plan's re-check enforces, with the limit it states taken from the constant the
+// check reads, so the model is not left to discover them one correction round at
+// a time.
+func TestGuidedPlanPromptStatesEveryBound(t *testing.T) {
+	projection := "# Rules\n\n" + ticketSentinel + "\n"
+	_, prompt, err := PlanPrompt(projection, testTicket, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		fmt.Sprintf("one question of at most %d bytes", decisionQuestionLimit),
+		fmt.Sprintf("at most %d lines of context", decisionContextLines),
+		fmt.Sprintf("each at most %d bytes", decisionContextLimit),
+		fmt.Sprintf("%d to %d options", decisionOptionMin, decisionOptionMax),
+		fmt.Sprintf("label, value and cost of at most %d, %d and %d bytes",
+			decisionLabelLimit, decisionValueLimit, decisionCostLimit),
+		"each on one line",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("the guided prompt does not state %q", want)
+		}
 	}
 }
 

@@ -842,12 +842,44 @@ func TestPlanPhaseCorrectsADecisionThatBrokeABound(t *testing.T) {
 	}
 }
 
+// TestPlanPhaseCorrectionNamesEveryBrokenBound: a decision that broke two bounds
+// is told both in the one correction round it gets, rather than the first alone,
+// so the reply can fix everything at once.
+func TestPlanPhaseCorrectionNamesEveryBrokenBound(t *testing.T) {
+	d := cloneDecision(testDecision)
+	d.Context = []string{strings.Repeat("x", decisionContextLimit+1)}
+	d.Options[0].Cost = strings.Repeat("c", decisionCostLimit+1)
+	planAgent := roundsAgent(t, []string{
+		decisionEvents("ses_1", d),
+		decisionEvents("ses_1", testDecision),
+	})
+	_, _, _, decision, err := runGuidedPlanPhase(t, planAgent, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision == nil || decision.Question != testDecision.Question {
+		t.Fatalf("decision = %+v, want the corrected decision", decision)
+	}
+	if planAgent.calls != 2 {
+		t.Fatalf("the plan agent ran %d rounds, want 2", planAgent.calls)
+	}
+	for _, want := range []string{
+		fmt.Sprintf("context line 1 is over %d bytes", decisionContextLimit),
+		fmt.Sprintf("option 1 cost is over %d bytes", decisionCostLimit),
+	} {
+		if !strings.Contains(planAgent.prompts[1], want) {
+			t.Errorf("the correction round's prompt = %q, want it to name %q", planAgent.prompts[1], want)
+		}
+	}
+}
+
 // TestPlanPhaseStopsPlanInvalidAfterACorrectionRound covers AC3: a plan still
-// invalid after its correction round stops once, naming the second round's
-// error rather than the first round's.
+// invalid after its correction round stops once, naming the first bound the
+// second round's decision broke rather than the first round's.
 func TestPlanPhaseStopsPlanInvalidAfterACorrectionRound(t *testing.T) {
 	second := cloneDecision(testDecision)
 	second.Options[0].Label = strings.Repeat("l", decisionLabelLimit+1)
+	second.Options[0].Cost = strings.Repeat("c", decisionCostLimit+1)
 	planAgent := roundsAgent(t, []string{
 		decisionEvents("ses_1", brokenContextDecision()),
 		decisionEvents("ses_1", second),
@@ -862,8 +894,9 @@ func TestPlanPhaseStopsPlanInvalidAfterACorrectionRound(t *testing.T) {
 		t.Fatalf("decision = %+v, want none", decision)
 	}
 	got := stop.Err.Error()
-	if !strings.Contains(got, "option 1 label is over 120 bytes") || strings.Contains(got, "context line 1") {
-		t.Fatalf("stop detail = %q, want the second round's error alone", got)
+	if !strings.Contains(got, "option 1 label is over 120 bytes") ||
+		strings.Contains(got, "context line 1") || strings.Contains(got, "option 1 cost") {
+		t.Fatalf("stop detail = %q, want the second round's first error alone", got)
 	}
 	if planAgent.calls != 2 {
 		t.Fatalf("the plan agent ran %d rounds, want exactly one correction", planAgent.calls)
