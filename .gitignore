@@ -8,6 +8,10 @@
 .terraform/
 __pycache__/
 /tools/omp/node_modules/
+/tools/shots/node_modules/
+
+# `bun run shots`'s own output, when it is not given another directory.
+/shots/
 
 # The Firebase CLI's deploy cache, written to the repo root by `firebase deploy`.
 /.firebase/

@@ -1,0 +1,88 @@
+{
+  "models": [
+    {
+      "model": "command-code/deepseek/deepseek-v4.1-flash",
+      "tickets": 18,
+      "passed": 16,
+      "cost_per_ticket_usd": 0.42,
+      "minutes_per_ticket": 11.5,
+      "rewrite_rate": "9.4%",
+      "rewrite_sample": 16
+    },
+    {
+      "model": "command-code/meta/muse-spark-1.3-contributor",
+      "tickets": 9,
+      "passed": 7,
+      "cost_per_ticket_usd": 0.61,
+      "minutes_per_ticket": 14.2,
+      "rewrite_rate": "12.8%",
+      "rewrite_sample": 7
+    }
+  ],
+  "providers": [
+    {
+      "provider": "command-code",
+      "trailing_cost_per_ticket_usd": 0.47,
+      "sample": 27,
+      "peak_tickets": 6,
+      "peak_cost_usd": 3.84,
+      "offpeak_tickets": 21,
+      "offpeak_cost_usd": 9.6
+    }
+  ],
+  "runs": [
+    {
+      "run_id": "run_01jfv0xk7",
+      "provider": "command-code",
+      "model": "command-code/deepseek/deepseek-v4.1-flash",
+      "cached_share": 0.62,
+      "build_cache": "58% first, 42% phase",
+      "plan_cache": "71% first, 63% phase",
+      "build_first_share": 0.58,
+      "build_phase_share": 0.42,
+      "plan_first_share": 0.71,
+      "plan_phase_share": 0.63,
+      "settled_at": "2026-09-16T16:12:00Z"
+    },
+    {
+      "run_id": "run_01jfv0wk7",
+      "provider": "command-code",
+      "model": "command-code/deepseek/deepseek-v4.1-flash",
+      "cached_share": 0.55,
+      "build_cache": "51% first, 39% phase",
+      "plan_cache": "67% first, 58% phase",
+      "build_first_share": 0.51,
+      "build_phase_share": 0.39,
+      "plan_first_share": 0.67,
+      "plan_phase_share": 0.58,
+      "settled_at": "2026-09-15T15:12:00Z"
+    },
+    {
+      "run_id": "run_01jfv0vk7",
+      "provider": "command-code",
+      "model": "command-code/meta/muse-spark-1.3-contributor",
+      "cached_share": 0.71,
+      "build_cache": "69% first, 61% phase",
+      "plan_cache": "74% first, 69% phase",
+      "build_first_share": 0.69,
+      "build_phase_share": 0.61,
+      "plan_first_share": 0.74,
+      "plan_phase_share": 0.69,
+      "settled_at": "2026-09-14T14:12:00Z"
+    },
+    {
+      "run_id": "run_01jfv0uk7",
+      "provider": "command-code",
+      "model": "command-code/deepseek/deepseek-v4.1-flash",
+      "cached_share": 0.48,
+      "build_cache": "44% first, 31% phase",
+      "plan_cache": "59% first, 47% phase",
+      "build_first_share": 0.44,
+      "build_phase_share": 0.31,
+      "plan_first_share": 0.59,
+      "plan_phase_share": 0.47,
+      "settled_at": "2026-09-13T13:12:00Z"
+    }
+  ],
+  "drifted_runs": []
+}

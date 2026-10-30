@@ -1,0 +1,33 @@
+{
+  "mode": "off-peak-only",
+  "holding": false,
+  "models": [
+    {
+      "model": "command-code/deepseek/deepseek-v4.1-flash",
+      "peak": {
+        "multiplier": 2,
+        "hours": [
+          {
+            "from": 1,
+            "to": 4
+          },
+          {
+            "from": 6,
+            "to": 10
+          }
+        ]
+      },
+      "priced": true
+    },
+    {
+      "model": "command-code/meta/muse-spark-1.3-contributor",
+      "peak": null,
+      "priced": true
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "peak": null,
+      "priced": false
+    }
+  ]
+}

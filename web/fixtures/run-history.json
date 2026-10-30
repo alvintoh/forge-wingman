@@ -1,0 +1,101 @@
+{
+  "runs": [
+    {
+      "run": "run_01jfu0am4",
+      "ticket": "FRG-215",
+      "repo": "alvintoh/forge-wingman",
+      "kind": "merged",
+      "words": "merged",
+      "settled_at": "2026-10-03T10:05:00Z"
+    },
+    {
+      "run": "run_01jfu0bm4",
+      "ticket": "FRG-216",
+      "repo": "alvintoh/forge-wingman",
+      "kind": "pr-open",
+      "words": "PR open, waiting on you",
+      "settled_at": "2026-10-04T11:05:00Z"
+    },
+    {
+      "run": "run_01jfu0cm4",
+      "ticket": "FRG-217",
+      "repo": "alvintoh/forge-wingman",
+      "kind": "merged",
+      "words": "merged",
+      "settled_at": "2026-10-05T12:05:00Z"
+    },
+    {
+      "run": "run_01jfu0dm4",
+      "ticket": "FRG-218",
+      "repo": "alvintoh/forge-wingman",
+      "kind": "no-changes",
+      "words": "ended with no changes",
+      "settled_at": "2026-10-06T13:05:00Z"
+    },
+    {
+      "run": "run_01jfu0em4",
+      "ticket": "FRG-219",
+      "repo": "alvintoh/forge-wingman-docs",
+      "kind": "merged",
+      "words": "merged",
+      "settled_at": "2026-10-07T14:05:00Z"
+    },
+    {
+      "run": "run_01jfu0fm4",
+      "ticket": "FRG-220",
+      "repo": "alvintoh/forge-wingman",
+      "kind": "cancelled",
+      "words": "cancelled by you",
+      "settled_at": "2026-10-08T15:05:00Z"
+    },
+    {
+      "run": "run_01jfu0gm4",
+      "ticket": "FRG-221",
+      "repo": "alvintoh/forge-wingman",
+      "kind": "merged",
+      "words": "merged",
+      "settled_at": "2026-10-09T16:05:00Z"
+    },
+    {
+      "run": "run_01jfu0hm4",
+      "ticket": "FRG-222",
+      "repo": "alvintoh/forge-wingman",
+      "kind": "allowance",
+      "words": "stopped, allowance spent",
+      "settled_at": "2026-10-10T10:05:00Z"
+    },
+    {
+      "run": "run_01jfu0im4",
+      "ticket": "FRG-223",
+      "repo": "alvintoh/forge-wingman",
+      "kind": "merged",
+      "words": "merged",
+      "settled_at": "2026-10-11T11:05:00Z"
+    },
+    {
+      "run": "run_01jfu0jm4",
+      "ticket": "FRG-224",
+      "repo": "alvintoh/forge-wingman-docs",
+      "kind": "failed",
+      "words": "failed",
+      "settled_at": "2026-10-12T12:05:00Z"
+    },
+    {
+      "run": "run_01jfu0km4",
+      "ticket": "FRG-225",
+      "repo": "alvintoh/forge-wingman",
+      "kind": "merged",
+      "words": "merged",
+      "settled_at": "2026-10-13T13:05:00Z"
+    },
+    {
+      "run": "run_01jfu0lm4",
+      "ticket": "FRG-226",
+      "repo": "alvintoh/forge-wingman",
+      "kind": "draft",
+      "words": "draft PR with open boxes",
+      "settled_at": "2026-10-14T14:05:00Z"
+    }
+  ],
+  "merged": 6
+}

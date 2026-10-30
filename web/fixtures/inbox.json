@@ -1,0 +1,56 @@
+{
+  "runs": [
+    {
+      "run": "run_01jfv3k7",
+      "ticket": "FRG-244",
+      "repo": "alvintoh/forge-wingman",
+      "size": "M",
+      "pr_url": "https://github.com/alvintoh/forge-wingman/pull/271",
+      "wait_reason": "checks-not-green",
+      "updated_at": "2026-10-30T11:24:00Z",
+      "attempt": 1,
+      "outcome": "pr-opened",
+      "retryable": false,
+      "title": "[BE] Read the run's checks on every poll",
+      "head_sha": "9c1f0ab",
+      "draft": false,
+      "checks": {
+        "state": "failure",
+        "summary": "2 of 11 checks failed"
+      }
+    },
+    {
+      "run": "run_01jfv2r9",
+      "ticket": "FRG-241",
+      "repo": "alvintoh/forge-wingman",
+      "size": "S",
+      "pr_url": "https://github.com/alvintoh/forge-wingman/pull/269",
+      "wait_reason": "draft",
+      "updated_at": "2026-10-30T10:02:00Z",
+      "attempt": 0,
+      "outcome": "pr-opened",
+      "retryable": true,
+      "title": "[FE] Draw the run's action card",
+      "head_sha": "3f5c1d9",
+      "draft": true,
+      "checks": {
+        "state": "pending",
+        "summary": "checks have not run yet"
+      }
+    },
+    {
+      "run": "run_01jfuyz1",
+      "ticket": "FRG-238",
+      "repo": "alvintoh/forge-wingman-docs",
+      "size": "S",
+      "pr_url": "",
+      "wait_reason": "",
+      "updated_at": "2026-10-30T08:15:00Z",
+      "attempt": 2,
+      "outcome": "stopped",
+      "stop_reason": "rebase-conflict",
+      "stopped": true,
+      "retryable": true
+    }
+  ]
+}

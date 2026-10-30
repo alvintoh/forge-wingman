@@ -1,0 +1,63 @@
+{
+  "total": 2,
+  "projects": [
+    {
+      "repository": "alvintoh/forge-wingman",
+      "linear_project": "Forge Wingman",
+      "added_at": "2026-09-02T08:00:00Z",
+      "paused": false,
+      "reach": {
+        "status": "reachable"
+      },
+      "snapshot": {
+        "phases": [
+          {
+            "name": "Phase 1 · Runner",
+            "done": 21,
+            "total": 21
+          },
+          {
+            "name": "Phase 2 · Surface",
+            "done": 9,
+            "total": 16
+          }
+        ],
+        "current": "Phase 2 · Surface",
+        "in_flight": [
+          {
+            "id": "FRG-244",
+            "title": "[BE] Read the run's checks on every poll",
+            "stage": "build"
+          }
+        ],
+        "queued": 2,
+        "queued_blocked": 1,
+        "eligible": ["FRG-246", "FRG-247"],
+        "eligible_blocked": 0,
+        "unreadable": false,
+        "reason": "",
+        "at": "2026-10-30T11:40:00Z"
+      },
+      "queue": {
+        "in_flight": 1,
+        "held": 0
+      },
+      "last_activity": "2026-10-30T11:24:00Z"
+    },
+    {
+      "repository": "alvintoh/forge-wingman-docs",
+      "linear_project": "Forge Wingman docs",
+      "added_at": "2026-09-21T13:30:00Z",
+      "paused": true,
+      "reach": {
+        "status": "reachable"
+      },
+      "snapshot": null,
+      "queue": {
+        "in_flight": 0,
+        "held": 2
+      },
+      "last_activity": "2026-10-30T08:15:00Z"
+    }
+  ]
+}
