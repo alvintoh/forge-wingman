@@ -91,6 +91,8 @@ type runCache struct {
 	BuildPhaseShare *float64 `json:"build_phase_share"`
 	PlanFirstShare  *float64 `json:"plan_first_share"`
 	PlanPhaseShare  *float64 `json:"plan_phase_share"`
+	// SettledAt is when the run settled, as the history endpoint serves it.
+	SettledAt time.Time `json:"settled_at"`
 }
 
 type driftedRun struct {
@@ -138,6 +140,7 @@ func renderComparison(c store.Comparison) comparisonResponse {
 			BuildCache: r.BuildCache, PlanCache: r.PlanCache,
 			BuildFirstShare: r.BuildFirstShare, BuildPhaseShare: r.BuildPhaseShare,
 			PlanFirstShare: r.PlanFirstShare, PlanPhaseShare: r.PlanPhaseShare,
+			SettledAt: r.SettledAt,
 		})
 	}
 	for _, d := range c.Drifted {
