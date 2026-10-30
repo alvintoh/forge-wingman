@@ -24,8 +24,11 @@ LAYERS = ("base/CLAUDE.md", "profiles/personal/CLAUDE.md", "profiles/work/CLAUDE
 EMPLOYER_LAYER = "profiles/work/CLAUDE.md"   # dropped from BOTH projections
 RULE_FILES = ("base/rules/code-comments.md", "base/rules/testing.md",
               "base/rules/schema-changes.md")
-# Only the unattended builder reports per-criterion evidence; a plan agent writes no code.
-BUILD_ONLY_RULES = ("base/projection/agent-ac-evidence.md",)
+# Rules only the unattended builder acts on: it reports per-criterion evidence
+# and checks its own output against the ticket's criteria. A plan agent writes
+# no code, so neither rule applies to it.
+BUILD_ONLY_RULES = ("base/projection/agent-ac-evidence.md",
+                    "base/projection/agent-ticket-fidelity.md")
 
 # ---- FR-19's trim rule, as section-heading prefixes -------------------------
 # Each entry is one of the five human-in-the-loop concerns FR-19 names. The
