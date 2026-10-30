@@ -15,7 +15,9 @@ import (
 // them, since a decision travels out of the untrusted model job: one question
 // per decision, at most decisionContextLines lines of context, and
 // decisionOptionMin..decisionOptionMax options, each naming what the owner
-// reads, the value a reply is matched against, and what the option costs.
+// reads, the value a reply is matched against, and what the option costs. The
+// plan prompt states these same limits, built from them, so a change here
+// changes what the model is told.
 const (
 	decisionQuestionLimit = 300
 	decisionContextLimit  = 200
@@ -31,20 +33,30 @@ const (
 // re-check enforces.
 var errDecisionInvalid = errors.New("the plan's decision is not usable")
 
-// decisionBoundError reports a decision that broke one of the bounds: the one
-// invalid decision the plan stage hands back to the model with the rule it
-// broke named. It unwraps to the rule, so it reads as that rule wherever an
-// invalid decision is reported.
-type decisionBoundError struct{ err error }
+// decisionBoundError reports a decision that broke the bounds: it names the
+// first it broke and carries every one, so a report states the first rule while
+// the plan stage's correction round can name them all. It unwraps to the first,
+// so it reads as that rule wherever an invalid decision is reported.
+type decisionBoundError struct{ breaches []error }
 
-func (e decisionBoundError) Error() string { return e.err.Error() }
-func (e decisionBoundError) Unwrap() error { return e.err }
+func (e decisionBoundError) Error() string { return e.breaches[0].Error() }
+func (e decisionBoundError) Unwrap() error { return e.breaches[0] }
 
 // breaksDecisionBound reports whether err is a decision that broke one of the
 // bounds, which the plan stage answers with one correction round.
 func breaksDecisionBound(err error) bool {
 	var b decisionBoundError
 	return errors.As(err, &b)
+}
+
+// decisionBreaches returns every bound err reports: all of them for a decision
+// that broke several, and err alone for any other error.
+func decisionBreaches(err error) []error {
+	var b decisionBoundError
+	if errors.As(err, &b) {
+		return b.breaches
+	}
+	return []error{err}
 }
 
 // Decision is a question a guided plan raises for the owner before the run
@@ -116,42 +128,40 @@ type Answer struct {
 // Check reports whether d is a usable decision: one non-empty question, at most
 // decisionContextLines lines of context, and decisionOptionMin to
 // decisionOptionMax options, each with a label, a value and a cost, none of
-// them longer than its limit or more than one line.
+// them longer than its limit or more than one line. It reports the first bound
+// broken, and carries every one it found.
 func (d Decision) Check() error {
-	if err := d.checkBounds(); err != nil {
-		return decisionBoundError{err}
+	if breaches := d.boundBreaches(); len(breaches) > 0 {
+		return decisionBoundError{breaches}
 	}
 	return nil
 }
 
-// checkBounds reports the first bound d breaks, or nil.
-func (d Decision) checkBounds() error {
-	if err := checkDecisionText("question", d.Question, decisionQuestionLimit); err != nil {
-		return err
+// boundBreaches reports every bound d breaks, in the order the fields are read,
+// so one correction round can name them together.
+func (d Decision) boundBreaches() []error {
+	var breaches []error
+	add := func(err error) {
+		if err != nil {
+			breaches = append(breaches, err)
+		}
 	}
+	add(checkDecisionText("question", d.Question, decisionQuestionLimit))
 	if len(d.Context) > decisionContextLines {
-		return fmt.Errorf("%w: context is over %d lines", errDecisionInvalid, decisionContextLines)
+		add(fmt.Errorf("%w: context is over %d lines", errDecisionInvalid, decisionContextLines))
 	}
 	for i, line := range d.Context {
-		if err := checkDecisionText(fmt.Sprintf("context line %d", i+1), line, decisionContextLimit); err != nil {
-			return err
-		}
+		add(checkDecisionText(fmt.Sprintf("context line %d", i+1), line, decisionContextLimit))
 	}
 	if len(d.Options) < decisionOptionMin || len(d.Options) > decisionOptionMax {
-		return fmt.Errorf("%w: %d options, want %d to %d", errDecisionInvalid, len(d.Options), decisionOptionMin, decisionOptionMax)
+		add(fmt.Errorf("%w: %d options, want %d to %d", errDecisionInvalid, len(d.Options), decisionOptionMin, decisionOptionMax))
 	}
 	for i, o := range d.Options {
-		if err := checkDecisionText(fmt.Sprintf("option %d label", i+1), o.Label, decisionLabelLimit); err != nil {
-			return err
-		}
-		if err := checkDecisionText(fmt.Sprintf("option %d value", i+1), o.Value, decisionValueLimit); err != nil {
-			return err
-		}
-		if err := checkDecisionText(fmt.Sprintf("option %d cost", i+1), o.Cost, decisionCostLimit); err != nil {
-			return err
-		}
+		add(checkDecisionText(fmt.Sprintf("option %d label", i+1), o.Label, decisionLabelLimit))
+		add(checkDecisionText(fmt.Sprintf("option %d value", i+1), o.Value, decisionValueLimit))
+		add(checkDecisionText(fmt.Sprintf("option %d cost", i+1), o.Cost, decisionCostLimit))
 	}
-	return nil
+	return breaches
 }
 
 // matchCollators folds case, width and diacritics when a reply is matched

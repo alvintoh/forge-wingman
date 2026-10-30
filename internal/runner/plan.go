@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -23,16 +24,25 @@ const planFileListInstruction = "Do not edit any files or run any shell commands
 // planDecisionInstruction is appended to the plan-files instruction for a guided
 // plan: the phase that may ask the owner a decision it may not take alone, and
 // how to phrase the request. The file list stays the default ending; the
-// decision block replaces it only when the plan genuinely needs the owner.
-const planDecisionInstruction = "But if — and only if — you need a decision you may not take alone, end your final response " +
-	"with a fenced decision block instead of the file list. A decision is yours to ask only when it is outward-facing " +
-	"(it reaches a third party), irreversible (it cannot be undone), a security choice, or scope (what the work includes " +
-	"or leaves out). Do not ask about a local choice you can settle yourself from the repository and the evidence in front " +
-	"of you — a reversible, in-repo decision is yours to make. When you ask, keep it to one question, at most three lines " +
-	"of context, and two to four options; put your recommendation first, and give each option its cost:\n\n" +
-	"```plan-decision\n" +
-	"{\"question\": \"…\", \"context\": [\"…\", \"…\"], \"options\": [{\"label\": \"…\", \"value\": \"…\", \"cost\": \"…\"}]}\n" +
-	"```"
+// decision block replaces it only when the plan genuinely needs the owner. Its
+// bounds are formatted from the constants decision.go's re-check reads, so the
+// prompt states the limits the check enforces.
+func planDecisionInstruction() string {
+	return "But if — and only if — you need a decision you may not take alone, end your final response " +
+		"with a fenced decision block instead of the file list. A decision is yours to ask only when it is outward-facing " +
+		"(it reaches a third party), irreversible (it cannot be undone), a security choice, or scope (what the work includes " +
+		"or leaves out). Do not ask about a local choice you can settle yourself from the repository and the evidence in front " +
+		"of you — a reversible, in-repo decision is yours to make. When you ask, keep to these bounds, which the plan's " +
+		"re-check enforces: one question of at most " + strconv.Itoa(decisionQuestionLimit) + " bytes on one line; " +
+		"at most " + strconv.Itoa(decisionContextLines) + " lines of context, each at most " +
+		strconv.Itoa(decisionContextLimit) + " bytes on one line; " + strconv.Itoa(decisionOptionMin) + " to " +
+		strconv.Itoa(decisionOptionMax) + " options, each needing a non-empty label, value and cost of at most " +
+		strconv.Itoa(decisionLabelLimit) + ", " + strconv.Itoa(decisionValueLimit) + " and " +
+		strconv.Itoa(decisionCostLimit) + " bytes, each on one line. Put your recommendation first:\n\n" +
+		"```plan-decision\n" +
+		"{\"question\": \"…\", \"context\": [\"…\", \"…\"], \"options\": [{\"label\": \"…\", \"value\": \"…\", \"cost\": \"…\"}]}\n" +
+		"```"
+}
 
 // PlanPrompt is the plan phase's prompt split into the plan projection's rules
 // head and the ticket text the plan-files format instruction is appended to. A
@@ -45,17 +55,22 @@ func PlanPrompt(projection string, t Ticket, guided bool) (rules, prompt string,
 	}
 	instruction := planFileListInstruction
 	if guided {
-		instruction += "\n\n" + planDecisionInstruction
+		instruction += "\n\n" + planDecisionInstruction()
 	}
 	return rules, ticket + "\n\n" + instruction, nil
 }
 
 // planDecisionCorrectionPrompt is what a guided plan's one correction round
-// receives: the rule its decision broke, worded as the re-check words it, so
-// the model can read what went wrong and reply again.
+// receives: every bound its decision broke, each worded as the re-check words
+// it, so the model can read all of what went wrong in the one round it gets.
 func planDecisionCorrectionPrompt(err error) string {
-	return "The plan-decision block you ended with broke a rule the plan re-check enforces: " +
-		detail(err) + "\n\nReply with the corrected decision block and nothing else."
+	breaches := decisionBreaches(err)
+	lines := make([]string, len(breaches))
+	for i, b := range breaches {
+		lines[i] = "- " + b.Error()
+	}
+	return "The plan-decision block you ended with broke the plan re-check's bounds:\n\n" +
+		strings.Join(lines, "\n") + "\n\nReply with the corrected decision block and nothing else."
 }
 
 // errPlanFiles reports a plan agent's final message that carries no valid
