@@ -450,8 +450,11 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 // runPlanPhase fetches the plan projection, runs the plan agent in dir
 // under the ticket's plan models, and returns the repository-relative files
 // the plan names, or — when the phase is guided and the plan asks instead — the
-// owner decision it raised. A plan naming a file under .github/workflows/ stops
-// the run before any build, since the run's App cannot push a workflow change.
+// owner decision it raised. A decision that breaks one of decision.go's bounds
+// gets one more round, told which rule it broke, and the corrected reply is
+// judged by the same re-check; a plan still invalid then stops the run. A plan
+// naming a file under .github/workflows/ stops the run before any build, since
+// the run's App cannot push a workflow change.
 // Both Build and the plan stage's own dispatch share it, so a ticket is
 // planned the same way whichever stage runs it.
 func runPlanPhase(ctx context.Context, d BuildDeps, c BuildConfig, dir string, sum *Summary) ([]string, *Decision, error) {
@@ -474,11 +477,30 @@ func runPlanPhase(ctx context.Context, d BuildDeps, c BuildConfig, dir string, s
 		return nil, nil, stopWith(OutcomeStopped, StopRunBudget, errors.New(stageBudgetSpent("build", nfr1BuildBudget)))
 	}
 	call := agentCall{Phase: PhasePlan, Round: 1, Model: c.PlanModels[0], Rules: planRules, Timeout: timeout}
-	text, _, _, err := runAgentInOrder(ctx, d, c, call, c.PlanModels, d.PlanAgent, dir, planPrompt, sum, sum.StartedAt, nfr1BuildBudget)
+	text, session, round, err := runAgentInOrder(ctx, d, c, call, c.PlanModels, d.PlanAgent, dir, planPrompt, sum, sum.StartedAt, nfr1BuildBudget)
 	if err != nil {
 		return nil, nil, err
 	}
 	files, decision, err := parsePlanArtifacts(text, c.Guided)
+	if breaksDecisionBound(err) {
+		// A decision that broke a bound is the one plan artifact the model can
+		// be asked to correct: one more round in the same session, told which
+		// rule it broke, judged by the same re-check.
+		timeout, inBudget := roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now(), nfr1BuildBudget)
+		if !inBudget {
+			return nil, nil, stopWith(OutcomeStopped, StopRunBudget, errors.New(stageBudgetSpent("build", nfr1BuildBudget)))
+		}
+		d.Logger.Info("planDecisionCorrection", "round", round+1, "rule", detail(err))
+		round++
+		correction := agentCall{Phase: PhasePlan, Round: round, Model: c.PlanModels[0], Session: session,
+			Rules: planRules, Timeout: timeout}
+		text, _, _, err = runAgentInOrder(ctx, d, c, correction, c.PlanModels, d.PlanAgent, dir,
+			planDecisionCorrectionPrompt(err), sum, sum.StartedAt, nfr1BuildBudget)
+		if err != nil {
+			return nil, nil, err
+		}
+		files, decision, err = parsePlanArtifacts(text, c.Guided)
+	}
 	if err != nil {
 		return nil, nil, stopWith(OutcomeStopped, StopPlanInvalid, err)
 	}
