@@ -98,7 +98,7 @@ export function Stats() {
           retry={retry}
           known={known}
           onChoose={choose}
-          className="mt-6 min-w-0 @[51.25rem]:col-start-2 @[51.25rem]:row-start-1 @[51.25rem]:row-span-2 @[51.25rem]:mt-0 @[51.25rem]:grid @[51.25rem]:grid-cols-1 @[51.25rem]:grid-rows-subgrid"
+          className="mt-6 min-w-0 @[51.25rem]:col-start-2 @[51.25rem]:row-start-1 @[51.25rem]:row-span-2 @[51.25rem]:mt-0 @[51.25rem]:grid @[51.25rem]:grid-cols-1 @[51.25rem]:grid-rows-subgrid @[51.25rem]:items-start"
         />
       </div>
       {settled && (
