@@ -75,6 +75,11 @@ func (g pullRequests) pull(ctx context.Context, number int) (pull, error) {
 	return p, err
 }
 
+// editPull replaces the pull request's body.
+func (g pullRequests) editPull(ctx context.Context, number int, body string) error {
+	return g.call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/pulls/%d", g.Repo, number), "", map[string]string{"body": body}, maxPullBytes, nil)
+}
+
 // diff is the diff from base to head, at most limit bytes, and whether it was cut.
 func (g pullRequests) diff(ctx context.Context, base, head string, limit int) (string, bool, error) {
 	var raw []byte

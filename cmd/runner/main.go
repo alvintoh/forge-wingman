@@ -5,6 +5,7 @@
 //	runner plan-stage      -ticket-file <path> -out <path>  run the plan phase alone and write its file list for the record job
 //	runner record-plan-stage -run-id <id> -plan-file <path>  re-check the plan, record it, settle it and wake the dispatcher
 //	runner pr-meta         -run-id <id> ...          render the PR's title and body from the run record
+//	runner pr              -pr <n> -sha <sha> [-shots <dir>]  publish the run's screenshots on the evidence branch and write them into the PR body
 //	runner record          -run-id <id> -summary ... validate the build's summary and merge it into the run record
 //	runner enable-provider -provider <name>          admit a halted provider back to dispatch (AC5)
 //	runner reset-breaker                             clear the breaker a systemic stop tripped, admitting dispatch again
@@ -76,12 +77,14 @@ func exitCode(err error) int {
 
 func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(string) string) error {
 	if len(args) == 0 {
-		return errors.New("usage: runner ticket|build|plan-stage|record-plan-stage|pr-meta|record|enable-provider|reset-breaker|peak-mode|auto-merge|requeue|backfill-queued-at|project-add|project-remove|plan-define|plan-verdict|plan-reply|plan-list|plans-refresh|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post|agent-probe|egress-proxy [flags]")
+		return errors.New("usage: runner ticket|build|plan-stage|record-plan-stage|pr-meta|pr|record|enable-provider|reset-breaker|peak-mode|auto-merge|requeue|backfill-queued-at|project-add|project-remove|plan-define|plan-verdict|plan-reply|plan-list|plans-refresh|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post|agent-probe|egress-proxy [flags]")
 	}
 	if args[0] == "plan-smoke" {
 		return planSmoke(ctx, logger, getenv, args[1:])
 	}
 	switch args[0] {
+	case "pr":
+		return prStep(ctx, logger, getenv, args[1:])
 	case "review-smoke":
 		return reviewSmoke(ctx, logger, getenv, args[1:])
 	case "pr-review-context":

@@ -325,3 +325,88 @@ func TestPRBodyNamesNoSupersededPRForAFirstAttempt(t *testing.T) {
 		t.Fatalf("body names a superseded PR:\n%s", body)
 	}
 }
+
+// TestScreenshotsSectionRendersTheRoutesByBand is AC1's table: a row per route,
+// the s, m, l and xl columns in that order, and a 200px image in each cell whose
+// source is the shot's raw URL on the evidence branch.
+func TestScreenshotsSectionRendersTheRoutesByBand(t *testing.T) {
+	shots := []Screenshot{
+		{Route: "/checkout", Band: "s", Path: "pr-12/checkout-s.png"},
+		{Route: "/checkout", Band: "xl", Path: "pr-12/checkout-xl.png"},
+		{Route: "/", Band: "m", Path: "pr-12/root-m.png"},
+	}
+	section := ScreenshotsSection("o/r", "abc1234", shots)
+	sCell := `<img width="200" alt="/checkout at s" src="https://raw.githubusercontent.com/o/r/evidence/pr-12/checkout-s.png">`
+	xlCell := `<img width="200" alt="/checkout at xl" src="https://raw.githubusercontent.com/o/r/evidence/pr-12/checkout-xl.png">`
+	mCell := `<img width="200" alt="/ at m" src="https://raw.githubusercontent.com/o/r/evidence/pr-12/root-m.png">`
+	for _, want := range []string{
+		"## Screenshots (fixture data) · `abc1234`\n\n",
+		"| Route | s | m | l | xl |\n|---|---|---|---|---|\n",
+		"| `/checkout` | " + sCell + " |  |  | " + xlCell + " |\n",
+		"| `/` |  | " + mCell + " |  |  |\n",
+	} {
+		if !strings.Contains(section, want) {
+			t.Errorf("section lacks %q:\n%s", want, section)
+		}
+	}
+	if n := strings.Count(section, `<img width="200"`); n != len(shots) {
+		t.Errorf("section holds %d images, want %d:\n%s", n, len(shots), section)
+	}
+	if strings.Index(section, "| `/` |") > strings.Index(section, "| `/checkout` |") {
+		t.Errorf("section does not order the routes by name:\n%s", section)
+	}
+}
+
+// TestScreenshotsSectionSaysTheRunCapturedNone is AC3: a run with no artifact
+// still gets a section, saying so in one line rather than an empty table.
+func TestScreenshotsSectionSaysTheRunCapturedNone(t *testing.T) {
+	want := "## Screenshots (fixture data)\n\nNo screenshots: this run captured none.\n"
+	if got := ScreenshotsSection("o/r", "abc1234", nil); got != want {
+		t.Fatalf("section = %q, want %q", got, want)
+	}
+}
+
+// TestWithScreenshotsReplacesTheSectionInPlace is AC2: a push re-renders the
+// body for the new sha, and the section it finds is replaced rather than a
+// second one added.
+func TestWithScreenshotsReplacesTheSectionInPlace(t *testing.T) {
+	body := "## Summary\n\nAdds the widget.\n\n" +
+		"## Screenshots (fixture data) · `old1234`\n\n" +
+		"| Route | s | m | l | xl |\n|---|---|---|---|---|\n" +
+		"| `/stale` | ![stale](https://example.invalid/stale.png) |  |  |  |\n\n" +
+		"## Notes\n\nBuilt unattended.\n"
+	section := ScreenshotsSection("o/r", "new5678", []Screenshot{{Route: "/checkout", Band: "s", Path: "pr-12/checkout-s.png"}})
+	got := WithScreenshots(body, section)
+	if n := strings.Count(got, "## Screenshots"); n != 1 {
+		t.Fatalf("body holds %d screenshots sections, want 1:\n%s", n, got)
+	}
+	for _, unwanted := range []string{"old1234", "stale"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("body keeps the previous section's %q:\n%s", unwanted, got)
+		}
+	}
+	for _, want := range []string{
+		"## Summary\n\nAdds the widget.",
+		"## Screenshots (fixture data) · `new5678`",
+		"pr-12/checkout-s.png",
+		"## Notes\n\nBuilt unattended.\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("body lacks %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestWithScreenshotsInsertsTheSectionBeforeTheNotes(t *testing.T) {
+	body := WithScreenshots("## Summary\n\nAdds the widget.\n\n## Notes\n\nBuilt unattended.\n",
+		ScreenshotsSection("o/r", "abc1234", []Screenshot{{Route: "/checkout", Band: "s", Path: "pr-12/checkout-s.png"}}))
+	if n := strings.Count(body, "## Screenshots"); n != 1 {
+		t.Fatalf("body holds %d screenshots sections, want 1:\n%s", n, body)
+	}
+	if strings.Index(body, "## Screenshots") > strings.Index(body, "## Notes") {
+		t.Fatalf("body puts the section after the notes:\n%s", body)
+	}
+	if !strings.HasSuffix(body, "Built unattended.\n") {
+		t.Fatalf("body changes the notes:\n%s", body)
+	}
+}

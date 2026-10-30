@@ -2,6 +2,9 @@ package runner
 
 import (
 	"errors"
+	"fmt"
+	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -18,7 +21,16 @@ const (
 	templateTableRule    = "|---|---|---|"
 	templateScreens      = "## Screenshots"
 	templateNotes        = "## Notes"
+	// screenshotHeading heads the body section the pr step writes with the
+	// screenshots the run published on the evidence branch.
+	screenshotHeading = "## Screenshots (fixture data)"
+	// noShotsLine is the one line a section with no screenshots says instead.
+	noShotsLine = "No screenshots: this run captured none."
 )
+
+// screenshotBands are the viewport bands every route is shot at, in the order
+// the screenshots table's columns list them.
+var screenshotBands = []string{"s", "m", "l", "xl"}
 
 // errTemplate reports a pull request template missing a line PRBody fills in.
 var errTemplate = errors.New("pull request template lacks the ticket line, summary, verification table or notes")
@@ -120,6 +132,136 @@ func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail
 	}
 	return strings.Join(out, "\n"), nil
 }
+
+// Screenshot is one image a run publishes for its pull request.
+type Screenshot struct {
+	// Route is the page the shot shows.
+	Route string
+	// Band is the viewport it was shot at, one of screenshotBands.
+	Band string
+	// Path is where it is published on the evidence branch.
+	Path string
+
+	// file is the image's name inside the shots artifact.
+	file string
+}
+
+// ScreenshotsSection renders the body's screenshots section for shots published
+// on repo's evidence branch at the head sha they were shot at: the heading with
+// the sha beside it, then a table of routes by band whose cells are 200px
+// images from that branch's raw URL. With no shots it is the one line saying
+// the run captured none.
+func ScreenshotsSection(repo, sha string, shots []Screenshot) string {
+	if len(shots) == 0 {
+		return screenshotHeading + "\n\n" + noShotsLine + "\n"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s · `%s`\n\n", screenshotHeading, sha)
+	b.WriteString("| Route | " + strings.Join(screenshotBands, " | ") + " |\n")
+	b.WriteString("|" + strings.Repeat("---|", len(screenshotBands)+1) + "\n")
+	for _, row := range screenshotRows(repo, shots) {
+		b.WriteString("| " + codeSpan(row.route) + " |")
+		for _, band := range screenshotBands {
+			b.WriteString(" " + row.cells[band] + " |")
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// WithScreenshots replaces the screenshots section in body with section, never
+// adding a second one, so a push to the branch re-renders the body from the
+// previous one rather than growing it. A body with no section gains it before
+// the notes.
+func WithScreenshots(body, section string) string {
+	if strings.TrimSpace(body) == "" {
+		return section
+	}
+	lines := strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.HasPrefix(line, screenshotHeading) {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		at := len(lines)
+		for i, line := range lines {
+			if line == templateNotes {
+				at = i
+				break
+			}
+		}
+		out := make([]string, 0, len(lines)+4)
+		out = append(out, lines[:at]...)
+		if len(out) > 0 && out[len(out)-1] != "" {
+			out = append(out, "")
+		}
+		out = append(out, strings.Split(section, "\n")...)
+		return strings.Join(append(out, lines[at:]...), "\n")
+	}
+	end := len(lines)
+	for i := start + 1; i < len(lines); i++ {
+		if strings.HasPrefix(lines[i], "## ") {
+			end = i
+			break
+		}
+	}
+	out := make([]string, 0, len(lines))
+	out = append(out, lines[:start]...)
+	out = append(out, strings.Split(section, "\n")...)
+	out = append(out, lines[end:]...)
+	return strings.Join(out, "\n")
+}
+
+// screenshotRow is one route's images, keyed by band.
+type screenshotRow struct {
+	route string
+	cells map[string]string
+}
+
+// screenshotRows groups shots into one row per route, routes in name order so a
+// re-render of the same shots is identical.
+func screenshotRows(repo string, shots []Screenshot) []screenshotRow {
+	cells := map[string]map[string]string{}
+	for _, s := range shots {
+		if cells[s.Route] == nil {
+			cells[s.Route] = map[string]string{}
+		}
+		cells[s.Route][s.Band] = screenshotCell(repo, s)
+	}
+	routes := make([]string, 0, len(cells))
+	for route := range cells {
+		routes = append(routes, route)
+	}
+	slices.Sort(routes)
+	rows := make([]screenshotRow, len(routes))
+	for i, route := range routes {
+		rows[i] = screenshotRow{route: route, cells: cells[route]}
+	}
+	return rows
+}
+
+// screenshotCell renders one shot as a 200px image in a table cell.
+func screenshotCell(repo string, s Screenshot) string {
+	return `<img width="200" alt="` + attr(s.Route+" at "+s.Band) + `" src="` + attr(rawURL(repo, s.Path)) + `">`
+}
+
+// rawURL is p's raw URL on the evidence branch of repo.
+func rawURL(repo, p string) string {
+	segments := strings.Split(p, "/")
+	for i, s := range segments {
+		segments[i] = url.PathEscape(s)
+	}
+	return "https://raw.githubusercontent.com/" + repo + "/" + EvidenceBranch + "/" + strings.Join(segments, "/")
+}
+
+// attrEscaper escapes the characters that would end an HTML attribute's value.
+var attrEscaper = strings.NewReplacer("&", "&amp;", `"`, "&quot;", "<", "&lt;", ">", "&gt;")
+
+// attr renders s inside a double-quoted HTML attribute.
+func attr(s string) string { return attrEscaper.Replace(s) }
 
 // supersedeReason is why the owner replaced a PR: a retry with a note, or a
 // different option chosen on a decision.
