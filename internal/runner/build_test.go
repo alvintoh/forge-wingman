@@ -747,6 +747,266 @@ func TestBuildStopsWhenThePlanAgentNamesNoFiles(t *testing.T) {
 	}
 }
 
+// cloneDecision copies d's slices, so a test can break one field of testDecision
+// without touching it for every other plan test.
+func cloneDecision(d Decision) Decision {
+	d.Context = slices.Clone(d.Context)
+	d.Options = slices.Clone(d.Options)
+	return d
+}
+
+// brokenContextDecision is testDecision with its first context line one byte
+// over the bound, the breach a correction round answers.
+func brokenContextDecision() Decision {
+	d := cloneDecision(testDecision)
+	d.Context = []string{strings.Repeat("x", decisionContextLimit+1)}
+	return d
+}
+
+// decisionEvents is one plan round's event stream: the decision it asks, under
+// the session the next round continues.
+func decisionEvents(session string, d Decision) string {
+	b, err := json.Marshal(d)
+	if err != nil {
+		panic(err)
+	}
+	return `{"type":"step_finish","sessionID":"` + session + `","part":{"tokens":{}}}` + "\n" +
+		planEvent("```plan-decision\n"+string(b)+"\n```")
+}
+
+// roundsAgent is a plan agent answering one round per event stream.
+func roundsAgent(t *testing.T, rounds []string) *fakeAgent {
+	t.Helper()
+	return &fakeAgent{eventsFn: func(call int) string {
+		if call > len(rounds) {
+			t.Fatalf("the plan phase ran %d rounds, want %d", call, len(rounds))
+		}
+		return rounds[call-1]
+	}}
+}
+
+// runGuidedPlanPhase runs the plan phase with planAgent and returns what it made
+// of the plan; prepare, when set, adjusts the dependencies and the config before it runs.
+func runGuidedPlanPhase(t *testing.T, planAgent *fakeAgent, prepare func(*BuildDeps, *BuildConfig)) (completions fakeObjects, c BuildConfig, sum Summary, decision *Decision, err error) {
+	t.Helper()
+	objects := validObjects()
+	objects["projections/"+testSHA+"/"+planProjectionFile] = []byte("# Plan rules\n\n" + ticketSentinel)
+	deps, completions, _ := testDeps(objects, nil)
+	deps.PlanAgent = planAgent
+	c = testConfig(t, t.TempDir())
+	c.Ticket.Size = "M"
+	c.Guided = true
+	if prepare != nil {
+		prepare(&deps, &c)
+	}
+	sum = Summary{DurationsMS: map[string]int64{}, StartedAt: deps.Now()}
+	_, decision, err = runPlanPhase(context.Background(), deps, c, t.TempDir(), &sum)
+	return completions, c, sum, decision, err
+}
+
+// TestPlanPhaseCorrectsADecisionThatBrokeABound covers AC1, AC2 and AC4: a
+// decision over a bound gets one more round in the same session, told which
+// rule it broke, and that round's spend is a plan round.
+func TestPlanPhaseCorrectsADecisionThatBrokeABound(t *testing.T) {
+	planAgent := roundsAgent(t, []string{
+		decisionEvents("ses_1", brokenContextDecision()),
+		decisionEvents("ses_1", testDecision),
+	})
+	completions, c, sum, decision, err := runGuidedPlanPhase(t, planAgent, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision == nil || decision.Question != testDecision.Question {
+		t.Fatalf("decision = %+v, want the corrected decision", decision)
+	}
+	if planAgent.calls != 2 {
+		t.Fatalf("the plan agent ran %d rounds, want 2", planAgent.calls)
+	}
+	if want := "context line 1 is over 200 bytes"; !strings.Contains(planAgent.prompts[1], want) {
+		t.Fatalf("the correction round's prompt = %q, want it to name %q", planAgent.prompts[1], want)
+	}
+	if planAgent.sessions[1] != "ses_1" {
+		t.Fatalf("the correction round continued session %q, want ses_1", planAgent.sessions[1])
+	}
+	var rounds []int
+	for _, st := range sum.Steps {
+		if st.Phase == PhasePlan {
+			rounds = append(rounds, st.Round)
+		}
+	}
+	if !slices.Equal(rounds, []int{1, 2}) {
+		t.Fatalf("plan rounds = %v, want 1 and 2", rounds)
+	}
+	if _, ok := completions[completionsObject(c.AttemptID, PhasePlan, 2)]; !ok {
+		t.Fatal("the correction round uploaded no completions")
+	}
+}
+
+// TestPlanPhaseStopsPlanInvalidAfterACorrectionRound covers AC3: a plan still
+// invalid after its correction round stops once, naming the second round's
+// error rather than the first round's.
+func TestPlanPhaseStopsPlanInvalidAfterACorrectionRound(t *testing.T) {
+	second := cloneDecision(testDecision)
+	second.Options[0].Label = strings.Repeat("l", decisionLabelLimit+1)
+	planAgent := roundsAgent(t, []string{
+		decisionEvents("ses_1", brokenContextDecision()),
+		decisionEvents("ses_1", second),
+	})
+	_, _, _, decision, err := runGuidedPlanPhase(t, planAgent, nil)
+
+	var stop *StopError
+	if !errors.As(err, &stop) || stop.Reason != StopPlanInvalid {
+		t.Fatalf("err = %v, want a plan-invalid stop", err)
+	}
+	if decision != nil {
+		t.Fatalf("decision = %+v, want none", decision)
+	}
+	got := stop.Err.Error()
+	if !strings.Contains(got, "option 1 label is over 120 bytes") || strings.Contains(got, "context line 1") {
+		t.Fatalf("stop detail = %q, want the second round's error alone", got)
+	}
+	if planAgent.calls != 2 {
+		t.Fatalf("the plan agent ran %d rounds, want exactly one correction", planAgent.calls)
+	}
+}
+
+// TestPlanPhaseTakesNoCorrectionRoundForAValidDecision covers AC2: a decision
+// that passes its first check costs no second round.
+func TestPlanPhaseTakesNoCorrectionRoundForAValidDecision(t *testing.T) {
+	planAgent := roundsAgent(t, []string{decisionEvents("ses_1", testDecision)})
+	_, _, _, decision, err := runGuidedPlanPhase(t, planAgent, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision == nil {
+		t.Fatal("the plan phase returned no decision")
+	}
+	if planAgent.calls != 1 {
+		t.Fatalf("the plan agent ran %d rounds, want 1", planAgent.calls)
+	}
+}
+
+// TestPlanPhaseTakesNoCorrectionRoundForAPlanItCannotRead keeps the correction
+// round to a decision that broke a bound: a plan naming no artifact is the
+// model's mistake to explain only once.
+func TestPlanPhaseTakesNoCorrectionRoundForAPlanItCannotRead(t *testing.T) {
+	planAgent := roundsAgent(t, []string{planEvent("no file list here")})
+	_, _, _, _, err := runGuidedPlanPhase(t, planAgent, nil)
+
+	var stop *StopError
+	if !errors.As(err, &stop) || stop.Reason != StopPlanInvalid {
+		t.Fatalf("err = %v, want a plan-invalid stop", err)
+	}
+	if planAgent.calls != 1 {
+		t.Fatalf("the plan agent ran %d rounds, want 1", planAgent.calls)
+	}
+}
+
+// TestPlanPhaseStopsRunBudgetWhenNoBudgetIsLeftForTheCorrectionRound covers the
+// correction round's own deadline: a stage with nothing left runs no round at
+// all, rather than one carrying the default agent timeout past its budget.
+func TestPlanPhaseStopsRunBudgetWhenNoBudgetIsLeftForTheCorrectionRound(t *testing.T) {
+	base := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	spent := false
+	planAgent := &fakeAgent{eventsFn: func(int) string {
+		spent = true
+		return decisionEvents("ses_1", brokenContextDecision())
+	}}
+	prepare := func(d *BuildDeps, _ *BuildConfig) {
+		d.Now = func() time.Time {
+			if spent {
+				return base.Add(nfr1BuildBudget)
+			}
+			return base
+		}
+	}
+	_, _, _, decision, err := runGuidedPlanPhase(t, planAgent, prepare)
+
+	var stop *StopError
+	if !errors.As(err, &stop) || stop.Reason != StopRunBudget {
+		t.Fatalf("err = %v, want a run-budget stop", err)
+	}
+	if decision != nil {
+		t.Fatalf("decision = %+v, want none", decision)
+	}
+	if planAgent.calls != 1 {
+		t.Fatalf("the plan agent ran %d rounds, want no correction round", planAgent.calls)
+	}
+}
+
+// TestPlanPhaseKeepsAnAgentFailureOfTheCorrectionRound covers the correction
+// round's own error: a round that failed to run stops with the agent's
+// classification, not as an invalid plan, even when its partial reply carries a
+// decision the re-check would accept.
+func TestPlanPhaseKeepsAnAgentFailureOfTheCorrectionRound(t *testing.T) {
+	planAgent := &fakeAgent{
+		eventsFn: func(call int) string {
+			if call == 1 {
+				return decisionEvents("ses_1", brokenContextDecision())
+			}
+			return decisionEvents("ses_1", testDecision)
+		},
+		errFn: func(call int) error {
+			if call == 1 {
+				return nil
+			}
+			return errors.New("agent exited 1")
+		},
+	}
+	_, _, _, decision, err := runGuidedPlanPhase(t, planAgent, nil)
+
+	var stop *StopError
+	if !errors.As(err, &stop) || stop.Outcome != OutcomeAgentFailed || stop.Reason != StopAgentExit {
+		t.Fatalf("err = %v, want the agent's own failure", err)
+	}
+	if decision != nil {
+		t.Fatalf("decision = %+v, want none", decision)
+	}
+	if planAgent.calls != 2 {
+		t.Fatalf("the plan agent ran %d rounds, want the first and its correction", planAgent.calls)
+	}
+}
+
+// TestPlanPhaseCorrectsOnTheModelThatAnswered keeps the correction round with
+// the model whose session it continues: after the first round fell back to the
+// second model, the correction runs on that model, not on the primary.
+func TestPlanPhaseCorrectsOnTheModelThatAnswered(t *testing.T) {
+	planAgent := &fakeAgent{
+		eventsFn: func(call int) string {
+			if call == 2 {
+				return decisionEvents("ses_b", brokenContextDecision())
+			}
+			return decisionEvents("ses_b", testDecision)
+		},
+		stderrFn: func(call int) string {
+			if call == 1 {
+				return "Error: no endpoints found for this model"
+			}
+			return ""
+		},
+		errFn: func(call int) error {
+			if call == 1 {
+				return errors.New("exit status 1")
+			}
+			return nil
+		},
+	}
+	prepare := func(_ *BuildDeps, c *BuildConfig) { c.PlanModels = []string{"p/a", "p/b"} }
+	_, _, sum, decision, err := runGuidedPlanPhase(t, planAgent, prepare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision == nil || decision.Question != testDecision.Question {
+		t.Fatalf("decision = %+v, want the corrected decision", decision)
+	}
+	if got, want := stepModels(sum, PhasePlan), []string{"p/a", "p/b", "p/b"}; !slices.Equal(got, want) {
+		t.Fatalf("plan rounds ran on %v, want %v", got, want)
+	}
+	if planAgent.sessions[2] != "ses_b" {
+		t.Fatalf("the correction round continued session %q, want ses_b", planAgent.sessions[2])
+	}
+}
+
 func TestBuildStopsWhenThePlanNamesAWorkflowFile(t *testing.T) {
 	planAgent := &fakeAgent{events: planEvent("```plan-files\nversion.go\n.github/workflows/ci.yml\n```")}
 	buildAgent := &fakeAgent{}

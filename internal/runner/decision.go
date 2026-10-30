@@ -31,6 +31,22 @@ const (
 // re-check enforces.
 var errDecisionInvalid = errors.New("the plan's decision is not usable")
 
+// decisionBoundError reports a decision that broke one of the bounds: the one
+// invalid decision the plan stage hands back to the model with the rule it
+// broke named. It unwraps to the rule, so it reads as that rule wherever an
+// invalid decision is reported.
+type decisionBoundError struct{ err error }
+
+func (e decisionBoundError) Error() string { return e.err.Error() }
+func (e decisionBoundError) Unwrap() error { return e.err }
+
+// breaksDecisionBound reports whether err is a decision that broke one of the
+// bounds, which the plan stage answers with one correction round.
+func breaksDecisionBound(err error) bool {
+	var b decisionBoundError
+	return errors.As(err, &b)
+}
+
 // Decision is a question a guided plan raises for the owner before the run
 // continues: the question, a few lines of context, and the options the owner
 // may choose between. The first option is the recommendation.
@@ -102,6 +118,14 @@ type Answer struct {
 // decisionOptionMax options, each with a label, a value and a cost, none of
 // them longer than its limit or more than one line.
 func (d Decision) Check() error {
+	if err := d.checkBounds(); err != nil {
+		return decisionBoundError{err}
+	}
+	return nil
+}
+
+// checkBounds reports the first bound d breaks, or nil.
+func (d Decision) checkBounds() error {
 	if err := checkDecisionText("question", d.Question, decisionQuestionLimit); err != nil {
 		return err
 	}

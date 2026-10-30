@@ -50,6 +50,14 @@ func PlanPrompt(projection string, t Ticket, guided bool) (rules, prompt string,
 	return rules, ticket + "\n\n" + instruction, nil
 }
 
+// planDecisionCorrectionPrompt is what a guided plan's one correction round
+// receives: the rule its decision broke, worded as the re-check words it, so
+// the model can read what went wrong and reply again.
+func planDecisionCorrectionPrompt(err error) string {
+	return "The plan-decision block you ended with broke a rule the plan re-check enforces: " +
+		detail(err) + "\n\nReply with the corrected decision block and nothing else."
+}
+
 // errPlanFiles reports a plan agent's final message that carries no valid
 // plan-files block.
 var errPlanFiles = errors.New("plan agent's response carries no valid plan-files list")
