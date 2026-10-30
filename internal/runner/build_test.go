@@ -2538,6 +2538,162 @@ func TestFixRoundSubstitutionIsClampedByTheReviewBudget(t *testing.T) {
 	}
 }
 
+// writerFunc is an io.Writer that hands each write to a function, so a test
+// can act on a log line the moment the code under test emits it.
+type writerFunc func(p []byte)
+
+func (w writerFunc) Write(p []byte) (int, error) {
+	w(p)
+	return len(p), nil
+}
+
+// TestPrePRLoopDraftsWithoutAReReviewWhenTheScanAfterAFixRoundFails keeps a
+// scan that cannot list the fixed diff from reading as one that found nothing:
+// the run takes no re-review of guards it could not probe, and the PR says the
+// review failed.
+func TestPrePRLoopDraftsWithoutAReReviewWhenTheScanAfterAFixRoundFails(t *testing.T) {
+	var lock string
+	agent := &fakeAgent{}
+	agent.edit = func(dir string) error {
+		if agent.calls > 1 {
+			// A held index lock leaves the changed paths listable, which only
+			// reads, but stops the scan marking this round's new file for its
+			// line diff.
+			lock = strings.TrimSpace(mustGit(t, dir, "rev-parse", "--git-path", "index.lock"))
+			if !filepath.IsAbs(lock) {
+				lock = filepath.Join(dir, lock)
+			}
+			if err := os.WriteFile(lock, nil, 0o600); err != nil {
+				return err
+			}
+			if err := edit("b.go", "package x\n")(dir); err != nil {
+				return err
+			}
+		}
+		return edit("a.go", guardedFile)(dir)
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	deps.PackageTests = func(context.Context, string, string) (bool, string, error) {
+		return false, "", nil // every test passes: the guard is uncovered
+	}
+	// The lock is lifted at the first clock read after the fix round's checks,
+	// the one the scan's failure comes ahead of, so a run that carried on past a
+	// failed scan would find the re-review's own diff readable.
+	sinceChecks := -1
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		if lock != "" {
+			sinceChecks = 0
+		}
+		return "", "", nil
+	}
+	deps.Now = func() time.Time {
+		switch sinceChecks {
+		case -1:
+		case 0:
+			sinceChecks = 1 // the checks' own timing read
+		default:
+			sinceChecks = -1
+			if err := os.Remove(lock); err != nil {
+				t.Error(err)
+			}
+		}
+		return time.Now()
+	}
+	var logs strings.Builder
+	deps.Logger = slog.New(slog.NewTextHandler(writerFunc(func(p []byte) {
+		logs.Write(p)
+		if strings.Contains(string(p), "reviewFailed") && sinceChecks != -1 {
+			// The commit that follows needs the index the failure was held on.
+			sinceChecks = -1
+			if err := os.Remove(lock); err != nil {
+				t.Error(err)
+			}
+		}
+	}), nil))
+	review := &fakeAgent{events: reviewEvent("")}
+	deps.ReviewAgent = review
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 2 {
+		t.Fatalf("build agent ran %d times, want the build round and one fix round", agent.calls)
+	}
+	if review.calls != 1 {
+		t.Fatalf("review agent ran %d times, want the pass alone: the scan after the fix round failed", review.calls)
+	}
+	if !strings.Contains(logs.String(), "reviewFailed reason=checks-run") {
+		t.Fatalf("logs = %q, want the review to fail on the checks run", logs.String())
+	}
+	rec := reported.last(t)
+	if rec.Ready || !strings.HasPrefix(rec.LoopDetail, "review: ") {
+		t.Fatalf("record ready = %v, detail = %q, want a draft naming the failed review", rec.Ready, rec.LoopDetail)
+	}
+}
+
+// TestPrePRLoopContinuesFromTheRoundASubstitutedFixModelAnswered holds the
+// round numbers apart when the first fix round steps to its backup model: the
+// backup's step is round 3, so its checks and re-review run as round 3 and the
+// next fix round is round 4, each round once, and the rows and the second
+// round's cost name the round that did the fixing.
+func TestPrePRLoopContinuesFromTheRoundASubstitutedFixModelAnswered(t *testing.T) {
+	const finding = "the retry never bounds its attempts"
+	agent := &fakeAgent{
+		edit: edit("version.go", "package x\n"),
+		errFn: func(call int) error {
+			if call == 2 {
+				return errors.New("exit status 1")
+			}
+			return nil
+		},
+		stderrFn: func(call int) string {
+			if call == 2 {
+				return allowanceStderr
+			}
+			return ""
+		},
+		events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{"input":1}}}` + "\n",
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	review := &fakeAgent{eventsFn: func(call int) string {
+		if call < 3 {
+			return reviewEvent(finding)
+		}
+		return reviewEvent("")
+	}}
+	deps.ReviewAgent = review
+	c := testConfig(t, initRepo(t))
+	c.Model = DefaultModel()
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 4 {
+		t.Fatalf("build agent ran %d times, want the build round, the refused fix attempt, its backup and a second fix round", agent.calls)
+	}
+	rec := reported.last(t)
+	roundsOf := func(p Phase) []int {
+		var rounds []int
+		for _, st := range rec.Steps {
+			if st.Phase == p {
+				rounds = append(rounds, st.Round)
+			}
+		}
+		return rounds
+	}
+	build, reviews := roundsOf(PhaseBuild), roundsOf(PhaseReview)
+	if !slices.Equal(build, []int{1, 2, 3, 4}) || !slices.Equal(reviews, []int{1, 3, 4}) {
+		t.Fatalf("build rounds = %v, review rounds = %v, want [1 2 3 4] and [1 3 4]: no round number reused", build, reviews)
+	}
+	if want := []ReviewFinding{{Finding: finding, Resolution: "fixed in round 4"}}; !slices.Equal(rec.ReviewFindings, want) {
+		t.Fatalf("findings = %+v, want %+v", rec.ReviewFindings, want)
+	}
+	if rec.ReviewSecondRound == nil || rec.ReviewSecondRound.Round != 4 {
+		t.Fatalf("second round cost = %+v, want the round the rows name", rec.ReviewSecondRound)
+	}
+}
+
 // exitClassifiedAgent classifies its failures by exit code alone, the way a
 // harness reads a server error it prints nothing about.
 type exitClassifiedAgent struct{ *fakeAgent }

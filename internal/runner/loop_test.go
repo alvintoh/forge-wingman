@@ -65,6 +65,26 @@ func TestReviewRowsFollowsFindingsThroughBothFixRounds(t *testing.T) {
 	}
 }
 
+// TestReviewRowsNamesTheRoundForAFindingOnlyTheLastReCheckMade covers a finding
+// the last re-check reports that no fix round was given: after two rounds it
+// reads open after the last one, like the findings a round did try.
+func TestReviewRowsNamesTheRoundForAFindingOnlyTheLastReCheckMade(t *testing.T) {
+	tried := reviewPending("the timeout is hard-coded")
+	newly := reviewPending("the retry never bounds its attempts")
+
+	got := reviewRows([]fixRoundResult{
+		{round: 2, issued: tried, open: tried, rechecked: true},
+		{round: 3, issued: tried, open: append(slices.Clone(tried), newly...), rechecked: true},
+	})
+	want := []ReviewFinding{
+		{Finding: "the timeout is hard-coded", Resolution: "still open after round 3"},
+		{Finding: "the retry never bounds its attempts", Resolution: "still open after round 3"},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("rows = %+v, want %+v", got, want)
+	}
+}
+
 // TestTheStageBudgetsAndTheReserveTotalTheRunCap keeps NFR-1's cap and the three
 // shares drawn from it from drifting apart: the reserve is what the two stages
 // must leave, so any change to one of them has to account for the others.

@@ -415,6 +415,12 @@ func findingResolution(key string, stillOpen map[string]bool, fixRound int, rech
 // round ran, or the last re-check still reports it.
 const stillOpenText = "still open"
 
+// stillOpenAfter is how a row reads when the re-check after fixRound reports
+// its finding and more than one round ran.
+func stillOpenAfter(fixRound int) string {
+	return fmt.Sprintf("still open after round %d", fixRound)
+}
+
 // fixedIn is how a row reads when fixRound resolved its finding.
 func fixedIn(fixRound int) string {
 	return fmt.Sprintf("fixed in round %d", fixRound)
@@ -468,7 +474,7 @@ func reviewRows(rounds []fixRoundResult) []ReviewFinding {
 			case !f.stable && reworded && res == fixedIn(r.round):
 				res = fmt.Sprintf("addressed in round %d; the re-review still reported findings", r.round)
 			case res == stillOpenText && r.rechecked && last && len(rounds) > 1:
-				res = fmt.Sprintf("still open after round %d", r.round)
+				res = stillOpenAfter(r.round)
 			}
 			rows[at[f.key]].Resolution = res
 		}
@@ -481,7 +487,11 @@ func reviewRows(rounds []fixRoundResult) []ReviewFinding {
 				continue
 			}
 			at[f.key] = len(rows)
-			rows = append(rows, ReviewFinding{Finding: f.text, Resolution: stillOpenText})
+			res := stillOpenText
+			if len(rounds) > 1 {
+				res = stillOpenAfter(round.round)
+			}
+			rows = append(rows, ReviewFinding{Finding: f.text, Resolution: res})
 		}
 	}
 	return capFindings(rows)
@@ -546,8 +556,9 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 
 	rounds := make([]fixRoundResult, 0, maxFixRounds)
 	findings, checksDetail := pending, ""
+	round := buildRound
 	for n := 1; n <= maxFixRounds; n++ {
-		round := buildRound + n
+		round++
 		timeout, inBudget := roundTimeout(c.AgentTimeout, reviewStarted, d.Now(), nfr1ReviewBudget)
 		if !inBudget {
 			// A stage with no budget left starts no round: the findings stay open
@@ -558,11 +569,13 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 		fixes := fixOrder(c, sum)
 		call := agentCall{Phase: PhaseBuild, Round: round, Model: fixes[0], Session: session, Rules: rules, Detail: text,
 			Timeout: timeout}
-		fixText, resumed, _, err := runAgentInOrder(ctx, d, c, call, fixes, d.Agent, wt.Dir, withCommitInstruction(fixPrompt(text)), sum, reviewStarted, nfr1ReviewBudget)
+		fixText, resumed, ran, err := runAgentInOrder(ctx, d, c, call, fixes, d.Agent, wt.Dir, withCommitInstruction(fixPrompt(text)), sum, reviewStarted, nfr1ReviewBudget)
 		if err != nil {
 			return false, "", err
 		}
-		session = resumed
+		// A substitution inside the round advanced it, so the checks, the
+		// re-review and the next round continue from the round that answered.
+		round, session = ran, resumed
 		msg.adopt(fixText, c.Ticket.ID)
 		if n > 1 {
 			// The one extra round this run took is priced in the PR notes, so the
