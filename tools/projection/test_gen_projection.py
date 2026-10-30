@@ -83,6 +83,18 @@ class GenProjectionTest(unittest.TestCase):
             self.assertLess(build.index(heading), build.index(gen.PROTOCOL_HEADING))
             self.assertNotIn(heading, plan)
 
+    def test_the_fidelity_rule_rides_after_the_evidence_rule(self):
+        evidence = "base/projection/agent-ac-evidence.md"
+        fidelity = "base/projection/agent-ticket-fidelity.md"
+        self.assertIn(evidence, gen.BUILD_ONLY_RULES)
+        self.assertIn(fidelity, gen.BUILD_ONLY_RULES)
+        self.assertLess(gen.BUILD_ONLY_RULES.index(evidence),
+                        gen.BUILD_ONLY_RULES.index(fidelity))
+        write_stack(self.root)
+        build = gen.build(self.root, trimmed=True)
+        self.assertLess(build.index(gen._own_heading(self.root, evidence)),
+                        build.index(gen._own_heading(self.root, fidelity)))
+
     def test_stack_packs_ride_in_the_build_projection_only(self):
         write_stack(self.root)
         result = run(self.root, self.out)
@@ -176,29 +188,35 @@ class GenProjectionTest(unittest.TestCase):
             self.assertEqual((self.out / name).read_bytes(), (again / name).read_bytes())
 
     def test_missing_build_only_rule_fails_closed(self):
-        write_stack(self.root)
-        (self.root / gen.BUILD_ONLY_RULES[0]).unlink()
-        result = run(self.root, self.out)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(list(self.out.iterdir()), [])
-        self.assertNotIn(MARKER, result.stdout + result.stderr)
+        for rel in gen.BUILD_ONLY_RULES:
+            with self.subTest(rel=rel):
+                write_stack(self.root)
+                (self.root / rel).unlink()
+                result = run(self.root, self.out)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(list(self.out.iterdir()), [])
+                self.assertNotIn(MARKER, result.stdout + result.stderr)
 
     def test_check_rejects_build_text_missing_the_build_only_rule(self):
         write_stack(self.root)
-        text = gen.build(self.root, trimmed=True).replace(
-            gen._own_heading(self.root, gen.BUILD_ONLY_RULES[0]), "")
-        with self.assertRaises(AssertionError) as caught:
-            gen.check(self.root, "build", text, trimmed=True)
-        self.assertIn("build projection lost", str(caught.exception))
+        for rel in gen.BUILD_ONLY_RULES:
+            with self.subTest(rel=rel):
+                text = gen.build(self.root, trimmed=True).replace(
+                    gen._own_heading(self.root, rel), "")
+                with self.assertRaises(AssertionError) as caught:
+                    gen.check(self.root, "build", text, trimmed=True)
+                self.assertIn("build projection lost", str(caught.exception))
 
     def test_check_rejects_plan_text_carrying_the_build_only_rule(self):
         write_stack(self.root)
-        text = gen.build(self.root, trimmed=False).replace(
-            gen.TICKET_SENTINEL, gen._own_heading(self.root, gen.BUILD_ONLY_RULES[0])
-            + "\n\n" + gen.TICKET_SENTINEL)
-        with self.assertRaises(AssertionError) as caught:
-            gen.check(self.root, "plan", text, trimmed=False)
-        self.assertIn("plan projection kept", str(caught.exception))
+        for rel in gen.BUILD_ONLY_RULES:
+            with self.subTest(rel=rel):
+                text = gen.build(self.root, trimmed=False).replace(
+                    gen.TICKET_SENTINEL, gen._own_heading(self.root, rel)
+                    + "\n\n" + gen.TICKET_SENTINEL)
+                with self.assertRaises(AssertionError) as caught:
+                    gen.check(self.root, "plan", text, trimmed=False)
+                self.assertIn("plan projection kept", str(caught.exception))
 
     def test_failed_assertion_writes_nothing_and_prints_no_rule_text(self):
         write_stack(self.root, leak_employer=True)
