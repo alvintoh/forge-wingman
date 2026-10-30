@@ -786,19 +786,19 @@ func roundsAgent(t *testing.T, rounds []string) *fakeAgent {
 }
 
 // runGuidedPlanPhase runs the plan phase with planAgent and returns what it made
-// of the plan; prepare, when set, adjusts the dependencies before it runs.
-func runGuidedPlanPhase(t *testing.T, planAgent *fakeAgent, prepare func(*BuildDeps)) (completions fakeObjects, c BuildConfig, sum Summary, decision *Decision, err error) {
+// of the plan; prepare, when set, adjusts the dependencies and the config before it runs.
+func runGuidedPlanPhase(t *testing.T, planAgent *fakeAgent, prepare func(*BuildDeps, *BuildConfig)) (completions fakeObjects, c BuildConfig, sum Summary, decision *Decision, err error) {
 	t.Helper()
 	objects := validObjects()
 	objects["projections/"+testSHA+"/"+planProjectionFile] = []byte("# Plan rules\n\n" + ticketSentinel)
 	deps, completions, _ := testDeps(objects, nil)
 	deps.PlanAgent = planAgent
-	if prepare != nil {
-		prepare(&deps)
-	}
 	c = testConfig(t, t.TempDir())
 	c.Ticket.Size = "M"
 	c.Guided = true
+	if prepare != nil {
+		prepare(&deps, &c)
+	}
 	sum = Summary{DurationsMS: map[string]int64{}, StartedAt: deps.Now()}
 	_, decision, err = runPlanPhase(context.Background(), deps, c, t.TempDir(), &sum)
 	return completions, c, sum, decision, err
@@ -912,7 +912,7 @@ func TestPlanPhaseStopsRunBudgetWhenNoBudgetIsLeftForTheCorrectionRound(t *testi
 		spent = true
 		return decisionEvents("ses_1", brokenContextDecision())
 	}}
-	prepare := func(d *BuildDeps) {
+	prepare := func(d *BuildDeps, _ *BuildConfig) {
 		d.Now = func() time.Time {
 			if spent {
 				return base.Add(nfr1BuildBudget)
@@ -964,6 +964,46 @@ func TestPlanPhaseKeepsAnAgentFailureOfTheCorrectionRound(t *testing.T) {
 	}
 	if planAgent.calls != 2 {
 		t.Fatalf("the plan agent ran %d rounds, want the first and its correction", planAgent.calls)
+	}
+}
+
+// TestPlanPhaseCorrectsOnTheModelThatAnswered keeps the correction round with
+// the model whose session it continues: after the first round fell back to the
+// second model, the correction runs on that model, not on the primary.
+func TestPlanPhaseCorrectsOnTheModelThatAnswered(t *testing.T) {
+	planAgent := &fakeAgent{
+		eventsFn: func(call int) string {
+			if call == 2 {
+				return decisionEvents("ses_b", brokenContextDecision())
+			}
+			return decisionEvents("ses_b", testDecision)
+		},
+		stderrFn: func(call int) string {
+			if call == 1 {
+				return "Error: no endpoints found for this model"
+			}
+			return ""
+		},
+		errFn: func(call int) error {
+			if call == 1 {
+				return errors.New("exit status 1")
+			}
+			return nil
+		},
+	}
+	prepare := func(_ *BuildDeps, c *BuildConfig) { c.PlanModels = []string{"p/a", "p/b"} }
+	_, _, sum, decision, err := runGuidedPlanPhase(t, planAgent, prepare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision == nil || decision.Question != testDecision.Question {
+		t.Fatalf("decision = %+v, want the corrected decision", decision)
+	}
+	if got, want := stepModels(sum, PhasePlan), []string{"p/a", "p/b", "p/b"}; !slices.Equal(got, want) {
+		t.Fatalf("plan rounds ran on %v, want %v", got, want)
+	}
+	if planAgent.sessions[2] != "ses_b" {
+		t.Fatalf("the correction round continued session %q, want ses_b", planAgent.sessions[2])
 	}
 }
 

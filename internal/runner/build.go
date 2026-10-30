@@ -491,10 +491,13 @@ func runPlanPhase(ctx context.Context, d BuildDeps, c BuildConfig, dir string, s
 			return nil, nil, stopWith(OutcomeStopped, StopRunBudget, errors.New(stageBudgetSpent("build", nfr1BuildBudget)))
 		}
 		d.Logger.Info("planDecisionCorrection", "round", round+1, "rule", detail(err))
+		// Each substitution adds one round, so the model that answered sits
+		// round-call.Round into the order, and the session it opened belongs to it.
+		remaining := c.PlanModels[round-call.Round:]
 		round++
-		correction := agentCall{Phase: PhasePlan, Round: round, Model: c.PlanModels[0], Session: session,
+		correction := agentCall{Phase: PhasePlan, Round: round, Model: remaining[0], Session: session,
 			Rules: planRules, Timeout: timeout}
-		text, _, _, err = runAgentInOrder(ctx, d, c, correction, c.PlanModels, d.PlanAgent, dir,
+		text, _, _, err = runAgentInOrder(ctx, d, c, correction, remaining, d.PlanAgent, dir,
 			planDecisionCorrectionPrompt(err), sum, sum.StartedAt, nfr1BuildBudget)
 		if err != nil {
 			return nil, nil, err
