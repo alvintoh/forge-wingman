@@ -2,8 +2,10 @@ package runner
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -35,11 +37,12 @@ var errTemplate = errors.New("pull request template lacks the ticket line, summa
 // nothing did. noPlan is set for a run no plan stage recorded a write set for,
 // which waits for the owner rather than merging itself. review is what the
 // pre-open review found and how the run left it, listed in the notes and empty
-// for a run whose review found nothing. provisional are the decisions auto-pilot
-// took the recommended option on, empty for a run that took none. supersedes is
-// the number of the PR an owner's choice replaced, zero when none, and retried
-// says that choice was a retry with a note.
-func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail, overlap string, outOfPlan []string, writeSetUnread bool, frontEnd []string, noPlan bool, review []ReviewFinding, provisional []Provisional, supersedes int, retried bool) (string, error) {
+// for a run whose review found nothing. secondRound is what the review's one
+// extra fix round cost, nil for a run that never took one. provisional are the
+// decisions auto-pilot took the recommended option on, empty for a run that took
+// none. supersedes is the number of the PR an owner's choice replaced, zero when
+// none, and retried says that choice was a retry with a note.
+func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail, overlap string, outOfPlan []string, writeSetUnread bool, frontEnd []string, noPlan bool, review []ReviewFinding, secondRound *FixRoundCost, provisional []Provisional, supersedes int, retried bool) (string, error) {
 	summary := plainText(prSummary)
 	if summary == "" {
 		summary = "`" + t.ID + "`: " + t.Title
@@ -108,6 +111,9 @@ func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail
 					notes = append(notes, "- "+plainText(f.Finding)+" — "+plainText(f.Resolution))
 				}
 			}
+			if secondRound != nil {
+				notes = append(notes, "", secondRoundNote(secondRound))
+			}
 			notes = append(notes, "", "The ticket as built:", "", fence(t.Body), t.Body, fence(t.Body), "")
 			out = append(out, notes...)
 			filled[templateNotes] = true
@@ -128,6 +134,15 @@ func supersedeReason(retried bool) string {
 		return "the owner retried this run with a note."
 	}
 	return "the owner chose a different option."
+}
+
+// secondRoundNote is the PR notes' report of the pre-open review's one extra
+// fix round: the round it ran as, what that step spent and how long it took, so
+// the owner prices the round from the run itself.
+func secondRoundNote(c *FixRoundCost) string {
+	took := (time.Duration(c.DurationMS) * time.Millisecond).Round(time.Second)
+	return fmt.Sprintf("**Second fix round:** round %d cost %d input and %d output tokens over %s, inside the review stage's budget",
+		c.Round, c.Tokens.Input, c.Tokens.Output, took)
 }
 
 // commentEnds reports whether line i closes the first HTML comment of its section.

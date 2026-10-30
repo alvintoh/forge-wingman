@@ -19,6 +19,11 @@ const checkLoopMaxRounds = 3
 // the loop's give-up detail carries.
 const checkFeedbackLimit = 8 << 10
 
+// maxFixRounds is FR-28's fix-round ceiling for the pre-open review: a fix
+// round and, when its re-check still reports a finding, one more. A finding
+// still open after the last stays open and holds the PR as a draft.
+const maxFixRounds = 2
+
 const (
 	// nfr1RunCap is NFR-1's whole-run duration ceiling — the build job's own
 	// timeout-minutes in .github/workflows/model.yml, which must agree with it.
@@ -28,8 +33,8 @@ const (
 	// guard scan the review pass follows.
 	nfr1BuildBudget = 60 * time.Minute
 	// nfr1ReviewBudget is how much of nfr1RunCap the review stage may spend,
-	// from the review's own start: the review pass, the fix round and the
-	// re-checks that follow it.
+	// from the review's own start: the review pass, its fix rounds and the
+	// re-checks that follow them.
 	nfr1ReviewBudget = 25 * time.Minute
 	// nfr1CommitReserve is what nfr1RunCap leaves once both stages have spent
 	// their own — nfr1RunCap - nfr1BuildBudget - nfr1ReviewBudget — for the
@@ -82,7 +87,7 @@ func checkFeedbackPrompt(gate, output string) string {
 		truncate(output, checkFeedbackLimit) + "\n```"
 }
 
-// fixPrompt is what the pre-open loop's one fix round receives: its findings —
+// fixPrompt is what a fix round of the pre-open loop receives: its findings —
 // the review pass's and the guard probe's together — asking for a fix and
 // nothing else.
 func fixPrompt(findings string) string {
@@ -126,6 +131,16 @@ func lastBuildModel(sum *Summary) string {
 		}
 	}
 	return ""
+}
+
+// lastFixRoundCost is the spend of the fix round that has just returned, as the
+// PR notes price it: runAgent records the round's step before it returns, so the
+// summary's newest step is that round's, and it carries the round's own number
+// even when a model substitution advanced it. The caller reads it only after a
+// round that returned without an error, so there is always a step to read.
+func lastFixRoundCost(sum *Summary) *FixRoundCost {
+	st := sum.Steps[len(sum.Steps)-1]
+	return &FixRoundCost{Round: st.Round, Tokens: st.Tokens, DurationMS: st.DurationMS}
 }
 
 // reviewOrder is the review phase's ordered models: the free models after the
@@ -388,33 +403,85 @@ const noFixRound = 0
 func findingResolution(key string, stillOpen map[string]bool, fixRound int, rechecked bool) string {
 	switch {
 	case stillOpen[key], fixRound == noFixRound:
-		return "still open"
+		return stillOpenText
 	case rechecked:
-		return fmt.Sprintf("fixed in round %d", fixRound)
+		return fixedIn(fixRound)
 	default:
 		return fmt.Sprintf("addressed in round %d, not re-checked", fixRound)
 	}
 }
 
-// reviewRows is what the PR body publishes (AC5): every finding the fix round
-// was given and how the run left it, then any finding the re-check made that
-// the fix round never saw — a guard the round itself added uncovered, say.
-func reviewRows(pending, open []pendingFinding, fixRound int) []ReviewFinding {
-	rows := resolveFindings(pending, findingKeys(open), fixRound, true)
-	// A model's finding is matched only by its text, so while the re-review
-	// still reports any finding of its own, an earlier one it did not repeat
-	// word for word may be that same finding reworded: it is not shown as fixed.
-	if slices.ContainsFunc(open, func(f pendingFinding) bool { return !f.stable }) {
-		for i, f := range pending {
-			if !f.stable && rows[i].Resolution == fmt.Sprintf("fixed in round %d", fixRound) {
-				rows[i].Resolution = fmt.Sprintf("addressed in round %d; the re-review still reported findings", fixRound)
+// stillOpenText is a row's resolution when nothing closed its finding: no fix
+// round ran, or the last re-check still reports it.
+const stillOpenText = "still open"
+
+// fixedIn is how a row reads when fixRound resolved its finding.
+func fixedIn(fixRound int) string {
+	return fmt.Sprintf("fixed in round %d", fixRound)
+}
+
+// fixRoundResult is one fix round of the pre-open loop and the re-check that
+// followed it: the findings the round was given, the ones that re-check still
+// reported, the round its own step ran as, and whether the review stage's
+// budget left room to re-check it at all.
+type fixRoundResult struct {
+	round     int
+	issued    []pendingFinding
+	open      []pendingFinding
+	rechecked bool
+}
+
+// reviewRows is what the PR body publishes (AC5, AC2): every finding a fix round
+// was given and how the run left it, then any finding the last re-check made that
+// no fix round saw — a guard the round itself added uncovered, say.
+//
+// Each round's own re-check settles the findings it was given, and a later round
+// settles them again, so a finding the first round left open and the second fixed
+// reads as fixed in the second, and one the last re-check still reports reads as
+// open after that round. Round numbers are the round each step ran as.
+func reviewRows(rounds []fixRoundResult) []ReviewFinding {
+	var issued []pendingFinding
+	at := map[string]int{}
+	for _, r := range rounds {
+		for _, f := range r.issued {
+			if _, seen := at[f.key]; !seen {
+				at[f.key] = len(issued)
+				issued = append(issued, f)
 			}
 		}
 	}
-	seen := findingKeys(pending)
-	for _, f := range open {
-		if !seen[f.key] {
-			rows = append(rows, ReviewFinding{Finding: f.text, Resolution: "still open"})
+	rows := make([]ReviewFinding, len(issued))
+	for i, f := range issued {
+		rows[i] = ReviewFinding{Finding: f.text}
+	}
+	for i, r := range rounds {
+		open := findingKeys(r.open)
+		// A model's finding is matched only by its text, so while this round's
+		// re-check still reports any finding of its own, an earlier one it did
+		// not repeat word for word may be that same finding reworded: it is not
+		// shown as fixed.
+		reworded := slices.ContainsFunc(r.open, func(f pendingFinding) bool { return !f.stable })
+		last := i == len(rounds)-1
+		for _, f := range r.issued {
+			res := findingResolution(f.key, open, r.round, r.rechecked)
+			switch {
+			case !f.stable && reworded && res == fixedIn(r.round):
+				res = fmt.Sprintf("addressed in round %d; the re-review still reported findings", r.round)
+			case res == stillOpenText && r.rechecked && last && len(rounds) > 1:
+				res = fmt.Sprintf("still open after round %d", r.round)
+			}
+			rows[at[f.key]].Resolution = res
+		}
+	}
+	for _, round := range rounds {
+		for _, f := range round.open {
+			// Anything a re-check reports that a later round was given is in at
+			// already, so only the last round's own new findings are listed here.
+			if _, seen := at[f.key]; seen {
+				continue
+			}
+			at[f.key] = len(rows)
+			rows = append(rows, ReviewFinding{Finding: f.text, Resolution: stillOpenText})
 		}
 	}
 	return capFindings(rows)
@@ -426,28 +493,31 @@ func reviewRows(pending, open []pendingFinding, fixRound int) []ReviewFinding {
 // the code around it against the ticket's acceptance criteria (AC2, AC3, AC4).
 // models is the review's ordered list, which a free-tier run derives from its
 // free list; an empty one is a run with no model left to review it (AC2), which
-// opens as a draft instead. Findings from either get exactly one fix round, fed
-// back to the build agent's own session the same way a check failure is, and
-// the summary carries each one with how the run left it (AC5). The checks then
-// run once, to catch a gate the fix round newly broke, and — when the review
+// opens as a draft instead. Findings from either get a fix round, fed back to
+// the build agent's own session the same way a check failure is, and the
+// summary carries each one with how the run left it (AC5). The checks then run
+// once, to catch a gate the fix round newly broke, and — when the review
 // stage's own budget still allows it — the guards are probed again and the
-// review re-run on the fixed diff, so the detail lists only the findings the
-// re-checks still report. A clean re-check with the checks passing leaves the
-// run ready (FR-5), and a run whose review found nothing is untouched by any of
-// this (AC6).
+// review re-run on the fixed diff.
+//
+// A re-check that still reports a finding, the round's own or one it newly
+// made, starts one more fix round on the same session, up to maxFixRounds in
+// all: a finding the last round still leaves open stays open and holds the PR
+// as a draft. So the detail lists only what the last re-check reports. A clean
+// re-check with the checks passing leaves the run ready (FR-5), and a run whose
+// review found nothing is untouched by any of this (AC6).
 //
 // The review's budget runs from when the review begins, after the guard scan,
 // so a build stage that spent its own share of the cap leaves the review stage
-// the whole of its own. It gives up — running neither the review nor the fix
-// round — once that budget would not leave enough time for one, and skips the
-// re-checks alone once it would not leave enough time for those, labelling the
-// findings as addressed by a fix round rather than re-checked. A valid
-// commit-message block from the fix round replaces msg. Each review pass starts
-// a fresh session, so it carries no history of its own; rules is the build
-// projection's rules, which the review needs to check the diff against them,
-// and the fix round resumes the build agent's own session with the same rules
-// it was built under — dropping them there would change the resumed session's
-// system prompt mid-conversation.
+// the whole of its own. It gives up — running no fix round — once that budget
+// would not leave enough time for one, and skips a re-check alone once it would
+// not leave enough time for that, labelling the findings as addressed by a fix
+// round rather than re-checked. A valid commit-message block from a fix round
+// replaces msg. Each review pass starts a fresh session, so it carries no
+// history of its own; rules is the build projection's rules, which the review
+// needs to check the diff against them, and every fix round resumes the build
+// agent's own session with the same rules it was built under — dropping them
+// there would change the resumed session's system prompt mid-conversation.
 func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum *Summary, rules, session string, buildRound int, models []string, msg *CommitMessage) (ready bool, detail string, err error) {
 	if len(models) == 0 {
 		return false, noReviewDetail, nil
@@ -462,7 +532,7 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 	reviewStarted := d.Now()
 	// The review's budget begins here, so its first pass takes the stage's own
 	// clamp with nothing to gate — the budget is whole at the instant the stage
-	// starts. Only the fix round and the re-checks below run late enough in the
+	// starts. Only the fix rounds and the re-checks below run late enough in the
 	// stage to need one.
 	passTimeout := min(effectiveAgentTimeout(c.AgentTimeout), nfr1ReviewBudget)
 	found, err := reviewPass(ctx, d, c, wt, sum, models, 1, rules, passTimeout, reviewStarted, nfr1ReviewBudget)
@@ -473,54 +543,75 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 	if len(pending) == 0 {
 		return true, "", nil
 	}
-	findings := findingsText(pending)
 
-	fixTimeout, inBudget := roundTimeout(c.AgentTimeout, reviewStarted, d.Now(), nfr1ReviewBudget)
-	if !inBudget {
+	rounds := make([]fixRoundResult, 0, maxFixRounds)
+	findings, checksDetail := pending, ""
+	for n := 1; n <= maxFixRounds; n++ {
+		round := buildRound + n
+		timeout, inBudget := roundTimeout(c.AgentTimeout, reviewStarted, d.Now(), nfr1ReviewBudget)
+		if !inBudget {
+			// A stage with no budget left starts no round: the findings stay open
+			// and the PR says so, exactly as it did before there was a second one.
+			break
+		}
+		text := findingsText(findings)
+		fixes := fixOrder(c, sum)
+		call := agentCall{Phase: PhaseBuild, Round: round, Model: fixes[0], Session: session, Rules: rules, Detail: text,
+			Timeout: timeout}
+		fixText, resumed, _, err := runAgentInOrder(ctx, d, c, call, fixes, d.Agent, wt.Dir, withCommitInstruction(fixPrompt(text)), sum, reviewStarted, nfr1ReviewBudget)
+		if err != nil {
+			return false, "", err
+		}
+		session = resumed
+		msg.adopt(fixText, c.Ticket.ID)
+		if n > 1 {
+			// The one extra round this run took is priced in the PR notes, so the
+			// owner sees what it cost before deciding to keep it.
+			sum.ReviewSecondRound = lastFixRoundCost(sum)
+		}
+
+		gate, output, cerr := checksFormatted(ctx, d, sum, wt, round)
+		if cerr != nil {
+			return false, "", cerr
+		}
+		checksDetail = ""
+		if gate != "" {
+			checksDetail = "checks: " + gate + " failing after the fix round\n\n" + truncate(output, checkFeedbackLimit)
+		}
+
+		// The post-fix scan is charged to the review stage, and each probe is
+		// itself bounded by what the review's budget leaves, so the guards cannot
+		// spend the time the re-review needs. Both re-checks then run under the
+		// one gate below: a finding is open, or fixed, only once its own re-check
+		// has said so.
+		surviving, err := scanGuards(ctx, d, wt, reviewStarted, nfr1ReviewBudget)
+		if err != nil {
+			return false, "", err
+		}
+		recheckTimeout, inBudget := roundTimeout(c.AgentTimeout, reviewStarted, d.Now(), nfr1ReviewBudget)
+		if !inBudget {
+			rounds = append(rounds, fixRoundResult{round: round, issued: findings})
+			sum.ReviewFindings = reviewRows(rounds)
+			return false, detailParts("findings addressed by a fix round, not re-reviewed: "+
+				text+" ("+stageBudgetSpent("review", nfr1ReviewBudget)+")", checksDetail), nil
+		}
+		remaining, err := reviewPass(ctx, d, c, wt, sum, models, round, rules, recheckTimeout, reviewStarted, nfr1ReviewBudget)
+		if err != nil {
+			return false, "", err
+		}
+		open := append(surviving, reviewPending(remaining)...)
+		rounds = append(rounds, fixRoundResult{round: round, issued: findings, open: open, rechecked: true})
+		if len(open) == 0 {
+			sum.ReviewFindings = reviewRows(rounds)
+			return checksDetail == "", checksDetail, nil
+		}
+		findings = open
+	}
+	if len(rounds) == 0 {
+		// The budget left no round at all: nothing was done about the findings.
 		sum.ReviewFindings = capFindings(resolveFindings(pending, nil, noFixRound, false))
-		return false, "findings open: " + findings + " (fix round skipped: " + stageBudgetSpent("review", nfr1ReviewBudget) + ")", nil
+		return false, "findings open: " + findingsText(pending) + " (fix round skipped: " + stageBudgetSpent("review", nfr1ReviewBudget) + ")", nil
 	}
-	fixRound := buildRound + 1
-	fixes := fixOrder(c, sum)
-	fixCall := agentCall{Phase: PhaseBuild, Round: fixRound, Model: fixes[0], Session: session, Rules: rules, Detail: findings,
-		Timeout: fixTimeout}
-	fixText, _, _, err := runAgentInOrder(ctx, d, c, fixCall, fixes, d.Agent, wt.Dir, withCommitInstruction(fixPrompt(findings)), sum, reviewStarted, nfr1ReviewBudget)
-	if err != nil {
-		return false, "", err
-	}
-	msg.adopt(fixText, c.Ticket.ID)
-
-	gate, output, cerr := checksFormatted(ctx, d, sum, wt, fixRound)
-	if cerr != nil {
-		return false, "", cerr
-	}
-	checksDetail := ""
-	if gate != "" {
-		checksDetail = "checks: " + gate + " failing after the fix round\n\n" + truncate(output, checkFeedbackLimit)
-	}
-
-	// The post-fix scan is charged to the review stage, and each probe is itself
-	// bounded by what the review's budget leaves, so the guards cannot spend the
-	// time the re-review needs. Both re-checks then run under the one gate
-	// below: a finding is open, or fixed, only once its own re-check has said so.
-	surviving, err := scanGuards(ctx, d, wt, reviewStarted, nfr1ReviewBudget)
-	if err != nil {
-		return false, "", err
-	}
-	recheckTimeout, inBudget := roundTimeout(c.AgentTimeout, reviewStarted, d.Now(), nfr1ReviewBudget)
-	if !inBudget {
-		sum.ReviewFindings = capFindings(resolveFindings(pending, nil, fixRound, false))
-		return false, detailParts("findings addressed by a fix round, not re-reviewed: "+
-			findings+" ("+stageBudgetSpent("review", nfr1ReviewBudget)+")", checksDetail), nil
-	}
-	remaining, err := reviewPass(ctx, d, c, wt, sum, models, 2, rules, recheckTimeout, reviewStarted, nfr1ReviewBudget)
-	if err != nil {
-		return false, "", err
-	}
-	open := append(surviving, reviewPending(remaining)...)
-	sum.ReviewFindings = reviewRows(pending, open, fixRound)
-	if len(open) == 0 {
-		return checksDetail == "", checksDetail, nil
-	}
-	return false, detailParts("findings open: "+findingsText(open), checksDetail), nil
+	sum.ReviewFindings = reviewRows(rounds)
+	return false, detailParts("findings open: "+findingsText(findings), checksDetail), nil
 }

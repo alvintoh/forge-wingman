@@ -74,6 +74,18 @@ type Summary struct {
 	// left it, which the PR body publishes so a reader sees what the run fixed
 	// before opening the pull request (AC5).
 	ReviewFindings []ReviewFinding `json:"review_findings,omitempty"`
+	// ReviewSecondRound is what the pre-open review's one extra fix round cost,
+	// nil for a run that never took one: the PR notes publish it so the owner
+	// prices the round on the first run that spends it.
+	ReviewSecondRound *FixRoundCost `json:"review_second_round,omitempty"`
+}
+
+// FixRoundCost is one fix round's own spend: the round its step ran as, its
+// tokens and its wall time.
+type FixRoundCost struct {
+	Round      int   `json:"round"`
+	Tokens     Usage `json:"tokens"`
+	DurationMS int64 `json:"duration_ms"`
 }
 
 // Step is one agent invocation in a run's build, distinct from Usage.Steps,
@@ -449,6 +461,17 @@ func (s Summary) validate(attemptID string, t Ticket, now time.Time) error {
 	for _, f := range s.ReviewFindings {
 		if !printable(f.Finding) || !printable(f.Resolution) {
 			return errors.New("a review finding or its resolution is not one printable line")
+		}
+	}
+	if r := s.ReviewSecondRound; r != nil {
+		if r.Round <= 0 || int64(r.Round) > maxCount {
+			return fmt.Errorf("second fix round %d is out of range", r.Round)
+		}
+		if err := r.Tokens.validate(); err != nil {
+			return err
+		}
+		if r.DurationMS < 0 || r.DurationMS > maxPhaseDuration.Milliseconds() {
+			return fmt.Errorf("second fix round duration %d ms is out of range", r.DurationMS)
 		}
 	}
 	if s.PeakContextTokens < 0 || s.PeakContextTokens > maxCount {
