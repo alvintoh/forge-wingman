@@ -1,0 +1,61 @@
+{
+  "runs": [
+    {
+      "run": "run-2026-02-28-a",
+      "ticket": "FRG-240",
+      "repo": "acme/widgets",
+      "pr_url": "https://github.com/acme/widgets/pull/240",
+      "wait_reason": "checks-not-green",
+      "updated_at": "2026-02-28T10:40:00Z",
+      "title": "Add the widget table",
+      "head_sha": "c4a1f0e",
+      "draft": false,
+      "checks": { "state": "failure", "summary": "web failed" },
+      "attempt": 0,
+      "retryable": true
+    },
+    {
+      "run": "run-2026-02-28-b",
+      "ticket": "FRG-241",
+      "repo": "acme/widgets",
+      "pr_url": "https://github.com/acme/widgets/pull/241",
+      "wait_reason": "front-end",
+      "updated_at": "2026-02-28T09:15:00Z",
+      "title": "Redraw the widget card",
+      "head_sha": "9b7e21d",
+      "draft": false,
+      "checks": { "state": "success", "summary": "all checks green" },
+      "attempt": 0,
+      "retryable": true
+    },
+    {
+      "run": "run-2026-02-27-c",
+      "ticket": "FRG-242",
+      "repo": "acme/gadgets",
+      "pr_url": "https://github.com/acme/gadgets/pull/242",
+      "wait_reason": "draft",
+      "updated_at": "2026-02-27T16:05:00Z",
+      "title": "Gadget list filters",
+      "head_sha": "1d2c8aa",
+      "draft": true,
+      "checks": { "state": "success", "summary": "all checks green" },
+      "attempt": 0,
+      "retryable": true
+    },
+    {
+      "run": "run-2026-02-26-d",
+      "ticket": "FRG-238",
+      "repo": "acme/gadgets",
+      "pr_url": "",
+      "wait_reason": "",
+      "updated_at": "2026-02-26T11:30:00Z",
+      "title": "Gadget settings page",
+      "head_sha": "77aa10c",
+      "stopped": true,
+      "stop_reason": "rebase-conflict",
+      "outcome": "stopped",
+      "attempt": 1,
+      "retryable": true
+    }
+  ]
+}

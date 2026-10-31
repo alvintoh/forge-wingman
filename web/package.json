@@ -9,7 +9,10 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "fmt": "oxfmt",
-    "fmt:check": "oxfmt --check"
+    "fmt:check": "oxfmt --check",
+    "shots": "bun ../tools/shots/main.ts",
+    "test:shots": "bun test ../tools/shots --path-ignore-patterns='**/*.integration.test.ts'",
+    "test:shots:integration": "bun test ../tools/shots/capture.integration.test.ts"
   },
   "dependencies": {
     "@tanstack/react-form": "^1.33.5",
