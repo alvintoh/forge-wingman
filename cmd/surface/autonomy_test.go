@@ -397,7 +397,7 @@ func TestAutonomyReportsTheAutoMergeSwitchAndTheRatesVerdict(t *testing.T) {
 
 // TestAutonomyEffectiveIsTheSwitchAlone asserts the endpoint's effective state
 // is the switch on and readable alone, with the rate still served beside it as
-// information a page words (AC4, AC6).
+// information a page words.
 func TestAutonomyEffectiveIsTheSwitchAlone(t *testing.T) {
 	at := measuredAt()
 	reverted := ratedMerges(at, 0)
@@ -474,6 +474,16 @@ func TestAutonomyReportsASwitchItCannotReadAsOff(t *testing.T) {
 	}
 	if !strings.Contains(log.String(), "autoMergeSwitchUnread") {
 		t.Errorf("log = %q, want the unread switch reported", log.String())
+	}
+}
+
+// TestRenderAutoMergeReportsAnUnreadSwitchOffWhateverItHolds asserts a switch
+// that could not be read is off even where the value it was read as is on.
+func TestRenderAutoMergeReportsAnUnreadSwitchOffWhateverItHolds(t *testing.T) {
+	got := renderAutoMerge(ratedMerges(measuredAt(), 0), true, false)
+	want := autoMergeState{RateAllows: true, RateValue: "0.0%", Limit: "10.0%", Window: 10, Reason: "switch-unread"}
+	if got != want {
+		t.Fatalf("auto_merge = %+v, want %+v", got, want)
 	}
 }
 

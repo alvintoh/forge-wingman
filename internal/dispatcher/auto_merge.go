@@ -8,8 +8,8 @@ import (
 // The reasons the switch and the rate report, stable so a log line and a view
 // can be counted by them.
 const (
-	// AutoMergeReasonOn is the reason when the rate is within its bar and
-	// nothing holds auto-merge off.
+	// AutoMergeReasonOn is a rate within AutoMergeRate over a full measured window
+	// that holds no reverted auto-merge.
 	AutoMergeReasonOn = "on"
 	// AutoMergeReasonSwitchOff is the owner's switch being off.
 	AutoMergeReasonSwitchOff = "switch-off"
@@ -47,14 +47,14 @@ type AutoMergeDecision struct {
 	Reverted int
 }
 
-// Evaluated reports whether the decision was made on evidence, which a switch
-// that was off or evidence that could not be read leaves unmeasured.
+// Evaluated reports whether the rate was read from evidence: a switch that was
+// off, or evidence that could not be read, leaves it unread.
 func (d AutoMergeDecision) Evaluated() bool {
 	return d.Reason != AutoMergeReasonSwitchOff && d.Reason != AutoMergeReasonEvidenceUnread
 }
 
-// RateText is the rate as a percentage, or "no agent lines" where none exists,
-// whichever reason the decision stopped on.
+// RateText is the rate as a percentage, or "no agent lines" where the window has
+// none.
 func (d AutoMergeDecision) RateText() string {
 	if d.Reason == AutoMergeReasonNoAgentLines || math.IsInf(d.Rate, 0) {
 		return "no agent lines"

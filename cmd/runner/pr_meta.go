@@ -131,18 +131,17 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		return err
 	}
 	draft := draftPR(sum, check)
-	switchOn := autoMergeSwitchOn(ctx, logger, *runID, store.NewAutoMergeSwitches(fsc))
-	rate := autoMergeRate(ctx, logger, *runID, store.NewRewrites(fsc), switchOn)
-	merge := autoMerge(switchOn, *runID, rec.Ticket(), sum, runner.FailedGate(*checkReport), check)
+	verdict := decideAutoMerge(ctx, logger, *runID, store.NewAutoMergeSwitches(fsc), store.NewRewrites(fsc),
+		rec.Ticket(), sum, runner.FailedGate(*checkReport), check)
 	if err := records.SetWaitReason(ctx, *runID, waitReason(*runID, rec.Ticket(), sum, check)); err != nil {
 		logger.Warn("waitReasonNotRecorded", "run", *runID, "err", err.Error())
 	}
-	logger.Info("autoMergeDecided", append(rateAttrs(rate), "run", *runID, "autoMerge", merge, "sampled", runner.Sampled(*runID),
+	logger.Info("autoMergeDecided", append(verdict.attrs(), "run", *runID, "sampled", runner.Sampled(*runID),
 		"draft", draft, "frontEnd", len(check.FrontEnd), "changed", len(check.Changed), "outOfPlan", len(check.OutOfPlan), "overlap", check.Overlap, "planned", check.Planned)...)
 	if err := writeOutputs(e.output, map[string]string{
 		"title":          title,
 		"branch_segment": rec.Ticket().BranchSegment(),
-		"auto_merge":     strconv.FormatBool(merge),
+		"auto_merge":     strconv.FormatBool(verdict.Merge),
 		"draft":          strconv.FormatBool(draft),
 		"superseded_pr":  supersededOutput(check.Supersedes),
 		// superseded_by_retry words the close comment, so it is set only when a PR is superseded.
@@ -381,6 +380,36 @@ func rateAttrs(d dispatcher.AutoMergeDecision) []any {
 // not consulted.
 func autoMerge(switchOn bool, runID string, t runner.Ticket, sum runner.Summary, failedGate string, check prCheck) bool {
 	return switchOn && !ownerAttention(runID, t, sum, failedGate, check)
+}
+
+// autoMergeVerdict is what pr-meta settles about auto-merge for a run's PR.
+type autoMergeVerdict struct {
+	// Merge is whether the PR is marked eligible for auto-merge.
+	Merge bool
+	// SwitchOn is the owner's switch, off where it could not be read.
+	SwitchOn bool
+	// Rate is the trailing rewrite rate's verdict, which the log reports and Merge
+	// does not follow.
+	Rate dispatcher.AutoMergeDecision
+}
+
+// decideAutoMerge reads the owner's switch and the rewrite rate and decides
+// whether the run's PR is marked eligible for auto-merge: from the switch and the
+// run alone, whatever the rate or the evidence it was read from.
+func decideAutoMerge(ctx context.Context, logger *slog.Logger, runID string, switches autoMergeSwitchStore, rewrites recentRewrites,
+	t runner.Ticket, sum runner.Summary, failedGate string, check prCheck) autoMergeVerdict {
+	switchOn := autoMergeSwitchOn(ctx, logger, runID, switches)
+	return autoMergeVerdict{
+		Merge:    autoMerge(switchOn, runID, t, sum, failedGate, check),
+		SwitchOn: switchOn,
+		Rate:     autoMergeRate(ctx, logger, runID, rewrites, switchOn),
+	}
+}
+
+// attrs are the verdict's log attributes: the rate's, whose reason is not why
+// autoMerge has its value, then the merge and the switch it followed.
+func (v autoMergeVerdict) attrs() []any {
+	return append(rateAttrs(v.Rate), "autoMerge", v.Merge, "switchOn", v.SwitchOn)
 }
 
 // refuseWorkflowPush fails a build whose write set touches a workflow file, so

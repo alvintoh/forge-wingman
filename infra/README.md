@@ -133,11 +133,11 @@ Auto-merge is off until both are set:
 | Repository "Allow auto-merge" (`allow_auto_merge`) | on |
 | The owner's switch (`runner auto-merge -mode on`) | on, stored at `dispatch/auto-merge`; no document counts as on, one that cannot be read as off |
 
-With the switch on, auto-merge is on when the trailing rewrite rate is 10% or less over
-the ten newest measured merged PRs and none of them is an auto-merged PR a later merged
-revert names. The switch and the rate are two facts: turning the switch off makes every
-PR manual whatever the rate reads. The Autonomy page and `GET /api/autonomy` show the
-state, the rate and the reason.
+The switch alone decides whether auto-merge is on: turning it off makes every PR manual,
+and turning it on makes an eligible PR automatic whatever the rate reads. The trailing
+rewrite rate over the ten newest measured merged PRs, and any auto-merged PR a later
+merged revert names, are a guide: the runner logs them, and the Autonomy page and
+`GET /api/autonomy` show them with the reason beside a 10% bar, but they hold nothing off.
 
 The rate is measured rather than trusted. Each poll reads the run PRs whose merges landed
 since the last one and writes onto each run row the lines the agent wrote and the lines
@@ -145,11 +145,11 @@ the owner changed after it: a commit authored as the runner (`github-actions[bot
 as the agent's, every other commit as the owner's.
 
 The `dispatch/autonomy` document and its history, and the `runner autonomy` and
-`runner cd` commands, were removed (`adr/0018`); eligibility now follows the rule and the
-switch above. Nothing reads those documents or that field — they are left where they are,
+`runner cd` commands, were removed (`adr/0018`); eligibility now follows the switch
+above. Nothing reads those documents or that field — they are left where they are,
 so a run row that carries an old `autonomy` field is read exactly as one that does not.
 
-With the switch on and the rate allowing it, a run's S or M PR that has a recorded plan, is not in the review sample,
+With the switch on, a run's S or M PR that has a recorded plan, is not in the review sample,
 edits nothing outside that plan, fails no check gate and is not a front-end change
 gets the `wingman:auto-merge-eligible` label, which must exist in the repository. A
 run with no recorded plan is never labelled, and its PR body says so; an S run is

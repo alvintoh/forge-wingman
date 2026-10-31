@@ -156,8 +156,9 @@ type autoMergeState struct {
 	Window int `json:"window"`
 	// Effective is the switch on and readable. The rate does not enter it.
 	Effective bool `json:"effective"`
-	// Reason is why auto-merge is not effective: switch-unread, else switch-off
-	// where the switch is off, else the rate's own reason for a switch that is on.
+	// Reason is switch-unread for a switch that could not be read and switch-off
+	// for one that is off; for a switch that is on it is the rate's own reason,
+	// which Effective does not follow.
 	Reason string `json:"reason"`
 }
 

@@ -184,8 +184,7 @@ func TestAutoMergeRate(t *testing.T) {
 
 // TestAutoMergeFollowsTheSwitchAlone asserts the owner's switch is the only
 // thing that decides whether an eligible PR is marked for auto-merge: the rate,
-// how much of the window is measured and a revert are served as information
-// (AC1–AC3, AC6).
+// how much of the window is measured and a revert are read as information.
 func TestAutoMergeFollowsTheSwitchAlone(t *testing.T) {
 	rated := func(ownerPerPR int64) []dispatcher.Sample {
 		window := make([]dispatcher.Sample, 0, dispatcher.TrailingPRs)
@@ -213,13 +212,11 @@ func TestAutoMergeFollowsTheSwitchAlone(t *testing.T) {
 		"a switch that cannot be read":               {&fakeAutoMergeSwitchStore{enabled: true, readErr: unreadable}, fakeRecentRewrites{samples: rated(0)}, false, "switch-off"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			logger := slog.New(slog.NewTextHandler(&strings.Builder{}, nil))
-			switchOn := autoMergeSwitchOn(context.Background(), logger, "run-abc-12", tt.store)
-			rate := autoMergeRate(context.Background(), logger, "run-abc-12", tt.rewrites, switchOn)
+			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 			sum := runner.Summary{Outcome: runner.OutcomeBuilt, Ready: true}
-			got := autoMerge(switchOn, "run-abc-12", prRecord.Ticket(), sum, "", prCheck{Planned: true})
-			if got != tt.want || rate.Reason != tt.reason {
-				t.Fatalf("autoMerge = %v, rate = %+v, want %v with reason %q", got, rate, tt.want, tt.reason)
+			got := decideAutoMerge(context.Background(), logger, "run-abc-12", tt.store, tt.rewrites, prRecord.Ticket(), sum, "", prCheck{Planned: true})
+			if got.Merge != tt.want || got.SwitchOn != tt.want || got.Rate.Reason != tt.reason {
+				t.Fatalf("verdict = %+v, want merge and switch %v with the rate's reason %q", got, tt.want, tt.reason)
 			}
 		})
 	}
@@ -252,6 +249,20 @@ func TestRateAttrsEncodeAsJSONAndOmitWhatWasNotMeasured(t *testing.T) {
 				t.Fatalf("log %q, want measured = %v, rate %q", buf.String(), tt.measured, tt.rate)
 			}
 		})
+	}
+}
+
+func TestAutoMergeVerdictLogsTheSwitchBesideTheRatesReason(t *testing.T) {
+	v := autoMergeVerdict{Merge: true, SwitchOn: true,
+		Rate: dispatcher.AutoMergeDecision{Reason: dispatcher.AutoMergeReasonRateAboveBar, PRs: 10, Rate: 0.153}}
+	var buf strings.Builder
+	slog.New(slog.NewJSONHandler(&buf, nil)).Info("autoMergeDecided", v.attrs()...)
+	var line map[string]any
+	if err := json.Unmarshal([]byte(buf.String()), &line); err != nil {
+		t.Fatalf("log %q is not JSON: %v", buf.String(), err)
+	}
+	if line["reason"] != "rate-above-bar" || line["autoMerge"] != true || line["switchOn"] != true {
+		t.Fatalf("log %q, want reason rate-above-bar beside autoMerge and switchOn both true", buf.String())
 	}
 }
 
