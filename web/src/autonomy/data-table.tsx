@@ -266,7 +266,11 @@ function MergedAt({ at }: { at: string }) {
 // prFirstLine is a PR's first line: the record's numbers, newest first.
 function prFirstLine(bar: number): PRField[] {
   return [
-    { head: "Date, Sydney", render: (pr) => <MergedAt at={pr.merged_at} />, long: true },
+    {
+      head: "Date Finished (AEST/AEDT)",
+      render: (pr) => <MergedAt at={pr.merged_at} />,
+      long: true,
+    },
     { head: "Run", render: (pr) => <span className="font-mono whitespace-nowrap">{pr.run}</span> },
     { head: "Size", render: (pr) => <span className="font-mono">{pr.size}</span> },
     {
@@ -424,7 +428,7 @@ function PerPRTable({ prs, bar, showRepo, captionId }: PerPRTableProps) {
 }
 
 const PR_NOTES = [
-  "Times are Sydney time. Trailing 10 is the rewrite rate over the ten merged PRs ending at that one, the trend chart's numbers; it starts at the tenth measured PR, so the oldest nine PRs show none.",
+  "Trailing 10 is the rewrite rate over the ten merged PRs ending at that one, the trend chart's numbers; it starts at the tenth measured PR, so the oldest nine PRs show none.",
   "Plan, build and review are the strip's lanes in words.",
 ];
 
