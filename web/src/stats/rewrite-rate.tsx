@@ -15,12 +15,12 @@ function rateSentence(merge: MergeState): string {
   if (!merge.rate_value.endsWith("%") || merge.reason === "too-few-measured") {
     return reasonText(merge.reason);
   }
-  return `Rewrite rate over the trailing ${merge.window} PRs is ${merge.rate_value}; limit ${whole(barOf(merge.limit))}`;
+  return `Rewrite rate over the trailing ${merge.window} PRs is ${merge.rate_value}; guide ${whole(barOf(merge.limit))}`;
 }
 
 /**
  * RewriteRate is the Statistics card for the rewrite rate: what it measures, the figure over the
- * trailing window against its limit, the key to the figures under each model, and the models of
+ * trailing window against its guide, the key to the figures under each model, and the models of
  * the three phases. The endpoint is pooled, so a project chosen on the page leaves every figure
  * here as All draws it and the card says so.
  */

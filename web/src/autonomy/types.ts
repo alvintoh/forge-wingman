@@ -1,6 +1,6 @@
 // MergeState is the auto-merge state the endpoint serves: the owner's switch
-// beside the rate's verdict over the trailing window, the bar it is compared to
-// and the reason the pair gives.
+// beside the rate over the trailing window, the guide it is compared to and the
+// reason the endpoint gives for both.
 export type MergeState = {
   switch_on: boolean;
   rate_allows: boolean;
@@ -9,8 +9,8 @@ export type MergeState = {
   // Window is how many trailing merged PRs the rate covers.
   window: number;
   effective: boolean;
-  // Reason is why auto-merge is or is not effective: one of the endpoint's own
-  // stable tokens, which reasonText words.
+  // Reason is the endpoint's own stable token for the rate's state, or the
+  // switch's, which reasonText words.
   reason: string;
 };
 
