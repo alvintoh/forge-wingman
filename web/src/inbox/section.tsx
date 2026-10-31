@@ -310,49 +310,37 @@ export function InboxSection({ className }: SectionProps) {
           </div>
         )}
         {state.status === "ready" && (
-          <>
-            {state.stale && (
-              <p role="status" className="mt-4 text-cap text-defer">
-                The list could not be refreshed; showing the last read.
+          <div className="card-frame mt-4">
+            <div className="flex min-h-13 items-center border-b border-hair">
+              <KindChips chip={chip} onChange={setChip} />
+            </div>
+            {runs.length > 0 && (
+              <ul ref={listRef} onKeyDown={handleKeyDown} onFocus={handleFocus} onBlur={handleBlur}>
+                {runs.map((run) => (
+                  <InboxRow
+                    key={run.run}
+                    run={run}
+                    now={state.readAt}
+                    state={rows[run.run]}
+                    cancel={cancels[cancelKey(run)]}
+                    stop={stop?.run === run.run ? stop.cell : undefined}
+                    onOpen={handleSheetOpen}
+                    onMerge={handleMerge}
+                    onRetry={merge}
+                    onCompose={handlePillCompose}
+                  />
+                ))}
+              </ul>
+            )}
+            {runs.length === 0 && !filtering && (
+              <p className="flex min-h-13 items-center text-body">No PR waits on you.</p>
+            )}
+            {runs.length === 0 && filtering && (
+              <p className="flex min-h-18 items-center text-body font-semibold">
+                {emptyWords(project, chip)}
               </p>
             )}
-            <div className="card-frame mt-4">
-              <div className="flex min-h-13 items-center border-b border-hair">
-                <KindChips chip={chip} onChange={setChip} />
-              </div>
-              {runs.length > 0 && (
-                <ul
-                  ref={listRef}
-                  onKeyDown={handleKeyDown}
-                  onFocus={handleFocus}
-                  onBlur={handleBlur}
-                >
-                  {runs.map((run) => (
-                    <InboxRow
-                      key={run.run}
-                      run={run}
-                      now={state.readAt}
-                      state={rows[run.run]}
-                      cancel={cancels[cancelKey(run)]}
-                      stop={stop?.run === run.run ? stop.cell : undefined}
-                      onOpen={handleSheetOpen}
-                      onMerge={handleMerge}
-                      onRetry={merge}
-                      onCompose={handlePillCompose}
-                    />
-                  ))}
-                </ul>
-              )}
-              {runs.length === 0 && !filtering && (
-                <p className="flex min-h-13 items-center text-body">No PR waits on you.</p>
-              )}
-              {runs.length === 0 && filtering && (
-                <p className="flex min-h-18 items-center text-body font-semibold">
-                  {emptyWords(project, chip)}
-                </p>
-              )}
-            </div>
-          </>
+          </div>
         )}
         <MergeDialog opened={target} onClose={handleClose} onConfirm={handleConfirm} />
         <RetryDialog
