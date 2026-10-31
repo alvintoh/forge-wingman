@@ -522,7 +522,7 @@ export function DataSection({ rewrite, className }: DataSectionProps) {
             <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
               <polygon points="5,0.5 0,9.5 10,9.5" className="fill-stop" />
             </svg>
-            red = above {whole(bar)}, auto-merge off
+            red = above the {whole(bar)} guide
           </p>
         </>
       )}
