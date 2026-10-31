@@ -191,7 +191,7 @@ const MERGES_SIZE = 11;
 
 // placeDates puts each day's label under its slots: the date on a first row and a
 // merge count on a second, the largest groups first, and a label that would touch
-// another is dropped (the Data table lists every date). A merge count is one word
+// another is dropped (the Data section lists every date). A merge count is one word
 // ("2 merges"), and a lone day close to another takes the second row.
 export function placeDates(groups: DateGroup[], axis: Axis): DateLabel[] {
   const rows: { x: number; width: number }[][] = [[], []];

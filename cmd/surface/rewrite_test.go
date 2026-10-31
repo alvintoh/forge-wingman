@@ -111,7 +111,7 @@ func TestAutonomyReportsTheRewriteFiguresThePageDraws(t *testing.T) {
 	if !ok {
 		t.Fatalf("newest PR = %v, want an object", prs[0])
 	}
-	if got, want := slices.Sorted(maps.Keys(newest)), []string{"agent_lines", "build_model", "merged_at", "owner_lines", "plan_model", "pr", "pr_url", "rate", "rate_value", "repo", "review_model", "run", "size", "title"}; !slices.Equal(got, want) {
+	if got, want := slices.Sorted(maps.Keys(newest)), []string{"agent_lines", "build_model", "merged_at", "owner_lines", "plan_model", "pr", "pr_url", "rate", "rate_value", "repo", "review_model", "run", "size", "title", "trailing_10", "trailing_10_value"}; !slices.Equal(got, want) {
 		t.Errorf("PR keys = %v, want %v", got, want)
 	}
 	if newest["run"] != "run-2" || newest["repo"] != "octo/scratch" || newest["size"] != "M" ||
@@ -291,34 +291,51 @@ func TestAutonomyFoldsAPRsSizeIntoTheBucketBySizeUses(t *testing.T) {
 	}
 }
 
-func TestAutonomyCapsThePRListAtTheTrailingWindow(t *testing.T) {
+// TestAutonomyListsEveryMeasuredPRWithItsTrailingWindow asserts the list carries every
+// measured PR the read holds, newest first, each with the rate pooled over the window
+// its merge ends, so the page's one per-PR table loses nothing the old trailing window
+// cut. The nine oldest have fewer than a window behind them and carry none.
+func TestAutonomyListsEveryMeasuredPRWithItsTrailingWindow(t *testing.T) {
 	at := time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC)
-	measured := make([]dispatcher.Sample, 0, dispatcher.TrailingPRs+1)
-	for i := range dispatcher.TrailingPRs + 1 {
+	count := dispatcher.TrailingPRs + 2
+	measured := make([]dispatcher.Sample, 0, count)
+	for i := range count {
 		measured = append(measured, dispatcher.Sample{
 			PR:       200 - i,
 			MergedAt: at.Add(-time.Duration(i) * time.Hour),
-			Rewrite:  dispatcher.Rewrite{AgentLines: 100},
+			Rewrite:  dispatcher.Rewrite{AgentLines: 100, OwnerLines: 10},
 		})
 	}
 	rec := getAutonomy(t, &stubMeasured{merges: measured})
 
-	var body map[string]any
+	var body struct {
+		Rewrite struct {
+			PRs []map[string]any `json:"prs"`
+		} `json:"rewrite"`
+	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	rewrite, ok := body["rewrite"].(map[string]any)
-	if !ok {
-		t.Fatalf("rewrite = %v, want the figures", body["rewrite"])
+	prs := body.Rewrite.PRs
+	if len(prs) != count {
+		t.Fatalf("prs = %d, want every measured merge (%d)", len(prs), count)
 	}
-	prs, ok := rewrite["prs"].([]any)
-	if !ok || len(prs) != dispatcher.TrailingPRs {
-		t.Fatalf("prs = %v, want the newest %d merges", rewrite["prs"], dispatcher.TrailingPRs)
+	if first, last := prs[0]["pr"], prs[len(prs)-1]["pr"]; first != 200.0 || last != float64(201-count) {
+		t.Errorf("prs run %v to %v, want the newest first", first, last)
 	}
-	newest, _ := prs[0].(map[string]any)
-	oldest, _ := prs[len(prs)-1].(map[string]any)
-	if newest["pr"] != 200.0 || oldest["pr"] != 191.0 {
-		t.Errorf("prs run %v to %v, want the newest ten", newest["pr"], oldest["pr"])
+	// The list is newest first, so a PR has a trailing window while at least the
+	// window's merges follow it: with twelve merges, the nine oldest carry none.
+	for i, pr := range prs {
+		want := i+dispatcher.TrailingPRs <= count
+		if got := pr["trailing_10"]; (got != nil) != want {
+			t.Errorf("prs[%d].trailing_10 = %v, want a figure: %v", i, got, want)
+		}
+	}
+	if got := prs[0]["trailing_10"]; got != "10.0%" {
+		t.Errorf("newest trailing_10 = %v, want its window's 10.0%%", got)
+	}
+	if got := prs[len(prs)-1]["trailing_10_value"]; got != nil {
+		t.Errorf("oldest trailing_10_value = %v, want none", got)
 	}
 }
 

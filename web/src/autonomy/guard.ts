@@ -83,6 +83,8 @@ const isPR = shape<PR>({
   plan_model: isString,
   build_model: isString,
   review_model: isString,
+  trailing_10: nullable(isString),
+  trailing_10_value: nullable(isNumber),
 });
 
 const groupChecks: { [K in keyof Group]-?: Check } = {

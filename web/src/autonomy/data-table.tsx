@@ -1,5 +1,8 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { parsePull } from "../inbox/run";
+import { usePageSize } from "../page-size";
+import { pageWindow } from "../page-window";
+import { Pager } from "../pager";
 import { prKey } from "./axis";
 import {
   NO_RATE,
@@ -39,9 +42,9 @@ type TableProps<T> = {
   rowKey: (row: T) => string;
 };
 
-// DataTable is one table of the Data disclosure. Its first column heads each row,
-// and below the md breakpoint a row stacks, each cell naming itself, so the table
-// needs no sideways scroll on a phone.
+// DataTable is one table of the Data section. Its first column heads each row, and
+// below the md breakpoint a row stacks, each cell naming itself, so the table needs
+// no sideways scroll on a phone.
 function DataTable<T>({ title, columns, rows, rowKey }: TableProps<T>) {
   const [first, ...rest] = columns;
   if (first === undefined) {
@@ -238,13 +241,200 @@ function noAgentNotes(rewrite: RewriteView): string[] {
   );
 }
 
-type DataDisclosureProps = { rewrite: RewriteView };
+type PRField = {
+  head: string;
+  render: (pr: PR) => ReactNode;
+  // A figure sits right-aligned beside the line's other figures.
+  figure?: boolean;
+  // How many of the first line's eight columns the cell takes.
+  span?: number;
+};
 
-// DataDisclosure holds the exact numbers behind every chart, which are the
-// charts' text alternative: it is closed until opened and is the same set of
-// tables at every width. A rate above the bar is red with a triangle, and the
-// legend says what red means.
-export function DataDisclosure({ rewrite }: DataDisclosureProps) {
+// prFirstLine is a PR's first line: the record's numbers, newest first.
+function prFirstLine(bar: number): PRField[] {
+  return [
+    {
+      head: "Date (UTC)",
+      render: (pr) => <span className="font-mono">{utcDay(pr.merged_at)}</span>,
+      figure: true,
+    },
+    { head: "Run", render: (pr) => <span className="font-mono">{pr.run}</span>, figure: true },
+    { head: "Size", render: (pr) => pr.size },
+    {
+      head: "Agent lines",
+      render: (pr) => <span className="font-mono">{count(pr.agent_lines)}</span>,
+      figure: true,
+    },
+    {
+      head: "Owner lines",
+      render: (pr) => <span className="font-mono">{count(pr.owner_lines)}</span>,
+      figure: true,
+    },
+    {
+      head: "Rate",
+      render: (pr) => <Rate value={pr.rate_value} text={pr.rate} words={pr.rate} bar={bar} />,
+      figure: true,
+    },
+    {
+      head: "Trailing 10",
+      render: (pr) =>
+        pr.trailing_10 === null ? (
+          "-"
+        ) : (
+          <Rate
+            value={pr.trailing_10_value}
+            text={pr.trailing_10}
+            words={pr.trailing_10}
+            bar={bar}
+          />
+        ),
+      figure: true,
+    },
+  ];
+}
+
+// The second line of a PR's row: the title, and the model of each phase that ran.
+const PR_SECOND_LINE: PRField[] = [
+  { head: "Title", render: (pr) => pr.title, span: 5 },
+  { head: "Plan", render: (pr) => modelCell("plan", pr.plan_model) },
+  { head: "Build", render: (pr) => modelCell("build", pr.build_model) },
+  { head: "Review", render: (pr) => modelCell("review", pr.review_model) },
+];
+
+// The per-PR table's cells: below 768 a label drawn from the cell's data-label, and from it a
+// figure right-aligned beside the line's other figures.
+const FIRST_CELL =
+  "pt-2 pr-4 pb-1 max-md:flex max-md:items-baseline max-md:justify-between max-md:gap-x-4 max-md:py-1 max-md:pr-0 max-md:before:text-cap max-md:before:text-ink2 max-md:before:content-[attr(data-label)]";
+const SECOND_CELL =
+  "pt-1 pr-4 pb-2 max-md:block max-md:py-1 max-md:pr-0 max-md:before:block max-md:before:text-cap max-md:before:text-ink2 max-md:before:content-[attr(data-label)]";
+
+type PerPRTableProps = {
+  prs: PR[];
+  bar: number;
+  // Whether a row shows its repository, which a list spanning more than one needs.
+  showRepo: boolean;
+};
+
+// PerPRTable is the one table of every measured PR, newest first: its first line is the
+// record's numbers and its second the title and the models that ran it, so twelve figures fit
+// the page's width. Below 768 each cell names itself and the record stacks into pairs.
+function PerPRTable({ prs, bar, showRepo }: PerPRTableProps) {
+  const first = prFirstLine(bar);
+  // The 5px at the left keeps a link's 3px focus ring and its 2px offset inside the scroller.
+  return (
+    <div className="-ml-[5px] mt-4 overflow-x-auto pl-[5px]">
+      <table className="w-full text-label max-md:block">
+        <caption className="pb-1 text-left text-cap font-semibold text-ink2 max-md:block">
+          Per PR, newest first
+        </caption>
+        <thead className="max-md:sr-only">
+          <tr className="text-left text-cap text-ink2">
+            <th scope="col" className="pt-2 pr-4 pb-1 font-semibold">
+              PR
+            </th>
+            {first.map((field) => (
+              <th
+                key={field.head}
+                scope="col"
+                className={`pt-2 pr-4 pb-1 font-semibold ${field.figure ? "text-right" : ""}`}
+              >
+                {field.head}
+              </th>
+            ))}
+          </tr>
+          <tr className="border-b border-hair text-left text-cap text-ink2">
+            <th scope="col" colSpan={5} className="pt-1 pr-4 pb-2 font-semibold">
+              Title
+            </th>
+            <th scope="col" className="pt-1 pr-4 pb-2 font-semibold">
+              Plan
+            </th>
+            <th scope="col" className="pt-1 pr-4 pb-2 font-semibold">
+              Build
+            </th>
+            <th scope="col" className="pt-1 pr-4 pb-2 font-semibold">
+              Review
+            </th>
+          </tr>
+        </thead>
+        {prs.map((pr) => (
+          <tbody key={prKey(pr.repo, pr.pr)} className="max-md:block">
+            <tr className="max-md:block">
+              <th
+                scope="row"
+                className="pt-2 pr-4 pb-1 text-left font-normal max-md:block max-md:py-1 max-md:pr-0"
+              >
+                <PRNumber pr={pr} showRepo={showRepo} />
+              </th>
+              {first.map((field) => (
+                <td
+                  key={field.head}
+                  data-label={field.head}
+                  className={`${FIRST_CELL} ${field.figure ? "md:text-right" : ""}`}
+                >
+                  {field.render(pr)}
+                </td>
+              ))}
+            </tr>
+            <tr className="border-b border-hair max-md:block">
+              {PR_SECOND_LINE.map((field) => (
+                <td
+                  key={field.head}
+                  colSpan={field.span}
+                  data-label={field.head}
+                  className={SECOND_CELL}
+                >
+                  {field.render(pr)}
+                </td>
+              ))}
+            </tr>
+          </tbody>
+        ))}
+      </table>
+    </div>
+  );
+}
+
+type PagedPRsProps = { prs: PR[]; bar: number; showRepo: boolean };
+
+// Why a PR shows a dash under trailing 10: fewer than nine merges came before it.
+const TRAILING_NOTE =
+  "The trailing 10 is the rate pooled over a PR and the nine merged before it: the oldest nine show a dash, and every PR does until ten have merged.";
+
+// PagedPRs is the per-PR table with its pager: the range and the buttons above the rows, a
+// second pager 16px under the last row on a phone, and the note that explains the dash.
+function PagedPRs({ prs, bar, showRepo }: PagedPRsProps) {
+  const pageSize = usePageSize();
+  const [page, setPage] = useState(0);
+  // Five a page below 768 leaves fewer pages than ten, so a page kept across a width change can
+  // sit past the last one: the window clamps it.
+  const range = pageWindow(prs.length, page, pageSize);
+  const rows = prs.slice(range.page * pageSize, range.page * pageSize + pageSize);
+  const pager = (
+    <Pager noun="PRs" total={prs.length} page={range.page} pageSize={pageSize} onPage={setPage} />
+  );
+  return (
+    <div>
+      {pager}
+      <p className="mt-2 text-label text-ink2">{TRAILING_NOTE}</p>
+      <PerPRTable prs={rows} bar={bar} showRepo={showRepo} />
+      {range.paged && <div className="mt-4 md:hidden">{pager}</div>}
+    </div>
+  );
+}
+
+type DataSectionProps = {
+  rewrite: RewriteView;
+  // Where the section sits on its page, which owns its place and the gaps around it.
+  className?: string;
+};
+
+// DataSection holds the exact numbers behind every chart, which are the charts' text
+// alternative: the three windows in words and the splits by size, model and repository, then
+// one table of every measured PR, paged. A rate above the bar is red with a triangle, and the
+// legend says what red means. It draws nothing with no measured PR, where the section above
+// says why there are none.
+export function DataSection({ rewrite, className }: DataSectionProps) {
   const bar = rewrite.bars.rollback;
   const sizes = rewrite.by_size.filter((size) => size.prs > 0);
   const models: ModelTableRow[] = PHASES.flatMap((phase) =>
@@ -254,224 +444,141 @@ export function DataDisclosure({ rewrite }: DataDisclosureProps) {
   const lastPR = rewrite.tiles[2]?.prs[0];
   const lastRepo = lastPR === undefined ? null : lastPrRepo(rewrite.prs, lastPR);
   const notes = noAgentNotes(rewrite);
-  // A PR's number names it only within its repository, so rows show the repository
-  // where the lists span more than one.
+  // A PR's number names it only within its repository, so rows show the repository where the
+  // lists span more than one.
   const manyRepos = new Set(rewrite.prs.map((pr) => pr.repo)).size > 1;
-  const pointRepos = new Set(rewrite.series.map((point) => point.repo)).size;
   return (
-    <details className="group rounded-tile border border-hair bg-card" data-disclosure>
-      <summary className="flex min-h-14 cursor-pointer list-none items-center gap-x-3 px-padx py-2 [&::-webkit-details-marker]:hidden">
-        <span className="text-body font-semibold text-ink">Data</span>
-        <span className="text-label text-ink2">the exact numbers behind these charts</span>
-        <svg
-          width="12"
-          height="12"
-          viewBox="0 0 12 12"
-          aria-hidden="true"
-          className="ml-auto shrink-0 transition-transform duration-150 group-open:rotate-90"
-        >
-          <polyline
-            points="3,1 9,6 3,11"
-            fill="none"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="stroke-ink2"
-          />
+    <section aria-labelledby="data-title" className={className}>
+      <h2 id="data-title" className="text-head font-semibold text-ink">
+        Data
+      </h2>
+      <p className="mt-1 text-body text-ink2">The exact numbers behind these charts.</p>
+      <p className="mt-2 flex items-center gap-2 text-label text-ink2">
+        <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+          <polygon points="5,0.5 0,9.5 10,9.5" className="fill-stop" />
         </svg>
-      </summary>
-      <div className="space-y-8 px-padx pt-2 pb-6">
-        <p className="flex items-center gap-2 text-label text-ink2">
-          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-            <polygon points="5,0.5 0,9.5 10,9.5" className="fill-stop" />
-          </svg>
-          red = above {whole(bar)}, auto-merge off
-        </p>
-        <DataTable<PR>
-          title="Per PR, newest first"
-          rows={rewrite.prs}
-          rowKey={(pr) => prKey(pr.repo, pr.pr)}
-          columns={[
-            { head: "PR", render: (pr) => <PRNumber pr={pr} showRepo={manyRepos} /> },
-            { head: "Title", render: (pr) => pr.title, long: true },
-            { head: "Run", render: (pr) => pr.run, figure: true },
-            { head: "Size", render: (pr) => pr.size, figure: true },
-            { head: "Agent lines", render: (pr) => count(pr.agent_lines), figure: true },
-            { head: "Owner lines", render: (pr) => count(pr.owner_lines), figure: true },
-            {
-              head: "Rate",
-              render: (pr) => (
-                <Rate value={pr.rate_value} text={pr.rate} words={pr.rate} bar={bar} />
-              ),
-              figure: true,
-            },
-          ]}
-        />
-        <DataTable
-          title="Trailing 10 after each merged PR, newest first, UTC dates"
-          rows={[...rewrite.series].reverse()}
-          rowKey={(point) => prKey(point.repo, point.pr)}
-          columns={[
-            {
-              head: "After PR",
-              render: (point) => (
-                <>
-                  #{point.pr}
-                  {pointRepos > 1 && (
-                    <span className="block font-mono text-micro text-ink2">{point.repo}</span>
-                  )}
-                </>
-              ),
-              figure: true,
-            },
-            { head: "Date", render: (point) => utcDay(point.merged_at), figure: true },
-            {
-              head: "Trailing 10",
-              render: (point) => (
-                <Rate value={point.rate_value} text={point.rate} words={point.rate} bar={bar} />
-              ),
-              figure: true,
-            },
-          ]}
-        />
-        <DataTable<SizeRow>
-          title="By size"
-          rows={sizes}
-          rowKey={(size) => size.size}
-          columns={[
-            { head: "Size", render: (size) => size.size },
-            { head: "PRs", render: (size) => size.prs, figure: true },
-            {
-              head: "Pooled",
-              render: (size) => (
-                <Rate value={size.rate_value} text={size.rate} words="no rate" bar={bar} />
-              ),
-              figure: true,
-            },
-            { head: "Median PR", render: (size) => spreadText(size.median, size), figure: true },
-            { head: "p90 PR", render: (size) => spreadText(size.p90, size), figure: true },
-          ]}
-        />
-        <div>
-          <DataTable
-            title="Trend arrows, in words"
-            rows={tileRows}
-            rowKey={(entry) => entry.label}
+        red = above {whole(bar)}, auto-merge off
+      </p>
+      {rewrite.prs.length > 0 && (
+        <div className="mt-4 space-y-8">
+          <div>
+            <DataTable
+              title="Trend arrows, in words"
+              rows={tileRows}
+              rowKey={(entry) => entry.label}
+              columns={[
+                {
+                  head: "Tile",
+                  render: (entry) =>
+                    entry.label === "last PR" && lastPR !== undefined
+                      ? `last PR ${lastRepo === null ? "" : `${lastRepo} `}#${lastPR}`
+                      : entry.label,
+                },
+                {
+                  head: "Now",
+                  render: (entry) => entry.tile.rate,
+                  figure: true,
+                },
+                {
+                  head: "One PR earlier",
+                  render: (entry) =>
+                    entry.tile.previous_rate_value === null
+                      ? "-"
+                      : percent(entry.tile.previous_rate_value),
+                  figure: true,
+                },
+                {
+                  head: "Trend arrow, in words",
+                  long: true,
+                  render: (entry) =>
+                    [
+                      trendWords(entry.tile) ?? "no earlier window",
+                      entry.label === "last PR"
+                        ? `${count(entry.tile.agent_lines)} agent lines`
+                        : null,
+                    ]
+                      .filter((part) => part !== null)
+                      .join(", "),
+                },
+              ]}
+            />
+            <p className="mt-2 text-label text-ink2">
+              Lower is better: up is red, down is green. Two moves the same way, the latest at least
+              0.5 points.
+            </p>
+          </div>
+          <DataTable<SizeRow>
+            title="By size"
+            rows={sizes}
+            rowKey={(size) => size.size}
             columns={[
+              { head: "Size", render: (size) => size.size },
+              { head: "PRs", render: (size) => size.prs, figure: true },
               {
-                head: "Tile",
-                render: (entry) =>
-                  entry.label === "last PR" && lastPR !== undefined
-                    ? `last PR ${lastRepo === null ? "" : `${lastRepo} `}#${lastPR}`
-                    : entry.label,
-              },
-              {
-                head: "Now",
-                render: (entry) => entry.tile.rate,
+                head: "Pooled",
+                render: (size) => (
+                  <Rate value={size.rate_value} text={size.rate} words="no rate" bar={bar} />
+                ),
                 figure: true,
               },
+              { head: "Median PR", render: (size) => spreadText(size.median, size), figure: true },
+              { head: "p90 PR", render: (size) => spreadText(size.p90, size), figure: true },
+            ]}
+          />
+          <DataTable<ModelTableRow>
+            title="By model, by role"
+            rows={models}
+            rowKey={(entry) => `${entry.phase}:${entry.row.model}`}
+            columns={[
+              { head: "Role", render: (entry) => entry.phase },
               {
-                head: "One PR earlier",
-                render: (entry) =>
-                  entry.tile.previous_rate_value === null
-                    ? "-"
-                    : percent(entry.tile.previous_rate_value),
-                figure: true,
-              },
-              {
-                head: "Trend arrow, in words",
+                head: "Model",
+                render: (entry) => modelCell(entry.phase, entry.row.model),
                 long: true,
-                render: (entry) =>
-                  [
-                    trendWords(entry.tile) ?? "no earlier window",
-                    entry.label === "last PR"
-                      ? `${count(entry.tile.agent_lines)} agent lines`
-                      : null,
-                  ]
-                    .filter((part) => part !== null)
-                    .join(", "),
+              },
+              ...groupColumns(bar).map((column): Column<ModelTableRow> => ({
+                head: column.head,
+                figure: column.figure,
+                render: (entry) => column.render(entry.row),
+              })),
+              {
+                head: "Review-found",
+                render: (entry) => count(entry.row.review_found_lines),
+                figure: true,
+              },
+              {
+                head: "Owner-change",
+                render: (entry) => count(entry.row.owner_change_lines),
+                figure: true,
+              },
+              {
+                head: "Unlabelled",
+                render: (entry) => count(entry.row.unlabelled_lines),
+                figure: true,
               },
             ]}
           />
-          <p className="mt-2 text-label text-ink2">
-            Lower is better: up is red, down is green. Two moves the same way, the latest at least
-            0.5 points.
-          </p>
+          <DataTable
+            title="By repository"
+            rows={rewrite.by_repo}
+            rowKey={(repo) => repo.repo}
+            columns={[
+              { head: "Repository", render: (repo) => repo.repo },
+              ...groupColumns(bar).map((column): Column<(typeof rewrite.by_repo)[number]> => ({
+                head: column.head,
+                figure: column.figure,
+                render: (repo) => column.render(repo.average),
+              })),
+            ]}
+          />
+          {notes.map((note) => (
+            <p key={note} className="-mt-4 text-label text-ink2">
+              {note}
+            </p>
+          ))}
+          <PagedPRs prs={rewrite.prs} bar={bar} showRepo={manyRepos} />
         </div>
-        <DataTable<ModelTableRow>
-          title="By model"
-          rows={models}
-          rowKey={(entry) => `${entry.phase}:${entry.row.model}`}
-          columns={[
-            { head: "Role", render: (entry) => entry.phase },
-            {
-              head: "Model",
-              render: (entry) => modelCell(entry.phase, entry.row.model),
-              long: true,
-            },
-            ...groupColumns(bar).map((column): Column<ModelTableRow> => ({
-              head: column.head,
-              figure: column.figure,
-              render: (entry) => column.render(entry.row),
-            })),
-            {
-              head: "Review-found",
-              render: (entry) => count(entry.row.review_found_lines),
-              figure: true,
-            },
-            {
-              head: "Owner-change",
-              render: (entry) => count(entry.row.owner_change_lines),
-              figure: true,
-            },
-            {
-              head: "Unlabelled",
-              render: (entry) => count(entry.row.unlabelled_lines),
-              figure: true,
-            },
-          ]}
-        />
-        <DataTable
-          title="By repository"
-          rows={rewrite.by_repo}
-          rowKey={(repo) => repo.repo}
-          columns={[
-            { head: "Repository", render: (repo) => repo.repo },
-            ...groupColumns(bar).map((column): Column<(typeof rewrite.by_repo)[number]> => ({
-              head: column.head,
-              figure: column.figure,
-              render: (repo) => column.render(repo.average),
-            })),
-          ]}
-        />
-        {notes.map((note) => (
-          <p key={note} className="-mt-4 text-label text-ink2">
-            {note}
-          </p>
-        ))}
-        <DataTable
-          title="Models per PR, newest first"
-          rows={rewrite.prs}
-          rowKey={(pr) => prKey(pr.repo, pr.pr)}
-          columns={[
-            {
-              head: "PR",
-              render: (pr) => (
-                <>
-                  #{pr.pr}
-                  {manyRepos && (
-                    <span className="block font-mono text-micro text-ink2">{pr.repo}</span>
-                  )}
-                </>
-              ),
-              figure: true,
-            },
-            { head: "Plan", long: true, render: (pr) => modelCell("plan", pr.plan_model) },
-            { head: "Build", long: true, render: (pr) => modelCell("build", pr.build_model) },
-            { head: "Review", long: true, render: (pr) => modelCell("review", pr.review_model) },
-          ]}
-        />
-      </div>
-    </details>
+      )}
+    </section>
   );
 }

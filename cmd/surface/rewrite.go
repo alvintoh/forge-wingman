@@ -53,7 +53,7 @@ type rewritePoint struct {
 }
 
 // rewritePR is one merged runner PR as the list shows it, with its own rate
-// beside the lines the rate is read from.
+// beside the lines the rate is read from, and the rate its trailing window ends at.
 type rewritePR struct {
 	PR         int       `json:"pr"`
 	Run        string    `json:"run"`
@@ -70,6 +70,10 @@ type rewritePR struct {
 	PlanModel   string `json:"plan_model"`
 	BuildModel  string `json:"build_model"`
 	ReviewModel string `json:"review_model"`
+	// Trailing10 is the rate pooled over this PR and the nine merged before it,
+	// null for a PR with fewer than a window's PRs behind it.
+	Trailing10      *string  `json:"trailing_10"`
+	Trailing10Value *float64 `json:"trailing_10_value"`
 }
 
 // groupFigures is one group of PRs, the same object for a size, a model and a
@@ -168,16 +172,13 @@ func renderSeries(points []dispatcher.SeriesPoint) []rewritePoint {
 	return out
 }
 
-// renderPRs renders the newest merged PRs, up to the trailing window the tiles
-// read over.
+// renderPRs renders every merged PR the read holds, newest first, each with the
+// rate pooled over its trailing window: the same window the rolling series ends
+// at, and null for a PR with fewer than the window's PRs behind it.
 func renderPRs(samples []dispatcher.Sample) []rewritePR {
-	shown := samples
-	if len(shown) > dispatcher.TrailingPRs {
-		shown = shown[:dispatcher.TrailingPRs]
-	}
-	out := make([]rewritePR, 0, len(shown))
-	for _, s := range shown {
-		out = append(out, rewritePR{
+	out := make([]rewritePR, 0, len(samples))
+	for i, s := range samples {
+		pr := rewritePR{
 			PR:          s.PR,
 			Run:         s.Run,
 			Repo:        s.Repo,
@@ -192,7 +193,14 @@ func renderPRs(samples []dispatcher.Sample) []rewritePR {
 			PlanModel:   modelOrUnknown(s.PlanModel),
 			BuildModel:  modelOrUnknown(s.BuildModel),
 			ReviewModel: modelOrUnknown(s.ReviewModel),
-		})
+		}
+		if i+dispatcher.TrailingPRs <= len(samples) {
+			window := dispatcher.Lines(samples[i : i+dispatcher.TrailingPRs])
+			text := linesRateText(window.AgentLines, window.Rate())
+			pr.Trailing10 = &text
+			pr.Trailing10Value = linesRateNumber(window.AgentLines, window.Rate())
+		}
+		out = append(out, pr)
 	}
 	return out
 }

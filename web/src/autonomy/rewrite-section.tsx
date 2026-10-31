@@ -2,7 +2,6 @@ import { useEffect } from "react";
 import { ByModel } from "./by-model";
 import { ByRepo, RepoMultiples } from "./by-repo";
 import { BySize } from "./by-size";
-import { DataDisclosure } from "./data-table";
 import { isRewrite } from "./guard";
 import { PatternDefs } from "./marks";
 import { Tiles } from "./tiles";
@@ -54,18 +53,18 @@ export function RewriteFigures({ figures, scope, busy }: RewriteFiguresProps) {
 type RewriteSectionProps = { rewrite: RewriteView; scope: RewriteScope | null; busy: boolean };
 
 // RewriteSection is the rewrite rate as a dashboard: the figures, the trend with
-// its per-PR strip, the split by size, model and repository, and the numbers
-// behind them. It draws what the endpoint served and computes only geometry and
-// the words around a figure. With no measured PR, or none with agent lines, it is
-// one card; under ten PRs the trend is one line and the rest is drawn from what
-// there is.
+// its per-PR strip, and the split by size, model and repository. The exact
+// numbers behind them are the Data section below the page's columns. It draws
+// what the endpoint served and computes only geometry and the words around a
+// figure. With no measured PR, or none with agent lines, it is one card; under
+// ten PRs the trend is one line and the rest is drawn from what there is.
 export function RewriteSection({ rewrite, scope, busy }: RewriteSectionProps) {
   const first = rewrite.tiles[0];
   const bar = rewrite.bars.rollback;
   const trended = rewrite.by_repo.filter((repo) => repo.series.length > 0);
   const partial = first !== undefined && first.prs.length < first.asked;
-  // Nothing to divide only where no PR in the read has agent lines: the newest ten
-  // having none leaves older ones, and the charts and tables are drawn from them.
+  // Nothing to divide only where no PR in the read has agent lines, since the charts and
+  // tables are drawn from whatever the read holds.
   const nothingToDivide = rewrite.by_size.every((size) => size.agent_lines === 0);
   const tiles = (
     <Tiles tiles={rewrite.tiles} prs={rewrite.prs} bar={bar} bleed={!partial} stacked={partial} />
@@ -123,7 +122,6 @@ export function RewriteSection({ rewrite, scope, busy }: RewriteSectionProps) {
           <BySize sizes={rewrite.by_size} bar={bar} />
           <ByModel byModel={rewrite.by_model} />
           <ByRepo repos={rewrite.by_repo} />
-          <DataDisclosure rewrite={rewrite} />
         </div>
       )}
     </section>

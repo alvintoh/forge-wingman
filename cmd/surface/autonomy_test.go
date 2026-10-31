@@ -197,7 +197,7 @@ func figuresOf(t *testing.T, body string) scopedFigures {
 // TestAutonomyScopedToARepositoryServesItsOwnFigures asserts a repo parameter
 // computes every rewrite figure over that repository's merges alone, its tiles
 // and series the ones its by_repo row carries in the whole answer, from the same
-// capped read.
+// read.
 func TestAutonomyScopedToARepositoryServesItsOwnFigures(t *testing.T) {
 	reader := &stubMeasured{merges: twoRepositories()}
 	rec := getAutonomyAt(t, reader, &stubAutoMerge{enabled: true}, "/api/autonomy?repo=octo/scratch")
@@ -239,8 +239,8 @@ func TestAutonomyScopedToARepositoryServesItsOwnFigures(t *testing.T) {
 		}
 	}
 
-	if len(figures.PRs) != dispatcher.TrailingPRs {
-		t.Fatalf("prs = %+v, want the trailing window of scratch's merges", figures.PRs)
+	if len(figures.PRs) != 12 {
+		t.Fatalf("prs = %+v, want every one of scratch's twelve merges", figures.PRs)
 	}
 	for i, pr := range figures.PRs {
 		if pr.Repo != "octo/scratch" || pr.PR != 200-2*i {

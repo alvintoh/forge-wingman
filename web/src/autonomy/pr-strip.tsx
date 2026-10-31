@@ -149,14 +149,14 @@ export function PrStrip({ axis, prs, width, padx, compact, alone }: PrStripProps
   const index = new Map(axis.slots.map((slot, i) => [prKey(slot.repo, slot.pr), i]));
   const radii: Radii = compact ? { max: 6.5, min: 2.5 } : radiiFor(axis.step);
   const rMax = radii.max;
-  const mostLines = Math.max(0, ...prs.map((pr) => pr.agent_lines));
+  const mostLines = Math.max(0, ...placed.map(({ pr }) => pr.agent_lines));
   const clipped = placed.filter(({ pr }) => pr.rate_value !== null && pr.rate_value > CAP);
   const band = clipped.length > 0 ? BAND_H : 0;
   const top = band > 0 ? BAND_H : PLOT_TOP;
   const base = top + PLOT_H;
   const y = (value: number) => yOf(value, top, PLOT_H, CAP);
   // A PR number is mono, so its width is exact: no margin for an estimate.
-  const widest = Math.max(...prs.map((pr) => `#${pr.pr}`.length));
+  const widest = Math.max(0, ...placed.map(({ pr }) => `#${pr.pr}`.length));
   const numbers = !compact && widest * 11 * 0.6 + 3 <= axis.step;
   const firstX = placed[0]?.x ?? axis.x1;
   const samples = keySamples(mostLines);
@@ -200,7 +200,7 @@ export function PrStrip({ axis, prs, width, padx, compact, alone }: PrStripProps
         height={height}
         viewBox={`0 0 ${width} ${height}`}
         role="img"
-        aria-label={`Each of the last ${prs.length} merged PRs' own rate, the area of its dot its agent lines. The Data table lists every figure.`}
+        aria-label={`Each of the last ${placed.length} merged PRs' own rate, the area of its dot its agent lines. The Data section lists every figure.`}
         className="mt-3"
         data-chart="strip"
       >

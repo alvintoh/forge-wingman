@@ -59,6 +59,10 @@ export type PR = {
   plan_model: string;
   build_model: string;
   review_model: string;
+  // trailing_10 is the rate pooled over this PR and the nine merged before it, and its value
+  // beside it; both are null for a PR with fewer than a window's PRs behind it.
+  trailing_10: string | null;
+  trailing_10_value: number | null;
 };
 
 // Group is the figures of one group of PRs: a size, a model or a repository's
