@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { isAutonomy, isRewrite } from "../../web/src/autonomy/guard";
 import { isConfigView, isPeakView, isRunsPerRepoView } from "../../web/src/config/types";
 import { isInbox } from "../../web/src/inbox/run";
+import { isRunning } from "../../web/src/running/run";
 import { FixtureApi, fixtureFile } from "./fixtures";
 
 const REPO_ROOT = join(import.meta.dir, "../..");
@@ -119,5 +120,9 @@ describe("the fixtures' shapes", () => {
 
   test("inbox passes its guard", () => {
     expect(isInbox(fixture("inbox"))).toBe(true);
+  });
+
+  test("running passes its guard", () => {
+    expect(isRunning(fixture("running"))).toBe(true);
   });
 });

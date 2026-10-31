@@ -1,0 +1,39 @@
+{
+  "runs": [
+    {
+      "ticket": "DEMO-242",
+      "repo": "acme/gadgets",
+      "stage": "building",
+      "claimed_at": "2026-03-01T10:25:00Z",
+      "title": "Gadget list filters"
+    },
+    {
+      "ticket": "DEMO-240",
+      "repo": "acme/widgets",
+      "stage": "building",
+      "claimed_at": "2026-03-01T10:44:00Z",
+      "title": "Add the widget table"
+    },
+    {
+      "ticket": "DEMO-243",
+      "repo": "acme/widgets",
+      "stage": "planning",
+      "claimed_at": "2026-03-01T11:15:00Z",
+      "title": "Price the gift cards"
+    },
+    {
+      "ticket": "DEMO-241",
+      "repo": "acme/widgets",
+      "stage": "building",
+      "claimed_at": "2026-03-01T11:32:00Z",
+      "title": "Redraw the widget card"
+    },
+    {
+      "ticket": "DEMO-244",
+      "repo": "acme/gadgets",
+      "stage": "planning",
+      "claimed_at": "2026-03-01T11:56:00Z",
+      "title": "Cache the shelf report"
+    }
+  ]
+}
