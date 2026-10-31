@@ -19,13 +19,14 @@ export function Inbox() {
     refreshProjects();
   }, [refreshInbox, refreshProjects]);
 
-  // The oldest read the page draws: the strip's age, and the age a failed re-read names.
-  const reads = [inbox.readAt, projects.readAt].filter((at) => at > 0);
-  const readAt = reads.length === 0 ? 0 : Math.min(...reads);
+  // The oldest read the page draws once both first reads have landed: the strip's age, and the age a
+  // failed re-read names. Until then the strip draws nothing; a failed first read has its own panel.
+  const readAt =
+    inbox.readAt > 0 && projects.readAt > 0 ? Math.min(inbox.readAt, projects.readAt) : 0;
 
   return (
     <div>
-      <div className="px-padx pt-4 lg:pl-4">
+      <div className="px-padx lg:pl-4">
         <RefreshStrip
           readAt={readAt}
           stale={inbox.stale || projects.stale}

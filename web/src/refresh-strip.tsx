@@ -1,15 +1,12 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { ago } from "./ago";
 import { pillSetWidth } from "./button-style";
 import { SmallPill } from "./pill-button";
 
-// A return to the tab reads the page only once the read on screen is older than this: a tab that
-// flips back, or a window focused just after a read, must not read again.
+// A return to the tab reads the page only once the newer of the read on screen and this strip's last
+// ask is older than this, so a failing endpoint is read once per floor, and the two signals of one
+// return (visibility and focus) ask once.
 const RETURN_FLOOR_MS = 30_000;
-
-// One return to the tab fires both signals below, a moment apart. A second ask this close to the
-// first is that same return, so it asks nothing.
-const ONE_RETURN_MS = 1_000;
 
 // REFRESH and REFRESHING... share one width, so the control keeps its size while a read is open.
 const PILL_WIDTH = pillSetWidth(["REFRESH", "REFRESHING..."]);
@@ -31,22 +28,24 @@ type RefreshStripProps = {
  * old. Nothing reads on a timer.
  */
 export function RefreshStrip({ readAt, stale, fetching, refresh }: RefreshStripProps) {
-  // When this strip last asked for a read, so the two signals of one return ask once.
+  // When this strip last asked for a read, whether it then succeeded or failed.
   const askedAt = useRef(0);
+
+  const ask = useCallback(() => {
+    askedAt.current = Date.now();
+    refresh();
+  }, [refresh]);
 
   useEffect(() => {
     function returned() {
-      const at = Date.now();
       if (
         fetching ||
         readAt === 0 ||
-        at - readAt < RETURN_FLOOR_MS ||
-        at - askedAt.current < ONE_RETURN_MS
+        Date.now() - Math.max(readAt, askedAt.current) < RETURN_FLOOR_MS
       ) {
         return;
       }
-      askedAt.current = at;
-      refresh();
+      ask();
     }
     function handleVisibility() {
       if (document.visibilityState === "visible") {
@@ -59,7 +58,7 @@ export function RefreshStrip({ readAt, stale, fetching, refresh }: RefreshStripP
       window.removeEventListener("focus", returned);
       document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, [fetching, readAt, refresh]);
+  }, [fetching, readAt, ask]);
 
   // The age is the wall clock read at this draw; the strip is neither memoised nor hydrated, so
   // there is nowhere else the instant could come from.
@@ -75,21 +74,21 @@ export function RefreshStrip({ readAt, stale, fetching, refresh }: RefreshStripP
     >
       {readAt > 0 && (
         <>
-          {/* One line either way: the age, or the failed read that still stands. */}
-          <p
-            role="status"
-            className={`text-right text-cap leading-4 ${stale ? "text-defer" : "text-muted"}`}
-          >
-            {stale
-              ? `The page could not be refreshed; showing the read from ${ago(readAt, now)}.`
-              : `updated ${ago(readAt, now)}`}
-          </p>
+          {/* One line either way: the age, or the failed read that still stands. Only the failure is
+              announced; the status stays mounted so its text changing is what is heard. */}
+          <div className="text-right text-cap leading-4">
+            {!stale && <p className="text-muted">{`updated ${ago(readAt, now)}`}</p>}
+            <p role="status" className="text-defer">
+              {stale &&
+                `The page could not be refreshed; showing the read from ${ago(readAt, now)}.`}
+            </p>
+          </div>
           <SmallPill
             kind="secondary"
             width={PILL_WIDTH}
             label={fetching ? "REFRESHING..." : "REFRESH"}
             aria-disabled={fetching ? true : undefined}
-            onClick={fetching ? undefined : refresh}
+            onClick={fetching ? undefined : ask}
           />
         </>
       )}
