@@ -1,4 +1,5 @@
 import { useId, useState } from "react";
+import { DisclosureRow } from "./disclosure-row";
 import { AllProjectsRow, RadioChoice } from "./filter-radio";
 import { displayName, type Project, type ProjectsState } from "./project-list";
 import { NO_PROJECT_LISTED, ProjectStateChip, ProjectsHeading, ProjectsPanels } from "./projects";
@@ -102,16 +103,12 @@ export function ProjectFilterColumn({
             </ul>
           )}
           {folds && (
-            <div className="border-t border-hair pl-8">
-              <button
-                type="button"
-                aria-expanded={open}
-                onClick={() => setOpen((was) => !was)}
-                className="flex min-h-13 w-fit items-center text-label font-semibold text-accent underline"
-              >
-                {open ? "Show fewer" : `Show all ${state.projects.length} projects`}
-              </button>
-            </div>
+            <DisclosureRow
+              open={open}
+              label={`Show all ${state.projects.length} projects`}
+              onClick={() => setOpen((was) => !was)}
+              className="pl-8"
+            />
           )}
         </div>
       </ProjectsPanels>

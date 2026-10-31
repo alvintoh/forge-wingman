@@ -737,7 +737,6 @@ export function ProjectsSection({ className, read }: ProjectsSectionProps) {
   return (
     <section aria-labelledby="projects-heading" className={`min-w-0 ${className}`}>
       <ProjectsHeading id="projects-heading" />
-      {/* The second row of the Overview's subgrid: everything under the heading, as one child. */}
       <div>
         <ProjectsPanels state={state} retry={retry}>
           <ProjectsCard
