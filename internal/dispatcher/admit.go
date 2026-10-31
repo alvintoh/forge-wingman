@@ -156,6 +156,10 @@ type Facts struct {
 	OpenPRsKnown bool
 	// DecisionMode is how the run's plan decisions are settled, recorded on the run when it is claimed.
 	DecisionMode runner.DecisionMode
+	// Title is the ticket's title as Linear reported it this poll, which a claim
+	// records on a run row that holds none; empty when this poll did not read the
+	// ticket, which then leaves the row's own.
+	Title string
 	// History loads the poll's snapshot of the settled run history, which the
 	// budget ceilings are summed from: read once for a whole poll however many
 	// candidates it walks, and only once a candidate reaches its ceilings, so a

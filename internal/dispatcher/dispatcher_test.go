@@ -1905,6 +1905,22 @@ func TestPollClaimsAPlanStageOnThePlanEstimateAndDispatchesItWithTheStage(t *tes
 	}
 }
 
+func TestPollHandsTheClaimTheTicketsTitle(t *testing.T) {
+	issue := admitted("size:M", "repo:octo/scratch")
+	issue.Title = "Add the running view"
+	q := &fakeQueue{candidates: []Candidate{{RunID: "FRG-18", Repo: "octo/scratch", Size: "M", Private: true}}}
+	deps := pollDeps(fakeSource{issues: []Issue{issue}}, q, &fakeWorkflow{})
+	if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.tryClaims) != 1 {
+		t.Fatalf("tryClaims = %+v, want the candidate claimed once", q.tryClaims)
+	}
+	if got := q.tryClaims[0].facts.Title; got != "Add the running view" {
+		t.Fatalf("title = %q, want the delegated issue's own", got)
+	}
+}
+
 func TestPollClaimsAPlannedRunForItsBuildWithItsWriteSet(t *testing.T) {
 	q := &fakeQueue{candidates: []Candidate{{
 		RunID: "run-a", Repo: "octo/scratch", Size: "M", Private: true,

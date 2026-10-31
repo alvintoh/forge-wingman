@@ -461,11 +461,13 @@ func poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	LogPhase(d.Logger, "admit", start, d.Now())
 	relations := make(map[string]Relations, len(issues))
 	links := make(map[string]string, len(issues))
+	titles := make(map[string]string, len(issues))
 	for _, issue := range issues {
 		relations[issue.ID] = Relations{
 			Known: true, BlockedBy: issue.BlockedBy, Blocks: issue.Blocks, BlockedByOpen: issue.BlockedByOpen,
 		}
 		links[issue.ID] = issue.URL
+		titles[issue.ID] = issue.Title
 	}
 	// A run that stopped on a known transient fault returns to the queue ahead
 	// of the claim walk, so the retry it earns is claimed by this same poll
@@ -483,7 +485,7 @@ func poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	var claims []Claim
 	var claimErr error
 	if listed {
-		claims, claimErr = admitClaims(ctx, d, c, relations, links, &res, history, prs)
+		claims, claimErr = admitClaims(ctx, d, c, relations, links, titles, &res, history, prs)
 	}
 	LogPhase(d.Logger, "claim", start, d.Now())
 	start = d.Now()
@@ -610,13 +612,14 @@ func claimStage(cand Candidate, twoStage bool) string {
 // dispatch or release them. The breaker and the owner's paused projects are the
 // poll's own, read once before this walk (an unreadable set holds every
 // repository), and so is the open-PR count across the allowlist; the provider
-// halt and the verdict are keyed off each candidate's own plan. A breaker
-// that cannot be read holds the walk as a tripped one would, and a budget
-// ceiling raises at most one notice. A candidate the plan's own window or cap
-// withholds is retried on the next paid plans in order, and once every one binds
-// on the configured free-tier plans, a private one only with the owner's private
-// opt-in. A candidate held for peak hours is no ceiling's, so it is neither
-// moved nor noticed.
+// halt and the verdict are keyed off each candidate's own plan, and the title a
+// claim records on a run row that holds none is the ticket's, read in the same
+// poll. A breaker that cannot be read holds the walk as a tripped one would, and
+// a budget ceiling raises at most one notice. A candidate the plan's own window
+// or cap withholds is retried on the next paid plans in order, and once every
+// one binds on the configured free-tier plans, a private one only with the
+// owner's private opt-in. A candidate held for peak hours is no ceiling's, so it
+// is neither moved nor noticed.
 //
 // The settled run history is read at most once for the whole walk, the first
 // time a candidate reaches its budget ceilings, and an estimate once per size
@@ -624,7 +627,7 @@ func claimStage(cand Candidate, twoStage bool) string {
 // history and one estimate of each size it holds, however many candidates are
 // queued (AC1), and a walk whose candidates a non-budget limit withholds reads
 // no history at all (AC5).
-func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Relations, links map[string]string, res *Result, history HistoryLoader, prs openPRCount) ([]Claim, error) {
+func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Relations, links map[string]string, titles map[string]string, res *Result, history HistoryLoader, prs openPRCount) ([]Claim, error) {
 	candidates, err := d.Queue.Candidates(ctx)
 	if err != nil {
 		return nil, err
@@ -745,7 +748,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		candPlan := runner.Provider(candModel)
 		facts := Facts{Limits: limits, Tuning: c.Tuning.OrDefault(), History: history, ProviderHalted: halted(candPlan), BreakerTripped: tripped,
 			OpenPRs: reviewWIPFor(ctx, d, cand, prs), OpenPRsKnown: prs.known, Relations: relations[cand.RunID], Model: candModel, LastResort: lastResort,
-			PeakHeld: PeakHeld(mode, candModel, d.Now(), est.Minutes), DecisionMode: c.DecisionMode,
+			PeakHeld: PeakHeld(mode, candModel, d.Now(), est.Minutes), DecisionMode: c.DecisionMode, Title: titles[cand.RunID],
 			OwnerPaused: paused.holds(cand.Repo) && stage != StageBuild}
 		claimVerdict := verdictOf(candPlan)
 		ok, binding, err := d.Queue.TryClaim(ctx, cand.RunID, d.Now(), budget, facts, reservation)

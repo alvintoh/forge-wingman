@@ -47,10 +47,10 @@ func run(logger *slog.Logger) error {
 		port = "8080"
 	}
 
-	// The comparison, run history, autonomy and peak endpoints read past runs,
-	// the measured merges and the peak mode, so they need the store. A local run
-	// without GOOGLE_CLOUD_PROJECT has none and serves the SPA alone, answering
-	// those endpoints with 503.
+	// The comparison, run history, running, autonomy and peak endpoints read past
+	// runs, the runs in flight, the measured merges and the peak mode, so they
+	// need the store. A local run without GOOGLE_CLOUD_PROJECT has none and serves
+	// the SPA alone, answering those endpoints with 503.
 	var comparison ComparisonReader
 	var measured MeasuredReader
 	var peak PeakModeStore
@@ -60,6 +60,7 @@ func run(logger *slog.Logger) error {
 	var runs MergeRuns
 	var cancels CancelRuns
 	var history RunHistoryReader
+	var running RunningReader
 	var retries RunRetries
 	var runsCap RunsPerRepoStore
 	if project := os.Getenv("GOOGLE_CLOUD_PROJECT"); project != "" {
@@ -82,6 +83,7 @@ func run(logger *slog.Logger) error {
 		defer func() { _ = owner.Close() }()
 		phases, queue, reaches := store.NewPhases(owner), store.NewQueue(fsc), store.NewReaches(fsc)
 		retries = queue
+		running = queue
 		projects = ProjectStores{
 			Projects: phases, Snapshots: store.NewPhaseSnapshots(fsc), Reaches: reaches,
 			Loads: queue, Activity: queue, Starts: phases, Pauses: phases,
@@ -111,6 +113,7 @@ func run(logger *slog.Logger) error {
 		Runs:       runs,
 		Cancels:    cancels,
 		History:    history,
+		Running:    running,
 		Retries:    retries,
 		Merger:     merger,
 		Pulls:      pulls,
@@ -165,6 +168,7 @@ type Deps struct {
 	Runs       MergeRuns
 	Cancels    CancelRuns
 	History    RunHistoryReader
+	Running    RunningReader
 	Retries    RunRetries
 	Merger     PRMerger
 	Pulls      PullLister
@@ -182,6 +186,7 @@ func newMux(d Deps) *http.ServeMux {
 	mux.HandleFunc("GET /api/me", me)
 	mux.HandleFunc("GET /api/comparison", d.comparison)
 	mux.HandleFunc("GET /api/run-history", d.runHistory)
+	mux.HandleFunc("GET /api/running", d.running)
 	mux.HandleFunc("GET /api/autonomy", d.autonomy)
 	mux.HandleFunc("GET /api/config", d.config)
 	mux.HandleFunc("GET /api/peak", d.peak)

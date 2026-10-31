@@ -435,3 +435,21 @@ func TestStartIsRefusedWhenTheRepositoryWasNotReadThisPoll(t *testing.T) {
 		t.Errorf("resolved %v, want %v", projects.resolved, want)
 	}
 }
+
+func TestPhaseStageWordsEachKindOfReservation(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		stage string
+		want  string
+	}{
+		{"a plan-stage reservation", StagePlan, "planning"},
+		{"a build-stage reservation", StageBuild, "building"},
+		{"a single-stage claim", "", "building"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := PhaseStage(tt.stage); got != tt.want {
+				t.Errorf("PhaseStage(%q) = %q, want %q", tt.stage, got, tt.want)
+			}
+		})
+	}
+}
