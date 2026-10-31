@@ -274,7 +274,7 @@ export function referenceLabel(bar: number): string {
 export function seriesLabel(series: Point[]): string {
   const last = series[series.length - 1];
   const latest = last === undefined || last.rate_value === null ? "" : `, latest ${last.rate}`;
-  return `Rolling rewrite rate after each of the last ${series.length} merged PRs${latest}. The Data table lists every figure.`;
+  return `Rolling rewrite rate after each of the last ${series.length} merged PRs${latest}. The Data section lists every figure.`;
 }
 
 // lastPrRepo names the repository of the last-PR tile's PR where the merged PRs span

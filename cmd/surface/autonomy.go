@@ -104,9 +104,9 @@ func (d Deps) setAutoMerge(w http.ResponseWriter, r *http.Request) {
 }
 
 // measuredShown is how many measured merges the autonomy view reads, newest
-// first: enough for the tiles, the rolling series and the split by size, model
-// and repository a page draws. A repository's scoped figures filter this same
-// read, so they cover only its merges among these.
+// first: enough for the tiles, the rolling series, the split by size, model and
+// repository a page draws, and the list of every PR behind them. A repository's
+// scoped figures filter this same read, so they cover only its merges among these.
 const measuredShown = 200
 
 // autonomyResponse is the autonomy endpoint's wire shape: whether auto-merge is

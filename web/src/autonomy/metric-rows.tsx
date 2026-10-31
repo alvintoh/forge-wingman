@@ -311,7 +311,7 @@ type MetricPanelProps = {
 
 // MetricPanel is one titled set of rows on a 0 to 80% axis. On a phone it keeps
 // the groups that have a median, or the first when none does, and says in a line
-// what it left to the Data table.
+// what it left to the Data section.
 export function MetricPanel({
   title,
   rows,

@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { isAutonomy } from "../autonomy/guard";
+import { DataSection } from "../autonomy/data-table";
+import { isAutonomy, isRewrite } from "../autonomy/guard";
 import { RewriteFigures } from "../autonomy/rewrite-section";
 import { scopeOf, useScopedFigures } from "../autonomy/scoped-figures";
 import { MergeStatusCard } from "../autonomy/status-card";
@@ -11,14 +12,21 @@ import { useRead } from "../stats/use-read";
 
 // Every @[51.25rem] on this page is the Overview's split width (pages/overview.tsx). The gaps are
 // the drawn ones: the project card's top is the auto-merge card's top, and the rewrite section is
-// 10px under the card on a phone and 14px under the lower of the two columns on a desktop.
+// 10px under the card on a phone and 14px under the lower of the two columns on a desktop. The
+// Data section is the last block at every width, and on a phone the filter card sits above it.
 const COLUMN = "min-w-0 @[51.25rem]:col-start-2 @[51.25rem]:row-start-1";
 const STATUS_CELL = "min-w-0 @[51.25rem]:col-start-1 @[51.25rem]:row-start-1";
+const DATA_CELL = "mt-10 min-w-0 @[51.25rem]:col-span-2 @[51.25rem]:row-start-3 @[51.25rem]:mt-8";
+// The Data section's key for the pooled figures, so choosing a project remounts it and its pager
+// returns to the first page. A repository is named owner/name, so this can never be one.
+const POOLED = "all";
 
 // Autonomy shows whether an eligible pull request merges itself: the state over
 // the trailing window, the rate behind it and the reason, then the rewrite rate
-// as charts. The switch is the owner's setting, set with `runner auto-merge`. A
-// project chosen in the filter narrows the rewrite rate to it; the state stays pooled.
+// as charts, then the Data section listing every figure they draw. The switch is
+// the owner's setting, set with `runner auto-merge`. A project chosen in the
+// filter narrows the rewrite rate and the Data section to it; the state stays
+// pooled.
 export function Autonomy() {
   const read = useRead("/api/autonomy", isAutonomy, "autonomyNotRead");
   const { state: list, retry } = useProjects();
@@ -42,7 +50,7 @@ export function Autonomy() {
     <section className="mx-auto max-w-desk px-padx pt-4 pb-band">
       <h1 className="text-title font-semibold text-ink">Autonomy</h1>
       <p className="mt-2 text-body text-ink2">Whether an eligible PR merges itself.</p>
-      <div className="mt-6 grid grid-cols-1 @[51.25rem]:grid-cols-[minmax(0,1fr)_23rem] @[51.25rem]:grid-rows-[auto_auto] @[51.25rem]:gap-x-8">
+      <div className="mt-6 grid grid-cols-1 @[51.25rem]:grid-cols-[minmax(0,1fr)_23rem] @[51.25rem]:grid-rows-[auto_auto_auto] @[51.25rem]:gap-x-8">
         <div className={mounted ? STATUS_CELL : `pb-[13.5px] ${STATUS_CELL}`}>
           {!released && (
             <p role="status">
@@ -82,6 +90,9 @@ export function Autonomy() {
               </ProjectsPanels>
             </div>
           ))}
+        {mounted && isRewrite(shown.figures) && (
+          <DataSection key={shown.repo ?? POOLED} className={DATA_CELL} rewrite={shown.figures} />
+        )}
       </div>
     </section>
   );

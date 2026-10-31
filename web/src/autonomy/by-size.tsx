@@ -109,8 +109,8 @@ type BySizeProps = { sizes: SizeRow[]; bar: number };
 // as a bar and the p90's as a whisker, on its own 0 to 40% axis. A size under ten
 // PRs has no bar or whisker; its PR count is under the axis. A pooled rate, median
 // or p90 above the axis is clamped to it and drawn as a triangle in a band over
-// the plot, with its value; the Data table lists every figure. A size with no PRs
-// is not drawn. The phone leaves this chart to the Data table, as the drawing does.
+// the plot, with its value; the Data section lists every figure. A size with no PRs
+// is not drawn. The phone leaves this chart to the Data section, as the drawing does.
 export function BySize({ sizes, bar }: BySizeProps) {
   const shown = sizes.filter((size) => size.prs > 0);
   if (shown.length === 0) {
@@ -155,7 +155,7 @@ export function BySize({ sizes, bar }: BySizeProps) {
                 height={height}
                 viewBox={`0 0 ${svgWidth} ${height}`}
                 role="img"
-                aria-label="Pooled rate, median PR rate and p90 PR rate of each size. The Data table lists every figure."
+                aria-label="Pooled rate, median PR rate and p90 PR rate of each size. The Data section lists every figure."
                 className="shrink-0"
                 data-chart="by-size"
               >
