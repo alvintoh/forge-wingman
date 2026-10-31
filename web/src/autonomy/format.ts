@@ -97,22 +97,22 @@ export function phaseWord(phase: Phase, model: string): string {
   return model === UNKNOWN_MODEL ? NO_MODEL_WORD[phase] : modelName(model);
 }
 
-// reasonText is why auto-merge is on or off, as the view words the endpoint's
-// own reason tokens.
+// reasonText is what the endpoint's reason token says about the rate, or about
+// the switch where the token is the switch's own. The rate is information.
 export function reasonText(reason: string): string {
   switch (reason) {
     case "on":
-      return "The rate allows it and the switch is on.";
+      return "The rewrite rate is within the guide.";
     case "switch-off":
       return "The owner's switch is off.";
     case "switch-unread":
-      return "The switch could not be read, so auto-merge is off.";
+      return "The owner's switch could not be read.";
     case "too-few-measured":
       return "Fewer merged PRs than the window holds are measured, or one carries an unmeasured commit.";
     case "no-agent-lines":
       return "The measured PRs carry no agent lines, so there is no rate.";
     case "rate-above-bar":
-      return "The trailing rate is above the bar.";
+      return "The trailing rate is above the guide.";
     case "reverted":
       return "An auto-merged PR of the window was reverted.";
     case "evidence-unread":
@@ -123,29 +123,32 @@ export function reasonText(reason: string): string {
 }
 
 /**
- * rateLine is the rate's verdict in words, apart from the switch: the figure against the bar where
- * there is one, else the endpoint's reason. Switched off, the endpoint's reason is the switch, so
- * whether the rate is above the bar is read from the figures.
+ * rateLine words the rate beside its guide: the figure over the window, and its place against the
+ * guide. Where the switch is off the line says so, and the rate never decides auto-merge.
  */
 export function rateLine(merge: MergeState): string {
-  const trailing = `trailing ${merge.window} is ${merge.rate_value}`;
-  const bar = whole(barOf(merge.limit));
+  const trailing = `rewrite rate over the trailing ${merge.window} PRs is ${merge.rate_value}`;
+  const guide = whole(barOf(merge.limit));
+  const above = isRed(barOf(merge.rate_value), barOf(merge.limit));
+  if (merge.reason === "switch-unread") {
+    return reasonText(merge.reason);
+  }
   if (merge.reason === "switch-off") {
     if (merge.rate_allows) {
-      return "off: switched off by you; the rate would allow it";
+      return `off: switched off by you; the rewrite rate is within the ${guide} guide`;
     }
-    if (isRed(barOf(merge.rate_value), barOf(merge.limit))) {
-      return `off: switched off by you; ${trailing}, above ${bar}`;
-    }
-    return "off: switched off by you; the rate would not allow it";
+    return above
+      ? `off: switched off by you; ${trailing}, above the ${guide} guide`
+      : reasonText(merge.reason);
   }
   if (merge.rate_allows) {
-    return `Recommended: ${trailing}; limit ${bar}`;
+    return `Recommended: ${trailing}; guide ${guide}`;
   }
-  if (merge.reason === "rate-above-bar") {
-    return `held: ${trailing}, above ${bar}`;
+  if (!above) {
+    return reasonText(merge.reason);
   }
-  return reasonText(merge.reason);
+  const rate = `${trailing}, above the ${guide} guide`;
+  return merge.reason === "rate-above-bar" ? `on: ${rate}` : `${rate}. ${reasonText(merge.reason)}`;
 }
 
 // isRed is whether a rate is strictly above the bar, which the page draws in red
@@ -264,9 +267,9 @@ export function wrap(text: string, size: number, width: number): string[] {
   return lines;
 }
 
-// referenceLabel names the reference line at the bar.
+// referenceLabel names the reference line at the guide.
 export function referenceLabel(bar: number): string {
-  return `${whole(bar)}: auto-merge on at or below, off above`;
+  return `${whole(bar)}: the guide`;
 }
 
 // seriesLabel is the one sentence a screen reader gets for the trend; the Data
