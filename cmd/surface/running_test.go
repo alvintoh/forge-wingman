@@ -97,8 +97,40 @@ func TestRunningTiesOnTheTicketWhenTwoClaimsShareATime(t *testing.T) {
 	}
 }
 
+func TestRunningTiesOnTheStageWhenOneTicketHoldsTwoClaimsAtOneTime(t *testing.T) {
+	// The stage is the last key, so it orders the claims however the reader
+	// listed them: here the plan comes first and the build sorts ahead of it.
+	got, _ := servedRunning(t, &stubRunning{runs: []store.Running{
+		{Ticket: "FRG-1", Repo: "octo/scratch", Stage: dispatcher.StagePlan, ClaimedAt: claimedAt(10), Title: "the widget"},
+		{Ticket: "FRG-1", Repo: "octo/scratch", Stage: dispatcher.StageBuild, ClaimedAt: claimedAt(10), Title: "the widget"},
+	}})
+	want := []runningRun{
+		{Ticket: "FRG-1", Repo: "octo/scratch", Stage: "building", ClaimedAt: "2026-10-31T09:10:00Z", Title: "the widget"},
+		{Ticket: "FRG-1", Repo: "octo/scratch", Stage: "planning", ClaimedAt: "2026-10-31T09:10:00Z", Title: "the widget"},
+	}
+	if !slices.Equal(got.Runs, want) {
+		t.Fatalf("runs = %+v, want %+v", got.Runs, want)
+	}
+}
+
+func TestRunningServesTheClaimTimeInUTC(t *testing.T) {
+	// 19:10 at +11:00 is 08:10 UTC, which the view reads with a Z suffix whatever
+	// zone the reader's time carries.
+	aedt := time.FixedZone("AEDT", 11*60*60)
+	got, _ := servedRunning(t, &stubRunning{runs: []store.Running{{
+		Ticket: "FRG-1", Repo: "octo/scratch", Stage: dispatcher.StageBuild,
+		ClaimedAt: time.Date(2026, 10, 31, 19, 10, 0, 0, aedt), Title: "build a",
+	}}})
+	want := []runningRun{
+		{Ticket: "FRG-1", Repo: "octo/scratch", Stage: "building", ClaimedAt: "2026-10-31T08:10:00Z", Title: "build a"},
+	}
+	if !slices.Equal(got.Runs, want) {
+		t.Fatalf("runs = %+v, want %+v", got.Runs, want)
+	}
+}
+
 func TestRunningServesAnEmptyTitleForARowWithoutOne(t *testing.T) {
-	// A reservation claimed before the claim recorded a title has none to serve.
+	// A run row that holds no title serves an empty one.
 	got, _ := servedRunning(t, &stubRunning{runs: []store.Running{{
 		Ticket: "FRG-1", Repo: "octo/other", Stage: dispatcher.StageBuild, ClaimedAt: claimedAt(10),
 	}}})

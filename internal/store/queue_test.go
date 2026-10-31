@@ -101,7 +101,11 @@ var openFacts = dispatcher.Facts{Limits: dispatcher.DefaultLimits, OpenPRsKnown:
 // test's admission starts from a known state, and drops it afterwards.
 func resetLedger(t *testing.T, client *firestore.Client, n int) {
 	t.Helper()
-	seedLedger(t, client, n, map[string]reservationEntry{})
+	ref := client.Collection(dispatchCollection).Doc(ledgerDocID)
+	if _, err := ref.Set(context.Background(), ledgerDoc{Reservations: map[string]reservationEntry{}, N: n}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = ref.Delete(context.Background()) })
 }
 
 // attemptOf is the settling run's attempt as Settle takes it.

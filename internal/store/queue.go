@@ -698,8 +698,7 @@ type Running struct {
 	// empty for a single-stage claim, which plans and builds in one job.
 	Stage     string
 	ClaimedAt time.Time
-	// Title is the ticket's title as the run row records it, empty for a row
-	// claimed before the claim recorded one.
+	// Title is the ticket's title the run row holds, empty when the row holds none.
 	Title string
 }
 
@@ -726,9 +725,7 @@ func (q *Queue) Running(ctx context.Context) ([]Running, error) {
 	}
 	titles := make(map[string]string, len(snaps))
 	for _, snap := range snaps {
-		if snap.Exists() {
-			titles[snap.Ref.ID] = str(snap.Data(), ticketTitleField)
-		}
+		titles[snap.Ref.ID] = str(snap.Data(), ticketTitleField)
 	}
 	for key, r := range ledger.Reservations {
 		out = append(out, Running{
@@ -982,13 +979,6 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 		}
 		if _, recorded := data[decisionModeField]; !recorded {
 			updates = append(updates, firestore.Update{Path: decisionModeField, Value: string(facts.DecisionMode)})
-		}
-		if facts.Title != "" && str(data, ticketTitleField) == "" {
-			// A row with no title takes the ticket's as Linear reported it. A row
-			// that already holds one keeps it: admission validated that title and
-			// this poll's read did not, and the runner refuses a title it cannot
-			// build.
-			updates = append(updates, firestore.Update{Path: ticketTitleField, Value: facts.Title})
 		}
 		if res.Stage != dispatcher.StageBuild {
 			var lastResortModels, movedFrom, planModels any = firestore.Delete, firestore.Delete, firestore.Delete
