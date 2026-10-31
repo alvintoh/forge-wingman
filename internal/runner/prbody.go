@@ -154,11 +154,11 @@ func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail
 func Screenshots(ev Evidence, repository string) string {
 	var b strings.Builder
 	b.WriteString(screenshotsHeading + " — shot at `" + ev.SHA + "`\n\n")
-	b.WriteString("| Route | " + strings.Join(ShotWidths, " | ") + " |\n")
-	b.WriteString("|" + strings.Repeat("---|", len(ShotWidths)+1) + "\n")
+	b.WriteString("| Route | " + strings.Join(shotWidths, " | ") + " |\n")
+	b.WriteString("|" + strings.Repeat("---|", len(shotWidths)+1) + "\n")
 	for _, row := range screenshotRows(ev.Files) {
 		b.WriteString("| " + codeSpan(row.route))
-		for _, width := range ShotWidths {
+		for _, width := range shotWidths {
 			b.WriteString(" | ")
 			if file, ok := row.shots[width]; ok {
 				b.WriteString(screenshot(file, repository))
@@ -201,14 +201,12 @@ func screenshotRows(files []EvidenceFile) []screenshotRow {
 // branch.
 func screenshot(file EvidenceFile, repository string) string {
 	return fmt.Sprintf("<img width=\"%d\" alt=\"%s\" src=\"%s\">", shotWidthPx,
-		html.EscapeString(file.Route+" at "+file.Width), EvidenceURL(repository, file.Path))
+		html.EscapeString(file.Route+" at "+file.Width), evidenceURL(repository, file.Path))
 }
 
-// ReplaceScreenshots replaces the body's screenshots section with section, the
-// run's shots at the sha they were taken at: the section is edited in place on
-// every push, so a body never grows a second copy of it. A body with no section
-// is refused rather than appended to, and a copy the ticket body quotes inside
-// its fence is not the section.
+// ReplaceScreenshots replaces the body's screenshots section with section, in
+// place, so a push never adds a second copy. A body with no section is refused,
+// and a heading quoted inside a code fence is not the section.
 func ReplaceScreenshots(body, section string) (string, error) {
 	lines := strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
 	fenced := fenceMask(lines)
@@ -237,9 +235,8 @@ func ReplaceScreenshots(body, section string) (string, error) {
 	return strings.Join(out, "\n"), nil
 }
 
-// AppendScreenshots is body with section after the sections it already has: what
-// a pull request written before the section existed gains, so its next push
-// finds the section and replaces it in place.
+// AppendScreenshots is body with section after its sections: what a body written
+// before the section existed gains.
 func AppendScreenshots(body, section string) string {
 	trimmed := strings.TrimRight(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
 	if trimmed == "" {
@@ -248,9 +245,8 @@ func AppendScreenshots(body, section string) string {
 	return trimmed + "\n\n" + section + "\n"
 }
 
-// fenceMask reports which lines of a body sit inside a code fence, the way the
-// ticket's own copy is fenced in the notes, so a heading it quotes is not taken
-// for the body's own.
+// fenceMask reports which lines of a body sit in a code fence, so a heading
+// quoted there is not the body's own.
 func fenceMask(lines []string) []bool {
 	mask := make([]bool, len(lines))
 	fence := 0

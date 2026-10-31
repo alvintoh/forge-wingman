@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // EvidenceBranch is the branch a run pushes a pull request's screenshots to.
@@ -18,9 +19,12 @@ import (
 // attachment store, so the images live on a branch the token can push.
 const EvidenceBranch = "evidence"
 
-// ShotWidths are the viewports a run captures, in the order the pull request
+// MaxShotBytes is the largest screenshot a run may push.
+const MaxShotBytes = 8 << 20
+
+// shotWidths are the viewports a run captures, in the order the pull request
 // body shows them.
-var ShotWidths = []string{"s", "m", "l", "xl"}
+var shotWidths = []string{"s", "m", "l", "xl"}
 
 // errShotsLayout reports a shots artifact holding a PNG outside a viewport's
 // folder, which would otherwise be dropped from the pull request body.
@@ -29,6 +33,16 @@ var errShotsLayout = errors.New("shots artifact holds a PNG outside a viewport's
 // errEvidencePath reports a screenshot whose place on the evidence branch would
 // fall outside the pull request's own folder.
 var errEvidencePath = errors.New("screenshot path is outside the pull request's folder")
+
+// errShotFile reports a PNG in the shots artifact that is not a regular file,
+// which a symlink would turn into a read of whatever it points at.
+var errShotFile = errors.New("shots artifact holds a PNG that is not a regular file")
+
+// errShotSize reports a screenshot over MaxShotBytes.
+var errShotSize = errors.New("screenshot is over the size limit")
+
+// errShotName reports a screenshot name the body's table cannot show as one cell.
+var errShotName = errors.New("screenshot name holds a character the body cannot show")
 
 // errShotCell reports two screenshots for one route and viewport, which the
 // body's table has a single cell for.
@@ -46,10 +60,10 @@ var evidenceSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 // screenshots live under.
 func EvidenceFolder(number int) string { return "pr-" + strconv.Itoa(number) }
 
-// EvidencePath is where the shots artifact's file at rel lives on EvidenceBranch
+// evidencePath is where the shots artifact's file at rel lives on EvidenceBranch
 // for pull request number at sha: inside that pull request's own folder, never
 // outside it. A number that is not a pull request's has no folder to hold it.
-func EvidencePath(number int, sha, rel string) (string, error) {
+func evidencePath(number int, sha, rel string) (string, error) {
 	if number <= 0 {
 		return "", fmt.Errorf("%w: pull request %d", errEvidencePR, number)
 	}
@@ -64,9 +78,9 @@ func EvidencePath(number int, sha, rel string) (string, error) {
 	return EvidenceFolder(number) + "/" + sha + "/" + clean, nil
 }
 
-// EvidenceURL is the address the pull request body shows the file at p by: the
+// evidenceURL is the address the pull request body shows the file at p by: the
 // raw form of EvidenceBranch in repository, which GitHub renders as an image.
-func EvidenceURL(repository, p string) string {
+func evidenceURL(repository, p string) string {
 	u := url.URL{Scheme: "https", Host: "raw.githubusercontent.com",
 		Path: "/" + repository + "/" + EvidenceBranch + "/" + p}
 	return u.String()
@@ -77,7 +91,7 @@ func EvidenceURL(repository, p string) string {
 type Shot struct {
 	// Route is the page it shows, as "/" for the site's root.
 	Route string
-	// Width is the viewport it was taken at, one of ShotWidths.
+	// Width is the viewport it was taken at, one of shotWidths.
 	Width string
 	// File is where the artifact holds it.
 	File string
@@ -90,6 +104,9 @@ type Shot struct {
 // folder's page. A directory holding no PNG is a run that captured none. Any
 // other file is ignored, and a PNG under no viewport's folder is refused rather
 // than silently left out of the pull request body.
+//
+// A PNG that is not a regular file, or is over MaxShotBytes, refuses the whole
+// set before anything is read.
 func ReadShots(dir string) ([]Shot, error) {
 	if dir == "" {
 		return nil, nil
@@ -107,8 +124,18 @@ func ReadShots(dir string) ([]Shot, error) {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("%w: %q", errShotFile, rel)
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Size() > MaxShotBytes {
+			return fmt.Errorf("%w: %q is %d bytes, over %d", errShotSize, rel, info.Size(), MaxShotBytes)
+		}
 		width, page, ok := strings.Cut(rel, "/")
-		if !ok || !slices.Contains(ShotWidths, width) {
+		if !ok || !slices.Contains(shotWidths, width) {
 			return fmt.Errorf("%w: %s", errShotsLayout, rel)
 		}
 		shots = append(shots, Shot{Route: shotRoute(page), Width: width, File: p, Rel: rel})
@@ -124,7 +151,7 @@ func ReadShots(dir string) ([]Shot, error) {
 		if byRoute := strings.Compare(a.Route, b.Route); byRoute != 0 {
 			return byRoute
 		}
-		return slices.Index(ShotWidths, a.Width) - slices.Index(ShotWidths, b.Width)
+		return slices.Index(shotWidths, a.Width) - slices.Index(shotWidths, b.Width)
 	})
 	return shots, nil
 }
@@ -161,14 +188,18 @@ type EvidenceFile struct {
 }
 
 // PlaceShots places shots at their place on EvidenceBranch for pull request
-// number at sha. A shot that would land outside the pull request's folder, or a
-// second shot for a cell the table has one of, refuses the whole set: nothing is
-// pushed for a partial answer, and no screenshot is silently dropped.
+// number at sha. A shot that would land outside the pull request's folder, one
+// whose name the body's table cannot show, or a second shot for a cell the table
+// has one of, refuses the whole set: nothing is pushed for a partial answer, and
+// no screenshot is silently dropped.
 func PlaceShots(shots []Shot, number int, sha string) (Evidence, error) {
 	ev := Evidence{SHA: sha, Files: make([]EvidenceFile, 0, len(shots))}
 	cell := make(map[string]bool, len(shots))
 	for _, s := range shots {
-		p, err := EvidencePath(number, sha, s.Rel)
+		if strings.IndexFunc(s.Rel, unshowable) >= 0 {
+			return Evidence{}, fmt.Errorf("%w: %q", errShotName, s.Rel)
+		}
+		p, err := evidencePath(number, sha, s.Rel)
 		if err != nil {
 			return Evidence{}, err
 		}
@@ -180,4 +211,10 @@ func PlaceShots(shots []Shot, number int, sha string) (Evidence, error) {
 		ev.Files = append(ev.Files, EvidenceFile{Route: s.Route, Width: s.Width, Source: s.File, Path: p})
 	}
 	return ev, nil
+}
+
+// unshowable reports a character a name cannot carry into the body: a control
+// character, or one that ends a table cell, a code span or an attribute.
+func unshowable(r rune) bool {
+	return unicode.IsControl(r) || strings.ContainsRune("|`<>", r)
 }

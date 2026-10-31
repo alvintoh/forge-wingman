@@ -9,8 +9,7 @@ import (
 	"testing"
 )
 
-// shotsDir writes the shots artifact a capture of routes produced: one PNG per
-// viewport per route, at <viewport>/<route>.png.
+// shotsDir writes a shots artifact holding each of files.
 func shotsDir(t *testing.T, files ...string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -49,6 +48,58 @@ func TestReadShotsRefusesAPNGOutsideAViewportsFolder(t *testing.T) {
 	}
 }
 
+func TestReadShotsRefusesASymlinkedPNG(t *testing.T) {
+	secret := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(secret, []byte("token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := shotsDir(t, "s/index.png")
+	if err := os.Symlink(secret, filepath.Join(dir, "s", "home.png")); err != nil {
+		t.Fatal(err)
+	}
+	shots, err := ReadShots(dir)
+	if !errors.Is(err, errShotFile) {
+		t.Fatalf("err = %v, want errShotFile: a link would upload what it points at", err)
+	}
+	if len(shots) != 0 {
+		t.Fatalf("read %d shots, want none for a refused set", len(shots))
+	}
+}
+
+func TestReadShotsBoundsAScreenshotsSize(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		size    int64
+		refused bool
+	}{
+		{name: "at the limit", size: 8388608},
+		{name: "one byte over", size: 8388609, refused: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := shotsDir(t, "s/index.png")
+			big := filepath.Join(dir, "s", "big.png")
+			f, err := os.Create(big)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = f.Close() }()
+			if err := f.Truncate(tt.size); err != nil {
+				t.Fatal(err)
+			}
+			shots, err := ReadShots(dir)
+			if tt.refused {
+				if !errors.Is(err, errShotSize) || len(shots) != 0 {
+					t.Fatalf("shots = %d, err = %v, want errShotSize and none read", len(shots), err)
+				}
+				return
+			}
+			if err != nil || len(shots) != 2 {
+				t.Fatalf("shots = %d, err = %v, want both read", len(shots), err)
+			}
+		})
+	}
+}
+
 func TestReadShotsOfNoArtifactIsNone(t *testing.T) {
 	for _, dir := range []string{"", filepath.Join(t.TempDir(), "absent"), shotsDir(t, "notes.md")} {
 		shots, err := ReadShots(dir)
@@ -59,7 +110,7 @@ func TestReadShotsOfNoArtifactIsNone(t *testing.T) {
 }
 
 func TestEvidencePathKeepsEveryShotUnderThePRsFolder(t *testing.T) {
-	got, err := EvidencePath(7, testSHA, "s/checkout/start.png")
+	got, err := evidencePath(7, testSHA, "s/checkout/start.png")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,21 +129,21 @@ func TestEvidencePathRefusesAPathOutsideThePRsFolder(t *testing.T) {
 		{"nothing at all", ""},
 		{"a windows separator", `s\home.png`},
 	} {
-		if got, err := EvidencePath(7, testSHA, tt[1]); !errors.Is(err, errEvidencePath) {
+		if got, err := evidencePath(7, testSHA, tt[1]); !errors.Is(err, errEvidencePath) {
 			t.Errorf("%s: path = %q, err = %v, want the push refused", tt[0], got, err)
 		}
 	}
 }
 
 func TestEvidencePathRefusesAShaThatIsNotOne(t *testing.T) {
-	if _, err := EvidencePath(7, "../../notes", "s/home.png"); !errors.Is(err, errEvidencePath) {
+	if _, err := evidencePath(7, "../../notes", "s/home.png"); !errors.Is(err, errEvidencePath) {
 		t.Fatalf("err = %v, want the sha refused", err)
 	}
 }
 
 func TestEvidencePathRefusesAPullRequestNumberThatIsNotOne(t *testing.T) {
 	for _, number := range []int{0, -1} {
-		if got, err := EvidencePath(number, testSHA, "s/home.png"); !errors.Is(err, errEvidencePR) {
+		if got, err := evidencePath(number, testSHA, "s/home.png"); !errors.Is(err, errEvidencePR) {
 			t.Errorf("pull request %d: path = %q, err = %v, want refused", number, got, err)
 		}
 	}
@@ -148,8 +199,22 @@ func TestPlaceShotsRefusesTwoShotsForOneCell(t *testing.T) {
 	}
 }
 
+func TestPlaceShotsRefusesANameTheBodyCannotShow(t *testing.T) {
+	for _, tt := range [][2]string{
+		{"a newline", "s/a\n## Notes\nINJECTED.png"},
+		{"a pipe", "s/a|b.png"},
+		{"a backtick", "s/a`b.png"},
+		{"an angle bracket", "s/a<b.png"},
+	} {
+		ev, err := PlaceShots([]Shot{{Route: "/x", Width: "s", File: "a", Rel: tt[1]}}, 7, testSHA)
+		if !errors.Is(err, errShotName) || len(ev.Files) != 0 {
+			t.Errorf("%s: files = %d, err = %v, want errShotName and none placed", tt[0], len(ev.Files), err)
+		}
+	}
+}
+
 func TestEvidenceURLIsTheBranchesRawForm(t *testing.T) {
-	got := EvidenceURL("o/r", "pr-7/"+testSHA+"/s/home.png")
+	got := evidenceURL("o/r", "pr-7/"+testSHA+"/s/home.png")
 	want := "https://raw.githubusercontent.com/o/r/evidence/pr-7/" + testSHA + "/s/home.png"
 	if got != want {
 		t.Fatalf("url = %q, want %q", got, want)

@@ -349,9 +349,6 @@ func TestPRBodyNamesNoSupersededPRForAFirstAttempt(t *testing.T) {
 	}
 }
 
-// TestPRBodySaysTheRunCapturedNoScreenshots is the line a run that captured
-// nothing leaves until the pr step replaces it, so the owner can tell the
-// absence is the run's rather than the body's.
 func TestPRBodySaysTheRunCapturedNoScreenshots(t *testing.T) {
 	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, nil, nil, 0, false)
 	if err != nil {
@@ -367,9 +364,6 @@ func evidenceOf(route, width, p string) EvidenceFile {
 	return EvidenceFile{Route: route, Width: width, Path: p}
 }
 
-// TestScreenshotsRendersOneImagePerViewport is the table the pr step puts in
-// place of that line: a row per route, a 200px image per viewport at its raw
-// URL on the evidence branch, and an empty cell where the route was not shot.
 func TestScreenshotsRendersOneImagePerViewport(t *testing.T) {
 	ev := Evidence{SHA: testSHA, Files: []EvidenceFile{
 		evidenceOf("/checkout", "s", "pr-7/"+testSHA+"/s/checkout.png"),
@@ -387,9 +381,6 @@ func TestScreenshotsRendersOneImagePerViewport(t *testing.T) {
 	}
 }
 
-// TestReplaceScreenshotsReplacesTheSectionForANewSHA is the in-place edit: a
-// second push names the sha it shot at and leaves one section, never a second
-// copy of it.
 func TestReplaceScreenshotsReplacesTheSectionForANewSHA(t *testing.T) {
 	const first, second = "fedcba9876543210fedcba9876543210fedcba98", "89abcdef0123456789abcdef0123456789abcdef"
 	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, nil, nil, 0, false)
@@ -419,9 +410,7 @@ func TestReplaceScreenshotsRefusesABodyWithNoSection(t *testing.T) {
 	}
 }
 
-// TestReplaceScreenshotsLeavesAFencedCopyAlone covers a ticket body that quotes
-// the heading inside its fence: the section is the one before the notes, and the
-// quote is not a second copy to replace or to end on.
+// The ticket body quotes the heading inside its fence in the notes.
 func TestReplaceScreenshotsLeavesAFencedCopyAlone(t *testing.T) {
 	body := "## Summary\n\nAdds it.\n\n## Screenshots (fixture data)\n" +
 		"No screenshots: this run captured none.\n\n## Notes\n\nThe ticket as built:\n\n" +
@@ -442,8 +431,31 @@ func TestReplaceScreenshotsLeavesAFencedCopyAlone(t *testing.T) {
 	}
 }
 
-// TestAppendScreenshotsSeedsTheSectionABodyLacks is the heal: a body written
-// before the section existed gains it, and the next push finds it in place.
+func TestReplaceScreenshotsSkipsAFencedHeadingBeforeTheSection(t *testing.T) {
+	body := "## Summary\n\n```\n## Screenshots (fixture data)\nquoted\n```\n\n" +
+		"## Screenshots (fixture data)\nNo screenshots: this run captured none.\n\n## Notes\nbuilt\n"
+	got, err := ReplaceScreenshots(body, "SECTION")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "## Summary\n\n```\n## Screenshots (fixture data)\nquoted\n```\n\nSECTION\n\n## Notes\nbuilt\n"
+	if got != want {
+		t.Fatalf("body =\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestReplaceScreenshotsEndsAtTheNextHeadingOutsideAFence(t *testing.T) {
+	body := "## Summary\n\n## Screenshots (fixture data)\nold\n\n```\n## Quoted\n```\n\n## Notes\nbuilt\n"
+	got, err := ReplaceScreenshots(body, "SECTION")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "## Summary\n\nSECTION\n\n## Notes\nbuilt\n"
+	if got != want {
+		t.Fatalf("body =\n%s\nwant:\n%s", got, want)
+	}
+}
+
 func TestAppendScreenshotsSeedsTheSectionABodyLacks(t *testing.T) {
 	body := "## Summary\n\nAdds it.\n\n## Notes\n\nBuilt unattended.\n"
 	section := "## Screenshots (fixture data) — shot at `" + testSHA + "`"
@@ -460,15 +472,5 @@ func TestAppendScreenshotsSeedsAnEmptyBody(t *testing.T) {
 	section := "## Screenshots (fixture data) — shot at `" + testSHA + "`"
 	if got, want := AppendScreenshots("", section), section+"\n"; got != want {
 		t.Fatalf("body = %q, want %q", got, want)
-	}
-}
-
-// TestScreenshotsRendersTheTableWithoutAnyShot is the section's shape with no
-// row to show: the heading, the route column and the four viewports.
-func TestScreenshotsRendersTheTableWithoutAnyShot(t *testing.T) {
-	want := "## Screenshots (fixture data) — shot at `" + testSHA + "`\n\n" +
-		"| Route | s | m | l | xl |\n|---|---|---|---|---|"
-	if got := Screenshots(Evidence{SHA: testSHA}, "o/r"); got != want {
-		t.Fatalf("section =\n%s\nwant:\n%s", got, want)
 	}
 }

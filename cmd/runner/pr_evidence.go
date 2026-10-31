@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -13,28 +14,16 @@ import (
 	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
-const (
-	// maxEvidenceFileBytes bounds one screenshot read from the shots artifact: the
-	// pull request body shows it at 200px, so a larger file is a capture bug, not
-	// evidence worth pushing.
-	maxEvidenceFileBytes = 8 << 20
-	// evidencePushAttempts bounds how often a commit is retried when another run's
-	// commit moved the evidence branch between reading it and moving it on.
-	evidencePushAttempts = 3
-)
+// evidencePushAttempts bounds how often a lost ref race is rebuilt and retried.
+const evidencePushAttempts = 3
 
-// errEvidenceRefLost reports the evidence branch moving between reading it and
-// moving it on, which a rebuild over the branch as it stands then survives. Any
-// other failure is this run's own and is not retried.
+// errEvidenceRefLost marks a ref write that lost to another run's commit, the one
+// failure a retry survives.
 var errEvidenceRefLost = errors.New("the evidence branch moved under the push")
 
 // prEvidence pushes a run's screenshots to the evidence branch and shows them in
-// the pull request body. A run that captured none leaves the body as pr-meta
-// worded it and still succeeds: the diff is the deliverable, the pictures are
-// not.
-//
-// The shots artifact is only produced for a front-end change, so its presence is
-// what marks this pull request as one, and the images are of fixture data.
+// the pull request body. A run that captured none leaves the body as it is and
+// still succeeds.
 func prEvidence(ctx context.Context, logger *slog.Logger, getenv func(string) string, args []string) error {
 	fs := flag.NewFlagSet("pr", flag.ContinueOnError)
 	number := fs.Int("pr", 0, "the pull request the screenshots belong to")
@@ -80,8 +69,7 @@ func publishScreenshots(ctx context.Context, logger *slog.Logger, gh pullRequest
 	section := runner.Screenshots(ev, gh.Repo)
 	body, err := runner.ReplaceScreenshots(p.Body, section)
 	if errors.Is(err, runner.ErrNoScreenshotsSection) {
-		// A pull request opened before the section existed: seed it, so the body
-		// gains the shots rather than the step failing.
+		// A body written before the section existed gains it.
 		logger.Info("prScreenshotsSectionSeeded", "pr", number)
 		body, err = runner.AppendScreenshots(p.Body, section), nil
 	}
@@ -102,9 +90,7 @@ func (g pullRequests) editBody(ctx context.Context, number int, body string) err
 }
 
 // pushEvidence commits ev's files to the evidence branch: one blob each, then a
-// tree over the branch's own, then the commit the ref moves to. The first push
-// starts the branch, so a repository that never captured a screenshot gains one
-// commit holding only what the pull requests pushed.
+// tree over the branch's own, then the commit the ref moves to.
 func (g pullRequests) pushEvidence(ctx context.Context, ev runner.Evidence, number int) error {
 	entries := make([]treeEntry, 0, len(ev.Files))
 	for _, f := range ev.Files {
@@ -115,10 +101,6 @@ func (g pullRequests) pushEvidence(ctx context.Context, ev runner.Evidence, numb
 		entries = append(entries, treeEntry{Path: f.Path, Mode: "100644", Type: "blob", SHA: sha})
 	}
 	message := fmt.Sprintf("chore(evidence): add %s screenshots at %s", runner.EvidenceFolder(number), ev.SHA)
-	// A second run committing to the branch between this read and the ref
-	// update makes the update a lost race, not a failure: the commit is rebuilt
-	// over the branch as it stands then. Any other failure is this run's own and
-	// is not retried.
 	var err error
 	for range evidencePushAttempts {
 		err = g.commitEvidence(ctx, entries, message)
@@ -177,11 +159,10 @@ func (g pullRequests) commitEvidence(ctx context.Context, entries []treeEntry, m
 	return nil
 }
 
-// refRace wraps a ref create or update that lost to another run's commit, which
-// a rebuild over the branch as it stands then survives. GitHub answers a lost
-// create with 422 (the branch already exists) and a lost update with 409 or 422
-// (not a fast forward); any other failure is this run's own and is returned as
-// such, so it is not retried.
+// refRace marks a ref create or update that lost to another run's commit.
+//
+// GitHub answers a lost create with 422 (the branch exists) and a lost update with
+// 409 or 422 (not a fast forward); any other status is this run's own failure.
 func refRace(err error) error {
 	var api *apiError
 	if errors.As(err, &api) && (api.Code == http.StatusConflict || api.Code == http.StatusUnprocessableEntity) {
@@ -198,9 +179,11 @@ type gitRef struct {
 	} `json:"object"`
 }
 
-// evidenceTip is the evidence branch's head, empty when the branch does not
-// exist yet. The matching form answers an empty list for a branch nobody has
-// pushed, where the ref itself would answer 404.
+// evidenceTip is the evidence branch's head, empty when the branch does not exist
+// yet.
+//
+// matching-refs answers an empty list for a missing branch, where the ref itself
+// would answer 404, and every ref the name prefixes, so the branch is matched exactly.
 func (g pullRequests) evidenceTip(ctx context.Context) (string, error) {
 	var refs []gitRef
 	path := fmt.Sprintf("/repos/%s/git/matching-refs/heads/%s", g.Repo, runner.EvidenceBranch)
@@ -238,14 +221,20 @@ type treeEntry struct {
 	SHA  string `json:"sha"`
 }
 
-// createBlob stores the file at path as a blob and returns its sha.
+// createBlob stores the file at path as a blob and returns its sha, reading no
+// more than runner.MaxShotBytes of it.
 func (g pullRequests) createBlob(ctx context.Context, path string) (string, error) {
-	raw, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
-	if len(raw) > maxEvidenceFileBytes {
-		return "", fmt.Errorf("%s is %d bytes, over the %d-byte screenshot limit", path, len(raw), maxEvidenceFileBytes)
+	defer func() { _ = f.Close() }()
+	raw, err := io.ReadAll(io.LimitReader(f, runner.MaxShotBytes+1))
+	if err != nil {
+		return "", err
+	}
+	if len(raw) > runner.MaxShotBytes {
+		return "", fmt.Errorf("over the %d-byte screenshot limit", runner.MaxShotBytes)
 	}
 	var blob struct {
 		SHA string `json:"sha"`
