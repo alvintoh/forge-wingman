@@ -3,6 +3,7 @@ import { parsePull } from "../inbox/run";
 import { usePageSize } from "../page-size";
 import { pageWindow } from "../page-window";
 import { Pager } from "../pager";
+import { sydneyDateTime } from "../sydney-date-time";
 import { prKey } from "./axis";
 import {
   NO_RATE,
@@ -19,7 +20,6 @@ import {
   servedRate,
   spreadText,
   trendWords,
-  utcDay,
   whole,
 } from "./format";
 import { PHASES } from "./types";
@@ -245,16 +245,29 @@ type PRField = {
   render: (pr: PR) => ReactNode;
   // A figure sits right-aligned beside the line's other figures.
   figure?: boolean;
+  // Too wide for half a stacked row, so below 768 it takes the whole line.
+  long?: boolean;
 };
+
+// MergedAt is a PR's merge on Sydney's clock, held to one line, or a dash where the text is no
+// instant.
+function MergedAt({ at }: { at: string }) {
+  const text = sydneyDateTime(at);
+  if (text === null) {
+    return "-";
+  }
+  return (
+    <time dateTime={at} className="font-mono whitespace-nowrap">
+      {text}
+    </time>
+  );
+}
 
 // prFirstLine is a PR's first line: the record's numbers, newest first.
 function prFirstLine(bar: number): PRField[] {
   return [
-    {
-      head: "Date, UTC",
-      render: (pr) => <span className="font-mono">{utcDay(pr.merged_at)}</span>,
-    },
-    { head: "Run", render: (pr) => <span className="font-mono">{pr.run}</span> },
+    { head: "Date, Sydney", render: (pr) => <MergedAt at={pr.merged_at} />, long: true },
+    { head: "Run", render: (pr) => <span className="font-mono whitespace-nowrap">{pr.run}</span> },
     { head: "Size", render: (pr) => <span className="font-mono">{pr.size}</span> },
     {
       head: "Agent lines",
@@ -385,7 +398,7 @@ function PerPRTable({ prs, bar, showRepo, captionId }: PerPRTableProps) {
               <td
                 key={field.head}
                 data-label={field.head}
-                className={`${FIRST_CELL} ${field.figure ? "md:text-right" : ""}`}
+                className={`${FIRST_CELL} ${field.figure ? "md:text-right" : ""} ${field.long ? "max-md:col-span-2" : ""}`}
               >
                 {field.render(pr)}
               </td>
@@ -411,7 +424,7 @@ function PerPRTable({ prs, bar, showRepo, captionId }: PerPRTableProps) {
 }
 
 const PR_NOTES = [
-  "Dates are UTC. Trailing 10 is the rewrite rate over the ten merged PRs ending at that one, the trend chart's numbers; it starts at the tenth measured PR, so the oldest nine PRs show none.",
+  "Times are Sydney time. Trailing 10 is the rewrite rate over the ten merged PRs ending at that one, the trend chart's numbers; it starts at the tenth measured PR, so the oldest nine PRs show none.",
   "Plan, build and review are the strip's lanes in words.",
 ];
 
