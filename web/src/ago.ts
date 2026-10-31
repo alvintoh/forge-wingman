@@ -1,6 +1,7 @@
-/** ago words how long before `now` the ISO time `iso` was: "just now", "14m ago", "3h ago", "2d ago". */
-export function ago(iso: string, now: number, suffix = " ago"): string {
-  const minutes = Math.max(0, Math.floor((now - Date.parse(iso)) / 60_000));
+/** ago words how long before `now` the ISO time or millisecond time `at` was: "just now", "14m ago", "3h ago", "2d ago". */
+export function ago(at: string | number, now: number, suffix = " ago"): string {
+  const since = typeof at === "number" ? at : Date.parse(at);
+  const minutes = Math.max(0, Math.floor((now - since) / 60_000));
   if (Number.isNaN(minutes)) {
     return "at an unknown time";
   }

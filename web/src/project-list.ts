@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 
+// The projects endpoint sets no read deadline of its own, so a read still open at 15 seconds has
+// stalled: it ends in the error state, or as a stale read, rather than reading forever.
+const READ_DEADLINE_MS = 15_000;
+
 export type PhaseProgress = {
   name: string;
   done: number;
@@ -53,6 +57,14 @@ export type ProjectsState = {
   stale: boolean;
 };
 
+export type ProjectsRead = {
+  state: ProjectsState;
+  // A read is open: the first one, or a re-read that leaves the cards on screen meanwhile.
+  fetching: boolean;
+  refresh: () => void;
+  retry: () => void;
+};
+
 // displayName is how the design names a project: the part of owner/name after the slash, or the whole
 // name while another listed project shares that part.
 export function displayName(repository: string, projects: readonly Project[]): string {
@@ -78,7 +90,7 @@ function isProjects(body: unknown): body is ProjectsResponse {
 
 // useProjects reads the list. refresh re-reads in place; retry shows the
 // loading panel again first, for a read that failed.
-export function useProjects() {
+export function useProjects(): ProjectsRead {
   const [state, setState] = useState<ProjectsState>({
     status: "loading",
     total: 0,
@@ -87,12 +99,15 @@ export function useProjects() {
     stale: false,
   });
   const [attempt, setAttempt] = useState(0);
+  const [fetching, setFetching] = useState(true);
 
   useEffect(() => {
     const controller = new AbortController();
 
     async function read() {
-      const response = await fetch("/api/projects", { signal: controller.signal });
+      const response = await fetch("/api/projects", {
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(READ_DEADLINE_MS)]),
+      });
       if (!response.ok) {
         throw new Error(`the projects endpoint answered ${response.status}`);
       }
@@ -110,6 +125,7 @@ export function useProjects() {
         readAt: Date.now(),
         stale: false,
       });
+      setFetching(false);
     }
 
     read().catch((err: unknown) => {
@@ -122,16 +138,21 @@ export function useProjects() {
           ? { ...previous, stale: true }
           : { status: "error", total: 0, projects: [], readAt: 0, stale: false },
       );
+      setFetching(false);
     });
 
     return () => controller.abort();
   }, [attempt]);
 
-  const refresh = useCallback(() => setAttempt((n) => n + 1), []);
+  const refresh = useCallback(() => {
+    setFetching(true);
+    setAttempt((n) => n + 1);
+  }, []);
   const retry = useCallback(() => {
     setState({ status: "loading", total: 0, projects: [], readAt: 0, stale: false });
+    setFetching(true);
     setAttempt((n) => n + 1);
   }, []);
 
-  return { state, refresh, retry };
+  return { state, fetching, refresh, retry };
 }

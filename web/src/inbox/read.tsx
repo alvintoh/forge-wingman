@@ -20,6 +20,8 @@ type InboxState = {
 
 type InboxRead = {
   state: InboxState;
+  // A read is open: the first one, or a re-read that leaves the rows on screen meanwhile.
+  fetching: boolean;
   refresh: () => void;
   retry: () => void;
 };
@@ -38,6 +40,7 @@ function useInboxRead(): InboxRead {
     stale: false,
   });
   const [attempt, setAttempt] = useState(0);
+  const [fetching, setFetching] = useState(true);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -58,6 +61,7 @@ function useInboxRead(): InboxRead {
         return;
       }
       setState({ status: "ready", runs: body.runs, readAt: Date.now(), stale: false });
+      setFetching(false);
     }
 
     read().catch((err: unknown) => {
@@ -70,18 +74,23 @@ function useInboxRead(): InboxRead {
           ? { ...previous, stale: true }
           : { status: "error", runs: [], readAt: 0, stale: false },
       );
+      setFetching(false);
     });
 
     return () => controller.abort();
   }, [attempt]);
 
-  const refresh = useCallback(() => setAttempt((n) => n + 1), []);
+  const refresh = useCallback(() => {
+    setFetching(true);
+    setAttempt((n) => n + 1);
+  }, []);
   const retry = useCallback(() => {
     setState({ status: "loading", runs: [], readAt: 0, stale: false });
+    setFetching(true);
     setAttempt((n) => n + 1);
   }, []);
 
-  return { state, refresh, retry };
+  return { state, fetching, refresh, retry };
 }
 
 type InboxProviderProps = {

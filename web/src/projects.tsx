@@ -14,6 +14,7 @@ import {
   type PhaseProgress,
   type PhaseSnapshot,
   type Project,
+  type ProjectsRead,
   type ProjectsState,
   useProjects,
 } from "./project-list";
@@ -716,14 +717,14 @@ export function ProjectsHeading({ id, className = "" }: { id: string; className?
   );
 }
 
-type SectionProps = { className: string };
+type ProjectsSectionProps = { className: string; read: ProjectsRead };
 
 // ProjectsSection is the inbox's PROJECTS section: the newest three, then a link to the rest, as the
 // radios that narrow the Actions to one project. A project chosen by a link shows alone, whatever
 // rank it holds. The whole section waits for the inbox's first read, settled or failed, so the
 // Actions list does not push it down when it arrives.
-export function ProjectsSection({ className }: SectionProps) {
-  const { state, refresh, retry } = useProjects();
+export function ProjectsSection({ className, read }: ProjectsSectionProps) {
+  const { state, refresh, retry } = read;
   const { state: inbox } = useInbox();
   const [released, setReleased] = useState(inbox.status !== "loading");
   if (!released && inbox.status !== "loading") {
@@ -743,7 +744,8 @@ export function ProjectsSection({ className }: SectionProps) {
             projects={known === undefined ? state.projects.slice(0, SECTION_PROJECTS) : [known]}
             total={state.total}
             now={state.readAt}
-            stale={state.stale}
+            // The Overview's strip says a failed re-read, so the card does not say it again here.
+            stale={false}
             seeAll={state.total > SECTION_PROJECTS}
             refresh={refresh}
             filter={{ selected: known?.repository ?? null, onChoose: choose }}
