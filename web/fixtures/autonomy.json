@@ -1,0 +1,602 @@
+{
+  "auto_merge": {
+    "switch_on": true,
+    "rate_allows": true,
+    "rate_value": "7.4%",
+    "limit": "10.0%",
+    "window": 20,
+    "effective": true,
+    "reason": "on"
+  },
+  "rewrite": {
+    "tiles": [
+      {
+        "prs": [108, 107, 204, 106, 105, 203, 104, 103, 202, 102],
+        "asked": 10,
+        "agent_lines": 5450,
+        "owner_lines": 401,
+        "rate": "7.4%",
+        "rate_value": 0.074,
+        "previous_rate_value": 0.081,
+        "trend": "down"
+      },
+      {
+        "prs": [108, 107, 204, 106, 105],
+        "asked": 5,
+        "agent_lines": 2720,
+        "owner_lines": 200,
+        "rate": "7.4%",
+        "rate_value": 0.074,
+        "previous_rate_value": null,
+        "trend": "flat"
+      },
+      {
+        "prs": [108],
+        "asked": 1,
+        "agent_lines": 520,
+        "owner_lines": 31,
+        "rate": "6.0%",
+        "rate_value": 0.06,
+        "previous_rate_value": 0.052,
+        "trend": "up"
+      }
+    ],
+    "series": [
+      {
+        "repo": "acme/gadgets",
+        "pr": 201,
+        "merged_at": "2026-02-02T15:00:00Z",
+        "rate": "6.4%",
+        "rate_value": 0.064
+      },
+      {
+        "repo": "acme/widgets",
+        "pr": 101,
+        "merged_at": "2026-02-05T15:00:00Z",
+        "rate": "6.0%",
+        "rate_value": 0.06
+      },
+      {
+        "repo": "acme/widgets",
+        "pr": 102,
+        "merged_at": "2026-02-08T15:00:00Z",
+        "rate": "4.7%",
+        "rate_value": 0.047
+      },
+      {
+        "repo": "acme/gadgets",
+        "pr": 202,
+        "merged_at": "2026-02-10T15:00:00Z",
+        "rate": "9.5%",
+        "rate_value": 0.095
+      },
+      {
+        "repo": "acme/widgets",
+        "pr": 103,
+        "merged_at": "2026-02-12T15:00:00Z",
+        "rate": "5.8%",
+        "rate_value": 0.058
+      },
+      {
+        "repo": "acme/widgets",
+        "pr": 104,
+        "merged_at": "2026-02-14T15:00:00Z",
+        "rate": "7.1%",
+        "rate_value": 0.071
+      },
+      {
+        "repo": "acme/gadgets",
+        "pr": 203,
+        "merged_at": "2026-02-16T15:00:00Z",
+        "rate": "10.5%",
+        "rate_value": 0.105
+      },
+      {
+        "repo": "acme/widgets",
+        "pr": 105,
+        "merged_at": "2026-02-18T15:00:00Z",
+        "rate": "7.6%",
+        "rate_value": 0.076
+      },
+      {
+        "repo": "acme/widgets",
+        "pr": 106,
+        "merged_at": "2026-02-20T15:00:00Z",
+        "rate": "6.1%",
+        "rate_value": 0.061
+      },
+      {
+        "repo": "acme/gadgets",
+        "pr": 204,
+        "merged_at": "2026-02-22T15:00:00Z",
+        "rate": "9.4%",
+        "rate_value": 0.094
+      },
+      {
+        "repo": "acme/widgets",
+        "pr": 107,
+        "merged_at": "2026-02-24T15:00:00Z",
+        "rate": "8.1%",
+        "rate_value": 0.081
+      },
+      {
+        "repo": "acme/widgets",
+        "pr": 108,
+        "merged_at": "2026-02-27T15:00:00Z",
+        "rate": "6.0%",
+        "rate_value": 0.06
+      }
+    ],
+    "prs": [
+      {
+        "pr": 108,
+        "run": "run-2026-02-27-a",
+        "repo": "acme/widgets",
+        "size": "M",
+        "title": "Add the widget table",
+        "agent_lines": 520,
+        "owner_lines": 31,
+        "rate": "6.0%",
+        "rate_value": 0.06,
+        "merged_at": "2026-02-27T15:00:00Z",
+        "pr_url": "https://github.com/acme/widgets/pull/108",
+        "plan_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "build_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "review_model": "command-code/deepseek/deepseek-v4.1-flash"
+      },
+      {
+        "pr": 107,
+        "run": "run-2026-02-24-b",
+        "repo": "acme/widgets",
+        "size": "M",
+        "title": "Redraw the widget card",
+        "agent_lines": 640,
+        "owner_lines": 52,
+        "rate": "8.1%",
+        "rate_value": 0.081,
+        "merged_at": "2026-02-24T15:00:00Z",
+        "pr_url": "https://github.com/acme/widgets/pull/107",
+        "plan_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "build_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "review_model": "command-code/deepseek/deepseek-v4.1-flash"
+      },
+      {
+        "pr": 204,
+        "run": "run-2026-02-22-c",
+        "repo": "acme/gadgets",
+        "size": "L",
+        "title": "Gadget list filters",
+        "agent_lines": 480,
+        "owner_lines": 45,
+        "rate": "9.4%",
+        "rate_value": 0.094,
+        "merged_at": "2026-02-22T15:00:00Z",
+        "pr_url": "https://github.com/acme/gadgets/pull/204",
+        "plan_model": "command-code/meta/muse-spark-1.3-contributor",
+        "build_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "review_model": "command-code/deepseek/deepseek-v4.1-flash"
+      },
+      {
+        "pr": 106,
+        "run": "run-2026-02-20-d",
+        "repo": "acme/widgets",
+        "size": "S",
+        "title": "Widget detail drawer",
+        "agent_lines": 700,
+        "owner_lines": 43,
+        "rate": "6.1%",
+        "rate_value": 0.061,
+        "merged_at": "2026-02-20T15:00:00Z",
+        "pr_url": "https://github.com/acme/widgets/pull/106",
+        "plan_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "build_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "review_model": "command-code/deepseek/deepseek-v4.1-flash"
+      },
+      {
+        "pr": 105,
+        "run": "run-2026-02-18-e",
+        "repo": "acme/widgets",
+        "size": "S",
+        "title": "Fix widget pagination",
+        "agent_lines": 380,
+        "owner_lines": 29,
+        "rate": "7.6%",
+        "rate_value": 0.076,
+        "merged_at": "2026-02-18T15:00:00Z",
+        "pr_url": "https://github.com/acme/widgets/pull/105",
+        "plan_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "build_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "review_model": "command-code/deepseek/deepseek-v4.1-flash"
+      },
+      {
+        "pr": 203,
+        "run": "run-2026-02-16-f",
+        "repo": "acme/gadgets",
+        "size": "L",
+        "title": "Gadget settings page",
+        "agent_lines": 610,
+        "owner_lines": 64,
+        "rate": "10.5%",
+        "rate_value": 0.105,
+        "merged_at": "2026-02-16T15:00:00Z",
+        "pr_url": "https://github.com/acme/gadgets/pull/203",
+        "plan_model": "command-code/meta/muse-spark-1.3-contributor",
+        "build_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "review_model": "command-code/deepseek/deepseek-v4.1-flash"
+      },
+      {
+        "pr": 104,
+        "run": "run-2026-02-14-g",
+        "repo": "acme/widgets",
+        "size": "M",
+        "title": "Widget search keys",
+        "agent_lines": 560,
+        "owner_lines": 40,
+        "rate": "7.1%",
+        "rate_value": 0.071,
+        "merged_at": "2026-02-14T15:00:00Z",
+        "pr_url": "https://github.com/acme/widgets/pull/104",
+        "plan_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "build_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "review_model": "command-code/deepseek/deepseek-v4.1-flash"
+      },
+      {
+        "pr": 103,
+        "run": "run-2026-02-12-h",
+        "repo": "acme/widgets",
+        "size": "S",
+        "title": "Widget empty state",
+        "agent_lines": 450,
+        "owner_lines": 26,
+        "rate": "5.8%",
+        "rate_value": 0.058,
+        "merged_at": "2026-02-12T15:00:00Z",
+        "pr_url": "https://github.com/acme/widgets/pull/103",
+        "plan_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "build_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "review_model": "command-code/deepseek/deepseek-v4.1-flash"
+      },
+      {
+        "pr": 202,
+        "run": "run-2026-02-10-i",
+        "repo": "acme/gadgets",
+        "size": "M",
+        "title": "Gadget export",
+        "agent_lines": 390,
+        "owner_lines": 37,
+        "rate": "9.5%",
+        "rate_value": 0.095,
+        "merged_at": "2026-02-10T15:00:00Z",
+        "pr_url": "https://github.com/acme/gadgets/pull/202",
+        "plan_model": "command-code/meta/muse-spark-1.3-contributor",
+        "build_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "review_model": "command-code/deepseek/deepseek-v4.1-flash"
+      },
+      {
+        "pr": 102,
+        "run": "run-2026-02-08-j",
+        "repo": "acme/widgets",
+        "size": "S",
+        "title": "Widget table sort",
+        "agent_lines": 720,
+        "owner_lines": 34,
+        "rate": "4.7%",
+        "rate_value": 0.047,
+        "merged_at": "2026-02-08T15:00:00Z",
+        "pr_url": "https://github.com/acme/widgets/pull/102",
+        "plan_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "build_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "review_model": "command-code/deepseek/deepseek-v4.1-flash"
+      },
+      {
+        "pr": 101,
+        "run": "run-2026-02-05-k",
+        "repo": "acme/widgets",
+        "size": "S",
+        "title": "Widget header",
+        "agent_lines": 500,
+        "owner_lines": 30,
+        "rate": "6.0%",
+        "rate_value": 0.06,
+        "merged_at": "2026-02-05T15:00:00Z",
+        "pr_url": "https://github.com/acme/widgets/pull/101",
+        "plan_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "build_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "review_model": "command-code/deepseek/deepseek-v4.1-flash"
+      },
+      {
+        "pr": 201,
+        "run": "run-2026-02-02-l",
+        "repo": "acme/gadgets",
+        "size": "S",
+        "title": "Gadget import",
+        "agent_lines": 330,
+        "owner_lines": 21,
+        "rate": "6.4%",
+        "rate_value": 0.064,
+        "merged_at": "2026-02-02T15:00:00Z",
+        "pr_url": "https://github.com/acme/gadgets/pull/201",
+        "plan_model": "command-code/meta/muse-spark-1.3-contributor",
+        "build_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "review_model": "unknown"
+      }
+    ],
+    "by_size": [
+      {
+        "size": "S",
+        "prs": 6,
+        "rate": "5.9%",
+        "rate_value": 0.059,
+        "median": null,
+        "median_value": null,
+        "p90": null,
+        "p90_value": null,
+        "agent_lines": 3080,
+        "owner_lines": 183,
+        "review_found_lines": 90,
+        "owner_change_lines": 60,
+        "unlabelled_lines": 33,
+        "no_agent_lines_prs": 0,
+        "no_agent_owner_lines": 0
+      },
+      {
+        "size": "M",
+        "prs": 4,
+        "rate": "7.6%",
+        "rate_value": 0.076,
+        "median": null,
+        "median_value": null,
+        "p90": null,
+        "p90_value": null,
+        "agent_lines": 2110,
+        "owner_lines": 160,
+        "review_found_lines": 80,
+        "owner_change_lines": 50,
+        "unlabelled_lines": 30,
+        "no_agent_lines_prs": 0,
+        "no_agent_owner_lines": 0
+      },
+      {
+        "size": "L",
+        "prs": 2,
+        "rate": "10.0%",
+        "rate_value": 0.1,
+        "median": null,
+        "median_value": null,
+        "p90": null,
+        "p90_value": null,
+        "agent_lines": 1090,
+        "owner_lines": 109,
+        "review_found_lines": 50,
+        "owner_change_lines": 40,
+        "unlabelled_lines": 19,
+        "no_agent_lines_prs": 0,
+        "no_agent_owner_lines": 0
+      }
+    ],
+    "by_model": {
+      "plan": [
+        {
+          "model": "command-code/deepseek/deepseek-v4.1-flash",
+          "prs": 8,
+          "rate": "6.4%",
+          "rate_value": 0.064,
+          "median": null,
+          "median_value": null,
+          "p90": null,
+          "p90_value": null,
+          "agent_lines": 4470,
+          "owner_lines": 285,
+          "review_found_lines": 140,
+          "owner_change_lines": 95,
+          "unlabelled_lines": 50,
+          "no_agent_lines_prs": 0,
+          "no_agent_owner_lines": 0
+        },
+        {
+          "model": "command-code/meta/muse-spark-1.3-contributor",
+          "prs": 4,
+          "rate": "9.2%",
+          "rate_value": 0.092,
+          "median": null,
+          "median_value": null,
+          "p90": null,
+          "p90_value": null,
+          "agent_lines": 1810,
+          "owner_lines": 167,
+          "review_found_lines": 80,
+          "owner_change_lines": 55,
+          "unlabelled_lines": 32,
+          "no_agent_lines_prs": 0,
+          "no_agent_owner_lines": 0
+        }
+      ],
+      "build": [
+        {
+          "model": "command-code/deepseek/deepseek-v4.1-flash",
+          "prs": 12,
+          "rate": "7.2%",
+          "rate_value": 0.072,
+          "median": "7.1%",
+          "median_value": 0.071,
+          "p90": "9.5%",
+          "p90_value": 0.095,
+          "agent_lines": 6280,
+          "owner_lines": 452,
+          "review_found_lines": 220,
+          "owner_change_lines": 150,
+          "unlabelled_lines": 82,
+          "no_agent_lines_prs": 0,
+          "no_agent_owner_lines": 0
+        }
+      ],
+      "review": [
+        {
+          "model": "command-code/deepseek/deepseek-v4.1-flash",
+          "prs": 11,
+          "rate": "7.2%",
+          "rate_value": 0.072,
+          "median": "7.1%",
+          "median_value": 0.071,
+          "p90": "9.5%",
+          "p90_value": 0.095,
+          "agent_lines": 5950,
+          "owner_lines": 431,
+          "review_found_lines": 210,
+          "owner_change_lines": 140,
+          "unlabelled_lines": 81,
+          "no_agent_lines_prs": 0,
+          "no_agent_owner_lines": 0
+        },
+        {
+          "model": "unknown",
+          "prs": 1,
+          "rate": "6.4%",
+          "rate_value": 0.064,
+          "median": null,
+          "median_value": null,
+          "p90": null,
+          "p90_value": null,
+          "agent_lines": 330,
+          "owner_lines": 21,
+          "review_found_lines": 10,
+          "owner_change_lines": 7,
+          "unlabelled_lines": 4,
+          "no_agent_lines_prs": 0,
+          "no_agent_owner_lines": 0
+        }
+      ]
+    },
+    "by_repo": [
+      {
+        "repo": "acme/widgets",
+        "tiles": [],
+        "series": [
+          {
+            "repo": "acme/widgets",
+            "pr": 101,
+            "merged_at": "2026-02-05T15:00:00Z",
+            "rate": "6.0%",
+            "rate_value": 0.06
+          },
+          {
+            "repo": "acme/widgets",
+            "pr": 102,
+            "merged_at": "2026-02-08T15:00:00Z",
+            "rate": "4.7%",
+            "rate_value": 0.047
+          },
+          {
+            "repo": "acme/widgets",
+            "pr": 103,
+            "merged_at": "2026-02-12T15:00:00Z",
+            "rate": "5.8%",
+            "rate_value": 0.058
+          },
+          {
+            "repo": "acme/widgets",
+            "pr": 104,
+            "merged_at": "2026-02-14T15:00:00Z",
+            "rate": "7.1%",
+            "rate_value": 0.071
+          },
+          {
+            "repo": "acme/widgets",
+            "pr": 105,
+            "merged_at": "2026-02-18T15:00:00Z",
+            "rate": "7.6%",
+            "rate_value": 0.076
+          },
+          {
+            "repo": "acme/widgets",
+            "pr": 106,
+            "merged_at": "2026-02-20T15:00:00Z",
+            "rate": "6.1%",
+            "rate_value": 0.061
+          },
+          {
+            "repo": "acme/widgets",
+            "pr": 107,
+            "merged_at": "2026-02-24T15:00:00Z",
+            "rate": "8.1%",
+            "rate_value": 0.081
+          },
+          {
+            "repo": "acme/widgets",
+            "pr": 108,
+            "merged_at": "2026-02-27T15:00:00Z",
+            "rate": "6.0%",
+            "rate_value": 0.06
+          }
+        ],
+        "average": {
+          "prs": 8,
+          "rate": "6.4%",
+          "rate_value": 0.064,
+          "median": null,
+          "median_value": null,
+          "p90": null,
+          "p90_value": null,
+          "agent_lines": 4470,
+          "owner_lines": 285,
+          "review_found_lines": 140,
+          "owner_change_lines": 95,
+          "unlabelled_lines": 50,
+          "no_agent_lines_prs": 0,
+          "no_agent_owner_lines": 0
+        }
+      },
+      {
+        "repo": "acme/gadgets",
+        "tiles": [],
+        "series": [
+          {
+            "repo": "acme/gadgets",
+            "pr": 201,
+            "merged_at": "2026-02-02T15:00:00Z",
+            "rate": "6.4%",
+            "rate_value": 0.064
+          },
+          {
+            "repo": "acme/gadgets",
+            "pr": 202,
+            "merged_at": "2026-02-10T15:00:00Z",
+            "rate": "9.5%",
+            "rate_value": 0.095
+          },
+          {
+            "repo": "acme/gadgets",
+            "pr": 203,
+            "merged_at": "2026-02-16T15:00:00Z",
+            "rate": "10.5%",
+            "rate_value": 0.105
+          },
+          {
+            "repo": "acme/gadgets",
+            "pr": 204,
+            "merged_at": "2026-02-22T15:00:00Z",
+            "rate": "9.4%",
+            "rate_value": 0.094
+          }
+        ],
+        "average": {
+          "prs": 4,
+          "rate": "9.2%",
+          "rate_value": 0.092,
+          "median": null,
+          "median_value": null,
+          "p90": null,
+          "p90_value": null,
+          "agent_lines": 1810,
+          "owner_lines": 167,
+          "review_found_lines": 80,
+          "owner_change_lines": 55,
+          "unlabelled_lines": 32,
+          "no_agent_lines_prs": 0,
+          "no_agent_owner_lines": 0
+        }
+      }
+    ],
+    "bars": { "rollback": 0.1 }
+  }
+}

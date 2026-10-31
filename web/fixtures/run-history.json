@@ -1,0 +1,74 @@
+{
+  "runs": [
+    {
+      "run": "run-2026-02-18-a",
+      "ticket": "DEMO-218",
+      "repo": "acme/widgets",
+      "kind": "merged",
+      "words": "merged"
+    },
+    {
+      "run": "run-2026-02-19-b",
+      "ticket": "DEMO-219",
+      "repo": "acme/gadgets",
+      "kind": "pr-open",
+      "words": "PR open, waiting on you"
+    },
+    {
+      "run": "run-2026-02-20-c",
+      "ticket": "DEMO-220",
+      "repo": "acme/widgets",
+      "kind": "draft",
+      "words": "draft PR with open boxes"
+    },
+    {
+      "run": "run-2026-02-21-d",
+      "ticket": "DEMO-221",
+      "repo": "acme/gadgets",
+      "kind": "failed",
+      "words": "failed"
+    },
+    {
+      "run": "run-2026-02-22-e",
+      "ticket": "DEMO-222",
+      "repo": "acme/widgets",
+      "kind": "cancelled",
+      "words": "cancelled by you"
+    },
+    {
+      "run": "run-2026-02-23-f",
+      "ticket": "DEMO-223",
+      "repo": "acme/widgets",
+      "kind": "allowance",
+      "words": "stopped, allowance spent"
+    },
+    {
+      "run": "run-2026-02-24-g",
+      "ticket": "DEMO-224",
+      "repo": "acme/gadgets",
+      "kind": "no-changes",
+      "words": "ended with no changes"
+    },
+    {
+      "run": "run-2026-02-25-h",
+      "ticket": "DEMO-225",
+      "repo": "acme/widgets",
+      "kind": "decision",
+      "words": "stopped at an unconfirmed decision"
+    },
+    {
+      "run": "run-2026-02-26-i",
+      "ticket": "DEMO-226",
+      "repo": "acme/widgets",
+      "kind": "merged",
+      "words": "merged"
+    },
+    {
+      "run": "run-2026-02-27-j",
+      "ticket": "DEMO-227",
+      "repo": "acme/gadgets",
+      "kind": "other",
+      "words": "ended"
+    }
+  ]
+}

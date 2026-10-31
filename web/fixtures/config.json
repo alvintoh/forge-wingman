@@ -1,0 +1,23 @@
+{
+  "phases": [
+    { "phase": "plan", "model": "command-code/deepseek/deepseek-v4.1-flash" },
+    { "phase": "build", "model": "command-code/deepseek/deepseek-v4.1-flash" },
+    {
+      "phase": "review",
+      "model": "command-code/meta/muse-spark-1.3-contributor"
+    }
+  ],
+  "concurrency": { "review_wip": 3, "platform_cap": 20, "poll_minutes": 5 },
+  "peak_windows": [
+    {
+      "model": "command-code/deepseek/deepseek-v4.1-flash",
+      "peak": { "multiplier": 2, "hours": [{ "from": 1, "to": 4 }] },
+      "priced": true
+    },
+    {
+      "model": "command-code/meta/muse-spark-1.3-contributor",
+      "peak": null,
+      "priced": true
+    }
+  ]
+}
