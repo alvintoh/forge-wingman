@@ -43,6 +43,16 @@ const (
 	SnapshotRunsUnreadable  = "runs-unreadable"
 )
 
+// PhaseStage is the stage word a run in flight is drawn with: a plan-stage
+// reservation plans, and every other claim — a build's and a single-stage run's,
+// which plans inside its own job — builds.
+func PhaseStage(stage string) string {
+	if stage == StagePlan {
+		return PhaseStagePlanning
+	}
+	return PhaseStageBuilding
+}
+
 // Milestone is the Linear project milestone a ticket belongs to: a phase.
 type Milestone struct {
 	ID        string

@@ -689,6 +689,53 @@ func (q *Queue) ledgerOutsideTx(ctx context.Context) (ledgerDoc, error) {
 	return ledger, nil
 }
 
+// Running is one run in flight: a run the ledger holds a reservation for, which
+// the dispatcher has claimed and not yet settled.
+type Running struct {
+	Ticket string
+	Repo   string
+	// Stage is the stage the reservation was claimed for — plan, build, or
+	// empty for a single-stage claim, which plans and builds in one job.
+	Stage     string
+	ClaimedAt time.Time
+	// Title is the ticket's title the run row holds, empty when the row holds none.
+	Title string
+}
+
+// Running reads the runs in flight: one entry per reservation, with the title
+// its run row records. The entries come in no particular order, so a view that
+// draws them sorts them itself. A reservation whose row is gone, or whose row
+// records no title, serves an empty one rather than failing the read.
+func (q *Queue) Running(ctx context.Context) ([]Running, error) {
+	ledger, err := q.ledgerOutsideTx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Running, 0, len(ledger.Reservations))
+	if len(ledger.Reservations) == 0 {
+		return out, nil
+	}
+	refs := make([]*firestore.DocumentRef, 0, len(ledger.Reservations))
+	for key := range ledger.Reservations {
+		refs = append(refs, q.client.Collection(runsCollection).Doc(reservationRunID(key)))
+	}
+	snaps, err := q.client.GetAll(ctx, refs)
+	if err != nil {
+		return nil, fmt.Errorf("reading the runs in flight: %w", err)
+	}
+	titles := make(map[string]string, len(snaps))
+	for _, snap := range snaps {
+		titles[snap.Ref.ID] = str(snap.Data(), ticketTitleField)
+	}
+	for key, r := range ledger.Reservations {
+		out = append(out, Running{
+			Ticket: r.TicketID, Repo: r.Repo, Stage: r.Stage, ClaimedAt: r.ClaimedAt,
+			Title: titles[reservationRunID(key)],
+		})
+	}
+	return out, nil
+}
+
 // RepoLoads reads each repository's load, keyed by lower-cased repository. A
 // planned row is not Held: its plan stage has settled and its build still claims
 // while the project is paused.
@@ -752,10 +799,7 @@ func (q *Queue) TicketRuns(ctx context.Context, tickets []string) (map[string]di
 	}
 	stages := map[string]string{}
 	for _, run := range inFlight(ledger) {
-		stages[run.Ticket] = dispatcher.PhaseStageBuilding
-		if run.Stage == dispatcher.StagePlan {
-			stages[run.Ticket] = dispatcher.PhaseStagePlanning
-		}
+		stages[run.Ticket] = dispatcher.PhaseStage(run.Stage)
 	}
 	runs := make(map[string]dispatcher.TicketRun, len(snaps))
 	for _, snap := range snaps {
