@@ -17,9 +17,10 @@ import { captionClass } from "../caption";
 
 type RowProps = { phase: Phase; row: ModelRow; bar: number };
 
-// One model: its name, its median PR on the right, the pooled rate and PR count beneath, and a thin
-// bar for the median on the 0 to 30% axis the charts share. A model with a rate and under ten PRs has
-// no right-hand cell: the count beneath is the only place it prints.
+// One model: its name, its median PR rewrite rate on the right with the bar it is above on its
+// own line, the pooled rate and PR count beneath, and a thin bar for the median on the 0 to 30%
+// axis the charts share. A model with a rate and under ten PRs has no right-hand cell: the count
+// beneath is the only place it prints.
 function ModelLine({ phase, row, bar }: RowProps) {
   const above = isRed(row.median_value, bar);
   const tone = above ? "text-defer" : "text-ink";
@@ -43,8 +44,9 @@ function ModelLine({ phase, row, bar }: RowProps) {
           {`pooled ${servedRate(row.rate, row.rate_value, "no rate")}, ${prsWord(row.prs)}`}
         </p>
         {row.median !== null && (
-          <p className="shrink-0 font-semibold text-ink2">
-            {above ? `median PR, above ${whole(bar)}` : "median PR"}
+          <p className="shrink-0 text-right font-semibold text-ink2">
+            median PR rewrite rate
+            {above && <span className="block">{`above ${whole(bar)}`}</span>}
           </p>
         )}
       </div>
@@ -103,8 +105,9 @@ export function PhaseSlots() {
 type PhaseModelsProps = { figures: unknown; bar: number };
 
 /**
- * PhaseModels lists each phase's models with their median PR and pooled rate, from the endpoint's
- * rewrite figures. A median strictly above the bar is in the defer colour and says so in words.
+ * PhaseModels lists each phase's models with their median PR rewrite rate and pooled rate, from the
+ * endpoint's rewrite figures. A median strictly above the bar is in the defer colour and says so in
+ * words.
  */
 export function PhaseModels({ figures, bar }: PhaseModelsProps) {
   const readable = isRewrite(figures);

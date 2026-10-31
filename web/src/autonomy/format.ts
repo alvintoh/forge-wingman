@@ -32,6 +32,21 @@ export function percent(fraction: number): string {
   return `${points.toFixed(1)}%`;
 }
 
+// wholePercent prints a fraction as a whole percentage, a tie to the even
+// point: 0.625 is "62%", as the endpoint's own text for a cache share is, and
+// not the 63% JavaScript's rounding gives.
+export function wholePercent(fraction: number): string {
+  const points = fraction * 100;
+  // A double's exact decimal expansion shows a tie as a 5 and then only zeros.
+  const tie = /^(\d+)\.50*$/.exec(points.toFixed(20));
+  const tieWhole = tie?.[1];
+  if (tieWhole !== undefined) {
+    const whole = Number(tieWhole);
+    return `${whole % 2 === 0 ? whole : whole + 1}%`;
+  }
+  return `${Math.round(points)}%`;
+}
+
 // whole prints a bar's fraction without a decimal it does not have: "10%".
 export function whole(fraction: number): string {
   return `${Math.round(fraction * 1000) / 10}%`;
