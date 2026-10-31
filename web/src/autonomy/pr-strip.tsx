@@ -20,6 +20,8 @@ import type { Phase, PR } from "./types";
 const PLOT_H = 100;
 const LANE_H = 28;
 const LANE_LINE = 13;
+// How many of the newest PRs the strip draws, however many the list behind it holds.
+const STRIP_PRS = 10;
 
 function modelOf(pr: PR, phase: Phase): string {
   return { plan: pr.plan_model, build: pr.build_model, review: pr.review_model }[phase];
@@ -141,6 +143,7 @@ type PrStripProps = {
 // where the room allows, the models each PR ran as one pill per run of equal ones.
 export function PrStrip({ axis, prs, width, padx, compact, alone }: PrStripProps) {
   const placed: Placed[] = prs
+    .slice(0, STRIP_PRS)
     .flatMap((pr) => {
       const x = axis.xOfPR(pr.repo, pr.pr);
       return x === undefined ? [] : [{ pr, x }];
