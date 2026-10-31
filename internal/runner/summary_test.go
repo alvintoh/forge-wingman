@@ -185,6 +185,21 @@ func TestParseSummaryRejects(t *testing.T) {
 		{"a negative step peak context", func(s *Summary) { s.Steps[0].PeakContextTokens = -1 }},
 		{"a step peak context over the ceiling", func(s *Summary) { s.Steps[0].PeakContextTokens = maxCount + 1 }},
 		{"a peak context over the ceiling", func(s *Summary) { s.PeakContextTokens = maxCount + 1 }},
+		{"a second fix round numbered zero", func(s *Summary) {
+			s.ReviewSecondRound = &FixRoundCost{Round: 0, DurationMS: 1}
+		}},
+		{"a second fix round over the ceiling", func(s *Summary) {
+			s.ReviewSecondRound = &FixRoundCost{Round: int(maxCount) + 1, DurationMS: 1}
+		}},
+		{"a second fix round with negative tokens", func(s *Summary) {
+			s.ReviewSecondRound = &FixRoundCost{Round: 3, Tokens: Usage{Input: -1}, DurationMS: 1}
+		}},
+		{"a second fix round with a negative duration", func(s *Summary) {
+			s.ReviewSecondRound = &FixRoundCost{Round: 3, DurationMS: -1}
+		}},
+		{"a second fix round over the duration ceiling", func(s *Summary) {
+			s.ReviewSecondRound = &FixRoundCost{Round: 3, DurationMS: maxPhaseDuration.Milliseconds() + 1}
+		}},
 		{"a start time over a week old", func(s *Summary) { s.StartedAt = finalizeNow.Add(-8 * 24 * time.Hour) }},
 		{"another run's completions", func(s *Summary) { s.Steps[0].CompletionsObject = "completions/1-2-build-1.jsonl" }},
 		{"a completions path escape", func(s *Summary) { s.Steps[0].CompletionsObject = "completions/../x.jsonl" }},

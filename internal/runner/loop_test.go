@@ -13,7 +13,12 @@ func TestReviewRowsDoesNotCallARewordedFindingFixed(t *testing.T) {
 	first := reviewPending("the retry never bounds its attempts")
 	reworded := reviewPending("retries are unbounded")
 
-	got := reviewRows(append([]pendingFinding{guard}, first...), reworded, 2)
+	got := reviewRows([]fixRoundResult{{
+		round:     2,
+		issued:    append([]pendingFinding{guard}, first...),
+		open:      reworded,
+		rechecked: true,
+	}})
 	want := []ReviewFinding{
 		{Finding: guard.text, Resolution: "fixed in round 2"},
 		{Finding: "the retry never bounds its attempts", Resolution: "addressed in round 2; the re-review still reported findings"},
@@ -27,8 +32,54 @@ func TestReviewRowsDoesNotCallARewordedFindingFixed(t *testing.T) {
 // TestReviewRowsCallsAFindingFixedWhenTheReReviewIsClean is the other side: a
 // re-review that reports nothing of its own has fixed every earlier finding.
 func TestReviewRowsCallsAFindingFixedWhenTheReReviewIsClean(t *testing.T) {
-	got := reviewRows(reviewPending("the retry never bounds its attempts"), nil, 2)
+	got := reviewRows([]fixRoundResult{{
+		round:     2,
+		issued:    reviewPending("the retry never bounds its attempts"),
+		rechecked: true,
+	}})
 	want := []ReviewFinding{{Finding: "the retry never bounds its attempts", Resolution: "fixed in round 2"}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("rows = %+v, want %+v", got, want)
+	}
+}
+
+// TestReviewRowsFollowsFindingsThroughBothFixRounds is the second round's own
+// report: a finding the first re-check left open and the second fixed names the
+// round that closed it, and one the second re-check still reports is marked
+// open after that round.
+func TestReviewRowsFollowsFindingsThroughBothFixRounds(t *testing.T) {
+	guard := pendingFinding{key: "a.go\x00if x == nil", text: "guard at a.go:4 can be removed", stable: true}
+	stubborn := reviewPending("the timeout is hard-coded")
+	issued := []pendingFinding{guard, stubborn[0]}
+
+	got := reviewRows([]fixRoundResult{
+		{round: 2, issued: issued, open: issued, rechecked: true},
+		{round: 3, issued: issued, open: stubborn, rechecked: true},
+	})
+	want := []ReviewFinding{
+		{Finding: guard.text, Resolution: "fixed in round 3"},
+		{Finding: "the timeout is hard-coded", Resolution: "still open after round 3"},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("rows = %+v, want %+v", got, want)
+	}
+}
+
+// TestReviewRowsNamesTheRoundForAFindingOnlyTheLastReCheckMade covers a finding
+// the last re-check reports that no fix round was given: after two rounds it
+// reads open after the last one, like the findings a round did try.
+func TestReviewRowsNamesTheRoundForAFindingOnlyTheLastReCheckMade(t *testing.T) {
+	tried := reviewPending("the timeout is hard-coded")
+	newly := reviewPending("the retry never bounds its attempts")
+
+	got := reviewRows([]fixRoundResult{
+		{round: 2, issued: tried, open: tried, rechecked: true},
+		{round: 3, issued: tried, open: append(slices.Clone(tried), newly...), rechecked: true},
+	})
+	want := []ReviewFinding{
+		{Finding: "the timeout is hard-coded", Resolution: "still open after round 3"},
+		{Finding: "the retry never bounds its attempts", Resolution: "still open after round 3"},
+	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("rows = %+v, want %+v", got, want)
 	}

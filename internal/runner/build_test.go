@@ -1722,7 +1722,12 @@ func TestPrePRLoopStopsAndCommitsNothingWhenTheFixRoundFormatterLeavesTheDiff(t 
 func TestPrePRLoopFormatsAFormattingFailureAfterTheFixRound(t *testing.T) {
 	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
 	deps, _, reported := testDeps(validObjects(), agent)
-	deps.ReviewAgent = &fakeAgent{events: reviewEvent("the retry never bounds its attempts")}
+	deps.ReviewAgent = &fakeAgent{eventsFn: func(call int) string {
+		if call == 1 {
+			return reviewEvent("the retry never bounds its attempts")
+		}
+		return reviewEvent("")
+	}}
 	var formatted []string
 	deps.Format = formatterWriting(&formatted, "version.go")
 	deps.Checks = func(context.Context, string, []string) (string, string, error) {
@@ -1855,7 +1860,7 @@ func TestPrePRLoopStillGetsThreeRebuildRoundsAfterAMidRoundModelSubstitution(t *
 	}
 }
 
-func TestPrePRLoopReviewFindingsForceADraftAndOneFixRound(t *testing.T) {
+func TestPrePRLoopReviewFindingsForceADraftAndTwoFixRounds(t *testing.T) {
 	const finding = "the retry never bounds its attempts"
 	agent := &fakeAgent{
 		edit:   edit("version.go", "package x\n"),
@@ -1869,35 +1874,47 @@ func TestPrePRLoopReviewFindingsForceADraftAndOneFixRound(t *testing.T) {
 	if _, err := Build(context.Background(), deps, c); err != nil {
 		t.Fatal(err)
 	}
-	if agent.calls != 2 {
-		t.Fatalf("build agent ran %d times, want 2 (initial attempt + one fix round)", agent.calls)
+	if agent.calls != 3 {
+		t.Fatalf("build agent ran %d times, want 3 (initial attempt + two fix rounds)", agent.calls)
 	}
-	if agent.sessions[1] != "ses_1" {
-		t.Fatalf("fix round session = %q, want the initial round's session continued", agent.sessions[1])
+	if agent.sessions[1] != "ses_1" || agent.sessions[2] != "ses_1" {
+		t.Fatalf("fix round sessions = %q, want both to continue the initial round's session", agent.sessions[1:])
 	}
-	if !strings.Contains(agent.prompts[1], finding) {
-		t.Fatalf("fix round prompt = %q, want it to carry the review's finding", agent.prompts[1])
+	if !strings.Contains(agent.prompts[1], finding) || !strings.Contains(agent.prompts[2], finding) {
+		t.Fatalf("fix round prompts = %q, want both to carry the review's finding", agent.prompts[1:])
 	}
-	// Both review passes carry the build's own rules, which is what lets the
-	// review judge the diff against the conventions the build was given; the
+	// Every review pass carries the build's own rules, which is what lets the
+	// review judge the diff against the conventions the build was given; each
 	// fix round resumes the build session, so it must carry them too — an empty
 	// rules would change the resumed session's system prompt mid-conversation.
-	if len(review.rules) != 2 || review.rules[0] == "" || review.rules[0] != agent.rules[0] || review.rules[1] != agent.rules[0] {
-		t.Fatalf("review pass rules = %q, want the build round's %q on both passes", review.rules, agent.rules[0])
+	if len(review.rules) != 3 {
+		t.Fatalf("review pass rules = %q, want the build round's %q on every pass", review.rules, agent.rules[0])
 	}
-	if agent.rules[1] == "" || agent.rules[1] != agent.rules[0] {
-		t.Fatalf("fix round rules = %q, want the build round's %q", agent.rules[1], agent.rules[0])
+	for i, got := range review.rules {
+		if got == "" || got != agent.rules[0] {
+			t.Fatalf("review pass %d rules = %q, want the build round's %q", i+1, got, agent.rules[0])
+		}
+	}
+	for i, got := range agent.rules {
+		if got == "" || got != agent.rules[0] {
+			t.Fatalf("build round %d rules = %q, want the build round's %q", i+1, got, agent.rules[0])
+		}
 	}
 	rec := reported.last(t)
 	if rec.Ready {
-		t.Fatal("ready = true, want false: the review left a finding open")
+		t.Fatal("ready = true, want false: the review left a finding open after both fix rounds")
 	}
 	if !strings.Contains(rec.LoopDetail, finding) {
 		t.Fatalf("loop detail = %q, want it to name the finding", rec.LoopDetail)
 	}
-	if len(rec.Steps) != 4 || rec.Steps[2].Phase != PhaseBuild || rec.Steps[2].Round != 2 || rec.Steps[2].Detail != finding ||
-		rec.Steps[3].Phase != PhaseReview || rec.Steps[3].Round != 2 {
-		t.Fatalf("steps = %+v, want [build round1] [review round1] [build round2, the fix] [review round2, the re-review]", rec.Steps)
+	if want := []ReviewFinding{{Finding: finding, Resolution: "still open after round 3"}}; !slices.Equal(rec.ReviewFindings, want) {
+		t.Fatalf("findings = %+v, want %+v", rec.ReviewFindings, want)
+	}
+	if len(rec.Steps) != 6 || rec.Steps[2].Phase != PhaseBuild || rec.Steps[2].Round != 2 || rec.Steps[2].Detail != finding ||
+		rec.Steps[3].Phase != PhaseReview || rec.Steps[3].Round != 2 ||
+		rec.Steps[4].Phase != PhaseBuild || rec.Steps[4].Round != 3 || rec.Steps[4].Detail != finding ||
+		rec.Steps[5].Phase != PhaseReview || rec.Steps[5].Round != 3 {
+		t.Fatalf("steps = %+v, want [build round1] [review round1] [fix round2] [re-review round2] [fix round3] [re-review round3]", rec.Steps)
 	}
 }
 
@@ -1936,11 +1953,14 @@ func TestPrePRLoopReReviewListsOnlyTheFindingsStillOpen(t *testing.T) {
 	if _, err := Build(context.Background(), deps, c); err != nil {
 		t.Fatal(err)
 	}
-	if review.calls != 2 {
-		t.Fatalf("review agent ran %d times, want 2 (the review pass, then one re-review)", review.calls)
+	if review.calls != 3 {
+		t.Fatalf("review agent ran %d times, want the pass and a re-review after each fix round", review.calls)
 	}
-	if !strings.Contains(review.prompts[1], "fixed.go") {
-		t.Fatalf("re-review prompt = %q, want it to carry the diff after the fix round", review.prompts[1])
+	if agent.calls != 3 {
+		t.Fatalf("build agent ran %d times, want the build round and a fix round for each re-review", agent.calls)
+	}
+	if !strings.Contains(review.prompts[1], "fixed.go") || !strings.Contains(review.prompts[2], "fixed.go") {
+		t.Fatalf("re-review prompts = %q, want each to carry the diff after a fix round", review.prompts[1:])
 	}
 	rec := reported.last(t)
 	if rec.Ready {
@@ -1951,6 +1971,14 @@ func TestPrePRLoopReReviewListsOnlyTheFindingsStillOpen(t *testing.T) {
 	}
 	if strings.Contains(rec.LoopDetail, first) {
 		t.Fatalf("loop detail = %q, want only the findings the re-review left open", rec.LoopDetail)
+	}
+	// The rows carry the round the run left each finding in, so the reader can
+	// tell one the second round never closed from one the first never finished.
+	if want := []ReviewFinding{
+		{Finding: first, Resolution: "addressed in round 2; the re-review still reported findings"},
+		{Finding: remaining, Resolution: "still open after round 3"},
+	}; !slices.Equal(rec.ReviewFindings, want) {
+		t.Fatalf("findings = %+v, want %+v", rec.ReviewFindings, want)
 	}
 }
 
@@ -1980,7 +2008,13 @@ func TestPrePRLoopCleanReReviewWithPassingChecksOpensReady(t *testing.T) {
 	if review.calls != 2 {
 		t.Fatalf("review agent ran %d times, want the review pass then the re-review", review.calls)
 	}
+	if agent.calls != 2 {
+		t.Fatalf("build agent ran %d times, want the build round and one fix round: a clean re-check starts no second", agent.calls)
+	}
 	rec := reported.last(t)
+	if rec.ReviewSecondRound != nil {
+		t.Fatalf("second round cost = %+v, want none: a clean re-check starts no second round", rec.ReviewSecondRound)
+	}
 	if !rec.Ready || rec.LoopDetail != "" {
 		t.Fatalf("record ready = %v, detail = %q, want ready with no detail", rec.Ready, rec.LoopDetail)
 	}
@@ -2106,14 +2140,14 @@ func TestPrePRLoopDrivesAFixRoundFromAGuardNoTestCovers(t *testing.T) {
 	if _, err := Build(context.Background(), deps, c); err != nil {
 		t.Fatal(err)
 	}
-	if probes != 2 {
-		t.Fatalf("probed the guard %d times, want once before the fix round and once after it", probes)
+	if probes != 3 {
+		t.Fatalf("probed the guard %d times, want once before each fix round and once after it", probes)
 	}
-	if agent.calls != 2 {
-		t.Fatalf("build agent ran %d times, want 2: the guard's finding gets one fix round", agent.calls)
+	if agent.calls != 3 {
+		t.Fatalf("build agent ran %d times, want 3: the guard's finding gets both fix rounds", agent.calls)
 	}
-	if !strings.Contains(agent.prompts[1], finding) {
-		t.Fatalf("fix round prompt = %q, want it to carry the guard's finding", agent.prompts[1])
+	if !strings.Contains(agent.prompts[1], finding) || !strings.Contains(agent.prompts[2], finding) {
+		t.Fatalf("fix round prompts = %q, want each to carry the guard's finding", agent.prompts[1:])
 	}
 	if !strings.Contains(review.prompts[0], "early return") {
 		t.Fatalf("review prompt = %q, want the checks a walkthrough makes", review.prompts[0])
@@ -2125,10 +2159,11 @@ func TestPrePRLoopDrivesAFixRoundFromAGuardNoTestCovers(t *testing.T) {
 	if !strings.Contains(rec.LoopDetail, finding) {
 		t.Fatalf("loop detail = %q, want it to name the guard still open", rec.LoopDetail)
 	}
-	if len(rec.Steps) != 4 || rec.Steps[2].Detail != finding {
-		t.Fatalf("steps = %+v, want [build] [review] [the fix round carrying the guard's finding] [re-review]", rec.Steps)
+	if len(rec.Steps) != 6 || rec.Steps[2].Detail != finding || rec.Steps[4].Detail != finding ||
+		rec.Steps[4].Phase != PhaseBuild || rec.Steps[4].Round != 3 {
+		t.Fatalf("steps = %+v, want the build, the review, and each fix round carrying the guard's finding", rec.Steps)
 	}
-	if want := []ReviewFinding{{Finding: finding, Resolution: "still open"}}; !slices.Equal(rec.ReviewFindings, want) {
+	if want := []ReviewFinding{{Finding: finding, Resolution: "still open after round 3"}}; !slices.Equal(rec.ReviewFindings, want) {
 		t.Fatalf("findings = %+v, want %+v", rec.ReviewFindings, want)
 	}
 }
@@ -2158,6 +2193,165 @@ func TestPrePRLoopRecordsAGuardTheFixRoundCovered(t *testing.T) {
 	}
 	if want := []ReviewFinding{{Finding: finding, Resolution: "fixed in round 2"}}; !slices.Equal(rec.ReviewFindings, want) {
 		t.Fatalf("findings = %+v, want %+v", rec.ReviewFindings, want)
+	}
+}
+
+// TestPrePRLoopSecondFixRoundResolvesAFindingTheFirstLeftOpen is the second
+// round doing its job: a re-check that still reports the finding starts one more
+// fix round on the build session, and a clean second re-check leaves the run
+// ready with the finding recorded as fixed in that round.
+func TestPrePRLoopSecondFixRoundResolvesAFindingTheFirstLeftOpen(t *testing.T) {
+	const finding = "the retry never bounds its attempts"
+	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
+	agent.eventsFn = func(call int) string {
+		if call == 3 {
+			return `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{"input":40,"output":10}}}` + "\n"
+		}
+		return `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{"input":1}}}` + "\n"
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	review := &fakeAgent{eventsFn: func(call int) string {
+		if call < 3 {
+			return reviewEvent(finding)
+		}
+		return reviewEvent("")
+	}}
+	deps.ReviewAgent = review
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if review.calls != 3 {
+		t.Fatalf("review agent ran %d times, want the pass and a re-review after each fix round", review.calls)
+	}
+	if agent.calls != 3 {
+		t.Fatalf("build agent ran %d times, want the build round and two fix rounds", agent.calls)
+	}
+	if agent.sessions[2] != "ses_1" {
+		t.Fatalf("second fix round session = %q, want the build agent's own session continued", agent.sessions[2])
+	}
+	if !strings.Contains(agent.prompts[2], finding) {
+		t.Fatalf("second fix round prompt = %q, want it to carry the finding the re-check reported", agent.prompts[2])
+	}
+	rec := reported.last(t)
+	if !rec.Ready || rec.LoopDetail != "" {
+		t.Fatalf("record ready = %v, detail = %q, want ready with no detail", rec.Ready, rec.LoopDetail)
+	}
+	if want := []ReviewFinding{{Finding: finding, Resolution: "fixed in round 3"}}; !slices.Equal(rec.ReviewFindings, want) {
+		t.Fatalf("findings = %+v, want %+v", rec.ReviewFindings, want)
+	}
+	if len(rec.Steps) != 6 || rec.Steps[4].Phase != PhaseBuild || rec.Steps[4].Round != 3 || rec.Steps[4].Detail != finding ||
+		rec.Steps[5].Phase != PhaseReview || rec.Steps[5].Round != 3 {
+		t.Fatalf("steps = %+v, want the second fix round and its re-review as rounds of their own", rec.Steps)
+	}
+	// The second round is priced on its own step, and the summary carries that
+	// cost for the PR notes to report.
+	if rec.Steps[4].Tokens.Input != 40 || rec.Steps[4].Tokens.Output != 10 {
+		t.Fatalf("second fix round tokens = %+v, want the round's own", rec.Steps[4].Tokens)
+	}
+	if rec.ReviewSecondRound == nil || rec.ReviewSecondRound.Round != 3 ||
+		rec.ReviewSecondRound.Tokens.Input != 40 || rec.ReviewSecondRound.Tokens.Output != 10 {
+		t.Fatalf("second round cost = %+v, want round 3's own tokens", rec.ReviewSecondRound)
+	}
+}
+
+// TestPrePRLoopTakesNoSecondFixRoundWithoutBudget is the other side of the
+// ceiling: a review stage with no budget left for the one extra round takes
+// none, and the run stops as it did when a review had a single fix round.
+func TestPrePRLoopTakesNoSecondFixRoundWithoutBudget(t *testing.T) {
+	const finding = "the retry never bounds its attempts"
+	agent := &fakeAgent{
+		edit:   edit("version.go", "package x\n"),
+		events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{}}}` + "\n",
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	started := time.Now()
+	clock := started
+	deps.Now = func() time.Time { return clock }
+	review := &fakeAgent{events: reviewEvent(finding)}
+	review.edit = func(string) error {
+		if review.calls == 2 {
+			// The pass and the re-review spend the whole review budget, so no
+			// second fix round may start.
+			clock = started.Add(nfr1ReviewBudget + time.Minute)
+		}
+		return nil
+	}
+	deps.ReviewAgent = review
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 2 {
+		t.Fatalf("build agent ran %d times, want the build round and one fix round: no budget was left for a second", agent.calls)
+	}
+	if review.calls != 2 {
+		t.Fatalf("review agent ran %d times, want the pass and the re-review", review.calls)
+	}
+	rec := reported.last(t)
+	if rec.Ready {
+		t.Fatal("ready = true, want false: the finding is still open")
+	}
+	if !strings.Contains(rec.LoopDetail, finding) {
+		t.Fatalf("loop detail = %q, want it to name the finding still open", rec.LoopDetail)
+	}
+	// One round ran, so the rows read as they did before there was a second one.
+	if want := []ReviewFinding{{Finding: finding, Resolution: "still open"}}; !slices.Equal(rec.ReviewFindings, want) {
+		t.Fatalf("findings = %+v, want %+v", rec.ReviewFindings, want)
+	}
+	if rec.ReviewSecondRound != nil {
+		t.Fatalf("second round cost = %+v, want none: no second round ran", rec.ReviewSecondRound)
+	}
+}
+
+// TestPrePRLoopRecordsTheSecondRoundWhenItsBudgetIsSpent is the extra round's
+// other budget path: the round runs, the stage's budget is gone by its checks,
+// so no re-check follows — the rows say the finding was addressed without being
+// verified, and the round's own cost is still reported.
+func TestPrePRLoopRecordsTheSecondRoundWhenItsBudgetIsSpent(t *testing.T) {
+	const finding = "the retry never bounds its attempts"
+	agent := &fakeAgent{
+		edit:   edit("version.go", "package x\n"),
+		events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{"input":7}}}` + "\n",
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	started := time.Now()
+	clock := started
+	deps.Now = func() time.Time { return clock }
+	checks := 0
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		checks++
+		if checks == 3 {
+			// The second fix round's checks find the review budget spent, so the
+			// re-check that would settle its findings never runs.
+			clock = started.Add(nfr1ReviewBudget + time.Minute)
+		}
+		return "", "", nil
+	}
+	deps.ReviewAgent = &fakeAgent{events: reviewEvent(finding)}
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 3 {
+		t.Fatalf("build agent ran %d times, want the build round and both fix rounds", agent.calls)
+	}
+	rec := reported.last(t)
+	if rec.Ready {
+		t.Fatal("ready = true, want false: the last round's findings were never re-checked")
+	}
+	if !strings.Contains(rec.LoopDetail, "addressed by a fix round, not re-reviewed") ||
+		!strings.Contains(rec.LoopDetail, "the review stage's 25-minute budget was spent") {
+		t.Fatalf("loop detail = %q, want the addressed-not-re-reviewed label naming the spent budget", rec.LoopDetail)
+	}
+	if want := []ReviewFinding{{Finding: finding, Resolution: "addressed in round 3, not re-checked"}}; !slices.Equal(rec.ReviewFindings, want) {
+		t.Fatalf("findings = %+v, want %+v", rec.ReviewFindings, want)
+	}
+	if rec.ReviewSecondRound == nil || rec.ReviewSecondRound.Round != 3 || rec.ReviewSecondRound.Tokens.Input != 7 {
+		t.Fatalf("second round cost = %+v, want round 3's own step", rec.ReviewSecondRound)
 	}
 }
 
@@ -2374,6 +2568,162 @@ func TestFixRoundSubstitutionIsClampedByTheReviewBudget(t *testing.T) {
 	}
 	if got := time.Until(buildAgent.deadlines[2]); got < nfr1ReviewBudget-2*time.Second || got > nfr1ReviewBudget+2*time.Second {
 		t.Fatalf("the fix round's backup is bounded by %s, want the review's own budget %s, not what the build stage had left", got, nfr1ReviewBudget)
+	}
+}
+
+// writerFunc is an io.Writer that hands each write to a function, so a test
+// can act on a log line the moment the code under test emits it.
+type writerFunc func(p []byte)
+
+func (w writerFunc) Write(p []byte) (int, error) {
+	w(p)
+	return len(p), nil
+}
+
+// TestPrePRLoopDraftsWithoutAReReviewWhenTheScanAfterAFixRoundFails keeps a
+// scan that cannot list the fixed diff from reading as one that found nothing:
+// the run takes no re-review of guards it could not probe, and the PR says the
+// review failed.
+func TestPrePRLoopDraftsWithoutAReReviewWhenTheScanAfterAFixRoundFails(t *testing.T) {
+	var lock string
+	agent := &fakeAgent{}
+	agent.edit = func(dir string) error {
+		if agent.calls > 1 {
+			// A held index lock leaves the changed paths listable, which only
+			// reads, but stops the scan marking this round's new file for its
+			// line diff.
+			lock = strings.TrimSpace(mustGit(t, dir, "rev-parse", "--git-path", "index.lock"))
+			if !filepath.IsAbs(lock) {
+				lock = filepath.Join(dir, lock)
+			}
+			if err := os.WriteFile(lock, nil, 0o600); err != nil {
+				return err
+			}
+			if err := edit("b.go", "package x\n")(dir); err != nil {
+				return err
+			}
+		}
+		return edit("a.go", guardedFile)(dir)
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	deps.PackageTests = func(context.Context, string, string) (bool, string, error) {
+		return false, "", nil // every test passes: the guard is uncovered
+	}
+	// The lock is lifted at the first clock read after the fix round's checks,
+	// the one the scan's failure comes ahead of, so a run that carried on past a
+	// failed scan would find the re-review's own diff readable.
+	sinceChecks := -1
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		if lock != "" {
+			sinceChecks = 0
+		}
+		return "", "", nil
+	}
+	deps.Now = func() time.Time {
+		switch sinceChecks {
+		case -1:
+		case 0:
+			sinceChecks = 1 // the checks' own timing read
+		default:
+			sinceChecks = -1
+			if err := os.Remove(lock); err != nil {
+				t.Error(err)
+			}
+		}
+		return time.Now()
+	}
+	var logs strings.Builder
+	deps.Logger = slog.New(slog.NewTextHandler(writerFunc(func(p []byte) {
+		logs.Write(p)
+		if strings.Contains(string(p), "reviewFailed") && sinceChecks != -1 {
+			// The commit that follows needs the index the failure was held on.
+			sinceChecks = -1
+			if err := os.Remove(lock); err != nil {
+				t.Error(err)
+			}
+		}
+	}), nil))
+	review := &fakeAgent{events: reviewEvent("")}
+	deps.ReviewAgent = review
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 2 {
+		t.Fatalf("build agent ran %d times, want the build round and one fix round", agent.calls)
+	}
+	if review.calls != 1 {
+		t.Fatalf("review agent ran %d times, want the pass alone: the scan after the fix round failed", review.calls)
+	}
+	if !strings.Contains(logs.String(), "reviewFailed reason=checks-run") {
+		t.Fatalf("logs = %q, want the review to fail on the checks run", logs.String())
+	}
+	rec := reported.last(t)
+	if rec.Ready || !strings.HasPrefix(rec.LoopDetail, "review: ") {
+		t.Fatalf("record ready = %v, detail = %q, want a draft naming the failed review", rec.Ready, rec.LoopDetail)
+	}
+}
+
+// TestPrePRLoopContinuesFromTheRoundASubstitutedFixModelAnswered holds the
+// round numbers apart when the first fix round steps to its backup model: the
+// backup's step is round 3, so its checks and re-review run as round 3 and the
+// next fix round is round 4, each round once, and the rows and the second
+// round's cost name the round that did the fixing.
+func TestPrePRLoopContinuesFromTheRoundASubstitutedFixModelAnswered(t *testing.T) {
+	const finding = "the retry never bounds its attempts"
+	agent := &fakeAgent{
+		edit: edit("version.go", "package x\n"),
+		errFn: func(call int) error {
+			if call == 2 {
+				return errors.New("exit status 1")
+			}
+			return nil
+		},
+		stderrFn: func(call int) string {
+			if call == 2 {
+				return allowanceStderr
+			}
+			return ""
+		},
+		events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{"input":1}}}` + "\n",
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	review := &fakeAgent{eventsFn: func(call int) string {
+		if call < 3 {
+			return reviewEvent(finding)
+		}
+		return reviewEvent("")
+	}}
+	deps.ReviewAgent = review
+	c := testConfig(t, initRepo(t))
+	c.Model = DefaultModel()
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 4 {
+		t.Fatalf("build agent ran %d times, want the build round, the refused fix attempt, its backup and a second fix round", agent.calls)
+	}
+	rec := reported.last(t)
+	roundsOf := func(p Phase) []int {
+		var rounds []int
+		for _, st := range rec.Steps {
+			if st.Phase == p {
+				rounds = append(rounds, st.Round)
+			}
+		}
+		return rounds
+	}
+	build, reviews := roundsOf(PhaseBuild), roundsOf(PhaseReview)
+	if !slices.Equal(build, []int{1, 2, 3, 4}) || !slices.Equal(reviews, []int{1, 3, 4}) {
+		t.Fatalf("build rounds = %v, review rounds = %v, want [1 2 3 4] and [1 3 4]: no round number reused", build, reviews)
+	}
+	if want := []ReviewFinding{{Finding: finding, Resolution: "fixed in round 4"}}; !slices.Equal(rec.ReviewFindings, want) {
+		t.Fatalf("findings = %+v, want %+v", rec.ReviewFindings, want)
+	}
+	if rec.ReviewSecondRound == nil || rec.ReviewSecondRound.Round != 4 {
+		t.Fatalf("second round cost = %+v, want the round the rows name", rec.ReviewSecondRound)
 	}
 }
 
@@ -3979,15 +4329,17 @@ func TestEndedByOurStop(t *testing.T) {
 	}
 }
 
-// TestBuildCountsNoProgressPerRound pins that the count is per invocation by construction: two rounds each one step under the limit pass, a fix round at the limit stops.
+// TestBuildCountsNoProgressPerRound pins that the count is per invocation by
+// construction: every round one step under the limit passes, and a fix round at
+// the limit stops.
 func TestBuildCountsNoProgressPerRound(t *testing.T) {
 	underLimit := readsOnlyEvents(DEFAULT_NO_PROGRESS_STEPS - 1)
-	run := func(t *testing.T, secondRound string) (*fakeAgent, BuildResult) {
+	run := func(t *testing.T, laterRounds string) (*fakeAgent, BuildResult) {
 		agent := &fakeAgent{edit: edit("version.go", "package x\n"), eventsFn: func(call int) string {
 			if call == 1 {
 				return underLimit
 			}
-			return secondRound
+			return laterRounds
 		}}
 		deps, _, _ := testDeps(validObjects(), agent)
 		deps.ReviewAgent = &fakeAgent{events: reviewEvent("the ticket also asks for a second file")}
@@ -3999,8 +4351,9 @@ func TestBuildCountsNoProgressPerRound(t *testing.T) {
 	}
 
 	agent, res := run(t, underLimit)
-	if len(agent.prompts) != 2 || strings.Contains(res.LoopDetail, "no file change") {
-		t.Fatalf("rounds = %d, loop detail = %q, want both rounds to pass the guard", len(agent.prompts), res.LoopDetail)
+	// The build round and both fix rounds each stay under the limit.
+	if len(agent.prompts) != 3 || strings.Contains(res.LoopDetail, "no file change") {
+		t.Fatalf("rounds = %d, loop detail = %q, want every round to pass the guard", len(agent.prompts), res.LoopDetail)
 	}
 	// A fix round's stop surfaces as the review failure the run opens as a draft with.
 	_, res = run(t, readsOnlyEvents(DEFAULT_NO_PROGRESS_STEPS))
