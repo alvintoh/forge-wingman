@@ -141,7 +141,10 @@ export function preCaptureRefusal(checks: CaptureChecks): Refused | null {
  * sizeError says why a shot's pixel size is not the viewport at its device
  * scale factor, or null when it is.
  */
-export function sizeError(viewport: Viewport, size: { width: number; height: number }): string | null {
+export function sizeError(
+  viewport: Viewport,
+  size: { width: number; height: number },
+): string | null {
   const wantWidth = viewport.width * viewport.deviceScaleFactor;
   const wantHeight = viewport.height * viewport.deviceScaleFactor;
   if (size.width === wantWidth && size.height === wantHeight) {
@@ -154,7 +157,6 @@ export function sizeError(viewport: Viewport, size: { width: number; height: num
 export async function captureShot(shot: Shot): Promise<{ width: number; height: number }> {
   const { cdp, page, url, viewport, out } = shot;
   const { sessionId } = page;
-  const timeout = READY_TIMEOUT_MS;
 
   await cdp.send(
     "Emulation.setDeviceMetricsOverride",
@@ -167,19 +169,27 @@ export async function captureShot(shot: Shot): Promise<{ width: number; height: 
     sessionId,
   );
   if (viewport.mobile) {
-    await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 }, sessionId);
+    await cdp.send(
+      "Emulation.setTouchEmulationEnabled",
+      { enabled: true, maxTouchPoints: 1 },
+      sessionId,
+    );
   } else {
     await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false }, sessionId);
   }
 
   page.pending.clear();
-  const loaded = cdp.waitFor("Page.loadEventFired", sessionId, timeout);
+  const loaded = cdp.waitFor("Page.loadEventFired", sessionId, READY_TIMEOUT_MS);
   await cdp.send("Page.navigate", { url }, sessionId);
   await loaded;
-  await waitForQuiet(page, 150, timeout);
+  await waitForQuiet(page, 150, READY_TIMEOUT_MS);
 
   await evaluate(cdp, sessionId, STOP_ANIMATIONS);
-  await evaluate(cdp, sessionId, "document.activeElement instanceof HTMLElement && document.activeElement.blur()");
+  await evaluate(
+    cdp,
+    sessionId,
+    "document.activeElement instanceof HTMLElement && document.activeElement.blur()",
+  );
   await evaluate(cdp, sessionId, "window.scrollTo(0, 0), document.fonts.ready.then(() => true)");
 
   let unsettled: string | null = null;
@@ -188,8 +198,9 @@ export async function captureShot(shot: Shot): Promise<{ width: number; height: 
       unsettled = await evaluate<string | null>(cdp, sessionId, READY);
       return unsettled === null;
     },
-    timeout,
-    () => (unsettled === null ? "the page did not settle" : `the page did not settle: ${unsettled}`),
+    READY_TIMEOUT_MS,
+    () =>
+      unsettled === null ? "the page did not settle" : `the page did not settle: ${unsettled}`,
   );
 
   // The pointer starts at the viewport's top-left corner. Walk the corners and
@@ -204,7 +215,11 @@ export async function captureShot(shot: Shot): Promise<{ width: number; height: 
   ];
   let hovered: string[] = [];
   for (const [x, y] of points) {
-    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none" }, sessionId);
+    await cdp.send(
+      "Input.dispatchMouseEvent",
+      { type: "mouseMoved", x, y, button: "none" },
+      sessionId,
+    );
     await settle(cdp, sessionId);
     hovered = await evaluate<string[]>(cdp, sessionId, HOVERED_CONTROLS);
     if (hovered.length === 0) {
@@ -260,7 +275,11 @@ async function evaluate<T>(cdp: CommandChannel, sessionId: string, expression: s
 
 // waitFor polls until the predicate answers true; past the deadline it throws
 // the caller's message.
-async function waitFor(predicate: () => Promise<boolean>, timeoutMs: number, why: () => string): Promise<void> {
+async function waitFor(
+  predicate: () => Promise<boolean>,
+  timeoutMs: number,
+  why: () => string,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     if (await predicate()) {

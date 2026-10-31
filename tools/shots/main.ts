@@ -49,7 +49,8 @@ export async function run(argv: readonly string[]): Promise<number> {
 // cannot get as far as reporting the shots it took.
 async function execute(args: Args): Promise<number> {
   const dist = args.dist === null ? join(REPO_ROOT, "web/dist") : resolve(args.dist);
-  const fixtures = args.fixtures === null ? join(REPO_ROOT, "web/fixtures") : resolve(args.fixtures);
+  const fixtures =
+    args.fixtures === null ? join(REPO_ROOT, "web/fixtures") : resolve(args.fixtures);
   const out = resolve(args.out);
   for (const [flag, dir] of [
     ["--dist", dist],
@@ -95,9 +96,7 @@ async function execute(args: Args): Promise<number> {
     }
     const executable = findChromium(args.chromium);
     if (executable === null) {
-      throw new Error(
-        "no Chromium found; pass --chromium <path> or set CHROME_PATH to one",
-      );
+      throw new Error("no Chromium found; pass --chromium <path> or set CHROME_PATH to one");
     }
     const browser = await launchChromium(executable);
     try {

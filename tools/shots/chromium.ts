@@ -39,7 +39,12 @@ const CANDIDATES = [
  */
 export function findChromium(given: string | null): string | null {
   for (const candidate of [given, process.env.CHROME_PATH]) {
-    if (candidate !== undefined && candidate !== null && candidate !== "" && existsSync(candidate)) {
+    if (
+      candidate !== undefined &&
+      candidate !== null &&
+      candidate !== "" &&
+      existsSync(candidate)
+    ) {
       return candidate;
     }
   }
@@ -122,11 +127,14 @@ export async function launchChromium(executable: string): Promise<Browser> {
 
 /**
  * openPage makes a new tab and pins the determinism settings on it before any
- * app script runs: the clock is fixed and the time zone and locale are pinned.
+ * app script runs: the clock is fixed, the time zone and locale are pinned and
+ * scrollbars are hidden.
  * The animation-stopping style is injected per shot, at capture time.
  */
 export async function openPage(cdp: CDP, fixedTime: number): Promise<Page> {
-  const { targetId } = await cdp.send<{ targetId: string }>("Target.createTarget", { url: "about:blank" });
+  const { targetId } = await cdp.send<{ targetId: string }>("Target.createTarget", {
+    url: "about:blank",
+  });
   const { sessionId } = await cdp.send<{ sessionId: string }>("Target.attachToTarget", {
     targetId,
     flatten: true,
@@ -138,9 +146,14 @@ export async function openPage(cdp: CDP, fixedTime: number): Promise<Page> {
   await cdp.send("Network.enable", {}, sessionId);
   await cdp.send("Emulation.setTimezoneOverride", { timezoneId: "UTC" }, sessionId);
   await cdp.send("Emulation.setLocaleOverride", { locale: "en_US" }, sessionId);
-  await cdp.send("Emulation.setEmulatedMedia", {
-    features: [{ name: "prefers-reduced-motion", value: "reduce" }],
-  }, sessionId);
+  await cdp.send("Emulation.setScrollbarsHidden", { hidden: true }, sessionId);
+  await cdp.send(
+    "Emulation.setEmulatedMedia",
+    {
+      features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+    },
+    sessionId,
+  );
   await cdp.send(
     "Page.addScriptToEvaluateOnNewDocument",
     { source: CLOCK_SHIM(fixedTime) },
@@ -159,6 +172,14 @@ export async function openPage(cdp: CDP, fixedTime: number): Promise<Page> {
   };
   cdp.on("Network.loadingFinished", finish);
   cdp.on("Network.loadingFailed", finish);
+  // The app never reads the body of a failed response and Chromium reports a
+  // fetch finished only once its body is read, so such a request is over when
+  // its status arrives.
+  cdp.on("Network.responseReceived", (params, from) => {
+    if (statusOf(params) >= 400) {
+      finish(params, from);
+    }
+  });
   cdp.on("Runtime.consoleAPICalled", (params, from) => {
     if (from === sessionId && params.type === "error") {
       page.errors.push(params.args === undefined ? "console error" : JSON.stringify(params.args));
@@ -171,6 +192,14 @@ export async function openPage(cdp: CDP, fixedTime: number): Promise<Page> {
   });
 
   return page;
+}
+
+function statusOf(params: Record<string, unknown>): number {
+  const response = params.response;
+  if (typeof response === "object" && response !== null && "status" in response) {
+    return typeof response.status === "number" ? response.status : 0;
+  }
+  return 0;
 }
 
 // CLOCK_SHIM pins Date.now and a no-argument new Date to one instant, so the

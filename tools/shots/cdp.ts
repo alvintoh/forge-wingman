@@ -55,7 +55,11 @@ export class CDP {
     return promise;
   }
 
-  send<T = Record<string, unknown>>(method: string, params: object = {}, sessionId?: string): Promise<T> {
+  send<T = Record<string, unknown>>(
+    method: string,
+    params: object = {},
+    sessionId?: string,
+  ): Promise<T> {
     if (this.#closed !== null) {
       return Promise.reject(this.#closed);
     }
@@ -80,7 +84,11 @@ export class CDP {
 
   // waitFor resolves on the next event of the given name, for the given session
   // when one is named.
-  waitFor(method: string, sessionId: string | null, timeoutMs: number): Promise<Record<string, unknown>> {
+  waitFor(
+    method: string,
+    sessionId: string | null,
+    timeoutMs: number,
+  ): Promise<Record<string, unknown>> {
     const { promise, resolve, reject } = Promise.withResolvers<Record<string, unknown>>();
     const timer = setTimeout(() => {
       off();

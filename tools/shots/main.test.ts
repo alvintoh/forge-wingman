@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run } from "./main";
+import { quietly } from "./quietly";
 
 const cleanup: string[] = [];
 
@@ -24,22 +25,6 @@ function dist(withIndex: boolean): string {
     writeFileSync(join(dir, "index.html"), "<div></div>");
   }
   return dir;
-}
-
-// quietly answers the run's exit code and the lines it printed, so a passing
-// test does not fill the reporter with usage text.
-async function quietly(work: () => Promise<number>): Promise<{ code: number; lines: string[] }> {
-  const log = console.log;
-  const error = console.error;
-  const lines: string[] = [];
-  console.log = (...parts: unknown[]) => lines.push(parts.join(" "));
-  console.error = (...parts: unknown[]) => lines.push(parts.join(" "));
-  try {
-    return { code: await work(), lines };
-  } finally {
-    console.log = log;
-    console.error = error;
-  }
 }
 
 describe("run", () => {

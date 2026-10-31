@@ -3,7 +3,9 @@ import { parseArgs, UsageError } from "./cli";
 
 describe("parseArgs", () => {
   test("reads the flags in either form and defaults the rest", () => {
-    expect(parseArgs(["--out", "shots", "--routes=/stats,/config", "--base", "origin/main"])).toEqual({
+    expect(
+      parseArgs(["--out", "shots", "--routes=/stats,/config", "--base", "origin/main"]),
+    ).toEqual({
       dist: null,
       fixtures: null,
       out: "shots",
@@ -28,7 +30,9 @@ describe("parseArgs", () => {
   });
 
   test("rejects an empty route list", () => {
-    expect(() => parseArgs(["--out", "x", "--routes", " , "])).toThrow("--routes needs at least one route");
+    expect(() => parseArgs(["--out", "x", "--routes", " , "])).toThrow(
+      "--routes needs at least one route",
+    );
   });
 
   test("help needs no --out", () => {

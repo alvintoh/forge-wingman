@@ -18,31 +18,38 @@ describe("outcome", () => {
 
   test("fails the run for each request the fixture API does not serve", () => {
     expect(outcome(new Map(), new Map([["POST /api/projects/add", 1]]), [], [])).toEqual({
-      failures: [
-        'shotsFailed reason=unexpected-write request="POST /api/projects/add" count=1',
-      ],
+      failures: ['shotsFailed reason=unexpected-write request="POST /api/projects/add" count=1'],
       exitCode: 1,
     });
   });
 
   test("fails the run for each refused shot, with its width and reason", () => {
     expect(
-      outcome(new Map(), new Map(), [
-        { route: "runs-runId", width: "s", detail: "the page scrolls sideways" },
-      ], []),
+      outcome(
+        new Map(),
+        new Map(),
+        [{ route: "runs-runId", width: "s", detail: "the page scrolls sideways" }],
+        [],
+      ),
     ).toEqual({
-      failures: [
-        'shotsFailed reason=refused shot=runs-runId-s detail="the page scrolls sideways"',
-      ],
+      failures: ['shotsFailed reason=refused shot=runs-runId-s detail="the page scrolls sideways"'],
       exitCode: 1,
     });
   });
 
   test("fails the run for a route whose page logged an error", () => {
     expect(
-      outcome(new Map(), new Map(), [], [
-        { route: "/stats", detail: "comparisonNotRead the endpoint answered a document of another shape" },
-      ]),
+      outcome(
+        new Map(),
+        new Map(),
+        [],
+        [
+          {
+            route: "/stats",
+            detail: "comparisonNotRead the endpoint answered a document of another shape",
+          },
+        ],
+      ),
     ).toEqual({
       failures: [
         'shotsFailed reason=page-error route=/stats detail="comparisonNotRead the endpoint answered a document of another shape"',

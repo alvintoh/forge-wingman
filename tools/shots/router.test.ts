@@ -75,7 +75,12 @@ describe("routesForNames", () => {
 
   test("opens an unnamed path as a URL", () => {
     const [run] = routesForNames(["/runs/other"], routes);
-    expect(run).toEqual({ pattern: "/runs/other", page: null, url: "/runs/other", name: "runs-other" });
+    expect(run).toEqual({
+      pattern: "/runs/other",
+      page: null,
+      url: "/runs/other",
+      name: "runs-other",
+    });
   });
 
   test("rejects a name that is not a path", () => {
@@ -98,6 +103,8 @@ describe("routesForChange", () => {
   test("shoots every route when no page file changed", () => {
     const selection = routesForChange(routes, new Set(["web/src/inbox/row.tsx"]));
     expect(selection.changed).toBe(false);
-    expect(selection.routes.map((route) => route.pattern)).toEqual(routes.map((route) => route.pattern));
+    expect(selection.routes.map((route) => route.pattern)).toEqual(
+      routes.map((route) => route.pattern),
+    );
   });
 });

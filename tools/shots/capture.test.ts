@@ -106,6 +106,9 @@ describe("captureShot", () => {
   type FakeOptions = {
     // The READY expression's answer: null is settled, a string is the reason not.
     ready?: string | null;
+    // The answer to every READY evaluation after the first, when it differs: the
+    // page's state at the moment of capture.
+    lateReady?: string | null;
     readyThrows?: string;
     hovered?: string[];
     overflow?: number | null;
@@ -125,6 +128,7 @@ describe("captureShot", () => {
   // be driven without a browser.
   function fakeChannel(options: FakeOptions): CommandChannel & { calls: string[] } {
     const calls: string[] = [];
+    let readyCalls = 0;
     return {
       calls,
       async send<T>(method: string, params: object = {}): Promise<T> {
@@ -135,7 +139,11 @@ describe("captureShot", () => {
             if (options.readyThrows !== undefined) {
               return { exceptionDetails: { text: options.readyThrows } } as T;
             }
-            return { result: { value: options.ready ?? null } } as T;
+            const answer =
+              readyCalls++ === 0 || options.lateReady === undefined
+                ? options.ready
+                : options.lateReady;
+            return { result: { value: answer ?? null } } as T;
           }
           if (expression.includes(":hover")) {
             return { result: { value: options.hovered ?? [] } } as T;
@@ -213,15 +221,26 @@ describe("captureShot", () => {
     expect(channel.calls).not.toContain("Page.captureScreenshot");
   });
 
+  test("refuses a page that stops being settled after the gate and does not capture it", async () => {
+    const channel = fakeChannel({ ready: null, lateReady: "an element is aria-busy: section" });
+    const refusal = await refusalOf(channel, phone);
+    expect(refusal).toBeInstanceOf(Refused);
+    expect(refusal.message).toBe(
+      "the page changed before the shot: an element is aria-busy: section",
+    );
+    expect(channel.calls).not.toContain("Page.captureScreenshot");
+  });
+
   test("throws when the page never settles", async () => {
     const realNow = Date.now;
     let clock = 0;
     Date.now = () => (clock += 60_000);
     try {
-      const refusal = await refusalOf(fakeChannel({ ready: "an element is aria-busy: body" }), phone);
-      expect(refusal.message).toContain(
-        "the page did not settle: an element is aria-busy: body",
+      const refusal = await refusalOf(
+        fakeChannel({ ready: "an element is aria-busy: body" }),
+        phone,
       );
+      expect(refusal.message).toContain("the page did not settle: an element is aria-busy: body");
     } finally {
       Date.now = realNow;
     }

@@ -16,14 +16,14 @@
         "current": "Phase 1",
         "in_flight": [
           {
-            "id": "FRG-240",
+            "id": "DEMO-240",
             "title": "Add the widget table",
             "stage": "build"
           }
         ],
         "queued": 2,
         "queued_blocked": 0,
-        "eligible": ["FRG-243"],
+        "eligible": ["DEMO-243"],
         "eligible_blocked": 0,
         "unreadable": false,
         "reason": "",

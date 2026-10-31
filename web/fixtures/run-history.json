@@ -2,70 +2,70 @@
   "runs": [
     {
       "run": "run-2026-02-18-a",
-      "ticket": "FRG-218",
+      "ticket": "DEMO-218",
       "repo": "acme/widgets",
       "kind": "merged",
       "words": "merged"
     },
     {
       "run": "run-2026-02-19-b",
-      "ticket": "FRG-219",
+      "ticket": "DEMO-219",
       "repo": "acme/gadgets",
       "kind": "pr-open",
       "words": "PR open, waiting on you"
     },
     {
       "run": "run-2026-02-20-c",
-      "ticket": "FRG-220",
+      "ticket": "DEMO-220",
       "repo": "acme/widgets",
       "kind": "draft",
       "words": "draft PR with open boxes"
     },
     {
       "run": "run-2026-02-21-d",
-      "ticket": "FRG-221",
+      "ticket": "DEMO-221",
       "repo": "acme/gadgets",
       "kind": "failed",
       "words": "failed"
     },
     {
       "run": "run-2026-02-22-e",
-      "ticket": "FRG-222",
+      "ticket": "DEMO-222",
       "repo": "acme/widgets",
       "kind": "cancelled",
       "words": "cancelled by you"
     },
     {
       "run": "run-2026-02-23-f",
-      "ticket": "FRG-223",
+      "ticket": "DEMO-223",
       "repo": "acme/widgets",
       "kind": "allowance",
       "words": "stopped, allowance spent"
     },
     {
       "run": "run-2026-02-24-g",
-      "ticket": "FRG-224",
+      "ticket": "DEMO-224",
       "repo": "acme/gadgets",
       "kind": "no-changes",
       "words": "ended with no changes"
     },
     {
       "run": "run-2026-02-25-h",
-      "ticket": "FRG-225",
+      "ticket": "DEMO-225",
       "repo": "acme/widgets",
       "kind": "decision",
       "words": "stopped at an unconfirmed decision"
     },
     {
       "run": "run-2026-02-26-i",
-      "ticket": "FRG-226",
+      "ticket": "DEMO-226",
       "repo": "acme/widgets",
       "kind": "merged",
       "words": "merged"
     },
     {
       "run": "run-2026-02-27-j",
-      "ticket": "FRG-227",
+      "ticket": "DEMO-227",
       "repo": "acme/gadgets",
       "kind": "other",
       "words": "ended"

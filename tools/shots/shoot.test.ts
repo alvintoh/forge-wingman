@@ -58,7 +58,11 @@ describe("shootRoutes", () => {
     });
     expect(result.written).toBe(1);
     expect(result.refusals).toEqual([
-      { route: "stats", width: "l", detail: "the page scrolls sideways: 12px wider than the viewport" },
+      {
+        route: "stats",
+        width: "l",
+        detail: "the page scrolls sideways: 12px wider than the viewport",
+      },
     ]);
     expect(calls).toEqual(["/tmp/shots-test/root-l.png", "/tmp/shots-test/stats-l.png"]);
   });
@@ -73,7 +77,10 @@ describe("shootRoutes", () => {
       page: driven,
       capture: async (shot) => {
         if (shot.url.endsWith("/stats")) {
-          driven.errors.push("comparisonNotRead", "the endpoint answered a document of another shape");
+          driven.errors.push(
+            "comparisonNotRead",
+            "the endpoint answered a document of another shape",
+          );
         }
         return { width: 1024, height: 768 };
       },

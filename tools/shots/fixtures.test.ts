@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isAutonomy, isRewrite } from "../../web/src/autonomy/guard";
@@ -100,7 +100,7 @@ describe("the committed fixtures", () => {
 // The app checks each endpoint's answer with a guard before it draws it, so a
 // fixture the guard rejects would show the page's error state instead. These are
 // the exported guards; an unexported one is covered by the page-error failure the
-// tool now reports.
+// tool reports.
 describe("the fixtures' shapes", () => {
   const fixture = (name: string) =>
     JSON.parse(readFileSync(join(FIXTURES, `${name}.json`), "utf8"));

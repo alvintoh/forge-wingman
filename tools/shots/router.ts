@@ -20,7 +20,7 @@ export type Route = {
  * The values the sample URLs use for a route's parameters. A parameter without
  * one is a page the tool cannot open, and it says so rather than guessing.
  */
-export const SAMPLE_PARAMS: Readonly<Record<string, string>> = {
+const SAMPLE_PARAMS: Readonly<Record<string, string>> = {
   runId: "run-2026-02-18-a",
 };
 
@@ -72,10 +72,10 @@ export function routesFromRouter(source: string): Route[] {
  * routeUrl fills a pattern's parameters; a new parameter without a sample value
  * is an error naming the route, not a URL that silently omits it.
  */
-export function routeUrl(pattern: string, samples: Readonly<Record<string, string>> = SAMPLE_PARAMS): string {
+export function routeUrl(pattern: string): string {
   const missing: string[] = [];
   const url = pattern.replace(/\$(\w+)/g, (_, name: string) => {
-    const value = samples[name];
+    const value = SAMPLE_PARAMS[name];
     if (value === undefined) {
       missing.push(name);
       return "";
@@ -99,11 +99,7 @@ export function routeName(pattern: string): string {
   if (pattern === "/") {
     return "root";
   }
-  return pattern
-    .replace(/^\/+/, "")
-    .replace(/\/+$/, "")
-    .replace(/[/$]+/g, "-")
-    .replace(/-+/g, "-");
+  return pattern.replace(/^\/+/, "").replace(/\/+$/, "").replace(/[/$]+/g, "-").replace(/-+/g, "-");
 }
 
 /**
@@ -138,5 +134,7 @@ export function routesForChange(
   changedPages: ReadonlySet<string>,
 ): { routes: Route[]; changed: boolean } {
   const changed = routes.filter((route) => route.page !== null && changedPages.has(route.page));
-  return changed.length > 0 ? { routes: changed, changed: true } : { routes: [...routes], changed: false };
+  return changed.length > 0
+    ? { routes: changed, changed: true }
+    : { routes: [...routes], changed: false };
 }

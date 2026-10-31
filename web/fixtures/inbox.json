@@ -2,7 +2,7 @@
   "runs": [
     {
       "run": "run-2026-02-28-a",
-      "ticket": "FRG-240",
+      "ticket": "DEMO-240",
       "repo": "acme/widgets",
       "pr_url": "https://github.com/acme/widgets/pull/240",
       "wait_reason": "checks-not-green",
@@ -16,7 +16,7 @@
     },
     {
       "run": "run-2026-02-28-b",
-      "ticket": "FRG-241",
+      "ticket": "DEMO-241",
       "repo": "acme/widgets",
       "pr_url": "https://github.com/acme/widgets/pull/241",
       "wait_reason": "front-end",
@@ -30,7 +30,7 @@
     },
     {
       "run": "run-2026-02-27-c",
-      "ticket": "FRG-242",
+      "ticket": "DEMO-242",
       "repo": "acme/gadgets",
       "pr_url": "https://github.com/acme/gadgets/pull/242",
       "wait_reason": "draft",
@@ -44,7 +44,7 @@
     },
     {
       "run": "run-2026-02-26-d",
-      "ticket": "FRG-238",
+      "ticket": "DEMO-238",
       "repo": "acme/gadgets",
       "pr_url": "",
       "wait_reason": "",

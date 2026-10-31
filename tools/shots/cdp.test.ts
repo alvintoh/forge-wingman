@@ -74,8 +74,8 @@ describe("CDP", () => {
     const dead = Bun.serve({ port: 0, fetch: () => new Response("closed") });
     const closed = `ws://127.0.0.1:${dead.port}`;
     dead.stop(true);
-    await expect(
-      CDP.connect(closed, { connectTimeoutMs: 500 }),
-    ).rejects.toThrow("cannot connect to the browser");
+    await expect(CDP.connect(closed, { connectTimeoutMs: 500 })).rejects.toThrow(
+      "cannot connect to the browser",
+    );
   });
 });

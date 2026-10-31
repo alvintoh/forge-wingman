@@ -38,14 +38,7 @@ Shoots the built surface at four widths with fixture data.
 /** A command line the tool cannot run. */
 export class UsageError extends Error {}
 
-const FLAGS = new Set([
-  "--dist",
-  "--fixtures",
-  "--out",
-  "--routes",
-  "--base",
-  "--chromium",
-]);
+const FLAGS = new Set(["--dist", "--fixtures", "--out", "--routes", "--base", "--chromium"]);
 
 /**
  * parseArgs reads the flags in any order, each as `--flag value` or

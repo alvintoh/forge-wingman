@@ -35,6 +35,8 @@ describe("launchChromium", () => {
   });
 
   test("fails when the browser exits before its debugging port opens", async () => {
-    await expect(launchChromium("/bin/false")).rejects.toThrow("exited before it was ready");
+    await expect(launchChromium(Bun.which("false") ?? "false")).rejects.toThrow(
+      "exited before it was ready",
+    );
   }, 10_000);
 });
