@@ -844,7 +844,7 @@ func (g GitHub) listPullCommits(ctx context.Context, repo string, number int) ([
 // resolves its author to and how many lines it changed. The listing carries no
 // line counts, so each commit is read once. A listing cut at the page cap ends in
 // an unmeasured commit, so a window holding it measures nothing for the
-// auto-merge rule.
+// rewrite rate.
 func (g GitHub) Commits(ctx context.Context, repo string, number int) ([]Commit, error) {
 	listed, capped, err := g.listPullCommits(ctx, repo, number)
 	if err != nil {

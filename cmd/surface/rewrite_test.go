@@ -520,7 +520,7 @@ func TestAutonomyEveryRateTextHasItsNumber(t *testing.T) {
 func TestAutonomyServesTheBarFromTheGoConstant(t *testing.T) {
 	bars, _ := rewriteFigures(t, nil)["bars"].(map[string]any)
 	if !slices.Equal(sortedKeys(bars), []string{"rollback"}) || bars["rollback"] != 0.1 {
-		t.Errorf("bars = %v, want the one bar, the trailing rate auto-merge is on at or under", bars)
+		t.Errorf("bars = %v, want the one bar, the trailing rate is drawn against", bars)
 	}
 }
 

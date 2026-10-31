@@ -78,7 +78,7 @@ func TestRunWorkflowMarksAutoMergeEligibilityOnlyOnPRMetasDecision(t *testing.T)
 	}
 	for _, gone := range []string{"WINGMAN_AUTO_MERGE", "auto-merge-switch"} {
 		if strings.Contains(string(yml), gone) {
-			t.Errorf("run.yml still passes %q; pr-meta reads the auto-merge switch and the rule from the store", gone)
+			t.Errorf("run.yml still passes %q; pr-meta reads the auto-merge switch and the rate from the store", gone)
 		}
 	}
 }

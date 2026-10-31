@@ -43,7 +43,7 @@ const (
 )
 
 // Rewrites records each merged agent PR's measured lines on its run row and
-// reads back the samples the auto-merge rule is decided from.
+// reads back the samples the rewrite rate is computed from.
 type Rewrites struct {
 	client *firestore.Client
 }
@@ -210,7 +210,7 @@ func recentSamples(ctx context.Context, client *firestore.Client, limit int) ([]
 	return out, nil
 }
 
-// sample reads one measured row, id, as the auto-merge rule reads it.
+// sample reads one measured row, id, as the rewrite rate reads it.
 func sample(id string, row map[string]any) dispatcher.Sample {
 	autoMerged, _ := row[autoMergeField].(bool)
 	reverted, _ := row[rewriteRevertedField].(bool)

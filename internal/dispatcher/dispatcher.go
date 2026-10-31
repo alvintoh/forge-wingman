@@ -193,7 +193,7 @@ type Deps struct {
 	OpenPRs      OpenPRCounter
 	// PullRequests reads the merged run PRs the rewrite rate is measured from,
 	// and Rewrites records each measurement on its run row and reads the samples
-	// the auto-merge rule is decided from.
+	// the rate is read over.
 	PullRequests PullRequests
 	Rewrites     Rewrites
 	Workflow     Workflow
