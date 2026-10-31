@@ -132,12 +132,12 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	}
 	draft := draftPR(sum, check)
 	switchOn := autoMergeSwitchOn(ctx, logger, *runID, store.NewAutoMergeSwitches(fsc))
-	rule := autoMergeRule(ctx, logger, *runID, store.NewRewrites(fsc), switchOn)
-	merge := autoMerge(rule.On, *runID, rec.Ticket(), sum, runner.FailedGate(*checkReport), check)
+	rate := autoMergeRate(ctx, logger, *runID, store.NewRewrites(fsc), switchOn)
+	merge := autoMerge(switchOn, *runID, rec.Ticket(), sum, runner.FailedGate(*checkReport), check)
 	if err := records.SetWaitReason(ctx, *runID, waitReason(*runID, rec.Ticket(), sum, check)); err != nil {
 		logger.Warn("waitReasonNotRecorded", "run", *runID, "err", err.Error())
 	}
-	logger.Info("autoMergeDecided", append(ruleAttrs(rule), "run", *runID, "autoMerge", merge, "sampled", runner.Sampled(*runID),
+	logger.Info("autoMergeDecided", append(rateAttrs(rate), "run", *runID, "autoMerge", merge, "sampled", runner.Sampled(*runID),
 		"draft", draft, "frontEnd", len(check.FrontEnd), "changed", len(check.Changed), "outOfPlan", len(check.OutOfPlan), "overlap", check.Overlap, "planned", check.Planned)...)
 	if err := writeOutputs(e.output, map[string]string{
 		"title":          title,
@@ -345,14 +345,15 @@ func autoMergeSwitchOn(ctx context.Context, logger *slog.Logger, runID string, s
 	return on
 }
 
-// recentRewrites is the store of measured PRs the auto-merge rule reads.
+// recentRewrites is the store of measured PRs the rewrite rate is read from.
 type recentRewrites interface {
 	Recent(ctx context.Context, limit int) ([]dispatcher.Sample, error)
 }
 
-// autoMergeRule decides whether the rule is on. A switch that is off returns
-// before the evidence is read; evidence that cannot be read holds auto-merge off.
-func autoMergeRule(ctx context.Context, logger *slog.Logger, runID string, r recentRewrites, switchOn bool) dispatcher.AutoMergeDecision {
+// autoMergeRate reads the rewrite rate the log reports as information. A switch
+// that is off returns before the evidence is read; evidence that cannot be read
+// reports its own reason, which holds auto-merge off nowhere.
+func autoMergeRate(ctx context.Context, logger *slog.Logger, runID string, r recentRewrites, switchOn bool) dispatcher.AutoMergeDecision {
 	if !switchOn {
 		return dispatcher.AutoMergeDecision{Reason: dispatcher.AutoMergeReasonSwitchOff}
 	}
@@ -364,9 +365,9 @@ func autoMergeRule(ctx context.Context, logger *slog.Logger, runID string, r rec
 	return dispatcher.AutoMergeOn(dispatcher.Evidence{Trailing: trailing})
 }
 
-// ruleAttrs are the decision's log attributes: the reason always, and the
-// numbers only where the decision was made on evidence.
-func ruleAttrs(d dispatcher.AutoMergeDecision) []any {
+// rateAttrs are the rate's log attributes: the reason always, and the numbers
+// only where the evidence was read.
+func rateAttrs(d dispatcher.AutoMergeDecision) []any {
 	attrs := []any{"reason", d.Reason}
 	if d.Evaluated() {
 		attrs = append(attrs, "rate", d.RateText(), "measured", d.PRs, "reverted", d.Reverted)
@@ -375,10 +376,11 @@ func ruleAttrs(d dispatcher.AutoMergeDecision) []any {
 }
 
 // autoMerge reports whether the run's PR is marked eligible for auto-merge,
-// which pr-review.yml requests once its review is clean: the auto-merge rule is
-// on and nothing in the run needs the owner.
-func autoMerge(ruleOn bool, runID string, t runner.Ticket, sum runner.Summary, failedGate string, check prCheck) bool {
-	return ruleOn && !ownerAttention(runID, t, sum, failedGate, check)
+// which pr-review.yml requests once its review is clean: the owner's switch is
+// on and readable, and nothing in the run needs the owner. The rewrite rate is
+// not consulted.
+func autoMerge(switchOn bool, runID string, t runner.Ticket, sum runner.Summary, failedGate string, check prCheck) bool {
+	return switchOn && !ownerAttention(runID, t, sum, failedGate, check)
 }
 
 // refuseWorkflowPush fails a build whose write set touches a workflow file, so

@@ -15,7 +15,7 @@ import (
 const (
 	// TrailingPRs is the window the trailing rate covers.
 	TrailingPRs = 10
-	// AutoMergeRate is the trailing rate auto-merge is on at or under.
+	// AutoMergeRate is the bar the trailing rate is measured against.
 	AutoMergeRate = 0.10
 )
 
@@ -138,7 +138,7 @@ type RunRow struct {
 	Measured time.Time
 }
 
-// Sample is one merged agent PR as the auto-merge rule reads it.
+// Sample is one merged agent PR as the rewrite rate reads it.
 type Sample struct {
 	// Run is the id of the run row the PR was measured on.
 	Run string
@@ -166,7 +166,7 @@ type Sample struct {
 	Reverted bool
 }
 
-// Evidence is what the auto-merge rule is decided from.
+// Evidence is what the rewrite rate is read from.
 type Evidence struct {
 	// Trailing is the merged PRs' samples, newest merge first, one read serving
 	// every window.

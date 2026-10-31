@@ -116,8 +116,8 @@ const measuredShown = 200
 // links, run ids and repository names — and no field of it sets anything; the
 // switch is set through its own endpoint.
 type autonomyResponse struct {
-	// AutoMerge is the owner's switch beside the rate's verdict, the two facts
-	// the effective state needs both of.
+	// AutoMerge is the owner's switch beside the rate's verdict, which the page
+	// words as information beside it.
 	AutoMerge autoMergeState `json:"auto_merge"`
 	// Rewrite is the measured merges' own figures, the rates a page draws, or
 	// one repository's alone when the request names it.
@@ -126,7 +126,7 @@ type autonomyResponse struct {
 
 // renderAutonomy renders the auto-merge state and the rewrite figures of the
 // measured merges as JSON. A repo scopes the rewrite figures to its merges and
-// never the auto-merge rate, which reads every merge given. switchRead is false
+// never the rate's verdict, which reads every merge given. switchRead is false
 // for a switch that could not be read, which reports off whatever switchOn holds.
 func renderAutonomy(samples []dispatcher.Sample, repo string, switchOn, switchRead bool) autonomyResponse {
 	shown := samples
@@ -139,13 +139,14 @@ func renderAutonomy(samples []dispatcher.Sample, repo string, switchOn, switchRe
 	}
 }
 
-// autoMergeState is the owner's auto-merge switch beside the rate's verdict, the
-// two facts the effective state needs both of, computed here so the page decides
+// autoMergeState is the owner's auto-merge switch beside the rate's verdict,
+// which the switch alone makes effective, computed here so the page decides
 // nothing.
 type autoMergeState struct {
 	// SwitchOn is the owner's setting, on while no document is stored.
 	SwitchOn bool `json:"switch_on"`
-	// RateAllows is the rate's verdict alone, the dispatcher's own rule.
+	// RateAllows is whether the rate is within its bar. It is information, and
+	// it does not change Effective.
 	RateAllows bool `json:"rate_allows"`
 	// RateValue is the trailing rate as the view prints it.
 	RateValue string `json:"rate_value"`
@@ -153,26 +154,27 @@ type autoMergeState struct {
 	Limit string `json:"limit"`
 	// Window is how many trailing merged PRs the rate covers.
 	Window int `json:"window"`
-	// Effective is the switch on and the rate allowing it.
+	// Effective is the switch on and readable. The rate does not enter it.
 	Effective bool `json:"effective"`
-	// Reason is why auto-merge is not effective: the rule's own reason, the
-	// switch being off, or the switch being unreadable.
+	// Reason is why auto-merge is not effective: switch-unread, else switch-off
+	// where the switch is off, else the rate's own reason for a switch that is on.
 	Reason string `json:"reason"`
 }
 
 // renderAutoMerge renders the owner's switch beside the rate's verdict over the
-// measured merges, taken from the dispatcher's own rule. switchRead is false for
-// a switch that could not be read, which reports off whatever switchOn holds.
+// measured merges. The switch alone decides Effective; the rate is served as
+// information. switchRead is false for a switch that could not be read, which
+// reports off whatever switchOn holds.
 func renderAutoMerge(samples []dispatcher.Sample, switchOn, switchRead bool) autoMergeState {
 	rate := dispatcher.AutoMergeOn(dispatcher.Evidence{Trailing: samples})
 	on := switchOn && switchRead
 	out := autoMergeState{
 		SwitchOn:   on,
-		RateAllows: rate.On,
+		RateAllows: rate.WithinBar,
 		RateValue:  rate.RateText(),
 		Limit:      rateText(dispatcher.AutoMergeRate),
 		Window:     dispatcher.TrailingPRs,
-		Effective:  on && rate.On,
+		Effective:  on,
 		Reason:     rate.Reason,
 	}
 	switch {

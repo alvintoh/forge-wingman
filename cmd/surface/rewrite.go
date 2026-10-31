@@ -24,7 +24,7 @@ type rewriteView struct {
 
 // bars are the lines a chart of the rate draws.
 type bars struct {
-	// Rollback is the trailing rate auto-merge is on at or under.
+	// Rollback is the bar the trailing rate is drawn against.
 	Rollback float64 `json:"rollback"`
 }
 

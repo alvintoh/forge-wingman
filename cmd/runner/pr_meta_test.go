@@ -93,14 +93,14 @@ func TestAutoMerge(t *testing.T) {
 	}
 }
 
-func TestAutoMergeNeedsTheRuleOn(t *testing.T) {
+func TestAutoMergeNeedsTheSwitchOn(t *testing.T) {
 	sum := runner.Summary{Outcome: runner.OutcomeBuilt, Ready: true}
 	clear := prRecord.Ticket()
 	if autoMerge(false, "run-abc-12", clear, sum, "", prCheck{Planned: true}) {
-		t.Error("rule off: autoMerge = true, want false for a run the rule would otherwise make eligible")
+		t.Error("switch off: autoMerge = true, want false for a run nothing else holds back")
 	}
 	if !autoMerge(true, "run-abc-12", clear, sum, "", prCheck{Planned: true}) {
-		t.Error("rule on: autoMerge = false, want true")
+		t.Error("switch on: autoMerge = false, want true")
 	}
 }
 
@@ -149,7 +149,7 @@ func (f fakeRecentRewrites) Recent(_ context.Context, limit int) ([]dispatcher.S
 	return f.samples, f.err
 }
 
-func TestAutoMergeRule(t *testing.T) {
+func TestAutoMergeRate(t *testing.T) {
 	clean := make([]dispatcher.Sample, dispatcher.TrailingPRs)
 	for i := range clean {
 		clean[i] = dispatcher.Sample{Rewrite: dispatcher.Rewrite{AgentLines: 100}}
@@ -162,18 +162,18 @@ func TestAutoMergeRule(t *testing.T) {
 		wantWarn  bool
 		wantReads int
 	}{
-		"ten measured PRs and the switch on": {fakeRecentRewrites{samples: clean}, true, true, dispatcher.AutoMergeReasonOn, false, 1},
-		"the switch off skips the read":      {fakeRecentRewrites{samples: clean}, false, false, dispatcher.AutoMergeReasonSwitchOff, false, 0},
-		"too few measured PRs":               {fakeRecentRewrites{samples: clean[:3]}, true, false, dispatcher.AutoMergeReasonTooFewMeasured, false, 1},
-		"an unreadable read":                 {fakeRecentRewrites{samples: clean, err: errors.New("firestore is unreachable")}, true, false, dispatcher.AutoMergeReasonEvidenceUnread, true, 1},
+		"ten measured PRs and the switch on": {fakeRecentRewrites{samples: clean}, true, true, "on", false, 1},
+		"the switch off skips the read":      {fakeRecentRewrites{samples: clean}, false, false, "switch-off", false, 0},
+		"too few measured PRs":               {fakeRecentRewrites{samples: clean[:3]}, true, false, "too-few-measured", false, 1},
+		"an unreadable read":                 {fakeRecentRewrites{samples: clean, err: errors.New("firestore is unreachable")}, true, false, "evidence-unread", true, 1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var logs strings.Builder
 			var reads, limit int
 			tt.store.reads, tt.store.limit = &reads, &limit
-			got := autoMergeRule(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), "run-abc-12", tt.store, tt.switchOn)
-			if got.On != tt.want || got.Reason != tt.reason || strings.Contains(logs.String(), "msg=autoMergeEvidenceUnread") != tt.wantWarn || reads != tt.wantReads {
-				t.Fatalf("decision = %+v, log %q, reads %d, want on = %v, reason %q, warned = %v, reads %d", got, logs.String(), reads, tt.want, tt.reason, tt.wantWarn, tt.wantReads)
+			got := autoMergeRate(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), "run-abc-12", tt.store, tt.switchOn)
+			if got.WithinBar != tt.want || got.Reason != tt.reason || strings.Contains(logs.String(), "msg=autoMergeEvidenceUnread") != tt.wantWarn || reads != tt.wantReads {
+				t.Fatalf("decision = %+v, log %q, reads %d, want within the bar = %v, reason %q, warned = %v, reads %d", got, logs.String(), reads, tt.want, tt.reason, tt.wantWarn, tt.wantReads)
 			}
 			if reads > 0 && limit != dispatcher.TrailingPRs {
 				t.Fatalf("Recent limit = %d, want %d", limit, dispatcher.TrailingPRs)
@@ -182,7 +182,50 @@ func TestAutoMergeRule(t *testing.T) {
 	}
 }
 
-func TestRuleAttrsEncodeAsJSONAndOmitWhatWasNotMeasured(t *testing.T) {
+// TestAutoMergeFollowsTheSwitchAlone asserts the owner's switch is the only
+// thing that decides whether an eligible PR is marked for auto-merge: the rate,
+// how much of the window is measured and a revert are served as information
+// (AC1–AC3, AC6).
+func TestAutoMergeFollowsTheSwitchAlone(t *testing.T) {
+	rated := func(ownerPerPR int64) []dispatcher.Sample {
+		window := make([]dispatcher.Sample, 0, dispatcher.TrailingPRs)
+		for range dispatcher.TrailingPRs {
+			window = append(window, dispatcher.Sample{Rewrite: dispatcher.Rewrite{AgentLines: 1_000, OwnerLines: ownerPerPR}})
+		}
+		return window
+	}
+	reverted := rated(0)
+	reverted[4].AutoMerged, reverted[4].Reverted = true, true
+	noAgentLines := make([]dispatcher.Sample, dispatcher.TrailingPRs)
+	unreadable := errors.New("firestore is unreachable")
+	for name, tt := range map[string]struct {
+		store    *fakeAutoMergeSwitchStore
+		rewrites fakeRecentRewrites
+		want     bool
+		reason   string
+	}{
+		"the switch on at 15.3%":                     {&fakeAutoMergeSwitchStore{enabled: true}, fakeRecentRewrites{samples: rated(153)}, true, "rate-above-bar"},
+		"the switch on with fewer than ten measured": {&fakeAutoMergeSwitchStore{enabled: true}, fakeRecentRewrites{samples: rated(0)[:9]}, true, "too-few-measured"},
+		"the switch on with no agent lines":          {&fakeAutoMergeSwitchStore{enabled: true}, fakeRecentRewrites{samples: noAgentLines}, true, "no-agent-lines"},
+		"the switch on with a reverted auto-merge":   {&fakeAutoMergeSwitchStore{enabled: true}, fakeRecentRewrites{samples: reverted}, true, "reverted"},
+		"the switch on with unreadable evidence":     {&fakeAutoMergeSwitchStore{enabled: true}, fakeRecentRewrites{err: unreadable}, true, "evidence-unread"},
+		"the switch off with a good rate":            {&fakeAutoMergeSwitchStore{}, fakeRecentRewrites{samples: rated(0)}, false, "switch-off"},
+		"a switch that cannot be read":               {&fakeAutoMergeSwitchStore{enabled: true, readErr: unreadable}, fakeRecentRewrites{samples: rated(0)}, false, "switch-off"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			logger := slog.New(slog.NewTextHandler(&strings.Builder{}, nil))
+			switchOn := autoMergeSwitchOn(context.Background(), logger, "run-abc-12", tt.store)
+			rate := autoMergeRate(context.Background(), logger, "run-abc-12", tt.rewrites, switchOn)
+			sum := runner.Summary{Outcome: runner.OutcomeBuilt, Ready: true}
+			got := autoMerge(switchOn, "run-abc-12", prRecord.Ticket(), sum, "", prCheck{Planned: true})
+			if got != tt.want || rate.Reason != tt.reason {
+				t.Fatalf("autoMerge = %v, rate = %+v, want %v with reason %q", got, rate, tt.want, tt.reason)
+			}
+		})
+	}
+}
+
+func TestRateAttrsEncodeAsJSONAndOmitWhatWasNotMeasured(t *testing.T) {
 	for name, tt := range map[string]struct {
 		d        dispatcher.AutoMergeDecision
 		measured bool
@@ -195,7 +238,7 @@ func TestRuleAttrsEncodeAsJSONAndOmitWhatWasNotMeasured(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			var buf strings.Builder
-			slog.New(slog.NewJSONHandler(&buf, nil)).Info("autoMergeDecided", ruleAttrs(tt.d)...)
+			slog.New(slog.NewJSONHandler(&buf, nil)).Info("autoMergeDecided", rateAttrs(tt.d)...)
 			var line map[string]any
 			if err := json.Unmarshal([]byte(buf.String()), &line); err != nil {
 				t.Fatalf("log %q is not JSON: %v", buf.String(), err)

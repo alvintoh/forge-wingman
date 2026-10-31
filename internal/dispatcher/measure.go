@@ -39,7 +39,7 @@ type PullRequests interface {
 }
 
 // Rewrites records each merged agent PR's measured lines on its run row and
-// reads the samples the auto-merge rule is decided from.
+// reads the samples the rewrite rate is computed from.
 type Rewrites interface {
 	// RunForMerged returns the run row merged PR pr belongs to, whichever
 	// attempt opened it.
@@ -65,7 +65,8 @@ var revertTitle = regexp.MustCompile(`^Revert "(.*)"$`)
 
 // measureRewrites records each merged run PR's measured lines on its run row and
 // flags the rows of the PRs a merged revert names. It runs after the dispatch
-// walk, so the samples the next poll's auto-merge rule reads are already written.
+// walk, so the samples the next poll's rewrite rate is computed from are already
+// written.
 //
 // A repository whose listing fails is logged and skipped while another one
 // listed, since the reachability record already reports it; only when every

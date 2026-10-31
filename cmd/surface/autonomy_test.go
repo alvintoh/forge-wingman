@@ -287,21 +287,21 @@ func TestAutonomyAnUnknownRepositoryServesTheEmptyShape(t *testing.T) {
 	}
 }
 
-// TestAutonomyScopedAnswerLeavesTheGatePooled asserts the auto-merge verdict is
-// read over every merge whatever repository the figures are scoped to: the gate
-// a scoped request shows is the gate the runner applies.
-func TestAutonomyScopedAnswerLeavesTheGatePooled(t *testing.T) {
+// TestAutonomyScopedAnswerLeavesTheRatePooled asserts the rate's verdict is read
+// over every merge whatever repository the figures are scoped to: the rate a
+// scoped request reports is the rate the runner reports.
+func TestAutonomyScopedAnswerLeavesTheRatePooled(t *testing.T) {
 	pooled := blocksOf(t, autonomyBody(t, twoRepositories(), "/api/autonomy")).AutoMerge
-	var gate struct {
+	var rate struct {
 		RateValue  string `json:"rate_value"`
 		RateAllows bool   `json:"rate_allows"`
 		Reason     string `json:"reason"`
 	}
-	if err := json.Unmarshal(pooled, &gate); err != nil {
+	if err := json.Unmarshal(pooled, &rate); err != nil {
 		t.Fatal(err)
 	}
-	if gate.RateValue != "52.5%" || gate.RateAllows || gate.Reason != "rate-above-bar" {
-		t.Fatalf("auto_merge = %+v, want the newest ten merges of both repositories pooled", gate)
+	if rate.RateValue != "52.5%" || rate.RateAllows || rate.Reason != "rate-above-bar" {
+		t.Fatalf("auto_merge = %+v, want the newest ten merges of both repositories pooled", rate)
 	}
 
 	for _, repo := range []string{"octo/scratch", "octo/other", "octo/missing"} {
@@ -348,7 +348,7 @@ func TestAutonomyRefusesAMalformedRepository(t *testing.T) {
 	}
 }
 
-// ratedMerges is the window the auto-merge rule reads: ten measured merges of
+// ratedMerges is the window the rate is read over: ten measured merges of
 // one PR each, ownerPerPR of them rewritten.
 func ratedMerges(at time.Time, ownerPerPR int64) []dispatcher.Sample {
 	measured := make([]dispatcher.Sample, 0, dispatcher.TrailingPRs)
@@ -378,9 +378,9 @@ func readAutoMerge(t *testing.T, merges []dispatcher.Sample, switches AutoMergeS
 }
 
 // TestAutonomyReportsTheAutoMergeSwitchAndTheRatesVerdict asserts the autonomy
-// view carries the owner's switch beside the rate's verdict, the two facts the
-// effective state needs both of, with the bar read from the dispatcher's own
-// constant (AC1).
+// view carries the owner's switch beside the rate's verdict, which the switch
+// alone makes effective, with the bar read from the dispatcher's own constant
+// (AC1).
 func TestAutonomyReportsTheAutoMergeSwitchAndTheRatesVerdict(t *testing.T) {
 	state := readAutoMerge(t, ratedMerges(measuredAt(), 98), &stubAutoMerge{enabled: true})
 
@@ -390,22 +390,46 @@ func TestAutonomyReportsTheAutoMergeSwitchAndTheRatesVerdict(t *testing.T) {
 	if state["switch_on"] != true || state["rate_allows"] != true || state["effective"] != true {
 		t.Errorf("auto_merge = %v, want the switch on and the 9.8%% rate allowing it", state)
 	}
-	if state["rate_value"] != "9.8%" || state["limit"] != "10.0%" || state["window"] != 10.0 || state["reason"] != dispatcher.AutoMergeReasonOn {
-		t.Errorf("auto_merge = %v, want the rule's own rate against its bar", state)
+	if state["rate_value"] != "9.8%" || state["limit"] != "10.0%" || state["window"] != 10.0 || state["reason"] != "on" {
+		t.Errorf("auto_merge = %v, want the rate against its own bar", state)
 	}
 }
 
-// TestAutonomyReportsARateAboveTheBarAsNotAllowing asserts the two facts are
-// separate: the owner's switch is on while the rate does not allow, so
-// auto-merge is not effective (AC1).
-func TestAutonomyReportsARateAboveTheBarAsNotAllowing(t *testing.T) {
-	state := readAutoMerge(t, ratedMerges(measuredAt(), 101), &stubAutoMerge{enabled: true})
-
-	if state["switch_on"] != true || state["rate_allows"] != false || state["effective"] != false {
-		t.Errorf("auto_merge = %v, want the switch on and the rate refusing", state)
+// TestAutonomyEffectiveIsTheSwitchAlone asserts the endpoint's effective state
+// is the switch on and readable alone, with the rate still served beside it as
+// information a page words (AC4, AC6).
+func TestAutonomyEffectiveIsTheSwitchAlone(t *testing.T) {
+	at := measuredAt()
+	reverted := ratedMerges(at, 0)
+	reverted[3].AutoMerged, reverted[3].Reverted = true, true
+	noAgentLines := make([]dispatcher.Sample, dispatcher.TrailingPRs)
+	for i := range noAgentLines {
+		noAgentLines[i] = dispatcher.Sample{PR: 140 - i, MergedAt: at.Add(-time.Duration(i) * time.Hour)}
 	}
-	if state["rate_value"] != "10.1%" || state["reason"] != dispatcher.AutoMergeReasonRateAboveBar {
-		t.Errorf("auto_merge = %v, want the rate with the reason it refused", state)
+	unreadable := errors.New("firestore unreachable")
+	for name, tt := range map[string]struct {
+		merges     []dispatcher.Sample
+		switches   AutoMergeStore
+		effective  bool
+		rateAllows bool
+		rateValue  string
+		reason     string
+	}{
+		"the switch on at 15.3%":                     {ratedMerges(at, 153), &stubAutoMerge{enabled: true}, true, false, "15.3%", "rate-above-bar"},
+		"the switch on with fewer than ten measured": {ratedMerges(at, 0)[:9], &stubAutoMerge{enabled: true}, true, false, "0.0%", "too-few-measured"},
+		"the switch on with no agent lines":          {noAgentLines, &stubAutoMerge{enabled: true}, true, false, "no agent lines", "no-agent-lines"},
+		"the switch on with a reverted auto-merge":   {reverted, &stubAutoMerge{enabled: true}, true, false, "0.0%", "reverted"},
+		"the switch off with a good rate":            {ratedMerges(at, 0), &stubAutoMerge{}, false, true, "0.0%", "switch-off"},
+		"a switch that cannot be read":               {ratedMerges(at, 0), &stubAutoMerge{enabled: true, readErr: unreadable}, false, true, "0.0%", "switch-unread"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			state := readAutoMerge(t, tt.merges, tt.switches)
+			if state["effective"] != tt.effective || state["rate_allows"] != tt.rateAllows ||
+				state["rate_value"] != tt.rateValue || state["reason"] != tt.reason {
+				t.Fatalf("auto_merge = %v, want effective %v, rate_allows %v, rate_value %q, reason %q",
+					state, tt.effective, tt.rateAllows, tt.rateValue, tt.reason)
+			}
+		})
 	}
 }
 
@@ -417,7 +441,7 @@ func TestAutonomyReportsAnOffSwitchBesideARateThatAllows(t *testing.T) {
 	if state["switch_on"] != false || state["effective"] != false {
 		t.Errorf("auto_merge = %v, want the switch off and no effect", state)
 	}
-	if state["rate_allows"] != true || state["reason"] != dispatcher.AutoMergeReasonSwitchOff {
+	if state["rate_allows"] != true || state["reason"] != "switch-off" {
 		t.Errorf("auto_merge = %v, want the rate still allowing it and the switch named as the reason", state)
 	}
 }
@@ -445,7 +469,7 @@ func TestAutonomyReportsASwitchItCannotReadAsOff(t *testing.T) {
 	if !ok {
 		t.Fatalf("auto_merge = %v, want the switch and the rate", body["auto_merge"])
 	}
-	if state["switch_on"] != false || state["effective"] != false || state["reason"] != dispatcher.AutoMergeReasonSwitchUnread {
+	if state["switch_on"] != false || state["effective"] != false || state["reason"] != "switch-unread" {
 		t.Errorf("auto_merge = %v, want the unread switch reported off with the reason", state)
 	}
 	if !strings.Contains(log.String(), "autoMergeSwitchUnread") {

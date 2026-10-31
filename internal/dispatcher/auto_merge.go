@@ -5,17 +5,18 @@ import (
 	"math"
 )
 
-// The reasons auto-merge is on or off, stable so a log line and a view can be
-// counted by them.
+// The reasons the switch and the rate report, stable so a log line and a view
+// can be counted by them.
 const (
-	// AutoMergeReasonOn is the reason when every clause of the rule holds.
+	// AutoMergeReasonOn is the reason when the rate is within its bar and
+	// nothing holds auto-merge off.
 	AutoMergeReasonOn = "on"
 	// AutoMergeReasonSwitchOff is the owner's switch being off.
 	AutoMergeReasonSwitchOff = "switch-off"
-	// AutoMergeReasonSwitchUnread is the owner's switch being unreadable. The
-	// runner's rule takes the switch as a boolean and reports a failed read as a
-	// warning before it runs; the surface, which reads the switch itself, reports
-	// it as the reason auto-merge is off.
+	// AutoMergeReasonSwitchUnread is the owner's switch being unreadable. pr-meta
+	// takes the switch as a boolean and reports a failed read as a warning before
+	// it reads the rate; the surface, which reads the switch itself, reports it
+	// as the reason auto-merge is off.
 	AutoMergeReasonSwitchUnread = "switch-unread"
 	// AutoMergeReasonTooFewMeasured is fewer than TrailingPRs merged PRs, or one with an unmeasured commit.
 	AutoMergeReasonTooFewMeasured = "too-few-measured"
@@ -29,9 +30,14 @@ const (
 	AutoMergeReasonEvidenceUnread = "evidence-unread"
 )
 
-// AutoMergeDecision is whether auto-merge is on and the numbers it was decided on.
+// AutoMergeDecision is the rewrite rate's own verdict over the trailing window:
+// whether the rate is within its bar and what it was read from. The owner's
+// switch alone decides whether auto-merge is on, so this is information for the
+// runner's log and the autonomy view.
 type AutoMergeDecision struct {
-	On bool
+	// WithinBar is the rate alone: whether it is at or under AutoMergeRate. It
+	// changes nothing about auto-merge.
+	WithinBar bool
 	// Reason is one of the AutoMerge reason tokens.
 	Reason string
 	// PRs is how many merged PRs the window held.
@@ -56,9 +62,11 @@ func (d AutoMergeDecision) RateText() string {
 	return fmt.Sprintf("%.1f%%", d.Rate*100)
 }
 
-// AutoMergeOn decides, with the owner's switch on, whether auto-merge is on: the
-// newest TrailingPRs merged PRs are all measured, carry agent lines, rewrite at
-// most AutoMergeRate pooled, and none of them is a reverted auto-merge.
+// AutoMergeOn reads the rate's verdict over the newest TrailingPRs merged PRs:
+// whether they are all measured, carry agent lines, rewrite at most
+// AutoMergeRate pooled, and hold no auto-merged PR a merged revert names. Its
+// WithinBar is the rate's own answer, which the views report as information:
+// auto-merge follows the owner's switch.
 func AutoMergeOn(ev Evidence) AutoMergeDecision {
 	window := ev.Window(TrailingPRs)
 	lines := Lines(window)
@@ -73,7 +81,7 @@ func AutoMergeOn(ev Evidence) AutoMergeDecision {
 	case d.Reverted > 0:
 		d.Reason = AutoMergeReasonReverted
 	default:
-		d.Reason, d.On = AutoMergeReasonOn, true
+		d.Reason, d.WithinBar = AutoMergeReasonOn, true
 	}
 	return d
 }
