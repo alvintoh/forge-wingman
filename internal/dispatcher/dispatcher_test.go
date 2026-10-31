@@ -141,6 +141,11 @@ type fakeQueue struct {
 	reprioritized map[string]int
 	priorityErr   error
 
+	// refreshed records each ticket the poll refreshed on a queued run; refreshErr
+	// fails that refresh.
+	refreshed  []Queued
+	refreshErr error
+
 	// reserved and settled are the spend Spend reports at every moment; spends
 	// records each moment it was asked about.
 	reserved Totals
@@ -241,6 +246,14 @@ func (q *fakeQueue) UpdateQueuedPriority(_ context.Context, runID string, rank i
 	}
 	q.reprioritized[runID] = rank
 	return true, nil
+}
+
+func (q *fakeQueue) RefreshQueuedTicket(_ context.Context, run Queued) ([]string, error) {
+	if q.refreshErr != nil {
+		return nil, q.refreshErr
+	}
+	q.refreshed = append(q.refreshed, run)
+	return nil, nil
 }
 
 func (q *fakeQueue) Enqueue(_ context.Context, run Queued) error {
@@ -862,6 +875,73 @@ func TestPollAdmitsPastAFailedRankRefresh(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "msg=priorityRefreshFailed") {
 		t.Fatalf("log = %q, want priorityRefreshFailed", logs.String())
+	}
+}
+
+func TestPollRefreshesAQueuedTicket(t *testing.T) {
+	q := &fakeQueue{holds: map[string]bool{"FRG-18": true}}
+	issue := admitted("size:L", "repo:octo/scratch", runner.FrontEndLabel)
+	issue.BlockedBy = []string{"FRG-17"}
+	issue.Blocks = []string{"FRG-19"}
+	if _, err := Poll(context.Background(), pollDeps(fakeSource{issues: []Issue{issue}}, q, &fakeWorkflow{}), buildConfig); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.refreshed) != 1 {
+		t.Fatalf("refreshed = %+v, want one ticket", q.refreshed)
+	}
+	got := q.refreshed[0]
+	if got.RunID != "FRG-18" || got.Ticket.Title != issue.Title || got.Ticket.Body != issue.Body ||
+		got.Ticket.Size != "L" || !got.Ticket.FrontEnd || !slices.Equal(got.BlockedBy, []string{"FRG-17"}) ||
+		!slices.Equal(got.Blocks, []string{"FRG-19"}) {
+		t.Fatalf("refreshed = %+v, want the issue's current ticket", got)
+	}
+}
+
+func TestPollDoesNotRefreshTheTicketOfARunItEnqueues(t *testing.T) {
+	q := &fakeQueue{}
+	deps := pollDeps(fakeSource{issues: []Issue{admitted("size:M", "repo:octo/scratch")}}, q, &fakeWorkflow{})
+	if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.refreshed) != 0 {
+		t.Fatalf("refreshed = %+v, want none for a new ticket", q.refreshed)
+	}
+}
+
+func TestPollAdmitsPastAFailedTicketRefresh(t *testing.T) {
+	q := &fakeQueue{
+		holds:      map[string]bool{"FRG-18": true},
+		refreshErr: errFirestore,
+		candidates: []Candidate{{RunID: "FRG-18", Repo: "octo/scratch", Priority: 2}},
+	}
+	w := &fakeWorkflow{}
+	var logs strings.Builder
+	deps := pollDeps(fakeSource{issues: []Issue{admitted("size:M", "repo:octo/scratch")}}, q, w)
+	deps.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	res, err := Poll(context.Background(), deps, buildConfig)
+	if err != nil {
+		t.Fatalf("err = %v, want the poll to continue past the failed refresh", err)
+	}
+	if !slices.Equal(res.Dispatched, []string{"FRG-18"}) {
+		t.Fatalf("dispatched = %q, want the candidate admitted", res.Dispatched)
+	}
+	if !strings.Contains(logs.String(), "msg=ticketRefreshFailed") {
+		t.Fatalf("log = %q, want ticketRefreshFailed", logs.String())
+	}
+}
+
+func TestPollDoesNotRefreshATicketTheQueueWouldRefuse(t *testing.T) {
+	q := &fakeQueue{holds: map[string]bool{"FRG-18": true}}
+	deps := pollDeps(fakeSource{issues: []Issue{admitted("repo:octo/scratch")}}, q, &fakeWorkflow{})
+	res, err := Poll(context.Background(), deps, buildConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reasons(res.Rejections); !slices.Equal(got, []Refusal{RefusalNoSize}) {
+		t.Fatalf("refused %v, want the unsized ticket refused", got)
+	}
+	if len(q.refreshed) != 0 {
+		t.Fatalf("refreshed = %+v, want a refused ticket to leave the held row as it is", q.refreshed)
 	}
 }
 

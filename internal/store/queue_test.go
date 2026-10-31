@@ -596,6 +596,197 @@ func TestUpdateQueuedPriorityLogsOnlyAChangedRank(t *testing.T) {
 	}
 }
 
+// ticketRow is the row Enqueue writes for run, in state, for the fields a ticket
+// refresh reads.
+func ticketRow(run dispatcher.Queued, state string) map[string]any {
+	row := map[string]any{
+		stateField: state, ticketTitleField: run.Ticket.Title, ticketBodyField: run.Ticket.Body,
+		sizeField: run.Ticket.Size, sizedByField: run.Ticket.SizedBy, frontEndField: run.Ticket.FrontEnd,
+	}
+	if len(run.BlockedBy) > 0 {
+		row[blockedByField] = run.BlockedBy
+	}
+	if len(run.Blocks) > 0 {
+		row[blocksField] = run.Blocks
+	}
+	return row
+}
+
+func TestRefreshQueuedTicketRewritesOnlyAQueuedRun(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	for _, tt := range []struct {
+		name  string
+		state string
+		want  []string
+	}{
+		{"queued", stateQueued, []string{ticketTitleField, ticketBodyField, sizeField, frontEndField, blockedByField, blocksField}},
+		{"planned", statePlanned, nil},
+		{"claimed", stateClaimed, nil},
+		{"waiting", stateWaiting, nil},
+		{"stopped", stateStopped, nil},
+		{"abandoned", stateAbandoned, nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			id := fresh("queue-refresh-ticket")
+			old := queuedRun(id, 3)
+			old.BlockedBy, old.Blocks = []string{"FRG-1"}, []string{"FRG-9"}
+			seedRow(t, client, id, ticketRow(old, tt.state))
+			run := queuedRun(id, 3)
+			run.Ticket.Title, run.Ticket.Body, run.Ticket.Size, run.Ticket.FrontEnd = "fix(x): add two files", "Add two files.", "L", true
+			run.BlockedBy = []string{"FRG-2"}
+			changed, err := q.RefreshQueuedTicket(ctx, run)
+			if err != nil || !slices.Equal(changed, tt.want) {
+				t.Fatalf("changed = %v, err %v, want %v", changed, err, tt.want)
+			}
+			row := readRow(t, client, id)
+			if tt.want == nil {
+				if row[ticketTitleField] != old.Ticket.Title || row[ticketBodyField] != old.Ticket.Body || row[sizeField] != "M" || row[frontEndField] != false ||
+					!slices.Equal(stringList(row, blockedByField), old.BlockedBy) || !slices.Equal(stringList(row, blocksField), old.Blocks) {
+					t.Fatalf("row = %v, want it untouched", row)
+				}
+				return
+			}
+			if row[ticketTitleField] != run.Ticket.Title || row[ticketBodyField] != run.Ticket.Body || row[sizeField] != "L" || row[frontEndField] != true {
+				t.Fatalf("row = %v, want the issue's ticket", row)
+			}
+			if got := stringList(row, blockedByField); !slices.Equal(got, []string{"FRG-2"}) {
+				t.Fatalf("blocked_by = %v, want FRG-2", got)
+			}
+			if _, has := row[blocksField]; has {
+				t.Fatalf("blocks = %v, want the emptied field deleted", row[blocksField])
+			}
+		})
+	}
+	if changed, err := q.RefreshQueuedTicket(ctx, queuedRun(fresh("queue-refresh-ticket-missing"), 3)); err != nil || changed != nil {
+		t.Fatalf("missing run: changed = %v, err %v, want a no-op", changed, err)
+	}
+}
+
+func TestRefreshQueuedTicketTakesAnEditedBody(t *testing.T) {
+	q, client := queue(t)
+	id := fresh("queue-refresh-body")
+	run := queuedRun(id, 3)
+	seedRow(t, client, id, ticketRow(run, stateQueued))
+	run.Ticket.Body = "Add a file, and a test for it."
+	changed, err := q.RefreshQueuedTicket(context.Background(), run)
+	if err != nil || !slices.Equal(changed, []string{ticketBodyField}) {
+		t.Fatalf("changed = %v, err %v, want only the body", changed, err)
+	}
+	if got := readRow(t, client, id)[ticketBodyField]; got != run.Ticket.Body {
+		t.Fatalf("body = %v, want the edited body", got)
+	}
+}
+
+func TestRefreshQueuedTicketTakesAChangedAndAClearedBlockerList(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	id := fresh("queue-refresh-blockers")
+	run := queuedRun(id, 3)
+	run.BlockedBy = []string{"FRG-1", "FRG-2"}
+	seedRow(t, client, id, ticketRow(run, stateQueued))
+	run.BlockedBy = []string{"FRG-2"}
+	if changed, err := q.RefreshQueuedTicket(ctx, run); err != nil || !slices.Equal(changed, []string{blockedByField}) {
+		t.Fatalf("changed = %v, err %v, want the blocker list", changed, err)
+	}
+	if got := stringList(readRow(t, client, id), blockedByField); !slices.Equal(got, []string{"FRG-2"}) {
+		t.Fatalf("blocked_by = %v, want FRG-2", got)
+	}
+	run.BlockedBy = nil
+	if changed, err := q.RefreshQueuedTicket(ctx, run); err != nil || !slices.Equal(changed, []string{blockedByField}) {
+		t.Fatalf("changed = %v, err %v, want the cleared blocker list", changed, err)
+	}
+	if got, has := readRow(t, client, id)[blockedByField]; has {
+		t.Fatalf("blocked_by = %v, want the field deleted", got)
+	}
+}
+
+func TestRefreshQueuedTicketWritesNothingForAnUnchangedTicket(t *testing.T) {
+	q, _, _, commits := countingQueue(t, false)
+	id := fresh("queue-refresh-same")
+	run := queuedRun(id, 3)
+	run.Blocks = []string{"FRG-9"}
+	seedRow(t, q.client, id, ticketRow(run, stateQueued))
+	seeded := commits.Load()
+	changed, err := q.RefreshQueuedTicket(context.Background(), run)
+	if err != nil || changed != nil {
+		t.Fatalf("changed = %v, err %v, want nothing", changed, err)
+	}
+	if got := commits.Load() - seeded; got != 0 {
+		t.Fatalf("committed %d writes for an unchanged ticket, want none", got)
+	}
+}
+
+func TestRefreshQueuedTicketIgnoresTheOrderOfBlockers(t *testing.T) {
+	q, _, _, commits := countingQueue(t, false)
+	id := fresh("queue-refresh-order")
+	run := queuedRun(id, 3)
+	run.BlockedBy = []string{"FRG-1", "FRG-2"}
+	seedRow(t, q.client, id, ticketRow(run, stateQueued))
+	seeded := commits.Load()
+	run.BlockedBy = []string{"FRG-2", "FRG-1"}
+	changed, err := q.RefreshQueuedTicket(context.Background(), run)
+	if err != nil || changed != nil {
+		t.Fatalf("changed = %v, err %v, want nothing for the same blockers reordered", changed, err)
+	}
+	if got := commits.Load() - seeded; got != 0 {
+		t.Fatalf("committed %d writes for reordered blockers, want none", got)
+	}
+}
+
+func TestRefreshQueuedTicketTakesTheCurrentSizingSource(t *testing.T) {
+	q, client := queue(t)
+	id := fresh("queue-refresh-sized-by")
+	run := queuedRun(id, 3)
+	row := ticketRow(run, stateQueued)
+	row[sizedByField] = "an-earlier-source"
+	seedRow(t, client, id, row)
+	changed, err := q.RefreshQueuedTicket(context.Background(), run)
+	if err != nil || !slices.Equal(changed, []string{sizedByField}) {
+		t.Fatalf("changed = %v, err %v, want the sizing source", changed, err)
+	}
+	if got := str(readRow(t, client, id), sizedByField); got != run.Ticket.SizedBy {
+		t.Fatalf("sized_by = %q, want %q", got, run.Ticket.SizedBy)
+	}
+}
+
+func TestRefreshQueuedTicketLeavesARowHoldingAPlan(t *testing.T) {
+	q, client := queue(t)
+	id := fresh("queue-refresh-plan")
+	run := queuedRun(id, 3)
+	row := ticketRow(run, stateQueued)
+	row[planFilesField] = []string{"internal/x/x.go"}
+	seedRow(t, client, id, row)
+	run.Ticket.Body = "A body written after the plan."
+	if changed, err := q.RefreshQueuedTicket(context.Background(), run); err != nil || changed != nil {
+		t.Fatalf("changed = %v, err %v, want a planned row left alone", changed, err)
+	}
+	if got := readRow(t, client, id)[ticketBodyField]; got != "Add a file." {
+		t.Fatalf("body = %v, want the planned row's own", got)
+	}
+}
+
+func TestRefreshQueuedTicketLogsOnlyAChange(t *testing.T) {
+	q, client := queue(t)
+	var logged bytes.Buffer
+	q = q.WithLogger(slog.New(slog.NewJSONHandler(&logged, nil)))
+	id := fresh("queue-refresh-log")
+	run := queuedRun(id, 3)
+	seedRow(t, client, id, ticketRow(run, stateQueued))
+	for _, body := range []string{run.Ticket.Body, "A new body.", "A new body."} {
+		run.Ticket.Body = body
+		if _, err := q.RefreshQueuedTicket(context.Background(), run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := strings.Count(logged.String(), `"msg":"queuedTicketRefreshed"`); got != 1 {
+		t.Fatalf("logged %d changes, want one for the body edit only: %s", got, logged.String())
+	}
+	if !strings.Contains(logged.String(), `"run":"`+id+`","fields":"ticket_body"`) {
+		t.Fatalf("log = %s, want the run and the body field", logged.String())
+	}
+}
+
 // updateTime is when a row was last written, which a no-op leaves unchanged.
 func updateTime(t *testing.T, client *firestore.Client, id string) time.Time {
 	t.Helper()
