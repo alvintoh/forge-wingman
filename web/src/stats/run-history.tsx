@@ -1,5 +1,6 @@
 import { captionClass } from "../caption";
 import { sameRepository } from "../project-search";
+import { fillOf, RUN_COLOURS } from "./run-colours";
 import { useRead } from "./use-read";
 
 type HistoryRun = {
@@ -16,26 +17,9 @@ type HistoryResponse = {
   runs: HistoryRun[];
 };
 
-// The fill of each kind of run, from the tokens the inbox already draws its
-// reasons with. Some kinds share a colour, so the words carry which one a bar is.
-const kindFill: Record<string, string> = {
-  allowance: "bg-defer",
-  cancelled: "bg-muted",
-  credential: "bg-stop",
-  decision: "bg-stop",
-  draft: "bg-defer",
-  failed: "bg-stop",
-  merged: "bg-ok",
-  "no-changes": "bg-muted",
-  other: "bg-muted",
-  "pr-open": "bg-review",
-};
-
-const OTHER_FILL = "bg-muted";
-
 // RunHistory draws the latest settled runs as one bar each, oldest to newest,
-// with the merged count, narrowed to the project the page is on; each bar's
-// words are read out, not drawn.
+// with the merged count and the legend that names each bar's colour, narrowed
+// to the project the page is on; each bar's words are read out, not drawn.
 // While it loads, its line keeps the height of the strip (26px), so the ready
 // state does not push the page down.
 export function RunHistory({ project }: { project: string | null }) {
@@ -76,18 +60,34 @@ export function RunHistory({ project }: { project: string | null }) {
         </p>
       )}
       {read.status === "ready" && runs.length > 0 && (
-        <ol aria-label="The latest settled runs, oldest first" className="mt-3 flex gap-[5px]">
-          {runs.map((run) => (
-            <li
-              key={run.run}
-              className={`h-6.5 max-w-4 min-w-0 flex-1 rounded-tag ${kindFill[run.kind] ?? OTHER_FILL}`}
-            >
-              <span className="sr-only">
-                {run.ticket || run.run}: {run.words}
-              </span>
-            </li>
-          ))}
-        </ol>
+        <>
+          <ol aria-label="The latest settled runs, oldest first" className="mt-3 flex gap-[5px]">
+            {runs.map((run) => (
+              <li
+                key={run.run}
+                className={`h-6.5 max-w-4 min-w-0 flex-1 rounded-tag ${fillOf(run.kind)}`}
+              >
+                <span className="sr-only">
+                  {run.ticket || run.run}: {run.words}
+                </span>
+              </li>
+            ))}
+          </ol>
+          <ul
+            aria-label="Run kinds"
+            className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1 text-micro text-ink2"
+          >
+            {RUN_COLOURS.map((colour) => (
+              <li key={colour.fill} className="flex min-w-0 items-center gap-1.5">
+                <span
+                  aria-hidden="true"
+                  className={`h-2.5 w-2.5 shrink-0 rounded-tag ${colour.fill}`}
+                />
+                <span className="min-w-0">{colour.kinds.map((kind) => kind.words).join(", ")}</span>
+              </li>
+            ))}
+          </ul>
+        </>
       )}
     </section>
   );
