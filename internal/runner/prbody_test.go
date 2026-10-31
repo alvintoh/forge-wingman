@@ -29,6 +29,7 @@ func TestPRBodyRendersTheRepositoryTemplate(t *testing.T) {
 		"-->\n`ABC-12`: " + testTicket.Title + "\n",
 		"| Check | What it proves | Result |\n|---|---|---|\n| `make check` |",
 		"the check job reports every gate passing, by the branch's own config: not proof | ✅ |",
+		"## Screenshots (fixture data)\nNo screenshots: this run captured none.\n",
 		"## Notes\nBuilt unattended by forge-wingman. Run: " + testRunURL,
 		"```\n" + testTicket.Body + "\n```\n",
 	} {
@@ -36,7 +37,7 @@ func TestPRBodyRendersTheRepositoryTemplate(t *testing.T) {
 			t.Errorf("body lacks %q:\n%s", want, body)
 		}
 	}
-	for _, unwanted := range []string{"<TEAM-n>", "closes", "AC1 · <short name>", "<other check>", "## Screenshots", "| ❌ |"} {
+	for _, unwanted := range []string{"<TEAM-n>", "closes", "AC1 · <short name>", "<other check>", "FRONTEND changes only", "| ❌ |"} {
 		if strings.Contains(body, unwanted) {
 			t.Errorf("body keeps %q:\n%s", unwanted, body)
 		}
@@ -345,5 +346,131 @@ func TestPRBodyNamesNoSupersededPRForAFirstAttempt(t *testing.T) {
 	}
 	if strings.Contains(body, "Supersedes") {
 		t.Fatalf("body names a superseded PR:\n%s", body)
+	}
+}
+
+func TestPRBodySaysTheRunCapturedNoScreenshots(t *testing.T) {
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, nil, nil, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "## Screenshots (fixture data)\nNo screenshots: this run captured none.\n\n## Notes\n") {
+		t.Fatalf("body does not say the run captured none:\n%s", body)
+	}
+}
+
+// evidenceOf is one screenshot at its place on the evidence branch.
+func evidenceOf(route, width, p string) EvidenceFile {
+	return EvidenceFile{Route: route, Width: width, Path: p}
+}
+
+func TestScreenshotsRendersOneImagePerViewport(t *testing.T) {
+	ev := Evidence{SHA: testSHA, Files: []EvidenceFile{
+		evidenceOf("/checkout", "s", "pr-7/"+testSHA+"/s/checkout.png"),
+		evidenceOf("/home", "m", "pr-7/"+testSHA+"/m/index.png"),
+		evidenceOf("/home", "s", "pr-7/"+testSHA+"/s/index.png"),
+	}}
+	raw := "https://raw.githubusercontent.com/o/r/evidence/pr-7/" + testSHA
+	want := "## Screenshots (fixture data) — shot at `" + testSHA + "`\n\n" +
+		"| Route | s | m | l | xl |\n|---|---|---|---|---|\n" +
+		"| `/checkout` | <img width=\"200\" alt=\"/checkout at s\" src=\"" + raw + "/s/checkout.png\"> | — | — | — |\n" +
+		"| `/home` | <img width=\"200\" alt=\"/home at s\" src=\"" + raw +
+		"/s/index.png\"> | <img width=\"200\" alt=\"/home at m\" src=\"" + raw + "/m/index.png\"> | — | — |"
+	if got := Screenshots(ev, "o/r"); got != want {
+		t.Fatalf("section =\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestReplaceScreenshotsReplacesTheSectionForANewSHA(t *testing.T) {
+	const first, second = "fedcba9876543210fedcba9876543210fedcba98", "89abcdef0123456789abcdef0123456789abcdef"
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, nil, nil, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sha := range []string{first, second} {
+		ev := Evidence{SHA: sha, Files: []EvidenceFile{{Route: "/home", Width: "s", Path: "pr-7/" + sha + "/s/home.png"}}}
+		if body, err = ReplaceScreenshots(body, Screenshots(ev, "o/r")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := strings.Count(body, "## Screenshots (fixture data)"); n != 1 {
+		t.Fatalf("body holds %d screenshots sections, want 1:\n%s", n, body)
+	}
+	if !strings.Contains(body, "shot at `"+second+"`") || strings.Contains(body, first) {
+		t.Fatalf("body does not name the sha it was shot at:\n%s", body)
+	}
+	if !strings.Contains(body, "\n\n## Notes\nBuilt unattended") {
+		t.Fatalf("replacing the section joined it to the notes:\n%s", body)
+	}
+}
+
+func TestReplaceScreenshotsRefusesABodyWithNoSection(t *testing.T) {
+	if _, err := ReplaceScreenshots("## Notes\nbuilt", "## Screenshots (fixture data)\nx"); !errors.Is(err, ErrNoScreenshotsSection) {
+		t.Fatalf("err = %v, want ErrNoScreenshotsSection: a body must not gain an appended section", err)
+	}
+}
+
+// The ticket body quotes the heading inside its fence in the notes.
+func TestReplaceScreenshotsLeavesAFencedCopyAlone(t *testing.T) {
+	body := "## Summary\n\nAdds it.\n\n## Screenshots (fixture data)\n" +
+		"No screenshots: this run captured none.\n\n## Notes\n\nThe ticket as built:\n\n" +
+		"```\n## Screenshots (fixture data)\nquoted\n```\n"
+	section := "## Screenshots (fixture data) — shot at `" + testSHA + "`"
+	got, err := ReplaceScreenshots(body, section)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "```\n## Screenshots (fixture data)\nquoted\n```") {
+		t.Fatalf("the quoted copy did not survive verbatim:\n%s", got)
+	}
+	if n := strings.Count(got, "shot at `"+testSHA+"`"); n != 1 {
+		t.Fatalf("body holds %d shot sections, want 1:\n%s", n, got)
+	}
+	if shot, notes := strings.Index(got, "shot at `"+testSHA+"`"), strings.Index(got, "## Notes"); shot > notes {
+		t.Fatalf("the section landed after the notes:\n%s", got)
+	}
+}
+
+func TestReplaceScreenshotsSkipsAFencedHeadingBeforeTheSection(t *testing.T) {
+	body := "## Summary\n\n```\n## Screenshots (fixture data)\nquoted\n```\n\n" +
+		"## Screenshots (fixture data)\nNo screenshots: this run captured none.\n\n## Notes\nbuilt\n"
+	got, err := ReplaceScreenshots(body, "SECTION")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "## Summary\n\n```\n## Screenshots (fixture data)\nquoted\n```\n\nSECTION\n\n## Notes\nbuilt\n"
+	if got != want {
+		t.Fatalf("body =\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestReplaceScreenshotsEndsAtTheNextHeadingOutsideAFence(t *testing.T) {
+	body := "## Summary\n\n## Screenshots (fixture data)\nold\n\n```\n## Quoted\n```\n\n## Notes\nbuilt\n"
+	got, err := ReplaceScreenshots(body, "SECTION")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "## Summary\n\nSECTION\n\n## Notes\nbuilt\n"
+	if got != want {
+		t.Fatalf("body =\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestAppendScreenshotsSeedsTheSectionABodyLacks(t *testing.T) {
+	body := "## Summary\n\nAdds it.\n\n## Notes\n\nBuilt unattended.\n"
+	section := "## Screenshots (fixture data) — shot at `" + testSHA + "`"
+	seeded := AppendScreenshots(body, section)
+	if !strings.Contains(seeded, "## Notes\n\nBuilt unattended.\n\n"+section) {
+		t.Fatalf("seeded body does not keep its notes and carry the section:\n%s", seeded)
+	}
+	if _, err := ReplaceScreenshots(seeded, section); err != nil {
+		t.Fatalf("seeded body has no section to replace: %v", err)
+	}
+}
+
+func TestAppendScreenshotsSeedsAnEmptyBody(t *testing.T) {
+	section := "## Screenshots (fixture data) — shot at `" + testSHA + "`"
+	if got, want := AppendScreenshots("", section), section+"\n"; got != want {
+		t.Fatalf("body = %q, want %q", got, want)
 	}
 }

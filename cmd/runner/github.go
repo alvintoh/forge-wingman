@@ -117,6 +117,20 @@ func (g pullRequests) setStatus(ctx context.Context, sha string, s commitStatus)
 	return g.call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/statuses/%s", g.Repo, sha), "", s, maxPullBytes, nil)
 }
 
+// apiError is GitHub's answer to a request that did not succeed: the request,
+// the status it answered, and what it said.
+type apiError struct {
+	Method string
+	Path   string
+	Status string
+	Code   int
+	Detail string
+}
+
+func (e *apiError) Error() string {
+	return fmt.Sprintf("GitHub answered %s %s with %s: %s", e.Method, e.Path, e.Status, e.Detail)
+}
+
 // call sends one request and decodes a 2xx reply of at most limit bytes into
 // out: raw bytes into a *[]byte, JSON into anything else, nothing when nil.
 func (g pullRequests) call(ctx context.Context, method, path, accept string, body any, limit int, out any) error {
@@ -164,7 +178,8 @@ func (g pullRequests) call(ctx context.Context, method, path, accept string, bod
 		return fmt.Errorf("reading %s %s: %w", method, path, err)
 	}
 	if res.StatusCode < 200 || res.StatusCode > 299 {
-		return fmt.Errorf("GitHub answered %s %s with %s: %s", method, path, res.Status, cell(strings.ToValidUTF8(string(raw[:min(len(raw), maxGitHubError)]), "")))
+		return &apiError{Method: method, Path: path, Status: res.Status, Code: res.StatusCode,
+			Detail: cell(strings.ToValidUTF8(string(raw[:min(len(raw), maxGitHubError)]), ""))}
 	}
 	switch o := out.(type) {
 	case nil:
