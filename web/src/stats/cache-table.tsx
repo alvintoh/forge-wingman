@@ -231,6 +231,9 @@ export function CacheTable({ state, project }: CacheTableProps) {
                     <th scope="col" className="py-2 pr-3">
                       Run
                     </th>
+                    <th scope="col" className="py-2 pr-3">
+                      Provider
+                    </th>
                     <th scope="col" className="hidden py-2 pr-3 md:table-cell">
                       Finished <br />
                       (AEST/AEDT)
@@ -247,13 +250,14 @@ export function CacheTable({ state, project }: CacheTableProps) {
                         <th scope="row" className="py-2 pr-3 text-left font-mono">
                           {run.run_id}
                         </th>
+                        <td className="py-2 pr-3 font-mono">{run.provider}</td>
                         <td className="hidden py-2 pr-3 md:table-cell">
                           <Finished run={run} />
                         </td>
                         <td className="py-2">{wholePercent(run.cached_share)}</td>
                       </tr>
                       <tr className="border-b border-hair md:hidden">
-                        <td colSpan={2} className="pb-2 text-label text-ink2">
+                        <td colSpan={3} className="pb-2 text-label text-ink2">
                           <div className="flex justify-between gap-4">
                             <span>{FINISHED_LABEL}</span>
                             <Finished run={run} />
