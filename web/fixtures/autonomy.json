@@ -142,7 +142,9 @@
         "pr_url": "https://github.com/acme/widgets/pull/108",
         "plan_model": "command-code/deepseek/deepseek-v4.1-flash",
         "build_model": "command-code/deepseek/deepseek-v4.1-flash",
-        "review_model": "command-code/deepseek/deepseek-v4.1-flash"
+        "review_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "trailing_10": "7.4%",
+        "trailing_10_value": 0.0736
       },
       {
         "pr": 107,
@@ -158,7 +160,9 @@
         "pr_url": "https://github.com/acme/widgets/pull/107",
         "plan_model": "command-code/deepseek/deepseek-v4.1-flash",
         "build_model": "command-code/deepseek/deepseek-v4.1-flash",
-        "review_model": "command-code/deepseek/deepseek-v4.1-flash"
+        "review_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "trailing_10": "7.4%",
+        "trailing_10_value": 0.0737
       },
       {
         "pr": 204,
@@ -174,7 +178,9 @@
         "pr_url": "https://github.com/acme/gadgets/pull/204",
         "plan_model": "command-code/meta/muse-spark-1.3-contributor",
         "build_model": "command-code/deepseek/deepseek-v4.1-flash",
-        "review_model": "command-code/deepseek/deepseek-v4.1-flash"
+        "review_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "trailing_10": "7.2%",
+        "trailing_10_value": 0.0721
       },
       {
         "pr": 106,
@@ -190,7 +196,9 @@
         "pr_url": "https://github.com/acme/widgets/pull/106",
         "plan_model": "command-code/deepseek/deepseek-v4.1-flash",
         "build_model": "command-code/deepseek/deepseek-v4.1-flash",
-        "review_model": "command-code/deepseek/deepseek-v4.1-flash"
+        "review_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "trailing_10": null,
+        "trailing_10_value": null
       },
       {
         "pr": 105,
@@ -206,7 +214,9 @@
         "pr_url": "https://github.com/acme/widgets/pull/105",
         "plan_model": "command-code/deepseek/deepseek-v4.1-flash",
         "build_model": "command-code/deepseek/deepseek-v4.1-flash",
-        "review_model": "command-code/deepseek/deepseek-v4.1-flash"
+        "review_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "trailing_10": null,
+        "trailing_10_value": null
       },
       {
         "pr": 203,
@@ -222,7 +232,9 @@
         "pr_url": "https://github.com/acme/gadgets/pull/203",
         "plan_model": "command-code/meta/muse-spark-1.3-contributor",
         "build_model": "command-code/deepseek/deepseek-v4.1-flash",
-        "review_model": "command-code/deepseek/deepseek-v4.1-flash"
+        "review_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "trailing_10": null,
+        "trailing_10_value": null
       },
       {
         "pr": 104,
@@ -238,7 +250,9 @@
         "pr_url": "https://github.com/acme/widgets/pull/104",
         "plan_model": "command-code/deepseek/deepseek-v4.1-flash",
         "build_model": "command-code/deepseek/deepseek-v4.1-flash",
-        "review_model": "command-code/deepseek/deepseek-v4.1-flash"
+        "review_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "trailing_10": null,
+        "trailing_10_value": null
       },
       {
         "pr": 103,
@@ -254,7 +268,9 @@
         "pr_url": "https://github.com/acme/widgets/pull/103",
         "plan_model": "command-code/deepseek/deepseek-v4.1-flash",
         "build_model": "command-code/deepseek/deepseek-v4.1-flash",
-        "review_model": "command-code/deepseek/deepseek-v4.1-flash"
+        "review_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "trailing_10": null,
+        "trailing_10_value": null
       },
       {
         "pr": 202,
@@ -270,7 +286,9 @@
         "pr_url": "https://github.com/acme/gadgets/pull/202",
         "plan_model": "command-code/meta/muse-spark-1.3-contributor",
         "build_model": "command-code/deepseek/deepseek-v4.1-flash",
-        "review_model": "command-code/deepseek/deepseek-v4.1-flash"
+        "review_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "trailing_10": null,
+        "trailing_10_value": null
       },
       {
         "pr": 102,
@@ -286,7 +304,9 @@
         "pr_url": "https://github.com/acme/widgets/pull/102",
         "plan_model": "command-code/deepseek/deepseek-v4.1-flash",
         "build_model": "command-code/deepseek/deepseek-v4.1-flash",
-        "review_model": "command-code/deepseek/deepseek-v4.1-flash"
+        "review_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "trailing_10": null,
+        "trailing_10_value": null
       },
       {
         "pr": 101,
@@ -302,7 +322,9 @@
         "pr_url": "https://github.com/acme/widgets/pull/101",
         "plan_model": "command-code/deepseek/deepseek-v4.1-flash",
         "build_model": "command-code/deepseek/deepseek-v4.1-flash",
-        "review_model": "command-code/deepseek/deepseek-v4.1-flash"
+        "review_model": "command-code/deepseek/deepseek-v4.1-flash",
+        "trailing_10": null,
+        "trailing_10_value": null
       },
       {
         "pr": 201,
@@ -318,7 +340,9 @@
         "pr_url": "https://github.com/acme/gadgets/pull/201",
         "plan_model": "command-code/meta/muse-spark-1.3-contributor",
         "build_model": "command-code/deepseek/deepseek-v4.1-flash",
-        "review_model": "unknown"
+        "review_model": "unknown",
+        "trailing_10": null,
+        "trailing_10_value": null
       }
     ],
     "by_size": [
