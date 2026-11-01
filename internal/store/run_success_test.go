@@ -1,9 +1,13 @@
 package store
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -105,8 +109,6 @@ func TestCountRunSuccessCountsTheRunsThatFinished(t *testing.T) {
 		{"a run the owner cancelled", []runResult{
 			{StartedAt: at(day), Outcome: runner.OutcomePROpened, ChecksResult: dispatcher.CheckGreen, Cancelled: true},
 		}, "recent 0/0 null, previous 0/0 null, failure none"},
-		{"a run still in flight", []runResult{{StartedAt: at(day)}},
-			"recent 0/0 null, previous 0/0 null, failure none"},
 		{"a run stopped for a named reason", []runResult{
 			{StartedAt: at(day), Outcome: runner.OutcomeStopped, StopReason: runner.StopRebaseConflict},
 		}, "recent 0/1 null, previous 0/0 null, failure rebase-conflict=1"},
@@ -129,10 +131,6 @@ func TestCountRunSuccessCountsTheRunsThatFinished(t *testing.T) {
 			{StartedAt: at(day + time.Hour), Outcome: runner.OutcomeNoChanges},
 			{StartedAt: at(day + 2*time.Hour), Outcome: runner.OutcomeAgentFailed},
 		}, "recent 0/3 null, previous 0/0 null, failure no-changes=2"},
-		{"a tie goes to the first class by name", []runResult{
-			{StartedAt: at(day), Outcome: runner.OutcomeStopped, StopReason: runner.StopAgentExit},
-			{StartedAt: at(day + time.Hour), Outcome: runner.OutcomeNoChanges},
-		}, "recent 0/2 null, previous 0/0 null, failure agent-exit=1"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := runSuccessText(countRunSuccess(tt.rows, runSuccessBase)); got != tt.want {
@@ -142,11 +140,27 @@ func TestCountRunSuccessCountsTheRunsThatFinished(t *testing.T) {
 	}
 }
 
-// TestRunSuccessReadsOneCappedQuery asserts the rate is one query of the runs
-// started since the earlier window opened, newest start first and capped at 200
-// (AC4): 201 runs in the trailing four weeks read as the newest 200, and the
-// oldest is the one left out.
-func TestRunSuccessReadsOneCappedQuery(t *testing.T) {
+// cappedLines returns the runSuccessCapped lines logged to buf.
+func cappedLines(t *testing.T, buf *bytes.Buffer) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if !strings.Contains(line, "runSuccessCapped") {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// TestRunSuccessCapsTheReadAtTheNewestRuns asserts 201 runs in the trailing four
+// weeks read as the newest 200, the oldest is the one left out, and the cap is
+// logged once with the limit and the oldest start read.
+func TestRunSuccessCapsTheReadAtTheNewestRuns(t *testing.T) {
 	_, client := queue(t)
 	ctx := context.Background()
 	base := runSuccessWindowAt()
@@ -168,7 +182,8 @@ func TestRunSuccessReadsOneCappedQuery(t *testing.T) {
 	write(base, string(runner.OutcomePROpened), dispatcher.CheckFailing)
 	forget(t, client, ids...)
 
-	got, err := NewRecords(client).RunSuccess(ctx, base)
+	var logged bytes.Buffer
+	got, err := NewRecords(client).WithLogger(slog.New(slog.NewJSONHandler(&logged, nil))).RunSuccess(ctx, base)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,31 +191,135 @@ func TestRunSuccessReadsOneCappedQuery(t *testing.T) {
 	if want := "recent 199/200 0.995, previous 0/0 null, failure checks-failing=1"; runSuccessText(got) != want {
 		t.Fatalf("run success = %q, want %q", runSuccessText(got), want)
 	}
+	lines := cappedLines(t, &logged)
+	if len(lines) != 1 || lines[0]["limit"] != 200.0 {
+		t.Fatalf("runSuccessCapped lines = %v, want one carrying limit 200", lines)
+	}
+	oldest, err := time.Parse(time.RFC3339Nano, fmt.Sprint(lines[0]["oldest"]))
+	if want := base.Add(-28*24*time.Hour + time.Minute); err != nil || !oldest.Equal(want) {
+		t.Errorf("oldest = %v (%v), want %v", oldest, err, want)
+	}
 }
 
-// TestRunSuccessCountsTheFourWeeksBefore asserts the earlier window is counted
-// off the same read, and a run started before it is not counted at all (AC1).
-func TestRunSuccessCountsTheFourWeeksBefore(t *testing.T) {
+// TestRunSuccessLogsNothingUnderTheCap asserts a read of fewer than 200 runs logs
+// no cap line.
+func TestRunSuccessLogsNothingUnderTheCap(t *testing.T) {
 	_, client := queue(t)
-	ctx := context.Background()
 	base := runSuccessWindowAt()
 	clearRunSuccessWindow(t, client, base)
-	seed := func(age time.Duration) {
+	for i := range 199 {
+		seedRow(t, client, fresh("run-success"), map[string]any{
+			startedAtField:    base.Add(-time.Duration(i+1) * time.Minute),
+			outcomeField:      string(runner.OutcomePROpened),
+			checksResultField: dispatcher.CheckGreen,
+		})
+	}
+
+	var logged bytes.Buffer
+	if _, err := NewRecords(client).WithLogger(slog.New(slog.NewJSONHandler(&logged, nil))).RunSuccess(context.Background(), base); err != nil {
+		t.Fatal(err)
+	}
+	if lines := cappedLines(t, &logged); len(lines) != 0 {
+		t.Fatalf("runSuccessCapped lines = %v, want none", lines)
+	}
+}
+
+// TestRunSuccessWindowsIncludeTheirEdges asserts a run started exactly four
+// weeks ago is in the recent window, exactly eight weeks ago in the previous one,
+// and a second further back in neither.
+func TestRunSuccessWindowsIncludeTheirEdges(t *testing.T) {
+	_, client := queue(t)
+	base := runSuccessWindowAt()
+	clearRunSuccessWindow(t, client, base)
+	day := 24 * time.Hour
+	for _, age := range []time.Duration{28 * day, 28*day + time.Second, 56 * day, 56*day + time.Second} {
 		seedRow(t, client, fresh("run-success"), map[string]any{
 			startedAtField:    base.Add(-age),
 			outcomeField:      string(runner.OutcomePROpened),
 			checksResultField: dispatcher.CheckGreen,
 		})
 	}
-	seed(10 * 24 * time.Hour)
-	seed(30 * 24 * time.Hour)
-	seed(60 * 24 * time.Hour)
 
-	got, err := NewRecords(client).RunSuccess(ctx, base)
+	got, err := NewRecords(client).RunSuccess(context.Background(), base)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "recent 1/1 null, previous 1/1 null, failure none"; runSuccessText(got) != want {
+	if want := "recent 1/1 null, previous 2/2 null, failure none"; runSuccessText(got) != want {
 		t.Fatalf("run success = %q, want %q", runSuccessText(got), want)
+	}
+}
+
+// TestRunSuccessCountsFinishedRunsTheOwnerDidNotCancel asserts the stored rows
+// alone tell a cancelled run and a run still in flight from a counted one: a
+// finalized row carries the zero time until a cancel sets it.
+func TestRunSuccessCountsFinishedRunsTheOwnerDidNotCancel(t *testing.T) {
+	_, client := queue(t)
+	base := runSuccessWindowAt()
+	clearRunSuccessWindow(t, client, base)
+	started := base.Add(-24 * time.Hour)
+	opened := func(cancelledAt time.Time) map[string]any {
+		return map[string]any{
+			startedAtField:          started,
+			outcomeField:            string(runner.OutcomePROpened),
+			checksResultField:       dispatcher.CheckGreen,
+			cancelledByOwnerAtField: cancelledAt,
+		}
+	}
+	seedRow(t, client, fresh("run-success"), opened(started.Add(time.Hour)))
+	seedRow(t, client, fresh("run-success"), opened(time.Time{}))
+	seedRow(t, client, fresh("run-success"), map[string]any{startedAtField: started, cancelledByOwnerAtField: time.Time{}})
+
+	got, err := NewRecords(client).RunSuccess(context.Background(), base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "recent 1/1 null, previous 0/0 null, failure none"; runSuccessText(got) != want {
+		t.Fatalf("run success = %q, want %q", runSuccessText(got), want)
+	}
+}
+
+// TestRunSuccessCountsAnAbandonedRunAsFailed asserts the stored state alone makes
+// a run swept with no outcome a failure, unless the owner cancelled it, while a
+// run still in flight stays out of the count.
+func TestRunSuccessCountsAnAbandonedRunAsFailed(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		row  map[string]any
+		want string
+	}{
+		{"an abandoned run", map[string]any{stateField: stateAbandoned},
+			"recent 0/1 null, previous 0/0 null, failure abandoned=1"},
+		{"an abandoned run the owner cancelled", map[string]any{stateField: stateAbandoned, cancelledByOwnerAtField: time.Now()},
+			"recent 0/0 null, previous 0/0 null, failure none"},
+		{"a run still in flight", map[string]any{stateField: stateClaimed},
+			"recent 0/0 null, previous 0/0 null, failure none"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, client := queue(t)
+			base := runSuccessWindowAt()
+			clearRunSuccessWindow(t, client, base)
+			tt.row[startedAtField] = base.Add(-24 * time.Hour)
+			seedRow(t, client, fresh("run-success"), tt.row)
+
+			got, err := NewRecords(client).RunSuccess(context.Background(), base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if runSuccessText(got) != tt.want {
+				t.Fatalf("run success = %q, want %q", runSuccessText(got), tt.want)
+			}
+		})
+	}
+}
+
+// TestMostCommonTieGoesToTheFirstClassByName calls mostCommon many times because
+// a map ranges in a random order, so one call can pass by luck.
+func TestMostCommonTieGoesToTheFirstClassByName(t *testing.T) {
+	failures := map[string]int{"stopped": 2, "agent-exit": 2, "no-changes": 2, "rebase-conflict": 2, "agent-failed": 1}
+	for range 64 {
+		got := mostCommon(failures)
+		if got == nil || got.Class != "agent-exit" || got.Count != 2 {
+			t.Fatalf("mostCommon = %+v, want agent-exit=2", got)
+		}
 	}
 }

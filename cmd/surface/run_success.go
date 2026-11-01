@@ -32,10 +32,7 @@ func (d Deps) runSuccess(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, renderRunSuccess(success))
 }
 
-// runSuccessResponse is the run success endpoint's wire shape: each window's
-// passed count and its runs, with the rate between them, and the most common way
-// a run failed. It carries counts alone — no ticket text, no pull request — and
-// no field of it sets anything.
+// runSuccessResponse is the run success endpoint's wire shape.
 type runSuccessResponse struct {
 	// Recent is the four weeks to now, Previous the four weeks before those.
 	Recent   runSuccessWindow `json:"recent"`

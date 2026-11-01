@@ -47,9 +47,9 @@ func run(logger *slog.Logger) error {
 		port = "8080"
 	}
 
-	// The comparison, run history, running, autonomy and peak endpoints read past
-	// runs, the runs in flight, the measured merges and the peak mode, so they
-	// need the store. A local run without GOOGLE_CLOUD_PROJECT has none and serves
+	// The comparison, run history, running, run-success, autonomy and peak endpoints
+	// read past runs, the runs in flight, the measured merges and the peak mode, so
+	// they need the store. A local run without GOOGLE_CLOUD_PROJECT has none and serves
 	// the SPA alone, answering those endpoints with 503.
 	var comparison ComparisonReader
 	var measured MeasuredReader
@@ -70,7 +70,7 @@ func run(logger *slog.Logger) error {
 			return fmt.Errorf("firestore client: %w", err)
 		}
 		defer func() { _ = fsc.Close() }()
-		records := store.NewRecords(fsc)
+		records := store.NewRecords(fsc).WithLogger(logger)
 		comparison, inbox, runs, history, success = records, records, records, records, records
 		cancels = records
 		measured = store.NewRewrites(fsc)

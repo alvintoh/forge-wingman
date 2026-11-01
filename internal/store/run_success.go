@@ -18,19 +18,17 @@ const (
 	// reaches: four weeks.
 	runSuccessWindowSpan = 28 * 24 * time.Hour
 
-	// runSuccessMinRuns is the fewest runs a window states a rate over. Under it
-	// the window serves its counts and a null rate, so a rate over a handful of
-	// runs never reads as the goal either met or missed.
+	// runSuccessMinRuns is the fewest runs a window states a rate over.
 	runSuccessMinRuns = 20
 
-	// runSuccessLimit caps the read the figures are computed from, as adr/0016
-	// caps every read they come from.
+	// runSuccessLimit is the most runs the read returns.
 	runSuccessLimit = 200
 
-	// failureChecksFailing names a run that opened a pull request whose required
-	// checks failed among the ways runs fail. Neither an outcome nor a stop
-	// reason, it is named for what failed.
+	// failureChecksFailing is the failure class of a run whose pull request's checks failed.
 	failureChecksFailing = "checks-failing"
+
+	// failureAbandoned is the failure class of a run swept as never reporting back.
+	failureAbandoned = stateAbandoned
 )
 
 // RunSuccess is the run success rate: the share of runs that opened a pull
@@ -59,13 +57,14 @@ type FailureClass struct {
 	Count int
 }
 
-// runResult is one run's line in the rate: when it started, how it ended, and
-// what its pull request's checks settled at.
+// runResult is one run's line in the rate: when it started, how it ended, what
+// its pull request's checks settled at, and its stored state.
 type runResult struct {
 	StartedAt    time.Time
 	Outcome      runner.Outcome
 	ChecksResult string
 	StopReason   runner.StopReason
+	State        string
 	Cancelled    bool
 }
 
@@ -82,10 +81,12 @@ func (r *Records) RunSuccess(ctx context.Context, now time.Time) (RunSuccess, er
 		// cancelled_by_owner_at is read beside the counted fields because a cancel
 		// writes nothing else: without it a run the owner cancelled cannot be told
 		// from one that failed.
-		Select(checksResultField, outcomeField, startedAtField, stopReasonField, cancelledByOwnerAtField).
+		Select(checksResultField, outcomeField, startedAtField, stopReasonField, cancelledByOwnerAtField, stateField).
 		Documents(ctx)
 	defer iter.Stop()
 	var rows []runResult
+	var read int
+	var oldest time.Time
 	for {
 		snap, err := iter.Next()
 		if errors.Is(err, iterator.Done) {
@@ -96,20 +97,31 @@ func (r *Records) RunSuccess(ctx context.Context, now time.Time) (RunSuccess, er
 				since.UTC().Format(time.RFC3339), err)
 		}
 		row := snap.Data()
+		started, _ := row[startedAtField].(time.Time)
+		read++
+		oldest = started
+		if !hasEnded(row) && str(row, stateField) != stateAbandoned {
+			continue
+		}
 		result := runResult{
 			Outcome:      runner.Outcome(str(row, outcomeField)),
 			ChecksResult: str(row, checksResultField),
 			StopReason:   runner.StopReason(str(row, stopReasonField)),
+			State:        str(row, stateField),
+			StartedAt:    started,
 			Cancelled:    cancelledRow(row),
 		}
-		result.StartedAt, _ = row[startedAtField].(time.Time)
 		rows = append(rows, result)
+	}
+	if read == runSuccessLimit {
+		r.logger.InfoContext(ctx, "runSuccessCapped", "limit", runSuccessLimit, "oldest", oldest)
 	}
 	return countRunSuccess(rows, now), nil
 }
 
-// countRunSuccess counts the two windows over rows. A run counts once it has
-// finished and the owner has not cancelled it; a run that opened a pull request
+// countRunSuccess counts the two windows over the rows of runs that finished or
+// were abandoned, an abandoned run counting as one that did not pass. A
+// run the owner cancelled counts in neither; a run that opened a pull request
 // counts on its checks result, and one whose result is still pending, or can
 // never be read, counts in neither the pass nor the denominator.
 func countRunSuccess(rows []runResult, now time.Time) RunSuccess {
@@ -128,8 +140,7 @@ func countRunSuccess(rows []runResult, now time.Time) RunSuccess {
 		}
 		passed := false
 		switch {
-		case row.Cancelled || (row.Outcome == "" && row.StopReason == ""):
-			// Cancelled by the owner, or not finished yet: counted in neither.
+		case row.Cancelled:
 			continue
 		case row.Outcome == runner.OutcomePROpened:
 			switch row.ChecksResult {
@@ -155,14 +166,15 @@ func countRunSuccess(rows []runResult, now time.Time) RunSuccess {
 }
 
 // failureClass names how row failed: its pull request's checks failing, else the
-// reason that stopped it, else the outcome it ended with. A stop reason is the
-// most specific thing a row says, so it is read before the outcome.
+// reason that stopped it, else its abandonment, else the outcome it ended with.
 func failureClass(row runResult) string {
 	switch {
 	case row.Outcome == runner.OutcomePROpened:
 		return failureChecksFailing
 	case row.StopReason != "":
 		return string(row.StopReason)
+	case row.State == stateAbandoned:
+		return failureAbandoned
 	default:
 		return string(row.Outcome)
 	}
