@@ -18,18 +18,35 @@ const MODEL_NAMES: Record<string, string> = {
   "command-code/meta/muse-spark-1.3-contributor": "Muse Spark 1.3 Contributor",
 };
 
+// evenTie is the fixed-point text of a value that sits exactly on a tie at the given decimal places
+// and whose last kept digit is even, or null. There the endpoint's rounding keeps the digit, where
+// JavaScript's rounds it up. A double's exact decimal expansion shows a tie as a 5 and then only
+// zeros.
+function evenTie(points: number, places: number): string | null {
+  const [integer = "", fraction = ""] = points.toFixed(20).split(".");
+  const kept = fraction.slice(0, places);
+  const last = Number((integer + kept).slice(-1));
+  if (!/^50*$/.test(fraction.slice(places)) || last % 2 !== 0) {
+    return null;
+  }
+  return places > 0 ? `${integer}.${kept}` : integer;
+}
+
 // percent prints a fraction as the endpoint prints a rate, to one decimal, a tie
 // to the even tenth: 0.0625 is "6.2%", as the endpoint's own text for it is. The
 // page prints the endpoint's text wherever it has one; this words a figure the
 // endpoint serves only as a number.
 export function percent(fraction: number): string {
   const points = fraction * 100;
-  // A double's exact decimal expansion shows a tie as a 5 and then only zeros.
-  const tie = /^(\d+\.)(\d)50*$/.exec(points.toFixed(20));
-  if (tie?.[1] !== undefined && tie[2] !== undefined && Number(tie[2]) % 2 === 0) {
-    return `${tie[1]}${tie[2]}%`;
-  }
-  return `${points.toFixed(1)}%`;
+  return `${evenTie(points, 1) ?? points.toFixed(1)}%`;
+}
+
+// wholePercent prints a fraction as a whole percentage, a tie to the even
+// point: 0.625 is "62%", as the endpoint's own text for a cache share is, and
+// not the 63% JavaScript's rounding gives.
+export function wholePercent(fraction: number): string {
+  const points = fraction * 100;
+  return `${evenTie(points, 0) ?? Math.round(points)}%`;
 }
 
 // whole prints a bar's fraction without a decimal it does not have: "10%".
