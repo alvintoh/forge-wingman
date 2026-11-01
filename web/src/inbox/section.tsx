@@ -334,7 +334,7 @@ export function InboxSection() {
             )}
             {runs.length === 0 && filtering && (
               <p className="flex min-h-18 items-center text-body font-semibold">
-                {emptyWords(project, chip)}
+                <span className="min-w-0 wrap-break-word">{emptyWords(project, chip)}</span>
               </p>
             )}
           </div>
