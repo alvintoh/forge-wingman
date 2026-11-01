@@ -4,7 +4,14 @@ import { captionClass } from "../caption";
 import { usePageSize } from "../page-size";
 import { pageWindow } from "../page-window";
 import { Pager } from "../pager";
-import { figuresOf, partitionRuns, type CachedPhase, type RunsState } from "./comparison";
+import {
+  figuresOf,
+  finishedOf,
+  partitionRuns,
+  type CachedPhase,
+  type RunCache,
+  type RunsState,
+} from "./comparison";
 
 const DEFINITION =
   "First request is the phase's opening call; whole phase is every call in it; whole run is every call in the run.";
@@ -19,6 +26,20 @@ type CacheTableProps = {
 };
 
 type Paging = { project: CacheTableProps["project"]; page: number; olderPage: number };
+
+const FINISHED_LABEL = "Finished (AEST/AEDT)";
+
+// Finished is a run's settle time on Sydney's clock, on one line, or "not recorded".
+function Finished({ run }: { run: RunCache }) {
+  const text = finishedOf(run);
+  return text === null ? (
+    "not recorded"
+  ) : (
+    <time dateTime={run.settled_at} className="whitespace-nowrap">
+      {text}
+    </time>
+  );
+}
 
 /**
  * CacheTable lists each run's cached share per phase, from the endpoint's own
@@ -99,6 +120,14 @@ export function CacheTable({ state, project }: CacheTableProps) {
                   <th scope="col" rowSpan={2} className="py-2 pr-3 align-bottom">
                     Provider
                   </th>
+                  <th
+                    scope="col"
+                    rowSpan={2}
+                    className="hidden py-2 pr-3 align-bottom md:table-cell"
+                  >
+                    Finished <br />
+                    (AEST/AEDT)
+                  </th>
                   <th scope="col" colSpan={2} className="py-2 pr-3">
                     build
                   </th>
@@ -108,43 +137,61 @@ export function CacheTable({ state, project }: CacheTableProps) {
                 </tr>
                 <tr className="border-b border-hair text-left">
                   <th scope="col" className="py-2 pr-3">
-                    First request
+                    First <br className="hidden md:inline" />
+                    request
                   </th>
                   <th scope="col" className="py-2 pr-3">
-                    Whole phase
+                    Whole <br className="hidden md:inline" />
+                    phase
                   </th>
                   <th scope="col" className="py-2 pr-3">
-                    First request
+                    First <br className="hidden md:inline" />
+                    request
                   </th>
                   <th scope="col" className="py-2">
-                    Whole phase
+                    Whole <br className="hidden md:inline" />
+                    phase
                   </th>
                 </tr>
               </thead>
               <tbody>
                 {shown.map((run) => (
-                  <tr key={run.run_id} className="border-b border-hair">
-                    <th scope="row" className="py-2 pr-3 text-left font-mono">
-                      {run.run_id}
-                    </th>
-                    <td className="py-2 pr-3 font-mono">{run.provider}</td>
-                    {PHASE_COLUMNS.map((phase) => {
-                      const { first, whole, word } = figuresOf(run, phase);
-                      if (first === null || whole === null) {
+                  <Fragment key={run.run_id}>
+                    <tr className="border-hair md:border-b">
+                      <th scope="row" className="py-2 pr-3 text-left font-mono">
+                        {run.run_id}
+                      </th>
+                      <td className="py-2 pr-3 font-mono">{run.provider}</td>
+                      <td className="hidden py-2 pr-3 md:table-cell">
+                        <Finished run={run} />
+                      </td>
+                      {PHASE_COLUMNS.map((phase) => {
+                        const { first, whole, word } = figuresOf(run, phase);
+                        if (first === null || whole === null) {
+                          return (
+                            <td key={phase} colSpan={2} className="py-2 pr-3">
+                              {word}
+                            </td>
+                          );
+                        }
                         return (
-                          <td key={phase} colSpan={2} className="py-2 pr-3">
-                            {word}
-                          </td>
+                          <Fragment key={phase}>
+                            <td className="py-2 pr-3">{wholePercent(first)}</td>
+                            <td className="py-2 pr-3">{wholePercent(whole)}</td>
+                          </Fragment>
                         );
-                      }
-                      return (
-                        <Fragment key={phase}>
-                          <td className="py-2 pr-3">{wholePercent(first)}</td>
-                          <td className="py-2 pr-3">{wholePercent(whole)}</td>
-                        </Fragment>
-                      );
-                    })}
-                  </tr>
+                      })}
+                    </tr>
+                    <tr className="border-b border-hair md:hidden">
+                      <td
+                        colSpan={6}
+                        className="flex justify-between gap-4 pb-2 text-label text-ink2"
+                      >
+                        <span>{FINISHED_LABEL}</span>
+                        <Finished run={run} />
+                      </td>
+                    </tr>
+                  </Fragment>
                 ))}
               </tbody>
             </table>
@@ -185,6 +232,10 @@ export function CacheTable({ state, project }: CacheTableProps) {
                     <th scope="col" className="py-2 pr-3">
                       Run
                     </th>
+                    <th scope="col" className="hidden py-2 pr-3 md:table-cell">
+                      Finished <br />
+                      (AEST/AEDT)
+                    </th>
                     <th scope="col" className="py-2">
                       Whole run
                     </th>
@@ -192,12 +243,26 @@ export function CacheTable({ state, project }: CacheTableProps) {
                 </thead>
                 <tbody>
                   {olderShown.map((run) => (
-                    <tr key={run.run_id} className="border-b border-hair">
-                      <th scope="row" className="py-2 pr-3 text-left font-mono">
-                        {run.run_id}
-                      </th>
-                      <td className="py-2">{wholePercent(run.cached_share)}</td>
-                    </tr>
+                    <Fragment key={run.run_id}>
+                      <tr className="border-hair md:border-b">
+                        <th scope="row" className="py-2 pr-3 text-left font-mono">
+                          {run.run_id}
+                        </th>
+                        <td className="hidden py-2 pr-3 md:table-cell">
+                          <Finished run={run} />
+                        </td>
+                        <td className="py-2">{wholePercent(run.cached_share)}</td>
+                      </tr>
+                      <tr className="border-b border-hair md:hidden">
+                        <td
+                          colSpan={2}
+                          className="flex justify-between gap-4 pb-2 text-label text-ink2"
+                        >
+                          <span>{FINISHED_LABEL}</span>
+                          <Finished run={run} />
+                        </td>
+                      </tr>
+                    </Fragment>
                   ))}
                 </tbody>
               </table>

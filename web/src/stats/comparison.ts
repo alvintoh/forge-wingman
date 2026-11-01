@@ -1,4 +1,5 @@
 import { isNumber, isString, listOf, nullable, shape } from "../autonomy/guard";
+import { sydneyDateTime } from "../sydney-date-time";
 
 // One run's cache figures as the comparison endpoint serves them: the whole
 // run's own share, and each phase's share of its first request and of its whole
@@ -13,6 +14,8 @@ export type RunCache = {
   build_phase_share: number | null;
   plan_first_share: number | null;
   plan_phase_share: number | null;
+  // When the run settled, an RFC 3339 instant; the zero instant where none was recorded.
+  settled_at: string;
 };
 
 export type ComparisonResponse = { runs: RunCache[] };
@@ -30,6 +33,7 @@ export const isComparison = shape<ComparisonResponse>({
       build_phase_share: nullable(isNumber),
       plan_first_share: nullable(isNumber),
       plan_phase_share: nullable(isNumber),
+      settled_at: isString,
     }),
   ),
 });
@@ -67,6 +71,16 @@ export function figuresOf(run: RunCache, phase: CachedPhase): PhaseFigures {
     whole: null,
     word: recorded === "none" ? NO_STAGE_WORD[phase] : recorded,
   };
+}
+
+// finishedOf is when a run settled on Sydney's clock ("30 Oct, 11:42"), or null where the endpoint
+// recorded no instant or served one that is not a date: the zero time is how a run with none reads.
+export function finishedOf(run: RunCache): string | null {
+  const at = Date.parse(run.settled_at);
+  if (Number.isNaN(at) || new Date(at).getUTCFullYear() <= 1) {
+    return null;
+  }
+  return sydneyDateTime(run.settled_at);
 }
 
 // partitionRuns splits the runs into those that carry a per-phase split and the older ones that

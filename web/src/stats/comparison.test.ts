@@ -1,5 +1,12 @@
 import { describe, expect, it } from "bun:test";
-import { figuresOf, hasSplit, isComparison, partitionRuns, type RunCache } from "./comparison";
+import {
+  figuresOf,
+  finishedOf,
+  hasSplit,
+  isComparison,
+  partitionRuns,
+  type RunCache,
+} from "./comparison";
 
 // run is the endpoint's row with both phases measured; a case overrides what it
 // varies.
@@ -13,6 +20,7 @@ const run = (over: Partial<RunCache> = {}): RunCache => ({
   build_phase_share: 0.58,
   plan_first_share: 0.41,
   plan_phase_share: 0.39,
+  settled_at: "2026-10-29T13:42:00Z",
   ...over,
 });
 
@@ -72,6 +80,20 @@ describe("hasSplit", () => {
   });
 });
 
+describe("finishedOf", () => {
+  it("words the settle time on Sydney's clock, whatever the viewer's", () => {
+    expect(finishedOf(run({ settled_at: "2026-10-29T13:42:00Z" }))).toBe("30 Oct, 00:42");
+    expect(finishedOf(run({ settled_at: "2026-10-29T23:42:00Z" }))).toBe("30 Oct, 10:42");
+    expect(finishedOf(run({ settled_at: "2026-06-30T00:05:00Z" }))).toBe("30 Jun, 10:05");
+  });
+
+  it("reads a run with no instant, or one that is no date, as not recorded", () => {
+    expect(finishedOf(run({ settled_at: "0001-01-01T00:00:00Z" }))).toBeNull();
+    expect(finishedOf(run({ settled_at: "" }))).toBeNull();
+    expect(finishedOf(run({ settled_at: "garbage" }))).toBeNull();
+  });
+});
+
 describe("partitionRuns", () => {
   it("counts the runs with a split and the older runs that collapse", () => {
     const split = run();
@@ -86,6 +108,10 @@ describe("partitionRuns", () => {
 describe("isComparison", () => {
   it("accepts the endpoint's runs", () => {
     expect(isComparison({ runs: [run()] })).toBe(true);
+  });
+
+  it("accepts a run whose settle time is unreadable, which the table words as not recorded", () => {
+    expect(isComparison({ runs: [run({ settled_at: "" })] })).toBe(true);
   });
 
   it("accepts a run whose phases recorded no shares", () => {
