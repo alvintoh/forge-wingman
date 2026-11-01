@@ -31,10 +31,14 @@ export function CacheTable({ state, project }: CacheTableProps) {
   const olderId = useId();
   const pageSize = usePageSize();
   const [olderOpen, setOlderOpen] = useState(false);
-  // The pages belong to the project they were chosen under: a change of filter reads as page one
-  // again without an effect to reset them.
+  // The pages belong to the project they were chosen under: a change of filter starts both tables
+  // at page one, including a return to a project the pages were once chosen under. React re-renders
+  // at once when state is set during render, so no frame draws the old page.
   const fresh: Paging = { project, page: 0, olderPage: 0 };
   const [paging, setPaging] = useState<Paging>(fresh);
+  if (paging.project !== project) {
+    setPaging(fresh);
+  }
   const { page, olderPage } = paging.project === project ? paging : fresh;
   const setPage = (next: number) => setPaging({ project, page: next, olderPage });
   const setOlderPage = (next: number) => setPaging({ project, page, olderPage: next });
@@ -89,13 +93,13 @@ export function CacheTable({ state, project }: CacheTableProps) {
               </caption>
               <thead>
                 <tr className="text-left">
-                  <th scope="col" rowSpan={2} className="py-2 pr-4 align-bottom">
+                  <th scope="col" rowSpan={2} className="py-2 pr-3 align-bottom">
                     Run
                   </th>
-                  <th scope="col" rowSpan={2} className="py-2 pr-4 align-bottom">
+                  <th scope="col" rowSpan={2} className="py-2 pr-3 align-bottom">
                     Provider
                   </th>
-                  <th scope="col" colSpan={2} className="py-2 pr-4">
+                  <th scope="col" colSpan={2} className="py-2 pr-3">
                     build
                   </th>
                   <th scope="col" colSpan={2} className="py-2">
@@ -103,13 +107,13 @@ export function CacheTable({ state, project }: CacheTableProps) {
                   </th>
                 </tr>
                 <tr className="border-b border-hair text-left">
-                  <th scope="col" className="py-2 pr-4">
+                  <th scope="col" className="py-2 pr-3">
                     First request
                   </th>
-                  <th scope="col" className="py-2 pr-4">
+                  <th scope="col" className="py-2 pr-3">
                     Whole phase
                   </th>
-                  <th scope="col" className="py-2 pr-4">
+                  <th scope="col" className="py-2 pr-3">
                     First request
                   </th>
                   <th scope="col" className="py-2">
@@ -120,23 +124,23 @@ export function CacheTable({ state, project }: CacheTableProps) {
               <tbody>
                 {shown.map((run) => (
                   <tr key={run.run_id} className="border-b border-hair">
-                    <th scope="row" className="py-2 pr-4 text-left font-mono">
+                    <th scope="row" className="py-2 pr-3 text-left font-mono">
                       {run.run_id}
                     </th>
-                    <td className="py-2 pr-4 font-mono">{run.provider}</td>
+                    <td className="py-2 pr-3 font-mono">{run.provider}</td>
                     {PHASE_COLUMNS.map((phase) => {
                       const { first, whole, word } = figuresOf(run, phase);
                       if (first === null || whole === null) {
                         return (
-                          <td key={phase} colSpan={2} className="py-2 pr-4">
+                          <td key={phase} colSpan={2} className="py-2 pr-3">
                             {word}
                           </td>
                         );
                       }
                       return (
                         <Fragment key={phase}>
-                          <td className="py-2 pr-4">{wholePercent(first)}</td>
-                          <td className="py-2 pr-4">{wholePercent(whole)}</td>
+                          <td className="py-2 pr-3">{wholePercent(first)}</td>
+                          <td className="py-2 pr-3">{wholePercent(whole)}</td>
                         </Fragment>
                       );
                     })}
@@ -178,7 +182,7 @@ export function CacheTable({ state, project }: CacheTableProps) {
                 <caption className="sr-only">Older runs and their whole-run cached share</caption>
                 <thead>
                   <tr className="border-b border-hair text-left">
-                    <th scope="col" className="py-2 pr-4">
+                    <th scope="col" className="py-2 pr-3">
                       Run
                     </th>
                     <th scope="col" className="py-2">
@@ -189,7 +193,7 @@ export function CacheTable({ state, project }: CacheTableProps) {
                 <tbody>
                   {olderShown.map((run) => (
                     <tr key={run.run_id} className="border-b border-hair">
-                      <th scope="row" className="py-2 pr-4 text-left font-mono">
+                      <th scope="row" className="py-2 pr-3 text-left font-mono">
                         {run.run_id}
                       </th>
                       <td className="py-2">{wholePercent(run.cached_share)}</td>
