@@ -183,12 +183,11 @@ export function CacheTable({ state, project }: CacheTableProps) {
                       })}
                     </tr>
                     <tr className="border-b border-hair md:hidden">
-                      <td
-                        colSpan={6}
-                        className="flex justify-between gap-4 pb-2 text-label text-ink2"
-                      >
-                        <span>{FINISHED_LABEL}</span>
-                        <Finished run={run} />
+                      <td colSpan={6} className="pb-2 text-label text-ink2">
+                        <div className="flex justify-between gap-4">
+                          <span>{FINISHED_LABEL}</span>
+                          <Finished run={run} />
+                        </div>
                       </td>
                     </tr>
                   </Fragment>
@@ -254,12 +253,11 @@ export function CacheTable({ state, project }: CacheTableProps) {
                         <td className="py-2">{wholePercent(run.cached_share)}</td>
                       </tr>
                       <tr className="border-b border-hair md:hidden">
-                        <td
-                          colSpan={2}
-                          className="flex justify-between gap-4 pb-2 text-label text-ink2"
-                        >
-                          <span>{FINISHED_LABEL}</span>
-                          <Finished run={run} />
+                        <td colSpan={2} className="pb-2 text-label text-ink2">
+                          <div className="flex justify-between gap-4">
+                            <span>{FINISHED_LABEL}</span>
+                            <Finished run={run} />
+                          </div>
                         </td>
                       </tr>
                     </Fragment>
