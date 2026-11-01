@@ -30,11 +30,10 @@ function countsOf(projects: ProjectsState, chosen: string | null): QueueCounts {
   let queued = 0;
   let held = 0;
   for (const project of narrowed) {
-    if (project.snapshot !== null && !project.snapshot.unreadable) {
-      queued += project.snapshot.queued;
-    }
     if (project.paused) {
       held += project.queue.held;
+    } else if (project.snapshot !== null && !project.snapshot.unreadable) {
+      queued += project.snapshot.queued;
     }
   }
   return { queued, held };
@@ -166,7 +165,7 @@ export function RunningSection({ read, projects }: SectionProps) {
           {`bar = % of ${RUN_LIMIT_MINUTES}m run limit`}
         </p>
       </div>
-      {/* The section's second row: everything under the heading, as one child. */}
+      {/* Everything under the heading, as one child. */}
       <div>
         {state.status === "loading" && <LoadingRows />}
         {state.status === "error" && (

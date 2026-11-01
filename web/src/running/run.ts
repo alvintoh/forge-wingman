@@ -25,6 +25,7 @@ function isRunningRun(row: unknown): row is RunningRun {
     typeof repo === "string" &&
     typeof stage === "string" &&
     typeof claimedAt === "string" &&
+    Number.isFinite(Date.parse(claimedAt)) &&
     typeof title === "string"
   );
 }

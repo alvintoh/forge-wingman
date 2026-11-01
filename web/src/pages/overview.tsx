@@ -32,10 +32,13 @@ export function Inbox() {
     refreshRunning();
   }, [refreshInbox, refreshProjects, refreshRunning]);
 
-  // The oldest read the page draws: the strip's age, and the age a failed re-read names. A read that
-  // never landed has no age to give, so it is left out; until one lands the strip draws nothing.
-  const readAts = [inbox.readAt, projects.readAt, inFlight.readAt].filter((at) => at > 0);
-  const readAt = readAts.length === 0 ? 0 : Math.min(...readAts);
+  // The oldest read the page draws once the inbox and the projects have landed: the strip's age, and
+  // the age a failed re-read names. The runs in flight join it once their read has landed, so a
+  // failing read of theirs never hides the strip. Until the first two land the strip draws nothing.
+  const firstReads =
+    inbox.readAt > 0 && projects.readAt > 0 ? Math.min(inbox.readAt, projects.readAt) : 0;
+  const readAt =
+    firstReads > 0 && inFlight.readAt > 0 ? Math.min(firstReads, inFlight.readAt) : firstReads;
 
   return (
     <div>

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { isRunning, type RunningRun } from "./run";
 
-// The server gives up on its own read at 10 seconds, so a read still open at 15 has stalled: it
-// ends in the error state and its TRY AGAIN rather than reading forever.
+// The running endpoint sets no read deadline of its own, so a read still open at 15 seconds has
+// stalled: it ends in the error state and its TRY AGAIN rather than reading forever.
 const READ_DEADLINE_MS = 15_000;
 
 export type RunningState = {

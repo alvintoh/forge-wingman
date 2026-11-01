@@ -125,4 +125,9 @@ describe("the fixtures' shapes", () => {
   test("running passes its guard", () => {
     expect(isRunning(fixture("running"))).toBe(true);
   });
+
+  test("running rejects a run whose claim time does not parse", () => {
+    const body = fixture("running") as { runs: Record<string, unknown>[] };
+    expect(isRunning({ runs: [{ ...body.runs[0], claimed_at: "garbage" }] })).toBe(false);
+  });
 });
