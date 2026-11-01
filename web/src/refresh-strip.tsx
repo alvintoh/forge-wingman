@@ -72,7 +72,7 @@ export function RefreshStrip({ readAt, stale, fetching, refresh }: RefreshStripP
     // first read lands.
     <div
       aria-busy={fetching ? true : undefined}
-      className="flex min-h-11 items-center justify-end gap-3"
+      className="flex min-h-11 items-center justify-end gap-1"
     >
       {readAt > 0 && (
         <>
@@ -91,7 +91,7 @@ export function RefreshStrip({ readAt, stale, fetching, refresh }: RefreshStripP
             title={fetching ? READING_LABEL : READ_LABEL}
             aria-disabled={fetching ? true : undefined}
             onClick={ask}
-            className="group inline-flex size-11 shrink-0 cursor-pointer items-center justify-center aria-disabled:cursor-not-allowed focus-visible:outline-none!"
+            className="group -mr-2 inline-flex size-11 shrink-0 cursor-pointer items-center justify-center aria-disabled:cursor-not-allowed focus-visible:outline-none!"
           >
             <span className="grid size-7 place-items-center rounded-full border border-ink2 bg-card text-ink group-aria-disabled:border-hair group-aria-disabled:bg-track group-aria-disabled:text-muted group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-accent">
               <svg
@@ -101,7 +101,7 @@ export function RefreshStrip({ readAt, stale, fetching, refresh }: RefreshStripP
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"
-                strokeWidth="1.8"
+                strokeWidth="2.7"
                 strokeLinecap="round"
                 strokeLinejoin="round"
                 className={`block ${fetching ? "animate-spin motion-reduce:animate-none" : ""}`}
