@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { figuresOf, hasSplit, isComparison, type RunCache } from "./comparison";
+import { figuresOf, hasSplit, isComparison, partitionRuns, type RunCache } from "./comparison";
 
 // run is the endpoint's row with both phases measured; a case overrides what it
 // varies.
@@ -72,9 +72,24 @@ describe("hasSplit", () => {
   });
 });
 
+describe("partitionRuns", () => {
+  it("counts the runs with a split and the older runs that collapse", () => {
+    const split = run();
+    const older = run(noShares);
+    const lone = run({ ...noShares, build_first_share: 0.62 });
+    const { split: kept, older: collapsed } = partitionRuns([split, older, lone, split]);
+    expect(kept).toEqual([split, split]);
+    expect(collapsed).toEqual([older, lone]);
+  });
+});
+
 describe("isComparison", () => {
   it("accepts the endpoint's runs", () => {
     expect(isComparison({ runs: [run()] })).toBe(true);
+  });
+
+  it("accepts a run whose phases recorded no shares", () => {
+    expect(isComparison({ runs: [run(noShares)] })).toBe(true);
   });
 
   it("rejects a run without its phase shares", () => {

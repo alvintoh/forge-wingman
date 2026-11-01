@@ -1,10 +1,10 @@
-import { Fragment, useEffect, useId, useState } from "react";
+import { Fragment, useId, useState } from "react";
 import { wholePercent } from "../autonomy/format";
 import { captionClass } from "../caption";
 import { usePageSize } from "../page-size";
 import { pageWindow } from "../page-window";
 import { Pager } from "../pager";
-import { figuresOf, hasSplit, type CachedPhase, type RunsState } from "./comparison";
+import { figuresOf, partitionRuns, type CachedPhase, type RunsState } from "./comparison";
 
 const DEFINITION =
   "First request is the phase's opening call; whole phase is every call in it; whole run is every call in the run.";
@@ -18,6 +18,8 @@ type CacheTableProps = {
   project: string | null;
 };
 
+type Paging = { project: CacheTableProps["project"]; page: number; olderPage: number };
+
 /**
  * CacheTable lists each run's cached share per phase, from the endpoint's own
  * figures: its first request and its whole phase. Runs the endpoint recorded no
@@ -28,17 +30,17 @@ export function CacheTable({ state, project }: CacheTableProps) {
   const titleId = useId();
   const olderId = useId();
   const pageSize = usePageSize();
-  const [page, setPage] = useState(0);
-  const [olderPage, setOlderPage] = useState(0);
   const [olderOpen, setOlderOpen] = useState(false);
-  useEffect(() => {
-    setPage(0);
-    setOlderPage(0);
-  }, [project]);
+  // The pages belong to the project they were chosen under: a change of filter reads as page one
+  // again without an effect to reset them.
+  const fresh: Paging = { project, page: 0, olderPage: 0 };
+  const [paging, setPaging] = useState<Paging>(fresh);
+  const { page, olderPage } = paging.project === project ? paging : fresh;
+  const setPage = (next: number) => setPaging({ project, page: next, olderPage });
+  const setOlderPage = (next: number) => setPaging({ project, page, olderPage: next });
 
   const runs = state.status === "ready" ? state.runs : [];
-  const splitRuns = runs.filter(hasSplit);
-  const olderRuns = runs.filter((run) => !hasSplit(run));
+  const { split: splitRuns, older: olderRuns } = partitionRuns(runs);
   const range = pageWindow(splitRuns.length, page, pageSize);
   const olderRange = pageWindow(olderRuns.length, olderPage, pageSize);
   const shown = splitRuns.slice(range.page * pageSize, range.page * pageSize + pageSize);

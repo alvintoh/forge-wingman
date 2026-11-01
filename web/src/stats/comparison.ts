@@ -69,6 +69,12 @@ export function figuresOf(run: RunCache, phase: CachedPhase): PhaseFigures {
   };
 }
 
+// partitionRuns splits the runs into those that carry a per-phase split and the older ones that
+// collapse to one counted line.
+export function partitionRuns(runs: RunCache[]): { split: RunCache[]; older: RunCache[] } {
+  return { split: runs.filter(hasSplit), older: runs.filter((run) => !hasSplit(run)) };
+}
+
 // hasSplit is whether at least one phase carries its pair of shares, which is
 // how the endpoint measures a phase. A lone share is not a measurement, so a run
 // holding no pair predates the split and collapses to one line.
