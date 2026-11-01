@@ -20,8 +20,6 @@ import { InboxRow } from "./row";
 import { RowSheet } from "./row-sheet";
 import type { InboxRun } from "./run";
 
-type SectionProps = { className: string };
-
 // InboxSection is the inbox's ACTIONS section: the PRs that wait on the owner, and the runs that
 // stopped. A row opens its sheet of actions; its MERGE PR opens its confirm and then shows
 // the merge on the row, its RETRY, on a stopped run, opens the note for a new attempt, and the
@@ -31,7 +29,7 @@ type SectionProps = { className: string };
 // to its pill and back, Home and End to the first and last row, and the stop stays on the cell
 // last focused. The list shows the runs of the project chosen in the URL and of the kind chosen above
 // it.
-export function InboxSection({ className }: SectionProps) {
+export function InboxSection() {
   const {
     state,
     refresh,
@@ -271,7 +269,7 @@ export function InboxSection({ className }: SectionProps) {
       : "";
 
   return (
-    <section aria-labelledby={headingId} className={`min-w-0 ${className}`}>
+    <section aria-labelledby={headingId} className="min-w-0">
       <div className="flex min-h-6.5 items-start justify-between gap-4">
         <h2
           id={headingId}
@@ -288,7 +286,6 @@ export function InboxSection({ className }: SectionProps) {
           </span>
         )}
       </div>
-      {/* The second row of the Overview's subgrid: everything under the heading, as one child. */}
       <div>
         <p role="status" className="sr-only">
           {announcement}
