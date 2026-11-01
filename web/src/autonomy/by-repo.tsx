@@ -119,7 +119,7 @@ export function RepoMultiples({ repos, bar }: RepoMultiplesProps) {
               })}
             </ul>
             <p className="pb-1 text-cap text-ink2" style={{ paddingInline: padx }}>
-              The gate pools every repository. The split is informational and never moves the gate.
+              The rate pools every repository. The split is informational.
             </p>
           </div>
         );

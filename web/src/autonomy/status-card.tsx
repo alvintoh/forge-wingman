@@ -103,7 +103,7 @@ export function MergeStatusCard({ merge, projectChosen }: MergeStatusCardProps) 
       <p className="mt-1 text-body leading-5.5 text-ink2">{rateLine(merge)}</p>
       <Rules />
       {projectChosen && (
-        <p className="mt-2 text-label font-semibold text-ink">gate: all projects</p>
+        <p className="mt-2 text-label font-semibold text-ink">rate: all projects</p>
       )}
     </section>
   );

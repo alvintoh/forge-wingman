@@ -139,7 +139,10 @@ export function rateLine(merge: MergeState): string {
     }
     return above
       ? `off: switched off by you; ${trailing}, above the ${guide} guide`
-      : reasonText(merge.reason);
+      : "off: switched off by you";
+  }
+  if (merge.reason === "too-few-measured") {
+    return reasonText(merge.reason);
   }
   if (merge.rate_allows) {
     return `Recommended: ${trailing}; guide ${guide}`;
