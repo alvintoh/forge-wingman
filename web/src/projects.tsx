@@ -382,7 +382,7 @@ function ProjectEntry({ project, now, refresh, filter }: EntryProps) {
               <h3
                 id={nameId}
                 title={project.repository}
-                className="min-w-0 max-w-full truncate text-body leading-5 font-semibold text-ink"
+                className="min-w-0 truncate text-body leading-5 font-semibold text-ink"
               >
                 {project.repository}
               </h3>
