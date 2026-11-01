@@ -449,7 +449,7 @@ function ProjectEntry({ project, now, refresh, filter }: EntryProps) {
         </div>
       )}
       {view.notice !== null && (
-        <p id={noticeId} className="mt-0.5 text-cap leading-4 text-muted">
+        <p id={noticeId} className="mt-0.5 text-cap leading-4 wrap-break-word text-muted">
           {view.notice}
         </p>
       )}

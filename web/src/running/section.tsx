@@ -180,7 +180,9 @@ export function RunningSection({ read, projects }: SectionProps) {
           <div className="card-frame mt-4 pb-1.25">
             {runs.length === 0 ? (
               <p className="flex min-h-13 items-center text-body">
-                {chosen === null ? "Nothing running" : `Nothing running for ${chosen}`}
+                <span className="min-w-0 wrap-break-word">
+                  {chosen === null ? "Nothing running" : `Nothing running for ${chosen}`}
+                </span>
               </p>
             ) : (
               <ul>
