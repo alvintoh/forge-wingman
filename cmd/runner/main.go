@@ -15,6 +15,8 @@
 //	runner backfill-queued-at [-dry-run]             stamp queued_at on the queued and planned runs that lack it
 //	runner project-add     -linear-project <name> -repo <owner/name>  list a project and its repository in the owner database
 //	runner project-remove  -repo <owner/name>       unlist a project's repository
+//	runner project-stop    -repo <owner/name>       pause a project, so the next poll withholds its new claims
+//	runner project-resume  -repo <owner/name>       clear a project's pause
 //	runner plan-define     -provider <name> ...      record a provider plan's price, billing, limit behaviour, pages and harnesses
 //	runner plan-optin      -provider <name>          record the owner's consent to a per-token provider's spend, or with -private to private repos on its free tier, or with -harness to a harness that is not open-source
 //	runner plan-verdict    -provider <name> ...      record the verdict on a plan's terms with its wording and source
@@ -77,7 +79,7 @@ func exitCode(err error) int {
 
 func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(string) string) error {
 	if len(args) == 0 {
-		return errors.New("usage: runner ticket|build|plan-stage|record-plan-stage|pr-meta|pr|record|enable-provider|reset-breaker|peak-mode|auto-merge|requeue|backfill-queued-at|project-add|project-remove|plan-define|plan-verdict|plan-reply|plan-list|plans-refresh|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post|agent-probe|egress-proxy [flags]")
+		return errors.New("usage: runner ticket|build|plan-stage|record-plan-stage|pr-meta|pr|record|enable-provider|reset-breaker|peak-mode|auto-merge|requeue|backfill-queued-at|project-add|project-remove|project-stop|project-resume|plan-define|plan-verdict|plan-reply|plan-list|plans-refresh|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post|agent-probe|egress-proxy [flags]")
 	}
 	if args[0] == "plan-smoke" {
 		return planSmoke(ctx, logger, getenv, args[1:])
@@ -150,6 +152,10 @@ func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(st
 		return projectAdd(ctx, logger, e, args[1:])
 	case "project-remove":
 		return projectRemove(ctx, logger, e, args[1:])
+	case "project-stop":
+		return projectStop(ctx, logger, e, args[1:])
+	case "project-resume":
+		return projectResume(ctx, logger, e, args[1:])
 	default:
 		return fmt.Errorf("unknown subcommand %q", args[0])
 	}
