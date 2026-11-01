@@ -70,7 +70,7 @@ export function RewriteSection({ rewrite, scope, busy }: RewriteSectionProps) {
     <Tiles tiles={rewrite.tiles} prs={rewrite.prs} bar={bar} bleed={!partial} stacked={partial} />
   );
   const trendAside =
-    scope?.name ?? (trended.length > 1 ? "gate, pools every repository" : "all repositories");
+    scope?.name ?? (trended.length > 1 ? "pools every repository" : "all repositories");
   return (
     <section aria-labelledby="rewrite-title" aria-busy={busy}>
       <h2 id="rewrite-title" className="text-head font-semibold break-words text-ink">
