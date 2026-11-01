@@ -19,6 +19,12 @@ type projectStore interface {
 	Remove(ctx context.Context, repository string) (bool, error)
 }
 
+// phaseStore is the owner's pause on each listed project the pause subcommands
+// write.
+type phaseStore interface {
+	Set(ctx context.Context, repository string, paused bool, at time.Time) error
+}
+
 // projectAdd lists a project and its repository in the owner database. Its
 // account check only guards against a run on the wrong account by mistake:
 // Firestore IAM decides who may write (adr/0019).
@@ -81,6 +87,53 @@ func projectRemove(ctx context.Context, logger *slog.Logger, e env, args []strin
 	return runProjectRemove(ctx, logger, store.NewProjects(fsc), *repo)
 }
 
+// projectStop pauses a project, so the next poll withholds its new claims.
+func projectStop(ctx context.Context, logger *slog.Logger, e env, args []string) error {
+	return setProjectPause(ctx, logger, e, args, "project-stop", true)
+}
+
+// projectResume clears a project's pause.
+func projectResume(ctx context.Context, logger *slog.Logger, e env, args []string) error {
+	return setProjectPause(ctx, logger, e, args, "project-resume", false)
+}
+
+// openPhases opens the owner database's pause store and the function that closes
+// it; a test replaces it to fail the open.
+var openPhases = func(ctx context.Context, project string) (phaseStore, func() error, error) {
+	fsc, err := firestore.NewClientWithDatabase(ctx, project, store.OwnerDatabase)
+	if err != nil {
+		return nil, nil, err
+	}
+	return store.NewPhases(fsc), fsc.Close, nil
+}
+
+// setProjectPause writes the project's pause for a stop or a resume. Repeating
+// one is not an error: the write sets a value and does not toggle it. Its
+// account check only guards against a run on the wrong account by mistake:
+// Firestore IAM decides who may write (adr/0019).
+func setProjectPause(ctx context.Context, logger *slog.Logger, e env, args []string, command string, paused bool) error {
+	fs := flag.NewFlagSet(command, flag.ContinueOnError)
+	repo := fs.String("repo", "", "the project's repository, as owner/name")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	if err := e.identity.CheckAccount(); err != nil {
+		return err
+	}
+	if !store.ValidRepository(*repo) {
+		return fmt.Errorf("-repo %q is not owner/name", *repo)
+	}
+	phases, closePhases, err := openPhases(ctx, e.project)
+	if err != nil {
+		return fmt.Errorf("firestore client: %w", err)
+	}
+	defer func() { _ = closePhases() }()
+	return runProjectPause(ctx, logger, phases, *repo, paused, time.Now())
+}
+
 // runProjectAdd lists the project and reports what it stored.
 func runProjectAdd(ctx context.Context, logger *slog.Logger, s projectStore, linearProject, repository string, at time.Time) error {
 	if err := s.Add(ctx, linearProject, repository, at); err != nil {
@@ -102,5 +155,14 @@ func runProjectRemove(ctx context.Context, logger *slog.Logger, s projectStore, 
 		return nil
 	}
 	logger.Info("projectRemoved", "repo", repository)
+	return nil
+}
+
+// runProjectPause records the project's pause and says what it set.
+func runProjectPause(ctx context.Context, logger *slog.Logger, s phaseStore, repository string, paused bool, at time.Time) error {
+	if err := s.Set(ctx, repository, paused, at); err != nil {
+		return err
+	}
+	logger.Info("projectPauseSet", "repo", repository, "paused", paused)
 	return nil
 }

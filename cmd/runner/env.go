@@ -29,7 +29,8 @@ type env struct {
 func requiredEnv(command string) ([]string, bool) {
 	switch command {
 	case "ticket", "pr-meta", "enable-provider", "reset-breaker", "peak-mode", "auto-merge", "requeue", "backfill-queued-at",
-		"plan-define", "plan-optin", "plan-verdict", "plan-reply", "plan-list", "plans-refresh", "project-add", "project-remove":
+		"plan-define", "plan-optin", "plan-verdict", "plan-reply", "plan-list", "plans-refresh", "project-add", "project-remove",
+		"project-stop", "project-resume":
 		return []string{"GOOGLE_CLOUD_PROJECT"}, true
 	case "record", "record-plan-stage":
 		return []string{"GOOGLE_CLOUD_PROJECT", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"}, true
