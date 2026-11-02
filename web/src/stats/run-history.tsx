@@ -17,8 +17,7 @@ type HistoryResponse = {
   runs: HistoryRun[];
 };
 
-// How many slots the strip has. The endpoint serves up to `historyLimit` runs
-// (cmd/surface/history.go); a shorter history fills the first slots.
+// How many slots the strip has; the endpoint serves up to `historyLimit` runs (cmd/surface/history.go).
 const RUN_HISTORY_SLOTS = 30;
 
 // Thirty tracks of at most 16px: a narrow card shrinks them and keeps the 2px gap, a wide card
