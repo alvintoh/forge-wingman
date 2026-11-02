@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strings"
 	"time"
@@ -20,11 +21,17 @@ const runsCollection = "runs"
 // Records keeps run records in Firestore's runs collection.
 type Records struct {
 	client *firestore.Client
+	logger *slog.Logger
 }
 
-// NewRecords returns a Records backed by client.
+// NewRecords returns a Records backed by client, logging to the default logger.
 func NewRecords(client *firestore.Client) *Records {
-	return &Records{client: client}
+	return &Records{client: client, logger: slog.Default()}
+}
+
+// WithLogger returns a Records over the same client that logs to logger.
+func (r *Records) WithLogger(logger *slog.Logger) *Records {
+	return &Records{client: r.client, logger: logger}
 }
 
 // GetRecord returns the record, or runner.ErrRecordNotFound.

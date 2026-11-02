@@ -47,9 +47,9 @@ func run(logger *slog.Logger) error {
 		port = "8080"
 	}
 
-	// The comparison, run history, running, autonomy and peak endpoints read past
-	// runs, the runs in flight, the measured merges and the peak mode, so they
-	// need the store. A local run without GOOGLE_CLOUD_PROJECT has none and serves
+	// The comparison, run history, running, run-success, autonomy and peak endpoints
+	// read past runs, the runs in flight, the measured merges and the peak mode, so
+	// they need the store. A local run without GOOGLE_CLOUD_PROJECT has none and serves
 	// the SPA alone, answering those endpoints with 503.
 	var comparison ComparisonReader
 	var measured MeasuredReader
@@ -60,6 +60,7 @@ func run(logger *slog.Logger) error {
 	var runs MergeRuns
 	var cancels CancelRuns
 	var history RunHistoryReader
+	var success RunSuccessReader
 	var running RunningReader
 	var retries RunRetries
 	var runsCap RunsPerRepoStore
@@ -69,8 +70,8 @@ func run(logger *slog.Logger) error {
 			return fmt.Errorf("firestore client: %w", err)
 		}
 		defer func() { _ = fsc.Close() }()
-		records := store.NewRecords(fsc)
-		comparison, inbox, runs, history = records, records, records, records
+		records := store.NewRecords(fsc).WithLogger(logger)
+		comparison, inbox, runs, history, success = records, records, records, records, records
 		cancels = records
 		measured = store.NewRewrites(fsc)
 		peak = store.NewPeakModes(fsc)
@@ -113,6 +114,7 @@ func run(logger *slog.Logger) error {
 		Runs:       runs,
 		Cancels:    cancels,
 		History:    history,
+		RunSuccess: success,
 		Running:    running,
 		Retries:    retries,
 		Merger:     merger,
@@ -168,6 +170,7 @@ type Deps struct {
 	Runs       MergeRuns
 	Cancels    CancelRuns
 	History    RunHistoryReader
+	RunSuccess RunSuccessReader
 	Running    RunningReader
 	Retries    RunRetries
 	Merger     PRMerger
@@ -186,6 +189,7 @@ func newMux(d Deps) *http.ServeMux {
 	mux.HandleFunc("GET /api/me", me)
 	mux.HandleFunc("GET /api/comparison", d.comparison)
 	mux.HandleFunc("GET /api/run-history", d.runHistory)
+	mux.HandleFunc("GET /api/run-success", d.runSuccess)
 	mux.HandleFunc("GET /api/running", d.running)
 	mux.HandleFunc("GET /api/autonomy", d.autonomy)
 	mux.HandleFunc("GET /api/config", d.config)
