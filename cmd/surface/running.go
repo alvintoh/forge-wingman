@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
+	"github.com/alvintoh/forge-wingman/internal/runner"
 	"github.com/alvintoh/forge-wingman/internal/store"
 )
 
@@ -24,11 +25,12 @@ type runningResponse struct {
 }
 
 type runningRun struct {
-	Ticket    string `json:"ticket"`
-	Repo      string `json:"repo"`
-	Stage     string `json:"stage"`
-	ClaimedAt string `json:"claimed_at"`
-	Title     string `json:"title"`
+	Ticket       string `json:"ticket"`
+	Repo         string `json:"repo"`
+	Stage        string `json:"stage"`
+	ClaimedAt    string `json:"claimed_at"`
+	Title        string `json:"title"`
+	LimitMinutes int    `json:"limit_minutes"`
 }
 
 // running serves GET /api/running: the runs the dispatcher has claimed and not
@@ -63,12 +65,14 @@ func renderRunning(runs []store.Running) runningResponse {
 	})
 	out := runningResponse{Runs: make([]runningRun, 0, len(sorted))}
 	for _, run := range sorted {
+		stage := dispatcher.PhaseStage(run.Stage)
 		out.Runs = append(out.Runs, runningRun{
-			Ticket:    run.Ticket,
-			Repo:      run.Repo,
-			Stage:     dispatcher.PhaseStage(run.Stage),
-			ClaimedAt: run.ClaimedAt.UTC().Format(time.RFC3339),
-			Title:     run.Title,
+			Ticket:       run.Ticket,
+			Repo:         run.Repo,
+			Stage:        stage,
+			ClaimedAt:    run.ClaimedAt.UTC().Format(time.RFC3339),
+			Title:        run.Title,
+			LimitMinutes: runner.RunLimitMinutes(stage),
 		})
 	}
 	return out

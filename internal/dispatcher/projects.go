@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
 // delegateLane matches the lane a delegatable title opens with: the ticket
@@ -31,8 +33,8 @@ const holdLabel = "wingman:hold"
 
 // The stages a run in flight shows, and the reasons a start request is refused.
 const (
-	PhaseStagePlanning = "planning"
-	PhaseStageBuilding = "building"
+	PhaseStagePlanning = runner.RunStagePlanning
+	PhaseStageBuilding = runner.RunStageBuilding
 
 	StartRefusedPhaseMoved  = "phase-moved"
 	StartRefusedUnreadable  = "linear-unreadable"

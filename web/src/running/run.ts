@@ -7,6 +7,8 @@ export type RunningRun = {
   claimed_at: string;
   // The ticket's title, empty when the run's row records none.
   title: string;
+  // The minutes the run's stage may take.
+  limit_minutes?: number;
 };
 
 // The run limit each bar is measured against, in minutes: the runner's own budget for a stage.

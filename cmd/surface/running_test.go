@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -72,9 +75,9 @@ func TestRunningServesTheRunsOldestClaimFirst(t *testing.T) {
 	}}
 	got, _ := servedRunning(t, reader)
 	want := []runningRun{
-		{Ticket: "FRG-3", Repo: "octo/scratch", Stage: "building", ClaimedAt: "2026-10-31T09:10:00Z", Title: "build c"},
-		{Ticket: "FRG-2", Repo: "octo/scratch", Stage: "building", ClaimedAt: "2026-10-31T09:20:00Z", Title: "build and plan b"},
-		{Ticket: "FRG-1", Repo: "octo/other", Stage: "planning", ClaimedAt: "2026-10-31T09:30:00Z", Title: "plan a"},
+		{Ticket: "FRG-3", Repo: "octo/scratch", Stage: "building", ClaimedAt: "2026-10-31T09:10:00Z", Title: "build c", LimitMinutes: 90},
+		{Ticket: "FRG-2", Repo: "octo/scratch", Stage: "building", ClaimedAt: "2026-10-31T09:20:00Z", Title: "build and plan b", LimitMinutes: 90},
+		{Ticket: "FRG-1", Repo: "octo/other", Stage: "planning", ClaimedAt: "2026-10-31T09:30:00Z", Title: "plan a", LimitMinutes: 60},
 	}
 	if !slices.Equal(got.Runs, want) {
 		t.Fatalf("runs = %+v, want %+v", got.Runs, want)
@@ -89,8 +92,8 @@ func TestRunningTiesOnTheTicketWhenTwoClaimsShareATime(t *testing.T) {
 		{Ticket: "FRG-1", Repo: "octo/other", Stage: dispatcher.StagePlan, ClaimedAt: claimedAt(10), Title: "plan a"},
 	}})
 	want := []runningRun{
-		{Ticket: "FRG-1", Repo: "octo/other", Stage: "planning", ClaimedAt: "2026-10-31T09:10:00Z", Title: "plan a"},
-		{Ticket: "FRG-2", Repo: "octo/scratch", Stage: "building", ClaimedAt: "2026-10-31T09:10:00Z", Title: "build b"},
+		{Ticket: "FRG-1", Repo: "octo/other", Stage: "planning", ClaimedAt: "2026-10-31T09:10:00Z", Title: "plan a", LimitMinutes: 60},
+		{Ticket: "FRG-2", Repo: "octo/scratch", Stage: "building", ClaimedAt: "2026-10-31T09:10:00Z", Title: "build b", LimitMinutes: 90},
 	}
 	if !slices.Equal(got.Runs, want) {
 		t.Fatalf("runs = %+v, want %+v", got.Runs, want)
@@ -105,8 +108,8 @@ func TestRunningTiesOnTheStageWhenOneTicketHoldsTwoClaimsAtOneTime(t *testing.T)
 		{Ticket: "FRG-1", Repo: "octo/scratch", Stage: dispatcher.StageBuild, ClaimedAt: claimedAt(10), Title: "the widget"},
 	}})
 	want := []runningRun{
-		{Ticket: "FRG-1", Repo: "octo/scratch", Stage: "building", ClaimedAt: "2026-10-31T09:10:00Z", Title: "the widget"},
-		{Ticket: "FRG-1", Repo: "octo/scratch", Stage: "planning", ClaimedAt: "2026-10-31T09:10:00Z", Title: "the widget"},
+		{Ticket: "FRG-1", Repo: "octo/scratch", Stage: "building", ClaimedAt: "2026-10-31T09:10:00Z", Title: "the widget", LimitMinutes: 90},
+		{Ticket: "FRG-1", Repo: "octo/scratch", Stage: "planning", ClaimedAt: "2026-10-31T09:10:00Z", Title: "the widget", LimitMinutes: 60},
 	}
 	if !slices.Equal(got.Runs, want) {
 		t.Fatalf("runs = %+v, want %+v", got.Runs, want)
@@ -122,7 +125,7 @@ func TestRunningServesTheClaimTimeInUTC(t *testing.T) {
 		ClaimedAt: time.Date(2026, 10, 31, 19, 10, 0, 0, aedt), Title: "build a",
 	}}})
 	want := []runningRun{
-		{Ticket: "FRG-1", Repo: "octo/scratch", Stage: "building", ClaimedAt: "2026-10-31T08:10:00Z", Title: "build a"},
+		{Ticket: "FRG-1", Repo: "octo/scratch", Stage: "building", ClaimedAt: "2026-10-31T08:10:00Z", Title: "build a", LimitMinutes: 90},
 	}
 	if !slices.Equal(got.Runs, want) {
 		t.Fatalf("runs = %+v, want %+v", got.Runs, want)
@@ -135,7 +138,7 @@ func TestRunningServesAnEmptyTitleForARowWithoutOne(t *testing.T) {
 		Ticket: "FRG-1", Repo: "octo/other", Stage: dispatcher.StageBuild, ClaimedAt: claimedAt(10),
 	}}})
 	want := []runningRun{
-		{Ticket: "FRG-1", Repo: "octo/other", Stage: "building", ClaimedAt: "2026-10-31T09:10:00Z"},
+		{Ticket: "FRG-1", Repo: "octo/other", Stage: "building", ClaimedAt: "2026-10-31T09:10:00Z", LimitMinutes: 90},
 	}
 	if !slices.Equal(got.Runs, want) {
 		t.Fatalf("runs = %+v, want %+v", got.Runs, want)
@@ -150,9 +153,10 @@ func TestRunningServesAnEmptyListForAnEmptyLedger(t *testing.T) {
 }
 
 func TestRunningAnswersNoCostOrWriteSet(t *testing.T) {
-	rec := getRunning(t, &stubRunning{runs: []store.Running{{
-		Ticket: "FRG-1", Repo: "octo/other", Stage: dispatcher.StagePlan, ClaimedAt: claimedAt(10), Title: "plan c",
-	}}})
+	rec := getRunning(t, &stubRunning{runs: []store.Running{
+		{Ticket: "FRG-1", Repo: "octo/other", Stage: dispatcher.StagePlan, ClaimedAt: claimedAt(10), Title: "plan c"},
+		{Ticket: "FRG-2", Repo: "octo/other", Stage: dispatcher.StageBuild, ClaimedAt: claimedAt(20), Title: "build d"},
+	}})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
@@ -161,17 +165,72 @@ func TestRunningAnswersNoCostOrWriteSet(t *testing.T) {
 		t.Fatal(err)
 	}
 	runs, _ := body["runs"].([]any)
-	if len(runs) != 1 {
-		t.Fatalf("runs = %v, want the one reservation", body["runs"])
+	if len(runs) != 2 {
+		t.Fatalf("runs = %v, want the two reservations", body["runs"])
 	}
-	entry, _ := runs[0].(map[string]any)
-	keys := make([]string, 0, len(entry))
-	for key := range entry {
-		keys = append(keys, key)
+	for _, run := range runs {
+		entry, _ := run.(map[string]any)
+		keys := make([]string, 0, len(entry))
+		for key := range entry {
+			keys = append(keys, key)
+		}
+		slices.Sort(keys)
+		if want := []string{"claimed_at", "limit_minutes", "repo", "stage", "ticket", "title"}; !slices.Equal(keys, want) {
+			t.Fatalf("an entry carries %v, want %v", keys, want)
+		}
+		if limit, ok := entry["limit_minutes"].(float64); !ok || limit != math.Trunc(limit) {
+			t.Fatalf("limit_minutes = %v, want a whole number", entry["limit_minutes"])
+		}
 	}
-	slices.Sort(keys)
-	if want := []string{"claimed_at", "repo", "stage", "ticket", "title"}; !slices.Equal(keys, want) {
-		t.Fatalf("an entry carries %v, want %v", keys, want)
+}
+
+func TestRunningServesEachRunsOwnLimit(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		stage string
+		want  int
+	}{
+		{"a plan-stage reservation", dispatcher.StagePlan, 60},
+		{"a build-stage reservation", dispatcher.StageBuild, 90},
+		{"a single-stage claim", "", 90},
+		{"a stage the ledger does not name", "settled", 90},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, _ := servedRunning(t, &stubRunning{runs: []store.Running{{
+				Ticket: "FRG-1", Repo: "octo/other", Stage: tt.stage, ClaimedAt: claimedAt(10),
+			}}})
+			if len(got.Runs) != 1 || got.Runs[0].LimitMinutes != tt.want {
+				t.Fatalf("runs = %+v, want one run limited to %d minutes", got.Runs, tt.want)
+			}
+		})
+	}
+}
+
+// TestRunningMatchesTheFixture holds the page's fixture to what the endpoint
+// serves: the claims behind the fixture's runs, rendered, give the fixture back.
+func TestRunningMatchesTheFixture(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "web", "fixtures", "running.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture runningResponse
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	claims := make([]store.Running, 0, len(fixture.Runs))
+	for _, run := range fixture.Runs {
+		claimed, err := time.Parse(time.RFC3339, run.ClaimedAt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stage := dispatcher.StageBuild
+		if run.Stage == "planning" {
+			stage = dispatcher.StagePlan
+		}
+		claims = append(claims, store.Running{Ticket: run.Ticket, Repo: run.Repo, Stage: stage, ClaimedAt: claimed, Title: run.Title})
+	}
+	if got := renderRunning(claims); !slices.Equal(got.Runs, fixture.Runs) {
+		t.Fatalf("the claims serve %+v, want the fixture's %+v", got.Runs, fixture.Runs)
 	}
 }
 

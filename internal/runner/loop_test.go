@@ -3,6 +3,7 @@ package runner
 import (
 	"slices"
 	"testing"
+	"time"
 )
 
 // TestReviewRowsDoesNotCallARewordedFindingFixed covers a re-review that words
@@ -91,5 +92,31 @@ func TestReviewRowsNamesTheRoundForAFindingOnlyTheLastReCheckMade(t *testing.T) 
 func TestTheStageBudgetsAndTheReserveTotalTheRunCap(t *testing.T) {
 	if got := nfr1BuildBudget + nfr1ReviewBudget + nfr1CommitReserve; got != nfr1RunCap {
 		t.Fatalf("the build, review and commit shares total %s, want the run cap %s", got, nfr1RunCap)
+	}
+}
+
+func TestRunLimitMinutesByStageWord(t *testing.T) {
+	for _, tt := range []struct {
+		stage string
+		want  int
+	}{
+		{RunStagePlanning, 60},
+		{RunStageBuilding, 90},
+		{"", 90},
+		{"settled", 90},
+	} {
+		if got := RunLimitMinutes(tt.stage); got != tt.want {
+			t.Errorf("RunLimitMinutes(%q) = %d, want %d", tt.stage, got, tt.want)
+		}
+	}
+}
+
+// TestRunLimitMinutesAreWholeMinutes keeps the minutes the surface shows exact:
+// a budget with a stray second would be floored to a limit the runner never stops at.
+func TestRunLimitMinutesAreWholeMinutes(t *testing.T) {
+	for name, limit := range map[string]time.Duration{"nfr1RunCap": nfr1RunCap, "nfr1BuildBudget": nfr1BuildBudget} {
+		if limit%time.Minute != 0 {
+			t.Errorf("%s = %s, want a whole number of minutes", name, limit)
+		}
 	}
 }
