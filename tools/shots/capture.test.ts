@@ -188,11 +188,11 @@ describe("captureShot", () => {
     );
   }
 
-  test("writes a shot at the viewport's device size", async () => {
+  test("writes a shot at the viewport's device size, creating its width's folder", async () => {
     const bytes = png(1320, 2289);
     const channel = fakeChannel({ shot: bytes });
     const dir = outDir();
-    const out = join(dir, "s.png");
+    const out = join(dir, "s", "index.png");
     const size = await captureShot({
       cdp: channel,
       page: drivenPage(),
