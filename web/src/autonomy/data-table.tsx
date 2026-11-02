@@ -381,9 +381,6 @@ function PerPRTable({ prs, bar, showRepo, captionId }: PerPRTableProps) {
           <th scope="col" colSpan={5} className={`${HEAD} pt-1 pb-2`}>
             Title
           </th>
-          <th scope="col" colSpan={3} className={`${HEAD} pt-1 pb-2`}>
-            Plan, build, review
-          </th>
         </tr>
       </thead>
       {prs.map((pr) => (
@@ -447,7 +444,7 @@ function PagedPRs({ prs, bar, showRepo }: PagedPRsProps) {
   return (
     <div className={CARD}>
       <p id={captionId} className="text-cap font-semibold text-ink2">
-        Per PR, newest first
+        Newest first
       </p>
       {range.paged && (
         <div className="mt-2">
