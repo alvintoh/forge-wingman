@@ -737,13 +737,13 @@ export function ProjectsSection({ className, read }: ProjectsSectionProps) {
   return (
     <section aria-labelledby="projects-heading" className={`min-w-0 ${className}`}>
       <ProjectsHeading id="projects-heading" />
-      <div>
+      <div className="@[51.25rem]:row-span-2">
         <ProjectsPanels state={state} retry={retry}>
           <ProjectsCard
             projects={known === undefined ? state.projects.slice(0, SECTION_PROJECTS) : [known]}
             total={state.total}
             now={state.readAt}
-            // The Overview's strip says a failed re-read, so the card does not say it again here.
+            // The Overview's refresh notice says a failed re-read, so the card does not say it again here.
             stale={false}
             seeAll={state.total > SECTION_PROJECTS}
             refresh={refresh}
