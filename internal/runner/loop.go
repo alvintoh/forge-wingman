@@ -42,6 +42,21 @@ const (
 	nfr1CommitReserve = 5 * time.Minute
 )
 
+// The stage words a run in flight is shown with.
+const (
+	RunStagePlanning = "planning"
+	RunStageBuilding = "building"
+)
+
+// RunLimitMinutes is the whole minutes a run in the given stage word may take:
+// the build budget for planning, the whole-run cap for every other word.
+func RunLimitMinutes(stage string) int {
+	if stage == RunStagePlanning {
+		return int(nfr1BuildBudget / time.Minute)
+	}
+	return int(nfr1RunCap / time.Minute)
+}
+
 // effectiveAgentTimeout is configured, or defaultAgentTimeout when it is unset.
 func effectiveAgentTimeout(configured time.Duration) time.Duration {
 	if configured <= 0 {

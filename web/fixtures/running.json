@@ -5,35 +5,40 @@
       "repo": "acme/gadgets",
       "stage": "building",
       "claimed_at": "2026-03-01T10:25:00Z",
-      "title": "Gadget list filters"
+      "title": "Gadget list filters",
+      "limit_minutes": 90
     },
     {
       "ticket": "DEMO-240",
       "repo": "acme/widgets",
       "stage": "building",
       "claimed_at": "2026-03-01T10:44:00Z",
-      "title": "Add the widget table"
+      "title": "Add the widget table",
+      "limit_minutes": 90
     },
     {
       "ticket": "DEMO-243",
       "repo": "acme/widgets",
       "stage": "planning",
       "claimed_at": "2026-03-01T11:15:00Z",
-      "title": "Price the gift cards"
+      "title": "Price the gift cards",
+      "limit_minutes": 60
     },
     {
       "ticket": "DEMO-241",
       "repo": "acme/widgets",
       "stage": "building",
       "claimed_at": "2026-03-01T11:32:00Z",
-      "title": "Redraw the widget card"
+      "title": "Redraw the widget card",
+      "limit_minutes": 90
     },
     {
       "ticket": "DEMO-244",
       "repo": "acme/gadgets",
       "stage": "planning",
       "claimed_at": "2026-03-01T11:56:00Z",
-      "title": "Cache the shelf report"
+      "title": "Cache the shelf report",
+      "limit_minutes": 60
     }
   ]
 }
