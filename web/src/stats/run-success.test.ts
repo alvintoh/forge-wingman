@@ -188,7 +188,9 @@ describe("isRunSuccess", () => {
 
 describe("RunSuccessCard while it reads", () => {
   const loading = (projectChosen: boolean) =>
-    renderToStaticMarkup(createElement(RunSuccessCard, { projectChosen }));
+    renderToStaticMarkup(
+      createElement(RunSuccessCard, { project: projectChosen ? "acme/widgets" : null }),
+    );
 
   it("names the card, defines it and says it is reading", () => {
     const html = loading(false);
