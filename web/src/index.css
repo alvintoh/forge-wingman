@@ -14,3 +14,8 @@
   padding-inline: var(--spacing-padx);
   box-shadow: 0 2px 6px color-mix(in srgb, var(--color-ink) 6%, transparent);
 }
+
+/* The Statistics cache table's switch: from this card width the runs draw as one table, one line a
+   row, and below it as stacked blocks. 31.5rem (504px) clears the table's natural width of 498.6px
+   with an 8-character run id and a 12-character provider, 16px between columns, by 5px. */
+@custom-variant cache-wide (@container (min-width: 31.5rem));
