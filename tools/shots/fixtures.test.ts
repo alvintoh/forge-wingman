@@ -6,6 +6,7 @@ import { isAutonomy, isRewrite } from "../../web/src/autonomy/guard";
 import { isConfigView, isPeakView, isRunsPerRepoView } from "../../web/src/config/types";
 import { isInbox } from "../../web/src/inbox/run";
 import { isRunning } from "../../web/src/running/run";
+import { isRunSuccess } from "../../web/src/stats/run-success";
 import { FixtureApi, fixtureFile } from "./fixtures";
 
 const REPO_ROOT = join(import.meta.dir, "../..");
@@ -135,5 +136,9 @@ describe("the fixtures' shapes", () => {
   test("running rejects a run whose claim time does not parse", () => {
     const body = fixture("running") as { runs: Record<string, unknown>[] };
     expect(isRunning({ runs: [{ ...body.runs[0], claimed_at: "garbage" }] })).toBe(false);
+  });
+
+  test("run success passes its guard", () => {
+    expect(isRunSuccess(fixture("run-success"))).toBe(true);
   });
 });
