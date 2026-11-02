@@ -24,11 +24,6 @@ describe("phaseCell", () => {
     expect(phaseCell(run(), "plan")).toEqual({ kind: "share", share: 0.41 });
   });
 
-  it("ignores a whole-phase share the endpoint still sends", () => {
-    const sent = Object.assign(run(), { build_phase_share: 0.1 });
-    expect(phaseCell(sent, "build")).toEqual({ kind: "share", share: 0.62 });
-  });
-
   it("is a share for a phase that has only its first share", () => {
     expect(phaseCell(run({ plan_first_share: 0 }), "plan")).toEqual({ kind: "share", share: 0 });
   });
@@ -67,12 +62,6 @@ describe("finishedOf", () => {
 describe("isComparison", () => {
   it("accepts the endpoint's runs", () => {
     expect(isComparison({ runs: [run()] })).toBe(true);
-  });
-
-  it("accepts a run without the whole-phase shares, and one that carries them", () => {
-    const without = { ...run() };
-    const carrying = { ...run(), build_phase_share: 0.58, plan_phase_share: 0.39 };
-    expect(isComparison({ runs: [without, carrying] })).toBe(true);
   });
 
   it("accepts a run whose settle time is unreadable, which the table words as not recorded", () => {
