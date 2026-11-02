@@ -92,8 +92,8 @@ func TestRunHistoryListsTheRunsOldestFirstWithKindWordsAndTheMergedCount(t *test
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if reader.limit != 20 {
-		t.Errorf("asked for %d runs, want 20", reader.limit)
+	if reader.limit != 30 {
+		t.Errorf("asked for %d runs, want 30", reader.limit)
 	}
 
 	var body struct {
