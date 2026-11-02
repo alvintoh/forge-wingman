@@ -28,7 +28,7 @@ const STRIP_STYLE = {
   gridTemplateColumns: `repeat(${RUN_HISTORY_SLOTS}, minmax(0, 16px))`,
 } as const;
 
-// RunHistory reads the history and draws it.
+// RunHistory reads the history and draws its section of the Run success card.
 export function RunHistory({ project }: { project: string | null }) {
   const read = useRead("/api/run-history", isHistory, "runHistoryNotRead");
   return <RunHistoryView read={read} project={project} />;
@@ -37,9 +37,9 @@ export function RunHistory({ project }: { project: string | null }) {
 // RunHistoryView draws the latest settled runs as one bar each, oldest to newest,
 // with the merged count and the legend that names each bar's colour, narrowed
 // to the project the page is on; each bar's words are read out, not drawn.
-// The legend does not depend on the read, so every state draws it, and while the
-// history loads its line keeps the height of the strip (26px): the ready state
-// does not push the page down.
+// The legend does not depend on the read, so every state draws it, and a state
+// line keeps the height of the strip (26px): the ready state does not push the
+// card down.
 export function RunHistoryView({
   read,
   project,
@@ -53,11 +53,11 @@ export function RunHistoryView({
     project === null ? served : served.filter((run) => sameRepository(run.repo, project));
   const merged = runs.filter((run) => run.kind === "merged").length;
   return (
-    <section aria-labelledby="run-history-title" className="border-b border-hair pb-5">
+    <section aria-labelledby="run-history-title" className="mt-3.25 border-t border-hair pt-3.5">
       <div className="flex items-baseline justify-between gap-4">
         {/* One line whatever it counts and names, so choosing a project never moves the
-            card below. */}
-        <h2 id="run-history-title" className={`${captionClass} min-w-0 truncate text-muted`}>
+            legend or the card below. */}
+        <h2 id="run-history-title" className={`${captionClass} min-w-0 truncate text-ink2`}>
           {title(runs.length, project)}
         </h2>
         {read.status === "ready" && runs.length > 0 && (
@@ -65,20 +65,20 @@ export function RunHistoryView({
         )}
       </div>
       {read.status === "loading" && (
-        <p role="status" className="mt-3 min-h-[26px] text-label text-ink2">
+        <p role="status" className="mt-2 min-h-[26px] text-label text-ink2">
           Reading the run history…
         </p>
       )}
       {read.status === "error" && (
-        <p role="alert" className="mt-3 min-h-[26px] text-label text-ink2">
+        <p role="alert" className="mt-2 min-h-[26px] text-label text-ink2">
           The run history could not be read.
         </p>
       )}
       {read.status === "ready" && served.length === 0 && (
-        <p className="mt-3 min-h-[26px] text-label text-ink2">No run has settled yet.</p>
+        <p className="mt-2 min-h-[26px] text-label text-ink2">No run has settled yet.</p>
       )}
       {read.status === "ready" && served.length > 0 && runs.length === 0 && project !== null && (
-        <p className="mt-3 min-h-[26px] truncate text-label text-ink2">
+        <p className="mt-2 min-h-[26px] truncate text-label text-ink2">
           No run for {project} in the last {served.length} {served.length === 1 ? "run" : "runs"}.
         </p>
       )}
@@ -86,7 +86,7 @@ export function RunHistoryView({
         <ol
           aria-label="The latest settled runs, oldest first"
           style={STRIP_STYLE}
-          className="mt-3 grid justify-between gap-x-[5px]"
+          className="mt-2 grid justify-between gap-x-[5px]"
         >
           {runs.map((run) => (
             <li key={run.run} className={`h-6.5 rounded-tag ${fillOf(run.kind)}`}>
@@ -99,7 +99,7 @@ export function RunHistoryView({
       )}
       <ul
         aria-label="Run kinds"
-        className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1 text-micro text-ink2"
+        className="mt-4.5 flex flex-wrap gap-x-4 gap-y-1 text-micro text-ink2"
       >
         {RUN_COLOURS.map((colour) => (
           <li key={colour.fill} className="flex min-w-0 items-center gap-1.5">

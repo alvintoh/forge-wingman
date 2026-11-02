@@ -1,13 +1,16 @@
+import type { ReactNode } from "react";
 import { captionClass } from "../caption";
 import { StatusMark } from "../status-mark";
 import {
   describeRunSuccess,
   isRunSuccess,
   RUN_SUCCESS_DEFINITION,
+  type RunSuccess,
   type RunSuccessState,
   type RunSuccessView,
 } from "./run-success";
-import { useRead } from "./use-read";
+import { RunHistory } from "./run-history";
+import { useRead, type Read } from "./use-read";
 
 const WORD_COLOUR = {
   on: "text-ok",
@@ -71,16 +74,35 @@ function ReadyBody({ view, projectChosen }: { view: RunSuccessView; projectChose
 
 /**
  * RunSuccessCard is the Statistics card for run success: the trailing four weeks as a shape, a word
- * and a figure against the target, the previous four weeks and the most common stop. The endpoint is
- * pooled, so a project chosen on the page leaves the figures as All draws them and the card says so.
+ * and a figure against the target, the previous four weeks and the most common stop, then the last
+ * settled runs as its closing section. The endpoint is pooled, so a project chosen on the page leaves
+ * the figures as All draws them and the card says so, while the runs section follows the project.
  */
-export function RunSuccessCard({ projectChosen }: { projectChosen: boolean }) {
+export function RunSuccessCard({ project }: { project: string | null }) {
   const read = useRead("/api/run-success", isRunSuccess, "runSuccessNotRead");
+  return (
+    <RunSuccessCardView read={read} projectChosen={project !== null}>
+      <RunHistory project={project} />
+    </RunSuccessCardView>
+  );
+}
+
+// RunSuccessCardView draws the card for the read it is given, with the children as its last section:
+// they read for themselves, so the card's state never decides theirs.
+export function RunSuccessCardView({
+  read,
+  projectChosen,
+  children,
+}: {
+  read: Read<RunSuccess>;
+  projectChosen: boolean;
+  children: ReactNode;
+}) {
   return (
     <section
       aria-labelledby="run-success-title"
       aria-busy={read.status === "loading"}
-      className="card-frame pt-6 pb-4 max-sm:-mx-2.5"
+      className="card-frame pt-6 pb-6.5 max-sm:-mx-2.5"
     >
       <h2 id="run-success-title" className={`${captionClass} text-ink2`}>
         run success
@@ -104,6 +126,7 @@ export function RunSuccessCard({ projectChosen }: { projectChosen: boolean }) {
       {read.status === "ready" && (
         <ReadyBody view={describeRunSuccess(read.body)} projectChosen={projectChosen} />
       )}
+      {children}
     </section>
   );
 }

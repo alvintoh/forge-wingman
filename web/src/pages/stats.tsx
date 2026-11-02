@@ -6,19 +6,19 @@ import { useProjects } from "../project-list";
 import { CacheTable } from "../stats/cache-table";
 import { isComparison, type RunsState } from "../stats/comparison";
 import { RewriteRate } from "../stats/rewrite-rate";
-import { RunHistory } from "../stats/run-history";
 import { RunSuccessCard } from "../stats/run-success-card";
 
-// Statistics shows the run success against its target, lists the recent runs and the share of each
-// phase's input the provider served from cache, with the project filter that narrows the runs; the
-// run success and rewrite-rate figures stay pooled and say so.
+// Statistics shows the run success against its target with the recent runs as the card's last
+// section, the rewrite rate and the share of each phase's input the provider served from cache, with
+// the project filter that narrows the runs; the run success and rewrite-rate figures stay pooled and
+// say so.
 export function Stats() {
   const [state, setState] = useState<RunsState>({ status: "loading", runs: [] });
   const { state: list, retry } = useProjects();
   const { project } = useProjectFilter();
   const { known, choose } = useKnownProject(list.projects, list.status === "ready");
-  // The strip follows the URL at once, so a project chosen before the list arrives still narrows
-  // it; once the list has answered the caption names the project as the list serves it.
+  // The runs section follows the URL at once, so a project chosen before the list arrives still
+  // narrows it; once the list has answered the caption names the project as the list serves it.
   const narrowed = known?.repository ?? project;
   // The cached-share block mounts with the projects column's first answer and stays, so on a phone,
   // where the block sits under the column, the card's arrival never moves it and a retry of the
@@ -70,8 +70,7 @@ export function Stats() {
           statistics
         </h1>
         <div className="mt-4 flex min-w-0 flex-col gap-y-6 @[51.25rem]:col-start-1 @[51.25rem]:row-start-2">
-          <RunSuccessCard projectChosen={project !== null} />
-          <RunHistory project={narrowed} />
+          <RunSuccessCard project={narrowed} />
           <RewriteRate projectChosen={project !== null} />
         </div>
         {/* The filter column's caption and its card take the page's two rows, so the card's top is
