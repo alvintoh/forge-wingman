@@ -1,7 +1,7 @@
 import { captionClass } from "../caption";
 import { sameRepository } from "../project-search";
 import { fillOf, RUN_COLOURS } from "./run-colours";
-import { useRead } from "./use-read";
+import { useRead, type Read } from "./use-read";
 
 type HistoryRun = {
   run: string;
@@ -17,14 +17,36 @@ type HistoryResponse = {
   runs: HistoryRun[];
 };
 
-// RunHistory draws the latest settled runs as one bar each, oldest to newest,
+// How many slots the strip has: the length of the history served by `historyLimit` in
+// cmd/surface/history.go, so change them together.
+const RUN_HISTORY_SLOTS = 20;
+
+// Twenty tracks of at most 16px: a narrow card shrinks them and keeps the 5px gap, a wide card
+// keeps the bars at 16px and `justify-content: space-between` grows the gaps, so a full history
+// ends at the card's right edge. A shorter history takes the first tracks and the rest stay empty.
+const STRIP_STYLE = {
+  gridTemplateColumns: `repeat(${RUN_HISTORY_SLOTS}, minmax(0, 16px))`,
+} as const;
+
+// RunHistory reads the history and draws it.
+export function RunHistory({ project }: { project: string | null }) {
+  const read = useRead("/api/run-history", isHistory, "runHistoryNotRead");
+  return <RunHistoryView read={read} project={project} />;
+}
+
+// RunHistoryView draws the latest settled runs as one bar each, oldest to newest,
 // with the merged count and the legend that names each bar's colour, narrowed
 // to the project the page is on; each bar's words are read out, not drawn.
 // The legend does not depend on the read, so every state draws it, and while the
 // history loads its line keeps the height of the strip (26px): the ready state
 // does not push the page down.
-export function RunHistory({ project }: { project: string | null }) {
-  const read = useRead("/api/run-history", isHistory, "runHistoryNotRead");
+export function RunHistoryView({
+  read,
+  project,
+}: {
+  read: Read<HistoryResponse>;
+  project: string | null;
+}) {
   const served = read.status === "ready" ? read.body.runs : [];
   // A run that recorded no repository matches no project, so it shows under All alone.
   const runs =
@@ -61,12 +83,13 @@ export function RunHistory({ project }: { project: string | null }) {
         </p>
       )}
       {read.status === "ready" && runs.length > 0 && (
-        <ol aria-label="The latest settled runs, oldest first" className="mt-3 flex gap-[5px]">
+        <ol
+          aria-label="The latest settled runs, oldest first"
+          style={STRIP_STYLE}
+          className="mt-3 grid justify-between gap-x-[5px]"
+        >
           {runs.map((run) => (
-            <li
-              key={run.run}
-              className={`h-6.5 max-w-4 min-w-0 flex-1 rounded-tag ${fillOf(run.kind)}`}
-            >
+            <li key={run.run} className={`h-6.5 rounded-tag ${fillOf(run.kind)}`}>
               <span className="sr-only">
                 {run.ticket || run.run}: {run.words}
               </span>
