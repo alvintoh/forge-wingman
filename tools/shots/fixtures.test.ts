@@ -127,10 +127,10 @@ describe("the fixtures' shapes", () => {
     expect(isRunning(fixture("running"))).toBe(true);
   });
 
-  test("running accepts a run without a limit", () => {
+  test("running rejects a run without a limit", () => {
     const body = fixture("running") as { runs: Record<string, unknown>[] };
     const { limit_minutes: _limit, ...run } = body.runs[0];
-    expect(isRunning({ runs: [run] })).toBe(true);
+    expect(isRunning({ runs: [run] })).toBe(false);
   });
 
   test("running rejects a run whose claim time does not parse", () => {
