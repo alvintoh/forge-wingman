@@ -64,3 +64,7 @@ output "surface_service_account" {
 output "surface_url" {
   value = google_cloud_run_v2_service.surface.uri
 }
+
+output "surface_deploy_service_account" {
+  value = google_service_account.surface_deploy.email
+}

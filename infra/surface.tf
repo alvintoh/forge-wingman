@@ -115,6 +115,12 @@ resource "google_cloud_run_v2_service" "surface" {
     google_project_service.this,
     google_secret_manager_secret_iam_member.surface_merge_token,
   ]
+
+  # gcloud stamps these on every hand-run update or rollback; they are not
+  # configuration, and a deploy's plan must show the image change alone.
+  lifecycle {
+    ignore_changes = [client, client_version]
+  }
 }
 
 # IAP calls the service as its own service agent, so that agent needs the

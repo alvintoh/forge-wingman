@@ -28,6 +28,7 @@ this repository — the model's included — cannot become the runner.
 | `wingman-model` | `model.yml`, `model-smoke.yml` | completions create, projections read |
 | `wingman-publisher` | any job of the rule stack on `main` | projections create; get and overwrite of `projections/current` only |
 | `wingman-pr-review` | `pr-review.yml` | read of `linear-review-client-id` and `linear-review-client-secret` only |
+| `wingman-surface-deploy` | `deploy-surface.yml` | push to the `forge-wingman` registry; deploy of the surface service, acting as `surface`; the state objects under `infra/`; the reads a plan of the surface needs ([Deploy](#deploy)) |
 
 The publisher is the one identity for another repository: the rule stack, which is
 private, so nothing here names it. It has its own provider, `rule-stack`, whose
@@ -45,6 +46,7 @@ Set from the outputs after `apply`:
 | `GCP_SERVICE_ACCOUNT` | `runner_service_account` |
 | `GCP_MODEL_SERVICE_ACCOUNT` | `model_service_account` |
 | `GCP_PR_REVIEW_SERVICE_ACCOUNT` | `pr_review_service_account` |
+| `GCP_SURFACE_DEPLOY_SERVICE_ACCOUNT` | `surface_deploy_service_account` |
 
 `WINGMAN_ACCOUNT` is set by hand, not from an output: it must name the repository's
 owner. When it does not, run.yml's ticket, model and pr-meta jobs refuse to run and
@@ -271,7 +273,7 @@ Three variables name what OpenTofu cannot guess, and a fourth is optional:
 | `dispatcher_image` | the image to run. The `Dockerfile` builds it with `CMD=dispatcher`; nothing here pushes it, so push it yourself and name the digest |
 | `webhook_image` | the webhook service's image, built with `CMD=webhook`; pushed and named by digest the same way |
 | `linear_delegate` | the Linear id of the agent the job acts for; a poll whose token is another agent's admits nothing |
-| `dispatcher_settings` | optional. A map of `WINGMAN_PLATFORM_CAP`, `WINGMAN_LARGE_CAP`, `WINGMAN_REVIEW_WIP`, `WINGMAN_STABLE_RUNS`, `WINGMAN_RISE_WITHIN`, `WINGMAN_HALVE_BEYOND`, `WINGMAN_TWO_STAGE` and `WINGMAN_DECISION_TIMEOUT` to a value; a key left out keeps its default. `WINGMAN_DECISION_TIMEOUT` is how long a run waits on an owner decision (e.g. `24h`) before it is stopped as waiting-on-owner. Both the dispatcher job and the surface service read it: the job runs under these settings and the surface's configuration view shows them, so a change needs both applied |
+| `dispatcher_settings` | optional. A map of `WINGMAN_PLATFORM_CAP`, `WINGMAN_LARGE_CAP`, `WINGMAN_REVIEW_WIP`, `WINGMAN_STABLE_RUNS`, `WINGMAN_RISE_WITHIN`, `WINGMAN_HALVE_BEYOND`, `WINGMAN_TWO_STAGE` and `WINGMAN_DECISION_TIMEOUT` to a value; a key left out keeps its default. `WINGMAN_DECISION_TIMEOUT` is how long a run waits on an owner decision (e.g. `24h`) before it is stopped as waiting-on-owner. Both the dispatcher job and the surface service read it: the job runs under these settings and the surface's configuration view shows them, so a change needs both applied. The live values are in `settings.auto.tfvars`, which every plan and apply reads, so change them there |
 
 ### The queue tie-break
 
@@ -360,8 +362,8 @@ unconditional grants, which already reach every database.
 
 ### Apply
 
-Apply it targeted. A plain `tofu apply` also resets the dispatcher's runtime settings
-(FRG-150). `dispatcher_image`, `webhook_image` and `linear_delegate` have no default, and
+Apply it targeted: a plain `tofu apply` needs every deployable's live image, or it redeploys
+them with whatever it is given. `dispatcher_image`, `webhook_image` and `linear_delegate` have no default, and
 neither target uses them, so a placeholder satisfies the plan and the apply; a target that
 did depend on one would need its live value.
 
@@ -568,8 +570,7 @@ external applications (docs.cloud.google.com/iap/docs/custom-oauth-configuration
 
 ### Apply
 
-Apply it targeted, for the same reason as the owner database: a plain `tofu apply` also
-resets the dispatcher's runtime settings. `dispatcher_image`, `webhook_image` and
+Apply it targeted, for the same reason as the owner database. `dispatcher_image`, `webhook_image` and
 `linear_delegate` are not used by these targets, so a placeholder satisfies them;
 `surface_image` and `surface_owner_email` are used and need their live values.
 
@@ -621,6 +622,137 @@ curl -I "$URL"
   never a 200.
 - The owner's browser, signed in as `surface_owner_email`, reaches `$URL` and the page loads.
 - A second targeted plan with the same `T` and `V` arrays reads No changes.
+
+## Deploy
+
+`.github/workflows/deploy-surface.yml` deploys the surface on every push to `main` that
+changes `cmd/surface/`, `web/`, `internal/`, the `Dockerfile`, `go.mod` or `go.sum`. It
+builds the image for `linux/amd64` with `CMD=surface` and the commit's sha, pushes it tagged
+with that sha, and plans the surface service alone (`-target`) with the pushed digest. It
+applies only when that plan changes one resource, the surface service, in place, and nothing
+but its container image; then it reads the service back and fails unless the newest revision
+is Ready, takes all the traffic and runs that digest. Runs queue in one concurrency group and
+are never cancelled mid-apply; a run whose commit `main` has since moved past with another
+surface change skips the apply and leaves it to the newer run. The dispatcher and the webhook
+are never planned or applied. The by-hand recipe in [Surface](#surface) still works the same way.
+
+To deploy `main` as it stands, for example after a merge that changed none of those paths,
+run it by hand: `gh workflow run deploy-surface.yml --ref main`. A run from any other branch
+stops before signing in.
+
+It runs as `wingman-surface-deploy`, bound to that workflow file on `main` alone:
+
+| Grant | Scope | For |
+|---|---|---|
+| `roles/artifactregistry.writer` | the `forge-wingman` repository | pushing the image |
+| `roles/run.developer` | the `forge-wingman-surface` service | updating the service |
+| `roles/iam.serviceAccountUser` | the `surface` service account | a revision runs as it |
+| `roles/storage.objectUser` | `gs://forge-wingman-tfstate`, objects under `infra/` and a listing of that prefix | reading and writing state, and its lock (the bucket keeps versions, so a bad write rolls back) |
+| `surfaceDeployReader` (custom) | the project | `resourcemanager.projects.get`, `resourcemanager.projects.getIamPolicy`, `serviceusage.services.get`, `serviceusage.services.list`, `run.operations.get` |
+| `surfaceDeploySecretReader` (custom) | the `surface-merge-token` secret | `secretmanager.secrets.get`, `secretmanager.secrets.getIamPolicy`: its metadata, never its value |
+
+The two custom roles hold what a plan targeted at the surface refreshes besides the service
+itself: `data.google_project.this`, `surface_datastore`, `google_project_service.this`, the
+merge token and its binding, and the operation a service update returns. **They are to be
+confirmed by running the plan as the account** (step 2 below), and `run.operations.get` by the
+first deploy, since a plan makes no update. Nothing grants a secret's value, Firestore, the
+dispatcher or the webhook.
+
+`settings.auto.tfvars` holds the dispatcher settings both deployables read, so the plan carries
+the live values and the image check passes.
+
+### The registry
+
+`registry.tf` brings the hand-made `forge-wingman` repository in with an `import` block. Its
+cleanup policy keeps the newest 20 versions of the `surface` package and deletes older ones; both
+rules name the `surface` package alone, so the dispatcher's and the webhook's images are never
+matched. It starts as a dry run (`cleanup_policy_dry_run = true`), which logs what it would
+delete and deletes nothing.
+
+### Bootstrap (once, by the owner)
+
+1. Apply the account, its grants and the registry, targeted. Targeting the service's grant pulls
+   the surface service into the plan, so `surface_image` takes the digest that serves; the other
+   variables are unused and take placeholders.
+
+   ```sh
+   cd infra
+   IMG=$(gcloud run services describe forge-wingman-surface --region=us-central1 --project=forge-wingman \
+     --format='value(spec.template.spec.containers[0].image)')
+   T=(-target=google_artifact_registry_repository.images
+      -target=google_service_account.surface_deploy
+      -target=google_service_account_iam_member.surface_deploy_wif
+      -target=google_artifact_registry_repository_iam_member.surface_deploy_push
+      -target=google_cloud_run_v2_service_iam_member.surface_deploy_developer
+      -target=google_service_account_iam_member.surface_deploy_act_as
+      -target=google_storage_bucket_iam_member.surface_deploy_state
+      -target=google_project_iam_custom_role.surface_deploy_reader
+      -target=google_project_iam_member.surface_deploy_reader
+      -target=google_project_iam_custom_role.surface_deploy_secret_reader
+      -target=google_secret_manager_secret_iam_member.surface_deploy_secret_reader)
+   V=(-var=dispatcher_image=x -var=webhook_image=x -var=linear_delegate=x
+      -var="surface_image=${IMG}" -var=surface_owner_email=x)
+   # expect: Plan: 1 to import, 10 to add, 1 to change, 0 to destroy.
+   tofu plan "${T[@]}" "${V[@]}"
+   tofu apply "${T[@]}" "${V[@]}"
+   ```
+
+   The one change is the registry gaining its cleanup policy. Stop if the surface service
+   appears as a change: the digest or the settings do not match what serves.
+   Read it back: `gcloud iam service-accounts get-iam-policy "$(tofu output -raw surface_deploy_service_account)"`
+   lists the workflow principal for `deploy-surface.yml`, and
+   `gcloud artifacts repositories describe forge-wingman --location=us-central1 --project=forge-wingman`
+   shows the two cleanup policies.
+
+2. Run the workflow's plan as the account. Impersonating it needs the token creator role, granted
+   for this step and removed after it.
+
+   ```sh
+   SA=$(tofu output -raw surface_deploy_service_account)
+   gcloud iam service-accounts add-iam-policy-binding "$SA" --project=forge-wingman \
+     --role=roles/iam.serviceAccountTokenCreator --member="user:<owner google account>"
+   GOOGLE_IMPERSONATE_SERVICE_ACCOUNT="$SA" GOOGLE_BACKEND_IMPERSONATE_SERVICE_ACCOUNT="$SA" \
+     tofu plan -target=google_cloud_run_v2_service.surface "${V[@]}"
+   gcloud iam service-accounts remove-iam-policy-binding "$SA" --project=forge-wingman \
+     --role=roles/iam.serviceAccountTokenCreator --member="user:<owner google account>"
+   ```
+
+   Expect `No changes.` A 403 names the permission the account lacks: add it to the custom role
+   whose scope holds that resource, apply, and plan again. Read the final grants back with
+   `gcloud projects get-iam-policy forge-wingman --flatten=bindings --filter="bindings.members:$SA"`.
+
+3. Set the repository variable `GCP_SURFACE_DEPLOY_SERVICE_ACCOUNT` from `surface_deploy_service_account`:
+
+   ```sh
+   gh variable set GCP_SURFACE_DEPLOY_SERVICE_ACCOUNT --body "$(tofu output -raw surface_deploy_service_account)"
+   ```
+
+   `GCP_WIF_PROVIDER` is already set. Then merge: a merge changing only `infra/` and `.github/`
+   deploys nothing, and the next surface change is the first deploy.
+
+### Roll back
+
+List the revisions and send all the traffic to the previous one:
+
+```sh
+gcloud run revisions list --service=forge-wingman-surface --region=us-central1 --project=forge-wingman
+gcloud run services update-traffic forge-wingman-surface --region us-central1 --project forge-wingman --to-revisions=<previous>=100
+```
+
+That pins the traffic, so the next deploy's new revision takes none and its read-back fails.
+Once the fix is merged and deployed, return the traffic to the newest revision with
+`gcloud run services update-traffic forge-wingman-surface --region us-central1 --project forge-wingman --to-latest`.
+
+### Turning the dry run off
+
+After a week of dry-run logs, read what the policy would have deleted (Artifact Registry's
+audit log entries in Cloud Logging) and confirm every entry is a `surface` version. Then, in a
+change of its own, set `cleanup_policy_dry_run = false` and apply the registry alone:
+
+```sh
+tofu apply -target=google_artifact_registry_repository.images \
+  -var=dispatcher_image=x -var=webhook_image=x -var=linear_delegate=x -var=surface_image=x -var=surface_owner_email=x
+```
 
 ## Webhook
 
