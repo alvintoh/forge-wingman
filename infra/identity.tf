@@ -184,3 +184,94 @@ resource "google_storage_bucket_iam_member" "publisher_current" {
     expression = "resource.name == \"projects/_/buckets/${google_storage_bucket.projections.name}/objects/projections/current\""
   }
 }
+
+# The identity deploy-surface.yml runs under: it pushes the surface's image and
+# applies the surface service alone, and holds no secret value, no Firestore grant
+# and nothing on the dispatcher or the webhook.
+resource "google_service_account" "surface_deploy" {
+  account_id   = "wingman-surface-deploy"
+  display_name = "Forge Wingman surface deploy"
+
+  depends_on = [google_project_service.this]
+}
+
+resource "google_service_account_iam_member" "surface_deploy_wif" {
+  service_account_id = google_service_account.surface_deploy.name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = format(local.workflow_principal, "deploy-surface.yml")
+}
+
+resource "google_artifact_registry_repository_iam_member" "surface_deploy_push" {
+  location   = google_artifact_registry_repository.images.location
+  repository = google_artifact_registry_repository.images.name
+  role       = "roles/artifactregistry.writer"
+  member     = google_service_account.surface_deploy.member
+}
+
+resource "google_cloud_run_v2_service_iam_member" "surface_deploy_developer" {
+  project  = var.project_id
+  location = google_cloud_run_v2_service.surface.location
+  name     = google_cloud_run_v2_service.surface.name
+  role     = "roles/run.developer"
+  member   = google_service_account.surface_deploy.member
+}
+
+# A revision runs as the surface's account, so deploying one acts as it.
+resource "google_service_account_iam_member" "surface_deploy_act_as" {
+  service_account_id = google_service_account.surface.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = google_service_account.surface_deploy.member
+}
+
+# The state bucket is made by hand and named again in versions.tf's backend, which
+# cannot read a variable; rename both together. The grant reaches the objects
+# under infra/ and a listing of that prefix, which the backend makes to find its
+# workspaces.
+resource "google_storage_bucket_iam_member" "surface_deploy_state" {
+  bucket = "forge-wingman-tfstate"
+  role   = "roles/storage.objectAdmin"
+  member = google_service_account.surface_deploy.member
+
+  condition {
+    title      = "infra-prefix-only"
+    expression = "resource.name.startsWith(\"projects/_/buckets/forge-wingman-tfstate/objects/infra/\") || (resource.name == \"projects/_/buckets/forge-wingman-tfstate\" && api.getAttribute(\"storage.googleapis.com/objectListPrefix\", \"\").startsWith(\"infra/\"))"
+  }
+}
+
+# What a plan targeted at the surface service refreshes besides the service: the
+# project and its IAM policy (data.google_project.this, surface_datastore), the
+# enabled APIs, and the operation a service update returns. A custom role, as no
+# predefined one holds these reads without others.
+resource "google_project_iam_custom_role" "surface_deploy_reader" {
+  role_id = "surfaceDeployReader"
+  title   = "Surface deploy reader"
+  permissions = [
+    "resourcemanager.projects.get",
+    "resourcemanager.projects.getIamPolicy",
+    "run.operations.get",
+    "serviceusage.services.get",
+    "serviceusage.services.list",
+  ]
+}
+
+resource "google_project_iam_member" "surface_deploy_reader" {
+  project = var.project_id
+  role    = google_project_iam_custom_role.surface_deploy_reader.id
+  member  = google_service_account.surface_deploy.member
+}
+
+# The merge token's metadata and policy, which the same plan refreshes; never its value.
+resource "google_project_iam_custom_role" "surface_deploy_secret_reader" {
+  role_id = "surfaceDeploySecretReader"
+  title   = "Surface deploy secret metadata reader"
+  permissions = [
+    "secretmanager.secrets.get",
+    "secretmanager.secrets.getIamPolicy",
+  ]
+}
+
+resource "google_secret_manager_secret_iam_member" "surface_deploy_secret_reader" {
+  secret_id = google_secret_manager_secret.surface_merge_token.id
+  role      = google_project_iam_custom_role.surface_deploy_secret_reader.id
+  member    = google_service_account.surface_deploy.member
+}

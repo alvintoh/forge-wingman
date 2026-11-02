@@ -1,0 +1,177 @@
+# Deploys the surface when a merge to main changes what its image is built from:
+# builds the image, pushes it by the commit's sha, and applies the surface service
+# alone with that digest, refusing any plan that would change more than its image.
+# The dispatcher and the webhook are never touched. Needs the GCP_WIF_PROVIDER and
+# GCP_SURFACE_DEPLOY_SERVICE_ACCOUNT variables (infra/README.md, Deploy).
+name: deploy-surface
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - cmd/surface/**
+      - web/**
+      - internal/**
+      - Dockerfile
+      - go.mod
+      - go.sum
+  # Deploys main as it stands, for a commit whose push changed nothing above.
+  workflow_dispatch:
+
+permissions: {}
+
+# One deploy at a time, and an apply is never killed mid-flight.
+concurrency:
+  group: deploy-surface
+  cancel-in-progress: false
+
+env:
+  PROJECT: forge-wingman
+  REGION: us-central1
+  SERVICE: forge-wingman-surface
+  REPOSITORY: us-central1-docker.pkg.dev/forge-wingman/forge-wingman/surface
+
+jobs:
+  deploy:
+    # The identity provider admits main alone; a run from another branch stops here.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # The repository is public, so the fetch of main below needs no token.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SURFACE_DEPLOY_SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: us-central1-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      # Cloud Run rejects an arm64 image, and without provenance the manifest lists
+      # linux/amd64 alone.
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          push: true
+          build-args: |
+            CMD=surface
+            COMMIT_SHA=${{ github.sha }}
+          tags: ${{ env.REPOSITORY }}:${{ github.sha }}
+
+      - id: image
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          case "$DIGEST" in sha256:*) ;; *) echo "no digest from the push: '$DIGEST'"; exit 1 ;; esac
+          echo "ref=${REPOSITORY}@${DIGEST}" >> "$GITHUB_OUTPUT"
+
+      # An older commit never overwrites a newer image: when main has moved on and
+      # the newer commits change the surface too, their own run deploys them.
+      - id: latest
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin main
+          head=$(git rev-parse FETCH_HEAD)
+          if [ "$head" != "$SHA" ] && [ -n "$(git diff --name-only "$SHA" "$head" -- cmd/surface web internal Dockerfile go.mod go.sum)" ]; then
+            echo "main is at $head, which changes the surface again; its run deploys it" >> "$GITHUB_STEP_SUMMARY"
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "superseded=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.latest.outputs.superseded == 'false'
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: 1.12.6
+          tofu_wrapper: false
+
+      # The variables the surface does not use take placeholders, as in infra/README.md;
+      # dispatcher_settings comes from settings.auto.tfvars.
+      - name: Plan the surface service
+        if: steps.latest.outputs.superseded == 'false'
+        working-directory: infra
+        env:
+          IMAGE: ${{ steps.image.outputs.ref }}
+        run: |
+          tofu init -input=false -lockfile=readonly
+          tofu plan -input=false -target=google_cloud_run_v2_service.surface -out=plan \
+            -var="surface_image=${IMAGE}" \
+            -var=dispatcher_image=x -var=webhook_image=x -var=linear_delegate=x -var=surface_owner_email=x
+
+      # The plan may change one resource, the surface service, in place, and only its
+      # container image; an attribute unknown until apply is not a change. No change at
+      # all is a re-run of a digest already applied: nothing to apply, read it back.
+      - id: check
+        name: Check the plan changes the image alone
+        if: steps.latest.outputs.superseded == 'false'
+        working-directory: infra
+        run: |
+          tofu show -json plan > plan.json
+          if jq -e '[.resource_changes[] | select(.change.actions != ["no-op"])] | length == 0' plan.json >/dev/null; then
+            echo "apply=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "apply=true" >> "$GITHUB_OUTPUT"
+          jq -e '
+            def unknown($u; $p): any(range(0; ($p | length) + 1) as $i | (try ($u | getpath($p[0:$i])) catch null); . == true);
+            [.resource_changes[] | select(.change.actions != ["no-op"])] as $changes
+            | ($changes | length) == 1
+            and $changes[0].address == "google_cloud_run_v2_service.surface"
+            and $changes[0].change.actions == ["update"]
+            and ($changes[0].change as $c
+              | [($c.before, $c.after) | paths(type != "object" and type != "array")] | unique
+              | map(select(
+                  (. as $p | ($c.before | try getpath($p) catch null)) != (. as $p | ($c.after | try getpath($p) catch null))
+                  and (unknown($c.after_unknown; .) | not)))
+              | . == [["template", 0, "containers", 0, "image"]])
+          ' plan.json || {
+            echo "the plan changes more than the surface's image:"
+            jq '[.resource_changes[] | select(.change.actions != ["no-op"]) | {address, actions: .change.actions}]' plan.json
+            exit 1
+          }
+
+      - name: Apply
+        if: steps.latest.outputs.superseded == 'false' && steps.check.outputs.apply == 'true'
+        working-directory: infra
+        run: tofu apply -input=false plan
+
+      - if: steps.latest.outputs.superseded == 'false'
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      # The revision taking all the traffic must be the newest one, Ready, and running
+      # the digest just pushed.
+      - name: Read the service back
+        if: steps.latest.outputs.superseded == 'false'
+        env:
+          IMAGE: ${{ steps.image.outputs.ref }}
+        run: |
+          svc=$(gcloud run services describe "$SERVICE" --region="$REGION" --project="$PROJECT" --format=json)
+          ready=$(jq -r '.status.latestReadyRevisionName' <<<"$svc")
+          created=$(jq -r '.status.latestCreatedRevisionName' <<<"$svc")
+          serving=$(jq -r '[.status.traffic[] | select(.percent == 100) | .revisionName] | first // empty' <<<"$svc")
+          rev=$(gcloud run revisions describe "$ready" --region="$REGION" --project="$PROJECT" --format=json)
+          image=$(jq -r '.spec.containers[0].image' <<<"$rev")
+          status=$(jq -r '.status.conditions[] | select(.type == "Ready") | .status' <<<"$rev")
+          echo "latest ready $ready, latest created $created, serving $serving, image $image, Ready $status"
+          [ "$ready" = "$created" ] && [ "$serving" = "$ready" ] && [ "$image" = "$IMAGE" ] && [ "$status" = "True" ] || {
+            echo "the surface is not serving $IMAGE from a Ready revision"
+            exit 1
+          }
+          echo "deployed $IMAGE as $ready" >> "$GITHUB_STEP_SUMMARY"
