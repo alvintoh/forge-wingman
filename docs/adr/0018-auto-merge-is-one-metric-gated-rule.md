@@ -3,6 +3,7 @@
 - **Date:** 2026-10-17
 - **Status:** accepted — the switch, the rule and the removal of the levels are live (2026-10-19); the daily run cap was dropped before it shipped (see the struck bullet under Decision)
 - **Updated (2026-10-19):** the product no longer delegates a ticket to itself, and the daily run cap is gone (see the struck bullet under Decision).
+- **Updated (2026-10-31):** the rate is a guide, not a gate: the owner's switch alone decides whether auto-merge is on (see the struck lines under Decision). The owner: "i thought its controlled entirely by the configuration ? the 10% rewrite is just a guide".
 
 ## Context
 
@@ -10,14 +11,17 @@ The PRD's autonomy ladder has six levels, two rewrite-rate bars (5% to advance, 
 
 ## Decision
 
-**Auto-merge is on when the trailing-10 rewrite rate over ten measured PRs is 10% or less and none of them is an auto-merge that was reverted; otherwise it is off.**
+~~**Auto-merge is on when the trailing-10 rewrite rate over ten measured PRs is 10% or less and none of them is an auto-merge that was reverted; otherwise it is off.**~~
+
+**Superseded (2026-10-31): auto-merge is on when the owner's switch is on, and off when it is off.** The trailing-10 rewrite rate is shown against a 10% guide and a reverted auto-merge in that window is shown too; neither gates anything. The reasons the old rule computed (`too-few-measured`, `no-agent-lines`, `rate-above-bar`, `reverted`) stay as information on the Autonomy page. A switch that cannot be read still holds (off).
 
 - **Per-PR eligibility is unchanged:** size S and M only (FR-16), a front-end change is held, a PR in the 20% sample is held (FR-17).
-- **An owner switch, on by default.** Turning it off makes every PR manual whatever the rate. It lives in Firestore beside the peak-mode setting and is set by a command (`runner auto-merge`) and by a "..." button beside the status in the inbox and the Autonomy page that opens a small settings modal: an on/off switch with the rate shown, applied by SAVE and discarded by BACK, so a change needs no redeploy. The page shows two separate facts in words: the switch state (the owner's setting) and the rate line (whether the rate allows auto-merge); the effective state needs both. Setting it from the page is a write from the surface to that one Firestore document, so the surface's service account gets write access to it and nothing else. No document means on; a switch that cannot be read holds (off) and logs.
+- **An owner switch, on by default.** Turning it off makes every PR manual whatever the rate. It lives in Firestore beside the peak-mode setting and is set by a command (`runner auto-merge`) and by a "..." button beside the status in the inbox and the Autonomy page that opens a small settings modal: an on/off switch with the rate shown, applied by SAVE and discarded by BACK, so a change needs no redeploy. The page shows two separate facts in words: the switch state (the owner's setting) and the rate line (~~whether the rate allows auto-merge); the effective state needs both~~ the rate against its 10% guide). **Updated (2026-10-31):** the effective state is the switch alone. Setting it from the page is a write from the surface to that one Firestore document, so the surface's service account gets write access to it and nothing else. No document means on; a switch that cannot be read holds (off) and logs.
 - **Retired:** levels 0 to 5, the 5% bar, the 20% ceiling, the "delivery step exists" and gate-miss clauses.
 - ~~**Replaced by plain settings:** the daily run cap is one configured number (`WINGMAN_DAILY_RUNS`, default 5); transient requeue and self-delegation are always on.~~
   **Superseded (2026-10-19):** the product never starts work by itself. Work starts only when the owner delegates a ticket (by hand in Linear, through `/drive-phase`, or by the surface's START PHASE), so there is no self-delegation and no daily run cap; transient requeue stays always on. The owner's words: "i dont think forge-wingman should run automatically by itself". Self-delegation was built (FRG-125, FRG-164) and, the day it went live, rolled back and removed (FRG-181). The cap bounded nothing once self-delegation was gone, since the owner's own delegations never counted against it; budget ceilings, review WIP, the adaptive limit and the per-repo rule still bound the work.
-- **The rate is the measure.** A rate above 10% turns auto-merge off by itself, and the 10% is the same bar as the Phase 3 exit gate.
+- ~~**The rate is the measure.** A rate above 10% turns auto-merge off by itself, and the 10% is the same bar as the Phase 3 exit gate.~~
+  **Superseded (2026-10-31): the rate is the guide.** A rate above 10% is shown as above the guide and turns nothing off; the owner reads it and decides with the switch. The 10% is still the Phase 3 exit gate's bar. Consequence: auto-merge can be on while the rate is above the guide, so the rewrite rate can rise unchecked until the owner switches it off. The sampled 20% (FR-17) and the front-end hold are unchanged.
 
 ## Known limitation and revisit trigger
 

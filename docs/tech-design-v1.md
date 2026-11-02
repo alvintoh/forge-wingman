@@ -317,11 +317,14 @@ auto-merge only for a clean review of an eligible PR, pinned to the reviewed hea
 (`FR-16`). Branch protection requires the `go` and `web` checks and no approval.
 
 **Auto-merge — *Updated (2026-10-19)*, `adr/0018`.** Whether an eligible PR may merge at
-all is one metric-gated rule and the owner's switch: the switch is stored at
+all is ~~one metric-gated rule and~~ the owner's switch: the switch is stored at
 `dispatch/auto-merge`, set with `runner auto-merge` and by the surface's own handler, and
-auto-merge is on when the trailing rewrite rate is 10% or less over the ten newest measured
+~~auto-merge is on when the trailing rewrite rate is 10% or less over the ten newest measured
 merged PRs and none of them is an auto-merged PR a later merged revert names. pr-meta marks
-a PR eligible only when the rule is on and the switch is on. It replaces the
+a PR eligible only when the rule is on and the switch is on.~~ **Updated (2026-10-31):**
+auto-merge is on when the switch is on; the trailing rewrite rate over the ten newest measured
+merged PRs, and any auto-merged PR a merged revert names, are shown against a 10% guide and
+gate nothing. pr-meta marks a PR eligible when the switch is on. It replaces the
 `WINGMAN_AUTO_MERGE` repository variable, which the dispatcher could not read.
 
 **Front-end hold — *Updated (2026-10-13)*, forge-wingman #115.** Eligibility for auto-merge
