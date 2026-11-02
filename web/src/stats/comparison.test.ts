@@ -1,90 +1,60 @@
 import { describe, expect, it } from "bun:test";
-import {
-  figuresOf,
-  finishedOf,
-  hasSplit,
-  isComparison,
-  partitionRuns,
-  type RunCache,
-} from "./comparison";
+import fixture from "../../fixtures/comparison.json";
+import { columnChars, finishedOf, isComparison, phaseCell, type RunCache } from "./comparison";
 
-// run is the endpoint's row with both phases measured; a case overrides what it
-// varies.
+// run is the endpoint's row with both phases measured; a case overrides what it varies.
 const run = (over: Partial<RunCache> = {}): RunCache => ({
-  run_id: "run-1",
+  run_id: "FRG-101",
   provider: "command-code",
   cached_share: 0.5,
   build_cache: "62% first, 58% phase",
   plan_cache: "41% first, 39% phase",
   build_first_share: 0.62,
-  build_phase_share: 0.58,
   plan_first_share: 0.41,
-  plan_phase_share: 0.39,
   settled_at: "2026-10-29T13:42:00Z",
   ...over,
 });
 
-const noShares = {
-  build_first_share: null,
-  build_phase_share: null,
-  plan_first_share: null,
-  plan_phase_share: null,
-};
+describe("phaseCell", () => {
+  it("is the first-request share, whatever the cell's text says", () => {
+    expect(phaseCell(run({ build_cache: "99% first" }), "build")).toEqual({
+      kind: "share",
+      share: 0.62,
+    });
+    expect(phaseCell(run(), "plan")).toEqual({ kind: "share", share: 0.41 });
+  });
 
-describe("figuresOf", () => {
-  it("takes a phase's two shares from the numbers, not the cell's text", () => {
-    expect(figuresOf(run({ build_cache: "99% first, 99% phase" }), "build")).toEqual({
-      first: 0.62,
-      whole: 0.58,
-      word: "",
+  it("ignores a whole-phase share the endpoint still sends", () => {
+    const sent = Object.assign(run(), { build_phase_share: 0.1 });
+    expect(phaseCell(sent, "build")).toEqual({ kind: "share", share: 0.62 });
+  });
+
+  it("is a share for a phase that has only its first share", () => {
+    expect(phaseCell(run({ plan_first_share: 0 }), "plan")).toEqual({ kind: "share", share: 0 });
+  });
+
+  it("is none for the phase the endpoint says made no request, for either phase", () => {
+    expect(phaseCell(run({ plan_cache: "none", plan_first_share: null }), "plan")).toEqual({
+      kind: "none",
+    });
+    expect(phaseCell(run({ build_cache: "none", build_first_share: null }), "build")).toEqual({
+      kind: "none",
     });
   });
 
-  it("names the phase a run made no request in, for either phase", () => {
-    const noPlan = run({ plan_cache: "none", plan_first_share: null, plan_phase_share: null });
-    expect(figuresOf(noPlan, "plan").word).toBe("no plan stage");
-    const noBuild = run({ build_cache: "none", build_first_share: null, build_phase_share: null });
-    expect(figuresOf(noBuild, "build").word).toBe("no build stage");
-  });
-
-  it("keeps the endpoint's word where a phase recorded no share", () => {
-    const notRecorded = run({
-      plan_cache: "not recorded",
-      plan_first_share: null,
-      plan_phase_share: null,
+  it("is unrecorded for any other word with no share", () => {
+    expect(phaseCell(run({ plan_cache: "not recorded", plan_first_share: null }), "plan")).toEqual({
+      kind: "unrecorded",
     });
-    expect(figuresOf(notRecorded, "plan").word).toBe("not recorded");
-  });
-
-  it("words a phase whose shares are not a pair, the endpoint sending both or neither", () => {
-    const partial = run({ build_phase_share: null });
-    expect(figuresOf(partial, "build")).toEqual({
-      first: null,
-      whole: null,
-      word: "62% first, 58% phase",
-    });
-  });
-});
-
-describe("hasSplit", () => {
-  it("holds a run with a phase's pair of shares", () => {
-    const buildPair = { build_first_share: 0.62, build_phase_share: 0.58 };
-    const planPair = { plan_first_share: 0.41, plan_phase_share: 0.39 };
-    expect(hasSplit(run({ ...noShares, ...buildPair }))).toBe(true);
-    expect(hasSplit(run({ ...noShares, ...planPair }))).toBe(true);
-  });
-
-  it("leaves a run with a lone share, or none, to collapse", () => {
-    expect(hasSplit(run({ ...noShares, build_first_share: 0.62 }))).toBe(false);
-    expect(hasSplit(run(noShares))).toBe(false);
+    expect(phaseCell(run({ build_first_share: null }), "build")).toEqual({ kind: "unrecorded" });
   });
 });
 
 describe("finishedOf", () => {
   it("words the settle time on Sydney's clock, whatever the viewer's", () => {
-    expect(finishedOf(run({ settled_at: "2026-10-29T13:42:00Z" }))).toBe("30 Oct, 00:42");
-    expect(finishedOf(run({ settled_at: "2026-10-29T23:42:00Z" }))).toBe("30 Oct, 10:42");
-    expect(finishedOf(run({ settled_at: "2026-06-30T00:05:00Z" }))).toBe("30 Jun, 10:05");
+    expect(finishedOf(run({ settled_at: "2026-10-29T13:42:00Z" }))).toBe("30 Oct 2026, 00:42");
+    expect(finishedOf(run({ settled_at: "2026-10-29T23:42:00Z" }))).toBe("30 Oct 2026, 10:42");
+    expect(finishedOf(run({ settled_at: "2026-06-30T00:05:00Z" }))).toBe("30 Jun 2026, 10:05");
   });
 
   it("reads a run with no instant, or one that is no date, as not recorded", () => {
@@ -94,20 +64,15 @@ describe("finishedOf", () => {
   });
 });
 
-describe("partitionRuns", () => {
-  it("counts the runs with a split and the older runs that collapse", () => {
-    const split = run();
-    const older = run(noShares);
-    const lone = run({ ...noShares, build_first_share: 0.62 });
-    const { split: kept, older: collapsed } = partitionRuns([split, older, lone, split]);
-    expect(kept).toEqual([split, split]);
-    expect(collapsed).toEqual([older, lone]);
-  });
-});
-
 describe("isComparison", () => {
   it("accepts the endpoint's runs", () => {
     expect(isComparison({ runs: [run()] })).toBe(true);
+  });
+
+  it("accepts a run without the whole-phase shares, and one that carries them", () => {
+    const without = { ...run() };
+    const carrying = { ...run(), build_phase_share: 0.58, plan_phase_share: 0.39 };
+    expect(isComparison({ runs: [without, carrying] })).toBe(true);
   });
 
   it("accepts a run whose settle time is unreadable, which the table words as not recorded", () => {
@@ -115,10 +80,46 @@ describe("isComparison", () => {
   });
 
   it("accepts a run whose phases recorded no shares", () => {
-    expect(isComparison({ runs: [run(noShares)] })).toBe(true);
+    expect(isComparison({ runs: [run({ build_first_share: null, plan_first_share: null })] })).toBe(
+      true,
+    );
   });
 
-  it("rejects a run without its phase shares", () => {
-    expect(isComparison({ runs: [{ run_id: "run-1", provider: "command-code" }] })).toBe(false);
+  it("rejects a run without its first-request shares", () => {
+    const { build_first_share: _build, ...lacking } = run();
+    expect(isComparison({ runs: [lacking] })).toBe(false);
+  });
+
+  it("rejects a run without its identity", () => {
+    expect(isComparison({ runs: [{ run_id: "FRG-101", provider: "command-code" }] })).toBe(false);
+  });
+});
+
+describe("columnChars", () => {
+  it("is the longest run id, provider and finish text across every run", () => {
+    const runs = [
+      run({ run_id: "FRG-9", provider: "omp", settled_at: "2026-09-03T02:05:00Z" }),
+      run({ run_id: "FRG-1000", provider: "command-code", settled_at: "2026-10-29T13:42:00Z" }),
+      run({ run_id: "FRG-12", provider: "opencode", settled_at: "" }),
+    ];
+    expect(columnChars(runs)).toEqual({ runId: 8, provider: 12, finished: 18 });
+  });
+
+  it("counts a run with no readable finish as none and no runs as zero", () => {
+    expect(columnChars([run({ settled_at: "" })]).finished).toBe(0);
+    expect(columnChars([])).toEqual({ runId: 0, provider: 0, finished: 0 });
+  });
+});
+
+describe("the comparison fixture", () => {
+  it("is newest first, with the run that has no readable finish at the oldest end", () => {
+    expect(isComparison(fixture)).toBe(true);
+    const settled = fixture.runs.map((r) => Date.parse(r.settled_at));
+    const readable = settled.filter((at) => new Date(at).getUTCFullYear() > 1);
+    expect(readable).toEqual([...readable].sort((a, b) => b - a));
+    expect(settled.slice(readable.length).every((at) => new Date(at).getUTCFullYear() <= 1)).toBe(
+      true,
+    );
+    expect(readable.length).toBe(settled.length - 1);
   });
 });
