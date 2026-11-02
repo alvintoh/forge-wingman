@@ -4,11 +4,12 @@ import { TryAgainPill } from "../pill-button";
 import { useProjectFilter } from "../project-filter";
 import { displayName, type Project, type ProjectsState } from "../project-list";
 import { sameRepository } from "../project-search";
+import { RefreshButton, RefreshClock, RefreshNotice } from "../refresh-control";
+import type { PageRefresh } from "../refresh-read";
 import type { RunningRead } from "./read";
 import {
   DEFER_FROM_PERCENT,
   type QueueCounts,
-  RUN_LIMIT_MINUTES,
   type RunningRun,
   barWords,
   minutesOf,
@@ -120,6 +121,9 @@ type SectionProps = {
   read: RunningRead;
   // The Overview's project list: the rows' project names, and the queued line's counts.
   projects: ProjectsState;
+  // The page's read control, drawn at the end of the heading row.
+  refresh: PageRefresh;
+  className: string;
 };
 
 /**
@@ -127,7 +131,7 @@ type SectionProps = {
  * settled, the longest running first, each with a bar of the time its stage has used against the run
  * limit. A project chosen in the filter narrows it at once, and its rows drop the project name.
  */
-export function RunningSection({ read, projects }: SectionProps) {
+export function RunningSection({ read, projects, refresh, className }: SectionProps) {
   const { state, retry } = read;
   const { project } = useProjectFilter();
   const headingId = useId();
@@ -152,20 +156,29 @@ export function RunningSection({ read, projects }: SectionProps) {
     <section
       aria-labelledby={headingId}
       aria-busy={state.status === "loading" ? true : undefined}
-      className="min-w-0"
+      className={`min-w-0 ${className}`}
     >
-      <div className="flex min-h-6.5 flex-wrap items-start justify-between gap-x-4">
-        <h2
-          id={headingId}
-          className="min-w-0 py-[3.25px] font-mono text-label font-semibold text-ink2 uppercase wrap-break-word"
-        >
-          {heading}
-        </h2>
-        <p className="ml-auto py-[3.25px] text-cap whitespace-nowrap text-muted">
-          {`bar = % of ${RUN_LIMIT_MINUTES}m run limit`}
-        </p>
+      <div>
+        <div className="flex min-h-6.5 items-start gap-x-4">
+          <h2
+            id={headingId}
+            className="min-w-0 flex-1 py-[3.25px] font-mono text-label font-semibold text-ink2 uppercase wrap-break-word"
+          >
+            {heading}
+          </h2>
+          {refresh.readAt > 0 && (
+            <span
+              aria-busy={refresh.fetching ? true : undefined}
+              className="flex shrink-0 items-center gap-1"
+            >
+              <RefreshClock refresh={refresh} />
+              <RefreshButton refresh={refresh} />
+            </span>
+          )}
+        </div>
+        <RefreshNotice refresh={refresh} />
       </div>
-      {/* Everything under the heading, as one child. */}
+      {/* Everything under the heading and its notice, as one child. */}
       <div>
         {state.status === "loading" && <LoadingRows />}
         {state.status === "error" && (
