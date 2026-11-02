@@ -25,9 +25,10 @@ var runSuccessBase = time.Date(2035, 1, 1, 0, 0, 0, 0, time.UTC)
 // runSuccessWindowAt is the base of one test's two windows, each test's 100 days
 // apart so no two overlap, and clearRunSuccessWindow empties it before a test
 // writes: the emulator outlives one run of the suite, and this read counts every
-// row in its window.
+// row in its window. The base is cut to the microseconds Firestore stores, so a
+// row seeded at an exact edge reads back on it.
 func runSuccessWindowAt() time.Time {
-	return runSuccessBase.Add(time.Duration(queueSeq.Add(1)) * 100 * 24 * time.Hour)
+	return runSuccessBase.Add(time.Duration(queueSeq.Add(1)) * 100 * 24 * time.Hour).Truncate(time.Microsecond)
 }
 
 // clearRunSuccessWindow deletes the runs started in the two windows ending at
