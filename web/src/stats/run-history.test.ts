@@ -38,30 +38,45 @@ function strip(markup: string): string {
 }
 
 describe("RunHistoryView runs", () => {
-  it("has twenty tracks for twenty runs", () => {
-    const markup = strip(draw(runs(20)));
-    expect(markup).toContain("grid-template-columns:repeat(20, minmax(0, 16px))");
-    expect(markup.match(/<li /g)).toHaveLength(20);
+  it("has thirty tracks for thirty runs", () => {
+    const markup = strip(draw(runs(30)));
+    expect(markup).toContain("grid-template-columns:repeat(30, minmax(0, 16px))");
+    expect(markup.match(/<li /g)).toHaveLength(30);
   });
 
   it("draws a single run as one bar", () => {
     expect(strip(draw(runs(1))).match(/<li /g)).toHaveLength(1);
   });
 
-  it("lays the bars on a grid with a 5px gap and the strip's 26px height", () => {
+  it("lays the bars on a grid with a 2px gap and the strip's 20px height", () => {
     const markup = strip(draw(runs(2)));
-    expect(markup).toMatch(/<ol [^>]*class="[^"]*\bgrid\b[^"]*\bgap-x-\[5px\]/);
-    expect(markup).toMatch(/<li [^>]*class="[^"]*\bh-6\.5\b/);
+    expect(markup).toMatch(/<ol [^>]*class="[^"]*\bgrid\b[^"]*\bgap-x-\[2px\]/);
+    expect(markup).toMatch(/<li [^>]*class="[^"]*\bh-5\b/);
   });
 
-  it("keeps twenty tracks for three runs, so they take the first slots", () => {
+  it("keeps thirty tracks for three runs, so they take the first slots", () => {
     const markup = strip(draw(runs(3)));
-    expect(markup).toContain("grid-template-columns:repeat(20, minmax(0, 16px))");
+    expect(markup).toContain("grid-template-columns:repeat(30, minmax(0, 16px))");
     expect(markup.match(/<li /g)).toHaveLength(3);
   });
 
+  it("captions and counts nineteen runs in thirty tracks", () => {
+    const markup = draw(runs(19));
+    expect(markup).toContain("Last 19 runs</h2>");
+    expect(strip(markup)).toContain("grid-template-columns:repeat(30, minmax(0, 16px))");
+    expect(strip(markup).match(/<li /g)).toHaveLength(19);
+    expect(markup).toContain(">9 merged<");
+  });
+
+  it("draws a twenty-run history in the first twenty of thirty tracks", () => {
+    const markup = draw(runs(20));
+    expect(markup).toContain("Last 20 runs</h2>");
+    expect(strip(markup)).toContain("grid-template-columns:repeat(30, minmax(0, 16px))");
+    expect(strip(markup).match(/<li /g)).toHaveLength(20);
+  });
+
   it("spreads the free width between the bars rather than stretching them", () => {
-    expect(strip(draw(runs(20)))).toMatch(/<ol [^>]*class="[^"]*\bjustify-between\b/);
+    expect(strip(draw(runs(30)))).toMatch(/<ol [^>]*class="[^"]*\bjustify-between\b/);
   });
 
   it("draws the runs in the order served, each read out with its ticket and words", () => {
@@ -81,7 +96,7 @@ describe("RunHistoryView around the runs", () => {
       draw(runs(3), "acme/gadgets"),
     ];
     for (const markup of lines) {
-      expect(markup.match(/<p [^>]*class="[^"]*min-h-\[26px\]/g)).toHaveLength(1);
+      expect(markup.match(/<p [^>]*class="[^"]*\bmin-h-5\b/g)).toHaveLength(1);
     }
   });
 
