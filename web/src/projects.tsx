@@ -2,18 +2,17 @@ import { Link } from "@tanstack/react-router";
 import { useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ActionButton, ButtonPair } from "./action-button";
-import { hitAreaFocus, labelFocusRing } from "./button-style";
-import { projectName } from "./project-name";
+import { hitAreaFocus, labelFocusRing, pillSetWidth } from "./button-style";
 import { describe, projectState, type StatePill } from "./project-view";
 import { showModalOnBack } from "./show-modal-on-back";
 import { AddProjectDialog } from "./add-project";
-import { pillSetWidth } from "./button-style";
 import { AllProjectsRow, RadioChoice } from "./filter-radio";
 import { useInbox } from "./inbox-context";
 import { SmallPill, TryAgainPill } from "./pill-button";
 import { postJSON } from "./post-json";
 import { useKnownProject } from "./project-filter";
 import {
+  displayName,
   type PhaseProgress,
   type Project,
   type ProjectsRead,
@@ -88,13 +87,15 @@ type ProjectFilter = {
 
 type EntryProps = {
   project: Project;
+  // Every listed project, so a name two of them share keeps its owner.
+  all: readonly Project[];
   now: number;
   refresh: () => void;
   // Makes the whole entry a radio of the filter.
   filter?: ProjectFilter;
 };
 
-function ProjectEntry({ project, now, refresh, filter }: EntryProps) {
+function ProjectEntry({ project, all, now, refresh, filter }: EntryProps) {
   const view = describe(project, now);
   const { readable, phase } = view;
   const detailId = useId();
@@ -243,7 +244,7 @@ function ProjectEntry({ project, now, refresh, filter }: EntryProps) {
                 aria-label={project.repository}
                 className="min-w-0 truncate text-body leading-5 font-semibold text-ink"
               >
-                {projectName(project.repository)}
+                {displayName(project.repository, all)}
               </h3>
               <ProjectStateChip project={project} />
             </div>
@@ -437,6 +438,8 @@ function ProjectEntry({ project, now, refresh, filter }: EntryProps) {
 
 type CardProps = {
   projects: Project[];
+  // Every listed project; `projects` may be only the ones the card shows.
+  all: readonly Project[];
   total: number;
   now: number;
   stale: boolean;
@@ -450,7 +453,7 @@ type CardProps = {
 // ProjectsCard is ONE elevated card: each project a section split from the next by a rule, then
 // the footer row with SEE ALL at the left and the ADD pill at the right. With no project listed
 // the card is the footer alone.
-function ProjectsCard({ projects, total, now, stale, seeAll, refresh, filter }: CardProps) {
+function ProjectsCard({ projects, all, total, now, stale, seeAll, refresh, filter }: CardProps) {
   const [adding, setAdding] = useState(false);
   const addRef = useRef<HTMLButtonElement>(null);
   return (
@@ -478,6 +481,7 @@ function ProjectsCard({ projects, total, now, stale, seeAll, refresh, filter }: 
               <ProjectEntry
                 key={project.repository}
                 project={project}
+                all={all}
                 now={now}
                 refresh={refresh}
                 filter={filter}
@@ -608,6 +612,7 @@ export function ProjectsSection({ className, read }: ProjectsSectionProps) {
         <ProjectsPanels state={state} retry={retry}>
           <ProjectsCard
             projects={known === undefined ? state.projects.slice(0, SECTION_PROJECTS) : [known]}
+            all={state.projects}
             total={state.total}
             now={state.readAt}
             // The Overview's refresh notice says a failed re-read, so the card does not say it again here.
@@ -631,6 +636,7 @@ export function Projects() {
       <ProjectsPanels state={state} retry={retry}>
         <ProjectsCard
           projects={state.projects}
+          all={state.projects}
           total={state.total}
           now={state.readAt}
           stale={state.stale}
