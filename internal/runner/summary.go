@@ -167,16 +167,16 @@ func PhaseCacheCell(cache map[string]PhaseCache, phase Phase) string {
 	return fmt.Sprintf("%s first, %s phase", percentShare(first), percentShare(whole))
 }
 
-// PhaseCacheShares returns the fractions behind PhaseCacheCell: the share of the
-// phase's first request and of its whole input that came from the provider's
-// cache, each between 0 and 1. Both are nil wherever the cell prints a word, so
-// a share of zero is a cold phase and nil is no share to read.
-func PhaseCacheShares(cache map[string]PhaseCache, phase Phase) (first, whole *float64) {
-	firstShare, wholeShare, word := phaseCacheFigures(cache, phase)
+// PhaseCacheFirstShare returns the fraction behind PhaseCacheCell's first-request
+// figure: the share of the phase's first request that came from the provider's
+// cache, between 0 and 1. It is nil wherever the cell prints a word, so a share
+// of zero is a cold phase and nil is no share to read.
+func PhaseCacheFirstShare(cache map[string]PhaseCache, phase Phase) *float64 {
+	first, _, word := phaseCacheFigures(cache, phase)
 	if word != "" {
-		return nil, nil
+		return nil
 	}
-	return &firstShare, &wholeShare
+	return &first
 }
 
 // phaseCacheFigures reads phase's first-request and whole-phase shares from

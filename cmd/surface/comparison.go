@@ -71,9 +71,9 @@ type providerComparison struct {
 }
 
 // runCache is one run's own prompt-cache share: the share of its input tokens
-// that came from the provider's cache, and each phase's own share as the run
-// view lists it, both as the strings a view prints and as the fractions behind
-// them.
+// that came from the provider's cache, and each phase's own figures as the run
+// view lists them, both as the strings a view prints and as the first-request
+// fractions behind them.
 type runCache struct {
 	RunID       string  `json:"run_id"`
 	Provider    string  `json:"provider"`
@@ -84,13 +84,11 @@ type runCache struct {
 	// that stands in for a share the run recorded none of.
 	BuildCache string `json:"build_cache"`
 	PlanCache  string `json:"plan_cache"`
-	// The shares are the fractions behind those two strings, each between 0 and
-	// 1, and null wherever the string is a word. A share of zero is a
+	// The first shares are the fractions behind the first figure of those two
+	// strings, each between 0 and 1, and null wherever the string is a word. A share of zero is a
 	// measurement, so the keys are never omitted.
 	BuildFirstShare *float64 `json:"build_first_share"`
-	BuildPhaseShare *float64 `json:"build_phase_share"`
 	PlanFirstShare  *float64 `json:"plan_first_share"`
-	PlanPhaseShare  *float64 `json:"plan_phase_share"`
 	// SettledAt is when the run settled, as the history endpoint serves it.
 	SettledAt time.Time `json:"settled_at"`
 }
@@ -138,8 +136,7 @@ func renderComparison(c store.Comparison) comparisonResponse {
 		out.Runs = append(out.Runs, runCache{
 			RunID: r.RunID, Provider: r.Provider, Model: r.Model, CachedShare: r.CachedShare,
 			BuildCache: r.BuildCache, PlanCache: r.PlanCache,
-			BuildFirstShare: r.BuildFirstShare, BuildPhaseShare: r.BuildPhaseShare,
-			PlanFirstShare: r.PlanFirstShare, PlanPhaseShare: r.PlanPhaseShare,
+			BuildFirstShare: r.BuildFirstShare, PlanFirstShare: r.PlanFirstShare,
 			SettledAt: r.SettledAt,
 		})
 	}

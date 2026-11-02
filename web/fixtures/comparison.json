@@ -8,9 +8,7 @@
       "build_cache": "62% first, 58% phase",
       "plan_cache": "41% first, 39% phase",
       "build_first_share": 0.62,
-      "build_phase_share": 0.58,
       "plan_first_share": 0.41,
-      "plan_phase_share": 0.39,
       "settled_at": "2026-10-29T14:42:00Z"
     },
     {
@@ -21,9 +19,7 @@
       "build_cache": "62% first, 58% phase",
       "plan_cache": "40% first, 38% phase",
       "build_first_share": 0.625,
-      "build_phase_share": 0.58,
       "plan_first_share": 0.4,
-      "plan_phase_share": 0.38,
       "settled_at": "2026-10-28T20:25:00Z"
     },
     {
@@ -34,9 +30,7 @@
       "build_cache": "none",
       "plan_cache": "37% first, 35% phase",
       "build_first_share": null,
-      "build_phase_share": null,
       "plan_first_share": 0.37,
-      "plan_phase_share": 0.35,
       "settled_at": "2026-10-28T07:51:00Z"
     },
     {
@@ -47,9 +41,7 @@
       "build_cache": "51% first, 47% phase",
       "plan_cache": "not recorded",
       "build_first_share": 0.51,
-      "build_phase_share": 0.47,
       "plan_first_share": null,
-      "plan_phase_share": null,
       "settled_at": "2026-10-27T12:00:00Z"
     },
     {
@@ -60,9 +52,7 @@
       "build_cache": "66% first, 62% phase",
       "plan_cache": "none",
       "build_first_share": 0.66,
-      "build_phase_share": 0.62,
       "plan_first_share": null,
-      "plan_phase_share": null,
       "settled_at": "2026-10-26T22:52:00Z"
     },
     {
@@ -73,9 +63,7 @@
       "build_cache": "44% first, 40% phase",
       "plan_cache": "38% first, 36% phase",
       "build_first_share": 0.44,
-      "build_phase_share": 0.4,
       "plan_first_share": 0.38,
-      "plan_phase_share": 0.36,
       "settled_at": "2026-10-26T02:27:00Z"
     },
     {
@@ -86,9 +74,7 @@
       "build_cache": "57% first, 53% phase",
       "plan_cache": "43% first, 41% phase",
       "build_first_share": 0.57,
-      "build_phase_share": 0.53,
       "plan_first_share": 0.43,
-      "plan_phase_share": 0.41,
       "settled_at": "2026-10-25T14:00:00Z"
     },
     {
@@ -99,9 +85,7 @@
       "build_cache": "63% first, 59% phase",
       "plan_cache": "46% first, 44% phase",
       "build_first_share": 0.63,
-      "build_phase_share": 0.59,
       "plan_first_share": 0.46,
-      "plan_phase_share": 0.44,
       "settled_at": "2026-10-24T13:46:00Z"
     },
     {
@@ -112,9 +96,7 @@
       "build_cache": "60% first, 56% phase",
       "plan_cache": "39% first, 37% phase",
       "build_first_share": 0.6,
-      "build_phase_share": 0.56,
       "plan_first_share": 0.39,
-      "plan_phase_share": 0.37,
       "settled_at": "2026-10-23T22:30:00Z"
     },
     {
@@ -125,9 +107,7 @@
       "build_cache": "64% first, 60% phase",
       "plan_cache": "42% first, 40% phase",
       "build_first_share": 0.64,
-      "build_phase_share": 0.6,
       "plan_first_share": 0.42,
-      "plan_phase_share": 0.4,
       "settled_at": "2026-10-22T23:57:00Z"
     },
     {
@@ -138,9 +118,7 @@
       "build_cache": "52% first, 48% phase",
       "plan_cache": "36% first, 34% phase",
       "build_first_share": 0.52,
-      "build_phase_share": 0.48,
       "plan_first_share": 0.36,
-      "plan_phase_share": 0.34,
       "settled_at": "2026-10-22T07:07:00Z"
     },
     {
@@ -151,9 +129,7 @@
       "build_cache": "61% first, 57% phase",
       "plan_cache": "44% first, 42% phase",
       "build_first_share": 0.61,
-      "build_phase_share": 0.57,
       "plan_first_share": 0.44,
-      "plan_phase_share": 0.42,
       "settled_at": "2026-10-21T08:00:00Z"
     },
     {
@@ -164,9 +140,7 @@
       "build_cache": "65% first, 61% phase",
       "plan_cache": "48% first, 46% phase",
       "build_first_share": 0.65,
-      "build_phase_share": 0.61,
       "plan_first_share": 0.48,
-      "plan_phase_share": 0.46,
       "settled_at": "2026-10-20T14:36:00Z"
     },
     {
@@ -177,9 +151,7 @@
       "build_cache": "58% first, 54% phase",
       "plan_cache": "40% first, 38% phase",
       "build_first_share": 0.58,
-      "build_phase_share": 0.54,
       "plan_first_share": 0.4,
-      "plan_phase_share": 0.38,
       "settled_at": "2026-10-20T02:55:00Z"
     },
     {
@@ -190,9 +162,7 @@
       "build_cache": "not recorded",
       "plan_cache": "not recorded",
       "build_first_share": null,
-      "build_phase_share": null,
       "plan_first_share": null,
-      "plan_phase_share": null,
       "settled_at": "2026-10-19T07:57:00Z"
     },
     {
@@ -203,9 +173,7 @@
       "build_cache": "not recorded",
       "plan_cache": "not recorded",
       "build_first_share": null,
-      "build_phase_share": null,
       "plan_first_share": null,
-      "plan_phase_share": null,
       "settled_at": "2026-10-18T19:42:00Z"
     },
     {
@@ -216,9 +184,7 @@
       "build_cache": "not recorded",
       "plan_cache": "not recorded",
       "build_first_share": null,
-      "build_phase_share": null,
       "plan_first_share": null,
-      "plan_phase_share": null,
       "settled_at": "2026-10-18T00:10:00Z"
     },
     {
@@ -229,9 +195,7 @@
       "build_cache": "not recorded",
       "plan_cache": "not recorded",
       "build_first_share": null,
-      "build_phase_share": null,
       "plan_first_share": null,
-      "plan_phase_share": null,
       "settled_at": "2026-10-17T10:21:00Z"
     },
     {
@@ -242,9 +206,7 @@
       "build_cache": "not recorded",
       "plan_cache": "not recorded",
       "build_first_share": null,
-      "build_phase_share": null,
       "plan_first_share": null,
-      "plan_phase_share": null,
       "settled_at": "2026-10-16T14:15:00Z"
     },
     {
@@ -255,9 +217,7 @@
       "build_cache": "not recorded",
       "plan_cache": "not recorded",
       "build_first_share": null,
-      "build_phase_share": null,
       "plan_first_share": null,
-      "plan_phase_share": null,
       "settled_at": "2026-10-15T23:52:00Z"
     },
     {
@@ -268,9 +228,7 @@
       "build_cache": "not recorded",
       "plan_cache": "not recorded",
       "build_first_share": null,
-      "build_phase_share": null,
       "plan_first_share": null,
-      "plan_phase_share": null,
       "settled_at": "2026-10-15T02:12:00Z"
     },
     {
@@ -281,9 +239,7 @@
       "build_cache": "not recorded",
       "plan_cache": "not recorded",
       "build_first_share": null,
-      "build_phase_share": null,
       "plan_first_share": null,
-      "plan_phase_share": null,
       "settled_at": "2026-10-14T10:15:00Z"
     },
     {
@@ -294,9 +250,7 @@
       "build_cache": "not recorded",
       "plan_cache": "not recorded",
       "build_first_share": null,
-      "build_phase_share": null,
       "plan_first_share": null,
-      "plan_phase_share": null,
       "settled_at": "2026-10-13T12:01:00Z"
     },
     {
@@ -307,9 +261,7 @@
       "build_cache": "not recorded",
       "plan_cache": "not recorded",
       "build_first_share": null,
-      "build_phase_share": null,
       "plan_first_share": null,
-      "plan_phase_share": null,
       "settled_at": "2026-10-12T19:30:00Z"
     },
     {
@@ -320,9 +272,7 @@
       "build_cache": "not recorded",
       "plan_cache": "not recorded",
       "build_first_share": null,
-      "build_phase_share": null,
       "plan_first_share": null,
-      "plan_phase_share": null,
       "settled_at": "2026-10-11T19:42:00Z"
     },
     {
@@ -333,9 +283,7 @@
       "build_cache": "not recorded",
       "plan_cache": "not recorded",
       "build_first_share": null,
-      "build_phase_share": null,
       "plan_first_share": null,
-      "plan_phase_share": null,
       "settled_at": "2026-10-11T02:37:00Z"
     },
     {
@@ -346,9 +294,7 @@
       "build_cache": "not recorded",
       "plan_cache": "not recorded",
       "build_first_share": null,
-      "build_phase_share": null,
       "plan_first_share": null,
-      "plan_phase_share": null,
       "settled_at": "2026-10-10T15:15:00Z"
     },
     {
@@ -359,9 +305,7 @@
       "build_cache": "not recorded",
       "plan_cache": "not recorded",
       "build_first_share": null,
-      "build_phase_share": null,
       "plan_first_share": null,
-      "plan_phase_share": null,
       "settled_at": "2026-10-09T20:36:00Z"
     },
     {
@@ -372,9 +316,7 @@
       "build_cache": "not recorded",
       "plan_cache": "not recorded",
       "build_first_share": null,
-      "build_phase_share": null,
       "plan_first_share": null,
-      "plan_phase_share": null,
       "settled_at": "2026-10-09T07:40:00Z"
     },
     {
@@ -385,9 +327,7 @@
       "build_cache": "not recorded",
       "plan_cache": "not recorded",
       "build_first_share": null,
-      "build_phase_share": null,
       "plan_first_share": null,
-      "plan_phase_share": null,
       "settled_at": "2026-10-08T12:27:00Z"
     },
     {
@@ -398,9 +338,7 @@
       "build_cache": "not recorded",
       "plan_cache": "not recorded",
       "build_first_share": null,
-      "build_phase_share": null,
       "plan_first_share": null,
-      "plan_phase_share": null,
       "settled_at": "2026-10-07T22:57:00Z"
     },
     {
@@ -411,9 +349,7 @@
       "build_cache": "not recorded",
       "plan_cache": "not recorded",
       "build_first_share": null,
-      "build_phase_share": null,
       "plan_first_share": null,
-      "plan_phase_share": null,
       "settled_at": "2026-10-07T02:10:00Z"
     },
     {
@@ -424,9 +360,7 @@
       "build_cache": "not recorded",
       "plan_cache": "not recorded",
       "build_first_share": null,
-      "build_phase_share": null,
       "plan_first_share": null,
-      "plan_phase_share": null,
       "settled_at": "2026-10-06T12:06:00Z"
     },
     {
@@ -437,9 +371,7 @@
       "build_cache": "not recorded",
       "plan_cache": "not recorded",
       "build_first_share": null,
-      "build_phase_share": null,
       "plan_first_share": null,
-      "plan_phase_share": null,
       "settled_at": "2026-10-05T14:45:00Z"
     },
     {
@@ -450,9 +382,7 @@
       "build_cache": "not recorded",
       "plan_cache": "not recorded",
       "build_first_share": null,
-      "build_phase_share": null,
       "plan_first_share": null,
-      "plan_phase_share": null,
       "settled_at": "2026-10-04T23:07:00Z"
     },
     {
@@ -463,9 +393,7 @@
       "build_cache": "not recorded",
       "plan_cache": "not recorded",
       "build_first_share": null,
-      "build_phase_share": null,
       "plan_first_share": null,
-      "plan_phase_share": null,
       "settled_at": "2026-10-04T00:12:00Z"
     },
     {
@@ -476,9 +404,7 @@
       "build_cache": "not recorded",
       "plan_cache": "not recorded",
       "build_first_share": null,
-      "build_phase_share": null,
       "plan_first_share": null,
-      "plan_phase_share": null,
       "settled_at": "0001-01-01T00:00:00Z"
     }
   ]

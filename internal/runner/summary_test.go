@@ -94,59 +94,59 @@ func TestPhaseCacheCellPrintsThePhasesSharesOrTheWordForAMissingOne(t *testing.T
 	}
 }
 
-// TestPhaseCacheSharesAreTheFractionsThePhaseCellPrints asserts a phase's shares
-// are nil exactly where its cell prints a word, a present share of zero is a
-// number and not nil, and every present share is the figure the cell prints to
+// TestPhaseCacheFirstShareIsTheFractionThePhaseCellPrints asserts a phase's first
+// share is nil exactly where its cell prints a word, a present share of zero is
+// a number and not nil, and every present share is the figure the cell prints to
 // that figure's own rounding. The boundary rows pin the numbers as the exact
 // fractions, 0.625 and 0.375, not the rounded 0.62 and 0.38.
-func TestPhaseCacheSharesAreTheFractionsThePhaseCellPrints(t *testing.T) {
+func TestPhaseCacheFirstShareIsTheFractionThePhaseCellPrints(t *testing.T) {
 	tests := []struct {
 		name  string
 		cache map[string]PhaseCache
 		phase Phase
-		// shares is the first-request and whole-phase fraction, read only for a
-		// phase that prints figures.
-		shares []float64
-		cell   string
+		// share is the first-request fraction, read only for a phase that prints
+		// figures.
+		share float64
+		cell  string
 	}{
 		{"a recorded phase", map[string]PhaseCache{string(PhaseBuild): {FirstFresh: 10, FirstCached: 90, CachedShare: 0.75}},
-			PhaseBuild, []float64{0.9, 0.75}, "90% first, 75% phase"},
+			PhaseBuild, 0.9, "90% first, 75% phase"},
 		{"a first request that read nothing from cache", map[string]PhaseCache{string(PhaseBuild): {FirstFresh: 500, FirstCached: 0, CachedShare: 0}},
-			PhaseBuild, []float64{0, 0}, "0% first, 0% phase"},
+			PhaseBuild, 0, "0% first, 0% phase"},
 		{"a run with no plan stage", map[string]PhaseCache{string(PhaseBuild): {FirstFresh: 10, FirstCached: 90, CachedShare: 0.75}},
-			PhasePlan, nil, PhaseCacheNone},
-		{"no cache map", nil, PhaseBuild, nil, PhaseCacheNotRecorded},
-		{"an empty cache map", map[string]PhaseCache{}, PhaseBuild, nil, PhaseCacheNotRecorded},
+			PhasePlan, 0, PhaseCacheNone},
+		{"no cache map", nil, PhaseBuild, 0, PhaseCacheNotRecorded},
+		{"an empty cache map", map[string]PhaseCache{}, PhaseBuild, 0, PhaseCacheNotRecorded},
 		{"a first request that read no tokens", map[string]PhaseCache{string(PhaseBuild): {FirstFresh: 0, FirstCached: 0, CachedShare: 0.4}},
-			PhaseBuild, nil, PhaseCacheNotRecorded},
+			PhaseBuild, 0, PhaseCacheNotRecorded},
 		{"a share on the boundary that rounds down", map[string]PhaseCache{string(PhaseBuild): {FirstFresh: 3, FirstCached: 5, CachedShare: 0.5}},
-			PhaseBuild, []float64{0.625, 0.5}, "62% first, 50% phase"},
+			PhaseBuild, 0.625, "62% first, 50% phase"},
 		{"a share on the boundary that rounds up", map[string]PhaseCache{string(PhaseBuild): {FirstFresh: 5, FirstCached: 3, CachedShare: 0.5}},
-			PhaseBuild, []float64{0.375, 0.5}, "38% first, 50% phase"},
+			PhaseBuild, 0.375, "38% first, 50% phase"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			first, whole := PhaseCacheShares(tt.cache, tt.phase)
+			first := PhaseCacheFirstShare(tt.cache, tt.phase)
 			cell := PhaseCacheCell(tt.cache, tt.phase)
 			if cell != tt.cell {
 				t.Fatalf("cell = %q, want %q", cell, tt.cell)
 			}
 			word := cell == PhaseCacheNone || cell == PhaseCacheNotRecorded
-			if word != (first == nil) || word != (whole == nil) {
-				t.Fatalf("shares = %v, %v for the cell %q, want nil exactly when the cell is a word", first, whole, cell)
+			if word != (first == nil) {
+				t.Fatalf("share = %v for the cell %q, want nil exactly when the cell is a word", first, cell)
 			}
 			if word {
 				return
 			}
-			if *first != tt.shares[0] || *whole != tt.shares[1] {
-				t.Errorf("shares = %v, %v, want %v, %v", *first, *whole, tt.shares[0], tt.shares[1])
+			if *first != tt.share {
+				t.Errorf("share = %v, want %v", *first, tt.share)
 			}
 			var printedFirst, printedWhole float64
 			if _, err := fmt.Sscanf(cell, "%f%% first, %f%% phase", &printedFirst, &printedWhole); err != nil {
 				t.Fatalf("cell %q does not print two percentages: %v", cell, err)
 			}
-			if math.Abs(*first*100-printedFirst) > 0.5 || math.Abs(*whole*100-printedWhole) > 0.5 {
-				t.Errorf("shares %v, %v are more than half a point from the cell %q", *first, *whole, cell)
+			if math.Abs(*first*100-printedFirst) > 0.5 {
+				t.Errorf("share %v is more than half a point from the cell %q", *first, cell)
 			}
 		})
 	}
