@@ -229,7 +229,7 @@ resource "google_service_account_iam_member" "surface_deploy_act_as" {
 # workspaces.
 resource "google_storage_bucket_iam_member" "surface_deploy_state" {
   bucket = "forge-wingman-tfstate"
-  role   = "roles/storage.objectAdmin"
+  role   = "roles/storage.objectUser"
   member = google_service_account.surface_deploy.member
 
   condition {

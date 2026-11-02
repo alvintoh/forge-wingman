@@ -647,7 +647,7 @@ It runs as `wingman-surface-deploy`, bound to that workflow file on `main` alone
 | `roles/artifactregistry.writer` | the `forge-wingman` repository | pushing the image |
 | `roles/run.developer` | the `forge-wingman-surface` service | updating the service |
 | `roles/iam.serviceAccountUser` | the `surface` service account | a revision runs as it |
-| `roles/storage.objectAdmin` | `gs://forge-wingman-tfstate`, objects under `infra/` and a listing of that prefix | reading and writing state, and its lock |
+| `roles/storage.objectUser` | `gs://forge-wingman-tfstate`, objects under `infra/` and a listing of that prefix | reading and writing state, and its lock (the bucket keeps versions, so a bad write rolls back) |
 | `surfaceDeployReader` (custom) | the project | `resourcemanager.projects.get`, `resourcemanager.projects.getIamPolicy`, `serviceusage.services.get`, `serviceusage.services.list`, `run.operations.get` |
 | `surfaceDeploySecretReader` (custom) | the `surface-merge-token` secret | `secretmanager.secrets.get`, `secretmanager.secrets.getIamPolicy`: its metadata, never its value |
 
