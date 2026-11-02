@@ -69,7 +69,7 @@ export function Stats() {
         >
           statistics
         </h1>
-        <div className="mt-4 flex min-w-0 flex-col gap-y-6 @[51.25rem]:col-start-1 @[51.25rem]:row-start-2">
+        <div className="mt-4 flex min-w-0 flex-col gap-y-2 @[51.25rem]:gap-y-4 @[51.25rem]:col-start-1 @[51.25rem]:row-start-2">
           <RunSuccessCard project={narrowed} />
           <RewriteRate projectChosen={project !== null} />
         </div>

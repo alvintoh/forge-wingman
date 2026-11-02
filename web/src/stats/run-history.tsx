@@ -97,16 +97,14 @@ export function RunHistoryView({
           ))}
         </ol>
       )}
+      {/* 12px labels on a snug line keep the row height the 11px legend had. */}
       <ul
         aria-label="Run kinds"
-        className="mt-4.5 flex flex-wrap gap-x-4 gap-y-1 text-micro text-ink2"
+        className="mt-4.5 flex flex-wrap gap-x-4 gap-y-1 text-cap leading-snug text-ink2"
       >
         {RUN_COLOURS.map((colour) => (
           <li key={colour.fill} className="flex min-w-0 items-center gap-1.5">
-            <span
-              aria-hidden="true"
-              className={`h-2.5 w-2.5 shrink-0 rounded-tag ${colour.fill}`}
-            />
+            <span aria-hidden="true" className={`h-4 w-2.5 shrink-0 rounded-tag ${colour.fill}`} />
             <span className="min-w-0">{colour.kinds.map((kind) => kind.words).join(", ")}</span>
           </li>
         ))}

@@ -31,7 +31,7 @@ export function RewriteRate({ projectChosen }: { projectChosen: boolean }) {
     <section
       aria-labelledby="rewrite-rate-title"
       aria-busy={read.status === "loading"}
-      className="card-frame py-4"
+      className="card-frame py-4 max-sm:-mx-2.5"
     >
       <h2 id="rewrite-rate-title" className={`${captionClass} text-ink2`}>
         rewrite rate
