@@ -9,4 +9,9 @@ describe("the Autonomy fixture", () => {
       expect(run).toMatch(/^[A-Z]+-\d+$/);
     }
   });
+
+  it("reads the merge status window the endpoint serves", () => {
+    // TrailingPRs in internal/dispatcher/rewrite.go; keep the two equal.
+    expect(autonomy.auto_merge.window).toBe(10);
+  });
 });

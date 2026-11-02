@@ -4,7 +4,7 @@
     "rate_allows": true,
     "rate_value": "7.4%",
     "limit": "10.0%",
-    "window": 20,
+    "window": 10,
     "effective": true,
     "reason": "on"
   },
