@@ -1,43 +1,18 @@
 import { Link } from "@tanstack/react-router";
 import { captionClass } from "../caption";
+import { StatusMark } from "../status-mark";
 import { rateLine } from "./format";
 import type { MergeState } from "./types";
 
 const ON_WORD = "Auto-merge is on";
 const OFF_WORD = "Auto-merge is off";
 
-// The status as a shape beside its word: a tick in a disc, a bar in a ring.
-function StatusMark({ on }: { on: boolean }) {
-  return (
-    <svg aria-hidden="true" width="18" height="18" viewBox="0 0 18 18" className="shrink-0">
-      {on ? (
-        <>
-          <circle cx="9" cy="9" r="9" className="fill-ok" />
-          <path
-            d="M3.5 9.5l4 4l7-8"
-            fill="none"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="stroke-card"
-          />
-        </>
-      ) : (
-        <>
-          <circle cx="9" cy="9" r="8" fill="none" strokeWidth="2" className="stroke-ink2" />
-          <rect x="4" y="8" width="10" height="2" className="fill-ink2" />
-        </>
-      )}
-    </svg>
-  );
-}
-
 // Status is auto-merge's effectiveness as a shape and a word; the rate does not enter it.
 function Status({ merge }: { merge: MergeState }) {
   const on = merge.effective;
   return (
     <>
-      <StatusMark on={on} />
+      <StatusMark kind={on ? "on" : "off"} />
       <p
         role="status"
         className={`text-title leading-6 font-semibold ${on ? "text-ok" : "text-ink"}`}

@@ -1,0 +1,5 @@
+{
+  "recent": { "passed": 55, "runs": 64, "rate": 0.859375 },
+  "previous": { "passed": 53, "runs": 58, "rate": 0.9137931 },
+  "failure": { "class": "agent-timeout", "count": 4 }
+}

@@ -18,7 +18,7 @@ const (
 	// reaches: four weeks.
 	runSuccessWindowSpan = 28 * 24 * time.Hour
 
-	// runSuccessMinRuns is the fewest runs a window states a rate over.
+	// runSuccessMinRuns is the fewest runs a window states a rate over; the web's RUN_SUCCESS_MIN_RUNS repeats it.
 	runSuccessMinRuns = 20
 
 	// runSuccessLimit is the most runs the read returns.
