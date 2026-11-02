@@ -17,11 +17,11 @@ type HistoryResponse = {
   runs: HistoryRun[];
 };
 
-// How many slots the strip has: the length of the history served by `historyLimit` in
-// cmd/surface/history.go, so change them together.
-const RUN_HISTORY_SLOTS = 20;
+// How many slots the strip has. The endpoint serves up to `historyLimit` runs
+// (cmd/surface/history.go); a shorter history fills the first slots.
+const RUN_HISTORY_SLOTS = 30;
 
-// Twenty tracks of at most 16px: a narrow card shrinks them and keeps the 5px gap, a wide card
+// Thirty tracks of at most 16px: a narrow card shrinks them and keeps the 2px gap, a wide card
 // keeps the bars at 16px and `justify-content: space-between` grows the gaps, so a full history
 // ends at the card's right edge. A shorter history takes the first tracks and the rest stay empty.
 const STRIP_STYLE = {
@@ -38,7 +38,7 @@ export function RunHistory({ project }: { project: string | null }) {
 // with the merged count and the legend that names each bar's colour, narrowed
 // to the project the page is on; each bar's words are read out, not drawn.
 // The legend does not depend on the read, so every state draws it, and a state
-// line keeps the height of the strip (26px): the ready state does not push the
+// line keeps the height of the strip (20px): the ready state does not push the
 // card down.
 export function RunHistoryView({
   read,
@@ -65,20 +65,20 @@ export function RunHistoryView({
         )}
       </div>
       {read.status === "loading" && (
-        <p role="status" className="mt-2 min-h-[26px] text-label text-ink2">
+        <p role="status" className="mt-2 min-h-5 text-label text-ink2">
           Reading the run history…
         </p>
       )}
       {read.status === "error" && (
-        <p role="alert" className="mt-2 min-h-[26px] text-label text-ink2">
+        <p role="alert" className="mt-2 min-h-5 text-label text-ink2">
           The run history could not be read.
         </p>
       )}
       {read.status === "ready" && served.length === 0 && (
-        <p className="mt-2 min-h-[26px] text-label text-ink2">No run has settled yet.</p>
+        <p className="mt-2 min-h-5 text-label text-ink2">No run has settled yet.</p>
       )}
       {read.status === "ready" && served.length > 0 && runs.length === 0 && project !== null && (
-        <p className="mt-2 min-h-[26px] truncate text-label text-ink2">
+        <p className="mt-2 min-h-5 truncate text-label text-ink2">
           No run for {project} in the last {served.length} {served.length === 1 ? "run" : "runs"}.
         </p>
       )}
@@ -86,10 +86,10 @@ export function RunHistoryView({
         <ol
           aria-label="The latest settled runs, oldest first"
           style={STRIP_STYLE}
-          className="mt-2 grid justify-between gap-x-[5px]"
+          className="mt-2 grid justify-between gap-x-[2px]"
         >
           {runs.map((run) => (
-            <li key={run.run} className={`h-6.5 rounded-tag ${fillOf(run.kind)}`}>
+            <li key={run.run} className={`h-5 rounded-tag ${fillOf(run.kind)}`}>
               <span className="sr-only">
                 {run.ticket || run.run}: {run.words}
               </span>
