@@ -22,6 +22,7 @@ What gates a merge was read from GitHub on 2026-10-28: the ruleset `protect-main
 - Each poll settles at most 20 runs, oldest first, so the 50 existing pull requests are backfilled by the same code over a few polls and no separate backfill command exists.
 - *Updated (2026-10-29, owner's choice after review):* a run the poll can never settle is written `checks_result` = `unresolved` once, with no `pr_head_sha`: a pull request with no commit authored by the runner's login (an owner squashed it or force-pushed over the agent's commits) or a `pr_url` that does not parse. Without it such rows keep the front of the oldest-first list forever and starve newer runs under the 20-per-poll cap. A pending run or a failed read is never marked. The rate leaves `unresolved` runs out of both its numerator and its denominator, and a run cancelled in GitHub counts as a failure for now (one in 69 runs; excluding it needs a new field).
 - Success is `outcome` = `pr-opened` and `checks_result` = `green`. The window is four weeks of runs by start time, read from rows as `adr/0016` reads them; a run whose result is still pending is not counted until it settles.
+- *Updated (2026-11-02, owner's choice at review):* a run the sweep marks abandoned, which writes no outcome, counts as a failure of class `abandoned` in the denominator and the failure mix, so the rate no longer reads higher when a run is abandoned before its record job runs; one that is both abandoned and cancelled by the owner counts in neither. The read therefore projects six fields (`checks_result`, `outcome`, `started_at`, `stop_reason`, `cancelled_by_owner_at` and `state`), and it logs `runSuccessCapped` when the 200-row cap is reached, so the cap no longer truncates silently.
 
 ## Alternatives
 
@@ -34,7 +35,7 @@ What gates a merge was read from GitHub on 2026-10-28: the ruleset `protect-main
 
 ## Revisit when
 
-The repository goes private: fine-grained tokens have no Checks permission (`infra/README.md:520`), so read `statusCheckRollup` through GraphQL, as `PullSummaries` does. The window's rows pass `adr/0016`'s 200-row cap, which starts its ladder (cache header, rollup, BigQuery). The lag between a PR's checks finishing and the poll writing the result starts to matter, which is the webhook's case.
+The repository goes private: fine-grained tokens have no Checks permission (`infra/README.md:520`), so read `statusCheckRollup` through GraphQL, as `PullSummaries` does. The window's rows pass `adr/0016`'s 200-row cap, which starts its ladder (cache header, rollup, BigQuery); the `runSuccessCapped` log line is the signal that it has been reached. The lag between a PR's checks finishing and the poll writing the result starts to matter, which is the webhook's case.
 
 ## Consequences
 
