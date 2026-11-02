@@ -130,7 +130,7 @@
     "prs": [
       {
         "pr": 108,
-        "run": "run-2026-02-27-a",
+        "run": "DEMO-108",
         "repo": "acme/widgets",
         "size": "M",
         "title": "Add the widget table",
@@ -148,7 +148,7 @@
       },
       {
         "pr": 107,
-        "run": "run-2026-02-24-b",
+        "run": "DEMO-107",
         "repo": "acme/widgets",
         "size": "M",
         "title": "Redraw the widget card",
@@ -166,7 +166,7 @@
       },
       {
         "pr": 204,
-        "run": "run-2026-02-22-c",
+        "run": "DEMO-204",
         "repo": "acme/gadgets",
         "size": "L",
         "title": "Gadget list filters",
@@ -184,7 +184,7 @@
       },
       {
         "pr": 106,
-        "run": "run-2026-02-20-d",
+        "run": "DEMO-106",
         "repo": "acme/widgets",
         "size": "S",
         "title": "Widget detail drawer",
@@ -202,7 +202,7 @@
       },
       {
         "pr": 105,
-        "run": "run-2026-02-18-e",
+        "run": "DEMO-105",
         "repo": "acme/widgets",
         "size": "S",
         "title": "Fix widget pagination",
@@ -220,7 +220,7 @@
       },
       {
         "pr": 203,
-        "run": "run-2026-02-16-f",
+        "run": "DEMO-203",
         "repo": "acme/gadgets",
         "size": "L",
         "title": "Gadget settings page",
@@ -238,7 +238,7 @@
       },
       {
         "pr": 104,
-        "run": "run-2026-02-14-g",
+        "run": "DEMO-104",
         "repo": "acme/widgets",
         "size": "M",
         "title": "Widget search keys",
@@ -256,7 +256,7 @@
       },
       {
         "pr": 103,
-        "run": "run-2026-02-12-h",
+        "run": "DEMO-103",
         "repo": "acme/widgets",
         "size": "S",
         "title": "Widget empty state",
@@ -274,7 +274,7 @@
       },
       {
         "pr": 202,
-        "run": "run-2026-02-10-i",
+        "run": "DEMO-202",
         "repo": "acme/gadgets",
         "size": "M",
         "title": "Gadget export",
@@ -292,7 +292,7 @@
       },
       {
         "pr": 102,
-        "run": "run-2026-02-08-j",
+        "run": "DEMO-102",
         "repo": "acme/widgets",
         "size": "S",
         "title": "Widget table sort",
@@ -310,7 +310,7 @@
       },
       {
         "pr": 101,
-        "run": "run-2026-02-05-k",
+        "run": "DEMO-101",
         "repo": "acme/widgets",
         "size": "S",
         "title": "Widget header",
@@ -328,7 +328,7 @@
       },
       {
         "pr": 201,
-        "run": "run-2026-02-02-l",
+        "run": "DEMO-201",
         "repo": "acme/gadgets",
         "size": "S",
         "title": "Gadget import",
