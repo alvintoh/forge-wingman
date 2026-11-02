@@ -35,4 +35,19 @@ describe("the Statistics page", () => {
     expect(at("run-history-title")).toBeGreaterThan(at("run-success-title"));
     expect(between.match(/<\/section>/g)).toHaveLength(2);
   });
+
+  it("stacks the two cards 8px apart and 16px apart beside the filter column", async () => {
+    const html = await statsPage();
+    const column = html.match(/<div class="([^"]*)"><section aria-labelledby="run-success-title"/);
+    expect(column?.[1].split(" ")).toContain("gap-y-2");
+    expect(column?.[1].split(" ")).toContain("@[51.25rem]:gap-y-4");
+  });
+
+  it("gives the Rewrite rate card the Run success card's phone margin", async () => {
+    const html = await statsPage();
+    for (const id of ["run-success-title", "rewrite-rate-title"]) {
+      const card = html.match(new RegExp(`<section aria-labelledby="${id}"[^>]*class="([^"]*)"`));
+      expect(card?.[1].split(" ")).toContain("max-sm:-mx-2.5");
+    }
+  });
 });

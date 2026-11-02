@@ -114,6 +114,17 @@ describe("RunHistoryView around the runs", () => {
     expect(loading).toContain("cancelled");
   });
 
+  it("sets the legend in the 12px size with a 10 by 16 swatch for each colour", () => {
+    const legend = draw(runs(4)).match(/<ul aria-label="Run kinds" class="([^"]*)">(.*?)<\/ul>/);
+    expect(legend?.[1].split(" ")).toContain("text-cap");
+    expect(legend?.[1].split(" ")).not.toContain("text-micro");
+    expect(legend?.[1].split(" ")).toContain("leading-snug");
+    expect(legend?.[1].split(" ")).toContain("gap-x-4");
+    expect(legend?.[1].split(" ")).toContain("gap-y-1");
+    const swatches = legend?.[2].match(/<span aria-hidden="true" class="[^"]*\bh-4 w-2\.5\b/g);
+    expect(swatches).toHaveLength(legend?.[2].match(/<li /g)?.length ?? -1);
+  });
+
   it("says the history could not be read, with no count or strip", () => {
     const markup = drawRead({ status: "error", url: "/api/run-history" });
     expect(markup).toContain("The run history could not be read.");
