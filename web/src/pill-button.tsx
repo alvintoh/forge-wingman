@@ -1,4 +1,10 @@
-import { disabledEdge, kindClass, type PillWidth } from "./button-style";
+import {
+  disabledEdge,
+  hitAreaFocus,
+  kindClass,
+  labelFocusRing,
+  type PillWidth,
+} from "./button-style";
 
 type SmallPillProps = React.ComponentProps<"button"> & {
   label: string;
@@ -13,10 +19,12 @@ export function TryAgainPill(props: React.ComponentProps<"button">) {
   return (
     <button
       type="button"
-      className="group inline-flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center disabled:cursor-not-allowed focus-visible:outline-none!"
+      className={`${hitAreaFocus} inline-flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center disabled:cursor-not-allowed`}
       {...props}
     >
-      <span className="inline-flex h-8 min-w-26 items-center justify-center rounded-full border border-accent px-3 font-mono text-micro font-semibold text-accent group-disabled:border-muted group-disabled:text-muted group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-accent">
+      <span
+        className={`inline-flex h-8 min-w-26 items-center justify-center rounded-full border border-accent px-3 font-mono text-micro font-semibold text-accent group-disabled:border-muted group-disabled:text-muted ${labelFocusRing}`}
+      >
         TRY AGAIN
       </span>
     </button>
@@ -33,12 +41,12 @@ export function SmallPill({ label, kind, width, ticked = false, ...rest }: Small
   return (
     <button
       type="button"
-      className="group inline-flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center disabled:cursor-not-allowed aria-disabled:cursor-not-allowed focus-visible:outline-none!"
+      className={`${hitAreaFocus} inline-flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center disabled:cursor-not-allowed aria-disabled:cursor-not-allowed`}
       {...rest}
     >
       <span
         style={width}
-        className={`relative inline-flex h-7 items-center justify-center rounded-full border font-mono text-micro font-semibold tracking-[1.2px] group-disabled:bg-track group-disabled:text-muted group-aria-disabled:bg-track group-aria-disabled:text-muted group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-accent ${kindClass[kind]} ${disabledEdge[kind].group}`}
+        className={`relative inline-flex h-7 items-center justify-center rounded-full border font-mono text-micro font-semibold tracking-[1.2px] group-disabled:bg-track group-disabled:text-muted group-aria-disabled:bg-track group-aria-disabled:text-muted ${labelFocusRing} ${kindClass[kind]} ${disabledEdge[kind].group}`}
       >
         {ticked && (
           <svg

@@ -2,6 +2,9 @@ import { Link } from "@tanstack/react-router";
 import { useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ActionButton, ButtonPair } from "./action-button";
+import { hitAreaFocus, labelFocusRing } from "./button-style";
+import { projectName } from "./project-name";
+import { showModalOnBack } from "./show-modal-on-back";
 import { AddProjectDialog } from "./add-project";
 import { ago } from "./ago";
 import { pillSetWidth } from "./button-style";
@@ -244,6 +247,8 @@ function ProjectEntry({ project, now, refresh, filter }: EntryProps) {
   const noticeId = useId();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const stopRef = useRef<HTMLDialogElement>(null);
+  const startBackRef = useRef<HTMLButtonElement>(null);
+  const stopBackRef = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(false);
@@ -316,7 +321,7 @@ function ProjectEntry({ project, now, refresh, filter }: EntryProps) {
         aria-label={`Start ${readable?.current ?? "the phase"} in ${project.repository}`}
         onClick={() => {
           setSaveError(false);
-          dialogRef.current?.showModal();
+          showModalOnBack(dialogRef.current, startBackRef.current);
         }}
       />
     ) : view.pill === "RUNNING" ? (
@@ -327,7 +332,7 @@ function ProjectEntry({ project, now, refresh, filter }: EntryProps) {
         aria-label={`Stop ${readable?.current ?? "the phase"} in ${project.repository}`}
         onClick={() => {
           setStopError(false);
-          stopRef.current?.showModal();
+          showModalOnBack(stopRef.current, stopBackRef.current);
         }}
       />
     ) : (
@@ -375,16 +380,15 @@ function ProjectEntry({ project, now, refresh, filter }: EntryProps) {
       )}
       <div className="min-w-0">
         <div className="min-w-0">
-          <div
-            className={`flex min-h-11 items-center justify-between gap-x-3 ${filter ? "flex-wrap @min-[17rem]:flex-nowrap" : ""}`}
-          >
+          <div className="flex min-h-11 flex-wrap items-center justify-between gap-x-3 @min-[17rem]:flex-nowrap">
             <div className="flex min-h-11 min-w-0 items-center gap-2.5">
               <h3
                 id={nameId}
                 title={project.repository}
+                aria-label={project.repository}
                 className="min-w-0 truncate text-body leading-5 font-semibold text-ink"
               >
-                {project.repository}
+                {projectName(project.repository)}
               </h3>
               <ProjectStateChip project={project} />
             </div>
@@ -429,10 +433,12 @@ function ProjectEntry({ project, now, refresh, filter }: EntryProps) {
               aria-expanded={open}
               aria-controls={detailId}
               aria-label={`${open ? "Hide details" : "Details"}: what is running in ${project.repository}`}
-              className="relative -mb-3.5 -ml-1 -mt-1.5 flex w-fit min-h-11 min-w-11 cursor-pointer items-center px-1 text-label leading-4 text-accent"
+              className={`${hitAreaFocus} relative -mb-3.5 -ml-1 -mt-1.5 flex w-fit min-h-11 min-w-11 cursor-pointer items-center px-1 text-label leading-4 text-accent`}
               onClick={() => setOpen((v) => !v)}
             >
-              {open ? "Hide details" : "Details"}
+              <span className={`rounded-tag ${labelFocusRing}`}>
+                {open ? "Hide details" : "Details"}
+              </span>
             </button>
           )}
         </div>
@@ -516,6 +522,7 @@ function ProjectEntry({ project, now, refresh, filter }: EntryProps) {
           <ButtonPair
             back={
               <ActionButton
+                ref={stopBackRef}
                 kind="secondary"
                 label="BACK"
                 onClick={() => stopRef.current?.close()}
@@ -556,6 +563,7 @@ function ProjectEntry({ project, now, refresh, filter }: EntryProps) {
             <ButtonPair
               back={
                 <ActionButton
+                  ref={startBackRef}
                   kind="secondary"
                   label="BACK"
                   onClick={() => dialogRef.current?.close()}
@@ -630,25 +638,29 @@ function ProjectsCard({ projects, total, now, stale, seeAll, refresh, filter }: 
             ) : seeAll ? (
               <Link
                 to="/projects"
-                className="inline-flex min-h-13 min-w-11 items-center gap-[9.5px] text-label font-semibold text-ink"
+                className={`${hitAreaFocus} inline-flex min-h-13 min-w-11 items-center text-label font-semibold text-ink`}
               >
-                See all {total} projects
-                <svg
-                  aria-hidden="true"
-                  width="5"
-                  height="10"
-                  viewBox="0 0 5 10"
-                  className="overflow-visible text-ink2"
+                <span
+                  className={`inline-flex items-center gap-[9.5px] rounded-tag ${labelFocusRing}`}
                 >
-                  <path
-                    d="M0 0l5 5l-5 5"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.75"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
+                  See all {total} projects
+                  <svg
+                    aria-hidden="true"
+                    width="5"
+                    height="10"
+                    viewBox="0 0 5 10"
+                    className="overflow-visible text-ink2"
+                  >
+                    <path
+                      d="M0 0l5 5l-5 5"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.75"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </span>
               </Link>
             ) : (
               <span />

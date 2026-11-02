@@ -28,6 +28,15 @@ export const disabledEdge = {
   },
 } as const;
 
+/**
+ * The focus ring of a control whose hit area is larger than its visible shape: the hit area hides the
+ * browser's ring (`hitAreaFocus`, with `group` on it) and the visible label shows this one, 3px and
+ * offset 2 in the accent.
+ */
+export const hitAreaFocus = "group focus-visible:outline-none!";
+export const labelFocusRing =
+  "group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-accent";
+
 /** The width style of one set of small pills, from pillSetWidth. */
 export type PillWidth = { readonly width: string };
 

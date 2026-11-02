@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef } from "react";
 import { createPortal } from "react-dom";
 import { ActionButton, ButtonPair } from "../action-button";
+import { showModalOnBack } from "../show-modal-on-back";
 import { type Opened, listDialog } from "./keyboard";
 import { type InboxRun, parsePull } from "./run";
 
@@ -14,6 +15,7 @@ type DialogProps = {
 // onConfirm and closes it, and Escape and BACK close it without one.
 export function MergeDialog({ opened, onClose, onConfirm }: DialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const backRef = useRef<HTMLButtonElement>(null);
   const titleId = useId();
   const run = opened?.run ?? null;
 
@@ -29,7 +31,7 @@ export function MergeDialog({ opened, onClose, onConfirm }: DialogProps) {
       return;
     }
     if (!dialog.open) {
-      dialog.showModal();
+      showModalOnBack(dialog, backRef.current);
     }
   }, [opened]);
 
@@ -124,7 +126,7 @@ export function MergeDialog({ opened, onClose, onConfirm }: DialogProps) {
           <p className="mt-3 text-cap leading-4 text-muted">Merging is hard to reverse.</p>
           <ButtonPair
             margin="mt-2"
-            back={<ActionButton kind="secondary" label="BACK" onClick={back} />}
+            back={<ActionButton ref={backRef} kind="secondary" label="BACK" onClick={back} />}
             action={<ActionButton kind="primary" label="MERGE PR" onClick={confirm} />}
           />
         </>
