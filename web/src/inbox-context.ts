@@ -12,3 +12,11 @@ export function useInbox(): Inbox {
   }
   return inbox;
 }
+
+/**
+ * attentionCount is how many runs wait on the owner, the one count the menu's Overview badge and
+ * the header's line both show: null until a read has landed, or when none ever did.
+ */
+export function attentionCount(state: Inbox["state"]): number | null {
+  return state.status === "ready" ? state.runs.length : null;
+}
