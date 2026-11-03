@@ -91,8 +91,9 @@ func TestALateSettleOfAnEarlierAttemptLeavesTheNewAttemptsReservation(t *testing
 	if _, ok := after.Reservations[reservationKey(id, 1, dispatcher.StageBuild)]; !ok {
 		t.Fatal("the earlier attempt's settle deleted the new attempt's reservation")
 	}
-	if after.N != before.N || after.StableRuns != before.StableRuns {
-		t.Fatalf("N %d stable %d, want %d and %d unchanged", after.N, after.StableRuns, before.N, before.StableRuns)
+	if after.N != before.N || after.StableRuns != before.StableRuns || after.Recommended != before.Recommended {
+		t.Fatalf("N %d stable %d recommended %d, want %d, %d and %d unchanged",
+			after.N, after.StableRuns, after.Recommended, before.N, before.StableRuns, before.Recommended)
 	}
 
 	if err := q.Settle(ctx, id, attemptOf(1)); err != nil {

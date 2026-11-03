@@ -1,0 +1,12 @@
+{
+  "runs_at_once": 2,
+  "platform_cap": 20,
+  "recommendation": {
+    "n": 2,
+    "basis": "steady",
+    "stable": 3,
+    "stable_runs": 5,
+    "rise_within": 1.25,
+    "halve_beyond": 1.5
+  }
+}

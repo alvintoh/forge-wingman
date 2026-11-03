@@ -26,8 +26,16 @@ func (t Tuning) OrDefault() Tuning {
 	return t
 }
 
-// Concurrency is the discovered limit N and how many stable observations have
-// accumulated toward raising it.
+// The owner's runs-at-once setting N: how many runs may be in flight at once
+// across every project. Its upper bound is the platform cap, which is
+// configured, so it is not a constant here.
+const (
+	MinRunsAtOnce     = 1
+	DefaultRunsAtOnce = 2
+)
+
+// Concurrency is a limit N and how many stable observations have accumulated
+// toward raising it.
 type Concurrency struct {
 	N      int
 	Stable int
@@ -71,5 +79,48 @@ func NextConcurrency(cur Concurrency, obs Observation, t Tuning, platformCap int
 	default:
 		next.Stable = 0
 		return next
+	}
+}
+
+// The bases of a Recommendation: what the latest evidence at the owner's N was.
+const (
+	// BasisNone is no evidence at N yet.
+	BasisNone = ""
+	// BasisSteady counts the stable observations in a row toward raising N.
+	BasisSteady = "steady"
+	BasisRise   = "rise"
+	// BasisSlow is a loaded median past HalveBeyond times the solo median.
+	BasisSlow        = "slow"
+	BasisRateLimited = "rate-limited"
+)
+
+// Recommendation is the N the concurrency rule recommends beside the owner's
+// N, the stable observations in a row behind it, and its basis. It changes
+// nothing by itself: admission runs under the owner's N.
+type Recommendation struct {
+	// N is zero while Basis is BasisNone, which recommends the owner's N.
+	N      int
+	Stable int
+	Basis  string
+}
+
+// Recommend applies NextConcurrency at the owner's n to an observation and
+// returns what it would have set N to, without setting it. A rise holds its
+// count full, so it keeps recommending one more until evidence says otherwise;
+// an observation carrying no medians and no rate-limit stop changes nothing.
+func Recommend(prev Recommendation, n int, obs Observation, t Tuning, platformCap int) Recommendation {
+	if !obs.RateLimited && (obs.Solo <= 0 || obs.Loaded <= 0) {
+		return prev
+	}
+	next := NextConcurrency(Concurrency{N: n, Stable: prev.Stable}, obs, t, platformCap)
+	switch {
+	case next.N < n && obs.RateLimited:
+		return Recommendation{N: next.N, Basis: BasisRateLimited}
+	case next.N < n:
+		return Recommendation{N: next.N, Basis: BasisSlow}
+	case next.N > n:
+		return Recommendation{N: next.N, Stable: t.StableRuns, Basis: BasisRise}
+	default:
+		return Recommendation{N: n, Stable: next.Stable, Basis: BasisSteady}
 	}
 }
