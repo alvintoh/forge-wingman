@@ -2303,7 +2303,7 @@ func TestBuildModelReadsTheTicketsBuildLabel(t *testing.T) {
 	}
 }
 
-func TestTryClaimOnAFreeTierRecordsThePlanAndItsModels(t *testing.T) {
+func TestTryClaimClearsAFreeTierAnEarlierClaimRecorded(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
 	run := queuedRun(fresh("queue-claim-free"), 1)
@@ -2313,35 +2313,22 @@ func TestTryClaimOnAFreeTierRecordsThePlanAndItsModels(t *testing.T) {
 		t.Fatal(err)
 	}
 	free := runner.ModelLabels{Build: "command-code/free-a", Review: "command-code/free-b", Plan: []string{"command-code/free-a", "command-code/free-b"}}
+	if _, err := client.Collection(runsCollection).Doc(run.RunID).Update(ctx, []firestore.Update{
+		{Path: lastResortField, Value: true}, {Path: lastResortModelsField, Value: free},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	facts := openFacts
-	facts.Model, facts.LastResort = free.Build, &free
-	if ok, binding, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, facts, dispatcher.Reservation{RunnerMinutes: 12}); err != nil || !ok {
-		t.Fatalf("ok = %v, binding = %q, err = %v", ok, binding, err)
+	facts.Model = "command-code/paid"
+	if ok, _, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, facts, dispatcher.Reservation{}); err != nil || !ok {
+		t.Fatalf("ok = %v, err = %v, want the run claimed on the paid plan", ok, err)
 	}
 	rec, err := NewRecords(client).GetRecord(ctx, run.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec.Plan != "command-code" || !rec.LastResort || !reflect.DeepEqual(rec.RunModels(), free) {
-		t.Fatalf("plan %q, last resort %v, models %+v, want the free tier's plan and models", rec.Plan, rec.LastResort, rec.RunModels())
-	}
-	if entry := readLedgerDoc(t, client).Reservations[reservationKey(run.RunID, 0, dispatcher.StageBuild)]; entry.ProviderCostMicros != 0 || entry.RunnerMinutes != 12 {
-		t.Fatalf("reservation = %+v, want runner minutes and no provider cost", entry)
-	}
-
-	if err := q.Release(ctx, run.RunID, queueAt); err != nil {
-		t.Fatal(err)
-	}
-	facts.Model, facts.LastResort = "command-code/paid", nil
-	if ok, _, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, facts, dispatcher.Reservation{}); err != nil || !ok {
-		t.Fatalf("ok = %v, err = %v, want the run reclaimed on the paid plan", ok, err)
-	}
-	rec, err = NewRecords(client).GetRecord(ctx, run.RunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rec.LastResort || !reflect.DeepEqual(rec.LastResortModels, runner.ModelLabels{}) {
-		t.Fatalf("last resort %v, models %+v, want both cleared by a paid claim", rec.LastResort, rec.LastResortModels)
+	if rec.Plan != "command-code" || rec.LastResort || !reflect.DeepEqual(rec.LastResortModels, runner.ModelLabels{}) {
+		t.Fatalf("plan %q, last resort %v, models %+v, want the earlier free tier cleared by the claim", rec.Plan, rec.LastResort, rec.LastResortModels)
 	}
 }
 

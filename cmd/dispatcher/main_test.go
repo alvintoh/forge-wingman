@@ -168,8 +168,8 @@ func TestBudgetConfigCarriesTheProvidersModelCaps(t *testing.T) {
 }
 
 // TestLastResortPlansFollowTheConfiguredOrder asserts the dispatcher is handed
-// each configured plan's free models in the configured order, so an exhausted
-// run walks on to the next plan.
+// each configured plan's free models in the configured order, the order a
+// deferral notice offers them in.
 func TestLastResortPlansFollowTheConfiguredOrder(t *testing.T) {
 	order := providers.LastResortPlans()
 	rungs := lastResortPlans()
@@ -183,29 +183,29 @@ func TestLastResortPlansFollowTheConfiguredOrder(t *testing.T) {
 	}
 }
 
-func TestNextPlansIsEmptyForAnOrderOfOnePlanOrNone(t *testing.T) {
+func TestPlanBudgetsIsEmptyForAnOrderOfOnePlanOrNone(t *testing.T) {
 	for name, order := range map[string][]string{"none": nil, "one plan": {"command-code"}} {
 		t.Run(name, func(t *testing.T) {
-			next, err := nextPlans(order, runner.DefaultModel())
-			if err != nil || len(next) != 0 {
-				t.Fatalf("nextPlans = %v, %v, want none", next, err)
+			others, err := planBudgets(order, runner.DefaultModel())
+			if err != nil || len(others) != 0 {
+				t.Fatalf("planBudgets = %v, %v, want none", others, err)
 			}
 		})
 	}
 }
 
-func TestNextPlansListsEveryPlanAfterTheDefaultsWithItsOwnBudget(t *testing.T) {
-	next, err := nextPlans([]string{"command-code", "gemini"}, runner.DefaultModel())
+func TestPlanBudgetsListsEveryPlanAfterTheDefaultsWithItsOwnBudget(t *testing.T) {
+	others, err := planBudgets([]string{"command-code", "gemini"}, runner.DefaultModel())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(next) != 1 || next[0].Plan != "gemini" || next[0].Budget.Cash.Name != dispatcher.CeilingCash || len(next[0].Budget.ProviderWindows) != 0 {
-		t.Fatalf("nextPlans = %+v, want gemini with its own budget, not command-code's windows", next)
+	if len(others) != 1 || others[0].Plan != "gemini" || others[0].Budget.Cash.Name != dispatcher.CeilingCash || len(others[0].Budget.ProviderWindows) != 0 {
+		t.Fatalf("planBudgets = %+v, want gemini with its own budget, not command-code's windows", others)
 	}
 }
 
-func TestNextPlansRefusesAnOrderNotStartingOnTheDefaultModelsPlan(t *testing.T) {
-	_, err := nextPlans([]string{"gemini", "command-code"}, runner.DefaultModel())
+func TestPlanBudgetsRefusesAnOrderNotStartingOnTheDefaultModelsPlan(t *testing.T) {
+	_, err := planBudgets([]string{"gemini", "command-code"}, runner.DefaultModel())
 	if err == nil || !strings.Contains(err.Error(), "the first paid plan is gemini, not command-code") {
 		t.Fatalf("err = %v, want the first paid plan to be refused", err)
 	}

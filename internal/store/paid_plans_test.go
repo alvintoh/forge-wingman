@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -150,7 +151,7 @@ func TestTryClaimCountsEveryPlansSpendTowardCash(t *testing.T) {
 	}
 }
 
-func TestTryClaimRecordsAMoveBetweenPaidPlansAndClearsItOnReclaim(t *testing.T) {
+func TestTryClaimClearsAMoveAnEarlierClaimRecorded(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
 	run := queuedRun(fresh("queue-moved"), 1)
@@ -159,9 +160,14 @@ func TestTryClaimRecordsAMoveBetweenPaidPlansAndClearsItOnReclaim(t *testing.T) 
 	if err := q.Enqueue(ctx, run); err != nil {
 		t.Fatal(err)
 	}
-	models := runner.ModelLabels{Build: "beta/build", Review: "beta/review", Plan: []string{"beta/build"}}
+	moved := runner.ModelLabels{Build: "beta/build", Review: "beta/review", Plan: []string{"beta/build"}}
+	if _, err := client.Collection(runsCollection).Doc(run.RunID).Update(ctx, []firestore.Update{
+		{Path: movedFromField, Value: "alpha"}, {Path: planModelsField, Value: moved},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	facts := openFacts
-	facts.Model, facts.Moved = models.Build, &dispatcher.Move{From: "alpha", Models: models}
+	facts.Model = "alpha/build"
 	if ok, binding, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, facts, dispatcher.Reservation{}); err != nil || !ok {
 		t.Fatalf("ok = %v, binding = %q, err = %v", ok, binding, err)
 	}
@@ -169,23 +175,8 @@ func TestTryClaimRecordsAMoveBetweenPaidPlansAndClearsItOnReclaim(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec.Plan != "beta" || rec.MovedFrom != "alpha" || rec.LastResort || !reflect.DeepEqual(rec.RunModels(), models) {
-		t.Fatalf("plan %q, moved from %q, models %+v, want the move onto beta recorded with its models", rec.Plan, rec.MovedFrom, rec.RunModels())
-	}
-
-	if err := q.Release(ctx, run.RunID, queueAt); err != nil {
-		t.Fatal(err)
-	}
-	facts.Model, facts.Moved = "alpha/build", nil
-	if ok, _, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, facts, dispatcher.Reservation{}); err != nil || !ok {
-		t.Fatalf("ok = %v, err = %v, want the run reclaimed on its first plan", ok, err)
-	}
-	rec, err = NewRecords(client).GetRecord(ctx, run.RunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rec.MovedFrom != "" || !reflect.DeepEqual(rec.PlanModels, runner.ModelLabels{}) {
-		t.Fatalf("moved from %q, models %+v, want the move cleared by a claim that is not one", rec.MovedFrom, rec.PlanModels)
+	if rec.Plan != "alpha" || rec.MovedFrom != "" || !reflect.DeepEqual(rec.PlanModels, runner.ModelLabels{}) {
+		t.Fatalf("plan %q, moved from %q, models %+v, want the earlier move cleared by the claim", rec.Plan, rec.MovedFrom, rec.PlanModels)
 	}
 }
 
@@ -198,19 +189,20 @@ func TestTryClaimLeavesTheTierAPlanStageChoseOnABuildStageClaim(t *testing.T) {
 	if err := q.Enqueue(ctx, run); err != nil {
 		t.Fatal(err)
 	}
-	models := runner.ModelLabels{Build: "beta/build", Review: "beta/review", Plan: []string{"beta/build"}}
 	facts := openFacts
-	facts.Model, facts.Moved = models.Build, &dispatcher.Move{From: "alpha", Models: models}
+	facts.Model = "beta/build"
 	if ok, _, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, facts, dispatcher.Reservation{Stage: dispatcher.StagePlan}); err != nil || !ok {
 		t.Fatalf("plan stage ok = %v, err = %v", ok, err)
 	}
 	if err := q.Release(ctx, run.RunID, queueAt); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.Collection(runsCollection).Doc(run.RunID).Update(ctx, []firestore.Update{{Path: stateField, Value: statePlanned}}); err != nil {
+	if _, err := client.Collection(runsCollection).Doc(run.RunID).Update(ctx, []firestore.Update{
+		{Path: stateField, Value: statePlanned}, {Path: movedFromField, Value: "alpha"},
+	}); err != nil {
 		t.Fatal(err)
 	}
-	facts.Model, facts.Moved = "alpha/build", nil
+	facts.Model = "alpha/build"
 	if ok, _, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, facts, dispatcher.Reservation{Stage: dispatcher.StageBuild}); err != nil || !ok {
 		t.Fatalf("build stage ok = %v, err = %v", ok, err)
 	}
@@ -223,11 +215,11 @@ func TestTryClaimLeavesTheTierAPlanStageChoseOnABuildStageClaim(t *testing.T) {
 	}
 }
 
-func TestCandidatesReadsThePlanAndFreeTierAPlanStageClaimChose(t *testing.T) {
+func TestCandidatesReadsThePlanAndFreeTierARowRecords(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
 	paid, free := queuedRun(fresh("queue-cand-paid"), 1), queuedRun(fresh("queue-cand-free"), 2)
-	free.Models = runner.ModelLabels{Review: "gamma/review"}
+	free.Models = runner.ModelLabels{Review: "gamma/review", Plan: []string{"gamma/plan"}}
 	forget(t, client, paid.RunID, free.RunID)
 	resetLedger(t, client, 5)
 	labels := runner.ModelLabels{Build: "beta/free-a", Review: "beta/free-b", Plan: []string{"beta/free-a", "beta/free-b"}}
@@ -237,8 +229,7 @@ func TestCandidatesReadsThePlanAndFreeTierAPlanStageClaimChose(t *testing.T) {
 		}
 	}
 	paidFacts, freeFacts := openFacts, openFacts
-	paidFacts.Model = "alpha/build"
-	freeFacts.Model, freeFacts.LastResort = labels.Build, &labels
+	paidFacts.Model, freeFacts.Model = "alpha/build", labels.Build
 	for run, facts := range map[string]dispatcher.Facts{paid.RunID: paidFacts, free.RunID: freeFacts} {
 		if ok, _, err := q.TryClaim(ctx, run, queueAt, generousBudget, facts, dispatcher.Reservation{}); err != nil || !ok {
 			t.Fatalf("claim %s ok = %v, err = %v", run, ok, err)
@@ -246,6 +237,11 @@ func TestCandidatesReadsThePlanAndFreeTierAPlanStageClaimChose(t *testing.T) {
 		if err := q.Release(ctx, run, queueAt); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if _, err := client.Collection(runsCollection).Doc(free.RunID).Update(ctx, []firestore.Update{
+		{Path: lastResortField, Value: true}, {Path: lastResortModelsField, Value: labels},
+	}); err != nil {
+		t.Fatal(err)
 	}
 	cands, err := q.Candidates(ctx)
 	if err != nil {
@@ -258,7 +254,7 @@ func TestCandidatesReadsThePlanAndFreeTierAPlanStageClaimChose(t *testing.T) {
 	if c := found[paid.RunID]; c.Plan != "alpha" || c.LastResort != nil || c.ModelsNamed {
 		t.Fatalf("paid candidate = %+v, want plan alpha, no free tier, no model named", c)
 	}
-	if c := found[free.RunID]; c.Plan != "beta" || !reflect.DeepEqual(c.LastResort, &labels) || !c.ModelsNamed {
-		t.Fatalf("free candidate = %+v, want plan beta on its free models, a model named", c)
+	if c := found[free.RunID]; c.Plan != "beta" || !reflect.DeepEqual(c.LastResort, &labels) || !c.ModelsNamed || c.ReviewModel != "gamma/review" || !slices.Equal(c.PlanModels, []string{"gamma/plan"}) {
+		t.Fatalf("free candidate = %+v, want plan beta on its free models and the review and plan models it named", c)
 	}
 }

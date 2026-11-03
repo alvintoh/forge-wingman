@@ -32,6 +32,9 @@ const (
 	ConditionOwnerPaused = "owner-paused"
 	// ConditionPeakHours withholds a candidate that would run in its model's peak-price hours.
 	ConditionPeakHours = "peak-hours"
+	// ConditionPrivateOptIn withholds a private candidate whose ticket named a
+	// free model on a plan the owner has not opted private repositories in to.
+	ConditionPrivateOptIn = "private-opt-in"
 )
 
 // largeSize is the ticket size whose concurrent runs are capped separately.
@@ -143,13 +146,6 @@ type Facts struct {
 	// Model is the run's build model — the model its ticket named, or the run's
 	// own default — which selects any per-model cap that bounds it.
 	Model string
-	// LastResort names the models of a claim on Model's plan's free tier,
-	// written onto the run record with the claim; nil otherwise.
-	LastResort *runner.ModelLabels
-	// Moved names the paid plan whose ceiling bound and the models of the plan
-	// the claim moved to, written onto the run record with the claim; nil
-	// otherwise.
-	Moved *Move
 	// OpenPRs is the count of open agent PRs across the allowlisted
 	// repositories, meaningful only when OpenPRsKnown is set.
 	OpenPRs      int
@@ -163,12 +159,6 @@ type Facts struct {
 	// AC5). Nil where the claimant holds no snapshot, which then reads the
 	// history in its own transaction.
 	History HistoryLoader
-}
-
-// Move is a run's move from a paid plan whose ceiling bound to the next.
-type Move struct {
-	From   string
-	Models runner.ModelLabels
 }
 
 // Settled is the settled cost of runs inside each window Decide checks.

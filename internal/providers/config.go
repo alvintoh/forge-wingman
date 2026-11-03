@@ -199,13 +199,13 @@ type Config struct {
 	AvailabilityMarkers []string
 	// Providers maps each configured provider name to its plan facts.
 	Providers map[string]Provider
-	// LastResortPlans are the plans' free tiers, named in the order the
-	// dispatcher's free-tier fallback walks them. Empty for a configuration
-	// that names none, which has no free tier to fall to.
+	// LastResortPlans are the plans' free tiers, in the order the owner is
+	// offered them. Empty for a configuration that names none.
 	LastResortPlans []string
-	// PaidPlans are the plans a ticket may start on, in the order the
-	// dispatcher walks them as each one's own ceilings bind. Empty for a
-	// configuration whose one paid plan is the default model's.
+	// PaidPlans are the paid plans in the owner's order, the default model's
+	// first: runs start there, and a later plan holds only a run whose ticket
+	// named its model. Empty for a configuration whose one paid plan is the
+	// default model's.
 	PaidPlans []string
 }
 
@@ -722,14 +722,14 @@ func LastResortModels(plan string) []string {
 	return slices.Clone(embeddedConfig.Providers[plan].LastResort.Models)
 }
 
-// LastResortPlans are the plans' free tiers named in the order the free-tier
-// fallback walks them, empty for a configuration that names none.
+// LastResortPlans are the plans' free tiers in the order the owner is offered
+// them, empty for a configuration that names none.
 func LastResortPlans() []string {
 	return slices.Clone(embeddedConfig.LastResortPlans)
 }
 
-// PaidPlans are the plans a ticket may start on, in the order the dispatcher
-// walks them, empty for a configuration that names none.
+// PaidPlans are the paid plans in the owner's order, the default model's
+// first, empty for a configuration that names none.
 func PaidPlans() []string {
 	return slices.Clone(embeddedConfig.PaidPlans)
 }

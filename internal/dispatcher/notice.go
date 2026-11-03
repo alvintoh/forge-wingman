@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -115,10 +116,10 @@ func postNotices(ctx context.Context, d Deps) error {
 
 // noticeDeferral raises a notice for a run the budget ceiling withheld, when
 // that ceiling would still withhold it at the next poll: once per ceiling per
-// window, reporting whether it raised one. A run with no issue link raises
-// none, since a notice carries one. A failed read or write is logged, and the
-// next poll asks again.
-func noticeDeferral(ctx context.Context, d Deps, cfg BudgetConfig, model string, estimate Reservation, ceiling, link string, history HistoryLoader) bool {
+// window, reporting whether it raised one; detail is the notice's detail. A
+// run with no issue link raises none, since a notice carries one. A failed read
+// or write is logged, and the next poll asks again.
+func noticeDeferral(ctx context.Context, d Deps, cfg BudgetConfig, model string, estimate Reservation, ceiling, link, detail string, history HistoryLoader) bool {
 	at := d.Now()
 	start, ok := cfg.ceilingStart(ceiling, at)
 	if !ok || link == "" {
@@ -132,12 +133,60 @@ func noticeDeferral(ctx context.Context, d Deps, cfg BudgetConfig, model string,
 	if !stillBinds(cfg, model, reserved, settled, estimate, ceiling) {
 		return false
 	}
-	n := Notice{ID: deferralNoticeID(ceiling, start), Class: deferralClass + ceiling, Link: link}
+	n := Notice{ID: deferralNoticeID(ceiling, start), Class: deferralClass + ceiling, Detail: detail, Link: link}
 	if err := d.Notices.Raise(ctx, n, at); err != nil {
 		d.Logger.Warn("deferralNoticeNotRaised", "ceiling", ceiling, "err", err.Error())
 		return false
 	}
 	return true
+}
+
+// deferralChoices is a deferral notice's detail: the plan whose budget held
+// the run, the ceiling that binds, and the owner's choices of waiting or, when
+// one of the plan's own windows or model caps binds, naming free build and
+// review models on a ticket. It is empty for a ceiling it cannot name.
+func deferralChoices(cfg BudgetConfig, ceiling, plan string, freeTiers [][]string) string {
+	held := ceilingName(cfg, ceiling)
+	if held == "" {
+		return ""
+	}
+	detail := "plan " + plan + ": wait for " + held + " to reset"
+	if !cfg.isProviderCeiling(ceiling) {
+		return detail
+	}
+	var free []string
+	for _, models := range freeTiers {
+		for _, m := range models {
+			if !slices.Contains(free, m) {
+				free = append(free, m)
+			}
+		}
+	}
+	if len(free) == 0 {
+		return detail
+	}
+	return detail + ", or name free build and review models on a ticket: " + strings.Join(free, ", ") +
+		" (a private repository also needs the plan's private opt-in)"
+}
+
+// ceilingName is how a notice names ceiling among cfg's, empty for one cfg
+// does not carry.
+func ceilingName(cfg BudgetConfig, ceiling string) string {
+	switch ceiling {
+	case CeilingCash:
+		return "its cash ceiling"
+	case CeilingRunnerMinutes:
+		return "its runner-minutes ceiling"
+	}
+	if slices.ContainsFunc(cfg.ProviderWindows, func(w Window) bool { return w.Name == ceiling }) {
+		return "its " + ceiling + " window"
+	}
+	for _, w := range cfg.ModelCaps {
+		if w.Name == ceiling {
+			return "its cap on " + ceiling
+		}
+	}
+	return ""
 }
 
 // deferralNoticeID names the one notice a ceiling raises in the window

@@ -21,7 +21,7 @@ func TestTheHistoryHorizonCoversEveryWindowTheBudgetsMeasure(t *testing.T) {
 			ProviderWindows: []Window{{Name: "5h", Period: 5 * time.Hour, Limit: 10 * money.Dollar}},
 			Cash:            Window{Name: CeilingCash, Calendar: true, Limit: 30 * money.Dollar},
 		},
-		NextPlans: []PaidPlan{{Plan: "other", Budget: BudgetConfig{
+		PlanBudgets: []PaidPlan{{Plan: "other", Budget: BudgetConfig{
 			ProviderWindows: []Window{{Name: "8w", Period: wider, Limit: 100 * money.Dollar}},
 		}}},
 	}

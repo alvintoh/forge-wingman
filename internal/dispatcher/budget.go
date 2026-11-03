@@ -160,6 +160,10 @@ type Candidate struct {
 	// Model is the build model the run's ticket named, empty when it named
 	// none and the run's own default applies.
 	Model string
+	// ReviewModel is the review model the run's ticket named, empty when it named none.
+	ReviewModel string
+	// PlanModels are the plan models the run's ticket named, empty when it named none.
+	PlanModels []string
 	// ModelsNamed is whether the ticket named any model at all.
 	ModelsNamed bool
 	// Plan is the plan a plan-stage claim put the run on, empty before one has.
