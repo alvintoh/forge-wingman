@@ -91,15 +91,16 @@ const delegatedQuery = `query DelegatedIssues($delegate: ID!, $first: Int, $afte
   }
 }`
 
-// projectIssuesQuery reads the token's own identity beside every unfinished-or-
-// completed issue of the named Linear projects, with the milestone each belongs
-// to: a phase's progress counts its completed tickets, so those are read too.
+// projectIssuesQuery reads the token's own identity beside every issue of the
+// named Linear projects, with the milestone each belongs to: a phase's progress
+// counts its completed tickets, and a stopped run's ticket closed as completed
+// or canceled takes the run off the inbox, so finished issues are read too.
 const projectIssuesQuery = `query ProjectIssues($projects: [String!]!, $first: Int, $after: String) {
   viewer {
     id
   }
   issues(
-    filter: { project: { name: { in: $projects } }, state: { type: { nin: ["` + stateTypeCanceled + `"] } } }
+    filter: { project: { name: { in: $projects } } }
     first: $first
     after: $after
   ) {

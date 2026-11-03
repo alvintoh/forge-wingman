@@ -278,6 +278,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 			Snapshots: store.NewPhaseSnapshots(fsc),
 			Runs:      queue,
 			Issues:    tickets,
+			Closures:  queue,
 		},
 		Estimator:  store.NewEstimates(fsc),
 		Visibility: gh,

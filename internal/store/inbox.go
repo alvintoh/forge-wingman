@@ -44,8 +44,8 @@ type InboxRun struct {
 	UpdatedAt time.Time
 }
 
-// Inbox returns the runs updated since that the owner has not cancelled and that
-// either have an open, unmerged PR naming a wait reason or not marked for
+// Inbox returns the runs updated since that the owner has not cancelled, whose
+// ticket a poll has not found closed while they were stopped, and that either have an open, unmerged PR naming a wait reason or not marked for
 // auto-merge, or stopped with no automatic requeue due, newest first, up to
 // limit.
 //
@@ -58,7 +58,7 @@ func (r *Records) Inbox(ctx context.Context, since time.Time, limit int) ([]Inbo
 		Select(repoField, sizeField, prURLField, autoMergeField, outcomeField, ticketIDField, updatedAtField,
 			waitReasonField, mergedByOwnerAtField, rewriteMergedAtField, stateField, stopReasonField, attemptField,
 			settledAtField, claimedAtField, transientField, transientRequeuesField, ticketTitleField,
-			cancelledByOwnerAtField).
+			cancelledByOwnerAtField, ticketClosedAtField).
 		Documents(ctx)
 	defer iter.Stop()
 	var out []InboxRun
@@ -92,7 +92,7 @@ func inboxRun(id string, row map[string]any) (InboxRun, bool) {
 		StopReason: str(row, stopReasonField),
 	}
 	run.UpdatedAt, _ = row[updatedAtField].(time.Time)
-	if cancelledRow(row) {
+	if cancelledRow(row) || ticketClosedRow(row) {
 		return run, false
 	}
 	if stoppedRun(row) {
