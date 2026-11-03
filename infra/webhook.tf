@@ -16,6 +16,20 @@ resource "google_project_iam_member" "webhook_datastore" {
   role    = "roles/datastore.user"
   member  = google_service_account.webhook.member
 
+  # The webhook writes its markers and the queue in (default) and never opens the
+  # owner's controls, so its binding excludes them the way the runner's does.
+  condition {
+    title       = "not-the-owner-database"
+    description = "Every Firestore database except the owner's controls (adr/0019)"
+    expression  = "resource.name != \"projects/${var.project_id}/databases/${google_firestore_database.owner.name}\""
+  }
+
+  # IAM grants add up: create the conditional binding before destroying the unconditional
+  # one, or a delivery mid-apply cannot write its marker.
+  lifecycle {
+    create_before_destroy = true
+  }
+
   depends_on = [google_project_service.this]
 }
 
