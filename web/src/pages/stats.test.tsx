@@ -43,9 +43,16 @@ describe("the Statistics page", () => {
     expect(column?.[1].split(" ")).toContain("@[51.25rem]:gap-y-4");
   });
 
-  it("gives the Rewrite rate card the Run success card's phone margin", async () => {
+  it("draws the Concurrency card third in the column, under the Rewrite rate card", async () => {
     const html = await statsPage();
-    for (const id of ["run-success-title", "rewrite-rate-title"]) {
+    const at = (id: string) => html.indexOf(`aria-labelledby="${id}"`);
+    expect(at("concurrency-title")).toBeGreaterThan(at("rewrite-rate-title"));
+    expect(at("concurrency-title")).toBeLessThan(html.indexOf("projects"));
+  });
+
+  it("gives the Rewrite rate and Concurrency cards the Run success card's phone margin", async () => {
+    const html = await statsPage();
+    for (const id of ["run-success-title", "rewrite-rate-title", "concurrency-title"]) {
       const card = html.match(new RegExp(`<section aria-labelledby="${id}"[^>]*class="([^"]*)"`));
       expect(card?.[1].split(" ")).toContain("max-sm:-mx-2.5");
     }

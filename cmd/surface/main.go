@@ -47,7 +47,7 @@ func run(logger *slog.Logger) error {
 		port = "8080"
 	}
 
-	// The comparison, run history, running, run-success, autonomy and peak endpoints
+	// The comparison, run history, running, run-success, concurrency, autonomy and peak endpoints
 	// read past runs, the runs in flight, the measured merges and the peak mode, so
 	// they need the store. A local run without GOOGLE_CLOUD_PROJECT has none and serves
 	// the SPA alone, answering those endpoints with 503.
@@ -66,6 +66,7 @@ func run(logger *slog.Logger) error {
 	var runsCap RunsPerRepoStore
 	var runsAtOnce RunsAtOnceStore
 	var recommender RunsAtOnceRecommender
+	var concurrency ConcurrencyReader
 	if project := os.Getenv("GOOGLE_CLOUD_PROJECT"); project != "" {
 		fsc, err := firestore.NewClient(context.Background(), project)
 		if err != nil {
@@ -88,6 +89,7 @@ func run(logger *slog.Logger) error {
 		retries = queue
 		recommender = queue
 		running = queue
+		concurrency = queue
 		projects = ProjectStores{
 			Projects: phases, Snapshots: store.NewPhaseSnapshots(fsc), Reaches: reaches,
 			Loads: queue, Activity: queue, Starts: phases, Pauses: phases,
@@ -107,25 +109,26 @@ func run(logger *slog.Logger) error {
 	}
 
 	deps := Deps{
-		SPA:        spa,
-		Logger:     logger,
-		Comparison: comparison,
-		Measured:   measured,
-		Peak:       peak,
-		AutoMerge:  autoMerge,
-		Projects:   projects,
-		Inbox:      inbox,
-		Runs:       runs,
-		Cancels:    cancels,
-		History:    history,
-		RunSuccess: success,
-		Running:    running,
-		Retries:    retries,
-		Merger:     merger,
-		Pulls:      pulls,
-		RepoCap:    runsCap,
-		RunsAtOnce: runsAtOnce,
-		Recommend:  recommender,
+		SPA:         spa,
+		Logger:      logger,
+		Comparison:  comparison,
+		Measured:    measured,
+		Peak:        peak,
+		AutoMerge:   autoMerge,
+		Projects:    projects,
+		Inbox:       inbox,
+		Runs:        runs,
+		Cancels:     cancels,
+		History:     history,
+		RunSuccess:  success,
+		Running:     running,
+		Retries:     retries,
+		Merger:      merger,
+		Pulls:       pulls,
+		RepoCap:     runsCap,
+		RunsAtOnce:  runsAtOnce,
+		Recommend:   recommender,
+		Concurrency: concurrency,
 	}
 
 	handler, err := gate(context.Background(), logger, newMux(deps))
@@ -184,7 +187,10 @@ type Deps struct {
 	RepoCap    RunsPerRepoStore
 	RunsAtOnce RunsAtOnceStore
 	Recommend  RunsAtOnceRecommender
-	Getenv     func(string) string
+	// Concurrency reads the peak in flight and the held runs; the concurrency
+	// endpoint needs RepoCap beside it.
+	Concurrency ConcurrencyReader
+	Getenv      func(string) string
 }
 
 // newMux claims /api/ explicitly so an unknown endpoint 404s instead of
@@ -201,6 +207,7 @@ func newMux(d Deps) *http.ServeMux {
 	mux.HandleFunc("GET /api/running", d.running)
 	mux.HandleFunc("GET /api/autonomy", d.autonomy)
 	mux.HandleFunc("GET /api/config", d.config)
+	mux.HandleFunc("GET /api/concurrency", d.concurrency)
 	mux.HandleFunc("GET /api/peak", d.peak)
 	mux.HandleFunc("POST /api/peak", d.setPeak)
 	mux.HandleFunc("POST /api/auto-merge", d.setAutoMerge)

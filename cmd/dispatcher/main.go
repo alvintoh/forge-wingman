@@ -296,6 +296,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		Queue:        queue,
 		Verdicts:     queue,
 		Reach:        store.NewReaches(fsc),
+		Holds:        queue,
 		// The projects the owner may add are read as the agent the poll acts for,
 		// and recorded where the surface reads them without a Linear credential.
 		LinearProjects: tickets,

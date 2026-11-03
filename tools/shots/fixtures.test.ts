@@ -7,6 +7,7 @@ import { isRunsAtOnceView } from "../../web/src/config/runs-at-once";
 import { isConfigView, isPeakView, isRunsPerRepoView } from "../../web/src/config/types";
 import { isInbox } from "../../web/src/inbox/run";
 import { isRunning } from "../../web/src/running/run";
+import { isConcurrency } from "../../web/src/stats/concurrency";
 import { isRunSuccess } from "../../web/src/stats/run-success";
 import { FixtureApi, fixtureFile } from "./fixtures";
 
@@ -142,5 +143,9 @@ describe("the fixtures' shapes", () => {
 
   test("run success passes its guard", () => {
     expect(isRunSuccess(fixture("run-success"))).toBe(true);
+  });
+
+  test("concurrency passes its guard", () => {
+    expect(isConcurrency(fixture("concurrency"))).toBe(true);
   });
 });
