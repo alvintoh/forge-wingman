@@ -84,7 +84,7 @@ function TileCard({ label, tile, index, bar, prs, beside, roomy }: TileCardProps
       {tile.rate}
     </span>
   );
-  const link = lastPR === undefined ? null : <PRLink pr={lastPR} prs={prs} beside={beside} />;
+  const link = lastPR === undefined ? null : <PRLink pr={lastPR} prs={prs} />;
   const agentLines = (
     <span className="text-micro text-muted">{count(tile.agent_lines)} agent lines</span>
   );
@@ -103,13 +103,11 @@ function TileCard({ label, tile, index, bar, prs, beside, roomy }: TileCardProps
         <p className="mt-3 flex flex-wrap items-baseline gap-x-3.5 gap-y-1">
           {number}
           {words !== null && <span className="text-body font-semibold text-ink">{words}</span>}
-          {link}
         </p>
       ) : (
         <div className="mt-3">
           <p className="break-all">{number}</p>
           {words !== null && <p className="mt-1 text-label font-semibold text-ink">{words}</p>}
-          {link !== null && <p className="mt-1">{link}</p>}
         </div>
       )}
       {(trend !== null || index === 2) && (
@@ -137,6 +135,8 @@ function TileCard({ label, tile, index, bar, prs, beside, roomy }: TileCardProps
           )}
         </div>
       )}
+      {/* The link is the tile's last row at every width, under the arrow row. */}
+      {link !== null && <p className={beside ? "mt-2.5" : "mt-1.5"}>{link}</p>}
     </li>
   );
 }
@@ -159,16 +159,13 @@ function TrendLines({ words }: { words: string }) {
 // PRLink opens the PR the last-PR tile is about, as a 44px target; the PR's
 // address is checked before it is a link, and a PR the list does not carry is
 // plain text.
-function PRLink({ pr, prs, beside }: { pr: number; prs: PR[]; beside: boolean }) {
+function PRLink({ pr, prs }: { pr: number; prs: PR[] }) {
   // The newest PR leads the list, whatever repository it is in: a number alone
   // does not say which.
   const newest = prs[0];
   const url = newest?.pr === pr ? newest.pr_url : "";
   const repo = lastPrRepo(prs, pr);
-  const where =
-    repo === null ? null : (
-      <span className="block font-mono text-micro font-normal wrap-break-word">{repo}</span>
-    );
+  const where = repo === null ? null : <RepoLine repo={repo} />;
   if (parsePull(url) === null) {
     return (
       <span className="text-body font-semibold text-ink2">
@@ -182,11 +179,24 @@ function PRLink({ pr, prs, beside }: { pr: number; prs: PR[]; beside: boolean })
       href={url}
       target="_blank"
       rel="noopener noreferrer"
-      className={`inline-flex min-h-11 min-w-11 max-w-full flex-col items-start justify-center rounded-control text-body font-semibold text-accent underline ${beside ? "-my-3 ml-auto" : "-ml-1"}`}
+      className="inline-flex min-h-11 min-w-11 max-w-full flex-col items-start justify-center rounded-control -ml-1 pl-1 text-body font-semibold text-accent underline"
     >
       #{pr}
       {where}
       <span className="sr-only"> (opens in a new tab)</span>
     </a>
+  );
+}
+
+// RepoLine names the PR's repository under its number. A narrow tile breaks it
+// after the "/", so the owner and the name each stay whole where they fit.
+function RepoLine({ repo }: { repo: string }) {
+  const slash = repo.indexOf("/") + 1;
+  return (
+    <span className="block font-mono text-micro font-normal wrap-break-word">
+      {repo.slice(0, slash)}
+      <wbr />
+      {repo.slice(slash)}
+    </span>
   );
 }
