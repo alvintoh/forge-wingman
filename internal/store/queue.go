@@ -551,6 +551,7 @@ func (q *Queue) Candidates(ctx context.Context) ([]dispatcher.Candidate, error) 
 			PlanFiles:   stringList(data, planFilesField),
 			Plan:        str(data, planField),
 			Attempt:     rowAttempt(data),
+			Held:        heldOn(data),
 		}
 		if n, _ := data[supersededPRField].(int64); n > 0 {
 			cand.SupersededPR = int(n)

@@ -1,0 +1,14 @@
+{
+  "peak": 2,
+  "runs_at_once": 2,
+  "runs_per_repo": 5,
+  "review_wip": 5,
+  "platform_cap": 20,
+  "held": [
+    { "reason": "concurrency", "count": 14 },
+    { "reason": "review-wip", "count": 6 },
+    { "reason": "repo-busy", "count": 3 },
+    { "reason": "blocked", "count": 2 },
+    { "reason": "large-cap", "count": 1 }
+  ]
+}

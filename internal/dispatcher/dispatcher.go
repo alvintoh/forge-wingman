@@ -212,6 +212,8 @@ type Deps struct {
 	Verdicts VerdictRecorder
 	// Reach is optional: left unset, no repository reachability is recorded.
 	Reach ReachRecorder
+	// Holds is optional: left unset, no hold is recorded.
+	Holds HoldRecorder
 	// LinearProjects lists the Linear projects the surface offers and
 	// ProjectRecords is where each poll writes their names; both are optional,
 	// and with either unset nothing is read or recorded.
@@ -731,6 +733,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 			// have succeeded.
 			d.Logger.Info("estimateFailed", "run", cand.RunID, "size", cand.Size, "err", err.Error())
 			res.Deferrals = append(res.Deferrals, Deferral{RunID: cand.RunID, Ceiling: ConditionEstimateFailed, At: d.Now()})
+			recordHold(ctx, d, cand, ConditionEstimateFailed, c.Budget)
 			continue
 		}
 		if stage == StagePlan {
@@ -740,6 +743,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 			if err != nil {
 				d.Logger.Info("planEstimateFailed", "run", cand.RunID, "size", cand.Size, "err", err.Error())
 				res.Deferrals = append(res.Deferrals, Deferral{RunID: cand.RunID, Ceiling: ConditionEstimateFailed, At: d.Now()})
+				recordHold(ctx, d, cand, ConditionEstimateFailed, c.Budget)
 				continue
 			}
 		}
@@ -835,6 +839,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		}
 		d.Logger.Info("runDeferred", "run", cand.RunID, "ceiling", binding)
 		res.Deferrals = append(res.Deferrals, Deferral{RunID: cand.RunID, Ceiling: binding, At: d.Now()})
+		recordHold(ctx, d, cand, binding, budget)
 		if !noticed[binding] {
 			noticed[binding] = noticeDeferral(ctx, d, budget, facts.Model, reservation, binding, links[cand.RunID], history)
 		}

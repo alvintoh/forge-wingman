@@ -176,6 +176,9 @@ type Candidate struct {
 	Attempt int
 	// SupersededPR is the number of the PR the owner's choice replaced, zero for a run that replaces none.
 	SupersededPR int
+	// Held maps each Sydney date, as HoldDay names it, to the hold reasons the
+	// run's row already records for that day.
+	Held map[string][]string
 }
 
 // Deferral is a queued run's claim withheld this poll by a budget ceiling or an
