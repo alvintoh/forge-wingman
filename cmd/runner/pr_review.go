@@ -47,6 +47,10 @@ var skipDescriptions = map[string]string{
 	skipDiffTooLarge:   "Not reviewed: the diff is too large to review",
 }
 
+// errReviewAppNoTeam fails a review whose ticket reads as missing because the
+// review app's Linear user has lost its team, so it is not skipped as absent.
+var errReviewAppNoTeam = errors.New("reading the ticket: the review app cannot see the team; is its Linear user suspended? Recover it as infra/README.md's \"Pull request review\" section says")
+
 var (
 	shaPattern    = regexp.MustCompile(`^[0-9a-f]{40}$`)
 	runURLPattern = regexp.MustCompile(`^https://[A-Za-z0-9./_-]+$`)
@@ -95,6 +99,9 @@ func writePRReviewContext(ctx context.Context, logger *slog.Logger, gh pullReque
 	ticket, err := issue(ctx, id)
 	if errors.Is(err, linear.ErrIssueNotFound) {
 		return skipReview(logger, output, number, skipTicketNotFound)
+	}
+	if errors.Is(err, linear.ErrNoTeam) {
+		return errReviewAppNoTeam
 	}
 	if err != nil {
 		return err

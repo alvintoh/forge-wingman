@@ -20,6 +20,9 @@ const (
 	defaultMaxReply     = 4 << 20
 	maxErrorBytes       = 512
 	authenticationError = "AUTHENTICATION_ERROR"
+	// entityNotFoundMessage opens Linear's message for an id it cannot resolve,
+	// as in "Entity not found: Issue".
+	entityNotFoundMessage = "Entity not found"
 )
 
 // ErrUnauthenticated reports that Linear refused the token: an HTTP 401, or a
@@ -100,7 +103,7 @@ func (c Client) Do(ctx context.Context, query string, variables, out any) error 
 		for _, e := range reply.Errors {
 			msgs = append(msgs, e.Message)
 		}
-		failure = fmt.Errorf("the Linear API refused the query: %s", strings.Join(msgs, "; "))
+		failure = refusal{messages: msgs}
 	}
 	if failure != nil && unauthenticated {
 		return fmt.Errorf("%w: %w", ErrUnauthenticated, failure)
@@ -115,6 +118,30 @@ func (c Client) Do(ctx context.Context, query string, variables, out any) error 
 		return fmt.Errorf("decoding Linear's reply: %w", err)
 	}
 	return nil
+}
+
+// refusal is a query Linear answered with GraphQL errors.
+type refusal struct {
+	messages []string
+}
+
+func (r refusal) Error() string {
+	return "the Linear API refused the query: " + strings.Join(r.messages, "; ")
+}
+
+// entityNotFound reports whether err is Linear refusing a query because an
+// entity it names does not exist, or is not visible to the caller.
+func entityNotFound(err error) bool {
+	var r refusal
+	if !errors.As(err, &r) || errors.Is(err, ErrUnauthenticated) {
+		return false
+	}
+	for _, m := range r.messages {
+		if strings.HasPrefix(m, entityNotFoundMessage) {
+			return true
+		}
+	}
+	return false
 }
 
 // snippet is a refusal body cut to a log line, on a character boundary.

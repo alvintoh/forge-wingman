@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -134,6 +136,31 @@ func TestWritePRReviewContext(t *testing.T) {
 				t.Fatalf("context = %+v, diff path %q, err = %v", c, f.diffPath, err)
 			}
 		})
+	}
+}
+
+func TestWritePRReviewContextFailsWhenTheReviewAppSeesNoTeam(t *testing.T) {
+	hidden := func(context.Context, string) (linear.Issue, error) { return linear.Issue{}, linear.ErrNoTeam }
+	f := &fakePulls{pull: openPull("feat: ABC-12 add the secret widget", "", headSHA), diff: "+x"}
+	getenv := f.start(t)
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	err := writePRReviewContext(context.Background(), logger, f.client(getenv), hidden, 7, filepath.Join(t.TempDir(), "context.json"), getenv("GITHUB_OUTPUT"))
+	if !errors.Is(err, errReviewAppNoTeam) {
+		t.Fatalf("err = %v, want errReviewAppNoTeam", err)
+	}
+	for _, want := range []string{"the review app cannot see the team; is its Linear user suspended?", "infra/README.md"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %q, want it to say %q", err, want)
+		}
+	}
+	if got := readOutput(t, getenv); strings.Contains(got, "skip") {
+		t.Errorf("output = %q, want no skip", got)
+	}
+	for _, secret := range []string{"gh-token", "secret widget"} {
+		if strings.Contains(err.Error(), secret) || strings.Contains(logs.String(), secret) {
+			t.Errorf("the error or logs name %q: err %q, logs %q", secret, err, logs.String())
+		}
 	}
 }
 
