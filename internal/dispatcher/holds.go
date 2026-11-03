@@ -28,12 +28,13 @@ const (
 	HoldPeakHours    = "peak-hours"
 	HoldProviderDown = "provider-down"
 	HoldNoEstimate   = "no-estimate"
+	HoldPrivateOptIn = "private-opt-in"
 )
 
 // HoldReasons are the reasons a hold is recorded under, in tie order.
 var HoldReasons = []string{
 	HoldConcurrency, HoldRepoBusy, HoldReviewWIP, HoldLargeCap, HoldBlocked, HoldBudget,
-	HoldJobLimit, HoldBreaker, HoldPaused, HoldPeakHours, HoldProviderDown, HoldNoEstimate,
+	HoldJobLimit, HoldBreaker, HoldPaused, HoldPeakHours, HoldProviderDown, HoldNoEstimate, HoldPrivateOptIn,
 }
 
 // holdZone is the owner's zone, whose calendar days a hold is counted on.
@@ -102,6 +103,8 @@ func holdReason(binding string, budget BudgetConfig) string {
 		return HoldProviderDown
 	case ConditionEstimateFailed:
 		return HoldNoEstimate
+	case ConditionPrivateOptIn:
+		return HoldPrivateOptIn
 	}
 	if budget.isProviderCeiling(binding) {
 		return HoldBudget

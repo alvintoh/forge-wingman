@@ -49,6 +49,7 @@ func TestHoldReasonCountsEachConditionUnderItsReason(t *testing.T) {
 		{ConditionPeakHours, HoldPeakHours},
 		{CeilingProviderHalted, HoldProviderDown},
 		{ConditionEstimateFailed, HoldNoEstimate},
+		{ConditionPrivateOptIn, HoldPrivateOptIn},
 		// A name no condition carries counts nothing.
 		{"a-window-of-another-plan", ""},
 	} {

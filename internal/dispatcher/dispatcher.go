@@ -116,16 +116,16 @@ type Config struct {
 	ReposErr error
 	Budget   BudgetConfig
 	Model    string
-	// NextPlans are the paid plans a run moves to, in order, once the ceilings
-	// of the plan Model names bind; empty when Model's plan is the only one.
-	NextPlans []PaidPlan
+	// PlanBudgets are the paid plans after Model's in the owner's order, whose
+	// ceilings judge the build of a run its plan stage claimed on one of them.
+	// A ceiling that binds never moves a run onto one.
+	PlanBudgets []PaidPlan
 	// Limits are the concurrency ceilings; a zero field takes its default.
 	Limits Limits
 	// Tuning is the concurrency rule's numbers; a zero field takes its default.
 	Tuning Tuning
-	// LastResortPlans are the plans' free models, each entry one plan's list, in
-	// the order the free-tier fallback walks them; empty for a configuration
-	// with no free tier to fall to.
+	// LastResortPlans are the plans' free models, each entry one plan's list,
+	// which a budget deferral notice offers the owner to name on a ticket.
 	LastResortPlans [][]string
 	// TwoStage is whether an M or L run is planned before it is admitted to
 	// build. Off by default; a run plans inside its own build job, and the
@@ -138,8 +138,8 @@ type Config struct {
 	DecisionMode runner.DecisionMode
 }
 
-// PaidPlan is a paid plan a run may move to: the ceilings it is admitted
-// against and the models the run starts on there.
+// PaidPlan is a paid plan after the default model's: the ceilings a run
+// claimed on it is judged by and the models the run starts on there.
 type PaidPlan struct {
 	Plan   string
 	Budget BudgetConfig
@@ -626,11 +626,9 @@ func claimStage(cand Candidate, twoStage bool) string {
 // repository), and so is the open-PR count across the allowlist; the provider
 // halt and the verdict are keyed off each candidate's own plan. A breaker
 // that cannot be read holds the walk as a tripped one would, and a budget
-// ceiling raises at most one notice. A candidate the plan's own window or cap
-// withholds is retried on the next paid plans in order, and once every one binds
-// on the configured free-tier plans, a private one only with the owner's private
-// opt-in. A candidate held for peak hours is no ceiling's, so it is neither
-// moved nor noticed.
+// ceiling raises at most one notice. A candidate a ceiling withholds is held
+// on the plan it would run on, never moved to another plan or a free model. A
+// candidate held for peak hours is no ceiling's, so it is not noticed.
 //
 // The settled run history is read at most once for the whole walk, the first
 // time a candidate reaches its budget ceilings, and an estimate once per size
@@ -675,7 +673,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		return est, err
 	}
 	// The halt, the verdict and the private opt-in are read lazily and once per
-	// plan, since a run that moves to another free tier is judged by that plan.
+	// plan, since a candidate is judged by the plan its own model names.
 	halts := map[string]bool{}
 	halted := func(plan string) bool {
 		if v, ok := halts[plan]; ok {
@@ -702,23 +700,6 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		v := lookupPrivateOptIn(ctx, d, plan)
 		optIns[plan] = v
 		return v
-	}
-	// A plan a run moves to needs the plan record a ticket's own models need at
-	// enqueue, read lazily and once per plan.
-	usables := map[string]bool{}
-	usable := func(plan string) bool {
-		if v, ok := usables[plan]; ok {
-			return v
-		}
-		reason, detail, err := planRefusal(ctx, d.ModelPlans, plan)
-		switch {
-		case err != nil:
-			d.Logger.Info("paidPlanLookupFailed", "provider", plan, "err", err.Error())
-		case reason != "":
-			d.Logger.Info("paidPlanRefused", "provider", plan, "reason", string(reason), "detail", detail)
-		}
-		usables[plan] = err == nil && reason == ""
-		return usables[plan]
 	}
 	var claims []Claim
 	noticed := map[string]bool{}
@@ -751,83 +732,26 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		if cand.Private {
 			reservation.RunnerMinutes = est.Minutes
 		}
-		budget, candModel, lastResort := c.Budget, cmp.Or(cand.Model, c.Model), (*runner.ModelLabels)(nil)
-		if stage == StageBuild {
-			budget, candModel, lastResort = c.buildTier(cand)
-		}
-		if lastResort != nil {
+		tier := c.tierOf(cand, stage)
+		budget, candModel := tier.budget, tier.model
+		if budget.ProviderFree {
 			reservation.ProviderCost = 0
 		}
 		candPlan := runner.Provider(candModel)
+		if cand.Private && slices.ContainsFunc(c.namedFreeModels(cand), func(m string) bool { return !privateOptIn(runner.Provider(m)) }) {
+			d.Logger.Info("runDeferred", "run", cand.RunID, "ceiling", ConditionPrivateOptIn)
+			res.Deferrals = append(res.Deferrals, Deferral{RunID: cand.RunID, Ceiling: ConditionPrivateOptIn, At: d.Now()})
+			recordHold(ctx, d, cand, ConditionPrivateOptIn, budget)
+			continue
+		}
 		facts := Facts{Limits: limits, Tuning: c.Tuning.OrDefault(), History: history, ProviderHalted: halted(candPlan), BreakerTripped: tripped,
-			OpenPRs: reviewWIPFor(ctx, d, cand, prs), OpenPRsKnown: prs.known, Relations: relations[cand.RunID], Model: candModel, LastResort: lastResort,
+			OpenPRs: reviewWIPFor(ctx, d, cand, prs), OpenPRsKnown: prs.known, Relations: relations[cand.RunID], Model: candModel,
 			PeakHeld: PeakHeld(mode, candModel, d.Now(), est.Minutes), DecisionMode: c.DecisionMode,
 			OwnerPaused: paused.holds(cand.Repo) && stage != StageBuild}
 		claimVerdict := verdictOf(candPlan)
 		ok, binding, err := d.Queue.TryClaim(ctx, cand.RunID, d.Now(), budget, facts, reservation)
 		if err != nil {
 			return claims, err
-		}
-		// A build-stage claim keeps the tier its plan stage claimed — one tier
-		// per run — so it never moves plans or falls back to the free tier,
-		// which would mix tiers within the run; a ceiling that now binds
-		// defers it instead. A ticket that named a model keeps its plan.
-		if !ok && stage != StageBuild && !cand.ModelsNamed {
-			from := candPlan
-			for _, next := range c.NextPlans {
-				if !budget.isProviderCeiling(binding) {
-					break
-				}
-				if halted(next.Plan) || !usable(next.Plan) {
-					continue
-				}
-				moved := onPlan(facts, next, from)
-				moved.PeakHeld = PeakHeld(mode, moved.Model, d.Now(), est.Minutes)
-				ok, binding, err = d.Queue.TryClaim(ctx, cand.RunID, d.Now(), next.Budget, moved, reservation)
-				if err != nil {
-					return claims, err
-				}
-				budget, facts = next.Budget, moved
-				if ok {
-					claimVerdict = verdictOf(next.Plan)
-					d.Logger.Info("runMovedPlan", "run", cand.RunID, "plan", next.Plan, "from", from)
-				}
-				from = next.Plan
-			}
-		}
-		if !ok && stage != StageBuild && budget.isProviderCeiling(binding) {
-			paid := binding
-			for _, rung := range c.LastResortPlans {
-				// One free model cannot staff both the build and its review.
-				if len(rung) < 2 {
-					continue
-				}
-				rungPlan := runner.Provider(rung[0])
-				if cand.Private && !privateOptIn(rungPlan) {
-					d.Logger.Info("lastResortNeedsPrivateOptIn", "run", cand.RunID, "plan", rungPlan, "ceiling", paid)
-					continue
-				}
-				freeFacts := onLastResort(facts, rung)
-				freeFacts.ProviderHalted = halted(rungPlan)
-				// A free-tier claim is the same claim: it keeps its
-				// stage and write set, and spends no provider cost.
-				freeRes := reservation
-				freeRes.ProviderCost = 0
-				ok, binding, err = d.Queue.TryClaim(ctx, cand.RunID, d.Now(), c.Budget.lastResort(), freeFacts, freeRes)
-				if err != nil {
-					return claims, err
-				}
-				budget, facts, reservation = c.Budget.lastResort(), freeFacts, freeRes
-				if ok {
-					claimVerdict = verdictOf(rungPlan)
-					d.Logger.Info("runOnLastResort", "run", cand.RunID, "model", facts.Model, "plan", rungPlan, "paidCeiling", paid)
-				}
-				if binding == "" {
-					// Admitted, or another poll already claimed this row: no ceiling
-					// binds, so the walk is over.
-					break
-				}
-			}
 		}
 		if ok {
 			claims = append(claims, Claim{RunID: cand.RunID, Repo: cand.Repo, Priority: cand.Priority, Verdict: claimVerdict, Stage: stage, Attempt: cand.Attempt})
@@ -841,7 +765,8 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		res.Deferrals = append(res.Deferrals, Deferral{RunID: cand.RunID, Ceiling: binding, At: d.Now()})
 		recordHold(ctx, d, cand, binding, budget)
 		if !noticed[binding] {
-			noticed[binding] = noticeDeferral(ctx, d, budget, facts.Model, reservation, binding, links[cand.RunID], history)
+			choices := deferralChoices(budget, binding, tier.plan, c.LastResortPlans)
+			noticed[binding] = noticeDeferral(ctx, d, budget, facts.Model, reservation, binding, links[cand.RunID], choices, history)
 		}
 	}
 	if len(candidates) > 0 && len(res.Deferrals) == len(candidates) {
@@ -899,41 +824,75 @@ func providerHalted(ctx context.Context, d Deps, plan string) bool {
 	return v
 }
 
-// buildTier is the budget, build model and free-tier models a build-stage claim
-// is judged on: those of the tier its plan stage claimed, so the run is bound by
-// one plan's ceilings throughout. A run whose plan is unknown to this
-// configuration, or recorded none, keeps the default plan's.
-func (c Config) buildTier(cand Candidate) (BudgetConfig, string, *runner.ModelLabels) {
-	if cand.LastResort != nil {
-		return c.Budget.lastResort(), cand.LastResort.Build, cand.LastResort
+// claimTier is what a claim is judged on: the budget, the plan whose ceilings
+// or free tier that budget is, and the build model.
+type claimTier struct {
+	budget BudgetConfig
+	plan   string
+	model  string
+}
+
+// tierOf is the tier cand's claim at stage is judged on. A ticket that names a
+// free model is judged on the free tier at either stage. A build-stage claim
+// keeps the tier its plan stage claimed, so the run is bound by one plan's
+// ceilings throughout; one whose plan is unknown to this configuration, or
+// recorded none, keeps the default plan's.
+func (c Config) tierOf(cand Candidate, stage string) claimTier {
+	if stage == StageBuild && cand.LastResort != nil {
+		return claimTier{budget: c.Budget.lastResort(), plan: runner.Provider(cand.LastResort.Build), model: cand.LastResort.Build}
 	}
-	for _, p := range c.NextPlans {
-		if p.Plan == cand.Plan {
-			return p.Budget, cmp.Or(cand.Model, p.Models.Build), nil
+	if c.namedFree(cand) {
+		return claimTier{budget: c.Budget.lastResort(), plan: runner.Provider(cand.Model), model: cand.Model}
+	}
+	if stage == StageBuild {
+		for _, p := range c.PlanBudgets {
+			if p.Plan == cand.Plan {
+				return claimTier{budget: p.Budget, plan: p.Plan, model: cmp.Or(cand.Model, p.Models.Build)}
+			}
 		}
 	}
-	return c.Budget, cmp.Or(cand.Model, c.Model), nil
+	return claimTier{budget: c.Budget, plan: runner.Provider(c.Model), model: cmp.Or(cand.Model, c.Model)}
 }
 
-// onPlan is facts for a claim that moves to plan after from's ceiling bound: the
-// plan's build model leads, and the move is recorded with the plan's models.
-func onPlan(facts Facts, plan PaidPlan, from string) Facts {
-	facts.Model, facts.Moved = plan.Models.Build, &Move{From: from, Models: plan.Models}
-	return facts
+// namedFree reports whether every model cand's run will use is one of a
+// configured plan's free models: the build model its ticket named, the review
+// model it named or the default review models, and, for a run that plans, the
+// plan models it named or the default plan model.
+func (c Config) namedFree(cand Candidate) bool {
+	if cand.Model == "" {
+		return false
+	}
+	models := []string{cand.Model}
+	if cand.ReviewModel != "" {
+		models = append(models, cand.ReviewModel)
+	} else {
+		models = append(models, runner.DefaultReviewModels()...)
+	}
+	if cand.Size != "S" {
+		if len(cand.PlanModels) > 0 {
+			models = append(models, cand.PlanModels...)
+		} else {
+			models = append(models, runner.DefaultPlanModel())
+		}
+	}
+	return !slices.ContainsFunc(models, func(m string) bool { return !c.isFree(m) })
 }
 
-// onLastResort is facts for a claim on the free tier of models: the first
-// model builds and plans and the next reviews, so the build model never
-// reviews its own work.
-func onLastResort(facts Facts, models []string) Facts {
-	labels := runner.ModelLabels{Build: models[0], Review: models[1], Plan: slices.Clone(models)}
-	facts.Model, facts.LastResort, facts.Moved = labels.Build, &labels, nil
-	return facts
+// namedFreeModels are the models cand's ticket named that are a configured
+// plan's free models.
+func (c Config) namedFreeModels(cand Candidate) []string {
+	named := append([]string{cand.Model, cand.ReviewModel}, cand.PlanModels...)
+	return slices.DeleteFunc(named, func(m string) bool { return m == "" || !c.isFree(m) })
+}
+
+// isFree reports whether model is one of a configured plan's free models.
+func (c Config) isFree(model string) bool {
+	return slices.ContainsFunc(c.LastResortPlans, func(models []string) bool { return slices.Contains(models, model) })
 }
 
 // lookupPrivateOptIn reads whether the owner has opted private repositories in
 // to plan's free tier. A failed read is logged and reads as no opt-in, so a
-// private candidate defers rather than runs unconsented.
+// private candidate is held rather than run unconsented.
 func lookupPrivateOptIn(ctx context.Context, d Deps, plan string) bool {
 	p, _, err := d.ModelPlans.Plan(ctx, plan)
 	if err != nil {

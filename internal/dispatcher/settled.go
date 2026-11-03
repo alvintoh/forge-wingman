@@ -126,13 +126,13 @@ func (s Settlement) onPlan(plan string) bool {
 }
 
 // historySince is the earliest moment the budgets a poll admits against reach
-// back to: its own, every plan a run may move to, and the free tier's. A
-// claim's ceilings are summed from the poll's one snapshot of the settled
-// history, so that snapshot must cover every window any of them measures.
+// back to: its own, every other paid plan a claimed run may be on, and the free
+// tier's. A claim's ceilings are summed from the poll's one snapshot of the
+// settled history, so that snapshot must cover every window any of them measures.
 func (c Config) historySince(at time.Time) time.Time {
-	budgets := make([]BudgetConfig, 0, len(c.NextPlans)+2)
+	budgets := make([]BudgetConfig, 0, len(c.PlanBudgets)+2)
 	budgets = append(budgets, c.Budget)
-	for _, p := range c.NextPlans {
+	for _, p := range c.PlanBudgets {
 		budgets = append(budgets, p.Budget)
 	}
 	budgets = append(budgets, c.Budget.lastResort())

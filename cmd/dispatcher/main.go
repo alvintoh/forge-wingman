@@ -283,7 +283,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 	adoptRunsAtOnce(ctx, logger, store.NewRunsAtOnce(owner), queue, c.limits.OrDefault().PlatformCap)
 	plans := store.NewPlans(fsc)
 	model := runner.DefaultModel()
-	next, err := nextPlans(providers.PaidPlans(), model)
+	others, err := planBudgets(providers.PaidPlans(), model)
 	if err != nil {
 		return err
 	}
@@ -330,36 +330,35 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		Elicit:       webhook.Linear{Tokens: tokens},
 		Logger:       logger,
 		Now:          time.Now,
-	}, dispatcher.Config{Repos: repos, ReposErr: reposErr, Budget: budgetConfig(runner.Provider(model)), Model: model, NextPlans: next, Limits: c.limits, Tuning: c.tuning, LastResortPlans: lastResortPlans(), TwoStage: c.twoStage, DecisionTimeout: c.decisionTimeout, DecisionMode: c.decisionMode}); err != nil {
+	}, dispatcher.Config{Repos: repos, ReposErr: reposErr, Budget: budgetConfig(runner.Provider(model)), Model: model, PlanBudgets: others, Limits: c.limits, Tuning: c.tuning, LastResortPlans: lastResortPlans(), TwoStage: c.twoStage, DecisionTimeout: c.decisionTimeout, DecisionMode: c.decisionMode}); err != nil {
 		return err
 	}
 	return nil
 }
 
-// nextPlans is the paid plans a run moves to once the default model's plan
-// binds: every plan after it in order, each with its own budget and the models
-// a run moved onto it starts on. The first plan in order must be the default
-// model's, since that is where every run starts.
-func nextPlans(order []string, model string) ([]dispatcher.PaidPlan, error) {
+// planBudgets is every paid plan after the default model's in order, each with
+// its own budget and models, which judge a run already claimed on it. The first
+// plan in order must be the default model's, since that is where every run starts.
+func planBudgets(order []string, model string) ([]dispatcher.PaidPlan, error) {
 	if len(order) == 0 {
 		return nil, nil
 	}
 	if first := runner.Provider(model); order[0] != first {
 		return nil, fmt.Errorf("the first paid plan is %s, not %s, the default model's", order[0], first)
 	}
-	var next []dispatcher.PaidPlan
+	var others []dispatcher.PaidPlan
 	for _, plan := range order[1:] {
 		m := providers.PlanModels(plan)
-		next = append(next, dispatcher.PaidPlan{
+		others = append(others, dispatcher.PaidPlan{
 			Plan: plan, Budget: budgetConfig(plan),
 			Models: runner.ModelLabels{Build: m.Build, Review: m.Review, Plan: m.Plan},
 		})
 	}
-	return next, nil
+	return others, nil
 }
 
-// lastResortPlans is the ordered free-tier plans the fallback walks: each
-// configured plan's own free models, in the order the configuration names them.
+// lastResortPlans is each configured plan's own free models, in the order the
+// configuration names them.
 func lastResortPlans() [][]string {
 	var rungs [][]string
 	for _, plan := range providers.LastResortPlans() {

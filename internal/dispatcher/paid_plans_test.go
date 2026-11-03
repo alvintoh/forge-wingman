@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"slices"
 	"testing"
@@ -12,8 +13,8 @@ import (
 	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
-// nextPlan is a second paid plan with its own 5-hour window.
-func nextPlan(plan string) PaidPlan {
+// laterPlan is a paid plan listed after the first, with its own 5-hour window.
+func laterPlan(plan string) PaidPlan {
 	return PaidPlan{
 		Plan: plan,
 		Budget: BudgetConfig{
@@ -25,165 +26,101 @@ func nextPlan(plan string) PaidPlan {
 	}
 }
 
-// walkConfig is paidPlan with q, then r, to move to.
-func walkConfig() Config {
+// laterPlansConfig is paidPlan with q, then r, listed after it.
+func laterPlansConfig() Config {
 	c := paidPlan
-	c.NextPlans = []PaidPlan{nextPlan("q"), nextPlan("r")}
+	c.PlanBudgets = []PaidPlan{laterPlan("q"), laterPlan("r")}
 	return c
 }
 
-// usableDeps is pollDeps with every plan recorded as billing a flat allowance.
-func usableDeps(q *fakeQueue, w *fakeWorkflow) Deps {
-	deps := pollDeps(fakeSource{}, q, w)
-	deps.ModelPlans = &fakeModelPlans{plans: map[string]providers.Plan{
-		"q": planBilled(providers.BillingAllowance, false),
-		"r": planBilled(providers.BillingAllowance, false),
-	}}
-	return deps
-}
-
-func TestPollMovesARunToTheNextPaidPlanOnceTheFirstBinds(t *testing.T) {
-	q := &fakeQueue{
-		candidates:   []Candidate{{RunID: "run-a", Repo: "octo/scratch"}},
-		planBindings: map[string]string{"p": "p-5h"},
-	}
-	w := &fakeWorkflow{}
-	deps := usableDeps(q, w)
-	deps.Plans = fakeVerdicts{verdicts: map[string]providers.Verdict{"p": providers.VerdictAllowed, "q": providers.VerdictRestricted}}
-	res, err := Poll(context.Background(), deps, walkConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(res.Dispatched, []string{"run-a"}) || len(res.Deferrals) != 0 || len(q.tryClaims) != 2 {
-		t.Fatalf("dispatched %q, deferred %+v after %d claims, want the run on the second plan", res.Dispatched, res.Deferrals, len(q.tryClaims))
-	}
-	moved := q.tryClaims[1]
-	want := &Move{From: "p", Models: runner.ModelLabels{Build: "q/paid", Review: "q/review", Plan: []string{"q/paid"}}}
-	if moved.facts.Model != "q/paid" || !reflect.DeepEqual(moved.facts.Moved, want) || moved.facts.LastResort != nil {
-		t.Fatalf("facts = %+v, want the move from p onto q's models", moved.facts)
-	}
-	if !reflect.DeepEqual(moved.cfg, nextPlan("q").Budget) || moved.cfg.ProviderFree {
-		t.Fatalf("cfg = %+v, want the claim judged on q's own ceilings", moved.cfg)
-	}
-	if q.tryClaims[0].facts.Moved != nil {
-		t.Fatalf("first claim facts = %+v, want no move recorded on the plan the run starts on", q.tryClaims[0].facts)
-	}
-	if w.claims[0].Verdict != providers.VerdictRestricted {
-		t.Fatalf("verdict = %q, want the plan moved to's", w.claims[0].Verdict)
-	}
-}
-
-func TestPollMovesPastEveryPaidPlanWhoseCeilingBinds(t *testing.T) {
-	q := &fakeQueue{
-		candidates:   []Candidate{{RunID: "run-a", Repo: "octo/scratch"}},
-		planBindings: map[string]string{"p": "p-5h", "q": "q-5h"},
-	}
-	if _, err := Poll(context.Background(), usableDeps(q, &fakeWorkflow{}), walkConfig()); err != nil {
-		t.Fatal(err)
-	}
-	last := q.tryClaims[len(q.tryClaims)-1]
-	if len(q.tryClaims) != 3 || last.facts.Model != "r/paid" || last.facts.Moved == nil || last.facts.Moved.From != "q" {
-		t.Fatalf("tryClaims = %+v, want a third claim on r after q's ceiling bound", q.tryClaims)
-	}
-}
-
-func TestPollFallsToTheFreeTierWhenEveryPaidPlanBinds(t *testing.T) {
-	q := &fakeQueue{
-		candidates:   []Candidate{{RunID: "run-a", Repo: "octo/scratch"}},
-		planBindings: map[string]string{"p": "p-5h", "q": "q-5h", "r": "r-5h"},
-	}
-	res, err := Poll(context.Background(), usableDeps(q, &fakeWorkflow{}), walkConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
-	free := q.tryClaims[len(q.tryClaims)-1]
-	if len(q.tryClaims) != 4 || !free.cfg.ProviderFree || free.facts.Model != "p/free-a" || free.facts.Moved != nil {
-		t.Fatalf("tryClaims = %+v, want the free tier after all three paid plans, with no move recorded", q.tryClaims)
-	}
-	if !slices.Equal(res.Dispatched, []string{"run-a"}) {
-		t.Fatalf("dispatched %q, want the run on the free tier", res.Dispatched)
-	}
-}
-
-func TestPollDefersWhenTheNextPaidPlanIsBoundByAnotherCeiling(t *testing.T) {
-	q := &fakeQueue{
-		candidates:   []Candidate{{RunID: "run-a", Repo: "octo/scratch"}},
-		planBindings: map[string]string{"p": "p-5h", "q": CeilingCash},
-	}
-	res, err := Poll(context.Background(), usableDeps(q, &fakeWorkflow{}), walkConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(q.tryClaims) != 2 || len(res.Deferrals) != 1 || res.Deferrals[0].Ceiling != CeilingCash {
-		t.Fatalf("claims %d, deferrals %+v, want the run deferred on cash with no further plan tried", len(q.tryClaims), res.Deferrals)
-	}
-}
-
-func TestPollMovesToAPerTokenPlanOnlyWithTheOwnersOptIn(t *testing.T) {
+func TestPollHoldsARunOnItsPlanOnceThePaidCeilingBinds(t *testing.T) {
 	for name, tt := range map[string]struct {
-		plan     providers.Plan
-		present  bool
-		movedToQ bool
+		ceiling string
+		private bool
 	}{
-		"opted in":         {plan: planBilled(providers.BillingPerToken, true), present: true, movedToQ: true},
-		"not opted in":     {plan: planBilled(providers.BillingPerToken, false), present: true},
-		"no plan record":   {},
-		"a flat allowance": {plan: planBilled(providers.BillingAllowance, false), present: true, movedToQ: true},
+		"a plan window":                    {ceiling: "p-5h"},
+		"a model cap":                      {ceiling: "p/paid"},
+		"a private run the owner opted in": {ceiling: "p-5h", private: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			q := &fakeQueue{
-				candidates:   []Candidate{{RunID: "run-a", Repo: "octo/scratch"}},
-				planBindings: map[string]string{"p": "p-5h"},
+				candidates: []Candidate{{RunID: "run-a", Repo: "octo/scratch", Size: "M", Private: tt.private}},
+				bindings:   map[string]string{"run-a": tt.ceiling},
 			}
-			deps := usableDeps(q, &fakeWorkflow{})
-			plans := map[string]providers.Plan{}
-			if tt.present {
-				plans["q"] = tt.plan
-			}
-			deps.ModelPlans = &fakeModelPlans{plans: plans}
-			cfg := walkConfig()
-			cfg.NextPlans = cfg.NextPlans[:1]
-			if _, err := Poll(context.Background(), deps, cfg); err != nil {
+			holds := &fakeHolds{}
+			deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+			deps.Holds = holds
+			deps.Estimator = fakeEstimator{bySize: map[string]Estimate{"M": {ProviderCost: 2 * money.Dollar, Minutes: 30}}}
+			deps.ModelPlans = &fakeModelPlans{plans: map[string]providers.Plan{"p": {PrivateOptIn: true}}}
+			res, err := Poll(context.Background(), deps, laterPlansConfig())
+			if err != nil {
 				t.Fatal(err)
 			}
-			onQ := slices.ContainsFunc(q.tryClaims, func(c tryClaimCall) bool { return c.facts.Model == "q/paid" })
-			if onQ != tt.movedToQ {
-				t.Fatalf("claimed on q = %v, want %v (claims %+v)", onQ, tt.movedToQ, q.tryClaims)
+			if len(res.Dispatched) != 0 || len(res.Deferrals) != 1 || res.Deferrals[0].Ceiling != tt.ceiling {
+				t.Fatalf("dispatched %q, deferred %+v, want the run held on %s", res.Dispatched, res.Deferrals, tt.ceiling)
 			}
-			if last := q.tryClaims[len(q.tryClaims)-1]; !tt.movedToQ && !last.cfg.ProviderFree {
-				t.Fatalf("last claim = %+v, want the free tier once the move is refused", last)
+			if len(q.tryClaims) != 1 || q.tryClaims[0].cfg.ProviderFree {
+				t.Fatalf("tryClaims = %+v, want one claim on the paid plan and none on a free model", q.tryClaims)
+			}
+			if len(holds.recorded) != 1 || holds.recorded[0].reason != HoldBudget {
+				t.Fatalf("holds = %+v, want the run held as %s", holds.recorded, HoldBudget)
 			}
 		})
 	}
 }
 
-func TestPollSkipsAHaltedPaidPlanAndTriesTheNext(t *testing.T) {
-	q := &fakeQueue{
-		candidates:   []Candidate{{RunID: "run-a", Repo: "octo/scratch"}},
-		planBindings: map[string]string{"p": "p-5h"},
-	}
-	deps := usableDeps(q, &fakeWorkflow{})
-	deps.Providers = fakeProviders{halted: map[string]bool{"q": true}}
-	if _, err := Poll(context.Background(), deps, walkConfig()); err != nil {
-		t.Fatal(err)
-	}
-	if last := q.tryClaims[len(q.tryClaims)-1]; len(q.tryClaims) != 2 || last.facts.Model != "r/paid" {
-		t.Fatalf("tryClaims = %+v, want q skipped as halted and r claimed", q.tryClaims)
+func TestPollNeverClaimsOnAPaidPlanListedAfterTheFirst(t *testing.T) {
+	for name, bindings := range map[string]map[string]string{
+		"no ceiling binding":       nil,
+		"the first plan's binding": {"p": "p-5h"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			q := &fakeQueue{candidates: []Candidate{{RunID: "run-a", Repo: "octo/scratch"}}, planBindings: bindings}
+			res, err := Poll(context.Background(), pollDeps(fakeSource{}, q, &fakeWorkflow{}), laterPlansConfig())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(q.tryClaims) != 1 || !reflect.DeepEqual(q.tryClaims[0].cfg, paidPlan.Budget) || q.tryClaims[0].facts.Model != "p/paid" {
+				t.Fatalf("tryClaims = %+v, want one claim on the first plan's budget and model", q.tryClaims)
+			}
+			if admitted := bindings == nil; (len(res.Dispatched) == 1) != admitted {
+				t.Fatalf("dispatched %q, deferred %+v, want admitted = %v", res.Dispatched, res.Deferrals, admitted)
+			}
+		})
 	}
 }
 
-func TestPollKeepsATicketsNamedModelOnItsOwnPlan(t *testing.T) {
+func TestPollAdmitsAsBeforeWhenNoCeilingBinds(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{{RunID: "run-a", Repo: "octo/scratch", Size: "M"}}}
+	deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	deps.Estimator = fakeEstimator{bySize: map[string]Estimate{"M": {ProviderCost: 2 * money.Dollar, Minutes: 30}}}
+	res, err := Poll(context.Background(), deps, laterPlansConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(res.Dispatched, []string{"run-a"}) || len(res.Deferrals) != 0 {
+		t.Fatalf("dispatched %q, deferred %+v, want the run admitted", res.Dispatched, res.Deferrals)
+	}
+	got := q.tryClaims[0]
+	if len(q.tryClaims) != 1 || got.res.ProviderCost != 2*money.Dollar || got.cfg.ProviderFree {
+		t.Fatalf("tryClaims = %+v, want one paid claim reserving the estimate", q.tryClaims)
+	}
+}
+
+func TestPollHoldsATicketsNamedPaidModelLikeAnyOther(t *testing.T) {
 	q := &fakeQueue{
 		candidates:   []Candidate{{RunID: "run-a", Repo: "octo/scratch", Model: "p/other", ModelsNamed: true}},
 		planBindings: map[string]string{"p": "p-5h"},
 	}
-	if _, err := Poll(context.Background(), usableDeps(q, &fakeWorkflow{}), walkConfig()); err != nil {
+	res, err := Poll(context.Background(), pollDeps(fakeSource{}, q, &fakeWorkflow{}), laterPlansConfig())
+	if err != nil {
 		t.Fatal(err)
 	}
-	for _, c := range q.tryClaims {
-		if c.facts.Moved != nil {
-			t.Fatalf("tryClaims = %+v, want a ticket that named a model never moved", q.tryClaims)
-		}
+	if len(q.tryClaims) != 1 || q.tryClaims[0].facts.Model != "p/other" || q.tryClaims[0].cfg.ProviderFree {
+		t.Fatalf("tryClaims = %+v, want one claim on the named model", q.tryClaims)
+	}
+	if len(res.Dispatched) != 0 || len(res.Deferrals) != 1 || res.Deferrals[0].Ceiling != "p-5h" {
+		t.Fatalf("dispatched %q, deferred %+v, want the run held on the plan window", res.Dispatched, res.Deferrals)
 	}
 }
 
@@ -192,13 +129,13 @@ func TestPollJudgesAPlannedRunByThePlanItsPlanStageClaimed(t *testing.T) {
 		candidates:   []Candidate{{RunID: "run-a", Repo: "octo/scratch", Stage: StageBuild, Plan: "q", PlanFiles: []string{"a.go"}}},
 		planBindings: map[string]string{"p": "p-5h", "q": "q-5h"},
 	}
-	cfg := walkConfig()
+	cfg := laterPlansConfig()
 	cfg.TwoStage = true
-	res, err := Poll(context.Background(), usableDeps(q, &fakeWorkflow{}), cfg)
+	res, err := Poll(context.Background(), pollDeps(fakeSource{}, q, &fakeWorkflow{}), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(q.tryClaims) != 1 || !reflect.DeepEqual(q.tryClaims[0].cfg, nextPlan("q").Budget) || q.tryClaims[0].facts.Model != "q/paid" {
+	if len(q.tryClaims) != 1 || !reflect.DeepEqual(q.tryClaims[0].cfg, laterPlan("q").Budget) || q.tryClaims[0].facts.Model != "q/paid" {
 		t.Fatalf("tryClaims = %+v, want one claim on q's budget and build model", q.tryClaims)
 	}
 	if len(res.Deferrals) != 1 || res.Deferrals[0].Ceiling != "q-5h" {
@@ -212,9 +149,9 @@ func TestPollJudgesAPlannedFreeTierRunOnTheFreeTier(t *testing.T) {
 		candidates:   []Candidate{{RunID: "run-a", Repo: "octo/scratch", Size: "M", Stage: StageBuild, Plan: "p", LastResort: &free, PlanFiles: []string{"a.go"}}},
 		planBindings: map[string]string{"p": "p-5h"},
 	}
-	deps := usableDeps(q, &fakeWorkflow{})
+	deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
 	deps.Estimator = fakeEstimator{bySize: map[string]Estimate{"M": {ProviderCost: 2 * money.Dollar, Minutes: 30}}}
-	cfg := walkConfig()
+	cfg := laterPlansConfig()
 	cfg.TwoStage = true
 	res, err := Poll(context.Background(), deps, cfg)
 	if err != nil {
@@ -234,14 +171,192 @@ func TestPollJudgesAPlannedRunWhosePlanIsUnknownByTheDefaultPlan(t *testing.T) {
 		candidates:   []Candidate{{RunID: "run-a", Stage: StageBuild, Plan: "gone"}, {RunID: "run-b", Stage: StageBuild}},
 		planBindings: map[string]string{"q": "q-5h"},
 	}
-	cfg := walkConfig()
+	cfg := laterPlansConfig()
 	cfg.TwoStage = true
-	if _, err := Poll(context.Background(), usableDeps(q, &fakeWorkflow{}), cfg); err != nil {
+	if _, err := Poll(context.Background(), pollDeps(fakeSource{}, q, &fakeWorkflow{}), cfg); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range q.tryClaims {
 		if !reflect.DeepEqual(c.cfg, paidPlan.Budget) || c.facts.Model != "p/paid" {
 			t.Fatalf("claim = %+v, want the default plan's budget and model", c)
 		}
+	}
+}
+
+func TestPollAdmitsATicketNamingOnlyFreeModelsWhileThePaidCeilingBinds(t *testing.T) {
+	q := &fakeQueue{
+		candidates: []Candidate{{RunID: "run-a", Repo: "octo/scratch", Size: "M", ModelsNamed: true,
+			Model: "p/free-b", ReviewModel: "p/free-a", PlanModels: []string{"p/free-b"}}},
+		planBindings: map[string]string{"p": "p-5h"},
+	}
+	deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	deps.Estimator = fakeEstimator{bySize: map[string]Estimate{"M": {ProviderCost: 2 * money.Dollar, Minutes: 30}}}
+	res, err := Poll(context.Background(), deps, laterPlansConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(res.Dispatched, []string{"run-a"}) || len(res.Deferrals) != 0 {
+		t.Fatalf("dispatched %q, deferred %+v, want the named free model admitted", res.Dispatched, res.Deferrals)
+	}
+	got := q.tryClaims[0]
+	if len(q.tryClaims) != 1 || !got.cfg.ProviderFree || got.res.ProviderCost != 0 || got.facts.Model != "p/free-b" {
+		t.Fatalf("tryClaims = %+v, want one free-tier claim on the named model at no provider cost", q.tryClaims)
+	}
+}
+
+func TestPollJudgesTheBuildOfANamedFreeModelOnTheFreeTier(t *testing.T) {
+	q := &fakeQueue{
+		candidates: []Candidate{{RunID: "run-a", Repo: "octo/scratch", Size: "M", Stage: StageBuild, Plan: "p", ModelsNamed: true,
+			Model: "p/free-b", ReviewModel: "p/free-a", PlanModels: []string{"p/free-b"}, PlanFiles: []string{"a.go"}}},
+		planBindings: map[string]string{"p": "p-5h"},
+	}
+	deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	deps.Estimator = fakeEstimator{bySize: map[string]Estimate{"M": {ProviderCost: 2 * money.Dollar, Minutes: 30}}}
+	cfg := laterPlansConfig()
+	cfg.TwoStage = true
+	res, err := Poll(context.Background(), deps, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := q.tryClaims[0]
+	if len(q.tryClaims) != 1 || !got.cfg.ProviderFree || got.res.ProviderCost != 0 || got.res.Stage != StageBuild || len(res.Dispatched) != 1 {
+		t.Fatalf("tryClaims = %+v, dispatched %q, want the build claimed on the free tier at no provider cost", q.tryClaims, res.Dispatched)
+	}
+}
+
+func TestPollAdmitsAPrivateNamedFreeModelOnlyWithThePlansPrivateOptIn(t *testing.T) {
+	for name, tt := range map[string]struct {
+		private  bool
+		plans    map[string]providers.Plan
+		readErr  error
+		admitted bool
+	}{
+		"private, opted in":      {private: true, plans: map[string]providers.Plan{"p": {PrivateOptIn: true}}, admitted: true},
+		"private, not opted in":  {private: true, plans: map[string]providers.Plan{"p": {}}},
+		"private, lookup failed": {private: true, readErr: errors.New("unavailable")},
+		"public":                 {admitted: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			q := &fakeQueue{candidates: []Candidate{{RunID: "run-a", Repo: "octo/scratch", Size: "S", ModelsNamed: true,
+				Model: "p/free-a", ReviewModel: "p/free-b", Private: tt.private}}}
+			holds := &fakeHolds{}
+			deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+			deps.ModelPlans = &fakeModelPlans{plans: tt.plans, err: tt.readErr}
+			deps.Holds = holds
+			res, err := Poll(context.Background(), deps, laterPlansConfig())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.admitted {
+				if len(res.Dispatched) != 1 {
+					t.Fatalf("dispatched %q, deferred %+v, want the run admitted", res.Dispatched, res.Deferrals)
+				}
+				return
+			}
+			if len(q.tryClaims) != 0 || len(res.Deferrals) != 1 || res.Deferrals[0].Ceiling != ConditionPrivateOptIn {
+				t.Fatalf("claims %d, deferred %+v, want the run held for the private opt-in", len(q.tryClaims), res.Deferrals)
+			}
+			if len(holds.recorded) != 1 || holds.recorded[0].reason != HoldPrivateOptIn {
+				t.Fatalf("holds = %+v, want the run held as %s", holds.recorded, HoldPrivateOptIn)
+			}
+		})
+	}
+}
+
+// TestPollClaimsAPlanStageOnTheDefaultPlanWhateverTheRowRecords asserts a
+// plan-stage claim is judged on the default plan even when its row still
+// records the plan or free tier of an earlier claim, as a requeued run's does,
+// so a run is never put back on another plan or a free model without the owner
+// naming one.
+func TestPollClaimsAPlanStageOnTheDefaultPlanWhateverTheRowRecords(t *testing.T) {
+	free := runner.ModelLabels{Build: "p/free-a", Review: "p/free-b", Plan: []string{"p/free-a", "p/free-b"}}
+	for name, cand := range map[string]Candidate{
+		"another paid plan": {RunID: "run-a", Repo: "octo/scratch", Size: "M", Plan: "q"},
+		"the free tier":     {RunID: "run-a", Repo: "octo/scratch", Size: "M", Plan: "p", LastResort: &free},
+	} {
+		t.Run(name, func(t *testing.T) {
+			q := &fakeQueue{candidates: []Candidate{cand}}
+			cfg := laterPlansConfig()
+			cfg.TwoStage = true
+			if _, err := Poll(context.Background(), pollDeps(fakeSource{}, q, &fakeWorkflow{}), cfg); err != nil {
+				t.Fatal(err)
+			}
+			got := q.tryClaims[0]
+			if len(q.tryClaims) != 1 || got.res.Stage != StagePlan || !reflect.DeepEqual(got.cfg, paidPlan.Budget) || got.facts.Model != "p/paid" {
+				t.Fatalf("tryClaims = %+v, want one plan-stage claim on the default plan's budget and model", q.tryClaims)
+			}
+		})
+	}
+}
+
+func TestPollBuildsATicketsNamedModelOnThePlanItsPlanStageClaimed(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{{RunID: "run-a", Repo: "octo/scratch", Stage: StageBuild, Plan: "q", Model: "q/other", ModelsNamed: true, PlanFiles: []string{"a.go"}}}}
+	cfg := laterPlansConfig()
+	cfg.TwoStage = true
+	if _, err := Poll(context.Background(), pollDeps(fakeSource{}, q, &fakeWorkflow{}), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.tryClaims) != 1 || !reflect.DeepEqual(q.tryClaims[0].cfg, laterPlan("q").Budget) || q.tryClaims[0].facts.Model != "q/other" {
+		t.Fatalf("tryClaims = %+v, want one claim on q's budget building the named model", q.tryClaims)
+	}
+}
+
+func TestPollJudgesATicketOnThePaidBudgetUnlessEveryModelItUsesIsFree(t *testing.T) {
+	for name, cand := range map[string]Candidate{
+		"a free build with the paid default review":        {Size: "S", Model: "p/free-a"},
+		"a free build and review with the paid plan model": {Size: "M", Model: "p/free-a", ReviewModel: "p/free-b"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cand.RunID, cand.Repo, cand.ModelsNamed = "run-a", "octo/scratch", true
+			q := &fakeQueue{candidates: []Candidate{cand}, planBindings: map[string]string{"p": "p-5h"}}
+			res, err := Poll(context.Background(), pollDeps(fakeSource{}, q, &fakeWorkflow{}), laterPlansConfig())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(q.tryClaims) != 1 || q.tryClaims[0].cfg.ProviderFree {
+				t.Fatalf("tryClaims = %+v, want one claim on the paid budget", q.tryClaims)
+			}
+			if len(res.Dispatched) != 0 || len(res.Deferrals) != 1 || res.Deferrals[0].Ceiling != "p-5h" {
+				t.Fatalf("dispatched %q, deferred %+v, want the run held on the plan window", res.Dispatched, res.Deferrals)
+			}
+		})
+	}
+}
+
+func TestPollChecksThePrivateOptInOfEveryNamedFreeModelsOwnPlan(t *testing.T) {
+	for name, tt := range map[string]struct {
+		cand  Candidate
+		plans map[string]providers.Plan
+	}{
+		"a paid build and a free review not opted in": {
+			cand:  Candidate{Size: "S", Model: "p/paid", ReviewModel: "p/free-a"},
+			plans: map[string]providers.Plan{"p": {}},
+		},
+		"free models on two plans, one not opted in": {
+			cand:  Candidate{Size: "S", Model: "p/free-a", ReviewModel: "q/free-a"},
+			plans: map[string]providers.Plan{"p": {PrivateOptIn: true}, "q": {}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cand := tt.cand
+			cand.RunID, cand.Repo, cand.ModelsNamed, cand.Private = "run-a", "octo/scratch", true, true
+			q := &fakeQueue{candidates: []Candidate{cand}}
+			holds := &fakeHolds{}
+			deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+			deps.ModelPlans = &fakeModelPlans{plans: tt.plans}
+			deps.Holds = holds
+			cfg := laterPlansConfig()
+			cfg.LastResortPlans = [][]string{{"p/free-a", "p/free-b"}, {"q/free-a"}}
+			res, err := Poll(context.Background(), deps, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(q.tryClaims) != 0 || len(res.Deferrals) != 1 || res.Deferrals[0].Ceiling != ConditionPrivateOptIn {
+				t.Fatalf("claims %d, deferred %+v, want the run held for the private opt-in", len(q.tryClaims), res.Deferrals)
+			}
+			if len(holds.recorded) != 1 || holds.recorded[0].reason != HoldPrivateOptIn {
+				t.Fatalf("holds = %+v, want the run held as %s", holds.recorded, HoldPrivateOptIn)
+			}
+		})
 	}
 }

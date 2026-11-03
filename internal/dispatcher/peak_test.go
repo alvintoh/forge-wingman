@@ -151,15 +151,15 @@ func TestPollJudgesAPlanStageByItsOwnEstimate(t *testing.T) {
 	}
 }
 
-func TestPollNeitherMovesNorNoticesAHeldRun(t *testing.T) {
+func TestPollRaisesNoNoticeForAPeakHeldRun(t *testing.T) {
 	q := &fakeQueue{candidates: []Candidate{{RunID: "run-a", Repo: "octo/scratch", Size: "M"}}}
 	w := &fakeWorkflow{}
-	deps := usableDeps(q, w)
+	deps := pollDeps(fakeSource{}, q, w)
 	deps.Estimator = fakeEstimator{bySize: map[string]Estimate{"M": {Minutes: 30}}}
 	deps.Now = func() time.Time { return monday(2, 0) }
 	notices := &fakeNotices{}
 	deps.Notices = notices
-	cfg := walkConfig()
+	cfg := laterPlansConfig()
 	cfg.Model = peakModel
 	res, err := Poll(context.Background(), deps, cfg)
 	if err != nil {
@@ -168,29 +168,6 @@ func TestPollNeitherMovesNorNoticesAHeldRun(t *testing.T) {
 	if len(q.tryClaims) != 1 || len(w.claims) != 0 || len(res.Deferrals) != 1 || len(notices.raised) != 0 {
 		t.Fatalf("claims %d, dispatched %+v, deferrals %+v, notices %+v, want one claim, held, no notice",
 			len(q.tryClaims), w.claims, res.Deferrals, notices.raised)
-	}
-}
-
-func TestPollHoldsARunMovedOntoAPlanWhoseModelPricesPeakHours(t *testing.T) {
-	q := &fakeQueue{
-		candidates:   []Candidate{{RunID: "run-a", Repo: "octo/scratch", Size: "M"}},
-		planBindings: map[string]string{"p": "p-5h"},
-	}
-	deps := usableDeps(q, &fakeWorkflow{})
-	deps.Estimator = fakeEstimator{bySize: map[string]Estimate{"M": {Minutes: 30}}}
-	deps.Now = func() time.Time { return monday(2, 0) }
-	cfg := walkConfig()
-	cfg.NextPlans = cfg.NextPlans[:1]
-	cfg.NextPlans[0].Models.Build = peakModel
-	res, err := Poll(context.Background(), deps, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(q.tryClaims) != 2 || q.tryClaims[0].facts.PeakHeld || !q.tryClaims[1].facts.PeakHeld {
-		t.Fatalf("tryClaims = %+v, want the first plan free to claim and the move held", q.tryClaims)
-	}
-	if len(res.Dispatched) != 0 || res.Deferrals[0].Ceiling != "peak-hours" {
-		t.Fatalf("dispatched %q, deferrals %+v, want the run held on peak-hours, not on the free tier", res.Dispatched, res.Deferrals)
 	}
 }
 

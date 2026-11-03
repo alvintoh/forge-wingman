@@ -14,6 +14,7 @@ import (
 
 	"github.com/alvintoh/forge-wingman/internal/money"
 	"github.com/alvintoh/forge-wingman/internal/providers"
+	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
 // fakeBreaker reports the breaker tripped, or fails to read it.
@@ -190,6 +191,9 @@ func TestPollTellsAdmissionWhetherTheBreakerIsTripped(t *testing.T) {
 	}
 }
 
+// optInNote closes a notice that offers free models.
+const optInNote = " (a private repository also needs the plan's private opt-in)"
+
 // fiveHour is a rolling provider window with a $10 limit.
 var fiveHour = Window{Name: "5h", Period: 5 * time.Hour, Limit: money.FromUSD(10)}
 
@@ -206,7 +210,8 @@ func deferralPoll(binding string, settled money.Micros) (*fakeQueue, *fakeNotice
 	d := pollDeps(fakeSource{issues: []Issue{{ID: "ABC-18", URL: "https://linear.app/w/issue/ABC-18", Body: "ticket body"}}}, q, &fakeWorkflow{})
 	d.Estimator = fakeEstimator{bySize: map[string]Estimate{"M": {ProviderCost: money.FromUSD(1)}}}
 	d.Notices = notices
-	cfg := Config{Repos: buildConfig.Repos, Budget: BudgetConfig{ProviderWindows: []Window{fiveHour}, Cash: Window{Calendar: true, Limit: money.FromUSD(30)}}}
+	cfg := Config{Repos: buildConfig.Repos, Model: "p/paid", Budget: BudgetConfig{ProviderWindows: []Window{fiveHour}, Cash: Window{Calendar: true, Limit: money.FromUSD(30)}},
+		LastResortPlans: [][]string{{"p/free-a", "p/free-b"}, {"p/free-b", "q/free-a"}}}
 	return q, notices, d, cfg
 }
 
@@ -215,7 +220,8 @@ func TestPollNoticesADeferralWhoseCeilingStillBindsAtTheNextPoll(t *testing.T) {
 	if _, err := Poll(context.Background(), d, cfg); err != nil {
 		t.Fatal(err)
 	}
-	want := Notice{ID: "deferral-5h-1790485200", Class: "deferral:5h", Link: "https://linear.app/w/issue/ABC-18"}
+	want := Notice{ID: "deferral-5h-1790485200", Class: "deferral:5h", Link: "https://linear.app/w/issue/ABC-18",
+		Detail: "plan p: wait for its 5h window to reset, or name free build and review models on a ticket: p/free-a, p/free-b, q/free-a" + optInNote}
 	if !slices.Equal(notices.raised, []Notice{want}) {
 		t.Fatalf("raised %+v, want %+v", notices.raised, want)
 	}
@@ -365,17 +371,67 @@ func TestSlackDoesNotEchoAnUnparseableWebhook(t *testing.T) {
 	}
 }
 
-func TestPollNoticesAFreeTierDeferralAgainstTheFreeTiersOwnBudget(t *testing.T) {
+func TestPollNoticesAPlannedFreeTierBuildAgainstTheFreeTiersOwnBudget(t *testing.T) {
 	q, notices, d, cfg := deferralPoll("5h", money.FromUSD(10))
 	q.candidates[0].Private, q.reserved = true, Totals{ProviderCost: money.FromUSD(1)}
+	q.candidates[0].Stage = StageBuild
+	q.candidates[0].LastResort = &runner.ModelLabels{Build: "p/free-a", Review: "p/free-b", Plan: []string{"p/free-a", "p/free-b"}}
 	q.freeBindings = map[string]string{"ABC-18": CeilingRunnerMinutes}
 	d.Estimator = fakeEstimator{bySize: map[string]Estimate{"M": {ProviderCost: money.FromUSD(1), Minutes: 30}}}
-	d.ModelPlans = &fakeModelPlans{plans: map[string]providers.Plan{"p": {PrivateOptIn: true}}}
-	cfg.LastResortPlans = [][]string{{"p/free-a", "p/free-b"}}
+	cfg.TwoStage = true
 	if _, err := Poll(context.Background(), d, cfg); err != nil {
 		t.Fatal(err)
 	}
-	if len(notices.raised) != 1 || notices.raised[0].Class != "deferral:"+CeilingRunnerMinutes {
-		t.Fatalf("raised %+v, want the runner-minutes ceiling the free tier still meets", notices.raised)
+	want := "plan p: wait for its runner-minutes ceiling to reset"
+	if len(notices.raised) != 1 || notices.raised[0].Class != "deferral:"+CeilingRunnerMinutes || notices.raised[0].Detail != want {
+		t.Fatalf("raised %+v, want the runner-minutes ceiling the free tier still meets, offering no free model", notices.raised)
+	}
+}
+
+func TestDeferralChoicesNameTheBindingCeilingAndOfferAFreeModelOnlyForThePlansOwn(t *testing.T) {
+	budget := BudgetConfig{ProviderWindows: []Window{fiveHour}, ModelCaps: map[string]Window{"p/paid": {Name: "p/paid"}}}
+	free := [][]string{{"p/free-a"}}
+	for ceiling, want := range map[string]string{
+		"5h":                 "plan p: wait for its 5h window to reset, or name free build and review models on a ticket: p/free-a" + optInNote,
+		"p/paid":             "plan p: wait for its cap on p/paid to reset, or name free build and review models on a ticket: p/free-a" + optInNote,
+		CeilingCash:          "plan p: wait for its cash ceiling to reset",
+		CeilingRunnerMinutes: "plan p: wait for its runner-minutes ceiling to reset",
+		"another-plans-week": "",
+	} {
+		if got := deferralChoices(budget, ceiling, "p", free); got != want {
+			t.Errorf("deferralChoices(%q) = %q, want %q", ceiling, got, want)
+		}
+	}
+	if got := deferralChoices(budget, "5h", "p", nil); got != "plan p: wait for its 5h window to reset" {
+		t.Errorf("with no free models = %q", got)
+	}
+}
+
+func TestPollNoticeNamesThePlanWhoseBudgetHeldARunNamingAnotherProvidersModel(t *testing.T) {
+	q, notices, d, cfg := deferralPoll("5h", money.FromUSD(10))
+	q.candidates[0].Model, q.candidates[0].ModelsNamed = "q/other", true
+	if _, err := Poll(context.Background(), d, cfg); err != nil {
+		t.Fatal(err)
+	}
+	want := "plan p: wait for its 5h window to reset, or name free build and review models on a ticket: p/free-a, p/free-b, q/free-a" + optInNote
+	if len(notices.raised) != 1 || notices.raised[0].Detail != want {
+		t.Fatalf("raised %+v, want the default plan named, whose budget held the run", notices.raised)
+	}
+}
+
+func TestPollNoticeNamesTheFreeModelsOwnPlanForANamedFreeModel(t *testing.T) {
+	q, notices, d, cfg := deferralPoll("5h", money.FromUSD(10))
+	q.candidates[0].Model, q.candidates[0].ModelsNamed = "q/free-a", true
+	q.candidates[0].ReviewModel, q.candidates[0].PlanModels = "p/free-b", []string{"q/free-a"}
+	q.candidates[0].Private, q.reserved = true, Totals{ProviderCost: money.FromUSD(1)}
+	q.freeBindings = map[string]string{"ABC-18": CeilingRunnerMinutes}
+	d.Estimator = fakeEstimator{bySize: map[string]Estimate{"M": {ProviderCost: money.FromUSD(1), Minutes: 30}}}
+	d.ModelPlans = &fakeModelPlans{plans: map[string]providers.Plan{"p": {PrivateOptIn: true}, "q": {PrivateOptIn: true}}}
+	if _, err := Poll(context.Background(), d, cfg); err != nil {
+		t.Fatal(err)
+	}
+	want := "plan q: wait for its runner-minutes ceiling to reset"
+	if len(notices.raised) != 1 || notices.raised[0].Detail != want {
+		t.Fatalf("raised %+v, want the free model's own plan named, with no free model offered", notices.raised)
 	}
 }

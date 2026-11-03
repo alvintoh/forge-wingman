@@ -124,8 +124,9 @@ const (
 	ticketBodyField = "ticket_body"
 	sizedByField    = "sized_by"
 	frontEndField   = "front_end"
-	// planField, lastResortField, lastResortModelsField, movedFromField and
-	// planModelsField are Record's own, written with the claim.
+	// planField is Record's own, written with the claim; lastResortField,
+	// lastResortModelsField, movedFromField and planModelsField are cleared by
+	// it, so a requeued run starts on the plan and models this claim chose.
 	planField             = "plan"
 	lastResortField       = "last_resort"
 	lastResortModelsField = "last_resort_models"
@@ -546,6 +547,8 @@ func (q *Queue) Candidates(ctx context.Context) ([]dispatcher.Candidate, error) 
 		cand := dispatcher.Candidate{
 			RunID: snap.Ref.ID, Repo: repo, Size: size, Private: private, Priority: int(priority),
 			Model:       buildModel(data),
+			ReviewModel: named.Review,
+			PlanModels:  named.Plan,
 			ModelsNamed: named.Build != "" || named.Review != "" || len(named.Plan) > 0,
 			Stage:       stage,
 			PlanFiles:   stringList(data, planFilesField),
@@ -1073,19 +1076,12 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 			updates = append(updates, firestore.Update{Path: decisionModeField, Value: string(facts.DecisionMode)})
 		}
 		if res.Stage != dispatcher.StageBuild {
-			var lastResortModels, movedFrom, planModels any = firestore.Delete, firestore.Delete, firestore.Delete
-			if facts.LastResort != nil {
-				lastResortModels = *facts.LastResort
-			}
-			if facts.Moved != nil {
-				movedFrom, planModels = facts.Moved.From, facts.Moved.Models
-			}
 			updates = append(updates,
 				firestore.Update{Path: planField, Value: runner.Provider(facts.Model)},
-				firestore.Update{Path: lastResortField, Value: facts.LastResort != nil},
-				firestore.Update{Path: lastResortModelsField, Value: lastResortModels},
-				firestore.Update{Path: movedFromField, Value: movedFrom},
-				firestore.Update{Path: planModelsField, Value: planModels},
+				firestore.Update{Path: lastResortField, Value: false},
+				firestore.Update{Path: lastResortModelsField, Value: firestore.Delete},
+				firestore.Update{Path: movedFromField, Value: firestore.Delete},
+				firestore.Update{Path: planModelsField, Value: firestore.Delete},
 			)
 		}
 		if err := tx.Update(rowRef, updates); err != nil {
