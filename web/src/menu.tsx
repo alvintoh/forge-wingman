@@ -2,7 +2,7 @@ import { Link, useLocation } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { PageHeader } from "./header";
-import { attentionCount, useInbox } from "./inbox-context";
+import { useInbox } from "./inbox-context";
 import { useProjectFilter } from "./project-filter";
 import { useMedia } from "./use-media";
 
@@ -275,7 +275,7 @@ type MenuProps = {
 function Menu({ rail, onNavigate }: MenuProps) {
   const { state } = useInbox();
   const { project } = useProjectFilter();
-  const actions = attentionCount(state) ?? 0;
+  const actions = state.status === "ready" ? state.runs.length : 0;
   return (
     <nav id={MENU_ID} aria-label="Menu" className={`pt-3 pb-3 ${rail ? "px-3.5" : "px-3"}`}>
       <ul className="flex flex-col gap-1">
