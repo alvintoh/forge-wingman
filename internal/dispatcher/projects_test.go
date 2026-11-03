@@ -55,6 +55,18 @@ func (f *fakeProjectIssues) DelegateIssue(_ context.Context, id string) error {
 	return nil
 }
 
+type fakeClosures struct {
+	tickets [][]string
+	at      time.Time
+	err     error
+}
+
+func (f *fakeClosures) RecordTicketsClosed(_ context.Context, tickets []string, at time.Time) (int, error) {
+	f.tickets = append(f.tickets, tickets)
+	f.at = at
+	return len(tickets), f.err
+}
+
 func phaseIssue(id, state, milestone string, order float64, delegate string) Issue {
 	return Issue{
 		ID: id, UUID: "uuid-" + id, Title: "[BE] " + id, Labels: []string{"size:S", "repo:octo/widget"},
@@ -144,6 +156,7 @@ func TestPollProjectsSnapshotsTheCurrentPhase(t *testing.T) {
 		phaseIssue("FRG-5", "unstarted", "P2", 2, ""),
 		queuedBlocked,
 		phaseIssue("FRG-7", "unstarted", "P3", 3, ""),
+		phaseIssue("FRG-8", "canceled", "P2", 2, ""),
 	}}
 	runs := fakeRuns{"FRG-3": {Stage: PhaseStageBuilding}, "FRG-6": {Queued: true}}
 	pollProjects(context.Background(), phaseDeps(&fakePhaseProjects{listed: []PhaseProject{{Repository: "octo/widget", LinearProject: "Roadmap"}}}, snaps, runs, issues), widgetReach)
@@ -161,6 +174,36 @@ func TestPollProjectsSnapshotsTheCurrentPhase(t *testing.T) {
 	}
 	if want := []string{"FRG-4", "FRG-5"}; !slices.Equal(got.Eligible, want) {
 		t.Errorf("eligible = %v, want %v", got.Eligible, want)
+	}
+}
+
+func TestPollProjectsMarksTheRunsOfCompletedAndCanceledTickets(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		err  error
+	}{
+		{"recorded", nil},
+		{"the store fails", errors.New("firestore unavailable")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			snaps := &fakeSnapshots{}
+			issues := &fakeProjectIssues{issues: []Issue{
+				phaseIssue("FRG-1", "completed", "P1", 1, ""),
+				phaseIssue("FRG-2", "canceled", "P1", 1, ""),
+				phaseIssue("FRG-3", "started", "P1", 1, "agent-1"),
+				phaseIssue("FRG-4", "unstarted", "P1", 1, ""),
+			}}
+			closures := &fakeClosures{err: tt.err}
+			d := phaseDeps(&fakePhaseProjects{listed: []PhaseProject{{Repository: "octo/widget", LinearProject: "Roadmap"}}}, snaps, fakeRuns{}, issues)
+			d.ProjectPhases.Closures = closures
+			pollProjects(context.Background(), d, widgetReach)
+			if len(closures.tickets) != 1 || !slices.Equal(closures.tickets[0], []string{"FRG-1", "FRG-2"}) || !closures.at.Equal(phaseNow) {
+				t.Fatalf("marked closed %v at %v, want [FRG-1 FRG-2] once at %v", closures.tickets, closures.at, phaseNow)
+			}
+			if len(snaps.got) != 1 || snaps.got[0].Unreadable {
+				t.Errorf("snapshots = %+v, want the project's snapshot recorded whatever the marking did", snaps.got)
+			}
+		})
 	}
 }
 
@@ -238,10 +281,18 @@ func TestStartIsRefusedWhenThePhaseMoved(t *testing.T) {
 func TestStartDelegatesNothingWhenLinearCannotBeRead(t *testing.T) {
 	projects := &fakePhaseProjects{listed: []PhaseProject{widget("P1")}}
 	snaps := &fakeSnapshots{}
-	issues := &fakeProjectIssues{err: errors.New("page 2 failed"), issues: []Issue{phaseIssue("FRG-1", "unstarted", "P1", 1, "")}}
-	pollProjects(context.Background(), phaseDeps(projects, snaps, fakeRuns{}, issues), widgetReach)
+	issues := &fakeProjectIssues{err: errors.New("page 2 failed"), issues: []Issue{
+		phaseIssue("FRG-1", "unstarted", "P1", 1, ""), phaseIssue("FRG-2", "completed", "P1", 1, ""),
+	}}
+	closures := &fakeClosures{}
+	d := phaseDeps(projects, snaps, fakeRuns{}, issues)
+	d.ProjectPhases.Closures = closures
+	pollProjects(context.Background(), d, widgetReach)
 	if len(issues.delegated) != 0 {
 		t.Fatalf("delegated %v from a failed read", issues.delegated)
+	}
+	if len(closures.tickets) != 0 {
+		t.Fatalf("marked closed %v from a failed read", closures.tickets)
 	}
 	if len(snaps.got) != 1 || !snaps.got[0].Unreadable || snaps.got[0].Reason != StartRefusedUnreadable || !snaps.got[0].At.Equal(phaseNow) {
 		t.Errorf("snapshot = %+v, want unreadable with its reason and time", snaps.got)

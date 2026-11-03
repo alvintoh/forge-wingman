@@ -131,6 +131,9 @@ type ProjectPhaseDeps struct {
 	Runs PhaseRuns
 	// Issues reads the projects' tickets and delegates one.
 	Issues ProjectIssues
+	// Closures is optional: left unset, no stopped run is marked as its ticket
+	// closed.
+	Closures TicketClosures
 }
 
 func (p ProjectPhaseDeps) ready() bool {
@@ -162,6 +165,12 @@ type ProjectIssues interface {
 	DelegateIssue(ctx context.Context, issueID string) error
 }
 
+// TicketClosures marks, on each stopped run of the named tickets not marked
+// yet, when the poll found its ticket closed, and returns how many it marked.
+type TicketClosures interface {
+	RecordTicketsClosed(ctx context.Context, tickets []string, at time.Time) (int, error)
+}
+
 // phaseView is one project's snapshot with the tickets a start would delegate.
 type phaseView struct {
 	snapshot PhaseSnapshot
@@ -191,6 +200,9 @@ func pollProjects(ctx context.Context, d Deps, reaches []RepoReach) {
 	if err != nil {
 		d.Logger.Warn("phaseIssuesUnread", "err", err.Error())
 	}
+	if err == nil {
+		recordClosed(ctx, d, issues, at)
+	}
 	views := make([]phaseView, 0, len(projects))
 	for _, p := range projects {
 		if err != nil {
@@ -218,6 +230,33 @@ func pollProjects(ctx context.Context, d Deps, reaches []RepoReach) {
 			}
 			startPhase(ctx, d, p, views[i], read)
 		}
+	}
+}
+
+// recordClosed marks the stopped runs of the tickets Linear holds completed or
+// canceled, so the inbox stops offering a retry of work closed elsewhere. A
+// failure is logged and leaves the poll running.
+func recordClosed(ctx context.Context, d Deps, issues []Issue, at time.Time) {
+	closures := d.ProjectPhases.Closures
+	if closures == nil {
+		return
+	}
+	var closed []string
+	for _, issue := range issues {
+		if issue.StateType == stateTypeCompleted || issue.StateType == stateTypeCanceled {
+			closed = append(closed, issue.ID)
+		}
+	}
+	if len(closed) == 0 {
+		return
+	}
+	marked, err := closures.RecordTicketsClosed(ctx, closed, at)
+	if err != nil {
+		d.Logger.Warn("ticketsClosedNotRecorded", "tickets", len(closed), "err", err.Error())
+		return
+	}
+	if marked > 0 {
+		d.Logger.Info("ticketsClosedRecorded", "runs", marked)
 	}
 }
 
