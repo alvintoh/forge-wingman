@@ -16,8 +16,12 @@ function page(): Page {
 }
 
 describe("shotFile", () => {
-  test("names a shot after its route and width", () => {
-    expect(shotFile(ROUTES[1]!, WIDE)).toBe("stats-l.png");
+  test("places a shot in its width's folder, named after its route", () => {
+    expect(shotFile(ROUTES[1]!, WIDE)).toBe("l/stats.png");
+  });
+
+  test("names the root index, the runner's name for a folder's own page", () => {
+    expect(shotFile(ROUTES[0]!, WIDE)).toBe("l/index.png");
   });
 });
 
@@ -38,7 +42,7 @@ describe("shootRoutes", () => {
     });
     expect(result).toEqual({ written: 2, refusals: [], pageErrors: [] });
     expect(urls).toEqual(["http://127.0.0.1:9/", "http://127.0.0.1:9/stats"]);
-    expect(written).toEqual(["/tmp/shots-test/root-l.png", "/tmp/shots-test/stats-l.png"]);
+    expect(written).toEqual(["/tmp/shots-test/l/index.png", "/tmp/shots-test/l/stats.png"]);
   });
 
   test("collects a refusal and carries on with the remaining shots", async () => {
@@ -64,7 +68,7 @@ describe("shootRoutes", () => {
         detail: "the page scrolls sideways: 12px wider than the viewport",
       },
     ]);
-    expect(calls).toEqual(["/tmp/shots-test/root-l.png", "/tmp/shots-test/stats-l.png"]);
+    expect(calls).toEqual(["/tmp/shots-test/l/index.png", "/tmp/shots-test/l/stats.png"]);
   });
 
   test("collects a route's page errors and clears them for the next route", async () => {
@@ -124,6 +128,6 @@ describe("shootRoutes", () => {
       log: (line) => lines.push(line),
       capture: async () => ({ width: 1024, height: 768 }),
     });
-    expect(lines).toEqual(["shotWrote file=root-l.png width=1024 height=768"]);
+    expect(lines).toEqual(["shotWrote file=l/index.png width=1024 height=768"]);
   });
 });

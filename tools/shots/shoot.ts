@@ -37,9 +37,14 @@ export type ShootResult = {
   pageErrors: PageError[];
 };
 
-/** shotFile names one shot after its route and width: `stats-s.png`. */
+/**
+ * shotFile places one shot in its width's folder, named after its route:
+ * `s/stats.png`. The root is `index`, the name the runner's evidence step reads
+ * as a folder's own page (internal/runner/evidence.go, shotRoute).
+ */
 export function shotFile(route: Route, viewport: Viewport): string {
-  return `${route.name}-${viewport.key}.png`;
+  const stem = route.pattern === "/" ? "index" : route.name;
+  return `${viewport.key}/${stem}.png`;
 }
 
 /**

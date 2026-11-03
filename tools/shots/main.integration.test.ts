@@ -56,11 +56,15 @@ describe.skipIf(executable === null)("run end to end", () => {
   test("writes every shot and exits 0 for a page with nothing wrong", async () => {
     const { code, lines, out } = await shoot("<p>fine</p>");
     expect(code).toBe(0);
-    expect(readdirSync(out).sort()).toEqual([
-      "root-l.png",
-      "root-m.png",
-      "root-s.png",
-      "root-xl.png",
+    expect(readdirSync(out, { recursive: true }).sort()).toEqual([
+      "l",
+      "l/index.png",
+      "m",
+      "m/index.png",
+      "s",
+      "s/index.png",
+      "xl",
+      "xl/index.png",
     ]);
     expect(lines.filter((line) => line.startsWith("shotsDone count=4 "))).toHaveLength(1);
   }, 60_000);

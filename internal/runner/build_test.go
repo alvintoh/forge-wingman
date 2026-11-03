@@ -3540,8 +3540,8 @@ func TestRunWorkflowChecksTheBranchPattern(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := strings.Count(string(yml), `[[ "$BRANCH" =~ `+branchPattern); n != 2 {
-		t.Fatalf("run.yml checks the branch pattern %d times, want 2 (check and pr)", n)
+	if n := strings.Count(string(yml), `[[ "$BRANCH" =~ `+branchPattern); n != 4 {
+		t.Fatalf("run.yml checks the branch pattern %d times, want 4 (check, pr-meta, shots and pr)", n)
 	}
 }
 

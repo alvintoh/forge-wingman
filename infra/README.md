@@ -168,6 +168,12 @@ A front-end change is held for the owner, still as a ready PR: a ticket labelled
 `{"alvintoh/forge-wingman":["web/"]}`. Either one holds it, and a value that is not
 valid JSON holds every PR. The PR body names what matched.
 
+A run whose branch changes `web/` also screenshots it: run.yml's `shots` job builds `web/dist`
+and runs `tools/shots`, which writes `<width>/<route>.png` (widths s, m, l, xl), and the `pr`
+job pushes those under `pr-<n>/` of the `evidence` branch and shows them in the PR body as a
+table. `evidence-cleanup.yml` removes that folder when the PR closes. A capture that fails
+leaves the run and the PR as they would be without it.
+
 The build agent runs in the agent container and the pre-PR checks in the checks image,
 so it has no shell on the runner to forge a job output: `build` and `plan-stage` refuse to
 start without `WINGMAN_AGENT_IMAGE`, and `build` without its checks image. The review's

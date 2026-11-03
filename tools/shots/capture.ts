@@ -1,7 +1,8 @@
 // One shot: load a route in a viewport, wait until the page is settled, refuse
 // to shoot a hovered control or a sideways scroll, and write the PNG.
 
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import type { Page } from "./chromium";
 
 /** One review width: its CSS size, device scale factor and mobile emulation. */
@@ -247,6 +248,7 @@ export async function captureShot(shot: Shot): Promise<{ width: number; height: 
   if (mismatch !== null) {
     throw new Error(mismatch);
   }
+  mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, png);
   return size;
 }

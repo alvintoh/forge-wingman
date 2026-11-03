@@ -1,0 +1,65 @@
+# Removes a closed PR's screenshots from the `evidence` branch: the `pr-<n>/` folder that
+# run.yml's pr job pushed them under, and nothing else. pull_request_target runs this file
+# as main holds it with a token that can write, also for a PR from a fork; it never checks
+# out the PR's code and reads nothing from the PR but its number. A missing branch or
+# folder is nothing to remove.
+name: evidence-cleanup
+
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions: {}
+
+# Two cleanups would race for the branch tip; queue them instead.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      # Deletes the folder through the git data API: a tree over the tip's with the folder's
+      # entry removed, a commit on the tip, then a fast-forward of the ref. A run pushing
+      # screenshots between the read and the ref update makes the update fail, so it starts
+      # again from the new tip.
+      - name: Remove the PR's folder from the evidence branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          [[ "$NUMBER" =~ ^[0-9]+$ ]] || { echo "unexpected PR number"; exit 1; }
+          folder="pr-${NUMBER}"
+          for _ in 1 2 3; do
+            tip="$(gh api "repos/${REPO}/git/matching-refs/heads/evidence" \
+              --jq '.[] | select(.ref == "refs/heads/evidence") | .object.sha')"
+            if [[ -z "$tip" ]]; then
+              echo "evidenceCleanupSkipped reason=no-branch pr=${NUMBER}"
+              exit 0
+            fi
+            tree="$(gh api "repos/${REPO}/git/commits/${tip}" --jq .tree.sha)"
+            entry="$(gh api "repos/${REPO}/git/trees/${tree}" \
+              --jq ".tree[] | select(.path == \"${folder}\" and .type == \"tree\") | .sha")"
+            if [[ -z "$entry" ]]; then
+              echo "evidenceCleanupSkipped reason=no-folder pr=${NUMBER}"
+              exit 0
+            fi
+            pruned="$(jq -n --arg base "$tree" --arg path "$folder" \
+              '{base_tree: $base, tree: [{path: $path, mode: "040000", type: "tree", sha: null}]}' \
+              | gh api "repos/${REPO}/git/trees" --input - --jq .sha)"
+            commit="$(jq -n --arg tree "$pruned" --arg parent "$tip" --arg message "chore(evidence): remove ${folder}" \
+              '{message: $message, tree: $tree, parents: [$parent]}' \
+              | gh api "repos/${REPO}/git/commits" --input - --jq .sha)"
+            if jq -n --arg sha "$commit" '{sha: $sha, force: false}' \
+              | gh api -X PATCH "repos/${REPO}/git/refs/heads/evidence" --input - --silent; then
+              echo "evidenceCleanupRemoved pr=${NUMBER} commit=${commit}"
+              exit 0
+            fi
+          done
+          echo "::error::the evidence branch kept moving; ${folder} is still on it"
+          exit 1
