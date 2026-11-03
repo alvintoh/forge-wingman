@@ -107,6 +107,12 @@ resource "google_cloud_run_v2_job" "dispatcher" {
     google_secret_manager_secret_iam_member.dispatcher_linear_app,
     google_project_service.this,
   ]
+
+  # gcloud stamps these on every hand-run image update; they are not
+  # configuration, so a plan of the job shows a real change or none.
+  lifecycle {
+    ignore_changes = [client, client_version]
+  }
 }
 
 resource "google_cloud_run_v2_job_iam_member" "dispatcher_invoker" {

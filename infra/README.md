@@ -281,6 +281,43 @@ Three variables name what OpenTofu cannot guess, and a fourth is optional:
 | `linear_delegate` | the Linear id of the agent the job acts for; a poll whose token is another agent's admits nothing |
 | `dispatcher_settings` | optional. A map of `WINGMAN_PLATFORM_CAP`, `WINGMAN_LARGE_CAP`, `WINGMAN_REVIEW_WIP`, `WINGMAN_STABLE_RUNS`, `WINGMAN_RISE_WITHIN`, `WINGMAN_HALVE_BEYOND`, `WINGMAN_TWO_STAGE` and `WINGMAN_DECISION_TIMEOUT` to a value; a key left out keeps its default. `WINGMAN_DECISION_TIMEOUT` is how long a run waits on an owner decision (e.g. `24h`) before it is stopped as waiting-on-owner. Both the dispatcher job and the surface service read it: the job runs under these settings and the surface's configuration view shows them, so a change needs both applied. The live values are in `settings.auto.tfvars`, which every plan and apply reads, so change them there |
 
+### Changing a setting
+
+Where each dispatcher setting lives decides how it changes:
+
+| Setting | Changed in | Takes effect |
+|---|---|---|
+| `WINGMAN_REVIEW_WIP`, `WINGMAN_TWO_STAGE`, `WINGMAN_DECISION_TIMEOUT` and the other `dispatcher_settings` keys | `settings.auto.tfvars`, in a pull request | after the two applies below |
+| the repository allowlist (once `WINGMAN_REPOS`, then the `linear_repositories` variable) | the owner database: the surface's Projects card, or `runner project-add` / `project-remove` ([Owner database](#owner-database)) | the next poll, no deploy |
+| the runs-per-repo cap | the owner database: the surface's Configuration page (`settings/runs-per-repo`) | the next poll, no deploy |
+| peak-hour mode | `runner peak-mode`, or the surface's Avoid peak hours switch | the next poll, no deploy |
+
+A `settings.auto.tfvars` change is applied by hand once merged, the job and the surface each
+alone. `deploy-surface.yml` does not run for an `infra/` change, and it refuses a plan that
+changes more than the image, so it never carries a setting. Pass each deployable's live image so
+neither is redeployed:
+
+```sh
+cd infra
+D=$(gcloud run jobs describe forge-wingman-dispatcher --region=us-central1 --project=forge-wingman \
+  --format='value(spec.template.spec.template.spec.containers[0].image)')
+L=$(gcloud run jobs describe forge-wingman-dispatcher --region=us-central1 --project=forge-wingman \
+  --format=json | jq -r '.spec.template.spec.template.spec.containers[0].env[] | select(.name=="LINEAR_DELEGATE") | .value')
+S=$(gcloud run services describe forge-wingman-surface --region=us-central1 --project=forge-wingman \
+  --format='value(spec.template.spec.containers[0].image)')
+V=(-var="dispatcher_image=${D}" -var="linear_delegate=${L}" -var="surface_image=${S}"
+   -var=webhook_image=x -var=surface_owner_email=x)
+# expect: Plan: 0 to add, 1 to change, 0 to destroy, and only the env lines you edited differ.
+tofu plan -target=google_cloud_run_v2_job.dispatcher "${V[@]}"
+tofu apply -target=google_cloud_run_v2_job.dispatcher "${V[@]}"
+tofu plan -target=google_cloud_run_v2_service.surface "${V[@]}"
+tofu apply -target=google_cloud_run_v2_service.surface "${V[@]}"
+```
+
+With nothing edited, the job's plan reads `No changes.` (checked 2026-11-03 against the live job):
+the settings above are the ones it runs under, and the `client` stamps gcloud leaves on a
+hand-run update are ignored.
+
 ### The queue tie-break
 
 Runs of one priority are claimed oldest-queued first, by a `queued_at` field the
@@ -362,9 +399,10 @@ gcloud logging read 'resource.type="cloud_run_job"' --freshness=1h --limit=50
 `owner` is a second Firestore database holding the owner's controls: the repository
 allowlist and each project's phase state (`docs/adr/0019-owner-controls-live-in-an-owner-database.md`).
 It exists so the runner cannot change what it works on. The runner's
-`roles/datastore.user` binding (`identity.tf`) carries a condition that excludes it, and no
-other identity's binding changes: the dispatcher, the surface and the webhook keep their
-unconditional grants, which already reach every database.
+`roles/datastore.user` binding (`identity.tf`) carries a condition that excludes it, and so
+does the webhook's (`webhook.tf`): the webhook is public and never reads the owner's controls.
+The dispatcher and the surface keep their unconditional grants, which reach every database,
+because the dispatcher reads `owner` and the surface writes it.
 
 ### Apply
 
@@ -420,13 +458,14 @@ probe() { # $1 service account, $2 database id
       "${url}?updateMask.fieldPaths=probe")" \
     "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $tok" "${url}")"
 }
-for out in runner_service_account dispatcher_service_account surface_service_account; do
+for out in runner_service_account webhook_service_account dispatcher_service_account surface_service_account; do
   sa=$(tofu output -raw "$out")
   echo "$out owner: $(probe "$sa" owner)  default: $(probe "$sa" '(default)')"
 done
 ```
 
-Expect `w=403 r=403` for the runner on `owner` and `w=200 r=200` everywhere else. Then delete
+Expect `w=403 r=403` for the runner and the webhook on `owner`, and `w=200 r=200` everywhere
+else: on `(default)` for all four, and on `owner` for the dispatcher and the surface. Then delete
 the probe documents in both databases (`probe/check`) from the console or with the same token.
 Also confirm the database exists: `gcloud firestore databases list --project=forge-wingman`.
 
@@ -670,10 +709,54 @@ the live values and the image check passes.
 ### The registry
 
 `registry.tf` brings the hand-made `forge-wingman` repository in with an `import` block. Its
-cleanup policy keeps the newest 20 versions of the `surface` package and deletes older ones; both
-rules name the `surface` package alone, so the dispatcher's and the webhook's images are never
-matched. It starts as a dry run (`cleanup_policy_dry_run = true`), which logs what it would
-delete and deletes nothing.
+cleanup policy is one rule for every package (`dispatcher`, `surface`, `webhook`): keep the newest
+10 versions, and delete a version only when it is also older than 7 days. A keep rule wins where
+both match, so nothing younger than 7 days and none of a package's newest 10 is ever deleted. A
+count alone gave the surface about 4 days of rollback at ~7.6 merges a day; the time floor holds
+1 week for each deployable at any merge rate, and storage at this size is close to free.
+
+A version is one manifest, so a multi-platform push (an index, its platform manifest and its
+attestation) counts as three, and older dispatcher and webhook pushes are that shape. Artifact
+Registry never deletes a manifest an index still references, and the image each deployable runs
+is its package's newest, so the running image and the one before it are always kept. Check that
+after any push that is not the newest: a rollback to a digest older than 7 days and outside the
+newest 10 would be deletable.
+
+It starts as a dry run (`cleanup_policy_dry_run = true`), which deletes nothing and records what
+it would delete as a Data Access audit entry. Those entries exist only because
+`google_project_iam_audit_config.registry` turns on Artifact Registry's `DATA_WRITE` audit logs.
+
+#### What the dry run would delete
+
+Before an apply, list each package newest first and compare with the digests that serve; every
+running digest must be among its package's newest 10 or younger than 7 days:
+
+```sh
+B=us-central1-docker.pkg.dev/forge-wingman/forge-wingman
+for p in dispatcher webhook surface; do
+  echo "== $p"
+  gcloud artifacts docker images list "$B/$p" --include-tags --sort-by=~CREATE_TIME \
+    --format='csv[no-heading](version,create_time,tags)' | nl
+done
+gcloud run jobs describe forge-wingman-dispatcher --region=us-central1 --project=forge-wingman \
+  --format='value(spec.template.spec.template.spec.containers[0].image)'
+for s in webhook surface; do
+  gcloud run services describe "forge-wingman-$s" --region=us-central1 --project=forge-wingman \
+    --format='value(spec.template.spec.containers[0].image)'
+done
+```
+
+After an apply, give the background job a day, then read what it chose:
+
+```sh
+gcloud logging read 'protoPayload.methodName:"BatchDeleteVersions" AND protoPayload.request.validateOnly=true' \
+  --project=forge-wingman --freshness=2d --format='json(protoPayload.request)'
+```
+
+The request lists the version names it would delete (the field holding them is not named on
+Artifact Registry's cleanup page, so read the first entry before scripting against it).
+
+None of the names may be a running digest, nor the dispatcher's rollback digest.
 
 ### Bootstrap (once, by the owner)
 
@@ -751,8 +834,8 @@ Once the fix is merged and deployed, return the traffic to the newest revision w
 
 ### Turning the dry run off
 
-After a week of dry-run logs, read what the policy would have deleted (Artifact Registry's
-audit log entries in Cloud Logging) and confirm every entry is a `surface` version. Then, in a
+After a week of dry-run logs, read what the policy would have deleted (the `gcloud logging read`
+above) and confirm no entry is a digest any deployable runs or would roll back to. Then, in a
 change of its own, set `cleanup_policy_dry_run = false` and apply the registry alone:
 
 ```sh
@@ -775,7 +858,7 @@ it, an issue gets one run.
 
 | Service account | Grants |
 |---|---|
-| `webhook` | Firestore read/write, read `linear-webhook-secret`, `linear-client-id` and `linear-client-secret`, start one execution of the dispatcher job |
+| `webhook` | Firestore read/write on every database except `owner`, read `linear-webhook-secret`, `linear-client-id` and `linear-client-secret`, start one execution of the dispatcher job |
 
 `webhook_image` is the image, built with `CMD=webhook`; every apply must pass it,
 as it passes `dispatcher_image`. With no signing secret the service still starts
@@ -825,6 +908,34 @@ Live check, on a test ticket:
 gcloud run services update forge-wingman-webhook --region=us-central1 \
   --update-env-vars=DISPATCHER_RUN_URI=https://us-central1-run.googleapis.com/v2/projects/forge-wingman/locations/us-central1/jobs/missing:run
 gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="forge-wingman-webhook"' --freshness=10m --limit=50
+```
+
+### Excluding the owner database
+
+The webhook's datastore binding carries the runner's condition (`webhook.tf`), applied alone.
+No other identity's binding is in the plan, and no target uses an image, so placeholders do:
+
+```sh
+cd infra
+V=(-var=dispatcher_image=x -var=webhook_image=x -var=linear_delegate=x -var=surface_image=x -var=surface_owner_email=x)
+# expect: Plan: 1 to add, 0 to change, 1 to destroy.  (webhook_datastore, +/- create before destroy)
+tofu plan -target=google_project_iam_member.webhook_datastore "${V[@]}"
+tofu apply -target=google_project_iam_member.webhook_datastore "${V[@]}"
+```
+
+The conditional binding is created before the unconditional one is destroyed, so a delivery
+mid-apply still writes its marker. Then read it back:
+
+1. Run the probe in [Owner database, Read it back](#read-it-back). The webhook line must read
+   `owner: w=403 r=403  default: w=200 r=200`; IAM can take a few minutes to apply a change, so
+   rerun a `200` on `owner` before treating it as a failure. Delete the `probe/check` documents
+   after.
+2. Delegate a test ticket and confirm the webhook still records it in `(default)`: the log shows
+   `webhookWoke` and a `dispatch/webhook-<session id>` document appears.
+
+```sh
+gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="forge-wingman-webhook" AND "webhookWoke"' \
+  --project=forge-wingman --freshness=30m --limit=5
 ```
 
 ## Rolling out the model identity
