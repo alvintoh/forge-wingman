@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"sort"
@@ -463,6 +465,57 @@ func TestWorkflowsInstallThePinnedOmp(t *testing.T) {
 				t.Errorf("%s has no %q", name, want)
 			}
 		}
+	}
+}
+
+// TestOmpRunsOnOneBunVersion holds every bun that runs omp to one version: the
+// one each workflow installing omp sets up on the runner host, and the one the
+// agent image copies in. Nothing else ties them together, so bumping one pin
+// leaves omp on two runtimes depending on where a step runs it.
+func TestOmpRunsOnOneBunVersion(t *testing.T) {
+	root := filepath.Join("..", "..")
+	workflowPin := regexp.MustCompile(`(?m)^\s+bun-version:\s*["']?([^"'\s]+)["']?\s*$`)
+	imagePin := regexp.MustCompile(`(?m)^FROM oven/bun:(\d+\.\d+\.\d+)\S*`)
+	pins := map[string]string{}
+	pin := func(name string, re *regexp.Regexp) {
+		raw, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := re.FindAllStringSubmatch(string(raw), -1)
+		if len(m) != 1 {
+			t.Fatalf("%s pins bun %d times, want once", name, len(m))
+		}
+		pins[name] = m[0][1]
+	}
+
+	workflows, err := filepath.Glob(filepath.Join(root, ".github", "workflows", "*.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range workflows {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(raw), "bun install --frozen-lockfile --cwd tools/omp") {
+			pin(filepath.ToSlash(filepath.Join(".github", "workflows", filepath.Base(path))), workflowPin)
+		}
+	}
+	pin("tools/agent/Dockerfile", imagePin)
+	for _, name := range []string{".github/workflows/model.yml", ".github/workflows/plan-smoke.yml"} {
+		if _, ok := pins[name]; !ok {
+			t.Fatalf("%s no longer installs omp, so this check no longer covers it", name)
+		}
+	}
+
+	names := slices.Sorted(maps.Keys(pins))
+	if slices.ContainsFunc(names, func(n string) bool { return pins[n] != pins[names[0]] }) {
+		var b strings.Builder
+		for _, n := range names {
+			b.WriteString("\n  " + n + ": " + pins[n])
+		}
+		t.Fatalf("omp runs on different bun versions; set one version in all of these:%s", b.String())
 	}
 }
 
