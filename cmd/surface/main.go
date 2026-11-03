@@ -64,6 +64,8 @@ func run(logger *slog.Logger) error {
 	var running RunningReader
 	var retries RunRetries
 	var runsCap RunsPerRepoStore
+	var runsAtOnce RunsAtOnceStore
+	var recommender RunsAtOnceRecommender
 	if project := os.Getenv("GOOGLE_CLOUD_PROJECT"); project != "" {
 		fsc, err := firestore.NewClient(context.Background(), project)
 		if err != nil {
@@ -84,6 +86,7 @@ func run(logger *slog.Logger) error {
 		defer func() { _ = owner.Close() }()
 		phases, queue, reaches := store.NewPhases(owner), store.NewQueue(fsc), store.NewReaches(fsc)
 		retries = queue
+		recommender = queue
 		running = queue
 		projects = ProjectStores{
 			Projects: phases, Snapshots: store.NewPhaseSnapshots(fsc), Reaches: reaches,
@@ -91,6 +94,7 @@ func run(logger *slog.Logger) error {
 			Adds: store.NewProjects(owner), Names: store.NewProjectNames(fsc),
 		}
 		runsCap = store.NewRunsPerRepo(owner)
+		runsAtOnce = store.NewRunsAtOnce(owner)
 	}
 
 	// Merging needs the surface's own GitHub token, which no run job holds.
@@ -120,6 +124,8 @@ func run(logger *slog.Logger) error {
 		Merger:     merger,
 		Pulls:      pulls,
 		RepoCap:    runsCap,
+		RunsAtOnce: runsAtOnce,
+		Recommend:  recommender,
 	}
 
 	handler, err := gate(context.Background(), logger, newMux(deps))
@@ -176,6 +182,8 @@ type Deps struct {
 	Merger     PRMerger
 	Pulls      PullLister
 	RepoCap    RunsPerRepoStore
+	RunsAtOnce RunsAtOnceStore
+	Recommend  RunsAtOnceRecommender
 	Getenv     func(string) string
 }
 
@@ -198,6 +206,8 @@ func newMux(d Deps) *http.ServeMux {
 	mux.HandleFunc("POST /api/auto-merge", d.setAutoMerge)
 	mux.HandleFunc("GET /api/runs-per-repo", d.runsPerRepo)
 	mux.HandleFunc("POST /api/runs-per-repo", d.setRunsPerRepo)
+	mux.HandleFunc("GET /api/runs-at-once", d.runsAtOnce)
+	mux.HandleFunc("POST /api/runs-at-once", d.setRunsAtOnce)
 	mux.HandleFunc("GET /api/projects", d.projects)
 	mux.HandleFunc("POST /api/projects/start", d.startProject)
 	mux.HandleFunc("POST /api/projects/stop", d.stopProject)

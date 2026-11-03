@@ -61,3 +61,42 @@ func TestNextConcurrency(t *testing.T) {
 		})
 	}
 }
+
+func TestRecommend(t *testing.T) {
+	solo := 10 * time.Minute
+	stable := Observation{Solo: solo, Loaded: 12 * time.Minute}
+	for name, tt := range map[string]struct {
+		prev Recommendation
+		n    int
+		obs  Observation
+		want Recommendation
+	}{
+		"a stable median counts toward one more": {
+			Recommendation{N: 2, Stable: 2, Basis: BasisSteady}, 2, stable, Recommendation{N: 2, Stable: 3, Basis: BasisSteady}},
+		"the fifth stable median recommends one more": {
+			Recommendation{N: 2, Stable: 4, Basis: BasisSteady}, 2, stable, Recommendation{N: 3, Stable: 5, Basis: BasisRise}},
+		"a stable median after a rise keeps recommending one more": {
+			Recommendation{N: 3, Stable: 5, Basis: BasisRise}, 2, stable, Recommendation{N: 3, Stable: 5, Basis: BasisRise}},
+		"a median between the bands recommends N and restarts the count": {
+			Recommendation{N: 3, Stable: 5, Basis: BasisRise}, 2, Observation{Solo: solo, Loaded: 14 * time.Minute},
+			Recommendation{N: 2, Basis: BasisSteady}},
+		"a slow median recommends half": {
+			Recommendation{N: 2, Stable: 3, Basis: BasisSteady}, 4, Observation{Solo: solo, Loaded: 16 * time.Minute},
+			Recommendation{N: 2, Basis: BasisSlow}},
+		"a rate-limit stop recommends half": {
+			Recommendation{}, 5, Observation{RateLimited: true}, Recommendation{N: 2, Basis: BasisRateLimited}},
+		"halving one recommends one": {
+			Recommendation{}, 1, Observation{RateLimited: true}, Recommendation{N: 1, Basis: BasisSteady}},
+		"no medians leave the recommendation as it was": {
+			Recommendation{N: 1, Basis: BasisSlow}, 2, Observation{Solo: solo}, Recommendation{N: 1, Basis: BasisSlow}},
+		"the platform cap holds the recommendation at N": {
+			Recommendation{N: platformCap, Stable: 4, Basis: BasisSteady}, platformCap, stable,
+			Recommendation{N: platformCap, Basis: BasisSteady}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := Recommend(tt.prev, tt.n, tt.obs, DefaultTuning, platformCap); got != tt.want {
+				t.Fatalf("got %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}

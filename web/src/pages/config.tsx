@@ -6,24 +6,28 @@ import { captionClass } from "../caption";
 import { AutoMergeSection } from "../config/auto-merge-section";
 import { ConcurrencySection } from "../config/concurrency-section";
 import { ModelsSection } from "../config/models-section";
+import { isRunsAtOnceView } from "../config/runs-at-once";
+import { RunsAtOnceSection } from "../config/runs-at-once-section";
 import { useConfigSave } from "../config/save-state";
 import { avoidsPeak, isConfigView, isPeakView, isRunsPerRepoView } from "../config/types";
 import { useRead } from "../stats/use-read";
 
 /**
  * Configuration holds every setting in one centred column, 598px at most: the auto-merge switch,
- * the models by phase with the Avoid peak hours switch, then the dispatcher's limits, read-only.
- * One BACK / SAVE pair ends the page and saves whichever switches changed.
+ * the models by phase with the Avoid peak hours switch, runs at once (N), then the dispatcher's
+ * other limits, read-only. One BACK / SAVE pair ends the page and saves whatever changed.
  */
 export function Configuration() {
   const autonomy = useRead("/api/autonomy", isAutonomy, "autonomyNotRead");
   const peak = useRead("/api/peak", isPeakView, "peakNotRead");
   const config = useRead("/api/config", isConfigView, "configNotRead");
   const runsPerRepo = useRead("/api/runs-per-repo", isRunsPerRepoView, "runsPerRepoNotRead");
+  const runsAtOnce = useRead("/api/runs-at-once", isRunsAtOnceView, "runsAtOnceNotRead");
   const form = useConfigSave(
     {
       autoMerge: autonomy.status === "ready" ? autonomy.body.auto_merge.switch_on : null,
       avoidPeak: peak.status === "ready" ? avoidsPeak(peak.body.mode) : null,
+      runsAtOnce: runsAtOnce.status === "ready" ? runsAtOnce.body : null,
     },
     autonomy.reload,
   );
@@ -72,6 +76,14 @@ export function Configuration() {
             disabled={form.saving}
             onToggle={toggleAvoidPeak}
           />
+          <RunsAtOnceSection
+            read={runsAtOnce}
+            view={form.saved.runsAtOnce}
+            text={form.shown.runsAtOnce}
+            invalid={form.invalid}
+            disabled={form.saving}
+            onFill={form.fill}
+          />
           <ConcurrencySection config={config} runsPerRepo={runsPerRepo} />
         </div>
         <p
@@ -79,7 +91,7 @@ export function Configuration() {
           role="status"
           className="mt-4 px-padx text-label leading-5 text-ink2 min-[600px]:px-0 min-[600px]:text-center"
         >
-          {form.changed ? "Change not saved yet." : "No changes to save."}
+          {form.status}
         </p>
         {form.failure !== null && (
           <p
@@ -98,7 +110,7 @@ export function Configuration() {
             <ActionButton
               label="SAVE"
               kind="primary"
-              aria-disabled={!form.changed || form.saving}
+              aria-disabled={!form.changed || form.invalid || form.saving}
               aria-describedby={statusId}
               onClick={save}
             />

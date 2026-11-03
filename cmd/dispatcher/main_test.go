@@ -233,7 +233,7 @@ func TestLoadConfigRefusesAnUnknownDecisionMode(t *testing.T) {
 	}
 }
 
-// stubRunsPerRepo is the owner's runs-per-repo cap as a poll reads it.
+// stubRunsPerRepo is one of the owner's whole-number settings as a poll reads it.
 type stubRunsPerRepo struct {
 	value int
 	err   error
@@ -293,5 +293,58 @@ func TestOwnerRunsPerRepoLeavesAnInRangeCapAlone(t *testing.T) {
 		if got := ownerRunsPerRepo(context.Background(), logger, stubRunsPerRepo{value: n}); got != n || logs.Len() != 0 {
 			t.Fatalf("cap = %d for a read of %d, log %q, want it unchanged and silent", got, n, logs.String())
 		}
+	}
+}
+
+// stubAdopter records the N it was asked to adopt.
+type stubAdopter struct {
+	adopted []int
+	err     error
+}
+
+func (s *stubAdopter) AdoptRunsAtOnce(_ context.Context, n int) error {
+	s.adopted = append(s.adopted, n)
+	return s.err
+}
+
+// TestAdoptRunsAtOnceAdoptsTheOwnersNHeldToThePlatformCap is AC2's read: the
+// owner's saved N is the one the poll claims under, held to 1..the cap.
+func TestAdoptRunsAtOnceAdoptsTheOwnersNHeldToThePlatformCap(t *testing.T) {
+	for name, tt := range map[string]struct{ read, want int }{
+		"the saved N":   {3, 3},
+		"the default":   {2, 2},
+		"the cap":       {20, 20},
+		"zero":          {0, 1},
+		"above the cap": {25, 20},
+	} {
+		t.Run(name, func(t *testing.T) {
+			adopter := &stubAdopter{}
+			adoptRunsAtOnce(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)), stubRunsPerRepo{value: tt.read}, adopter, 20)
+			if len(adopter.adopted) != 1 || adopter.adopted[0] != tt.want {
+				t.Fatalf("adopted %v, want [%d]", adopter.adopted, tt.want)
+			}
+		})
+	}
+}
+
+// TestAdoptRunsAtOnceKeepsTheLastNWhenTheOwnersCannotBeRead is the rule that an
+// unreadable N adopts nothing, so a read failure never raises N.
+func TestAdoptRunsAtOnceKeepsTheLastNWhenTheOwnersCannotBeRead(t *testing.T) {
+	var logs strings.Builder
+	adopter := &stubAdopter{}
+	adoptRunsAtOnce(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), stubRunsPerRepo{err: errors.New("no document")}, adopter, 20)
+	if len(adopter.adopted) != 0 {
+		t.Fatalf("adopted %v, want nothing", adopter.adopted)
+	}
+	if !strings.Contains(logs.String(), "runsAtOnceNotRead") {
+		t.Fatalf("no runsAtOnceNotRead line in:\n%s", logs.String())
+	}
+}
+
+func TestAdoptRunsAtOnceLogsAnAdoptionItCouldNotMake(t *testing.T) {
+	var logs strings.Builder
+	adoptRunsAtOnce(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), stubRunsPerRepo{value: 3}, &stubAdopter{err: errors.New("aborted")}, 20)
+	if !strings.Contains(logs.String(), "runsAtOnceNotAdopted") {
+		t.Fatalf("no runsAtOnceNotAdopted line in:\n%s", logs.String())
 	}
 }

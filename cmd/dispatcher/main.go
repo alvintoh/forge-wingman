@@ -174,8 +174,8 @@ func ownerRepositories(ctx context.Context, owner *firestore.Client) ([]string, 
 	return listedRepositories(ctx, store.NewProjects(owner))
 }
 
-// runsPerRepoReader is the owner's cap on runs in one repository as a poll reads it.
-type runsPerRepoReader interface {
+// settingReader is one of the owner's whole-number settings as a poll reads it.
+type settingReader interface {
 	Value(ctx context.Context) (int, error)
 }
 
@@ -183,7 +183,7 @@ type runsPerRepoReader interface {
 // cannot be read is the default, never no cap at all, and one read outside the
 // setting's range is held to the nearest end of it, so the cap is never lifted
 // past the maximum nor lowered past the minimum.
-func ownerRunsPerRepo(ctx context.Context, logger *slog.Logger, reader runsPerRepoReader) int {
+func ownerRunsPerRepo(ctx context.Context, logger *slog.Logger, reader settingReader) int {
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 	n, err := reader.Value(ctx)
@@ -196,6 +196,32 @@ func ownerRunsPerRepo(ctx context.Context, logger *slog.Logger, reader runsPerRe
 		logger.Warn("runsPerRepoOutOfRange", "runs_per_repo", n, "held_to", held)
 	}
 	return held
+}
+
+// runsAtOnceAdopter makes the owner's N the one admission claims under.
+type runsAtOnceAdopter interface {
+	AdoptRunsAtOnce(ctx context.Context, n int) error
+}
+
+// adoptRunsAtOnce reads the owner's N once and makes it the N the poll that
+// follows claims under, held to 1..platformCap. An N that cannot be read, or
+// cannot be adopted, leaves the N the last poll adopted rather than guess one,
+// which could raise it past what the owner set.
+func adoptRunsAtOnce(ctx context.Context, logger *slog.Logger, reader settingReader, adopter runsAtOnceAdopter, platformCap int) {
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+	n, err := reader.Value(ctx)
+	if err != nil {
+		logger.Warn("runsAtOnceNotRead", "err", err.Error())
+		return
+	}
+	held := min(max(n, dispatcher.MinRunsAtOnce), platformCap)
+	if held != n {
+		logger.Warn("runsAtOnceOutOfRange", "runs_at_once", n, "held_to", held)
+	}
+	if err := adopter.AdoptRunsAtOnce(ctx, held); err != nil {
+		logger.Warn("runsAtOnceNotAdopted", "err", err.Error(), "runs_at_once", held)
+	}
 }
 
 // slackPoster opens the Slack poster from the webhook secret, trimmed of the
@@ -254,6 +280,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 	dispatcher.LogPhase(logger, "setup", started, time.Now())
 	gh := dispatcher.GitHub{Token: githubToken, Workflow: runWorkflow, Branch: runBranch, Client: client}
 	queue := store.NewQueue(fsc).WithLogger(logger)
+	adoptRunsAtOnce(ctx, logger, store.NewRunsAtOnce(owner), queue, c.limits.OrDefault().PlatformCap)
 	plans := store.NewPlans(fsc)
 	model := runner.DefaultModel()
 	next, err := nextPlans(providers.PaidPlans(), model)

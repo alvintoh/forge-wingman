@@ -681,12 +681,18 @@ func labelsOf(row map[string]any, field string) runner.ModelLabels {
 
 // ledgerDoc is the dispatch/ledger document's own shape (adr/0003): the
 // reservation every claimed-but-not-yet-settled run holds, keyed by run id and
-// attempt, and the discovered concurrency limit N beside them. A ledger written
-// before N existed reads as 1.
+// attempt, the owner's concurrency limit N admission claims under, and the N
+// the concurrency rule recommends beside it. A ledger written before N existed
+// reads as 1.
 type ledgerDoc struct {
 	Reservations map[string]reservationEntry `firestore:"reservations"`
-	N            int                         `firestore:"n"`
-	StableRuns   int                         `firestore:"stable_runs"`
+	// N is the owner's N as the dispatcher last adopted it (AdoptRunsAtOnce).
+	N          int `firestore:"n"`
+	StableRuns int `firestore:"stable_runs"`
+	// Recommended and RecommendBasis are the rule's recommendation at N; zero
+	// and empty while nothing has been observed at N.
+	Recommended    int    `firestore:"recommended_n"`
+	RecommendBasis string `firestore:"recommend_basis"`
 	// PlatformCap is the configured cap N may not pass, as the last claim saw it.
 	PlatformCap int `firestore:"platform_cap"`
 	// ChangedAfter is the latest claim time among the runs in flight when N last
@@ -895,6 +901,22 @@ func (d ledgerDoc) tuning() dispatcher.Tuning {
 // concurrency is the ledger's N and stable count as the rule reads them.
 func (d ledgerDoc) concurrency() dispatcher.Concurrency {
 	return dispatcher.Concurrency{N: max(d.N, 1), Stable: d.StableRuns}
+}
+
+// recommendation is the rule's recommendation at the ledger's N.
+func (d ledgerDoc) recommendation() dispatcher.Recommendation {
+	return dispatcher.Recommendation{N: d.Recommended, Stable: d.StableRuns, Basis: d.RecommendBasis}
+}
+
+// latestClaim is the latest claim time among the runs in flight, and after
+// where none is later.
+func (d ledgerDoc) latestClaim(after time.Time) time.Time {
+	for _, r := range d.Reservations {
+		if r.ClaimedAt.After(after) {
+			after = r.ClaimedAt
+		}
+	}
+	return after
 }
 
 // subject is the candidate a run row describes.
@@ -1730,7 +1752,8 @@ func (q *Queue) RecordVerdict(ctx context.Context, runID string, verdict prov.Ve
 
 // Settle removes the reservation runID holds at attempt from the
 // ledger, once its record carries its actual cost (runner.Finalize), and in
-// the same transaction moves N by what the settled run showed. It is a no-op
+// the same transaction updates the N recommended by what the settled run
+// showed; it never moves the owner's N. It is a no-op
 // when that attempt holds no reservation, so a record job that runs more than
 // once settles exactly once, and a late job never reaches a later attempt's
 // entry (adr/0003).
@@ -1786,26 +1809,17 @@ func (q *Queue) settle(ctx context.Context, runID string, attempt *int, stage st
 			}
 			return tx.Update(ledgerRef, ledgerUpdates)
 		}
-		cur := ledger.concurrency()
 		obs, err := q.observe(tx, rowRef, ledger)
 		if err != nil {
 			return err
 		}
 		platformCap := cmp.Or(ledger.PlatformCap, dispatcher.DefaultLimits.PlatformCap)
-		next := dispatcher.NextConcurrency(cur, obs, ledger.tuning(), platformCap)
-		changedAfter := ledger.ChangedAfter
-		if next.N != cur.N {
-			for _, r := range ledger.Reservations {
-				if r.ClaimedAt.After(changedAfter) {
-					changedAfter = r.ClaimedAt
-				}
-			}
-		}
+		rec := dispatcher.Recommend(ledger.recommendation(), ledger.concurrency().N, obs, ledger.tuning(), platformCap)
 		return tx.Update(ledgerRef, []firestore.Update{
 			{FieldPath: firestore.FieldPath{"reservations", key}, Value: firestore.Delete},
-			{Path: "n", Value: next.N},
-			{Path: "stable_runs", Value: next.Stable},
-			{Path: "changed_after", Value: changedAfter},
+			{Path: "stable_runs", Value: rec.Stable},
+			{Path: "recommended_n", Value: rec.N},
+			{Path: "recommend_basis", Value: rec.Basis},
 		})
 	})
 	if err != nil {

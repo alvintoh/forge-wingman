@@ -1733,6 +1733,15 @@ func seedRuns(t *testing.T, client *firestore.Client, size, prefix string, count
 	return ids
 }
 
+// recommended is the N the ledger recommends: its own N while nothing has
+// been observed at it.
+func recommended(ledger ledgerDoc) int {
+	if ledger.Recommended == 0 {
+		return ledger.N
+	}
+	return ledger.Recommended
+}
+
 // holdReservation makes the ledger hold a reservation for each run, claimed at
 // the given time, beside the ledger's own N, stable count and change marker.
 func holdReservation(t *testing.T, client *firestore.Client, ledger ledgerDoc, claimedAt map[string]time.Time) {
@@ -1746,7 +1755,7 @@ func holdReservation(t *testing.T, client *firestore.Client, ledger ledgerDoc, c
 	}
 }
 
-func TestSettleMovesNByWhatTheSettledRunShowed(t *testing.T) {
+func TestSettleRecommendsNByWhatTheSettledRunShowed(t *testing.T) {
 	const solo, slow = 10 * time.Minute, 20 * time.Minute
 	for name, tt := range map[string]struct {
 		before  ledgerDoc
@@ -1763,51 +1772,51 @@ func TestSettleMovesNByWhatTheSettledRunShowed(t *testing.T) {
 	}{
 		"the fifth stable run raises N": {
 			before: ledgerDoc{N: 1, StableRuns: 4}, claimed: 1, took: solo, outcome: runner.OutcomePROpened, alone: 4,
-			want: ledgerDoc{N: 2},
+			want: ledgerDoc{Recommended: 2, StableRuns: 5},
 		},
 		"a slow median of five at N halves it": {
 			before: ledgerDoc{N: 2, StableRuns: 3}, claimed: 2, took: slow, outcome: runner.OutcomePROpened, alone: 5, loaded: 4,
-			want: ledgerDoc{N: 1},
+			want: ledgerDoc{Recommended: 1},
 		},
 		"a run claimed below N holds it": {
 			before: ledgerDoc{N: 3, StableRuns: 2}, claimed: 1, took: solo, outcome: runner.OutcomePROpened, alone: 5,
-			want: ledgerDoc{N: 3, StableRuns: 2},
+			want: ledgerDoc{Recommended: 3, StableRuns: 2},
 		},
 		"fewer than five runs at N is no evidence": {
 			before: ledgerDoc{N: 1, StableRuns: 4}, claimed: 1, took: solo, outcome: runner.OutcomePROpened, alone: 3,
-			want: ledgerDoc{N: 1, StableRuns: 4},
+			want: ledgerDoc{Recommended: 1, StableRuns: 4},
 		},
 		"a quick failure does not count as a stable run": {
 			before: ledgerDoc{N: 1, StableRuns: 4}, claimed: 1, took: time.Second, outcome: runner.OutcomeAgentFailed, alone: 5,
-			want: ledgerDoc{N: 1, StableRuns: 4},
+			want: ledgerDoc{Recommended: 1, StableRuns: 4},
 		},
 		"a ledger tuned to two stable runs raises N on the second": {
 			before: ledgerDoc{N: 1, StableRuns: 1, TuneStableRuns: 2}, claimed: 1, took: solo, outcome: runner.OutcomePROpened, alone: 2,
-			want: ledgerDoc{N: 2},
+			want: ledgerDoc{Recommended: 2, StableRuns: 2},
 		},
 		"a ledger tuned to a tighter rise band holds a median the default would count": {
 			before: ledgerDoc{N: 2, StableRuns: 3, TuneRiseWithin: 1.05}, claimed: 2, took: 11 * time.Minute, outcome: runner.OutcomePROpened, alone: 5, loaded: 4,
-			want: ledgerDoc{N: 2},
+			want: ledgerDoc{Recommended: 2},
 		},
 		"a ledger tuned to an earlier fall band halves at a median the default would hold": {
 			before: ledgerDoc{N: 2, StableRuns: 3, TuneRiseWithin: 1.1, TuneHalveBeyond: 1.2}, claimed: 2, took: 13 * time.Minute, outcome: runner.OutcomePROpened, alone: 5, loaded: 4,
-			want: ledgerDoc{N: 1},
+			want: ledgerDoc{Recommended: 1},
 		},
 		"a tuned count reads only that many of the latest runs": {
 			before: ledgerDoc{N: 2, StableRuns: 1, TuneStableRuns: 2}, claimed: 2, took: solo, outcome: runner.OutcomePROpened, alone: 5, loaded: 1, older: 3,
-			want: ledgerDoc{N: 3},
+			want: ledgerDoc{Recommended: 3, StableRuns: 2},
 		},
 		"a tuned count reads only that many of the latest runs alone": {
 			before: ledgerDoc{N: 2, StableRuns: 1, TuneStableRuns: 2}, claimed: 2, took: 16 * time.Minute, outcome: runner.OutcomePROpened, alone: 2, loaded: 1, olderAlone: 3,
-			want: ledgerDoc{N: 1},
+			want: ledgerDoc{Recommended: 1},
 		},
 		"runs at N are no evidence while too few ran alone": {
 			before: ledgerDoc{N: 2, StableRuns: 3}, claimed: 2, took: solo, outcome: runner.OutcomePROpened, alone: 3, loaded: 4,
-			want: ledgerDoc{N: 2, StableRuns: 3},
+			want: ledgerDoc{Recommended: 2, StableRuns: 3},
 		},
 		"only the latest five runs at N make the median": {
 			before: ledgerDoc{N: 2, StableRuns: 4}, claimed: 2, took: solo, outcome: runner.OutcomePROpened, alone: 5, loaded: 4, older: 6,
-			want: ledgerDoc{N: 3},
+			want: ledgerDoc{Recommended: 3, StableRuns: 5},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -1827,8 +1836,9 @@ func TestSettleMovesNByWhatTheSettledRunShowed(t *testing.T) {
 				t.Fatal(err)
 			}
 			got := readLedgerDoc(t, client)
-			if got.N != tt.want.N || got.StableRuns != tt.want.StableRuns {
-				t.Fatalf("N %d stable %d, want N %d stable %d", got.N, got.StableRuns, tt.want.N, tt.want.StableRuns)
+			if got.N != tt.before.N || recommended(got) != tt.want.Recommended || got.StableRuns != tt.want.StableRuns {
+				t.Fatalf("N %d recommended %d stable %d, want N %d recommended %d stable %d",
+					got.N, recommended(got), got.StableRuns, tt.before.N, tt.want.Recommended, tt.want.StableRuns)
 			}
 			if _, held := got.Reservations[reservationKey(id, 0, dispatcher.StageBuild)]; held {
 				t.Fatal("the settled run's reservation was not dropped")
@@ -1837,7 +1847,7 @@ func TestSettleMovesNByWhatTheSettledRunShowed(t *testing.T) {
 	}
 }
 
-func TestSettleHalvesNOncePerIncident(t *testing.T) {
+func TestSettleRecommendsHalfOnARateLimitStopAndLeavesNAlone(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
 	ids := []string{fresh("queue-limited-a"), fresh("queue-limited-b"), fresh("queue-limited-c")}
@@ -1859,16 +1869,18 @@ func TestSettleHalvesNOncePerIncident(t *testing.T) {
 	if err := q.Settle(ctx, ids[0], attemptOf(0)); err != nil {
 		t.Fatal(err)
 	}
-	if got := readLedgerDoc(t, client); got.N != 2 || got.StableRuns != 0 {
-		t.Fatalf("N %d stable %d, want N halved to 2 with the count restarted", got.N, got.StableRuns)
+	got := readLedgerDoc(t, client)
+	if got.N != 4 || got.Recommended != 2 || got.StableRuns != 0 || got.RecommendBasis != dispatcher.BasisRateLimited {
+		t.Fatalf("N %d recommended %d stable %d basis %q, want N left at 4 and half of it recommended for the rate limit",
+			got.N, got.Recommended, got.StableRuns, got.RecommendBasis)
 	}
 	for _, id := range ids[1:] {
 		if err := q.Settle(ctx, id, attemptOf(0)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if got := readLedgerDoc(t, client).N; got != 2 {
-		t.Fatalf("N = %d, want the other failures of the same incident to leave it at 2", got)
+	if got := readLedgerDoc(t, client); got.N != 4 || got.Recommended != 2 {
+		t.Fatalf("N %d recommended %d, want the other failures of the same incident to recommend half of 4 still", got.N, got.Recommended)
 	}
 }
 
@@ -1883,12 +1895,12 @@ func TestSettleIgnoresARunClaimedAboveAnNAlreadyHalved(t *testing.T) {
 	if err := q.Settle(ctx, id, attemptOf(0)); err != nil {
 		t.Fatal(err)
 	}
-	if got := readLedgerDoc(t, client); got.N != 4 || got.StableRuns != 2 {
-		t.Fatalf("N %d stable %d, want a run claimed before N moved to leave both alone", got.N, got.StableRuns)
+	if got := readLedgerDoc(t, client); got.N != 4 || recommended(got) != 4 || got.StableRuns != 2 {
+		t.Fatalf("N %d recommended %d stable %d, want a run claimed before N moved to leave all three alone", got.N, recommended(got), got.StableRuns)
 	}
 }
 
-func TestSettleCapsNAtTheConfiguredPlatformCap(t *testing.T) {
+func TestSettleCapsTheRecommendationAtTheConfiguredPlatformCap(t *testing.T) {
 	q, client := queue(t)
 	size := "S-" + fresh("cap")
 	id := fresh("queue-cap")
@@ -1901,8 +1913,8 @@ func TestSettleCapsNAtTheConfiguredPlatformCap(t *testing.T) {
 	if err := q.Settle(context.Background(), id, attemptOf(0)); err != nil {
 		t.Fatal(err)
 	}
-	if got := readLedgerDoc(t, client).N; got != 2 {
-		t.Fatalf("N = %d, want it held at the configured cap", got)
+	if got := readLedgerDoc(t, client); got.N != 2 || recommended(got) != 2 {
+		t.Fatalf("N %d recommended %d, want the recommendation held at the configured cap", got.N, recommended(got))
 	}
 }
 
@@ -2039,8 +2051,8 @@ func TestSettleIgnoresAnInfraFailureThatIsNotAProviderStop(t *testing.T) {
 			if err := q.Settle(context.Background(), id, attemptOf(0)); err != nil {
 				t.Fatal(err)
 			}
-			if got := readLedgerDoc(t, client); got.N != 4 || got.StableRuns != 3 {
-				t.Fatalf("N %d stable %d, want N left at 4", got.N, got.StableRuns)
+			if got := readLedgerDoc(t, client); got.N != 4 || recommended(got) != 4 || got.StableRuns != 3 {
+				t.Fatalf("N %d recommended %d stable %d, want nothing recommended", got.N, recommended(got), got.StableRuns)
 			}
 		})
 	}
@@ -2059,8 +2071,8 @@ func TestSettleNeedsFiveRunsAtNNotOnlyFiveAlone(t *testing.T) {
 	if err := q.Settle(context.Background(), id, attemptOf(0)); err != nil {
 		t.Fatal(err)
 	}
-	if got := readLedgerDoc(t, client); got.N != 2 || got.StableRuns != 3 {
-		t.Fatalf("N %d stable %d, want three loaded runs to be no evidence", got.N, got.StableRuns)
+	if got := readLedgerDoc(t, client); got.N != 2 || recommended(got) != 2 || got.StableRuns != 3 {
+		t.Fatalf("N %d recommended %d stable %d, want three loaded runs to be no evidence", got.N, recommended(got), got.StableRuns)
 	}
 }
 
@@ -2081,8 +2093,8 @@ func TestSettleCountsRunsThatFoundNothingToChange(t *testing.T) {
 	if err := q.Settle(context.Background(), id, attemptOf(0)); err != nil {
 		t.Fatal(err)
 	}
-	if got := readLedgerDoc(t, client).N; got != 2 {
-		t.Fatalf("N = %d, want five no-change runs to count as stable and raise it to 2", got)
+	if got := readLedgerDoc(t, client); got.N != 1 || got.Recommended != 2 {
+		t.Fatalf("N %d recommended %d, want five no-change runs to count as stable and recommend 2", got.N, got.Recommended)
 	}
 }
 
@@ -2101,8 +2113,8 @@ func TestSettleReadsOnlyRunsOfTheSettledRunsSize(t *testing.T) {
 	if err := q.Settle(context.Background(), id, attemptOf(0)); err != nil {
 		t.Fatal(err)
 	}
-	if got := readLedgerDoc(t, client).N; got != 3 {
-		t.Fatalf("N = %d, want runs of another size left out of the medians", got)
+	if got := readLedgerDoc(t, client); got.N != 2 || got.Recommended != 3 {
+		t.Fatalf("N %d recommended %d, want runs of another size left out of the medians", got.N, got.Recommended)
 	}
 }
 
@@ -2124,8 +2136,8 @@ func TestSettleSkipsARunWithNoSettlementTime(t *testing.T) {
 	if err := q.Settle(context.Background(), id, attemptOf(0)); err != nil {
 		t.Fatal(err)
 	}
-	if got := readLedgerDoc(t, client); got.N != 1 || got.StableRuns != 4 {
-		t.Fatalf("N %d stable %d, want four settled runs to be no evidence", got.N, got.StableRuns)
+	if got := readLedgerDoc(t, client); got.N != 1 || recommended(got) != 1 || got.StableRuns != 4 {
+		t.Fatalf("N %d recommended %d stable %d, want four settled runs to be no evidence", got.N, recommended(got), got.StableRuns)
 	}
 }
 
@@ -2144,8 +2156,8 @@ func TestSettleTakesTheMedianOfOnlyTheLatestFiveLoadedRuns(t *testing.T) {
 	if err := q.Settle(context.Background(), id, attemptOf(0)); err != nil {
 		t.Fatal(err)
 	}
-	if got := readLedgerDoc(t, client).N; got != 1 {
-		t.Fatalf("N = %d, want the slow median of the latest five to halve it", got)
+	if got := readLedgerDoc(t, client); got.N != 2 || got.Recommended != 1 {
+		t.Fatalf("N %d recommended %d, want the slow median of the latest five to recommend half", got.N, got.Recommended)
 	}
 }
 
@@ -2223,8 +2235,8 @@ func TestSettleIgnoresARunClaimedBelowNEvenWhereNHasEvidence(t *testing.T) {
 	if err := q.Settle(context.Background(), id, attemptOf(0)); err != nil {
 		t.Fatal(err)
 	}
-	if got := readLedgerDoc(t, client); got.N != 3 || got.StableRuns != 2 {
-		t.Fatalf("N %d stable %d, want a run claimed below N to leave both alone", got.N, got.StableRuns)
+	if got := readLedgerDoc(t, client); got.N != 3 || recommended(got) != 3 || got.StableRuns != 2 {
+		t.Fatalf("N %d recommended %d stable %d, want a run claimed below N to leave all three alone", got.N, recommended(got), got.StableRuns)
 	}
 }
 
@@ -2242,7 +2254,7 @@ func TestSettleDropsTheReservationOfARunWithNoRow(t *testing.T) {
 		t.Fatalf("reservations %v, N %d stable %d, want the reservation dropped and N left alone", got.Reservations, got.N, got.StableRuns)
 	}
 	if !got.ChangedAfter.IsZero() {
-		t.Fatalf("changed_after = %v, want it left alone while N did not move", got.ChangedAfter)
+		t.Fatalf("changed_after = %v, want it left alone by a settle", got.ChangedAfter)
 	}
 }
 
