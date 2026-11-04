@@ -30,7 +30,7 @@ const HELD_VIEW = describeRunSuccess({
 
 // The word keeps its place without the figure's line, which sets the row's baseline, by taking its
 // margin; the mark sits 3px down so its centre is 6px above that baseline.
-function ReadyBody({ view, projectChosen }: { view: RunSuccessView; projectChosen: boolean }) {
+function ReadyBody({ view }: { view: RunSuccessView }) {
   return (
     <>
       <div
@@ -63,11 +63,6 @@ function ReadyBody({ view, projectChosen }: { view: RunSuccessView; projectChose
           {line}
         </p>
       ))}
-      {projectChosen && (
-        <p className="mt-2 text-label leading-4.5 font-semibold text-ink">
-          run success: all projects
-        </p>
-      )}
     </>
   );
 }
@@ -76,12 +71,12 @@ function ReadyBody({ view, projectChosen }: { view: RunSuccessView; projectChose
  * RunSuccessCard is the Statistics card for run success: the trailing four weeks as a shape, a word
  * and a figure against the target, the previous four weeks and the most common stop, then the last
  * settled runs as its closing section. The endpoint is pooled, so a project chosen on the page leaves
- * the figures as All draws them and the card says so, while the runs section follows the project.
+ * the figures as All draws them, while the runs section follows the project.
  */
 export function RunSuccessCard({ project }: { project: string | null }) {
   const read = useRead("/api/run-success", isRunSuccess, "runSuccessNotRead");
   return (
-    <RunSuccessCardView read={read} projectChosen={project !== null}>
+    <RunSuccessCardView read={read}>
       <RunHistory project={project} />
     </RunSuccessCardView>
   );
@@ -91,11 +86,9 @@ export function RunSuccessCard({ project }: { project: string | null }) {
 // they read for themselves, so the card's state never decides theirs.
 export function RunSuccessCardView({
   read,
-  projectChosen,
   children,
 }: {
   read: Read<RunSuccess>;
-  projectChosen: boolean;
   children: ReactNode;
 }) {
   return (
@@ -111,7 +104,7 @@ export function RunSuccessCardView({
       {read.status === "loading" && (
         <div className="grid">
           <div aria-hidden="true" className="invisible col-start-1 row-start-1">
-            <ReadyBody view={HELD_VIEW} projectChosen={projectChosen} />
+            <ReadyBody view={HELD_VIEW} />
           </div>
           <p role="status" className={`col-start-1 row-start-1 self-start ${STATUS_LINE}`}>
             Reading the run success…
@@ -123,9 +116,7 @@ export function RunSuccessCardView({
           The run success could not be read.
         </p>
       )}
-      {read.status === "ready" && (
-        <ReadyBody view={describeRunSuccess(read.body)} projectChosen={projectChosen} />
-      )}
+      {read.status === "ready" && <ReadyBody view={describeRunSuccess(read.body)} />}
       {children}
     </section>
   );

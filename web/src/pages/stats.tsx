@@ -12,7 +12,7 @@ import { RunSuccessCard } from "../stats/run-success-card";
 // Statistics shows the run success against its target with the recent runs as the card's last
 // section, the rewrite rate, the concurrency and the share of each phase's input the provider served
 // from cache, with the project filter that narrows the runs; the run success and rewrite-rate figures
-// stay pooled and say so, and the concurrency is the dispatcher's own.
+// stay pooled, and the concurrency is the dispatcher's own.
 export function Stats() {
   const [state, setState] = useState<RunsState>({ status: "loading", runs: [] });
   const { state: list, retry } = useProjects();
@@ -72,7 +72,7 @@ export function Stats() {
         </h1>
         <div className="mt-4 flex min-w-0 flex-col gap-y-2 @[51.25rem]:gap-y-4 @[51.25rem]:col-start-1 @[51.25rem]:row-start-2">
           <RunSuccessCard project={narrowed} />
-          <RewriteRate projectChosen={project !== null} />
+          <RewriteRate />
           <ConcurrencyCard />
         </div>
         {/* The filter column's caption and its card take the page's two rows, so the card's top is
