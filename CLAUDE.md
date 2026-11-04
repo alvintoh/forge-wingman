@@ -153,6 +153,21 @@ commands instead.
 
 *(Judgment call, owner-confirmed 2026-10-01: "why keep asking me to do it".)*
 
+## Applying OpenTofu for the owner
+
+When a change needs `tofu apply`, I run it myself instead of handing the command back. Only when
+ALL hold:
+
+- the owner approved the change (merged its PR, or said to apply it);
+- I save the plan with the runbook's targets (`tofu plan … -out=<file>`) and it shows exactly the
+  intended change: no replace, no destroy, no resource the change did not name;
+- I apply that saved plan file, never a fresh `tofu apply`, so what runs is what was read;
+- I read the resource back afterwards and report the value, not the apply's exit code.
+
+A plan that differs in any way stops for the owner, with the plan pasted. *(Owner's instruction
+2026-11-04: "codify to run it for me instead of me running it myself"; first done on FRG-200, a
+one-attribute targeted plan.)*
+
 ## omp is the default harness, and a fallback needs evidence
 
 A plan's harness is **omp** unless omp cannot reach the model. Establish that by
