@@ -18,7 +18,7 @@ resource "google_artifact_registry_repository" "images" {
   # any merge rate, for near-free storage. Versions count per package and include
   # the untagged platform and attestation manifests a multi-platform push adds; a
   # manifest an index still references is never deleted.
-  cleanup_policy_dry_run = true
+  cleanup_policy_dry_run = false
 
   cleanup_policies {
     id     = "keep-newest-10"
