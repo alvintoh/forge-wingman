@@ -43,9 +43,9 @@ func TestNextConcurrency(t *testing.T) {
 		"halving never goes below one": {
 			Concurrency{N: 1}, Observation{RateLimited: true}, 1, 0},
 		"a rise from 15 stays at 15": {
-			Concurrency{N: MaxRunsAtOnce, Stable: 4}, Observation{Solo: solo, Loaded: solo}, MaxRunsAtOnce, 0},
+			Concurrency{N: MaxRunsAtOnce, Stable: 4}, Observation{Solo: solo, Loaded: solo}, 15, 0},
 		"N above 15 is brought down to it": {
-			Concurrency{N: platformCap}, Observation{}, MaxRunsAtOnce, 0},
+			Concurrency{N: platformCap}, Observation{}, 15, 0},
 		"an unset N reads as one": {
 			Concurrency{}, Observation{Solo: solo, Loaded: solo}, 1, 1},
 		"no solo baseline holds N": {
@@ -105,7 +105,7 @@ func TestRecommend(t *testing.T) {
 			Recommendation{N: 1, Basis: BasisSlow}, 2, Observation{Solo: solo}, Recommendation{N: 1, Basis: BasisSlow}},
 		"15 holds the recommendation at N": {
 			Recommendation{N: MaxRunsAtOnce, Stable: 4, Basis: BasisSteady}, MaxRunsAtOnce, stable,
-			Recommendation{N: MaxRunsAtOnce, Basis: BasisSteady}},
+			Recommendation{N: 15, Basis: BasisSteady}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := Recommend(tt.prev, tt.n, tt.obs, DefaultTuning, platformCap); got != tt.want {
