@@ -20,7 +20,7 @@ export type Recommendation = {
  */
 export type RunsAtOnceView = {
   runs_at_once: number;
-  platform_cap: number;
+  max: number;
   recommendation: Recommendation | null;
 };
 
@@ -36,56 +36,35 @@ const isRecommendation = shape<Recommendation>({
 /** isRunsAtOnceView narrows the runs-at-once endpoint's answer. */
 export const isRunsAtOnceView = shape<RunsAtOnceView>({
   runs_at_once: isNumber,
-  platform_cap: isNumber,
+  max: isNumber,
   recommendation: nullable(isRecommendation),
 });
 
-/** The presets beside the field: one tap fills it with the number and saves nothing. */
-export const RUNS_AT_ONCE_PRESETS = [5, 10, 15] as const;
+/** N's lower bound; its upper bound is the view's max. */
+export const MIN_RUNS_AT_ONCE = 1;
 
-/** presetsUnder is the presets the platform cap allows; one above it is never offered. */
-export function presetsUnder(platformCap: number): number[] {
-  return RUNS_AT_ONCE_PRESETS.filter((preset) => preset <= platformCap);
-}
-
-/** parseRunsAtOnce is the field's text as N, or null unless it is a whole number from 1 to the cap. */
-export function parseRunsAtOnce(text: string, platformCap: number): number | null {
-  if (!/^\d+$/.test(text.trim())) {
-    return null;
+// reason is why the rule recommends r.n beside the owner's saved n, from the evidence at n.
+function reason(r: Recommendation, n: number, max: number): string {
+  if (r.basis === "slow") {
+    return `a run at ${n} took more than ${r.halve_beyond}x the solo median, so it halves to ${r.n}.`;
   }
-  const n = Number(text.trim());
-  return n >= 1 && n <= platformCap ? n : null;
-}
-
-/** rangeSentence says what N is and its range, from the platform cap. */
-export function rangeSentence(platformCap: number): string {
-  return `The most runs in flight at once, across every project: a whole number from 1 to ${platformCap}.`;
-}
-
-/** rangeError is the words under a field holding no N the range allows. */
-export function rangeError(platformCap: number): string {
-  return `Enter a whole number from 1 to ${platformCap}.`;
-}
-
-/**
- * reasonWords is why the rule recommends r.n beside the owner's saved n, worded from the evidence
- * at n. A recommendation equal to n says how far the count has to go, unless n is the cap.
- */
-export function reasonWords(r: Recommendation, n: number, platformCap: number): string {
-  switch (r.basis) {
-    case "rise":
-      return `${r.stable_runs} runs in a row at ${n} finished within ${r.rise_within}x the solo median, so one more can run at once.`;
-    case "slow":
-      return `A run at ${n} took more than ${r.halve_beyond}x the solo median, so it halves to ${r.n}.`;
-    case "rate-limited":
-      return `A run at ${n} was stopped by the provider's rate limit, so it halves to ${r.n}.`;
+  if (r.basis === "rate-limited") {
+    return `a run at ${n} was stopped by the provider's rate limit, so it halves to ${r.n}.`;
   }
-  if (n >= platformCap) {
-    return `The same as yours: ${platformCap} is the platform cap.`;
+  if (r.basis === "rise" && r.n > n) {
+    return `${r.stable_runs} runs in a row at ${n} finished within ${r.rise_within}x the solo median, so one more can run at once.`;
+  }
+  if (n >= max) {
+    return `runs at once cannot go above ${max}.`;
   }
   if (r.basis === "none" || r.stable === 0) {
-    return `The same as yours. No run has finished at ${n} yet; after ${r.stable_runs} in a row it recommends ${n + 1}.`;
+    return `no run has finished at ${n} yet; after ${r.stable_runs} in a row it recommends ${n + 1}.`;
   }
   const runs = r.stable === 1 ? "run" : "runs";
-  return `The same as yours. ${r.stable} ${runs} in a row at ${n} finished within ${r.rise_within}x the solo median; after ${r.stable_runs} it recommends ${n + 1}.`;
+  return `${r.stable} ${runs} in a row at ${n} finished within ${r.rise_within}x the solo median; after ${r.stable_runs} it recommends ${n + 1}.`;
+}
+
+/** noteWords is the recommendation note under the stepper, worded from the saved n. */
+export function noteWords(r: Recommendation, n: number, max: number): string {
+  return `Recommended: ${r.n}, because ${reason(r, n, max)}`;
 }

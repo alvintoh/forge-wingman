@@ -79,10 +79,9 @@ export function Configuration() {
           <RunsAtOnceSection
             read={runsAtOnce}
             view={form.saved.runsAtOnce}
-            text={form.shown.runsAtOnce}
-            invalid={form.invalid}
+            value={form.shown.runsAtOnce}
             disabled={form.saving}
-            onFill={form.fill}
+            onChange={form.setRunsAtOnce}
           />
           <ConcurrencySection config={config} runsPerRepo={runsPerRepo} />
         </div>
@@ -110,7 +109,7 @@ export function Configuration() {
             <ActionButton
               label="SAVE"
               kind="primary"
-              aria-disabled={!form.changed || form.invalid || form.saving}
+              aria-disabled={!form.changed || form.saving}
               aria-describedby={statusId}
               onClick={save}
             />
