@@ -25,12 +25,12 @@ type RunsAtOnceRecommender interface {
 	RecommendedRunsAtOnce(ctx context.Context) (store.RecommendedRunsAtOnce, error)
 }
 
-// runsAtOnceResponse is the runs-at-once endpoint's wire shape. Recommendation
-// is null when it could not be read, which leaves N itself readable and
-// settable.
+// runsAtOnceResponse is the runs-at-once endpoint's wire shape. Max is N's
+// upper bound. Recommendation is null when it could not be read, which leaves
+// N itself readable and settable.
 type runsAtOnceResponse struct {
 	RunsAtOnce     int                 `json:"runs_at_once"`
-	PlatformCap    int                 `json:"platform_cap"`
+	Max            int                 `json:"max"`
 	Recommendation *recommendationView `json:"recommendation"`
 }
 
@@ -52,19 +52,19 @@ const basisNone = "none"
 // recommendationAt is the recommendation beside the owner's n. One the ledger
 // observed at another N, before the dispatcher adopted n, says nothing about n,
 // so it is n with nothing observed yet.
-func recommendationAt(n, platformCap int, rec store.RecommendedRunsAtOnce) recommendationView {
+func recommendationAt(n, maxN int, rec store.RecommendedRunsAtOnce) recommendationView {
 	view := recommendationView{
 		N: n, Basis: basisNone,
 		StableRuns: rec.Tuning.StableRuns, RiseWithin: rec.Tuning.RiseWithin, HalveBeyond: rec.Tuning.HalveBeyond,
 	}
 	if r := rec.Recommendation; rec.At == n && r.Basis != dispatcher.BasisNone {
-		view.N, view.Basis, view.Stable = min(r.N, platformCap), r.Basis, r.Stable
+		view.N, view.Basis, view.Stable = min(r.N, maxN), r.Basis, r.Stable
 	}
 	return view
 }
 
-// platformCap is the configured platform cap, N's upper bound.
-func (d Deps) platformCap() (int, error) {
+// maxRunsAtOnce is N's upper bound under the configured platform cap.
+func (d Deps) maxRunsAtOnce() (int, error) {
 	getenv := d.Getenv
 	if getenv == nil {
 		getenv = os.Getenv
@@ -73,19 +73,19 @@ func (d Deps) platformCap() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return limits.OrDefault().PlatformCap, nil
+	return dispatcher.RunsAtOnceMax(limits.OrDefault().PlatformCap), nil
 }
 
-// writeRunsAtOnce answers with n held to the cap and the recommendation beside it.
-func (d Deps) writeRunsAtOnce(w http.ResponseWriter, r *http.Request, n, platformCap int) {
-	n = min(n, platformCap)
-	out := runsAtOnceResponse{RunsAtOnce: n, PlatformCap: platformCap}
+// writeRunsAtOnce answers with n held to maxN and the recommendation beside it.
+func (d Deps) writeRunsAtOnce(w http.ResponseWriter, r *http.Request, n, maxN int) {
+	n = min(n, maxN)
+	out := runsAtOnceResponse{RunsAtOnce: n, Max: maxN}
 	if d.Recommend == nil {
 		d.Logger.Warn("runsAtOnceRecommendationNotRead", "err", "no recommender")
 	} else if rec, err := d.Recommend.RecommendedRunsAtOnce(r.Context()); err != nil {
 		d.Logger.Warn("runsAtOnceRecommendationNotRead", "err", err.Error())
 	} else {
-		view := recommendationAt(n, platformCap, rec)
+		view := recommendationAt(n, maxN, rec)
 		out.Recommendation = &view
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -99,7 +99,7 @@ func (d Deps) runsAtOnce(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "runs at once needs a store", http.StatusServiceUnavailable)
 		return
 	}
-	platformCap, err := d.platformCap()
+	maxN, err := d.maxRunsAtOnce()
 	if err != nil {
 		d.Logger.Error("configNotRead", "err", err.Error())
 		http.Error(w, "reading the configuration", http.StatusInternalServerError)
@@ -111,12 +111,12 @@ func (d Deps) runsAtOnce(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "reading runs at once", http.StatusInternalServerError)
 		return
 	}
-	d.writeRunsAtOnce(w, r, n, platformCap)
+	d.writeRunsAtOnce(w, r, n, maxN)
 }
 
 // setRunsAtOnce serves POST /api/runs-at-once, gated as the runs-per-repo
 // write is: a JSON body naming the setting and nothing else. N outside 1 to
-// the platform cap is refused.
+// its upper bound is refused.
 func (d Deps) setRunsAtOnce(w http.ResponseWriter, r *http.Request) {
 	if d.RunsAtOnce == nil {
 		http.Error(w, "runs at once needs a store", http.StatusServiceUnavailable)
@@ -133,15 +133,15 @@ func (d Deps) setRunsAtOnce(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "the request body is not JSON naming runs at once", http.StatusBadRequest)
 		return
 	}
-	platformCap, err := d.platformCap()
+	maxN, err := d.maxRunsAtOnce()
 	if err != nil {
 		d.Logger.Error("configNotRead", "err", err.Error())
 		http.Error(w, "reading the configuration", http.StatusInternalServerError)
 		return
 	}
 	n := *body.RunsAtOnce
-	if n < dispatcher.MinRunsAtOnce || n > platformCap {
-		http.Error(w, fmt.Sprintf("runs at once %d is not from %d to %d", n, dispatcher.MinRunsAtOnce, platformCap),
+	if n < dispatcher.MinRunsAtOnce || n > maxN {
+		http.Error(w, fmt.Sprintf("runs at once %d is not from %d to %d", n, dispatcher.MinRunsAtOnce, maxN),
 			http.StatusBadRequest)
 		return
 	}
@@ -151,5 +151,5 @@ func (d Deps) setRunsAtOnce(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.Logger.Info("runsAtOnceSet", "runs_at_once", n)
-	d.writeRunsAtOnce(w, r, n, platformCap)
+	d.writeRunsAtOnce(w, r, n, maxN)
 }

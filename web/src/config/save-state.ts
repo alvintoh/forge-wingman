@@ -1,16 +1,16 @@
 import { useState } from "react";
 import { isBoolean, shape } from "../autonomy/guard";
 import { postJSON } from "../post-json";
-import { isRunsAtOnceView, parseRunsAtOnce } from "./runs-at-once";
+import { isRunsAtOnceView } from "./runs-at-once";
 import type { RunsAtOnceView } from "./runs-at-once";
 import { PEAK_MODE, avoidsPeak, isPeakView } from "./types";
 import type { PeakView } from "./types";
 
 /**
- * The page's two switches and the runs-at-once field's text; a staged value is one the owner set
- * and has not saved.
+ * The page's two switches and the runs-at-once N; a staged value is one the owner set and has not
+ * saved.
  */
-type Staged = { autoMerge?: boolean; avoidPeak?: boolean; runsAtOnce?: string };
+type Staged = { autoMerge?: boolean; avoidPeak?: boolean; runsAtOnce?: number };
 
 type Switch = "autoMerge" | "avoidPeak";
 type Setting = keyof Staged;
@@ -38,19 +38,15 @@ type Answers = {
 
 type Status = {
   saving: boolean;
-  invalid: boolean;
   changed: boolean;
   // The N the last save set, until the next change.
   savedRunsAtOnce: number | null;
 };
 
 /** statusWords is the line under the page's settings: what a SAVE would do, or has just done. */
-export function statusWords({ saving, invalid, changed, savedRunsAtOnce }: Status): string {
+export function statusWords({ saving, changed, savedRunsAtOnce }: Status): string {
   if (saving) {
     return "Saving…";
-  }
-  if (invalid) {
-    return "Fix the number to save.";
   }
   if (changed) {
     return "Change not saved yet.";
@@ -61,19 +57,25 @@ export function statusWords({ saving, invalid, changed, savedRunsAtOnce }: Statu
   return "No changes to save.";
 }
 
-/**
- * runsAtOnceChange is what the field's text stages against the saved N: no change while it reads
- * as the saved N, invalid while it holds no N the cap allows.
- */
-export function runsAtOnceChange(
-  text: string | undefined,
-  saved: RunsAtOnceView | null,
-): { changed: boolean; invalid: boolean } {
-  if (text === undefined || saved === null) {
-    return { changed: false, invalid: false };
+/** restage is was with setting staged at value; setting it back to the saved value is no change. */
+export function restage<K extends Setting>(
+  was: Staged,
+  setting: K,
+  value: Staged[K],
+  savedValue: Staged[K] | null,
+): Staged {
+  const next = { ...was };
+  if (value === savedValue) {
+    delete next[setting];
+  } else {
+    next[setting] = value;
   }
-  const n = parseRunsAtOnce(text, saved.platform_cap);
-  return { changed: n !== saved.runs_at_once, invalid: n === null };
+  return next;
+}
+
+/** isChanged says whether anything is staged for a SAVE. */
+export function isChanged(staged: Staged): boolean {
+  return SAVE_ORDER.some((setting) => staged[setting] !== undefined);
 }
 
 const isEnabled = shape<{ enabled: boolean }>({ enabled: isBoolean });
@@ -103,10 +105,10 @@ function failureWords(failed: Setting[], saved: Setting[]): string {
 }
 
 /**
- * useConfigSave holds the switches and the runs-at-once text the owner staged and saves only what
+ * useConfigSave holds the switches and the runs-at-once N the owner staged and saves only what
  * differs from the saved value, one endpoint after the other in page order. A success adopts the
  * endpoint's answer and clears that value; a failure keeps it staged and the words name it.
- * onAutoMergeSaved re-reads the auto-merge state. Nothing saves while the field holds no N.
+ * onAutoMergeSaved re-reads the auto-merge state.
  */
 export function useConfigSave(saved: Saved, onAutoMergeSaved: () => void) {
   const [staged, setStaged] = useState<Staged>({});
@@ -124,34 +126,23 @@ export function useConfigSave(saved: Saved, onAutoMergeSaved: () => void) {
     avoidPeak: answers.peak === null ? saved.avoidPeak : avoidsPeak(answers.peak.mode),
     runsAtOnce: answers.runsAtOnce ?? saved.runsAtOnce,
   };
-  const field = runsAtOnceChange(staged.runsAtOnce, current.runsAtOnce);
-  const changed = staged.autoMerge !== undefined || staged.avoidPeak !== undefined || field.changed;
+  const changed = isChanged(staged);
 
-  // stage sets a switch; setting it back to the saved value is no change at all.
-  function stage(setting: Switch, value: boolean) {
+  // stage sets a value and saves nothing.
+  function stage<K extends Setting>(setting: K, value: Staged[K], savedValue: Staged[K] | null) {
     setFailure(null);
     setSavedRunsAtOnce(null);
-    setStaged((was) => {
-      const next = { ...was };
-      if (value === current[setting]) {
-        delete next[setting];
-      } else {
-        next[setting] = value;
-      }
-      return next;
-    });
+    setStaged((was) => restage(was, setting, value, savedValue));
   }
 
   // toggle stages the opposite of what a switch shows.
   function toggle(setting: Switch) {
-    stage(setting, !(staged[setting] ?? current[setting]));
+    stage(setting, !(staged[setting] ?? current[setting]), current[setting]);
   }
 
-  // fill stages the field's text; it saves nothing.
-  function fill(text: string) {
-    setFailure(null);
-    setSavedRunsAtOnce(null);
-    setStaged((was) => ({ ...was, runsAtOnce: text }));
+  // setRunsAtOnce stages N; it saves nothing.
+  function setRunsAtOnce(n: number) {
+    stage("runsAtOnce", n, current.runsAtOnce?.runs_at_once ?? null);
   }
 
   function clear(setting: Setting) {
@@ -163,7 +154,7 @@ export function useConfigSave(saved: Saved, onAutoMergeSaved: () => void) {
   }
 
   async function save() {
-    if (!changed || field.invalid || saving) {
+    if (!changed || saving) {
       return;
     }
     setSaving(true);
@@ -171,7 +162,7 @@ export function useConfigSave(saved: Saved, onAutoMergeSaved: () => void) {
     const failed: Setting[] = [];
     const done: Setting[] = [];
     for (const setting of SAVE_ORDER) {
-      if (staged[setting] === undefined || (setting === "runsAtOnce" && !field.changed)) {
+      if (staged[setting] === undefined) {
         continue;
       }
       try {
@@ -184,9 +175,8 @@ export function useConfigSave(saved: Saved, onAutoMergeSaved: () => void) {
           const mode = staged.avoidPeak === true ? PEAK_MODE.offPeakOnly : PEAK_MODE.always;
           const view = await post("/api/peak", { mode }, isPeakView);
           setAnswers((was) => ({ ...was, peak: view }));
-        } else {
-          // field.changed holds only for text that reads as an N.
-          const body = { runs_at_once: Number(staged.runsAtOnce?.trim()) };
+        } else if (staged.runsAtOnce !== undefined) {
+          const body = { runs_at_once: staged.runsAtOnce };
           const view = await post("/api/runs-at-once", body, isRunsAtOnceView);
           setAnswers((was) => ({ ...was, runsAtOnce: view }));
           setSavedRunsAtOnce(view.runs_at_once);
@@ -207,18 +197,15 @@ export function useConfigSave(saved: Saved, onAutoMergeSaved: () => void) {
     shown: {
       autoMerge: staged.autoMerge ?? current.autoMerge,
       avoidPeak: staged.avoidPeak ?? current.avoidPeak,
-      runsAtOnce:
-        staged.runsAtOnce ??
-        (current.runsAtOnce === null ? null : String(current.runsAtOnce.runs_at_once)),
+      runsAtOnce: staged.runsAtOnce ?? current.runsAtOnce?.runs_at_once ?? null,
     },
     saved: current,
     changed,
-    invalid: field.invalid,
     saving,
     failure,
-    status: statusWords({ saving, invalid: field.invalid, changed, savedRunsAtOnce }),
+    status: statusWords({ saving, changed, savedRunsAtOnce }),
     toggle,
-    fill,
+    setRunsAtOnce,
     save,
   };
 }

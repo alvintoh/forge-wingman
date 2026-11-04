@@ -204,9 +204,9 @@ type runsAtOnceAdopter interface {
 }
 
 // adoptRunsAtOnce reads the owner's N once and makes it the N the poll that
-// follows claims under, held to 1..platformCap. An N that cannot be read, or
-// cannot be adopted, leaves the N the last poll adopted rather than guess one,
-// which could raise it past what the owner set.
+// follows claims under, held to 1..RunsAtOnceMax(platformCap). An N that
+// cannot be read, or cannot be adopted, leaves the N the last poll adopted
+// rather than guess one, which could raise it past what the owner set.
 func adoptRunsAtOnce(ctx context.Context, logger *slog.Logger, reader settingReader, adopter runsAtOnceAdopter, platformCap int) {
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
@@ -215,7 +215,7 @@ func adoptRunsAtOnce(ctx context.Context, logger *slog.Logger, reader settingRea
 		logger.Warn("runsAtOnceNotRead", "err", err.Error())
 		return
 	}
-	held := min(max(n, dispatcher.MinRunsAtOnce), platformCap)
+	held := min(max(n, dispatcher.MinRunsAtOnce), dispatcher.RunsAtOnceMax(platformCap))
 	if held != n {
 		logger.Warn("runsAtOnceOutOfRange", "runs_at_once", n, "held_to", held)
 	}

@@ -307,19 +307,21 @@ func (s *stubAdopter) AdoptRunsAtOnce(_ context.Context, n int) error {
 	return s.err
 }
 
-// TestAdoptRunsAtOnceAdoptsTheOwnersNHeldToThePlatformCap is AC2's read: the
-// owner's saved N is the one the poll claims under, held to 1..the cap.
-func TestAdoptRunsAtOnceAdoptsTheOwnersNHeldToThePlatformCap(t *testing.T) {
-	for name, tt := range map[string]struct{ read, want int }{
-		"the saved N":   {3, 3},
-		"the default":   {2, 2},
-		"the cap":       {20, 20},
-		"zero":          {0, 1},
-		"above the cap": {25, 20},
+// TestAdoptRunsAtOnceAdoptsTheOwnersNHeldToItsMax is AC2's read: the owner's
+// saved N is the one the poll claims under, held to 1..15, or to a lower
+// platform cap.
+func TestAdoptRunsAtOnceAdoptsTheOwnersNHeldToItsMax(t *testing.T) {
+	for name, tt := range map[string]struct{ read, platformCap, want int }{
+		"the saved N":             {3, 20, 3},
+		"the default":             {2, 20, 2},
+		"fifteen":                 {15, 20, 15},
+		"a saved 20":              {20, 20, 15},
+		"zero":                    {0, 20, 1},
+		"a platform cap under 15": {15, 12, 12},
 	} {
 		t.Run(name, func(t *testing.T) {
 			adopter := &stubAdopter{}
-			adoptRunsAtOnce(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)), stubRunsPerRepo{value: tt.read}, adopter, 20)
+			adoptRunsAtOnce(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)), stubRunsPerRepo{value: tt.read}, adopter, tt.platformCap)
 			if len(adopter.adopted) != 1 || adopter.adopted[0] != tt.want {
 				t.Fatalf("adopted %v, want [%d]", adopter.adopted, tt.want)
 			}

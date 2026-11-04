@@ -42,10 +42,10 @@ func TestNextConcurrency(t *testing.T) {
 			Concurrency{N: 5, Stable: 3}, Observation{Solo: solo, Loaded: solo, RateLimited: true}, 2, 0},
 		"halving never goes below one": {
 			Concurrency{N: 1}, Observation{RateLimited: true}, 1, 0},
-		"N never rises past the platform cap": {
-			Concurrency{N: platformCap, Stable: 4}, Observation{Solo: solo, Loaded: solo}, platformCap, 0},
-		"N above the platform cap is brought down to it": {
-			Concurrency{N: platformCap + 5}, Observation{}, platformCap, 0},
+		"a rise from 15 stays at 15": {
+			Concurrency{N: MaxRunsAtOnce, Stable: 4}, Observation{Solo: solo, Loaded: solo}, MaxRunsAtOnce, 0},
+		"N above 15 is brought down to it": {
+			Concurrency{N: platformCap}, Observation{}, MaxRunsAtOnce, 0},
 		"an unset N reads as one": {
 			Concurrency{}, Observation{Solo: solo, Loaded: solo}, 1, 1},
 		"no solo baseline holds N": {
@@ -57,6 +57,20 @@ func TestNextConcurrency(t *testing.T) {
 			got := NextConcurrency(tt.cur, tt.obs, DefaultTuning, platformCap)
 			if got.N != tt.wantN || got.Stable != tt.wantSt {
 				t.Fatalf("got %+v, want N %d stable %d", got, tt.wantN, tt.wantSt)
+			}
+		})
+	}
+}
+
+func TestNextConcurrencyIsHeldToAPlatformCapUnderFifteen(t *testing.T) {
+	solo := 10 * time.Minute
+	for name, cur := range map[string]Concurrency{
+		"a rise from the cap": {N: 12, Stable: 4},
+		"N above the cap":     {N: 15},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := NextConcurrency(cur, Observation{Solo: solo, Loaded: solo}, DefaultTuning, 12); got.N != 12 {
+				t.Fatalf("got %+v, want N 12", got)
 			}
 		})
 	}
@@ -89,9 +103,9 @@ func TestRecommend(t *testing.T) {
 			Recommendation{}, 1, Observation{RateLimited: true}, Recommendation{N: 1, Basis: BasisSteady}},
 		"no medians leave the recommendation as it was": {
 			Recommendation{N: 1, Basis: BasisSlow}, 2, Observation{Solo: solo}, Recommendation{N: 1, Basis: BasisSlow}},
-		"the platform cap holds the recommendation at N": {
-			Recommendation{N: platformCap, Stable: 4, Basis: BasisSteady}, platformCap, stable,
-			Recommendation{N: platformCap, Basis: BasisSteady}},
+		"15 holds the recommendation at N": {
+			Recommendation{N: MaxRunsAtOnce, Stable: 4, Basis: BasisSteady}, MaxRunsAtOnce, stable,
+			Recommendation{N: MaxRunsAtOnce, Basis: BasisSteady}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := Recommend(tt.prev, tt.n, tt.obs, DefaultTuning, platformCap); got != tt.want {

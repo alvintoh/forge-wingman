@@ -27,12 +27,17 @@ func (t Tuning) OrDefault() Tuning {
 }
 
 // The owner's runs-at-once setting N: how many runs may be in flight at once
-// across every project. Its upper bound is the platform cap, which is
-// configured, so it is not a constant here.
+// across every project, from MinRunsAtOnce to MaxRunsAtOnce and never past the
+// configured platform cap.
 const (
 	MinRunsAtOnce     = 1
+	MaxRunsAtOnce     = 15
 	DefaultRunsAtOnce = 2
 )
+
+// RunsAtOnceMax is N's upper bound under platformCap: MaxRunsAtOnce, or the
+// platform cap where that is lower.
+func RunsAtOnceMax(platformCap int) int { return min(MaxRunsAtOnce, platformCap) }
 
 // Concurrency is a limit N and how many stable observations have accumulated
 // toward raising it.
@@ -55,10 +60,12 @@ type Observation struct {
 
 // NextConcurrency applies the rule: N halves (never below 1) on a rate-limit
 // stop or a loaded median past HalveBeyond times the solo median, and rises by
-// one, up to platformCap, after StableRuns consecutive loaded medians within
-// RiseWithin times it. Anything in between holds N and restarts the count.
+// one, up to RunsAtOnceMax(platformCap), after StableRuns consecutive loaded
+// medians within RiseWithin times it. Anything in between holds N and restarts
+// the count.
 func NextConcurrency(cur Concurrency, obs Observation, t Tuning, platformCap int) Concurrency {
-	next := Concurrency{N: min(max(cur.N, 1), platformCap), Stable: cur.Stable}
+	top := RunsAtOnceMax(platformCap)
+	next := Concurrency{N: min(max(cur.N, 1), top), Stable: cur.Stable}
 	halved := Concurrency{N: max(next.N/2, 1)}
 	if obs.RateLimited {
 		return halved
@@ -73,7 +80,7 @@ func NextConcurrency(cur Concurrency, obs Observation, t Tuning, platformCap int
 	case ratio <= t.RiseWithin:
 		next.Stable++
 		if next.Stable >= t.StableRuns {
-			return Concurrency{N: min(next.N+1, platformCap)}
+			return Concurrency{N: min(next.N+1, top)}
 		}
 		return next
 	default:

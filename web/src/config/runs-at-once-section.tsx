@@ -1,101 +1,124 @@
-import { pillSetWidth } from "../button-style";
-import { SmallPill } from "../pill-button";
+import type { KeyboardEvent } from "react";
 import type { Read } from "../stats/use-read";
-import { useMedia } from "../use-media";
-import {
-  RUNS_AT_ONCE_PRESETS,
-  parseRunsAtOnce,
-  presetsUnder,
-  rangeError,
-  rangeSentence,
-  reasonWords,
-} from "./runs-at-once";
+import { MIN_RUNS_AT_ONCE, noteWords } from "./runs-at-once";
 import type { RunsAtOnceView } from "./runs-at-once";
 
 const TITLE_ID = "config-runs-at-once";
 const SENTENCE_ID = "config-runs-at-once-says";
-const ERROR_ID = "config-runs-at-once-error";
 
-// One width for the presets, with the tick's room in it, so a preset does not resize when chosen.
-const PRESET_WIDTH = pillSetWidth(RUNS_AT_ONCE_PRESETS.map(String), 14);
-// One width for USE R whatever R is, from the widest label the cap allows.
-const USE_WIDTH = pillSetWidth(["USE 20"]);
-
-// From this width the presets sit left of the field, centred on the name's capitals; under it the
-// name, the presets and the field do not fit one line, so the presets take their own row.
-const PRESETS_BESIDE = "(min-width: 520px)";
-
-type PresetsProps = {
-  platformCap: number;
-  // The number the field holds, null while it holds none the cap allows.
-  field: number | null;
+type StepHalfProps = {
+  sign: "+" | "−";
+  name: string;
+  live: boolean;
   disabled: boolean;
-  onFill: (text: string) => void;
+  onStep: () => void;
 };
 
 /**
- * Presets fill the field with their number and save nothing. The one equal to the field's number
- * is chosen (pressed, with a tick), never dead; one above the platform cap is not offered.
+ * StepHalf is one half of the stepper: visibly 24x13, with a 24x24 tap area that extends past the
+ * unit's top ("+") or bottom ("−") and meets the other half's at the seam.
  */
-export function Presets({ platformCap, field, disabled, onFill }: PresetsProps) {
+function StepHalf({ sign, name, live, disabled, onStep }: StepHalfProps) {
+  const top = sign === "+";
   return (
-    <div
-      role="group"
-      aria-label="Runs at once presets"
-      className="flex shrink-0 items-center gap-2"
+    <button
+      type="button"
+      tabIndex={-1}
+      aria-label={name}
+      disabled={!live || disabled}
+      onClick={onStep}
+      className={`flex h-6 w-full cursor-pointer disabled:cursor-not-allowed ${top ? "items-end" : "items-start"}`}
     >
-      {presetsUnder(platformCap).map((preset) => {
-        const on = preset === field;
-        return (
-          <SmallPill
-            key={preset}
-            kind={on ? "primary" : "secondary"}
-            width={PRESET_WIDTH}
-            label={String(preset)}
-            ticked={on}
-            aria-pressed={on}
-            aria-label={`Fill in ${preset}`}
-            disabled={disabled}
-            onClick={() => onFill(String(preset))}
+      <span
+        aria-hidden="true"
+        className={`mr-px flex h-3 flex-1 items-center justify-center ${top ? "rounded-tr-control" : "rounded-br-control border-t"} ${disabled ? "border-track" : "border-hair"} ${live || disabled ? "" : "bg-track"}`}
+      >
+        <svg viewBox="0 0 7 7" className="size-1.75" fill="none">
+          <path
+            d={top ? "M0 3.5h7M3.5 0v7" : "M0 3.5h7"}
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            className={live && !disabled ? "stroke-ink" : "stroke-muted"}
           />
-        );
-      })}
-    </div>
+        </svg>
+      </span>
+    </button>
   );
 }
 
-type RecommendedProps = {
-  view: RunsAtOnceView;
-  field: number | null;
+type StepperProps = {
+  value: number;
+  max: number;
   disabled: boolean;
-  onFill: (text: string) => void;
+  onChange: (n: number) => void;
 };
 
 /**
- * Recommended is the rule's N and why, worded from the saved N. USE R fills the field with R and
- * saves nothing; it shows only while R differs from the number in the field.
+ * Stepper is N's control, visibly 56x26 like the switch's track: the value as a spinbutton, with
+ * "+" stacked over "−" at its right. Arrow Up and Down on the value step it too.
  */
-export function Recommended({ view, field, disabled, onFill }: RecommendedProps) {
-  const r = view.recommendation;
-  if (r === null) {
-    return <p className="mt-3 text-ink2">The recommendation could not be read.</p>;
+export function Stepper({ value, max, disabled, onChange }: StepperProps) {
+  const canAdd = value < max;
+  const canTake = value > MIN_RUNS_AT_ONCE;
+
+  function add() {
+    if (canAdd && !disabled) {
+      onChange(value + 1);
+    }
   }
+
+  function take() {
+    if (canTake && !disabled) {
+      onChange(value - 1);
+    }
+  }
+
+  function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      add();
+    } else if (event.key === "ArrowDown") {
+      event.preventDefault();
+      take();
+    }
+  }
+
   return (
-    <>
-      <div className="mt-1.5 flex min-h-11 items-center justify-between gap-4">
-        <p className="font-semibold text-ink">Recommended: {r.n}</p>
-        {r.n !== field && (
-          <SmallPill
-            kind="secondary"
-            width={USE_WIDTH}
-            label={`USE ${r.n}`}
-            disabled={disabled}
-            onClick={() => onFill(String(r.n))}
-          />
-        )}
+    <div
+      className={`flex h-6.5 w-14 shrink-0 rounded-control border ${disabled ? "border-track bg-track" : "border-ink2 bg-card"}`}
+    >
+      <div
+        role="spinbutton"
+        tabIndex={0}
+        aria-labelledby={TITLE_ID}
+        aria-describedby={SENTENCE_ID}
+        aria-valuemin={MIN_RUNS_AT_ONCE}
+        aria-valuemax={max}
+        aria-valuenow={value}
+        aria-disabled={disabled}
+        onKeyDown={onKeyDown}
+        className={`flex w-7.75 items-center justify-center rounded-l-control border-r text-body font-semibold focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-accent ${disabled ? "border-track text-muted" : "border-ink2 text-ink"}`}
+      >
+        {value}
       </div>
-      <p className="text-ink2">{reasonWords(r, view.runs_at_once, view.platform_cap)}</p>
-    </>
+      {/* The halves' column overlaps the unit's top, bottom and right edges by their tap areas. */}
+      <div className="-mt-3 -mr-px flex h-12 flex-1 flex-col">
+        <StepHalf
+          sign="+"
+          name="More runs at once"
+          live={canAdd}
+          disabled={disabled}
+          onStep={add}
+        />
+        <StepHalf
+          sign="−"
+          name="Fewer runs at once"
+          live={canTake}
+          disabled={disabled}
+          onStep={take}
+        />
+      </div>
+    </div>
   );
 }
 
@@ -103,31 +126,24 @@ type RunsAtOnceSectionProps = {
   read: Read<RunsAtOnceView>;
   // The saved N's view: the read's answer, or the answer to the last save.
   view: RunsAtOnceView | null;
-  // The field's text, null until N is read.
-  text: string | null;
-  invalid: boolean;
+  // The N the stepper shows, null until N is read.
+  value: number | null;
   disabled: boolean;
-  onFill: (text: string) => void;
+  onChange: (n: number) => void;
 };
 
 /**
- * RunsAtOnceSection is the owner's N: the name with its number field, the presets, what N is and
- * its range, then the N the concurrency rule recommends and why. Every control fills the field;
- * the page's one SAVE saves it.
+ * RunsAtOnceSection is the owner's N: the name with its stepper, what N is, then the N the
+ * concurrency rule recommends and why. The stepper saves nothing; the page's one SAVE saves it.
  */
 export function RunsAtOnceSection({
   read,
   view,
-  text,
-  invalid,
+  value,
   disabled,
-  onFill,
+  onChange,
 }: RunsAtOnceSectionProps) {
-  const beside = useMedia(PRESETS_BESIDE);
-  const field = view === null || text === null ? null : parseRunsAtOnce(text, view.platform_cap);
-  const presets = view !== null && (
-    <Presets platformCap={view.platform_cap} field={field} disabled={disabled} onFill={onFill} />
-  );
+  const r = view?.recommendation ?? null;
   return (
     <section
       aria-labelledby={TITLE_ID}
@@ -138,25 +154,10 @@ export function RunsAtOnceSection({
         <h2 id={TITLE_ID} className="min-w-0 text-body font-semibold text-ink">
           Runs at once (N)
         </h2>
-        {view !== null && text !== null && (
-          <div className="flex shrink-0 items-center gap-3">
-            {beside && presets}
-            <input
-              type="text"
-              inputMode="numeric"
-              autoComplete="off"
-              value={text}
-              aria-labelledby={TITLE_ID}
-              aria-describedby={invalid ? `${ERROR_ID} ${SENTENCE_ID}` : SENTENCE_ID}
-              aria-invalid={invalid}
-              disabled={disabled}
-              onChange={(event) => onFill(event.target.value)}
-              className={`h-11 w-18 rounded-tile bg-card pl-3.5 font-mono text-head text-ink focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:bg-track disabled:text-muted ${invalid ? "border-2 border-stop" : "border border-ink2 disabled:border-track"}`}
-            />
-          </div>
+        {view !== null && value !== null && (
+          <Stepper value={value} max={view.max} disabled={disabled} onChange={onChange} />
         )}
       </div>
-      {!beside && view !== null && text !== null && <div className="mt-2">{presets}</div>}
       {read.status === "loading" && (
         <p role="status" className="text-ink2">
           Reading runs at once…
@@ -169,15 +170,14 @@ export function RunsAtOnceSection({
       )}
       {view !== null && (
         <>
-          {invalid && (
-            <p id={ERROR_ID} className="mt-1 font-semibold text-stop">
-              {rangeError(view.platform_cap)}
-            </p>
-          )}
-          <p id={SENTENCE_ID} className="mt-1 text-ink">
-            {rangeSentence(view.platform_cap)}
+          <p id={SENTENCE_ID} className="mt-px text-ink">
+            The most runs in flight at once, across every project.
           </p>
-          <Recommended view={view} field={field} disabled={disabled} onFill={onFill} />
+          <p className="mt-0.75 leading-4.5 text-ink2">
+            {r === null
+              ? "The recommendation could not be read."
+              : noteWords(r, view.runs_at_once, view.max)}
+          </p>
         </>
       )}
     </section>

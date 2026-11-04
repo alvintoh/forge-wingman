@@ -61,9 +61,9 @@ func TestRunsAtOnceServesTheSavedNWithTheRecommendationBesideIt(t *testing.T) {
 	if res.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", res.Code, res.Body.String())
 	}
-	want := runsAtOnceResponse{RunsAtOnce: 2, PlatformCap: 20, Recommendation: &recommendationView{
+	want := runsAtOnceResponse{RunsAtOnce: 2, Max: 15, Recommendation: &recommendationView{
 		N: 3, Basis: "rise", Stable: 5, StableRuns: 5, RiseWithin: 1.25, HalveBeyond: 1.5}}
-	if got.RunsAtOnce != want.RunsAtOnce || got.PlatformCap != want.PlatformCap || got.Recommendation == nil || *got.Recommendation != *want.Recommendation {
+	if got.RunsAtOnce != want.RunsAtOnce || got.Max != want.Max || got.Recommendation == nil || *got.Recommendation != *want.Recommendation {
 		t.Fatalf("got %+v %+v, want %+v %+v", got, got.Recommendation, want, want.Recommendation)
 	}
 }
@@ -82,13 +82,23 @@ func TestRunsAtOnceRecommendsTheOwnersNWhileNothingIsObservedAtIt(t *testing.T) 
 	}
 }
 
-func TestRunsAtOnceHoldsTheRecommendationAndNToThePlatformCap(t *testing.T) {
-	rec := store.RecommendedRunsAtOnce{At: 12, Tuning: defaultTuning,
-		Recommendation: dispatcher.Recommendation{N: 13, Stable: 5, Basis: dispatcher.BasisRise}}
-	mux := atOnceMux(&stubRunsPerRepo{n: 15}, stubRecommender{rec: rec}, map[string]string{"WINGMAN_PLATFORM_CAP": "12"})
-	_, got := serveAtOnce(t, mux, http.MethodGet, "")
-	if got.RunsAtOnce != 12 || got.PlatformCap != 12 || got.Recommendation == nil || got.Recommendation.N != 12 {
-		t.Fatalf("got %+v %+v, want N and the recommendation held to 12", got, got.Recommendation)
+func TestRunsAtOnceHoldsTheRecommendationAndNToTheMax(t *testing.T) {
+	for name, tt := range map[string]struct {
+		saved, at, max int
+		env            map[string]string
+	}{
+		"fifteen under the default platform cap":  {saved: 20, at: 15, max: 15},
+		"a configured platform cap under fifteen": {saved: 15, at: 12, max: 12, env: map[string]string{"WINGMAN_PLATFORM_CAP": "12"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := store.RecommendedRunsAtOnce{At: tt.at, Tuning: defaultTuning,
+				Recommendation: dispatcher.Recommendation{N: tt.at + 1, Stable: 5, Basis: dispatcher.BasisRise}}
+			mux := atOnceMux(&stubRunsPerRepo{n: tt.saved}, stubRecommender{rec: rec}, tt.env)
+			_, got := serveAtOnce(t, mux, http.MethodGet, "")
+			if got.RunsAtOnce != tt.max || got.Max != tt.max || got.Recommendation == nil || got.Recommendation.N != tt.max {
+				t.Fatalf("got %+v %+v, want N, max and the recommendation held to %d", got, got.Recommendation, tt.max)
+			}
+		})
 	}
 }
 
@@ -110,9 +120,9 @@ func TestRunsAtOnceReportsAReadFailureAndNeedsAStore(t *testing.T) {
 	}
 }
 
-// TestSetRunsAtOnceSavesAWholeNumberFromOneToTheCap is AC1's range, inclusive at both ends.
-func TestSetRunsAtOnceSavesAWholeNumberFromOneToTheCap(t *testing.T) {
-	for _, n := range []int{1, 3, 20} {
+// TestSetRunsAtOnceSavesAWholeNumberFromOneToFifteen is the range, inclusive at both ends.
+func TestSetRunsAtOnceSavesAWholeNumberFromOneToFifteen(t *testing.T) {
+	for _, n := range []int{1, 3, 15} {
 		saved := &stubRunsPerRepo{n: 2}
 		res, got := serveAtOnce(t, atOnceMux(saved, stubRecommender{rec: store.RecommendedRunsAtOnce{At: 2, Tuning: defaultTuning}}, nil),
 			http.MethodPost, fmt.Sprintf(`{"runs_at_once": %d}`, n))
@@ -125,15 +135,15 @@ func TestSetRunsAtOnceSavesAWholeNumberFromOneToTheCap(t *testing.T) {
 	}
 }
 
-// TestSetRunsAtOnceRefusesAValueOutsideOneToTheCap is AC1's 400.
-func TestSetRunsAtOnceRefusesAValueOutsideOneToTheCap(t *testing.T) {
+// TestSetRunsAtOnceRefusesAValueOutsideOneToFifteen is the range's 400.
+func TestSetRunsAtOnceRefusesAValueOutsideOneToFifteen(t *testing.T) {
 	for name, tt := range map[string]struct {
 		body string
 		env  map[string]string
 	}{
 		"zero":                   {`{"runs_at_once": 0}`, nil},
 		"negative":               {`{"runs_at_once": -1}`, nil},
-		"above the cap":          {`{"runs_at_once": 21}`, nil},
+		"above fifteen":          {`{"runs_at_once": 16}`, nil},
 		"above a configured cap": {`{"runs_at_once": 11}`, map[string]string{"WINGMAN_PLATFORM_CAP": "10"}},
 		"not a whole number":     {`{"runs_at_once": 2.5}`, nil},
 		"a string":               {`{"runs_at_once": "3"}`, nil},
