@@ -186,7 +186,7 @@ function inCard(card: Read<RunSuccess>, history: History, project: string | null
   return renderToStaticMarkup(
     createElement(
       RunSuccessCardView,
-      { read: card, projectChosen: project !== null },
+      { read: card },
       createElement(RunHistoryView, { read: history, project }),
     ),
   );
@@ -237,14 +237,16 @@ describe("the Run success card's runs section", () => {
     expect(markup).toContain(words);
   });
 
-  it("keeps the card's pooled line and narrows only its own runs to a chosen project", () => {
+  it("keeps the card's pooled figure with no scope line and narrows only its runs to a chosen project", () => {
     const mixed = [...runs(3), ...runs(2, "acme/gadgets")].map((run, i) => ({
       ...run,
       run: `run-${i}`,
     }));
     const markup = inCard(CARD_READS.ready, ready(mixed), "acme/gadgets");
-    expect(markup).toContain("run success: all projects");
+    expect(markup).not.toContain("all projects");
     expect(markup).toContain("Below target");
+    expect(markup).toContain("85%");
+    expect(markup).toContain("Over the trailing 4 weeks (55 of 64 runs)");
     expect(markup).toContain("Last 2 runs, acme/gadgets");
     expect(strip(markup).match(/<li /g)).toHaveLength(2);
   });

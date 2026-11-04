@@ -207,8 +207,10 @@ describe("RunSuccessCard while it reads", () => {
     expect(loading(false)).toContain('aria-hidden="true" class="invisible');
   });
 
-  it("holds the scope line's height only when a project is chosen", () => {
-    expect(loading(false)).not.toContain("run success: all projects");
-    expect(loading(true)).toContain("run success: all projects");
+  it("holds the same body with a project chosen as without one", () => {
+    const body = (html: string) =>
+      html.slice(0, html.indexOf('aria-labelledby="run-history-title"'));
+    expect(loading(true)).not.toContain("all projects");
+    expect(body(loading(true))).toBe(body(loading(false)));
   });
 });
