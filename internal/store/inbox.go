@@ -40,8 +40,10 @@ type InboxRun struct {
 	Stopped bool
 	// Title is the ticket's title, read for a stopped run only, which has no PR whose
 	// title could name it. The ticket's body is never read.
-	Title     string
-	UpdatedAt time.Time
+	Title string
+	// StopDetail is the run record's own words on why it stopped, read for a stopped run only.
+	StopDetail string
+	UpdatedAt  time.Time
 }
 
 // Inbox returns the runs updated since that the owner has not cancelled, whose
@@ -56,7 +58,7 @@ func (r *Records) Inbox(ctx context.Context, since time.Time, limit int) ([]Inbo
 		Where(updatedAtField, ">", since).
 		OrderBy(updatedAtField, firestore.Desc).
 		Select(repoField, sizeField, prURLField, autoMergeField, outcomeField, ticketIDField, updatedAtField,
-			waitReasonField, mergedByOwnerAtField, rewriteMergedAtField, stateField, stopReasonField, attemptField,
+			waitReasonField, mergedByOwnerAtField, rewriteMergedAtField, stateField, stopReasonField, stopDetailField, attemptField,
 			settledAtField, claimedAtField, transientField, transientRequeuesField, ticketTitleField,
 			cancelledByOwnerAtField, ticketClosedAtField).
 		Documents(ctx)
@@ -98,6 +100,7 @@ func inboxRun(id string, row map[string]any) (InboxRun, bool) {
 	if stoppedRun(row) {
 		run.Stopped = true
 		run.Title = str(row, ticketTitleField)
+		run.StopDetail = str(row, stopDetailField)
 		return run, true
 	}
 	open := run.PRURL != "" && run.Outcome == string(runner.OutcomePROpened) && !mergedRow(row)

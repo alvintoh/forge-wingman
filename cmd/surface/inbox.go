@@ -84,6 +84,8 @@ type inboxRun struct {
 	// Title is GitHub's title for a PR row, absent where the read failed, and the
 	// ticket's title for a stopped run.
 	Title string `json:"title,omitempty"`
+	// StopDetail is a stopped run's own words on why it stopped, free text the page shows as text.
+	StopDetail string `json:"stop_detail,omitempty"`
 	// The rest is GitHub's view of the PR as of the cached read, and is absent
 	// where the read failed or the surface holds no merge token. The merge route
 	// never trusts it: it reads the PR again.
@@ -120,7 +122,7 @@ func (d Deps) readInbox(ctx context.Context, now time.Time) (inboxResponse, erro
 			PRURL: r.PRURL, UpdatedAt: r.UpdatedAt, Attempt: r.Attempt, Outcome: r.Outcome, StopReason: r.StopReason}
 		if r.Stopped {
 			// A stopped run waits for a retry, not for a merge, so no switch or check holds it.
-			row.Stopped, row.Retryable, row.Title = true, true, r.Title
+			row.Stopped, row.Retryable, row.Title, row.StopDetail = true, true, r.Title, r.StopDetail
 			out.Runs = append(out.Runs, row)
 			continue
 		}

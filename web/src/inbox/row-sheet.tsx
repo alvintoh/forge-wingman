@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Chevron } from "./chevron";
 import { type Opened, listDialog } from "./keyboard";
 import { type InboxRun, parsePull, titleOf } from "./run";
+import { SheetStopDetail } from "./stop-detail-text";
 
 // One action of a row's sheet, a 68px row under a rule: the label at its 28px baseline, the detail
 // at 48, the chevron from 30 to 42. An action is a link or a button, with the same class and body.
@@ -145,6 +146,7 @@ export function RowSheet({ opened, onClose, onRetry, onCancel, busy }: SheetProp
           >
             {titleOf(run)}
           </p>
+          <SheetStopDetail run={run} />
           <ul className="mt-[18.5px]">
             {pull === null && !retryable && (
               <li className="border-t border-hair pt-3 text-label leading-5 text-muted">

@@ -8,6 +8,8 @@ import { type Cell, cellAttrs } from "./keyboard";
 import { DRAFT_WORDS, type Kind, type Wait, kindOf, waits } from "./kind";
 import type { RowState } from "./merge-state";
 import { type InboxRun, isStopped, stopReasonOf, titleOf } from "./run";
+import { stopDetailOf } from "./stop-detail";
+import { RowStopDetail } from "./stop-detail-text";
 
 const kindFill: Record<Kind, string> = {
   FORK: "bg-stop",
@@ -68,6 +70,8 @@ export function InboxRow({
   const title = titleOf(run);
   const stopped = isStopped(run);
   const kind = kindOf(run);
+  // A stopped row shows its detail's first paragraph; the sheet holds the rest.
+  const detail = stopDetailOf(run)[0];
 
   const plainReason = run.wait_reason.replaceAll("-", " ");
   let reason = draft
@@ -236,6 +240,7 @@ export function InboxRow({
               {reason}
             </p>
           )}
+          {detail !== undefined && <RowStopDetail paragraph={detail} />}
         </div>
         <Chevron className="mt-[16.4px]" />
       </div>

@@ -290,14 +290,15 @@ func TestInboxPageFitsOneBatchedGitHubRead(t *testing.T) {
 	}
 }
 
-func TestInboxListsAStoppedRunWithItsAttemptTitleAndNoPRRead(t *testing.T) {
+func TestInboxListsAStoppedRunWithItsAttemptTitleDetailAndNoPRRead(t *testing.T) {
 	inbox := &stubInbox{runs: []store.InboxRun{
-		{Run: "stopped", Ticket: "ABC-1", Title: "Add the widget", Stopped: true, Attempt: 2, Outcome: "agent-failed", StopReason: "agent-exit", UpdatedAt: measuredAt()},
+		{Run: "stopped", Ticket: "ABC-1", Title: "Add the widget", Stopped: true, Attempt: 2, Outcome: "agent-failed", StopReason: "agent-exit", StopDetail: "Next model tier: a/b.\n\nThe <b>build</b> failed.", UpdatedAt: measuredAt()},
 	}}
 	pulls := &stubPulls{}
 	rec := getInbox(newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Inbox: inbox, Pulls: pulls, AutoMerge: &stubAutoMerge{}}))
 	want := `{"runs":[{"run":"stopped","ticket":"ABC-1","repo":"","size":"","pr_url":"","wait_reason":"","updated_at":"2026-10-18T09:00:00Z",` +
-		`"attempt":2,"outcome":"agent-failed","stop_reason":"agent-exit","stopped":true,"retryable":true,"title":"Add the widget"}]}` + "\n"
+		`"attempt":2,"outcome":"agent-failed","stop_reason":"agent-exit","stopped":true,"retryable":true,"title":"Add the widget",` +
+		`"stop_detail":"Next model tier: a/b.\n\nThe \u003cb\u003ebuild\u003c/b\u003e failed."}]}` + "\n"
 	if rec.Body.String() != want {
 		t.Fatalf("body = %s, want %s: no wait reason though the auto-merge switch is off", rec.Body.String(), want)
 	}
@@ -331,13 +332,13 @@ func TestInboxListsAStoppedRunThatStillNamesAnEarlierDraft(t *testing.T) {
 }
 
 // A PR row's title is GitHub's: a ticket title the store holds for it is not served.
-func TestInboxServesNoTicketTitleOnAPRRow(t *testing.T) {
+func TestInboxServesNoTicketTitleOrStopDetailOnAPRRow(t *testing.T) {
 	inbox := &stubInbox{runs: []store.InboxRun{
-		{Run: "r1", Ticket: "ABC-1", Title: "The ticket's title", PRURL: "https://github.com/octo/scratch/pull/7", WaitReason: runner.WaitSizeL, UpdatedAt: measuredAt()},
+		{Run: "r1", Ticket: "ABC-1", Title: "The ticket's title", StopDetail: "An earlier attempt's detail.", PRURL: "https://github.com/octo/scratch/pull/7", WaitReason: runner.WaitSizeL, UpdatedAt: measuredAt()},
 	}}
 	rec := getInbox(newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Inbox: inbox, AutoMerge: &stubAutoMerge{enabled: true}}))
-	if strings.Contains(rec.Body.String(), "title") {
-		t.Fatalf("body = %s, want no title for a PR whose GitHub read is absent", rec.Body.String())
+	if body := rec.Body.String(); strings.Contains(body, "title") || strings.Contains(body, "stop_detail") {
+		t.Fatalf("body = %s, want no title for a PR whose GitHub read is absent and no stop detail on a run that is not stopped", body)
 	}
 }
 

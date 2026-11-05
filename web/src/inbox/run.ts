@@ -15,6 +15,8 @@ export type InboxRun = {
   draft?: boolean;
   checks?: Checks;
   stop_reason?: string;
+  // A stopped run's own words on why it stopped: free text, shown as text.
+  stop_detail?: string;
   outcome?: string;
   // The attempt the run is on, from 0; a retry names it so the server can refuse a stale one.
   attempt?: number;
@@ -49,6 +51,7 @@ function isInboxRun(row: unknown): row is InboxRun {
     optional("head_sha", "string") &&
     optional("draft", "boolean") &&
     optional("stop_reason", "string") &&
+    optional("stop_detail", "string") &&
     optional("outcome", "string") &&
     optional("attempt", "number") &&
     optional("retryable", "boolean") &&
@@ -103,6 +106,7 @@ const stopWords: Record<string, string> = {
   "workflow-change": "Stopped, it changed a workflow file",
   "run-budget": "Stopped, the run's time budget was spent",
   "formatter-outside-diff": "Stopped, the formatter changed files outside the change",
+  "model-refused": "Stopped, the ticket's model was refused",
 };
 
 // stopReasonOf words why a run stopped; a reason the table does not know is shown as the runner
