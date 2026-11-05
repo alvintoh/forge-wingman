@@ -10,21 +10,20 @@ import (
 	"slices"
 	"testing"
 	"testing/fstest"
-	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/store"
 )
 
 // stubRunSuccess is a RunSuccessReader that answers with the rate it holds, or
-// the error it was given, recording the moment it was asked for.
+// the error it was given, recording the window size it was asked for.
 type stubRunSuccess struct {
 	success store.RunSuccess
 	err     error
-	gotNow  time.Time
+	gotSize int
 }
 
-func (s *stubRunSuccess) RunSuccess(_ context.Context, now time.Time) (store.RunSuccess, error) {
-	s.gotNow = now
+func (s *stubRunSuccess) RunSuccess(_ context.Context, size int) (store.RunSuccess, error) {
+	s.gotSize = size
 	if s.err != nil {
 		return store.RunSuccess{}, s.err
 	}
@@ -56,9 +55,9 @@ func getRunSuccess(t *testing.T, reader RunSuccessReader) map[string]any {
 // windows carry passed and runs, the rate is served beside them, and the most
 // common failure class is served with its count (AC1).
 func TestRunSuccessServesEachWindowsCountsAndTheCommonestFailure(t *testing.T) {
-	rate := 0.995
+	rate := 0.8
 	reader := &stubRunSuccess{success: store.RunSuccess{
-		Recent:   store.RunWindow{Passed: 199, Runs: 200, Rate: &rate},
+		Recent:   store.RunWindow{Passed: 24, Runs: 30, Rate: &rate},
 		Previous: store.RunWindow{Passed: 3, Runs: 4},
 		Failure:  &store.FailureClass{Class: "checks-failing", Count: 1},
 	}}
@@ -71,8 +70,8 @@ func TestRunSuccessServesEachWindowsCountsAndTheCommonestFailure(t *testing.T) {
 	if got, want := slices.Sorted(maps.Keys(recent)), []string{"passed", "rate", "runs"}; !slices.Equal(got, want) {
 		t.Errorf("recent keys = %v, want %v", got, want)
 	}
-	if recent["passed"] != 199.0 || recent["runs"] != 200.0 || recent["rate"] != 0.995 {
-		t.Errorf("recent = %v, want 199 of 200 at 0.995", recent)
+	if recent["passed"] != 24.0 || recent["runs"] != 30.0 || recent["rate"] != 0.8 {
+		t.Errorf("recent = %v, want 24 of 30 at 0.8", recent)
 	}
 	previous, _ := body["previous"].(map[string]any)
 	if previous["passed"] != 3.0 || previous["runs"] != 4.0 {
@@ -86,8 +85,9 @@ func TestRunSuccessServesEachWindowsCountsAndTheCommonestFailure(t *testing.T) {
 	if failure["class"] != "checks-failing" || failure["count"] != 1.0 {
 		t.Errorf("failure = %v, want checks-failing counted once", failure)
 	}
-	if age := time.Since(reader.gotNow); age.Abs() > time.Minute {
-		t.Errorf("read for %v, want about now", reader.gotNow)
+	// Each window is the strip's own runs, so it holds as many as the history lists.
+	if reader.gotSize != 30 {
+		t.Errorf("read windows of %d runs, want 30", reader.gotSize)
 	}
 }
 

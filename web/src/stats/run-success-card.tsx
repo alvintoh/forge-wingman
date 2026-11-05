@@ -23,8 +23,8 @@ const STATUS_LINE = "mt-5.25 text-label leading-4.5 text-ink2";
 
 // The ready card's below-target body, drawn unseen while the read is out so the card keeps its height.
 const HELD_VIEW = describeRunSuccess({
-  recent: { passed: 55, runs: 64, rate: 55 / 64 },
-  previous: { passed: 53, runs: 58, rate: 53 / 58 },
+  recent: { passed: 24, runs: 30, rate: 24 / 30 },
+  previous: { passed: 27, runs: 30, rate: 27 / 30 },
   failure: { class: "agent-timeout", count: 4 },
 });
 
@@ -68,8 +68,8 @@ function ReadyBody({ view }: { view: RunSuccessView }) {
 }
 
 /**
- * RunSuccessCard is the Statistics card for run success: the trailing four weeks as a shape, a word
- * and a figure against the target, the previous four weeks and the most common stop, then the last
+ * RunSuccessCard is the Statistics card for run success: the last 30 counted runs as a shape, a word
+ * and a figure against the target, the 30 runs before them and the most common stop, then the last
  * settled runs as its closing section. The endpoint is pooled, so a project chosen on the page leaves
  * the figures as All draws them, while the runs section follows the project.
  */

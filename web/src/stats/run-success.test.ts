@@ -4,10 +4,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describeRunSuccess, isRunSuccess, type RunSuccess } from "./run-success";
 import { RunSuccessCard } from "./run-success-card";
 
-// success is the endpoint's answer with 20 or more runs in each window; a case overrides what it varies.
+// success is the endpoint's answer with both windows full; a case overrides what it varies.
 const success = (over: Partial<RunSuccess> = {}): RunSuccess => ({
-  recent: { passed: 55, runs: 64, rate: 55 / 64 },
-  previous: { passed: 53, runs: 58, rate: 53 / 58 },
+  recent: { passed: 24, runs: 30, rate: 24 / 30 },
+  previous: { passed: 27, runs: 30, rate: 27 / 30 },
   failure: { class: "agent-timeout", count: 4 },
   ...over,
 });
@@ -38,16 +38,22 @@ describe("describeRunSuccess", () => {
   });
 
   it("prints the figure rounded down", () => {
-    expect(describeRunSuccess(success()).figure).toBe("85%");
+    expect(describeRunSuccess(success({ recent: recentOf(55, 64) })).figure).toBe("85%");
   });
 
   it("words the rate line and the target beside a figure", () => {
     const view = describeRunSuccess(success());
-    expect(view.rate).toBe("Over the trailing 4 weeks (55 of 64 runs)");
+    expect(view.rate).toBe("Over the last 30 runs (24 of 30)");
     expect(view.target).toBe("target 90%");
   });
 
-  describe("under 20 runs in the trailing window", () => {
+  it("names the runs it counted when fewer than 30 exist", () => {
+    expect(describeRunSuccess(success({ recent: recentOf(20, 25) })).rate).toBe(
+      "Over the last 25 runs (20 of 25)",
+    );
+  });
+
+  describe("under 20 finished runs", () => {
     const few = success({ recent: { passed: 6, runs: 7, rate: null } });
 
     it("states no figure and no target", () => {
@@ -60,54 +66,68 @@ describe("describeRunSuccess", () => {
 
     it("says how many runs it has and how many it needs, with no detail lines", () => {
       const view = describeRunSuccess(few);
-      expect(view.rate).toBe("Only 7 runs in the trailing 4 weeks; 20 needed for a rate");
+      expect(view.rate).toBe("Only 7 runs so far; 20 needed for a rate");
       expect(view.details).toEqual([]);
     });
 
     it("reads run in the singular for a count of one", () => {
       const view = describeRunSuccess(success({ recent: { passed: 1, runs: 1, rate: null } }));
-      expect(view.rate).toBe("Only 1 run in the trailing 4 weeks; 20 needed for a rate");
+      expect(view.rate).toBe("Only 1 run so far; 20 needed for a rate");
     });
 
     it("reads runs in the plural for a count of zero", () => {
       const view = describeRunSuccess(success({ recent: { passed: 0, runs: 0, rate: null } }));
-      expect(view.rate).toBe("Only 0 runs in the trailing 4 weeks; 20 needed for a rate");
+      expect(view.rate).toBe("Only 0 runs so far; 20 needed for a rate");
     });
   });
 
   describe("the previous window", () => {
+    it("words a full window with its rate and counts", () => {
+      expect(describeRunSuccess(success()).details[0]).toBe("Previous 30 runs: 90% (27 of 30)");
+    });
+
     it("prints its percentage rounded down", () => {
-      const view = describeRunSuccess(success({ previous: recentOf(55, 64) }));
-      expect(view.details[0]).toBe("Previous 4 weeks: 85% (55 of 64 runs)");
+      const view = describeRunSuccess(success({ previous: recentOf(26, 30) }));
+      expect(view.details[0]).toBe("Previous 30 runs: 86% (26 of 30)");
+    });
+
+    it("names the runs it holds when fewer than 30 came before", () => {
+      const view = describeRunSuccess(success({ previous: recentOf(19, 22) }));
+      expect(view.details[0]).toBe("Previous 22 runs: 86% (19 of 22)");
     });
 
     it("says it holds too few runs when it has some but not enough", () => {
       const view = describeRunSuccess(success({ previous: { passed: 9, runs: 11, rate: null } }));
-      expect(view.details[0]).toBe("Previous 4 weeks: too few runs (9 of 11 runs)");
+      expect(view.details[0]).toBe("Previous 11 runs: too few for a rate (9 of 11)");
+    });
+
+    it("reads run in the singular for one run", () => {
+      const view = describeRunSuccess(success({ previous: { passed: 1, runs: 1, rate: null } }));
+      expect(view.details[0]).toBe("Previous 1 run: too few for a rate (1 of 1)");
     });
 
     it("says it holds no runs at zero", () => {
       const view = describeRunSuccess(success({ previous: { passed: 0, runs: 0, rate: null } }));
-      expect(view.details[0]).toBe("Previous 4 weeks: no runs");
+      expect(view.details[0]).toBe("Previous runs: none");
     });
   });
 
   describe("the top stop", () => {
     it("names the class in words and counts it against the failed runs", () => {
       expect(describeRunSuccess(success()).details[1]).toBe(
-        "Top stop: agent timeout, 4 of 9 failures",
+        "Top stop: agent timeout, 4 of 6 failures",
       );
     });
 
     it("turns every hyphen of the class into a space", () => {
       const view = describeRunSuccess(success({ failure: { class: "no-pr-opened", count: 2 } }));
-      expect(view.details[1]).toBe("Top stop: no pr opened, 2 of 9 failures");
+      expect(view.details[1]).toBe("Top stop: no pr opened, 2 of 6 failures");
     });
 
     it("reads failure in the singular for one failed run", () => {
       const view = describeRunSuccess(
         success({
-          recent: recentOf(63, 64),
+          recent: recentOf(29, 30),
           failure: { class: "abandoned", count: 1 },
         }),
       );
@@ -115,8 +135,8 @@ describe("describeRunSuccess", () => {
     });
 
     it("is absent when no run failed", () => {
-      const view = describeRunSuccess(success({ recent: recentOf(64, 64), failure: undefined }));
-      expect(view.details).toEqual(["Previous 4 weeks: 91% (53 of 58 runs)"]);
+      const view = describeRunSuccess(success({ recent: recentOf(30, 30), failure: undefined }));
+      expect(view.details).toEqual(["Previous 30 runs: 90% (27 of 30)"]);
     });
   });
 });

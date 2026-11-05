@@ -165,8 +165,8 @@ describe("RunHistoryView around the runs", () => {
 });
 
 const BELOW: RunSuccess = {
-  recent: { passed: 55, runs: 64, rate: 55 / 64 },
-  previous: { passed: 53, runs: 58, rate: 53 / 58 },
+  recent: { passed: 24, runs: 30, rate: 24 / 30 },
+  previous: { passed: 27, runs: 30, rate: 27 / 30 },
   failure: { class: "agent-timeout", count: 4 },
 };
 
@@ -237,6 +237,21 @@ describe("the Run success card's runs section", () => {
     expect(markup).toContain(words);
   });
 
+  it("draws only the runs that exist beside a card with too few for a rate", () => {
+    const few: Read<RunSuccess> = {
+      status: "ready",
+      body: {
+        recent: { passed: 6, runs: 7, rate: null },
+        previous: { passed: 0, runs: 0, rate: null },
+      },
+      url: "/api/run-success",
+    };
+    const markup = inCard(few, ready(runs(7)));
+    expect(markup).toContain("Only 7 runs so far; 20 needed for a rate");
+    expect(markup).toContain("Last 7 runs</h2>");
+    expect(strip(markup).match(/<li /g)).toHaveLength(7);
+  });
+
   it("keeps the card's pooled figure with no scope line and narrows only its runs to a chosen project", () => {
     const mixed = [...runs(3), ...runs(2, "acme/gadgets")].map((run, i) => ({
       ...run,
@@ -245,8 +260,8 @@ describe("the Run success card's runs section", () => {
     const markup = inCard(CARD_READS.ready, ready(mixed), "acme/gadgets");
     expect(markup).not.toContain("all projects");
     expect(markup).toContain("Below target");
-    expect(markup).toContain("85%");
-    expect(markup).toContain("Over the trailing 4 weeks (55 of 64 runs)");
+    expect(markup).toContain("80%");
+    expect(markup).toContain("Over the last 30 runs (24 of 30)");
     expect(markup).toContain("Last 2 runs, acme/gadgets");
     expect(strip(markup).match(/<li /g)).toHaveLength(2);
   });
