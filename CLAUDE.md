@@ -102,6 +102,11 @@ this file as project memory, so the rules below reach the run.
   and keep each acceptance criterion separately verifiable. *(Judgment call, owner's instruction
   2026-11-05; the batch-size trade-off is Reinertsen's U-curve, transaction cost against holding
   cost. Measured 2026-11-05 over 83 S/M runs.)*
+  **Combine INTO a surviving ticket, never into a new one:** rewrite the oldest ticket of the set
+  with every criterion carried over verbatim, then fold the others into it (Linear mechanics:
+  `base/stacks/linear.md`). Filing a new ticket turns N tickets into N duplicates plus one.
+  *(Judgment call, owner's instruction 2026-11-06, after combining five tickets into two new ones
+  left five duplicates in Phase 5's view.)*
 
 ## Fixing a runner PR: add commits, never rewrite the agent's
 
