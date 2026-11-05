@@ -29,7 +29,6 @@ type comparedRun struct {
 	outcome                           runner.Outcome
 	settledAt                         time.Time
 	cost                              money.Micros
-	lastResort                        bool
 	// input and cacheRead are the run's own recorded input tokens: what it read
 	// fresh and what its provider served from cache.
 	input, cacheRead int64
@@ -73,8 +72,6 @@ func comparedRecord(t *testing.T, client *firestore.Client, id string, c compare
 	rec := runner.NewRecord(id, tk, started)
 	rec.Plan = c.plan
 	rec.ModelLabels = runner.ModelLabels{Build: c.model}
-	rec.LastResort = c.lastResort
-	rec.LastResortModels = runner.ModelLabels{Build: c.model}
 	rec.SettledAt = c.settledAt
 	rec.SettledProviderCostMicros = c.cost
 	rec.Outcome = c.outcome
@@ -113,15 +110,14 @@ func comparedRecord(t *testing.T, client *firestore.Client, id string, c compare
 func TestProviderTrailingCostIsTheMeanOfThatProvidersOwnSettledRuns(t *testing.T) {
 	_, client := queue(t)
 	plan, other := fresh("trail"), fresh("trail-other")
-	a, b, c, elsewhere, unsettled, free := fresh("trail-a"), fresh("trail-b"), fresh("trail-c"),
-		fresh("trail-away"), fresh("trail-unsettled"), fresh("trail-free")
-	forget(t, client, a, b, c, elsewhere, unsettled, free)
+	a, b, c, elsewhere, unsettled := fresh("trail-a"), fresh("trail-b"), fresh("trail-c"),
+		fresh("trail-away"), fresh("trail-unsettled")
+	forget(t, client, a, b, c, elsewhere, unsettled)
 	comparedRecord(t, client, a, comparedRun{plan: plan, model: "command-code/x", settledAt: queueAt, cost: money.Dollar})
 	comparedRecord(t, client, b, comparedRun{plan: plan, model: "command-code/x", settledAt: queueAt, cost: 2 * money.Dollar})
 	comparedRecord(t, client, c, comparedRun{plan: plan, model: "command-code/x", settledAt: queueAt, cost: 3 * money.Dollar})
 	comparedRecord(t, client, elsewhere, comparedRun{plan: other, model: "command-code/x", settledAt: queueAt, cost: 100 * money.Dollar})
 	comparedRecord(t, client, unsettled, comparedRun{plan: plan, model: "command-code/x", cost: 100 * money.Dollar})
-	comparedRecord(t, client, free, comparedRun{plan: plan, model: "command-code/free", settledAt: queueAt, cost: 0, lastResort: true})
 
 	mean, sample, err := NewRecords(client).ProviderTrailingCost(context.Background(), plan, queueAt.Add(-time.Hour), "")
 	if err != nil {
@@ -168,9 +164,9 @@ func TestProviderTrailingCostIsZeroWithoutAnyOfThatProvidersRuns(t *testing.T) {
 func TestComparisonReportsEachModelsRunsAndEachProvidersTimeOfUse(t *testing.T) {
 	_, client := queue(t)
 	ctx := context.Background()
-	plan, model, freeModel := fresh("cmp"), fresh("cmp-model"), fresh("cmp-free-model")
-	passed, unchanged, failed, free := fresh("cmp-passed"), fresh("cmp-unchanged"), fresh("cmp-failed"), fresh("cmp-free")
-	forget(t, client, passed, unchanged, failed, free)
+	plan, model := fresh("cmp"), fresh("cmp-model")
+	passed, unchanged, failed := fresh("cmp-passed"), fresh("cmp-unchanged"), fresh("cmp-failed")
+	forget(t, client, passed, unchanged, failed)
 	comparedRecord(t, client, passed, comparedRun{plan: plan, model: model, settledAt: queueAt,
 		cost: money.Dollar, outcome: runner.OutcomePROpened, timeOfUse: runner.TimeOfUsePeak})
 	comparedRecord(t, client, unchanged, comparedRun{plan: plan, model: model, settledAt: queueAt.Add(time.Minute),
@@ -178,8 +174,6 @@ func TestComparisonReportsEachModelsRunsAndEachProvidersTimeOfUse(t *testing.T) 
 		costDrift: "cost $3.0000 is 50% above the $2.0000 average of 6 of this provider's runs"})
 	comparedRecord(t, client, failed, comparedRun{plan: plan, model: model, settledAt: queueAt.Add(2 * time.Minute),
 		cost: 2 * money.Dollar, outcome: runner.OutcomeAgentFailed, timeOfUse: runner.TimeOfUseOffPeak})
-	comparedRecord(t, client, free, comparedRun{plan: plan, model: freeModel, settledAt: queueAt.Add(3 * time.Minute),
-		cost: 0, outcome: runner.OutcomePROpened, lastResort: true})
 
 	got, err := NewRecords(client).Comparison(ctx, queueAt.Add(-time.Hour))
 	if err != nil {
@@ -190,15 +184,10 @@ func TestComparisonReportsEachModelsRunsAndEachProvidersTimeOfUse(t *testing.T) 
 	} else if m.Tickets != 3 || m.Passed != 2 || m.CostPerTicket != 2*money.Dollar {
 		t.Fatalf("model = %+v, want three tickets, two passed, at $2 each", m)
 	}
-	// A free-tier run is a real run of its model, but its $0 says nothing of
-	// what the provider charges, so it is the provider that leaves it out.
-	if _, ok := findModel(got.Models, freeModel); !ok {
-		t.Fatalf("models = %+v, want the free tier's own model", got.Models)
-	}
 	if p, ok := findProvider(got.Providers, plan); !ok {
 		t.Fatalf("providers = %+v, want this test's provider", got.Providers)
 	} else if p.Sample != 3 || p.TrailingCostPerTicket != 2*money.Dollar {
-		t.Fatalf("provider = %+v, want the three paid runs at $2 each", p)
+		t.Fatalf("provider = %+v, want the three runs at $2 each", p)
 	} else if p.PeakTickets != 2 || p.PeakCost != 4*money.Dollar || p.OffPeakTickets != 1 || p.OffPeakCost != 2*money.Dollar {
 		t.Fatalf("provider = %+v, want 2 peak runs at $4 and 1 off-peak at $2", p)
 	}

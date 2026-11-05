@@ -55,9 +55,7 @@ type ModelComparison struct {
 type ProviderComparison struct {
 	Provider string
 	// TrailingCostPerTicket is the mean settled cost of the provider's own
-	// runs, and Sample how many runs that mean covers. A run claimed on a
-	// free tier is left out of both, as the estimator leaves it out: its $0
-	// says nothing of what a paid run costs.
+	// runs, and Sample how many runs that mean covers.
 	TrailingCostPerTicket money.Micros
 	Sample                int
 	PeakTickets           int
@@ -107,9 +105,8 @@ type PlanCache map[string]runner.PhaseCache
 
 // ProviderTrailingCost implements runner.ProviderCostReader: the mean settled
 // cost of plan's own runs settled since since, and how many runs that mean
-// covers. Runs with no steps, claims on a free tier and excludeRunID's own run
-// are left out, so a run is compared against its provider's history and never
-// against itself.
+// covers. Runs with no steps and excludeRunID's own run are left out, so a run
+// is compared against its provider's history and never against itself.
 func (r *Records) ProviderTrailingCost(ctx context.Context, plan string, since time.Time, excludeRunID string) (money.Micros, int, error) {
 	settled, err := r.settledSince(ctx, since)
 	if err != nil {
@@ -322,7 +319,7 @@ func creditedModel(rec runner.Record) string {
 	if slices.ContainsFunc(rec.Steps, func(s runner.Step) bool { return s.Phase == runner.PhaseBuild && s.Model != "" }) {
 		return ""
 	}
-	return rec.RunModels().Build
+	return rec.ModelLabels.Build
 }
 
 // wallClockMinutes is how long a run took, from its start to its settlement. The
@@ -340,13 +337,11 @@ type providerTotal struct {
 }
 
 // countsForProviderSpend reports whether rec's settled cost belongs in its
-// provider's own paid totals. A run claimed on a free tier cost nothing, and a
-// record with no provider has no one to attribute its cost to, so neither says
-// anything about what a provider's paid runs cost — the estimator leaves a free
-// run out for the same reason. Every provider figure the comparison reports and
-// the baseline Finalize flags a run against is this one rule, so it is written
-// once here rather than at each aggregation.
-func countsForProviderSpend(rec runner.Record) bool { return rec.Plan != "" && !rec.LastResort }
+// provider's own totals: a record with no provider has no one to attribute its
+// cost to. Every provider figure the comparison reports and the baseline
+// Finalize flags a run against is this one rule, so it is written once here
+// rather than at each aggregation.
+func countsForProviderSpend(rec runner.Record) bool { return rec.Plan != "" }
 
 // countsForTrailingCost reports whether rec belongs in plan's trailing average.
 func countsForTrailingCost(rec runner.Record, plan, excludeRunID string) bool {

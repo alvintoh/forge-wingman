@@ -14,7 +14,6 @@ import (
 
 	"github.com/alvintoh/forge-wingman/internal/money"
 	"github.com/alvintoh/forge-wingman/internal/providers"
-	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
 // fakeBreaker reports the breaker tripped, or fails to read it.
@@ -368,23 +367,6 @@ func TestSlackDoesNotEchoAnUnparseableWebhook(t *testing.T) {
 	err := (Slack{Webhook: "http://h/\x7fsecret-token"}).Post(context.Background(), identityNotice)
 	if err == nil || strings.Contains(err.Error(), "secret-token") {
 		t.Fatalf("err = %v", err)
-	}
-}
-
-func TestPollNoticesAPlannedFreeTierBuildAgainstTheFreeTiersOwnBudget(t *testing.T) {
-	q, notices, d, cfg := deferralPoll("5h", money.FromUSD(10))
-	q.candidates[0].Private, q.reserved = true, Totals{ProviderCost: money.FromUSD(1)}
-	q.candidates[0].Stage = StageBuild
-	q.candidates[0].LastResort = &runner.ModelLabels{Build: "p/free-a", Review: "p/free-b", Plan: []string{"p/free-a", "p/free-b"}}
-	q.freeBindings = map[string]string{"ABC-18": CeilingRunnerMinutes}
-	d.Estimator = fakeEstimator{bySize: map[string]Estimate{"M": {ProviderCost: money.FromUSD(1), Minutes: 30}}}
-	cfg.TwoStage = true
-	if _, err := Poll(context.Background(), d, cfg); err != nil {
-		t.Fatal(err)
-	}
-	want := "plan p: wait for its runner-minutes ceiling to reset"
-	if len(notices.raised) != 1 || notices.raised[0].Class != "deferral:"+CeilingRunnerMinutes || notices.raised[0].Detail != want {
-		t.Fatalf("raised %+v, want the runner-minutes ceiling the free tier still meets, offering no free model", notices.raised)
 	}
 }
 

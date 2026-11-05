@@ -143,29 +143,6 @@ func TestPollJudgesAPlannedRunByThePlanItsPlanStageClaimed(t *testing.T) {
 	}
 }
 
-func TestPollJudgesAPlannedFreeTierRunOnTheFreeTier(t *testing.T) {
-	free := runner.ModelLabels{Build: "p/free-a", Review: "p/free-b", Plan: []string{"p/free-a", "p/free-b"}}
-	q := &fakeQueue{
-		candidates:   []Candidate{{RunID: "run-a", Repo: "octo/scratch", Size: "M", Stage: StageBuild, Plan: "p", LastResort: &free, PlanFiles: []string{"a.go"}}},
-		planBindings: map[string]string{"p": "p-5h"},
-	}
-	deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
-	deps.Estimator = fakeEstimator{bySize: map[string]Estimate{"M": {ProviderCost: 2 * money.Dollar, Minutes: 30}}}
-	cfg := laterPlansConfig()
-	cfg.TwoStage = true
-	res, err := Poll(context.Background(), deps, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := q.tryClaims[0]
-	if len(q.tryClaims) != 1 || !got.cfg.ProviderFree || got.facts.Model != "p/free-a" || got.res.ProviderCost != 0 {
-		t.Fatalf("tryClaims = %+v, want one free-tier claim reserving no provider cost", q.tryClaims)
-	}
-	if got.res.Stage != StageBuild || !slices.Equal(got.res.Files, []string{"a.go"}) || len(res.Dispatched) != 1 {
-		t.Fatalf("reservation = %+v, dispatched %q, want the build stage on its planned write set", got.res, res.Dispatched)
-	}
-}
-
 func TestPollJudgesAPlannedRunWhosePlanIsUnknownByTheDefaultPlan(t *testing.T) {
 	q := &fakeQueue{
 		candidates:   []Candidate{{RunID: "run-a", Stage: StageBuild, Plan: "gone"}, {RunID: "run-b", Stage: StageBuild}},
@@ -265,27 +242,18 @@ func TestPollAdmitsAPrivateNamedFreeModelOnlyWithThePlansPrivateOptIn(t *testing
 
 // TestPollClaimsAPlanStageOnTheDefaultPlanWhateverTheRowRecords asserts a
 // plan-stage claim is judged on the default plan even when its row still
-// records the plan or free tier of an earlier claim, as a requeued run's does,
-// so a run is never put back on another plan or a free model without the owner
-// naming one.
+// records the plan of an earlier claim, as a requeued run's does, so a run is
+// never put back on another plan without the owner naming one.
 func TestPollClaimsAPlanStageOnTheDefaultPlanWhateverTheRowRecords(t *testing.T) {
-	free := runner.ModelLabels{Build: "p/free-a", Review: "p/free-b", Plan: []string{"p/free-a", "p/free-b"}}
-	for name, cand := range map[string]Candidate{
-		"another paid plan": {RunID: "run-a", Repo: "octo/scratch", Size: "M", Plan: "q"},
-		"the free tier":     {RunID: "run-a", Repo: "octo/scratch", Size: "M", Plan: "p", LastResort: &free},
-	} {
-		t.Run(name, func(t *testing.T) {
-			q := &fakeQueue{candidates: []Candidate{cand}}
-			cfg := laterPlansConfig()
-			cfg.TwoStage = true
-			if _, err := Poll(context.Background(), pollDeps(fakeSource{}, q, &fakeWorkflow{}), cfg); err != nil {
-				t.Fatal(err)
-			}
-			got := q.tryClaims[0]
-			if len(q.tryClaims) != 1 || got.res.Stage != StagePlan || !reflect.DeepEqual(got.cfg, paidPlan.Budget) || got.facts.Model != "p/paid" {
-				t.Fatalf("tryClaims = %+v, want one plan-stage claim on the default plan's budget and model", q.tryClaims)
-			}
-		})
+	q := &fakeQueue{candidates: []Candidate{{RunID: "run-a", Repo: "octo/scratch", Size: "M", Plan: "q"}}}
+	cfg := laterPlansConfig()
+	cfg.TwoStage = true
+	if _, err := Poll(context.Background(), pollDeps(fakeSource{}, q, &fakeWorkflow{}), cfg); err != nil {
+		t.Fatal(err)
+	}
+	got := q.tryClaims[0]
+	if len(q.tryClaims) != 1 || got.res.Stage != StagePlan || !reflect.DeepEqual(got.cfg, paidPlan.Budget) || got.facts.Model != "p/paid" {
+		t.Fatalf("tryClaims = %+v, want one plan-stage claim on the default plan's budget and model", q.tryClaims)
 	}
 }
 

@@ -7,14 +7,11 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
 const (
 	peakModel  = "command-code/deepseek/deepseek-v4.1-flash"
 	flatModel  = "gemini/gemini-3.8-flash"
-	freeModel  = "command-code/poolside/laguna-s-2.1-free"
 	trialModel = "command-code/xiaomi/mimo-v2.6-pro"
 )
 
@@ -107,17 +104,6 @@ func TestPollNeverHoldsARunWhoseModelHasNoPeakWindow(t *testing.T) {
 				t.Fatalf("tryClaims = %+v, dispatched %+v, want the run claimed", q.tryClaims, w.claims)
 			}
 		})
-	}
-}
-
-func TestPollNeverHoldsABuildOnTheFreeTier(t *testing.T) {
-	cand := Candidate{RunID: "run-a", Repo: "octo/scratch", Size: "M", Stage: StageBuild,
-		LastResort: &runner.ModelLabels{Build: freeModel, Review: "command-code/glyph-cluster:free"}}
-	cfg := peakConfig()
-	cfg.TwoStage = true
-	q, w, _ := peakPoll(t, cand, cfg, PeakOffPeakOnly, monday(2, 0), 30)
-	if q.tryClaims[0].facts.PeakHeld || len(w.claims) != 1 {
-		t.Fatalf("tryClaims = %+v, dispatched %+v, want the free-tier build claimed inside the window", q.tryClaims, w.claims)
 	}
 }
 

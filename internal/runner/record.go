@@ -199,14 +199,6 @@ type Record struct {
 	// that never happened. Without it a broken read would disable every future
 	// flag with nothing in the record or the log to say so.
 	CostDriftUnread bool `firestore:"cost_drift_unread"`
-	// LastResort is set when the run was claimed on the plan's free tier,
-	// whose models LastResortModels names in place of ModelLabels.
-	LastResort       bool        `firestore:"last_resort"`
-	LastResortModels ModelLabels `firestore:"last_resort_models"`
-	// MovedFrom names the paid plan whose ceiling bound when the claim moved the
-	// run to Plan; PlanModels are then the models the run starts on.
-	MovedFrom  string      `firestore:"moved_from"`
-	PlanModels ModelLabels `firestore:"plan_models"`
 	// SettledAt, SettledProviderCostMicros and SettledRunnerMinutes are
 	// written once, by Finalize: the run's actual cost, settled against the
 	// dispatch/ledger reservation the claim booked (adr/0003). Zero until
@@ -301,16 +293,10 @@ func ValidRunID(id string) bool {
 	return runIDPattern.MatchString(id)
 }
 
-// Ticket is the ticket the record names, carrying the plan's free models when
-// the run was claimed on the free tier, which its ticket file hands the build
-// (AC1, AC2).
+// Ticket is the ticket the record names.
 func (r Record) Ticket() Ticket {
-	t := Ticket{ID: r.TicketID, Title: r.TicketTitle, Size: r.Size, SizedBy: r.SizedBy, Body: r.TicketBody,
+	return Ticket{ID: r.TicketID, Title: r.TicketTitle, Size: r.Size, SizedBy: r.SizedBy, Body: r.TicketBody,
 		FrontEnd: r.FrontEnd}
-	if r.LastResort {
-		t.FreeModels = slices.Clone(r.LastResortModels.Plan)
-	}
-	return t
 }
 
 // ReadRun returns run runID's record. A missing record or an unbuildable ticket
@@ -493,9 +479,8 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, reader Prov
 	rec.Private = existing.Private
 	rec.ProviderVerdict = existing.ProviderVerdict
 	rec.ModelLabels = existing.ModelLabels
-	rec.Plan, rec.LastResort, rec.LastResortModels = existing.Plan, existing.LastResort, existing.LastResortModels
+	rec.Plan = existing.Plan
 	rec.PriorSettledProviderCostMicros, rec.PriorSettledRunnerMinutes = existing.PriorSettledProviderCostMicros, existing.PriorSettledRunnerMinutes
-	rec.MovedFrom, rec.PlanModels = existing.MovedFrom, existing.PlanModels
 	rec.DecisionMode = existing.DecisionMode
 	rec.WaitReason, rec.MergedByOwnerAt, rec.MergedSHA = existing.WaitReason, existing.MergedByOwnerAt, existing.MergedSHA
 	rec.CancelledByOwnerAt, rec.CancelledBy = existing.CancelledByOwnerAt, existing.CancelledBy
@@ -663,19 +648,6 @@ func costDrift(ctx context.Context, reader ProviderCostReader, rec Record, now t
 	}
 	return fmt.Sprintf("cost $%.4f is %d%% above the $%.4f average of %d of this provider's runs",
 		cost.USD(), (cost-mean)*100/mean, mean.USD(), sample), false
-}
-
-// RunModels are the models the run's phases start on: the free tier's when it
-// was claimed on one, the plan's it moved to when it moved, else what the
-// ticket named.
-func (r Record) RunModels() ModelLabels {
-	if r.LastResort {
-		return r.LastResortModels
-	}
-	if r.MovedFrom != "" {
-		return r.PlanModels
-	}
-	return r.ModelLabels
 }
 
 // PhaseModel is the one model the steps of phase ran on: empty when no step of

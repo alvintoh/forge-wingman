@@ -124,14 +124,8 @@ const (
 	ticketBodyField = "ticket_body"
 	sizedByField    = "sized_by"
 	frontEndField   = "front_end"
-	// planField is Record's own, written with the claim; lastResortField,
-	// lastResortModelsField, movedFromField and planModelsField are cleared by
-	// it, so a requeued run starts on the plan and models this claim chose.
-	planField             = "plan"
-	lastResortField       = "last_resort"
-	lastResortModelsField = "last_resort_models"
-	movedFromField        = "moved_from"
-	planModelsField       = "plan_models"
+	// planField is Record's own, written with the claim.
+	planField = "plan"
 	// settledAtField, settledProviderCostField and settledRunnerMinutesField
 	// are Record's own settlement fields, written once by runner.Finalize and
 	// summed here for FR-22's window checks.
@@ -543,7 +537,7 @@ func (q *Queue) Candidates(ctx context.Context) ([]dispatcher.Candidate, error) 
 		if state, _ := data[stateField].(string); state == statePlanned {
 			stage = dispatcher.StageBuild
 		}
-		named := labelsOf(data, modelLabelsField)
+		named := modelLabelsOf(data)
 		cand := dispatcher.Candidate{
 			RunID: snap.Ref.ID, Repo: repo, Size: size, Private: private, Priority: int(priority),
 			Model:       buildModel(data),
@@ -558,10 +552,6 @@ func (q *Queue) Candidates(ctx context.Context) ([]dispatcher.Candidate, error) 
 		}
 		if n, _ := data[supersededPRField].(int64); n > 0 {
 			cand.SupersededPR = int(n)
-		}
-		if last, _ := data[lastResortField].(bool); last {
-			labels := labelsOf(data, lastResortModelsField)
-			cand.LastResort = &labels
 		}
 		out = append(out, cand)
 	}
@@ -677,9 +667,9 @@ func buildModel(row map[string]any) string {
 	return model
 }
 
-// labelsOf is the model labels row holds in field, zero when it holds none.
-func labelsOf(row map[string]any, field string) runner.ModelLabels {
-	labels, _ := row[field].(map[string]any)
+// modelLabelsOf is the model labels row's ticket named, zero when it named none.
+func modelLabelsOf(row map[string]any) runner.ModelLabels {
+	labels, _ := row[modelLabelsField].(map[string]any)
 	return runner.ModelLabels{Build: str(labels, "build"), Review: str(labels, "review"), Plan: stringList(labels, "plan")}
 }
 
@@ -1076,13 +1066,7 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 			updates = append(updates, firestore.Update{Path: decisionModeField, Value: string(facts.DecisionMode)})
 		}
 		if res.Stage != dispatcher.StageBuild {
-			updates = append(updates,
-				firestore.Update{Path: planField, Value: runner.Provider(facts.Model)},
-				firestore.Update{Path: lastResortField, Value: false},
-				firestore.Update{Path: lastResortModelsField, Value: firestore.Delete},
-				firestore.Update{Path: movedFromField, Value: firestore.Delete},
-				firestore.Update{Path: planModelsField, Value: firestore.Delete},
-			)
+			updates = append(updates, firestore.Update{Path: planField, Value: runner.Provider(facts.Model)})
 		}
 		if err := tx.Update(rowRef, updates); err != nil {
 			return err

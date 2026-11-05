@@ -2303,21 +2303,17 @@ func TestBuildModelReadsTheTicketsBuildLabel(t *testing.T) {
 	}
 }
 
-func TestTryClaimClearsAFreeTierAnEarlierClaimRecorded(t *testing.T) {
+func TestTryClaimClaimsARequeuedRowAnOldClaimLeftItsTierOn(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
-	run := queuedRun(fresh("queue-claim-free"), 1)
+	run := queuedRun(fresh("queue-claim-legacy"), 1)
+	run.Models = runner.ModelLabels{Build: "command-code/paid", Review: "command-code/review"}
 	forget(t, client, run.RunID)
 	resetLedger(t, client, 1)
 	if err := q.Enqueue(ctx, run); err != nil {
 		t.Fatal(err)
 	}
-	free := runner.ModelLabels{Build: "command-code/free-a", Review: "command-code/free-b", Plan: []string{"command-code/free-a", "command-code/free-b"}}
-	if _, err := client.Collection(runsCollection).Doc(run.RunID).Update(ctx, []firestore.Update{
-		{Path: lastResortField, Value: true}, {Path: lastResortModelsField, Value: free},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	writeLegacyClaimFields(t, client, run.RunID)
 	facts := openFacts
 	facts.Model = "command-code/paid"
 	if ok, _, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, facts, dispatcher.Reservation{}); err != nil || !ok {
@@ -2327,8 +2323,8 @@ func TestTryClaimClearsAFreeTierAnEarlierClaimRecorded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec.Plan != "command-code" || rec.LastResort || !reflect.DeepEqual(rec.LastResortModels, runner.ModelLabels{}) {
-		t.Fatalf("plan %q, last resort %v, models %+v, want the earlier free tier cleared by the claim", rec.Plan, rec.LastResort, rec.LastResortModels)
+	if rec.Plan != "command-code" || !reflect.DeepEqual(rec.ModelLabels, run.Models) {
+		t.Fatalf("plan %q, models %+v, want the claim's plan and the ticket's own models", rec.Plan, rec.ModelLabels)
 	}
 }
 

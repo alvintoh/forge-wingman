@@ -613,7 +613,7 @@ func TestFinalizeCarriesTheModelLabelsFromTheExistingRecord(t *testing.T) {
 	store := seeded(t)
 	rec := store[testRunID]
 	rec.ModelLabels = ModelLabels{Build: "p/a", Review: "p/b", Plan: []string{"p/c", "p/d"}}
-	rec.Plan, rec.LastResort, rec.LastResortModels = "p", true, ModelLabels{Build: "p/free"}
+	rec.Plan = "p"
 	store[testRunID] = rec
 	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: "",
 		RunResult: "failure", PRResult: "skipped"}
@@ -623,23 +623,8 @@ func TestFinalizeCarriesTheModelLabelsFromTheExistingRecord(t *testing.T) {
 	if got := store[testRunID].ModelLabels; got.Build != "p/a" || got.Review != "p/b" || !slices.Equal(got.Plan, []string{"p/c", "p/d"}) {
 		t.Fatalf("model labels = %+v, want the ticket's carried through finalize", got)
 	}
-	if got := store[testRunID]; got.Plan != "p" || !got.LastResort || got.LastResortModels.Build != "p/free" {
-		t.Fatalf("plan %q, last resort %v, %+v, want the claim's carried through finalize", got.Plan, got.LastResort, got.LastResortModels)
-	}
-}
-
-func TestFinalizeCarriesTheMoveToAnotherPaidPlan(t *testing.T) {
-	store := seeded(t)
-	rec := store[testRunID]
-	rec.Plan, rec.MovedFrom, rec.PlanModels = "q", "p", ModelLabels{Build: "q/a", Review: "q/b", Plan: []string{"q/a"}}
-	store[testRunID] = rec
-	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: "",
-		RunResult: "failure", PRResult: "skipped"}
-	if _, err := Finalize(context.Background(), store, &fakeLedger{}, nil, in, finalizeNow); err != nil {
-		t.Fatal(err)
-	}
-	if got := store[testRunID]; got.MovedFrom != "p" || got.PlanModels.Build != "q/a" || got.PlanModels.Review != "q/b" {
-		t.Fatalf("moved from %q, plan models %+v, want the move carried through finalize", got.MovedFrom, got.PlanModels)
+	if got := store[testRunID].Plan; got != "p" {
+		t.Fatalf("plan %q, want the claim's carried through finalize", got)
 	}
 }
 
@@ -726,41 +711,6 @@ func TestPhaseModelIsTheOneModelOfThePhase(t *testing.T) {
 		if got := PhaseModel(tt.steps, PhaseBuild); got != tt.want {
 			t.Errorf("%s: PhaseModel = %q, want %q", name, got, tt.want)
 		}
-	}
-}
-
-func TestRunModelsAreTheFreeTiersOnlyOnAFreeTierClaim(t *testing.T) {
-	named, free := ModelLabels{Build: "p/paid"}, ModelLabels{Build: "p/free"}
-	if got := (Record{ModelLabels: named, LastResortModels: free}).RunModels(); got.Build != "p/paid" {
-		t.Fatalf("RunModels = %+v, want the ticket's on a paid claim", got)
-	}
-	if got := (Record{ModelLabels: named, LastResort: true, LastResortModels: free}).RunModels(); got.Build != "p/free" {
-		t.Fatalf("RunModels = %+v, want the free tier's in place of the ticket's", got)
-	}
-}
-
-func TestRunModelsAreTheNewPlansOnlyOnAMovedRun(t *testing.T) {
-	named, moved := ModelLabels{Build: "p/paid"}, ModelLabels{Build: "q/paid"}
-	if got := (Record{ModelLabels: named, PlanModels: moved}).RunModels(); got.Build != "p/paid" {
-		t.Fatalf("RunModels = %+v, want the ticket's on a run that did not move", got)
-	}
-	if got := (Record{ModelLabels: named, MovedFrom: "p", PlanModels: moved}).RunModels(); got.Build != "q/paid" {
-		t.Fatalf("RunModels = %+v, want the plan moved to in place of the ticket's", got)
-	}
-}
-
-func TestTheRecordsTicketCarriesTheFreeModelsOnlyOnAFreeTierClaim(t *testing.T) {
-	free := ModelLabels{Build: "p/free-a", Review: "p/free-b", Plan: []string{"p/free-a", "p/free-b"}}
-	tk := (Record{TicketID: "ABC-12", TicketTitle: "t", Size: "S", TicketBody: "b",
-		ModelLabels: ModelLabels{Build: "p/paid", Plan: []string{"p/paid-a", "p/paid-b"}},
-		LastResort:  true, LastResortModels: free}).Ticket()
-	if !slices.Equal(tk.FreeModels, free.Plan) {
-		t.Fatalf("free models = %v, want the free tier's %v", tk.FreeModels, free.Plan)
-	}
-	paid := (Record{TicketID: "ABC-12", TicketTitle: "t", Size: "S", TicketBody: "b",
-		ModelLabels: ModelLabels{Build: "p/paid", Plan: []string{"p/paid-a", "p/paid-b"}}}).Ticket()
-	if len(paid.FreeModels) != 0 {
-		t.Fatalf("free models = %v, want none on a paid claim", paid.FreeModels)
 	}
 }
 
