@@ -4011,9 +4011,10 @@ func readsOnlyEvents(n int) string {
 
 // TestBuildStopsWhenTheAgentMakesNoProgress covers a build phase that only
 // reads: it stops at the limit rather than at the wall clock, and its summary
-// names what the agent did on the way.
+// names what the agent did on the way. With nothing edited, nothing is
+// committed.
 func TestBuildStopsWhenTheAgentMakesNoProgress(t *testing.T) {
-	agent := &fakeAgent{edit: edit("version.go", "package x\n"), events: readsOnlyEvents(DEFAULT_NO_PROGRESS_STEPS)}
+	agent := &fakeAgent{events: readsOnlyEvents(DEFAULT_NO_PROGRESS_STEPS)}
 	deps, _, reported := testDeps(validObjects(), agent)
 	c := testConfig(t, initRepo(t))
 
@@ -4039,6 +4040,9 @@ func TestBuildStopsWhenTheAgentMakesNoProgress(t *testing.T) {
 	}
 	if len(agent.prompts) != 1 {
 		t.Fatalf("the build agent ran %d times, want the one round it stalled in", len(agent.prompts))
+	}
+	if _, ok := sum.DurationsMS[string(PhaseCommit)]; ok || sum.CommitSubject != "" {
+		t.Fatalf("durations %v, subject %q, want no commit for a stop that edited nothing", sum.DurationsMS, sum.CommitSubject)
 	}
 }
 
@@ -4093,6 +4097,144 @@ func TestBuildCancelsAStalledAgentWhileItRuns(t *testing.T) {
 	rec := reported.last(t)
 	if _, ok := completions[rec.Steps[0].CompletionsObject]; !ok {
 		t.Fatal("completions were not uploaded after the guard's stop")
+	}
+}
+
+// editingBlockingAgent edits version.go, then runs until its deadline.
+type editingBlockingAgent struct{}
+
+func (editingBlockingAgent) Run(ctx context.Context, dir, _, _, _ string, stdout, _ io.Writer) error {
+	if err := edit("version.go", "package x\n")(dir); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(stdout, "{}\n"); err != nil {
+		return err
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestBuildCommitsTheEditsOfAStoppedBuildAsADraftKeepingTheStop(t *testing.T) {
+	tests := []struct {
+		name        string
+		prepare     func(*BuildDeps, *BuildConfig)
+		wantOutcome Outcome
+		wantReason  StopReason
+		wantDetail  string
+	}{
+		{"agent-no-progress", func(d *BuildDeps, _ *BuildConfig) {
+			d.Agent = &fakeAgent{edit: edit("version.go", "package x\n"), events: readsOnlyEvents(DEFAULT_NO_PROGRESS_STEPS)}
+		}, OutcomeAgentFailed, StopAgentNoProgress, "no file change in"},
+		{"agent-timeout", func(d *BuildDeps, c *BuildConfig) {
+			d.Agent = editingBlockingAgent{}
+			c.AgentTimeout = 100 * time.Millisecond
+		}, OutcomeAgentFailed, StopAgentTimeout, "agent exceeded"},
+		{"run-budget", func(d *BuildDeps, c *BuildConfig) {
+			// The plan agent leaves an edit and spends the build stage's budget,
+			// so the build stops before its first round with the edit pending.
+			started := time.Now()
+			clock := started
+			d.Now = func() time.Time { return clock }
+			d.PlanAgent = &fakeAgent{events: planEvent("```plan-files\nversion.go\n```"), edit: func(dir string) error {
+				clock = started.Add(nfr1BuildBudget + time.Minute)
+				return edit("version.go", "package x\n")(dir)
+			}}
+			d.Projections.(fakeObjects)["projections/"+testSHA+"/"+planProjectionFile] = []byte("# Plan rules\n\n" + ticketSentinel)
+			c.Ticket.Size = "M"
+		}, OutcomeStopped, StopRunBudget, "budget was spent"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deps, _, reported := testDeps(validObjects(), &fakeAgent{})
+			c := testConfig(t, initRepo(t))
+			tt.prepare(&deps, &c)
+
+			res, err := Build(context.Background(), deps, c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !res.Changed || res.Branch != "wingman/abc-12-42-1" {
+				t.Fatalf("result = %+v, want the branch bundled", res)
+			}
+			if _, err := os.Stat(res.BundlePath); err != nil {
+				t.Fatalf("bundle: %v", err)
+			}
+			sum := reported.last(t)
+			if sum.Outcome != tt.wantOutcome || sum.StopReason != tt.wantReason || sum.Phase != PhaseBuild {
+				t.Fatalf("summary = %s/%s at %s, want %s/%s at the build phase",
+					sum.Outcome, sum.StopReason, sum.Phase, tt.wantOutcome, tt.wantReason)
+			}
+			if sum.Ready || !strings.Contains(sum.StopDetail, tt.wantDetail) {
+				t.Fatalf("ready %v, detail %q, want a draft naming the stop", sum.Ready, sum.StopDetail)
+			}
+			if !slices.Equal(sum.EditedFiles, []string{"version.go"}) || sum.DiffLines.Added == 0 {
+				t.Fatalf("edited %q, diff %+v, want the pending edit committed", sum.EditedFiles, sum.DiffLines)
+			}
+			if _, ok := sum.DurationsMS[string(PhaseCommit)]; !ok {
+				t.Fatalf("durations = %v, want the commit timed", sum.DurationsMS)
+			}
+			if !strings.Contains(res.LoopDetail, string(tt.wantReason)) || sum.LoopDetail != res.LoopDetail {
+				t.Fatalf("loop detail %q, summary %q, want the draft to name the stop", res.LoopDetail, sum.LoopDetail)
+			}
+		})
+	}
+}
+
+func TestBuildStopsAKeptBuildThatTouchesAWorkflow(t *testing.T) {
+	agent := &fakeAgent{edit: func(dir string) error {
+		if err := os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o700); err != nil {
+			return err
+		}
+		return edit(".github/workflows/ci.yml", "on: push\n")(dir)
+	}, events: readsOnlyEvents(DEFAULT_NO_PROGRESS_STEPS)}
+	deps, _, reported := testDeps(validObjects(), agent)
+	c := testConfig(t, initRepo(t))
+
+	res, err := Build(context.Background(), deps, c)
+	if err != nil || !res.Changed {
+		t.Fatalf("err = %v, changed %v, want the branch bundled for a human to push", err, res.Changed)
+	}
+	sum := reported.last(t)
+	if sum.StopReason != StopWorkflowChange || sum.Phase != PhaseCommit || sum.Ready {
+		t.Fatalf("summary = %s at %s, ready %v, want the workflow-change stop at commit", sum.StopReason, sum.Phase, sum.Ready)
+	}
+}
+
+func TestBuildCommitsNothingForAnotherStopWithPendingEdits(t *testing.T) {
+	agent := &fakeAgent{edit: edit("version.go", "package x\n"), err: errors.New("exit status 1")}
+	deps, _, reported := testDeps(validObjects(), agent)
+	c := testConfig(t, initRepo(t))
+
+	res, err := Build(context.Background(), deps, c)
+	var stop *StopError
+	if !errors.As(err, &stop) || stop.Reason != StopAgentExit || res.Changed {
+		t.Fatalf("err = %v, changed %v, want the agent-exit stop and nothing bundled", err, res.Changed)
+	}
+	if sum := reported.last(t); len(sum.EditedFiles) != 0 {
+		t.Fatalf("edited = %q, want nothing committed", sum.EditedFiles)
+	}
+	if _, err := os.Stat(filepath.Join(c.TempDir, bundleName)); err == nil {
+		t.Fatal("a bundle was written")
+	}
+}
+
+func TestBuildRefusesToBundleASecretInAStoppedBuildsEdits(t *testing.T) {
+	const secret = "sk-live-abcdef"
+	agent := &fakeAgent{edit: edit("cfg.go", `var k = "`+secret+`"`), events: readsOnlyEvents(DEFAULT_NO_PROGRESS_STEPS)}
+	deps, _, reported := testDeps(validObjects(), agent)
+	c := testConfig(t, initRepo(t))
+	c.Secrets = []string{secret}
+
+	res, err := Build(context.Background(), deps, c)
+	if err == nil || res.Changed {
+		t.Fatal("Build bundled a stopped branch holding the secret")
+	}
+	sum := reported.last(t)
+	if sum.StopReason != StopSecretInBranch || sum.Phase != PhaseCommit || strings.Contains(sum.StopDetail, secret) {
+		t.Fatalf("summary = %s at %s, detail %q, want the secret stop at commit", sum.StopReason, sum.Phase, sum.StopDetail)
+	}
+	if _, err := os.Stat(filepath.Join(c.TempDir, bundleName)); err == nil {
+		t.Fatal("a bundle was written")
 	}
 }
 

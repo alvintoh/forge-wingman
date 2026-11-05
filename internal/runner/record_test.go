@@ -8,8 +8,10 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/alvintoh/forge-wingman/internal/money"
 	"github.com/alvintoh/forge-wingman/internal/providers"
@@ -551,6 +553,80 @@ func TestFinalizeKeepsEarlierAttemptsSpendInTheWindowsWhenTheRetryNeverReachedAn
 func TestBillableMinutesLeavesOutTheChecksThePhasesAlreadyHold(t *testing.T) {
 	if got := BillableMinutes(map[string]int64{"build": 90_000, "checks": 60_000}); got != 2 {
 		t.Fatalf("billable minutes = %d, want 2 from the build's 90s alone", got)
+	}
+}
+
+// timedStop is a build stop that ran 12.5 minutes besides its 10 minutes of
+// checks, with a 30-line diff.
+func timedStop(outcome Outcome, reason StopReason, detail string) Summary {
+	s := stoppedIn(PhaseBuild, outcome, reason, flashModel, detail)
+	s.DurationsMS = map[string]int64{"projection": 30_000, "build": 720_000, checksDuration: 600_000}
+	s.DiffLines = DiffLines{Added: 20, Removed: 10}
+	return s
+}
+
+const timedStopLine = "Stopped in build at 12 min, diff 30 lines."
+
+func TestFinalizeClosesAStoppedRunsDetailWithWhereItStopped(t *testing.T) {
+	tests := []struct {
+		name string
+		sum  Summary
+		want string
+	}{
+		{"after an escalation detail", timedStop(OutcomeAgentFailed, StopAgentTimeout, "agent exceeded 50m0s"),
+			"Next model tier: " + mimoModel + ". A `model:" + mimoModel +
+				"` label on the ticket chooses it, and a retry then runs once on that tier.\n\nagent exceeded 50m0s\n\n" + timedStopLine},
+		{"as the whole detail", timedStop(OutcomeStopped, StopRunBudget, ""), timedStopLine},
+		{"with a one-line diff", func() Summary {
+			s := timedStop(OutcomeStopped, StopRunBudget, "")
+			s.DiffLines = DiffLines{Added: 1}
+			return s
+		}(), "Stopped in build at 12 min, diff 1 line."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if rec := finalizeStop(t, seeded(t), 0, tt.sum); rec.StopDetail != tt.want {
+				t.Fatalf("stop detail = %q, want %q", rec.StopDetail, tt.want)
+			}
+		})
+	}
+}
+
+func TestFinalizeCutsALongDetailToKeepTheStopLine(t *testing.T) {
+	rec := finalizeStop(t, seeded(t), 0, timedStop(OutcomeStopped, StopRunBudget, strings.Repeat("é", stopDetailLimit)))
+	if !strings.HasSuffix(rec.StopDetail, "\n\n"+timedStopLine) || len(rec.StopDetail) > stopDetailLimit ||
+		!utf8.ValidString(rec.StopDetail) {
+		t.Fatalf("stop detail ends %q (%d bytes), want the stop line within the limit", rec.StopDetail[len(rec.StopDetail)-60:], len(rec.StopDetail))
+	}
+}
+
+func TestFinalizeAddsNoStopLineWithoutABuildThatStopped(t *testing.T) {
+	durations := map[string]int64{"build": 720_000}
+	tests := []struct {
+		name string
+		raw  func(t *testing.T) string
+		pr   string
+	}{
+		{"no summary", func(*testing.T) string { return "" }, "skipped"},
+		{"a built run whose PR job failed", func(t *testing.T) string {
+			return encoded(t, Summary{Outcome: OutcomeBuilt, DurationsMS: durations})
+		}, "failure"},
+		{"a run with no changes", func(t *testing.T) string {
+			return encoded(t, Summary{Outcome: OutcomeNoChanges, DurationsMS: durations})
+		}, "skipped"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: tt.raw(t),
+				RunResult: "success", PRResult: tt.pr}
+			rec, err := Finalize(context.Background(), seeded(t), &fakeLedger{}, nil, in, finalizeNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(rec.StopDetail, "Stopped in") {
+				t.Fatalf("stop detail = %q, want no stop line", rec.StopDetail)
+			}
+		})
 	}
 }
 
