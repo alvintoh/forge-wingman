@@ -19,7 +19,7 @@ const (
 
 	// runSuccessReadLimit is the most rows the read scans for its two windows: runs in
 	// flight, cancelled or awaiting their checks sit among the counted ones and are
-	// skipped, so it is set well above the 60 counted runs two windows of 30 hold.
+	// skipped, so it is set well above the twice-the-window-size counted runs the read needs.
 	runSuccessReadLimit = 200
 
 	// failureChecksFailing is the failure class of a run whose pull request's checks failed.
