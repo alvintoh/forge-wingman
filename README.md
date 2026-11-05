@@ -16,12 +16,12 @@ The runner reads only the issue's **title and description**, never its comments.
 A plan agreed in a comment has to be copied into the description before
 delegating, or the run plans without it.
 
-The ticket also needs two labels, and may name the models its phases run
-on with three optional ones:
+The ticket needs a repo label, may carry a size label, and may name the models
+its phases run on with three optional ones:
 
 | Label | Value |
 |---|---|
-| a size label | `size:S`, `size:M` or `size:L`, hand-set — nothing infers a size from the issue's own estimate |
+| a size label | `size:S`, `size:M` or `size:L`, hand-set, and always used over the sizer below; nothing reads the issue's own estimate |
 | a repo label | `repo:owner/name`, naming a repository the dispatcher is allowed to run in |
 | a model label | `model:provider/model`, the build model — overrides the default in `internal/runner/models.json` |
 | a review model label | `review-model:provider/model`, the pre-PR review model — overrides the `review_models` default in `run.yml` |
@@ -37,10 +37,21 @@ default review model, is refused too.
 measured to carry it, so it is held above the ceiling rather than rejected as
 unreadable.
 
-Without both labels the ticket is refused rather than queued, and the reason is
-recorded against it in the store as `dispatch/rejected-<identifier>`: `no-size` for
-no size label, `size-unknown` for a size that is not `S`, `M` or `L`,
-`size-above-ceiling` for an `XL`, `no-repository` for no repo label,
+A ticket with no size label is sized from its own title and description
+(`internal/dispatcher/sizer.go`): the number of acceptance criteria, and one
+doubt each for a title without a single-layer prefix (`[BE]`, `[FE]`, `[INFRA]`,
+`[OPS]`), each of schema, API, auth and money the title or criteria name, and
+criteria naming two or more modules. Doubt picks the larger size: S needs at most
+4 criteria and no doubt, M at most 4 with one doubt or at most 6 with none, and
+everything else is L, which plans and waits for the owner's merge. No criteria to
+count reads as L, and more than 12 is above the ceiling. The run record's
+`sized_by` says which sized it: `linear-label` or `deterministic`.
+
+Without a repo label the ticket is refused rather than queued, and the reason is
+recorded against it in the store as `dispatch/rejected-<identifier>`:
+`size-unknown` for a size label that is not `S`, `M` or `L`,
+`size-above-ceiling` for an `XL` label or a ticket the sizer puts above `L`,
+with its signals in the detail, `no-repository` for no repo label,
 `repository-not-allowlisted` for a repo not listed in the owner database, and `ticket-invalid` for a
 ticket that fails its own checks. A model a run may not use is refused the
 same way: `model-malformed` for a label that is not `provider/model` (or a

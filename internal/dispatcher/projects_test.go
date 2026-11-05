@@ -108,7 +108,12 @@ func TestPhaseEligibleTable(t *testing.T) {
 		{"slice lane in any case", with(func(i *Issue) { i.Title = "[slice] x" }), TicketRun{}, true},
 		{"infra lane", with(func(i *Issue) { i.Title = "[INFRA] x" }), TicketRun{}, false},
 		{"ops lane", with(func(i *Issue) { i.Title = "[OPS] x" }), TicketRun{}, false},
-		{"no size label", with(func(i *Issue) { i.Labels = []string{"repo:octo/widget"} }), TicketRun{}, false},
+		{"no size label", with(func(i *Issue) { i.Labels = []string{"repo:octo/widget"} }), TicketRun{}, true},
+		{"no size label, sized above the ceiling", with(func(i *Issue) {
+			i.Labels = []string{"repo:octo/widget"}
+			i.Body = "## Acceptance criteria\n" + strings.Repeat("1. A criterion.\n", maxACs+1)
+		}), TicketRun{}, false},
+		{"a size label outside the ladder", with(func(i *Issue) { i.Labels = []string{"size:enormous", "repo:octo/widget"} }), TicketRun{}, false},
 		{"another repository", with(func(i *Issue) { i.Labels = []string{"size:S", "repo:octo/other"} }), TicketRun{}, false},
 		{"started", with(func(i *Issue) { i.StateType = "started" }), TicketRun{}, false},
 		{"completed", with(func(i *Issue) { i.StateType = "completed" }), TicketRun{}, false},

@@ -371,9 +371,10 @@ func phaseProgress(issues []Issue) (progress []PhaseProgress, current string) {
 }
 
 // phaseEligible reports whether a start may delegate issue: a code-lane ticket
-// with a size and the project's repository label, that nobody has begun, whose
-// body names no workflow path outside the constraint sentence and no hold label,
-// with no delegate yet and no run row that has ended, is queued or is in flight.
+// the dispatcher sizes within the ceiling, with the project's repository label,
+// that nobody has begun, whose body names no workflow path outside the
+// constraint sentence and no hold label, with no delegate yet and no run row
+// that has ended, is queued or is in flight.
 func phaseEligible(issue Issue, repo string, run TicketRun) bool {
 	if !delegateLane.MatchString(issue.Title) ||
 		// An unknown state reads as started.
@@ -388,7 +389,7 @@ func phaseEligible(issue Issue, repo string, run TicketRun) bool {
 	if _, reason, _ := repository(issue.Labels, []string{repo}); reason != "" {
 		return false
 	}
-	_, reason, _ := sizeLabel(issue.Labels)
+	_, _, reason, _ := ticketSize(issue)
 	return reason == ""
 }
 

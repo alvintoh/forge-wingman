@@ -49,7 +49,6 @@ type Issue struct {
 type Refusal string
 
 const (
-	RefusalNoSize        Refusal = "no-size"
 	RefusalSizeUnknown   Refusal = "size-unknown"
 	RefusalAboveCeiling  Refusal = "size-above-ceiling"
 	RefusalNoRepository  Refusal = "no-repository"
@@ -583,7 +582,7 @@ func admit(ctx context.Context, d Deps, c Config, issue Issue, res *Result) erro
 	case err != nil:
 		return err
 	default:
-		d.Logger.Info("ticketEnqueued", "run", q.RunID, "repo", q.Repo, "size", q.Ticket.Size, "priority", q.Priority)
+		d.Logger.Info("ticketEnqueued", "run", q.RunID, "repo", q.Repo, "size", q.Ticket.Size, "sized_by", q.Ticket.SizedBy, "priority", q.Priority)
 		res.Enqueued = append(res.Enqueued, q.RunID)
 	}
 	return nil

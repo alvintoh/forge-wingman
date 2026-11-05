@@ -374,18 +374,18 @@ every apply must pass it.
 
 ### A ticket
 
-A delegated issue is queued only with both labels, and is recorded as refused
-otherwise, in `dispatch/rejected-<identifier>`:
+A delegated issue is queued only with a repo label and a size within the ceiling,
+and is recorded as refused otherwise, in `dispatch/rejected-<identifier>`:
 
 | Label | Values | Without it |
 |---|---|---|
-| `size:` | `S`, `M`, `L` | refused `no-size`; `XL` is refused `size-above-ceiling` |
+| `size:` | `S`, `M`, `L` | sized from its title and criteria (`sized_by: deterministic`); `XL`, or signals above `L`, is refused `size-above-ceiling` |
 | `repo:` | `owner/name`, listed in the owner database | refused `no-repository` or `repository-not-allowlisted` |
 
 Delegating a ticket whose run has already ended does not queue it again; that needs
 `runner requeue`.
 
-Sizes are hand-set labels: nothing infers a size from the issue's own estimate.
+A size label always wins over the sizer; nothing reads the issue's own estimate.
 
 Rollout: apply with the three variables, add the two secret versions, delegate
 one issue to the agent, then read the job's log for the poll that took it.
