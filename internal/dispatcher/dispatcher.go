@@ -320,6 +320,19 @@ type TicketRefresher interface {
 	RefreshQueuedTicket(ctx context.Context, q Queued) ([]string, error)
 }
 
+// RetriedModeler carries the models a ticket names now onto a run the owner
+// retried, while that attempt waits to be claimed: a retry is the same row, so
+// admission never reads its labels again. Each reports whether it applied; a run
+// that is not a retry waiting to be claimed is left untouched.
+type RetriedModeler interface {
+	// RetryAwaitingClaim reports whether the run is an owner's retry waiting to be claimed.
+	RetryAwaitingClaim(ctx context.Context, runID string) (bool, error)
+	// RefreshRetriedModels sets the run's named models to m.
+	RefreshRetriedModels(ctx context.Context, runID string, m runner.ModelLabels) (bool, error)
+	// StopRetried ends the attempt on reason, so a refused model never reaches a claim.
+	StopRetried(ctx context.Context, runID string, reason runner.StopReason, detail string, at time.Time) (bool, error)
+}
+
 // Claimer attempts to admit a candidate and claim it, atomically with every
 // other poll that might race it (adr/0003); Release returns a claimed run
 // whose dispatch never reached GitHub.
@@ -352,6 +365,7 @@ type Queue interface {
 	Candidater
 	Reprioritizer
 	TicketRefresher
+	RetriedModeler
 	Claimer
 	Rejector
 	Spender
@@ -394,6 +408,10 @@ type Result struct {
 
 	// issues is what the poll read from Linear, kept for the stuck check.
 	issues []Issue
+	// unchecked is every owner's retry whose ticket's models could not be
+	// checked this poll, which the claim walk holds rather than claim on the
+	// models the run held before.
+	unchecked map[string]bool
 }
 
 // Poll admits every issue still delegated, then returns the runs that stopped
@@ -556,7 +574,7 @@ func admit(ctx context.Context, d Deps, c Config, issue Issue, res *Result) erro
 		if _, err := d.Queue.RefreshQueuedTicket(ctx, q); err != nil {
 			d.Logger.Warn("ticketRefreshFailed", "run", q.RunID, "err", err.Error())
 		}
-		return nil
+		return refreshRetriedModels(ctx, d, c, issue, q.RunID, res)
 	}
 	q.Models = d.Overrides.Overrides(issue)
 	reason, detail, err := checkModels(ctx, d.ModelPlans, q.Models, c.Model)
@@ -584,6 +602,45 @@ func admit(ctx context.Context, d Deps, c Config, issue Issue, res *Result) erro
 	default:
 		d.Logger.Info("ticketEnqueued", "run", q.RunID, "repo", q.Repo, "size", q.Ticket.Size, "sized_by", q.Ticket.SizedBy, "priority", q.Priority)
 		res.Enqueued = append(res.Enqueued, q.RunID)
+	}
+	return nil
+}
+
+// refreshRetriedModels gives a retried run waiting to be claimed the models its
+// ticket names now, checked as admission checks them; any other run's plans are
+// not read again. A refusal ends that attempt
+// and is recorded against the ticket as admission records one; the owner fixes
+// the label and retries again. A failed plan read leaves the run's models as they
+// were and holds the run from this poll's claim walk, so it never starts on a
+// model its ticket may no longer name; the next poll checks it again.
+func refreshRetriedModels(ctx context.Context, d Deps, c Config, issue Issue, runID string, res *Result) error {
+	retried, err := d.Queue.RetryAwaitingClaim(ctx, runID)
+	if err != nil || !retried {
+		return err
+	}
+	models := d.Overrides.Overrides(issue)
+	reason, detail, err := checkModels(ctx, d.ModelPlans, models, c.Model)
+	if err != nil {
+		d.Logger.Warn("retriedModelsUnchecked", "run", runID, "err", err.Error())
+		if res.unchecked == nil {
+			res.unchecked = map[string]bool{}
+		}
+		res.unchecked[runID] = true
+		return nil
+	}
+	if reason != "" {
+		stopped, err := d.Queue.StopRetried(ctx, runID, runner.StopModelRefused, string(reason)+": "+detail, d.Now())
+		if err != nil || !stopped {
+			return err
+		}
+		return refuse(ctx, d, rejection(issue, reason, detail, d.Now()), res)
+	}
+	changed, err := d.Queue.RefreshRetriedModels(ctx, runID, models)
+	if err != nil {
+		return err
+	}
+	if changed {
+		d.Logger.Info("retriedModelsRefreshed", "run", runID, "build", models.Build)
 	}
 	return nil
 }
@@ -703,6 +760,11 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 	var claims []Claim
 	noticed := map[string]bool{}
 	for _, cand := range candidates {
+		if res.unchecked[cand.RunID] {
+			d.Logger.Info("runDeferred", "run", cand.RunID, "ceiling", ConditionModelsUnchecked)
+			res.Deferrals = append(res.Deferrals, Deferral{RunID: cand.RunID, Ceiling: ConditionModelsUnchecked, At: d.Now()})
+			continue
+		}
 		stage := claimStage(cand, c.TwoStage)
 		est, err := estimateOf(cand.Size)
 		if err != nil {

@@ -144,6 +144,10 @@ type Provider struct {
 	// Models are the models a run moved onto this plan starts on, empty for a
 	// plan no run is moved onto.
 	Models Models
+	// Escalation is the plan's model tiers, cheapest first: the tier a build
+	// that failed its own verification names for the owner to choose next.
+	// Empty for a plan with no ladder.
+	Escalation []string
 }
 
 // Models are the models a run on a plan starts on, every one of the plan's own.
@@ -230,6 +234,7 @@ type providerDoc struct {
 	Rates      map[string]ratesDoc `json:"rates"`
 	LastResort *lastResortDoc      `json:"last_resort"`
 	Models     *modelsDoc          `json:"models"`
+	Escalation []string            `json:"escalation"`
 }
 
 type modelsDoc struct {
@@ -315,9 +320,10 @@ func parseConfig(b []byte) (Config, error) {
 	}
 	for name, p := range doc.Providers {
 		provider := Provider{
-			BaseURL:   p.BaseURL,
-			KeySecret: p.KeySecret,
-			Harnesses: HarnessOrder{Default: p.Harnesses.Default, Fallbacks: p.Harnesses.Fallbacks},
+			BaseURL:    p.BaseURL,
+			KeySecret:  p.KeySecret,
+			Harnesses:  HarnessOrder{Default: p.Harnesses.Default, Fallbacks: p.Harnesses.Fallbacks},
+			Escalation: p.Escalation,
 		}
 		for _, w := range p.Windows {
 			provider.Windows = append(provider.Windows, Window{
@@ -415,6 +421,9 @@ func (c Config) validate() error {
 		if err := c.checkLastResort(name, p); err != nil {
 			return err
 		}
+		if err := checkEscalation(name, p); err != nil {
+			return err
+		}
 		for model, r := range p.Rates {
 			free := slices.Contains(p.LastResort.Models, model)
 			switch {
@@ -499,6 +508,34 @@ func checkPaidModels(provider string, m Models) error {
 	for _, model := range m.Plan {
 		if seen[model] {
 			return fmt.Errorf("paid plan %s lists plan model %s twice", provider, model)
+		}
+		seen[model] = true
+	}
+	return nil
+}
+
+// checkEscalation reports whether a plan's ladder is usable: when present, two
+// or more distinct tiers, each a model the plan admits — its own, on its rate
+// card, and not on its free tier, which leaves it priced above $0.
+func checkEscalation(provider string, p Provider) error {
+	if p.Escalation == nil {
+		return nil
+	}
+	if len(p.Escalation) < 2 {
+		return fmt.Errorf("provider %s has an escalation ladder of fewer than two tiers", provider)
+	}
+	seen := map[string]bool{}
+	for _, model := range p.Escalation {
+		_, priced := p.Rates[model]
+		switch {
+		case !isPlanModel(provider, model):
+			return fmt.Errorf("provider %s has an escalation tier %q, not a %s model", provider, model, provider)
+		case seen[model]:
+			return fmt.Errorf("provider %s lists escalation tier %s twice", provider, model)
+		case slices.Contains(p.LastResort.Models, model):
+			return fmt.Errorf("provider %s escalation tier %s is a last-resort model", provider, model)
+		case !priced:
+			return fmt.Errorf("provider %s escalation tier %s has no rate", provider, model)
 		}
 		seen[model] = true
 	}
@@ -714,6 +751,31 @@ func OutputCaps(provider string) map[string]int {
 		out[model] = maxTokens
 	}
 	return out
+}
+
+// Tier is where a model sits on its plan's escalation ladder.
+type Tier struct {
+	// Rung is the model's place on the ladder, 0 for the cheapest tier and for a
+	// model off the ladder, which Next tells apart.
+	Rung int
+	// Next is the tier above the model's, empty at the top or off the ladder.
+	Next string
+}
+
+// TierOf is where model sits on its plan's escalation ladder.
+func TierOf(model string) Tier { return tierOf(embeddedConfig, model) }
+
+func tierOf(cfg Config, model string) Tier {
+	ladder := cfg.Providers[planOf(model)].Escalation
+	i := slices.Index(ladder, model)
+	if i < 0 {
+		return Tier{}
+	}
+	t := Tier{Rung: i}
+	if i+1 < len(ladder) {
+		t.Next = ladder[i+1]
+	}
+	return t
 }
 
 // LastResortModels are a plan's free models in fall-through order, empty for a

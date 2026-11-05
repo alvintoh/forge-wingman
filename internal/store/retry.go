@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -162,4 +163,95 @@ func (q *Queue) row(ctx context.Context, runID string) (map[string]any, error) {
 		return nil, err
 	}
 	return snap.Data(), nil
+}
+
+// retriedAwaitingClaim reports whether row is an owner's retry whose attempt
+// still waits to be claimed: the retry's actor is on it, and it is in a state a
+// poll claims from. Whether it holds a plan does not matter.
+func retriedAwaitingClaim(row map[string]any) bool {
+	return str(row, retriedByField) != "" && slices.Contains(candidateStates, str(row, stateField))
+}
+
+// RetryAwaitingClaim reports whether runID is an owner's retry whose attempt
+// still waits to be claimed; an absent run is not.
+func (q *Queue) RetryAwaitingClaim(ctx context.Context, runID string) (bool, error) {
+	snap, err := q.client.Collection(runsCollection).Doc(runID).Get(ctx)
+	if status.Code(err) == codes.NotFound {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("reading whether run %s is a retry: %w", runID, err)
+	}
+	return retriedAwaitingClaim(snap.Data()), nil
+}
+
+// RefreshRetriedModels sets the model labels of a run the owner retried to m
+// while its attempt waits to be claimed, so the claim and the run's ticket job
+// read the models the ticket names now. It reports whether it changed them; any
+// other run, or one already naming m, is left untouched.
+func (q *Queue) RefreshRetriedModels(ctx context.Context, runID string, m runner.ModelLabels) (bool, error) {
+	changed, err := q.updateRetried(ctx, runID, func(row map[string]any) []firestore.Update {
+		if sameModels(modelLabelsOf(row), m) {
+			return nil
+		}
+		return []firestore.Update{{Path: modelLabelsField, Value: m}}
+	})
+	if err != nil {
+		return false, fmt.Errorf("refreshing the models of retried run %s: %w", runID, err)
+	}
+	return changed, nil
+}
+
+// StopRetried ends the attempt of a run the owner retried, while it waits to be
+// claimed, on reason with detail, and reports whether it did. The run is left
+// stopped for the owner, who can retry it again; any other run is left untouched.
+func (q *Queue) StopRetried(ctx context.Context, runID string, reason runner.StopReason, detail string, at time.Time) (bool, error) {
+	stopped, err := q.updateRetried(ctx, runID, func(map[string]any) []firestore.Update {
+		return []firestore.Update{
+			{Path: stateField, Value: stateStopped},
+			{Path: outcomeField, Value: string(runner.OutcomeStopped)},
+			{Path: buildOutcomeField, Value: string(runner.OutcomeStopped)},
+			{Path: stopReasonField, Value: string(reason)},
+			{Path: stopDetailField, Value: detail},
+			{Path: updatedAtField, Value: at},
+		}
+	})
+	if err != nil {
+		return false, fmt.Errorf("stopping retried run %s: %w", runID, err)
+	}
+	return stopped, nil
+}
+
+// updateRetried applies the updates decide returns to runID's row in one
+// transaction, only while the row is a retry waiting to be claimed, and reports
+// whether it wrote them. An absent row, any other row, and no updates write
+// nothing.
+func (q *Queue) updateRetried(ctx context.Context, runID string, decide func(row map[string]any) []firestore.Update) (bool, error) {
+	rowRef := q.client.Collection(runsCollection).Doc(runID)
+	var wrote bool
+	err := q.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		wrote = false
+		snap, err := tx.Get(rowRef)
+		if status.Code(err) == codes.NotFound {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !retriedAwaitingClaim(snap.Data()) {
+			return nil
+		}
+		updates := decide(snap.Data())
+		if len(updates) == 0 {
+			return nil
+		}
+		wrote = true
+		return tx.Update(rowRef, updates)
+	})
+	return wrote, err
+}
+
+// sameModels reports whether a and b name the same models.
+func sameModels(a, b runner.ModelLabels) bool {
+	return a.Build == b.Build && a.Review == b.Review && slices.Equal(a.Plan, b.Plan)
 }

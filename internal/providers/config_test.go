@@ -100,6 +100,53 @@ func TestParseConfigRejectsAnInvalidConfig(t *testing.T) {
 	}
 }
 
+func TestParseConfigRejectsAnInvalidEscalationLadder(t *testing.T) {
+	const rates = `,"rates":{"p/a":{"input_usd_per_mtok":1},"p/b":{"input_usd_per_mtok":2}}`
+	for name, tc := range map[string]struct{ body, want string }{
+		"one tier":         {rates + `,"escalation":["p/a"]`, "fewer than two tiers"},
+		"no tiers":         {rates + `,"escalation":[]`, "fewer than two tiers"},
+		"another plan's":   {rates + `,"escalation":["p/a","other/b"]`, `tier "other/b", not a p model`},
+		"a tier twice":     {rates + `,"escalation":["p/a","p/b","p/a"]`, "p/a twice"},
+		"an unpriced tier": {rates + `,"escalation":["p/a","p/c"]`, "p/c has no rate"},
+		"a free-rung tier": {paidRates + `,"last_resort":{"models":["p/free"],"measured_on":"unmeasured","smoke_runs":{"p/free":1}}` +
+			`,"escalation":["p/paid","p/free"]`, "p/free is a last-resort model"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := parseConfig([]byte(configWith(providerFacts + tc.body)))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want one containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestTierOfReadsTheLadder(t *testing.T) {
+	cfg, err := parseConfig([]byte(configWith(providerFacts +
+		`,"rates":{"p/a":{"input_usd_per_mtok":1},"p/b":{"input_usd_per_mtok":2},"p/c":{"input_usd_per_mtok":3}}` +
+		`,"escalation":["p/a","p/b","p/c"]`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for model, want := range map[string]Tier{
+		"p/a":     {Rung: 0, Next: "p/b"},
+		"p/b":     {Rung: 1, Next: "p/c"},
+		"p/c":     {Rung: 2},
+		"p/other": {},
+		"q/a":     {},
+	} {
+		if got := tierOf(cfg, model); got != want {
+			t.Errorf("tierOf(%s) = %+v, want %+v", model, got, want)
+		}
+	}
+}
+
+func TestEmbeddedGoatEscalatesFlashToMiMo(t *testing.T) {
+	got := TierOf("command-code/deepseek/deepseek-v4.1-flash")
+	if want := (Tier{Next: "command-code/xiaomi/mimo-v2.6-pro"}); got != want {
+		t.Fatalf("TierOf(flash) = %+v, want %+v", got, want)
+	}
+}
+
 // paidRates is a billing plan's window and rates: one model it charges for, and
 // its free rung's model at $0, so a run can fall to the rung.
 const paidRates = `,"windows":[{"name":"p-5h","hours":5,"limit_usd":14}],"rates":{"p/paid":{"input_usd_per_mtok":1},"p/free":{}}`

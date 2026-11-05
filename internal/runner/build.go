@@ -751,12 +751,11 @@ func validateModelList(label string, models []string) error {
 // further rounds for this phase continues from there rather than reusing one.
 // Once the order is exhausted it stops the build with the last failure's own
 // classification: OutcomeInfraFailure/StopModelUnavailable, or
-// OutcomeBudgetStop/StopAllowanceExhausted. That is deliberately not a path
-// FR-13's (unimplemented) escalation could hook into. started and budget are
-// the stage that owns the call's budget, so a later attempt's deadline is
-// recomputed from the time then left in that stage: earlier attempts cannot
-// stretch the stage past its own budget, and a substitution the stage no
-// longer leaves time for is not attempted at all.
+// OutcomeBudgetStop/StopAllowanceExhausted, neither of which names an escalation
+// tier. started and budget are the stage that owns the call's budget, so a
+// later attempt's deadline is recomputed from the time then left in that stage:
+// earlier attempts cannot stretch the stage past its own budget, and a
+// substitution the stage no longer leaves time for is not attempted at all.
 func runAgentInOrder(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, models []string, agent Agent, dir, prompt string, sum *Summary, started time.Time, budget time.Duration) (text, session string, round int, err error) {
 	round = call.Round
 	var lastErr *StopError

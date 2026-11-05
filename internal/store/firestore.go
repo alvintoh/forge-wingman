@@ -50,6 +50,26 @@ func (r *Records) GetRecord(ctx context.Context, id string) (runner.Record, erro
 	return rec, nil
 }
 
+// Records is what the runner's record job reads an archived attempt through.
+var _ runner.AttemptReader = (*Records)(nil)
+
+// GetAttempt reads the ended attempt n of run id, as a retry archived it. An
+// attempt never archived is runner.ErrRecordNotFound.
+func (r *Records) GetAttempt(ctx context.Context, id string, n int) (runner.Record, error) {
+	snap, err := archiveRef(r.client.Collection(runsCollection).Doc(id), n).Get(ctx)
+	if status.Code(err) == codes.NotFound {
+		return runner.Record{}, fmt.Errorf("%s attempt %d: %w", id, n, runner.ErrRecordNotFound)
+	}
+	if err != nil {
+		return runner.Record{}, err
+	}
+	var rec runner.Record
+	if err := snap.DataTo(&rec); err != nil {
+		return runner.Record{}, fmt.Errorf("decoding record %s attempt %d: %w", id, n, err)
+	}
+	return rec, nil
+}
+
 // RunRepository is the repository run id was queued for. The dispatcher writes
 // it when it queues the run; the record the run's jobs write has no such field.
 func (r *Records) RunRepository(ctx context.Context, id string) (string, error) {

@@ -35,6 +35,10 @@ const (
 	// ConditionPrivateOptIn withholds a private candidate whose ticket named a
 	// free model on a plan the owner has not opted private repositories in to.
 	ConditionPrivateOptIn = "private-opt-in"
+	// ConditionModelsUnchecked withholds an owner's retry whose ticket's models
+	// could not be checked this poll. It records no hold: it is one failed read,
+	// not a limit the run waits on.
+	ConditionModelsUnchecked = "models-unchecked"
 )
 
 // largeSize is the ticket size whose concurrent runs are capped separately.
