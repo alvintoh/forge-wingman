@@ -161,6 +161,9 @@ const localBranch = BranchPrefix + "wt"
 // file outside its plan is still committed, but never ready, and names those
 // files in its summary. A plan naming a file under .github/workflows/ stops
 // before the build, and a build touching one stops once its commit is bundled.
+// A build stopped by its budget, its agent's deadline or its agent's lack of
+// progress still commits and bundles what it edited, never ready, keeping that
+// stop.
 //
 // A ticket carrying plan files was already planned by the plan stage,
 // so Build skips planning and checks what it edited against the list it was
@@ -323,7 +326,45 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		checksOK, loopDetail, session, lastRound, err = runCheckLoop(ctx, d, c, wt, &sum, rules, prompt, &msg)
 		return err
 	}); err != nil {
-		return BuildResult{}, err
+		var stop *StopError
+		if !errors.As(err, &stop) || !keepsWork(stop.Reason) {
+			return BuildResult{}, err
+		}
+		pending, perr := wt.PendingFiles(ctx)
+		if perr != nil {
+			d.Logger.Error("pendingFilesUnread", "err", truncate(perr.Error(), logErrorLimit))
+			return BuildResult{}, err
+		}
+		if len(pending) == 0 {
+			return BuildResult{}, err
+		}
+		var bundle string
+		var wf []string
+		if cerr := timed(PhaseCommit, nil, "", func() error {
+			var cerr error
+			bundle, wf, cerr = commitWork(ctx, d, c, wt, &sum, msg, planFiles, pushBranch)
+			return cerr
+		}); cerr != nil {
+			return BuildResult{}, cerr
+		}
+		if bundle == "" {
+			sum.Phase = PhaseBuild
+			return BuildResult{}, err
+		}
+		if len(wf) > 0 {
+			sum.Outcome, sum.StopReason = OutcomeStopped, StopWorkflowChange
+			sum.StopDetail = truncate(workflowChange(wf).Error(), stopDetailLimit)
+			d.Logger.Info("workflowChange", "phase", string(PhaseCommit), "files", wf)
+			return BuildResult{Branch: pushBranch, BundlePath: bundle, Changed: true}, nil
+		}
+		sum.Phase = PhaseBuild
+		sum.Outcome, sum.StopReason = stop.Outcome, stop.Reason
+		sum.StopDetail = truncate(detail(stop.Err), stopDetailLimit)
+		loopDetail := keptWorkDetail(stop)
+		sum.LoopDetail = truncate(loopDetail, stopDetailLimit)
+		d.Logger.Error("runStopped", "reason", string(stop.Reason), "phase", string(sum.Phase),
+			"err", truncate(stop.Err.Error(), logErrorLimit), "keptFiles", len(sum.EditedFiles))
+		return BuildResult{Branch: pushBranch, BundlePath: bundle, Changed: true, LoopDetail: loopDetail}, nil
 	}
 
 	ready := checksOK
@@ -360,65 +401,18 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 	sum.LoopDetail = truncate(loopDetail, stopDetailLimit)
 	res = BuildResult{Branch: pushBranch, LoopDetail: loopDetail}
 	if err := timed(PhaseCommit, nil, "", func() error {
-		if err := wt.Verify(ctx); err != nil {
-			switch {
-			case errors.Is(err, ErrGitTampered):
-				return stopWith(OutcomeStopped, StopGitTampered, err)
-			case errors.Is(err, ErrHeadMoved):
-				return stopWith(OutcomeStopped, StopHeadMoved, err)
-			}
-			return stopWith(OutcomeInfraFailure, StopCommit, err)
-		}
-		if msg.Subject == "" {
-			pending, err := wt.PendingFiles(ctx)
-			if err != nil {
-				return stopWith(OutcomeInfraFailure, StopCommit, err)
-			}
-			msg = FallbackCommitMessage(c.Ticket, pending)
-			d.Logger.Info("commitMessageFallback")
-		}
-		files, err := wt.Commit(ctx, msg.Text())
+		bundle, wf, err := commitWork(ctx, d, c, wt, &sum, msg, planFiles, pushBranch)
 		if err != nil {
-			return stopWith(OutcomeInfraFailure, StopCommit, err)
+			return err
 		}
-		sum.CommitSubject, sum.CommitBody, sum.PRSummary = msg.Subject, msg.Body, msg.Summary
-		sum.EditedFiles = files
-		if len(files) > 0 {
-			if sum.DiffLines, err = wt.DiffLines(ctx); err != nil {
-				return stopWith(OutcomeInfraFailure, StopCommit, err)
-			}
-		}
-		d.Logger.Info("changesCommitted", "files", len(files))
-		if len(files) == 0 {
+		if bundle == "" {
 			sum.Outcome = OutcomeNoChanges
 			return nil
 		}
-		if c.Ticket.Size != "S" {
-			if extra := OutOfPlanFiles(files, planFiles); len(extra) > 0 {
-				sum.Ready = false
-				d.Logger.Info("outOfPlanEdits", "files", len(extra))
-			}
-		}
-		for _, secret := range c.Secrets {
-			if err := wt.CheckSecret(ctx, secret); err != nil {
-				if errors.Is(err, ErrSecretInBranch) {
-					return stopWith(OutcomeStopped, StopSecretInBranch, err)
-				}
-				return stopWith(OutcomeInfraFailure, StopCommit, err)
-			}
-		}
-		touched, err := wt.TouchedPaths(ctx)
-		if err != nil {
-			return stopWith(OutcomeInfraFailure, StopCommit, err)
-		}
-		res.BundlePath = filepath.Join(c.TempDir, bundleName)
-		if err := wt.Bundle(ctx, res.BundlePath, pushBranch); err != nil {
-			return stopWith(OutcomeInfraFailure, StopCommit, err)
-		}
-		res.Changed = true
+		res.BundlePath, res.Changed = bundle, true
 		sum.Outcome = OutcomeBuilt
 		// The bundle still uploads, so the work survives for a human to push.
-		if wf := workflowFiles(touched); len(wf) > 0 {
+		if len(wf) > 0 {
 			sum.Outcome, sum.StopReason = OutcomeStopped, StopWorkflowChange
 			sum.StopDetail = truncate(workflowChange(wf).Error(), stopDetailLimit)
 			sum.Ready = false
@@ -429,6 +423,81 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		return BuildResult{}, err
 	}
 	return res, nil
+}
+
+// keepsWork reports whether a build stopped for reason still commits the
+// edits it left, as a draft that keeps the stop.
+func keepsWork(reason StopReason) bool {
+	return reason == StopRunBudget || reason == StopAgentTimeout || reason == StopAgentNoProgress
+}
+
+// keptWorkDetail tells the draft's reader that a stopped build's edits are
+// unfinished, and why it stopped.
+func keptWorkDetail(stop *StopError) string {
+	return fmt.Sprintf("the build stopped before it finished (%s), so this holds only the edits it had made: %s",
+		stop.Reason, detail(stop.Err))
+}
+
+// commitWork verifies the worktree, commits its pending edits under msg and
+// bundles them as pushBranch, recording the commit on sum. It returns the
+// bundle's path, empty when the commit held no file, and the workflow files
+// the branch touches.
+func commitWork(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum *Summary, msg CommitMessage, planFiles []string, pushBranch string) (bundle string, workflow []string, err error) {
+	if err := wt.Verify(ctx); err != nil {
+		switch {
+		case errors.Is(err, ErrGitTampered):
+			return "", nil, stopWith(OutcomeStopped, StopGitTampered, err)
+		case errors.Is(err, ErrHeadMoved):
+			return "", nil, stopWith(OutcomeStopped, StopHeadMoved, err)
+		}
+		return "", nil, stopWith(OutcomeInfraFailure, StopCommit, err)
+	}
+	if msg.Subject == "" {
+		pending, err := wt.PendingFiles(ctx)
+		if err != nil {
+			return "", nil, stopWith(OutcomeInfraFailure, StopCommit, err)
+		}
+		msg = FallbackCommitMessage(c.Ticket, pending)
+		d.Logger.Info("commitMessageFallback")
+	}
+	files, err := wt.Commit(ctx, msg.Text())
+	if err != nil {
+		return "", nil, stopWith(OutcomeInfraFailure, StopCommit, err)
+	}
+	sum.CommitSubject, sum.CommitBody, sum.PRSummary = msg.Subject, msg.Body, msg.Summary
+	sum.EditedFiles = files
+	if len(files) > 0 {
+		if sum.DiffLines, err = wt.DiffLines(ctx); err != nil {
+			return "", nil, stopWith(OutcomeInfraFailure, StopCommit, err)
+		}
+	}
+	d.Logger.Info("changesCommitted", "files", len(files))
+	if len(files) == 0 {
+		return "", nil, nil
+	}
+	if c.Ticket.Size != "S" {
+		if extra := OutOfPlanFiles(files, planFiles); len(extra) > 0 {
+			sum.Ready = false
+			d.Logger.Info("outOfPlanEdits", "files", len(extra))
+		}
+	}
+	for _, secret := range c.Secrets {
+		if err := wt.CheckSecret(ctx, secret); err != nil {
+			if errors.Is(err, ErrSecretInBranch) {
+				return "", nil, stopWith(OutcomeStopped, StopSecretInBranch, err)
+			}
+			return "", nil, stopWith(OutcomeInfraFailure, StopCommit, err)
+		}
+	}
+	touched, err := wt.TouchedPaths(ctx)
+	if err != nil {
+		return "", nil, stopWith(OutcomeInfraFailure, StopCommit, err)
+	}
+	bundle = filepath.Join(c.TempDir, bundleName)
+	if err := wt.Bundle(ctx, bundle, pushBranch); err != nil {
+		return "", nil, stopWith(OutcomeInfraFailure, StopCommit, err)
+	}
+	return bundle, workflowFiles(touched), nil
 }
 
 // runPlanPhase fetches the plan projection, runs the plan agent in dir

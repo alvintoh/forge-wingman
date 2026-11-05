@@ -390,16 +390,43 @@ const msPerMinute = 60_000
 // workflow has finished — which is after the record job itself runs — so this
 // is a deliberate estimate of it (FR-22), not the billed truth.
 func BillableMinutes(durationsMS map[string]int64) int64 {
+	totalMS := phaseMS(durationsMS)
+	if totalMS <= 0 {
+		return 0
+	}
+	return (totalMS + msPerMinute - 1) / msPerMinute
+}
+
+// phaseMS is the run's time across its phases, leaving out the check time
+// they already hold.
+func phaseMS(durationsMS map[string]int64) int64 {
 	var totalMS int64
 	for p, ms := range durationsMS {
 		if p != checksDuration {
 			totalMS += ms
 		}
 	}
-	if totalMS <= 0 {
-		return 0
+	return totalMS
+}
+
+// withStopLine is detail closed by a paragraph naming where rec stopped, how
+// long it had run and how large its diff was, with detail cut so the whole
+// stays within stopDetailLimit.
+func withStopLine(detail string, rec Record) string {
+	lines := rec.DiffLines.Added + rec.DiffLines.Removed
+	noun := "lines"
+	if lines == 1 {
+		noun = "line"
 	}
-	return (totalMS + msPerMinute - 1) / msPerMinute
+	line := fmt.Sprintf("Stopped in %s at %d min, diff %d %s.", rec.Phase,
+		phaseMS(rec.DurationsMS)/msPerMinute, lines, noun)
+	if detail == "" {
+		return line
+	}
+	const sep = "\n\n"
+	// truncate appends a three-byte ellipsis to what it cuts.
+	room := stopDetailLimit - len(line) - len(sep) - len("…")
+	return truncate(detail, room) + sep + line
 }
 
 // NewRecord is the record the dispatcher starts a run with: the ticket as read
@@ -545,6 +572,9 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, reader Prov
 	// marker past the limit, and a transient fault is requeued, not escalated.
 	if escalates(rec.Phase, rec.Outcome) && rec.Transient == "" {
 		rec.StopDetail = truncate(escalationDetail(ctx, store, in, rec), stopDetailLimit)
+	}
+	if rec.StopReason != "" && rec.BuildOutcome != OutcomeBuilt && len(rec.DurationsMS) > 0 {
+		rec.StopDetail = withStopLine(rec.StopDetail, rec)
 	}
 	rec.JobResults["run"] = in.RunResult
 	rec.JobResults["pr"] = in.PRResult
