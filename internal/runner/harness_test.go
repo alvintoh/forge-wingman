@@ -494,10 +494,12 @@ func harnessNameAllowed(rel string) bool {
 // and the historical probe results names the retired free model set.
 func TestNoRetiredModelSetIsNamed(t *testing.T) {
 	root := filepath.Join("..", "..")
-	// Copies stamped from elsewhere are exempt: the vault's docs, and the agents
-	// /repo-init composes from poly-mind's stack packs.
+	// Copies stamped from elsewhere are exempt: the vault's docs, the agents
+	// /repo-init composes from poly-mind's stack packs, and the closed tickets
+	// the sizer is measured against, quoted as they were written.
 	cmd := exec.Command("git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ".",
-		":!docs/adr", ":!docs/tech-design-v1.md", ":!probe/results", ":!.claude/agents")
+		":!docs/adr", ":!docs/tech-design-v1.md", ":!probe/results", ":!.claude/agents",
+		":!internal/dispatcher/testdata/sized_tickets.json")
 	cmd.Dir = root
 	out, err := cmd.Output()
 	if err != nil {

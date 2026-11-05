@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -85,8 +86,6 @@ func TestBuildRefuses(t *testing.T) {
 	offScale.Priority = 7
 
 	for name, tt := range map[string]buildCase{
-		"no size label":                      {admitted("repo:octo/scratch"), RefusalNoSize, nil},
-		"an empty size label":                {admitted("size:", "repo:octo/scratch"), RefusalNoSize, nil},
 		"a size above the ceiling":           {unsized, RefusalAboveCeiling, nil},
 		"a size outside the ladder":          {admitted("size:enormous", "repo:octo/scratch"), RefusalSizeUnknown, nil},
 		"no repository label":                {admitted("size:S"), RefusalNoRepository, nil},
@@ -112,6 +111,49 @@ func TestBuildRefuses(t *testing.T) {
 				t.Fatalf("a refused ticket was queued: %+v", q)
 			}
 		})
+	}
+}
+
+func TestBuildSizesAnUnlabelledTicketBySignals(t *testing.T) {
+	for name, labels := range map[string][]string{
+		"no size label":       {"repo:octo/scratch"},
+		"an empty size label": {"size:", "repo:octo/scratch"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			issue := admitted(labels...)
+			issue.Title = "[FE] Rename the heading"
+			issue.Body = "## Acceptance criteria\n\n1. The heading reads the chosen name.\n"
+			q, rejection := build(issue, buildConfig, buildAt)
+			if rejection.Reason != "" {
+				t.Fatalf("refused %s: %s", rejection.Reason, rejection.Detail)
+			}
+			if q.Ticket.Size != "S" || q.Ticket.SizedBy != sizedBySignals {
+				t.Fatalf("ticket sized %s by %q, want S by %q", q.Ticket.Size, q.Ticket.SizedBy, sizedBySignals)
+			}
+		})
+	}
+}
+
+func TestBuildTakesTheSizeLabelOverTheSignals(t *testing.T) {
+	// The body alone sizes L: it has no acceptance criteria to count.
+	q, rejection := build(admitted("size:S", "repo:octo/scratch"), buildConfig, buildAt)
+	if rejection.Reason != "" {
+		t.Fatalf("refused %s: %s", rejection.Reason, rejection.Detail)
+	}
+	if q.Ticket.Size != "S" || q.Ticket.SizedBy != sizedByLabel {
+		t.Fatalf("ticket sized %s by %q, want S by %q", q.Ticket.Size, q.Ticket.SizedBy, sizedByLabel)
+	}
+}
+
+func TestBuildRefusesATicketItsSignalsSizeAboveTheCeiling(t *testing.T) {
+	issue := admitted("repo:octo/scratch")
+	issue.Body = "## Acceptance criteria\n" + strings.Repeat("1. A criterion.\n", maxACs+1)
+	_, rejection := build(issue, buildConfig, buildAt)
+	if rejection.Reason != RefusalAboveCeiling {
+		t.Fatalf("reason = %q, want %q", rejection.Reason, RefusalAboveCeiling)
+	}
+	if !strings.Contains(rejection.Detail, "13 acceptance criteria") {
+		t.Fatalf("detail = %q, want the signal that sized it", rejection.Detail)
 	}
 }
 

@@ -711,7 +711,7 @@ func TestPollAdmitsWhatItCanAndRefusesWhatItCannot(t *testing.T) {
 	w := &fakeWorkflow{}
 	res, err := Poll(context.Background(), pollDeps(fakeSource{issues: []Issue{
 		admitted("size:M", "repo:octo/scratch"),
-		admitted("repo:octo/scratch"),
+		admitted("size:enormous", "repo:octo/scratch"),
 		admitted("size:S", "repo:someone/else"),
 	}}, q, w), buildConfig)
 	if err != nil {
@@ -720,7 +720,7 @@ func TestPollAdmitsWhatItCanAndRefusesWhatItCannot(t *testing.T) {
 	if res.Seen != 3 || !slices.Equal(res.Enqueued, []string{"FRG-18"}) {
 		t.Fatalf("result = %+v", res)
 	}
-	if got := reasons(res.Rejections); !slices.Equal(got, []Refusal{RefusalNoSize, RefusalNotAllowlist}) {
+	if got := reasons(res.Rejections); !slices.Equal(got, []Refusal{RefusalSizeUnknown, RefusalNotAllowlist}) {
 		t.Fatalf("refused %v", got)
 	}
 	if len(q.queued) != 1 || q.queued[0].Repo != "octo/scratch" || !q.queued[0].At.Equal(pollAt) {
@@ -924,13 +924,13 @@ func TestPollAdmitsPastAFailedTicketRefresh(t *testing.T) {
 
 func TestPollDoesNotRefreshATicketTheQueueWouldRefuse(t *testing.T) {
 	q := &fakeQueue{holds: map[string]bool{"FRG-18": true}}
-	deps := pollDeps(fakeSource{issues: []Issue{admitted("repo:octo/scratch")}}, q, &fakeWorkflow{})
+	deps := pollDeps(fakeSource{issues: []Issue{admitted("size:enormous", "repo:octo/scratch")}}, q, &fakeWorkflow{})
 	res, err := Poll(context.Background(), deps, buildConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := reasons(res.Rejections); !slices.Equal(got, []Refusal{RefusalNoSize}) {
-		t.Fatalf("refused %v, want the unsized ticket refused", got)
+	if got := reasons(res.Rejections); !slices.Equal(got, []Refusal{RefusalSizeUnknown}) {
+		t.Fatalf("refused %v, want the off-ladder ticket refused", got)
 	}
 	if len(q.refreshed) != 0 {
 		t.Fatalf("refreshed = %+v, want a refused ticket to leave the held row as it is", q.refreshed)
@@ -1126,7 +1126,7 @@ func TestPollFailsOnTheStore(t *testing.T) {
 		"a run cannot be queued": {queue: &fakeQueue{enqueueErr: errFirestore},
 			issues: []Issue{admitted("size:M", "repo:octo/scratch")}},
 		"a refusal cannot be recorded": {queue: &fakeQueue{rejectErr: errFirestore},
-			issues: []Issue{admitted("repo:octo/scratch")}},
+			issues: []Issue{admitted("size:enormous", "repo:octo/scratch")}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			source := tt.source

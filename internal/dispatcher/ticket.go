@@ -19,8 +19,8 @@ const (
 	modelPrefix       = "model:"
 	reviewModelPrefix = "review-model:"
 	planModelPrefix   = "plan-model:"
-	// sizedByLabel is what sized a ticket the dispatcher admitted, since a
-	// size label is the owner's own sizing rather than the classifier's.
+	// sizedByLabel is what sized a ticket carrying a size label, the owner's
+	// own sizing, which always overrides the sizer.
 	sizedByLabel = "linear-label"
 	// ceilingSize is the largest ticket the queue admits.
 	ceilingSize = "L"
@@ -43,7 +43,7 @@ func build(issue Issue, c Config, at time.Time) (Queued, Rejection) {
 	if reason != "" {
 		return Queued{}, rejection(issue, reason, detail, at)
 	}
-	size, reason, detail := sizeLabel(issue.Labels)
+	size, sizedBy, reason, detail := ticketSize(issue)
 	if reason != "" {
 		return Queued{}, rejection(issue, reason, detail, at)
 	}
@@ -51,7 +51,7 @@ func build(issue Issue, c Config, at time.Time) (Queued, Rejection) {
 	if err != nil {
 		return Queued{}, rejection(issue, RefusalTicketInvalid, err.Error(), at)
 	}
-	t := runner.Ticket{ID: issue.ID, Title: issue.Title, Body: issue.Body, Size: size, SizedBy: sizedByLabel,
+	t := runner.Ticket{ID: issue.ID, Title: issue.Title, Body: issue.Body, Size: size, SizedBy: sizedBy,
 		FrontEnd: slices.ContainsFunc(issue.Labels, func(l string) bool { return strings.EqualFold(l, runner.FrontEndLabel) })}
 	if err := t.Validate(); err != nil {
 		return Queued{}, rejection(issue, RefusalTicketInvalid, err.Error(), at)
@@ -82,20 +82,25 @@ func repository(labels, allow []string) (string, Refusal, string) {
 	return "", RefusalNotAllowlist, label + " is not an allowlisted repository"
 }
 
-// sizeLabel is the ticket's size, and the refusal when it carries no size
-// label, one outside the ladder, or one naming a ticket above the ceiling.
-func sizeLabel(labels []string) (string, Refusal, string) {
-	label, ok := labelValue(labels, sizePrefix)
+// ticketSize is the issue's size and what sized it: its size label when it
+// carries one, else the signals in its own title and description. The refusal
+// is a label outside the ladder, or a size above the ceiling from either.
+func ticketSize(issue Issue) (size, sizedBy string, reason Refusal, detail string) {
+	label, ok := labelValue(issue.Labels, sizePrefix)
 	if !ok {
-		return "", RefusalNoSize, "no " + sizePrefix + " label"
+		got, why := signalSize(issue.Title, issue.Body)
+		if got == aboveCeiling {
+			return "", "", RefusalAboveCeiling, "sized " + got + " by its signals, above " + ceilingSize + ": " + why
+		}
+		return got, sizedBySignals, "", ""
 	}
 	switch s := strings.ToUpper(label); {
 	case sizes[s]:
-		return s, "", ""
+		return s, sizedByLabel, "", ""
 	case s == aboveCeiling:
-		return "", RefusalAboveCeiling, "size " + s + " is above " + ceilingSize
+		return "", "", RefusalAboveCeiling, "size " + s + " is above " + ceilingSize
 	}
-	return "", RefusalSizeUnknown, "size " + label + " is not S, M or L"
+	return "", "", RefusalSizeUnknown, "size " + label + " is not S, M or L"
 }
 
 // LabelOverrides reads the models a ticket names from its labels.

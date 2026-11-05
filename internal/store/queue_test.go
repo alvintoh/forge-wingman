@@ -210,8 +210,8 @@ func TestRejectRecordsTheRefusalAndEnqueueClearsIt(t *testing.T) {
 	ctx := context.Background()
 	run := queuedRun(fresh("queue-rej"), 1)
 	forget(t, client, run.RunID)
-	r := dispatcher.Rejection{Ticket: run.RunID, Reason: dispatcher.RefusalNoSize,
-		Detail: "no size: label", At: queueAt}
+	r := dispatcher.Rejection{Ticket: run.RunID, Reason: dispatcher.RefusalSizeUnknown,
+		Detail: "size enormous is not S, M or L", At: queueAt}
 	if err := q.Reject(ctx, r); err != nil {
 		t.Fatal(err)
 	}
