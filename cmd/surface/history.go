@@ -10,8 +10,9 @@ import (
 	"github.com/alvintoh/forge-wingman/internal/store"
 )
 
-// historyLimit is how many of the latest settled runs the history lists; it must equal the page
-// strip's slot count, RUN_HISTORY_SLOTS in web/src/stats/run-history.tsx.
+// historyLimit is how many of the latest settled runs the history lists, and how many
+// counted runs each run success window holds; it must equal the page strip's slot count,
+// RUN_HISTORY_SLOTS in web/src/stats/run-history.tsx.
 const historyLimit = 30
 
 // RunHistoryReader lists the latest settled runs, newest first. It has no write

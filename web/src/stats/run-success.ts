@@ -1,6 +1,6 @@
 import { isNumber, isString, nullable, shape } from "../autonomy/guard";
 
-// The share of runs, in whole percent, the trailing window is held to.
+// The share of runs, in whole percent, the recent window is held to.
 export const RUN_SUCCESS_TARGET_PERCENT = 90;
 
 // The runs a window holds before a rate is stated; the endpoint serves no rate under it
@@ -75,14 +75,21 @@ function floorPercent(passed: number, runs: number): string {
   return `${Math.floor((passed * 100) / runs)}%`;
 }
 
+function runsWord(runs: number): string {
+  return runs === 1 ? "run" : "runs";
+}
+
+// The window before the recent one holds the runs before those, as many as it found.
 function previousLine(previous: RunWindow): string {
-  if (previous.rate !== null) {
-    return `Previous 4 weeks: ${floorPercent(previous.passed, previous.runs)} (${previous.passed} of ${previous.runs} runs)`;
-  }
   if (previous.runs === 0) {
-    return "Previous 4 weeks: no runs";
+    return "Previous runs: none";
   }
-  return `Previous 4 weeks: too few runs (${previous.passed} of ${previous.runs} runs)`;
+  const label = `Previous ${previous.runs} ${runsWord(previous.runs)}`;
+  const counts = `(${previous.passed} of ${previous.runs})`;
+  if (previous.rate === null) {
+    return `${label}: too few for a rate ${counts}`;
+  }
+  return `${label}: ${floorPercent(previous.passed, previous.runs)} ${counts}`;
 }
 
 function failureLine(failure: RunFailure, failed: number): string {
@@ -97,7 +104,7 @@ export function describeRunSuccess({ recent, previous, failure }: RunSuccess): R
       word: "Too few runs",
       figure: null,
       target: null,
-      rate: `Only ${recent.runs} ${recent.runs === 1 ? "run" : "runs"} in the trailing 4 weeks; ${RUN_SUCCESS_MIN_RUNS} needed for a rate`,
+      rate: `Only ${recent.runs} ${runsWord(recent.runs)} so far; ${RUN_SUCCESS_MIN_RUNS} needed for a rate`,
       details: [],
     };
   }
@@ -111,7 +118,7 @@ export function describeRunSuccess({ recent, previous, failure }: RunSuccess): R
     word: onTarget ? "On target" : "Below target",
     figure: floorPercent(recent.passed, recent.runs),
     target: `target ${RUN_SUCCESS_TARGET_PERCENT}%`,
-    rate: `Over the trailing 4 weeks (${recent.passed} of ${recent.runs} runs)`,
+    rate: `Over the last ${recent.runs} runs (${recent.passed} of ${recent.runs})`,
     details,
   };
 }

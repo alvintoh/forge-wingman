@@ -14,15 +14,13 @@ import (
 )
 
 const (
-	// runSuccessWindowSpan is the span each of the two windows the rate compares
-	// reaches: four weeks.
-	runSuccessWindowSpan = 28 * 24 * time.Hour
-
 	// runSuccessMinRuns is the fewest runs a window states a rate over; the web's RUN_SUCCESS_MIN_RUNS repeats it.
 	runSuccessMinRuns = 20
 
-	// runSuccessLimit is the most runs the read returns.
-	runSuccessLimit = 200
+	// runSuccessReadLimit is the most rows the read scans for its two windows: runs in
+	// flight, cancelled or awaiting their checks sit among the counted ones and are
+	// skipped, so it is set well above the twice-the-window-size counted runs the read needs.
+	runSuccessReadLimit = 200
 
 	// failureChecksFailing is the failure class of a run whose pull request's checks failed.
 	failureChecksFailing = "checks-failing"
@@ -32,11 +30,11 @@ const (
 )
 
 // RunSuccess is the run success rate: the share of runs that opened a pull
-// request whose required checks passed, over the trailing four weeks and the
-// four weeks before (adr/0022). Every figure is read from the runs' own rows, as
-// adr/0016 reads the autonomy figures.
+// request whose required checks passed, over the newest counted runs and the
+// same number before them (adr/0022). Every figure is read from the runs' own
+// rows, as adr/0016 reads the autonomy figures.
 type RunSuccess struct {
-	// Recent is the four weeks to now, Previous the four weeks before those.
+	// Recent is the newest window of counted runs, Previous the window before them.
 	Recent   RunWindow
 	Previous RunWindow
 	// Failure is the most common way a run failed in Recent, nil when none did.
@@ -57,10 +55,9 @@ type FailureClass struct {
 	Count int
 }
 
-// runResult is one run's line in the rate: when it started, how it ended, what
-// its pull request's checks settled at, and its stored state.
+// runResult is one finished run's line in the rate: how it ended, what its pull
+// request's checks settled at, and its stored state.
 type runResult struct {
-	StartedAt    time.Time
 	Outcome      runner.Outcome
 	ChecksResult string
 	StopReason   runner.StopReason
@@ -68,16 +65,29 @@ type runResult struct {
 	Cancelled    bool
 }
 
-// RunSuccess returns the run success rate over the two windows ending at now. It
-// is one rows-only query of the runs started since the earlier window opened,
-// newest start first and capped, projected to the fields the count reads, and no
-// GitHub call: a run's checks result is already on its row (adr/0022).
-func (r *Records) RunSuccess(ctx context.Context, now time.Time) (RunSuccess, error) {
-	since := now.Add(-2 * runSuccessWindowSpan)
+// counted reports whether the run counts in a window. A run the owner cancelled
+// counts in neither; a run that opened a pull request counts once its checks
+// result is green or failing, and one still pending, or that can never be read,
+// counts in neither until it settles.
+func (row runResult) counted() bool {
+	if row.Cancelled {
+		return false
+	}
+	if row.Outcome != runner.OutcomePROpened {
+		return true
+	}
+	return row.ChecksResult == dispatcher.CheckGreen || row.ChecksResult == dispatcher.CheckFailing
+}
+
+// RunSuccess returns the run success rate over the newest size counted runs and
+// the size before them, so a stretch without runs leaves it where it was. It is
+// one rows-only read of the runs newest start first, projected to the fields the
+// count reads and stopped once both windows are full, and no GitHub call: a
+// run's checks result is already on its row (adr/0022).
+func (r *Records) RunSuccess(ctx context.Context, size int) (RunSuccess, error) {
 	iter := r.client.Collection(runsCollection).
-		Where(startedAtField, ">=", since).
 		OrderBy(startedAtField, firestore.Desc).
-		Limit(runSuccessLimit).
+		Limit(runSuccessReadLimit).
 		// cancelled_by_owner_at is read beside the counted fields because a cancel
 		// writes nothing else: without it a run the owner cancelled cannot be told
 		// from one that failed.
@@ -85,21 +95,19 @@ func (r *Records) RunSuccess(ctx context.Context, now time.Time) (RunSuccess, er
 		Documents(ctx)
 	defer iter.Stop()
 	var rows []runResult
-	var read int
+	var read, counted int
 	var oldest time.Time
-	for {
+	for counted < 2*size {
 		snap, err := iter.Next()
 		if errors.Is(err, iterator.Done) {
 			break
 		}
 		if err != nil {
-			return RunSuccess{}, fmt.Errorf("reading the runs started since %s: %w",
-				since.UTC().Format(time.RFC3339), err)
+			return RunSuccess{}, fmt.Errorf("reading the newest runs: %w", err)
 		}
 		row := snap.Data()
-		started, _ := row[startedAtField].(time.Time)
 		read++
-		oldest = started
+		oldest, _ = row[startedAtField].(time.Time)
 		if !hasEnded(row) && str(row, stateField) != stateAbandoned {
 			continue
 		}
@@ -108,54 +116,44 @@ func (r *Records) RunSuccess(ctx context.Context, now time.Time) (RunSuccess, er
 			ChecksResult: str(row, checksResultField),
 			StopReason:   runner.StopReason(str(row, stopReasonField)),
 			State:        str(row, stateField),
-			StartedAt:    started,
 			Cancelled:    cancelledRow(row),
+		}
+		if result.counted() {
+			counted++
 		}
 		rows = append(rows, result)
 	}
-	if read == runSuccessLimit {
-		r.logger.InfoContext(ctx, "runSuccessCapped", "limit", runSuccessLimit, "oldest", oldest)
+	if read == runSuccessReadLimit && counted < 2*size {
+		r.logger.InfoContext(ctx, "runSuccessCapped", "limit", runSuccessReadLimit, "counted", counted, "oldest", oldest)
 	}
-	return countRunSuccess(rows, now), nil
+	return countRunSuccess(rows, size), nil
 }
 
 // countRunSuccess counts the two windows over the rows of runs that finished or
-// were abandoned, an abandoned run counting as one that did not pass. A
-// run the owner cancelled counts in neither; a run that opened a pull request
-// counts on its checks result, and one whose result is still pending, or can
-// never be read, counts in neither the pass nor the denominator.
-func countRunSuccess(rows []runResult, now time.Time) RunSuccess {
-	recentFrom := now.Add(-runSuccessWindowSpan)
-	previousFrom := now.Add(-2 * runSuccessWindowSpan)
+// were abandoned, newest first: the first size counted runs are Recent, the next
+// size Previous, and the rest neither. An abandoned run counts as one that did
+// not pass.
+func countRunSuccess(rows []runResult, size int) RunSuccess {
 	var out RunSuccess
 	failures := map[string]int{}
+	n := 0
 	for _, row := range rows {
-		if row.StartedAt.Before(previousFrom) || row.StartedAt.After(now) {
+		if !row.counted() {
 			continue
 		}
-		recent := !row.StartedAt.Before(recentFrom)
+		if n == 2*size {
+			break
+		}
+		recent := n < size
+		n++
 		window := &out.Previous
 		if recent {
 			window = &out.Recent
 		}
-		passed := false
-		switch {
-		case row.Cancelled:
-			continue
-		case row.Outcome == runner.OutcomePROpened:
-			switch row.ChecksResult {
-			case dispatcher.CheckGreen:
-				passed = true
-				window.Passed++
-			case dispatcher.CheckFailing:
-			default:
-				// Still pending, or a pull request no result can be read for:
-				// counted in neither until it settles.
-				continue
-			}
-		}
 		window.Runs++
-		if recent && !passed {
+		if row.Outcome == runner.OutcomePROpened && row.ChecksResult == dispatcher.CheckGreen {
+			window.Passed++
+		} else if recent {
 			failures[failureClass(row)]++
 		}
 	}
