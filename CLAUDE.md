@@ -94,6 +94,15 @@ this file as project memory, so the rules below reach the run.
   truth is established; applying it to ticket text is a judgment call. Verified 2026-10-27: FRG-226,
   231, 233 and 234 told the runner not to build them while START would have delegated all four.)*
 
+- **Combine cohesive work into one ticket up to size M rather than filing several S tickets.**
+  Each run pays a fixed cost per PR: CI, the review pass, a merge and deploy, and a rebase when
+  two tickets touch the same files. Run time alone does not favour it (median 52 min for an S
+  run to its PR against 117 for an M, which adds the plan stage), so the saving is per PR.
+  Combine only work that shares a screen or package and a reason to change; never exceed M,
+  and keep each acceptance criterion separately verifiable. *(Judgment call, owner's instruction
+  2026-11-05; the batch-size trade-off is Reinertsen's U-curve, transaction cost against holding
+  cost. Measured 2026-11-05 over 83 S/M runs.)*
+
 ## Fixing a runner PR: add commits, never rewrite the agent's
 
 Fix a runner PR with new commits on top, each with `Rework: review-found` or `Rework: owner-change`
