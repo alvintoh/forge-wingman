@@ -33,7 +33,7 @@ func TestInboxListsOpenPRsWaitingOnTheOwnerNewestFirst(t *testing.T) {
 		return r
 	}
 	rows := map[string]map[string]any{
-		"newest":            row(time.Hour, map[string]any{"wait_reason": "front-end"}),
+		"newest":            row(time.Hour, map[string]any{"wait_reason": "front-end", "stop_detail": "an earlier attempt's detail"}),
 		"older":             row(2*time.Hour, nil),
 		"auto-merging":      row(3*time.Hour, map[string]any{"auto_merge": true}),
 		"auto-merge held":   row(3*time.Hour+time.Minute, map[string]any{"auto_merge": true, "wait_reason": "draft"}),
@@ -67,8 +67,8 @@ func TestInboxListsOpenPRsWaitingOnTheOwnerNewestFirst(t *testing.T) {
 		t.Fatalf("inbox = %v, want %v", names, want)
 	}
 	first := got[0]
-	if first.Stopped || first.Title != "" {
-		t.Fatalf("first = %+v, want a PR row not marked as a stopped run and carrying no ticket title", first)
+	if first.Stopped || first.Title != "" || first.StopDetail != "" {
+		t.Fatalf("first = %+v, want a PR row not marked as a stopped run and carrying no ticket title or stop detail", first)
 	}
 	if first.Ticket != "ABC-1" || first.Repo != "octo/scratch" || first.Size != "M" || first.WaitReason != runner.WaitFrontEnd ||
 		first.PRURL != "https://github.com/octo/scratch/pull/7" || !first.UpdatedAt.Equal(inboxBase.Add(-time.Hour)) {
@@ -99,7 +99,7 @@ func TestInboxListsStoppedRunsUnlessThereIsNothingForTheOwnerToRetry(t *testing.
 	}
 	requeued := []any{map[string]any{"class": "module-proxy", "at": inboxBase}}
 	rows := map[string]map[string]any{
-		"finished claim":      row(time.Hour, nil),
+		"finished claim":      row(time.Hour, map[string]any{"stop_detail": "Next model tier: a/b. A `model:a/b` label chooses it.\n\nThe build made no commits."}),
 		"stopped state":       row(2*time.Hour, map[string]any{"state": "stopped", "outcome": "stopped", "stop_reason": "waiting-on-owner"}),
 		"old draft kept":      row(2*time.Hour+time.Minute, map[string]any{"state": "stopped", "outcome": "stopped", "stop_reason": "plan-stage-failed", "pr_url": "https://github.com/octo/scratch/pull/9", "wait_reason": "draft"}),
 		"retry exhausted":     row(3*time.Hour, map[string]any{"transient": string(runner.TransientModuleProxy), "transient_requeues": append(requeued, requeued...)}),
@@ -140,6 +140,12 @@ func TestInboxListsStoppedRunsUnlessThereIsNothingForTheOwnerToRetry(t *testing.
 	}
 	if first.Title != "Add the widget" {
 		t.Fatalf("title = %q, want the ticket's title for a stopped run", first.Title)
+	}
+	if want := "Next model tier: a/b. A `model:a/b` label chooses it.\n\nThe build made no commits."; first.StopDetail != want {
+		t.Fatalf("stop detail = %q, want the run record's stop_detail", first.StopDetail)
+	}
+	if got[1].StopDetail != "" {
+		t.Fatalf("stop detail = %q, want none for a run whose record has none", got[1].StopDetail)
 	}
 	if kept := got[2]; !kept.Stopped || kept.PRURL != "https://github.com/octo/scratch/pull/9" {
 		t.Fatalf("kept = %+v, want a stopped run that still names its earlier attempt's draft", kept)

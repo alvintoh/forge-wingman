@@ -52,7 +52,8 @@
       "title": "Gadget settings page",
       "head_sha": "77aa10c",
       "stopped": true,
-      "stop_reason": "rebase-conflict",
+      "stop_reason": "agent-no-progress",
+      "stop_detail": "Next model tier: command-code/xiaomi/mimo-v2.6-pro. A `model:command-code/xiaomi/mimo-v2.6-pro` label on the ticket chooses it, and a retry then runs once on that tier.\n\nThe build made no commits in 25 minutes. Its last step ran go test ./internal/runner/... and 3 tests failed.",
       "outcome": "stopped",
       "attempt": 1,
       "retryable": true

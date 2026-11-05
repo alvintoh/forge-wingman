@@ -8,6 +8,8 @@ import { type Cell, cellAttrs } from "./keyboard";
 import { DRAFT_WORDS, type Kind, type Wait, kindOf, waits } from "./kind";
 import type { RowState } from "./merge-state";
 import { type InboxRun, isStopped, stopReasonOf, titleOf } from "./run";
+import { stopDetailOf } from "./stop-detail";
+import { RowStopDetail } from "./stop-detail-text";
 
 const kindFill: Record<Kind, string> = {
   FORK: "bg-stop",
@@ -61,6 +63,7 @@ export function InboxRow({
   const reasonId = useId();
   const ticketId = useId();
   const titleId = useId();
+  const detailId = useId();
   const wait: Wait | undefined = waits[run.wait_reason];
   const draft = run.draft === true;
   const blocked = wait?.blocks === true || draft;
@@ -68,6 +71,8 @@ export function InboxRow({
   const title = titleOf(run);
   const stopped = isStopped(run);
   const kind = kindOf(run);
+  // A stopped row shows its detail's first paragraph; the sheet holds the rest.
+  const detail = stopDetailOf(run)[0];
 
   const plainReason = run.wait_reason.replaceAll("-", " ");
   let reason = draft
@@ -125,6 +130,10 @@ export function InboxRow({
     reason = cancel.status === "sending" ? "Cancelling…" : "Cancelled.";
     tone = "text-ink2";
   }
+  const describedBy =
+    [reason !== undefined && reasonId, detail !== undefined && detailId]
+      .filter(Boolean)
+      .join(" ") || undefined;
   // A merged row has no pill, so a stop left on it falls back to the row.
   const rowStop = stop === "row" || (stop === "pill" && merged);
 
@@ -157,7 +166,7 @@ export function InboxRow({
         {...cellAttrs(run.run, "row")}
         aria-haspopup="dialog"
         aria-labelledby={`${ticketId} ${titleId}`}
-        aria-describedby={reason === undefined ? undefined : reasonId}
+        aria-describedby={describedBy}
         onClick={handleOpen}
         className="absolute inset-y-0 -inset-x-padx cursor-pointer rounded-tile focus-visible:outline-offset-[-7.5px]!"
       />
@@ -236,6 +245,7 @@ export function InboxRow({
               {reason}
             </p>
           )}
+          {detail !== undefined && <RowStopDetail id={detailId} paragraph={detail} />}
         </div>
         <Chevron className="mt-[16.4px]" />
       </div>
