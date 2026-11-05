@@ -32,13 +32,13 @@ const DEFINITION =
   "Build and plan are the share of that phase's opening call that came from cache, - where it was not recorded, none where the run had no such stage; whole run is every call in the run.";
 
 describe("CacheTable", () => {
-  it("draws the definition line exactly, with the all-projects note a line of its own", () => {
+  it("draws the definition line exactly, with no all-projects note under a chosen project", () => {
     const all = render(ready([run()]));
     expect(all.text).toContain(`<p class="mt-2 text-cap leading-4 text-ink2">${DEFINITION}</p>`);
     expect(all.text).not.toContain("Runs from all projects.");
     const chosen = render(ready([run()]), "alvintoh/forge-wingman");
     expect(chosen.text).toContain(`${DEFINITION}</p>`);
-    expect(chosen.text).toContain(">Runs from all projects.</p>");
+    expect(chosen.text).not.toContain("all projects");
   });
 
   it("draws one header row of six columns, with none of the old pieces", () => {
