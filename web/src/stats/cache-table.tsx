@@ -207,9 +207,6 @@ export function CacheTable({ state, project }: CacheTableProps) {
         cache
       </h2>
       <p className="mt-2 text-cap leading-4 text-ink2">{DEFINITION}</p>
-      {project !== null && (
-        <p className="mt-1 text-cap leading-4 text-ink2">Runs from all projects.</p>
-      )}
       {state.status === "loading" && (
         <p role="status" className="mt-6">
           Reading the runs…

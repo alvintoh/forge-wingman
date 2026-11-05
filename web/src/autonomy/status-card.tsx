@@ -54,8 +54,6 @@ function SettingsPill() {
 
 type MergeStatusCardProps = {
   merge: MergeState;
-  // Whether a project is chosen: the status stays pooled, and the card says so.
-  projectChosen: boolean;
 };
 
 /**
@@ -63,7 +61,7 @@ type MergeStatusCardProps = {
  * state as a shape and a word, the rate beside its guide, and who merges what. The page draws it
  * once the state has been read; the wait and the failure are page text, not this card.
  */
-export function MergeStatusCard({ merge, projectChosen }: MergeStatusCardProps) {
+export function MergeStatusCard({ merge }: MergeStatusCardProps) {
   return (
     <section aria-labelledby="auto-merge-card" className="card-frame py-4 max-sm:-mx-2.5">
       <h2 id="auto-merge-card" className={`${captionClass} text-ink2`}>
@@ -77,9 +75,6 @@ export function MergeStatusCard({ merge, projectChosen }: MergeStatusCardProps) 
       </div>
       <p className="mt-1 text-body leading-5.5 text-ink2">{rateLine(merge)}</p>
       <Rules />
-      {projectChosen && (
-        <p className="mt-2 text-label font-semibold text-ink">rate: all projects</p>
-      )}
     </section>
   );
 }
