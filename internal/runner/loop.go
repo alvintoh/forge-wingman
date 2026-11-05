@@ -124,28 +124,11 @@ func reviewFailureDetail(err error) string {
 	return "review: " + truncate(detail(err), checkFeedbackLimit)
 }
 
-// buildOrder is the ordered models a build-phase call falls through: the
-// ticket's free models on a free-tier run, so a model that is withdrawn or
-// unavailable falls to the next in list order (AC1); else the run's model and
-// its same-provider fallbacks, which an exhausted allowance also advances
-// along rather than stopping the build.
+// buildOrder is the ordered models a build-phase call falls through: the run's
+// model and its same-provider fallbacks, which an exhausted allowance also
+// advances along rather than stopping the build.
 func buildOrder(c BuildConfig) []string {
-	if free := c.Ticket.FreeModels; len(free) > 0 {
-		return free
-	}
 	return append([]string{c.Model}, fallbackModels(c.Model)...)
-}
-
-// lastBuildModel is the model the build phase last ran — the one that built the
-// run, since a successful attempt returns at once, so the newest build step is
-// the successful one.
-func lastBuildModel(sum *Summary) string {
-	for i := len(sum.Steps) - 1; i >= 0; i-- {
-		if sum.Steps[i].Phase == PhaseBuild {
-			return sum.Steps[i].Model
-		}
-	}
-	return ""
 }
 
 // lastFixRoundCost is the spend of the fix round that has just returned, as the
@@ -157,37 +140,6 @@ func lastFixRoundCost(sum *Summary) *FixRoundCost {
 	st := sum.Steps[len(sum.Steps)-1]
 	return &FixRoundCost{Round: st.Round, Tokens: st.Tokens, DurationMS: st.DurationMS}
 }
-
-// reviewOrder is the review phase's ordered models: the free models after the
-// one that built the run on a free-tier run, so the review is never the builder
-// checking its own work (AC2), empty once the build used every free model; else
-// the configured review list.
-func reviewOrder(c BuildConfig, sum *Summary) []string {
-	if len(c.Ticket.FreeModels) == 0 {
-		return c.ReviewModels
-	}
-	i := slices.Index(c.Ticket.FreeModels, lastBuildModel(sum))
-	if i < 0 {
-		return nil
-	}
-	return c.Ticket.FreeModels[i+1:]
-}
-
-// fixOrder is the ordered models the review's fix round resumes the build
-// session on: the one that built the run, on a free-tier run, so the round
-// cannot consume a free model the re-review needs (AC2); else the starting
-// model and its same-provider fallbacks.
-func fixOrder(c BuildConfig, sum *Summary) []string {
-	if len(c.Ticket.FreeModels) > 0 {
-		return []string{lastBuildModel(sum)}
-	}
-	return buildOrder(c)
-}
-
-// noReviewDetail is the pre-PR loop's report when a free-tier run's build used
-// the last of the plan's free models, so no model was left to review its diff
-// (AC2): the PR opens as a draft.
-const noReviewDetail = "review: the build used every free model, so none was left to review it"
 
 // runCheckLoop runs the build agent, then the repository's own checks,
 // feeding a failing gate's output back to the same session and rebuilding,
@@ -314,21 +266,20 @@ func formatInPlace(ctx context.Context, d BuildDeps, sum *Summary, wt Worktree, 
 	return nil
 }
 
-// reviewPass runs one review pass over the worktree's pending diff on models
-// in order and returns its findings, empty when the diff satisfies the ticket.
-// models is non-empty: the caller has already decided the run has a model to
-// review it. It starts a fresh session, so rules is the whole of what that
-// session carries — the build projection's rules, which is what the pass checks
-// the diff against. timeout is what the review's own budget leaves the pass,
-// and started and budget are the review stage's, so a pass that steps to its
-// backup model is bounded by the review's budget rather than the build's.
-func reviewPass(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum *Summary, models []string, round int, rules string, timeout time.Duration, started time.Time, budget time.Duration) (string, error) {
+// reviewPass runs one review pass over the worktree's pending diff on the
+// review models in order and returns its findings, empty when the diff
+// satisfies the ticket. It starts a fresh session, so rules is the whole of
+// what that session carries — the build projection's rules, which is what the
+// pass checks the diff against. timeout is what the review's own budget leaves
+// the pass, and started and budget are the review stage's, so a pass that steps
+// to its backup model is bounded by the review's budget rather than the build's.
+func reviewPass(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum *Summary, round int, rules string, timeout time.Duration, started time.Time, budget time.Duration) (string, error) {
 	diff, err := wt.DiffPending(ctx)
 	if err != nil {
 		return "", stopWith(OutcomeInfraFailure, StopChecksRun, err)
 	}
-	call := agentCall{Phase: PhaseReview, Round: round, Model: models[0], Rules: rules, Timeout: timeout}
-	text, _, _, err := runAgentInOrder(ctx, d, c, call, models, d.ReviewAgent, wt.Dir, PreOpenReviewPrompt(diff, c.Ticket), sum, started, budget)
+	call := agentCall{Phase: PhaseReview, Round: round, Model: c.ReviewModels[0], Rules: rules, Timeout: timeout}
+	text, _, _, err := runAgentInOrder(ctx, d, c, call, c.ReviewModels, d.ReviewAgent, wt.Dir, PreOpenReviewPrompt(diff, c.Ticket), sum, started, budget)
 	if err != nil {
 		return "", err
 	}
@@ -516,14 +467,11 @@ func reviewRows(rounds []fixRoundResult) []ReviewFinding {
 // guards the diff adds are broken in turn, mechanically, to find the ones no
 // test covers (AC1), and a model other than the builder's checks the diff and
 // the code around it against the ticket's acceptance criteria (AC2, AC3, AC4).
-// models is the review's ordered list, which a free-tier run derives from its
-// free list; an empty one is a run with no model left to review it (AC2), which
-// opens as a draft instead. Findings from either get a fix round, fed back to
-// the build agent's own session the same way a check failure is, and the
-// summary carries each one with how the run left it (AC5). The checks then run
-// once, to catch a gate the fix round newly broke, and — when the review
-// stage's own budget still allows it — the guards are probed again and the
-// review re-run on the fixed diff.
+// Findings from either get a fix round, fed back to the build agent's own
+// session the same way a check failure is, and the summary carries each one
+// with how the run left it (AC5). The checks then run once, to catch a gate the
+// fix round newly broke, and — when the review stage's own budget still allows
+// it — the guards are probed again and the review re-run on the fixed diff.
 //
 // A re-check that still reports a finding, the round's own or one it newly
 // made, starts one more fix round on the same session, up to maxFixRounds in
@@ -543,10 +491,7 @@ func reviewRows(rounds []fixRoundResult) []ReviewFinding {
 // needs to check the diff against them, and every fix round resumes the build
 // agent's own session with the same rules it was built under — dropping them
 // there would change the resumed session's system prompt mid-conversation.
-func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum *Summary, rules, session string, buildRound int, models []string, msg *CommitMessage) (ready bool, detail string, err error) {
-	if len(models) == 0 {
-		return false, noReviewDetail, nil
-	}
+func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum *Summary, rules, session string, buildRound int, msg *CommitMessage) (ready bool, detail string, err error) {
 	// The guard scan is charged to the build stage: it probes the diff the
 	// review reads, so it stops once the build's budget is spent and its time
 	// stays outside the review's own budget, which begins below.
@@ -560,7 +505,7 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 	// starts. Only the fix rounds and the re-checks below run late enough in the
 	// stage to need one.
 	passTimeout := min(effectiveAgentTimeout(c.AgentTimeout), nfr1ReviewBudget)
-	found, err := reviewPass(ctx, d, c, wt, sum, models, 1, rules, passTimeout, reviewStarted, nfr1ReviewBudget)
+	found, err := reviewPass(ctx, d, c, wt, sum, 1, rules, passTimeout, reviewStarted, nfr1ReviewBudget)
 	if err != nil {
 		return false, "", err
 	}
@@ -581,7 +526,7 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 			break
 		}
 		text := findingsText(findings)
-		fixes := fixOrder(c, sum)
+		fixes := buildOrder(c)
 		call := agentCall{Phase: PhaseBuild, Round: round, Model: fixes[0], Session: session, Rules: rules, Detail: text,
 			Timeout: timeout}
 		fixText, resumed, ran, err := runAgentInOrder(ctx, d, c, call, fixes, d.Agent, wt.Dir, withCommitInstruction(fixPrompt(text)), sum, reviewStarted, nfr1ReviewBudget)
@@ -623,7 +568,7 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 			return false, detailParts("findings addressed by a fix round, not re-reviewed: "+
 				text+" ("+stageBudgetSpent("review", nfr1ReviewBudget)+")", checksDetail), nil
 		}
-		remaining, err := reviewPass(ctx, d, c, wt, sum, models, round, rules, recheckTimeout, reviewStarted, nfr1ReviewBudget)
+		remaining, err := reviewPass(ctx, d, c, wt, sum, round, rules, recheckTimeout, reviewStarted, nfr1ReviewBudget)
 		if err != nil {
 			return false, "", err
 		}

@@ -96,7 +96,7 @@ func TestPlanOptInPrivateRecordsOnlyThePrivateOptIn(t *testing.T) {
 	}
 }
 
-func TestTicketHandsTheBuildTheFreeTiersModelsOnAFreeTierClaim(t *testing.T) {
+func TestTicketHandsTheBuildTheNamedModelsOfARowAnOldFreeTierClaimWrote(t *testing.T) {
 	if os.Getenv("FIRESTORE_EMULATOR_HOST") == "" {
 		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
 	}
@@ -105,15 +105,20 @@ func TestTicketHandsTheBuildTheFreeTiersModelsOnAFreeTierClaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runID := "ticket-free-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	runID := "ticket-legacy-" + strconv.FormatInt(time.Now().UnixNano(), 10)
 	t.Cleanup(func() {
 		_, _ = client.Collection("runs").Doc(runID).Delete(context.Background())
 		_ = client.Close()
 	})
 	rec := runner.NewRecord(runID, runner.Ticket{ID: "ABC-1", Title: "t", Size: "S", Body: "b"}, time.Now())
 	rec.ModelLabels = runner.ModelLabels{Build: "p/paid"}
-	rec.LastResort, rec.LastResortModels = true, runner.ModelLabels{Build: "p/free-a", Review: "p/free-b", Plan: []string{"p/free-a"}}
 	if err := store.NewRecords(client).PutRecord(ctx, runID, rec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Collection("runs").Doc(runID).Update(ctx, []firestore.Update{
+		{Path: "last_resort", Value: true},
+		{Path: "last_resort_models", Value: map[string]any{"build": "p/free-a", "plan": []string{"p/free-a"}}},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
@@ -127,49 +132,15 @@ func TestTicketHandsTheBuildTheFreeTiersModelsOnAFreeTierClaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(out), "override_model=p/free-a") || strings.Contains(string(out), "p/paid") {
-		t.Fatalf("GITHUB_OUTPUT = %q, want the free tier's build model in place of the ticket's", out)
+	if !strings.Contains(string(out), "override_model=p/paid") || strings.Contains(string(out), "p/free-a") {
+		t.Fatalf("GITHUB_OUTPUT = %q, want the ticket's named build model", out)
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, "ticket.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := runner.ParseTicket(string(raw))
-	if err != nil || !slices.Equal(got.FreeModels, []string{"p/free-a"}) {
-		t.Fatalf("ticket file %q parsed to free models %v, err %v", raw, got.FreeModels, err)
-	}
-}
-
-func TestTicketRefusesAFreeTierClaimNamingNoFreeModel(t *testing.T) {
-	if os.Getenv("FIRESTORE_EMULATOR_HOST") == "" {
-		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
-	}
-	ctx := context.Background()
-	client, err := firestore.NewClient(ctx, "p")
-	if err != nil {
-		t.Fatal(err)
-	}
-	runID := "ticket-nofree-" + strconv.FormatInt(time.Now().UnixNano(), 10)
-	t.Cleanup(func() {
-		_, _ = client.Collection("runs").Doc(runID).Delete(context.Background())
-		_ = client.Close()
-	})
-	rec := runner.NewRecord(runID, runner.Ticket{ID: "ABC-1", Title: "t", Size: "S", Body: "b"}, time.Now())
-	rec.ModelLabels = runner.ModelLabels{Build: "p/paid"}
-	rec.LastResort = true
-	if err := store.NewRecords(client).PutRecord(ctx, runID, rec); err != nil {
-		t.Fatal(err)
-	}
-	dir := t.TempDir()
-	env := map[string]string{"GOOGLE_CLOUD_PROJECT": "p", "RUNNER_TEMP": dir, "GITHUB_RUN_ID": "42", "GITHUB_RUN_ATTEMPT": "1",
-		"WINGMAN_ACCOUNT": "octo", "GITHUB_REPOSITORY_OWNER": "octo", "GITHUB_OUTPUT": filepath.Join(dir, "output")}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	err = run(ctx, logger, []string{"ticket", "-run-id", runID, "-out", filepath.Join(dir, "ticket.json")}, func(k string) string { return env[k] })
-	if err == nil || !strings.Contains(err.Error(), "names no free model") {
-		t.Fatalf("err = %v, want the ticket refused rather than built on the paid model", err)
-	}
-	if _, statErr := os.Stat(filepath.Join(dir, "ticket.json")); statErr == nil {
-		t.Fatal("ticket.json written for a free-tier claim with no free model")
+	if _, err := runner.ParseTicket(string(raw)); err != nil {
+		t.Fatalf("ticket file %q does not parse: %v", raw, err)
 	}
 }
 

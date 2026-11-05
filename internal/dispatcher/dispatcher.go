@@ -838,9 +838,6 @@ type claimTier struct {
 // ceilings throughout; one whose plan is unknown to this configuration, or
 // recorded none, keeps the default plan's.
 func (c Config) tierOf(cand Candidate, stage string) claimTier {
-	if stage == StageBuild && cand.LastResort != nil {
-		return claimTier{budget: c.Budget.lastResort(), plan: runner.Provider(cand.LastResort.Build), model: cand.LastResort.Build}
-	}
 	if c.namedFree(cand) {
 		return claimTier{budget: c.Budget.lastResort(), plan: runner.Provider(cand.Model), model: cand.Model}
 	}

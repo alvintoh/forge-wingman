@@ -11,6 +11,7 @@ import (
 
 	"cloud.google.com/go/firestore"
 
+	"github.com/alvintoh/forge-wingman/internal/money"
 	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
@@ -121,5 +122,59 @@ func TestPutRecordAgainstTheEmulator(t *testing.T) {
 	}
 	if data["stop_reason"] != string(runner.StopNoBuildRecord) {
 		t.Errorf("stop_reason = %v", data["stop_reason"])
+	}
+}
+
+// writeLegacyClaimFields writes onto run id the fields a free-tier or moved claim
+// once wrote and no claim writes any more, as a row settled then still holds.
+func writeLegacyClaimFields(t *testing.T, client *firestore.Client, id string) {
+	t.Helper()
+	labels := map[string]any{"build": "beta/free-a", "review": "beta/free-b", "plan": []string{"beta/free-a"}}
+	if _, err := client.Collection(runsCollection).Doc(id).Update(context.Background(), []firestore.Update{
+		{Path: "last_resort", Value: true}, {Path: "last_resort_models", Value: labels},
+		{Path: "moved_from", Value: "alpha"}, {Path: "plan_models", Value: labels},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestARowAnOldClaimLeftItsTierOnReadsOnEveryPath(t *testing.T) {
+	_, client := queue(t)
+	ctx := context.Background()
+	plan, size, id := fresh("legacy-plan"), "S-"+fresh("legacy-size"), fresh("legacy-run")
+	forget(t, client, id)
+	comparedRecord(t, client, id, comparedRun{plan: plan, model: "beta/paid", settledAt: queueAt, cost: money.Dollar})
+	if _, err := client.Collection(runsCollection).Doc(id).Update(ctx, []firestore.Update{{Path: sizeField, Value: size}}); err != nil {
+		t.Fatal(err)
+	}
+	writeLegacyClaimFields(t, client, id)
+	recs, since := NewRecords(client), queueAt.Add(-time.Hour)
+
+	rec, err := recs.GetRecord(ctx, id)
+	if err != nil || rec.Plan != plan || rec.ModelLabels.Build != "beta/paid" {
+		t.Fatalf("record plan %q, models %+v, err %v, want the row's own", rec.Plan, rec.ModelLabels, err)
+	}
+	if mean, sample, err := recs.ProviderTrailingCost(ctx, plan, since, ""); err != nil || mean != money.Dollar || sample != 1 {
+		t.Fatalf("trailing cost %d over %d, err %v, want the run counted", mean, sample, err)
+	}
+	cmp, err := recs.Comparison(ctx, since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, ok := findProvider(cmp.Providers, plan); !ok || p.Sample != 1 {
+		t.Fatalf("providers = %+v, want the run counted under its plan", cmp.Providers)
+	}
+	if _, err := recs.PlanCaches(ctx, since); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recs.RecentSettled(ctx, 50); err != nil {
+		t.Fatal(err)
+	}
+	est := NewEstimates(client)
+	if got, err := est.Estimate(ctx, size); err != nil || got.ProviderCost != money.Dollar {
+		t.Fatalf("estimate = %+v, err %v, want the run's own cost", got, err)
+	}
+	if _, err := est.EstimatePlan(ctx, size); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -98,9 +98,7 @@ type BuildConfig struct {
 	// (FR-28), ordered like PlanModels: the first entry is the main model and
 	// later ones are backups the phase moves to when the one before is
 	// unavailable or out of allowance. None may be Model, so the review is
-	// never the builder checking its own work. A free-tier run ignores it:
-	// Ticket.FreeModels decides the build's and the review's models instead
-	// (AC1, AC2).
+	// never the builder checking its own work.
 	ReviewModels []string
 	AgentTimeout time.Duration
 	// Secrets are checked against the branch before it is bundled, so an
@@ -229,15 +227,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 				return stopWith(OutcomeStopped, StopModelInvalid, err)
 			}
 		}
-		// A free-tier run's phases take their models from the ticket's free
-		// list, so its start model must be that list's first and its review
-		// list need not be the ticket's (AC1, AC2).
-		if free := c.Ticket.FreeModels; len(free) > 0 {
-			if c.Model != free[0] {
-				return stopWith(OutcomeStopped, StopModelInvalid,
-					fmt.Errorf("build model %q is not the free tier's first model %q", c.Model, free[0]))
-			}
-		} else if err := ValidateReviewModels(c.ReviewModels, c.Model); err != nil {
+		if err := ValidateReviewModels(c.ReviewModels, c.Model); err != nil {
 			return stopWith(OutcomeStopped, StopModelInvalid, err)
 		}
 		// A harness the run is not configured for stops here, before any
@@ -245,7 +235,6 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		// missing credential, any other as an invalid model.
 		if g, ok := d.Agent.(modelGate); ok {
 			models := append([]string{c.Model}, c.ReviewModels...)
-			models = append(models, c.Ticket.FreeModels...)
 			if c.Ticket.Size != "S" {
 				models = append(models, c.PlanModels...)
 			}
@@ -343,15 +332,10 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		// build: it forces a draft naming the failure instead (FR-5). The one
 		// exception is a formatter that touched a file outside the run's diff,
 		// which must stop the build before the commit stages that file.
-		reviewModels := reviewOrder(c, &sum)
-		reviewModel := ""
-		if len(reviewModels) > 0 {
-			reviewModel = reviewModels[0]
-		}
 		var formatterStop *StopError
-		_ = timed(PhaseReview, d.ReviewAgent, reviewModel, func() error {
+		_ = timed(PhaseReview, d.ReviewAgent, c.ReviewModels[0], func() error {
 			var rerr error
-			ready, loopDetail, rerr = runReview(ctx, d, c, wt, &sum, rules, session, lastRound, reviewModels, &msg)
+			ready, loopDetail, rerr = runReview(ctx, d, c, wt, &sum, rules, session, lastRound, &msg)
 			if rerr != nil {
 				ready = false
 				loopDetail = reviewFailureDetail(rerr)

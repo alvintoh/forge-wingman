@@ -66,6 +66,21 @@ func TestEstimateFallsBackToTheFirstEverSettledRunForAnUnseenSize(t *testing.T) 
 	}
 }
 
+func TestEstimateIsZeroWhenNoRunHasEverSettled(t *testing.T) {
+	queue(t) // skips without the emulator
+	ctx := context.Background()
+	// The emulator keeps each project's data apart, and nothing writes to this
+	// one, so it is a system with no settled run at all.
+	client, err := firestore.NewClient(ctx, "forge-wingman-test-empty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	if got, err := NewEstimates(client).Estimate(ctx, "M"); err != nil || got != (dispatcher.Estimate{}) {
+		t.Fatalf("estimate = %+v, err %v, want zero on a system with no settled run", got, err)
+	}
+}
+
 func TestEstimateIgnoresARunThatHasNotSettledYet(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
@@ -88,29 +103,18 @@ func TestEstimateIgnoresARunThatHasNotSettledYet(t *testing.T) {
 	}
 }
 
-func TestEstimateLeavesOutRunsOnAFreeTier(t *testing.T) {
+func TestEstimateCountsARunAnOldFreeTierClaimSettled(t *testing.T) {
 	_, client := queue(t)
 	ctx := context.Background()
-	size := "S-" + fresh("free")
-	oldest := queueAt.Add(-200 * 365 * 24 * time.Hour)
-	free, freeFirst, paid, paidFirst := fresh("est-free"), fresh("est-free-first"), fresh("est-paid"), fresh("est-paid-first")
-	forget(t, client, free, freeFirst, paid, paidFirst)
+	size := "S-" + fresh("legacy-free")
+	free, paid := fresh("est-legacy-free"), fresh("est-legacy-paid")
+	forget(t, client, free, paid)
 	settledRecord(t, client, paid, size, 4*money.Dollar, 60_000, queueAt)
 	settledRecord(t, client, free, size, 0, 60_000, queueAt)
-	settledRecord(t, client, freeFirst, "M", 0, 60_000, oldest)
-	settledRecord(t, client, paidFirst, "M", 7*money.Dollar, 60_000, oldest.Add(time.Hour))
-	for _, id := range []string{free, freeFirst} {
-		if _, err := client.Collection(runsCollection).Doc(id).Update(ctx, []firestore.Update{{Path: lastResortField, Value: true}}); err != nil {
-			t.Fatal(err)
-		}
-	}
+	writeLegacyClaimFields(t, client, free)
 
-	est := NewEstimates(client)
-	if got, err := est.Estimate(ctx, size); err != nil || got.ProviderCost != 4*money.Dollar {
-		t.Fatalf("estimate = %+v, err %v, want the paid run's cost unaveraged with the free one", got, err)
-	}
-	if got, err := est.Estimate(ctx, "L-"+fresh("free-unseen")); err != nil || got.ProviderCost != 7*money.Dollar {
-		t.Fatalf("estimate = %+v, err %v, want the first paid run as the fallback", got, err)
+	if got, err := NewEstimates(client).Estimate(ctx, size); err != nil || got.ProviderCost != 2*money.Dollar {
+		t.Fatalf("estimate = %+v, err %v, want the free run averaged in like any other", got, err)
 	}
 }
 

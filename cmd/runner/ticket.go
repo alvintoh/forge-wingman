@@ -41,9 +41,6 @@ func ticket(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	}
 	t := rec.Ticket()
 	logger.Info("ticketRead", "run", *runID, "ticket", t.ID)
-	if rec.LastResort && rec.LastResortModels.Build == "" {
-		return fmt.Errorf("run %s was claimed on a free tier but names no free model", *runID)
-	}
 	plan, err := records.GetPlan(ctx, *runID)
 	if err != nil {
 		return err
@@ -59,7 +56,7 @@ func ticket(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	if err != nil {
 		return err
 	}
-	return writeTicket(*out, e.output, t, rec.RunModels())
+	return writeTicket(*out, e.output, t, rec.ModelLabels)
 }
 
 // writeTicket writes the ticket to path and the models it named to $GITHUB_OUTPUT.
