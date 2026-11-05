@@ -108,6 +108,14 @@ this file as project memory, so the rules below reach the run.
   *(Judgment call, owner's instruction 2026-11-06, after combining five tickets into two new ones
   left five duplicates in Phase 5's view.)*
 
+- **A ticket that grounds at L is split into M tickets before it is built, in either lane.** START
+  can delegate any ticket, and a run's whole PR has 90 minutes: build 60, review with its fix round
+  25, a 5-minute reserve (`internal/runner/loop.go:28-40`). The only L sample, a p90 of 52.6 minutes
+  over 3 runs, leaves no margin, and an L diff is harder to review. Split along a contract both
+  halves can test against (a fixture, an API shape), keep the original ticket as one half, and
+  block the other on it. *(Judgment call, owner's instruction 2026-11-06, after FRG-297 grounded at
+  12 files and was split into FRG-297 and FRG-298.)*
+
 ## Fixing a runner PR: add commits, never rewrite the agent's
 
 Fix a runner PR with new commits on top, each with `Rework: review-found` or `Rework: owner-change`
