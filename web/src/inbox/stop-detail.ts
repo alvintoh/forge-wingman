@@ -32,3 +32,8 @@ export function spansOf(paragraph: string): DetailSpan[] {
 export function stopDetailOf(run: InboxRun): string[] {
   return isStopped(run) ? paragraphsOf(run.stop_detail) : [];
 }
+
+// overflows is whether a box's content is taller than the box, so it scrolls.
+export function overflows(box: { scrollHeight: number; clientHeight: number }): boolean {
+  return box.scrollHeight > box.clientHeight;
+}

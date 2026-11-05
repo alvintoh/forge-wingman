@@ -63,7 +63,6 @@ export function InboxRow({
   const reasonId = useId();
   const ticketId = useId();
   const titleId = useId();
-  const detailId = useId();
   const wait: Wait | undefined = waits[run.wait_reason];
   const draft = run.draft === true;
   const blocked = wait?.blocks === true || draft;
@@ -130,10 +129,6 @@ export function InboxRow({
     reason = cancel.status === "sending" ? "Cancelling…" : "Cancelled.";
     tone = "text-ink2";
   }
-  const describedBy =
-    [reason !== undefined && reasonId, detail !== undefined && detailId]
-      .filter(Boolean)
-      .join(" ") || undefined;
   // A merged row has no pill, so a stop left on it falls back to the row.
   const rowStop = stop === "row" || (stop === "pill" && merged);
 
@@ -166,7 +161,7 @@ export function InboxRow({
         {...cellAttrs(run.run, "row")}
         aria-haspopup="dialog"
         aria-labelledby={`${ticketId} ${titleId}`}
-        aria-describedby={describedBy}
+        aria-describedby={reason === undefined ? undefined : reasonId}
         onClick={handleOpen}
         className="absolute inset-y-0 -inset-x-padx cursor-pointer rounded-tile focus-visible:outline-offset-[-7.5px]!"
       />
@@ -245,7 +240,7 @@ export function InboxRow({
               {reason}
             </p>
           )}
-          {detail !== undefined && <RowStopDetail id={detailId} paragraph={detail} />}
+          {detail !== undefined && <RowStopDetail paragraph={detail} />}
         </div>
         <Chevron className="mt-[16.4px]" />
       </div>
