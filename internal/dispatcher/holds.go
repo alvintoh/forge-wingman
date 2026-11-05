@@ -12,7 +12,8 @@ import (
 )
 
 // The reasons a held run is counted under, in the order the Statistics page
-// breaks a tie in. Every condition that withholds a candidate has one; several
+// breaks a tie in. Every condition that withholds a candidate has one, bar a
+// retry whose models could not be checked (ConditionModelsUnchecked); several
 // share it: a repository at its cap and a write set overlapping a run in flight
 // both read as repo-busy, and every budget ceiling as budget.
 const (

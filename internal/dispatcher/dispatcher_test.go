@@ -141,6 +141,15 @@ type fakeQueue struct {
 	refreshed  []Queued
 	refreshErr error
 
+	// retried holds the runs that are an owner's retry waiting to be claimed;
+	// retriedModels records the models each was given and stoppedRetried the
+	// detail each was stopped with.
+	retried        map[string]bool
+	retriedModels  map[string]runner.ModelLabels
+	stoppedRetried map[string]string
+	// stopRaced makes StopRetried find the run already claimed by another poll.
+	stopRaced bool
+
 	// reserved and settled are the spend Spend reports at every moment; spends
 	// records each moment it was asked about.
 	reserved Totals
@@ -249,6 +258,32 @@ func (q *fakeQueue) RefreshQueuedTicket(_ context.Context, run Queued) ([]string
 	}
 	q.refreshed = append(q.refreshed, run)
 	return nil, nil
+}
+
+func (q *fakeQueue) RetryAwaitingClaim(_ context.Context, runID string) (bool, error) {
+	return q.retried[runID], nil
+}
+
+func (q *fakeQueue) RefreshRetriedModels(_ context.Context, runID string, m runner.ModelLabels) (bool, error) {
+	if !q.retried[runID] {
+		return false, nil
+	}
+	if q.retriedModels == nil {
+		q.retriedModels = map[string]runner.ModelLabels{}
+	}
+	q.retriedModels[runID] = m
+	return true, nil
+}
+
+func (q *fakeQueue) StopRetried(_ context.Context, runID string, reason runner.StopReason, detail string, _ time.Time) (bool, error) {
+	if !q.retried[runID] || q.stopRaced {
+		return false, nil
+	}
+	if q.stoppedRetried == nil {
+		q.stoppedRetried = map[string]string{}
+	}
+	q.stoppedRetried[runID] = string(reason) + " " + detail
+	return true, nil
 }
 
 func (q *fakeQueue) Enqueue(_ context.Context, run Queued) error {
@@ -886,6 +921,104 @@ func TestPollRefreshesAQueuedTicket(t *testing.T) {
 		got.Ticket.Size != "L" || !got.Ticket.FrontEnd || !slices.Equal(got.BlockedBy, []string{"FRG-17"}) ||
 		!slices.Equal(got.Blocks, []string{"FRG-19"}) {
 		t.Fatalf("refreshed = %+v, want the issue's current ticket", got)
+	}
+}
+
+// retriedPoll polls issue against a store holding FRG-18 as an owner's retry
+// waiting to be claimed, or as an ordinary queued run when retried is unset,
+// with the model plans models_test.go names.
+func retriedPoll(t *testing.T, retried bool, issue Issue) *fakeQueue {
+	t.Helper()
+	q := &fakeQueue{holds: map[string]bool{"FRG-18": true}, retried: map[string]bool{"FRG-18": retried}}
+	deps := pollDeps(fakeSource{issues: []Issue{issue}}, q, &fakeWorkflow{})
+	deps.ModelPlans = &fakeModelPlans{plans: modelPlans}
+	if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
+		t.Fatal(err)
+	}
+	return q
+}
+
+func TestPollGivesARetriedRunTheModelItsTicketNamesNow(t *testing.T) {
+	q := retriedPoll(t, true, admitted("size:S", "repo:octo/scratch", "model:allowance/a"))
+	if got := q.retriedModels["FRG-18"]; got.Build != "allowance/a" {
+		t.Fatalf("retried models = %+v, want the build model the label names", q.retriedModels)
+	}
+	if len(q.stoppedRetried) != 0 || len(q.rejected) != 0 {
+		t.Fatalf("stopped = %v, rejected = %v, want neither for an admitted model", q.stoppedRetried, q.rejected)
+	}
+}
+
+func TestPollGivesARetriedRunWithNoModelLabelTheDefault(t *testing.T) {
+	q := retriedPoll(t, true, admitted("size:S", "repo:octo/scratch"))
+	if got, ok := q.retriedModels["FRG-18"]; !ok || got.Build != "" || got.Review != "" || got.Plan != nil {
+		t.Fatalf("retried models = %+v (set %v), want none named, so the run's default applies", got, ok)
+	}
+}
+
+func TestPollStopsARetriedRunWhoseNewModelIsRefused(t *testing.T) {
+	q := retriedPoll(t, true, admitted("size:S", "repo:octo/scratch", "model:tokens/a"))
+	if got := q.stoppedRetried["FRG-18"]; !strings.HasPrefix(got, string(runner.StopModelRefused)+" "+string(RefusalModelNotOptedIn)+": ") {
+		t.Fatalf("stopped = %q, want model-refused naming the admission refusal", got)
+	}
+	if len(q.rejected) != 1 || q.rejected[0].Ticket != "FRG-18" || q.rejected[0].Reason != RefusalModelNotOptedIn {
+		t.Fatalf("rejected = %+v, want the refusal recorded against the ticket", q.rejected)
+	}
+	if _, ok := q.retriedModels["FRG-18"]; ok {
+		t.Fatal("the refused model was stored on the run")
+	}
+}
+
+func TestPollRecordsNoRefusalForARetryAnotherPollClaimedFirst(t *testing.T) {
+	q := &fakeQueue{holds: map[string]bool{"FRG-18": true}, retried: map[string]bool{"FRG-18": true}, stopRaced: true}
+	deps := pollDeps(fakeSource{issues: []Issue{admitted("size:S", "repo:octo/scratch", "model:tokens/a")}}, q, &fakeWorkflow{})
+	deps.ModelPlans = &fakeModelPlans{plans: modelPlans}
+	if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.rejected) != 0 {
+		t.Fatalf("rejected = %+v, want no refusal for a run no longer waiting on its retry", q.rejected)
+	}
+}
+
+func TestPollHoldsARetriedRunWhoseModelsCannotBeChecked(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err        error
+		dispatched bool
+	}{
+		"the plan read fails":    {errors.New("firestore down"), false},
+		"the plan read succeeds": {nil, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			q := &fakeQueue{holds: map[string]bool{"FRG-18": true}, retried: map[string]bool{"FRG-18": true},
+				candidates: []Candidate{{RunID: "FRG-18", Repo: "octo/scratch", Size: "S", Priority: 2, Attempt: 1}}}
+			deps := pollDeps(fakeSource{issues: []Issue{admitted("size:S", "repo:octo/scratch", "model:allowance/a")}}, q, &fakeWorkflow{})
+			deps.ModelPlans = &fakeModelPlans{plans: modelPlans, err: tc.err}
+			res, err := Poll(context.Background(), deps, buildConfig)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := slices.Contains(res.Dispatched, "FRG-18"); got != tc.dispatched {
+				t.Fatalf("dispatched = %v, want %v", res.Dispatched, tc.dispatched)
+			}
+			if tc.dispatched {
+				return
+			}
+			if len(res.Deferrals) != 1 || res.Deferrals[0].Ceiling != ConditionModelsUnchecked {
+				t.Fatalf("deferrals = %+v, want the retry held on %s", res.Deferrals, ConditionModelsUnchecked)
+			}
+			if len(q.tryClaims) != 0 || len(q.retriedModels) != 0 || len(q.stoppedRetried) != 0 {
+				t.Fatalf("claims = %d, models = %v, stopped = %v, want the run left as it was",
+					len(q.tryClaims), q.retriedModels, q.stoppedRetried)
+			}
+		})
+	}
+}
+
+func TestPollLeavesARunThatIsNotARetryAlone(t *testing.T) {
+	q := retriedPoll(t, false, admitted("size:S", "repo:octo/scratch", "model:tokens/a"))
+	if len(q.retriedModels) != 0 || len(q.stoppedRetried) != 0 || len(q.rejected) != 0 {
+		t.Fatalf("models = %v, stopped = %v, rejected = %v, want nothing done to a run that is not a retry",
+			q.retriedModels, q.stoppedRetried, q.rejected)
 	}
 }
 

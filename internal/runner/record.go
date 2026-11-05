@@ -42,8 +42,8 @@ const (
 	OutcomeInfraFailure Outcome = "infra-failure"
 	// OutcomeBudgetStop is a run the provider itself stopped by exhausting an
 	// allowance mid-build (FR-22). Kept distinct from OutcomeAgentFailed so it
-	// never reads as a verification failure FR-13 would retry at a higher,
-	// more expensive tier — the one thing an exhausted allowance must not do.
+	// never reads as a verification failure FR-13 would name a higher, more
+	// expensive tier for — the one thing an exhausted allowance must not do.
 	OutcomeBudgetStop Outcome = "budget-stop"
 )
 
@@ -121,6 +121,9 @@ const (
 	// StopFormatterOutsideDiff reports a formatter that changed a file the run's
 	// own diff did not already contain.
 	StopFormatterOutsideDiff StopReason = "formatter-outside-diff"
+	// StopModelRefused reports a retried run whose ticket now names a model
+	// admission refuses, so the retry never starts on it.
+	StopModelRefused StopReason = "model-refused"
 )
 
 // WaitReason names why a run's PR waits for the owner rather than merging itself.
@@ -461,6 +464,11 @@ type FinalizeInput struct {
 // its provider's runs usually cost — the provider's average lives in the store,
 // which this record job holds and the build does not.
 //
+// A build agent failure that is not a transient fault opens its stop detail with
+// the escalation ladder's next tier for the owner to choose, or says its one
+// escalation is spent and how the attempt the owner retried ended, read from
+// store when store is an AttemptReader.
+//
 // Every path through Finalize writes a terminal outcome, so every call
 // settles the run's ledger reservation to its actual cost (adr/0003) — even a
 // repeated call for the same run, since Settle is idempotent.
@@ -532,6 +540,11 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, reader Prov
 			words += "\n" + in.FailedJobLog
 		}
 		rec.Transient = ClassifyTransient(words)
+	}
+	// Classified first, from the build's own words: the note would push a fault
+	// marker past the limit, and a transient fault is requeued, not escalated.
+	if escalates(rec.Phase, rec.Outcome) && rec.Transient == "" {
+		rec.StopDetail = truncate(escalationDetail(ctx, store, in, rec), stopDetailLimit)
 	}
 	rec.JobResults["run"] = in.RunResult
 	rec.JobResults["pr"] = in.PRResult

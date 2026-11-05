@@ -16,7 +16,7 @@ const (
 	repoPrefix = "repo:"
 	// modelPrefix, reviewModelPrefix and planModelPrefix name the model a ticket
 	// asks a phase to run on; the plan label takes an ordered, comma-separated list.
-	modelPrefix       = "model:"
+	modelPrefix       = runner.ModelLabelPrefix
 	reviewModelPrefix = "review-model:"
 	planModelPrefix   = "plan-model:"
 	// sizedByLabel is what sized a ticket carrying a size label, the owner's

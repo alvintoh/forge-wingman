@@ -317,3 +317,150 @@ func TestSupersededByRetryLivesAsLongAsTheSupersededPR(t *testing.T) {
 		t.Fatalf("err = %v, want ErrRecordNotFound", err)
 	}
 }
+
+func TestGetAttemptReadsTheAttemptARetryArchived(t *testing.T) {
+	q, client := queue(t)
+	id := fresh("retry-get-attempt")
+	row := retryRow(map[string]any{
+		outcomeField:    string(runner.OutcomeAgentFailed),
+		stopReasonField: string(runner.StopAgentExit),
+	})
+	delete(row, prURLField)
+	seedRow(t, client, id, row)
+	if _, err := q.RetryWithNote(context.Background(), id, retryReq(func(r *RetryRequest) { r.SupersedePR = 0 }), queueAt.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = archiveRef(client.Collection(runsCollection).Doc(id), 2).Delete(context.Background()) })
+	records := NewRecords(client)
+	got, err := records.GetAttempt(context.Background(), id, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != runner.OutcomeAgentFailed || got.StopReason != runner.StopAgentExit {
+		t.Fatalf("attempt 2 = %s/%s, want the ended attempt's agent-failed/agent-exit", got.Outcome, got.StopReason)
+	}
+	if _, err := records.GetAttempt(context.Background(), id, 1); !errors.Is(err, runner.ErrRecordNotFound) {
+		t.Fatalf("attempt 1 err = %v, want ErrRecordNotFound for an attempt never archived", err)
+	}
+}
+
+// retried seeds retryRow and retries it, so id holds the owner's retry waiting
+// to be claimed, its plan files kept.
+func retried(t *testing.T, q *Queue, client *firestore.Client, id string) {
+	t.Helper()
+	seedRow(t, client, id, retryRow(nil))
+	if _, err := q.RetryWithNote(context.Background(), id, retryReq(nil), queueAt.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = archiveRef(client.Collection(runsCollection).Doc(id), 2).Delete(context.Background()) })
+}
+
+// candidate is id as the poll's Candidates lists it.
+func candidate(t *testing.T, q *Queue, id string) dispatcher.Candidate {
+	t.Helper()
+	cands, err := q.Candidates(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cands {
+		if c.RunID == id {
+			return c
+		}
+	}
+	t.Fatalf("%s is not a candidate", id)
+	return dispatcher.Candidate{}
+}
+
+func TestRefreshRetriedModelsCarriesANewLabelIntoTheClaim(t *testing.T) {
+	const mimo = "command-code/xiaomi/mimo-v2.6-pro"
+	for name, state := range map[string]string{"queued with its plan files": stateQueued, "planned": statePlanned} {
+		t.Run(name, func(t *testing.T) {
+			q, client := queue(t)
+			id := fresh("retry-models-" + state)
+			retried(t, q, client, id)
+			if _, err := client.Collection(runsCollection).Doc(id).Update(context.Background(),
+				[]firestore.Update{{Path: stateField, Value: state}}); err != nil {
+				t.Fatal(err)
+			}
+			awaiting, err := q.RetryAwaitingClaim(context.Background(), id)
+			if err != nil || !awaiting {
+				t.Fatalf("awaiting = %v (err %v), want the retry waiting to be claimed", awaiting, err)
+			}
+			changed, err := q.RefreshRetriedModels(context.Background(), id, runner.ModelLabels{Build: mimo})
+			if err != nil || !changed {
+				t.Fatalf("changed = %v (err %v), want the new label stored", changed, err)
+			}
+			if c := candidate(t, q, id); c.Model != mimo || !c.ModelsNamed {
+				t.Fatalf("candidate = %+v, want it to claim on %s", c, mimo)
+			}
+			row := readRow(t, client, id)
+			if row[operatorNoteField] != "Keep the old flag name." || row[attemptField] != int64(3) {
+				t.Fatalf("row = %v, want the retry's note and attempt kept", row)
+			}
+			if again, _ := q.RefreshRetriedModels(context.Background(), id, runner.ModelLabels{Build: mimo}); again {
+				t.Fatal("an unchanged label was written again")
+			}
+			for _, m := range []runner.ModelLabels{{Build: mimo, Review: "command-code/r"}, {Build: mimo, Review: "command-code/r", Plan: []string{"command-code/p"}}} {
+				if changed, err := q.RefreshRetriedModels(context.Background(), id, m); err != nil || !changed {
+					t.Fatalf("changed = %v (err %v) for %+v, want a new review or plan label stored", changed, err, m)
+				}
+			}
+		})
+	}
+}
+
+func TestRefreshRetriedModelsLeavesAnUnlabelledRetryOnTheDefault(t *testing.T) {
+	q, client := queue(t)
+	id := fresh("retry-models-none")
+	retried(t, q, client, id)
+	if changed, err := q.RefreshRetriedModels(context.Background(), id, runner.ModelLabels{}); err != nil || changed {
+		t.Fatalf("changed = %v (err %v), want nothing to change", changed, err)
+	}
+	if c := candidate(t, q, id); c.Model != "" || c.ModelsNamed {
+		t.Fatalf("candidate = %+v, want no named model, so the run's default applies", c)
+	}
+}
+
+func TestStopRetriedEndsTheRetriedAttemptKeepingItsNote(t *testing.T) {
+	q, client := queue(t)
+	id := fresh("retry-models-stop")
+	retried(t, q, client, id)
+	stopped, err := q.StopRetried(context.Background(), id, runner.StopModelRefused, "model-not-opted-in: tokens", queueAt.Add(2*time.Hour))
+	if err != nil || !stopped {
+		t.Fatalf("stopped = %v (err %v), want the attempt ended", stopped, err)
+	}
+	row := readRow(t, client, id)
+	if row[stateField] != stateStopped || row[stopReasonField] != string(runner.StopModelRefused) ||
+		row[stopDetailField] != "model-not-opted-in: tokens" || row[operatorNoteField] != "Keep the old flag name." {
+		t.Fatalf("row = %v, want it stopped on model-refused with the note kept", row)
+	}
+	if awaiting, _ := q.RetryAwaitingClaim(context.Background(), id); awaiting {
+		t.Fatal("a stopped retry still reads as waiting to be claimed")
+	}
+}
+
+func TestRetriedWritesLeaveARunThatIsNotARetryAlone(t *testing.T) {
+	q, client := queue(t)
+	id := fresh("retry-models-other")
+	row := retryRow(nil)
+	row[stateField] = stateQueued
+	delete(row, outcomeField)
+	delete(row, stopReasonField)
+	seedRow(t, client, id, row)
+	ctx := context.Background()
+	if awaiting, err := q.RetryAwaitingClaim(ctx, id); err != nil || awaiting {
+		t.Fatalf("awaiting = %v (err %v), want a queued run no one retried left out", awaiting, err)
+	}
+	if changed, err := q.RefreshRetriedModels(ctx, id, runner.ModelLabels{Build: "command-code/x"}); err != nil || changed {
+		t.Fatalf("changed = %v (err %v), want its models left alone", changed, err)
+	}
+	if stopped, err := q.StopRetried(ctx, id, runner.StopModelRefused, "x", queueAt); err != nil || stopped {
+		t.Fatalf("stopped = %v (err %v), want it left queued", stopped, err)
+	}
+	if got := readRow(t, client, id); got[stateField] != stateQueued || got[modelLabelsField] != nil {
+		t.Fatalf("row = %v, want it untouched", got)
+	}
+	if awaiting, err := q.RetryAwaitingClaim(ctx, fresh("retry-models-absent")); err != nil || awaiting {
+		t.Fatalf("awaiting = %v (err %v), want an absent run left out", awaiting, err)
+	}
+}

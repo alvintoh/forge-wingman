@@ -79,6 +79,10 @@
           "cache_write_usd_per_mtok": 0
         }
       },
+      "escalation": [
+        "command-code/deepseek/deepseek-v4.1-flash",
+        "command-code/xiaomi/mimo-v2.6-pro"
+      ],
       "models": {
         "build": "command-code/deepseek/deepseek-v4.1-flash",
         "review": "command-code/meta/muse-spark-1.3-contributor",
