@@ -30,6 +30,15 @@ const (
 	PhasePR     Phase = "pr"
 )
 
+// KnownPhase reports whether p is one of the phases above.
+func KnownPhase(p Phase) bool {
+	switch p {
+	case PhaseProjection, PhaseWorktree, PhaseAgentStart, PhasePlan, PhaseBuild, PhaseReview, PhaseCommit, PhasePR:
+		return true
+	}
+	return false
+}
+
 // Outcome is how a run ended.
 type Outcome string
 

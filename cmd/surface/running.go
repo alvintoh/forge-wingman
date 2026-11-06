@@ -18,6 +18,12 @@ type RunningReader interface {
 	Running(ctx context.Context) ([]store.Running, error)
 }
 
+// ProgressReader reads the newest progress of each run in flight. It never
+// fails: a run whose progress was not read is absent from the map.
+type ProgressReader interface {
+	Progress(ctx context.Context, runs []store.Running) map[progressKey]*store.Progress
+}
+
 // runningResponse is the running endpoint's wire shape: the runs in flight,
 // oldest claim first. It carries no cost, write set or run body.
 type runningResponse struct {
@@ -31,6 +37,18 @@ type runningRun struct {
 	ClaimedAt    string `json:"claimed_at"`
 	Title        string `json:"title"`
 	LimitMinutes int    `json:"limit_minutes"`
+	// Progress is the run's newest progress report, null when none was read.
+	Progress *runningProgress `json:"progress"`
+}
+
+// runningProgress is a run's newest progress report: its phase, empty where
+// the report named none the runner knows, its step count and diff lines, and
+// how long ago Cloud Storage created it.
+type runningProgress struct {
+	Phase      string `json:"phase"`
+	Steps      int64  `json:"steps"`
+	Lines      int64  `json:"lines"`
+	AgeSeconds int64  `json:"age_seconds"`
 }
 
 // running serves GET /api/running: the runs the dispatcher has claimed and not
@@ -46,13 +64,17 @@ func (d Deps) running(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "reading the runs in flight", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, renderRunning(runs))
+	var progress map[progressKey]*store.Progress
+	if d.Progress != nil {
+		progress = d.Progress.Progress(r.Context(), runs)
+	}
+	writeJSON(w, http.StatusOK, renderRunning(runs, progress, time.Now()))
 }
 
 // renderRunning orders the runs oldest claim first and renders each as the view
-// draws it. A tie on the claim time breaks on the ticket and then the stage, so
-// every read answers in the same order.
-func renderRunning(runs []store.Running) runningResponse {
+// draws it, with its progress as of now. A tie on the claim time breaks on the
+// ticket and then the stage, so every read answers in the same order.
+func renderRunning(runs []store.Running, progress map[progressKey]*store.Progress, now time.Time) runningResponse {
 	sorted := slices.Clone(runs)
 	slices.SortFunc(sorted, func(a, b store.Running) int {
 		if c := a.ClaimedAt.Compare(b.ClaimedAt); c != 0 {
@@ -73,7 +95,16 @@ func renderRunning(runs []store.Running) runningResponse {
 			ClaimedAt:    run.ClaimedAt.UTC().Format(time.RFC3339),
 			Title:        run.Title,
 			LimitMinutes: runner.RunLimitMinutes(stage),
+			Progress:     renderProgress(progress[progressKeyOf(run)], now),
 		})
 	}
 	return out
+}
+
+func renderProgress(p *store.Progress, now time.Time) *runningProgress {
+	if p == nil {
+		return nil
+	}
+	return &runningProgress{Phase: string(p.Phase), Steps: p.Steps, Lines: p.Lines,
+		AgeSeconds: max(0, int64(now.Sub(p.Created)/time.Second))}
 }

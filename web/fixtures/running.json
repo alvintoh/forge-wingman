@@ -6,7 +6,13 @@
       "stage": "building",
       "claimed_at": "2026-03-01T10:25:00Z",
       "title": "Gadget list filters",
-      "limit_minutes": 90
+      "limit_minutes": 90,
+      "progress": {
+        "phase": "build",
+        "steps": 41,
+        "lines": 286,
+        "age_seconds": 95
+      }
     },
     {
       "ticket": "DEMO-240",
@@ -14,7 +20,13 @@
       "stage": "building",
       "claimed_at": "2026-03-01T10:44:00Z",
       "title": "Add the widget table",
-      "limit_minutes": 90
+      "limit_minutes": 90,
+      "progress": {
+        "phase": "build",
+        "steps": 12,
+        "lines": 40,
+        "age_seconds": 1260
+      }
     },
     {
       "ticket": "DEMO-243",
@@ -22,7 +34,13 @@
       "stage": "planning",
       "claimed_at": "2026-03-01T11:15:00Z",
       "title": "Price the gift cards",
-      "limit_minutes": 60
+      "limit_minutes": 60,
+      "progress": {
+        "phase": "plan",
+        "steps": 7,
+        "lines": 0,
+        "age_seconds": 140
+      }
     },
     {
       "ticket": "DEMO-241",
@@ -30,7 +48,8 @@
       "stage": "building",
       "claimed_at": "2026-03-01T11:32:00Z",
       "title": "Redraw the widget card",
-      "limit_minutes": 90
+      "limit_minutes": 90,
+      "progress": null
     },
     {
       "ticket": "DEMO-244",
@@ -38,7 +57,13 @@
       "stage": "planning",
       "claimed_at": "2026-03-01T11:56:00Z",
       "title": "Cache the shelf report",
-      "limit_minutes": 60
+      "limit_minutes": 60,
+      "progress": {
+        "phase": "",
+        "steps": 3,
+        "lines": 0,
+        "age_seconds": 30
+      }
     }
   ]
 }

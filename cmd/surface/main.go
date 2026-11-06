@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/firestore"
+	"cloud.google.com/go/storage"
 	"golang.org/x/sync/singleflight"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
@@ -62,6 +63,7 @@ func run(logger *slog.Logger) error {
 	var history RunHistoryReader
 	var success RunSuccessReader
 	var running RunningReader
+	var progress ProgressReader
 	var retries RunRetries
 	var runsCap RunsPerRepoStore
 	var runsAtOnce RunsAtOnceStore
@@ -97,6 +99,12 @@ func run(logger *slog.Logger) error {
 		}
 		runsCap = store.NewRunsPerRepo(owner)
 		runsAtOnce = store.NewRunsAtOnce(owner)
+		gcs, err := storage.NewClient(context.Background())
+		if err != nil {
+			return fmt.Errorf("storage client: %w", err)
+		}
+		defer func() { _ = gcs.Close() }()
+		progress = newCachedProgress(store.NewProgresses(gcs, project+"-completions"), logger)
 	}
 
 	// Merging needs the surface's own GitHub token, which no run job holds.
@@ -122,6 +130,7 @@ func run(logger *slog.Logger) error {
 		History:     history,
 		RunSuccess:  success,
 		Running:     running,
+		Progress:    progress,
 		Retries:     retries,
 		Merger:      merger,
 		Pulls:       pulls,
@@ -181,6 +190,8 @@ type Deps struct {
 	History    RunHistoryReader
 	RunSuccess RunSuccessReader
 	Running    RunningReader
+	// Progress reads the runs in flight's progress; nil serves every run's as null.
+	Progress   ProgressReader
 	Retries    RunRetries
 	Merger     PRMerger
 	Pulls      PullLister

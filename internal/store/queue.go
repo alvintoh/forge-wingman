@@ -763,6 +763,9 @@ func (q *Queue) ledgerOutsideTx(ctx context.Context) (ledgerDoc, error) {
 type Running struct {
 	Ticket string
 	Repo   string
+	// RunID and Attempt are the run row and claim attempt the reservation books.
+	RunID   string
+	Attempt int
 	// Stage is the stage the reservation was claimed for — plan, build, or
 	// empty for a single-stage claim, which plans and builds in one job.
 	Stage     string
@@ -797,9 +800,10 @@ func (q *Queue) Running(ctx context.Context) ([]Running, error) {
 		titles[snap.Ref.ID] = str(snap.Data(), ticketTitleField)
 	}
 	for key, r := range ledger.Reservations {
+		runID := reservationRunID(key)
 		out = append(out, Running{
-			Ticket: r.TicketID, Repo: r.Repo, Stage: r.Stage, ClaimedAt: r.ClaimedAt,
-			Title: titles[reservationRunID(key)],
+			Ticket: r.TicketID, Repo: r.Repo, RunID: runID, Attempt: r.Attempt, Stage: r.Stage,
+			ClaimedAt: r.ClaimedAt, Title: titles[runID],
 		})
 	}
 	return out, nil

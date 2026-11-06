@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
+	"github.com/alvintoh/forge-wingman/internal/runner"
 	"github.com/alvintoh/forge-wingman/internal/store"
 )
 
@@ -175,7 +177,7 @@ func TestRunningAnswersNoCostOrWriteSet(t *testing.T) {
 			keys = append(keys, key)
 		}
 		slices.Sort(keys)
-		if want := []string{"claimed_at", "limit_minutes", "repo", "stage", "ticket", "title"}; !slices.Equal(keys, want) {
+		if want := []string{"claimed_at", "limit_minutes", "progress", "repo", "stage", "ticket", "title"}; !slices.Equal(keys, want) {
 			t.Fatalf("an entry carries %v, want %v", keys, want)
 		}
 		if limit, ok := entry["limit_minutes"].(float64); !ok || limit != math.Trunc(limit) {
@@ -207,7 +209,8 @@ func TestRunningServesEachRunsOwnLimit(t *testing.T) {
 }
 
 // TestRunningMatchesTheFixture holds the page's fixture to what the endpoint
-// serves: the claims behind the fixture's runs, rendered, give the fixture back.
+// serves: the claims and progress behind the fixture's runs, rendered, give the
+// fixture back.
 func TestRunningMatchesTheFixture(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "web", "fixtures", "running.json"))
 	if err != nil {
@@ -217,7 +220,9 @@ func TestRunningMatchesTheFixture(t *testing.T) {
 	if err := json.Unmarshal(raw, &fixture); err != nil {
 		t.Fatal(err)
 	}
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 	claims := make([]store.Running, 0, len(fixture.Runs))
+	reader := stubProgress{}
 	for _, run := range fixture.Runs {
 		claimed, err := time.Parse(time.RFC3339, run.ClaimedAt)
 		if err != nil {
@@ -227,10 +232,16 @@ func TestRunningMatchesTheFixture(t *testing.T) {
 		if run.Stage == "planning" {
 			stage = dispatcher.StagePlan
 		}
-		claims = append(claims, store.Running{Ticket: run.Ticket, Repo: run.Repo, Stage: stage, ClaimedAt: claimed, Title: run.Title})
+		claim := store.Running{Ticket: run.Ticket, Repo: run.Repo, RunID: "run-" + run.Ticket, Stage: stage, ClaimedAt: claimed, Title: run.Title}
+		claims = append(claims, claim)
+		if p := run.Progress; p != nil {
+			reader[progressKeyOf(claim)] = &store.Progress{Phase: runner.Phase(p.Phase), Steps: p.Steps, Lines: p.Lines,
+				Created: now.Add(-time.Duration(p.AgeSeconds) * time.Second)}
+		}
 	}
-	if got := renderRunning(claims); !slices.Equal(got.Runs, fixture.Runs) {
-		t.Fatalf("the claims serve %+v, want the fixture's %+v", got.Runs, fixture.Runs)
+	got := renderRunning(claims, reader.Progress(context.Background(), claims), now)
+	if !reflect.DeepEqual(got, fixture) {
+		t.Fatalf("the claims serve %s, want the fixture's", mustJSON(t, got))
 	}
 }
 
@@ -243,5 +254,60 @@ func TestRunningNeedsAStore(t *testing.T) {
 func TestRunningReportsAReadFailure(t *testing.T) {
 	if rec := getRunning(t, &stubRunning{err: errors.New("the ledger is unreadable")}); rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+// stubProgress is a ProgressReader answering with the progress it holds.
+type stubProgress map[progressKey]*store.Progress
+
+func (s stubProgress) Progress(_ context.Context, runs []store.Running) map[progressKey]*store.Progress {
+	out := map[progressKey]*store.Progress{}
+	for _, run := range runs {
+		if p, ok := s[progressKeyOf(run)]; ok {
+			out[progressKeyOf(run)] = p
+		}
+	}
+	return out
+}
+
+func mustJSON(t *testing.T, v any) string {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func TestRunningServesEachRunsProgressAsOfNow(t *testing.T) {
+	now := claimedAt(40)
+	build := store.Running{Ticket: "DEMO-1", Repo: "octo/other", RunID: "run-1", Attempt: 2, Stage: dispatcher.StageBuild, ClaimedAt: claimedAt(10)}
+	ahead := store.Running{Ticket: "DEMO-2", Repo: "octo/other", RunID: "run-2", Stage: dispatcher.StagePlan, ClaimedAt: claimedAt(20)}
+	none := store.Running{Ticket: "DEMO-3", Repo: "octo/other", RunID: "run-3", ClaimedAt: claimedAt(30)}
+	reader := stubProgress{
+		progressKeyOf(build): {Phase: runner.PhaseBuild, Steps: 5, Lines: 12, Created: now.Add(-95 * time.Second)},
+		// A clock ahead of the server's reads as just written, never a negative age.
+		progressKeyOf(ahead): {Created: now.Add(time.Minute)},
+	}
+	runs := []store.Running{build, ahead, none}
+	got := renderRunning(runs, reader.Progress(context.Background(), runs), now)
+	want := []*runningProgress{
+		{Phase: "build", Steps: 5, Lines: 12, AgeSeconds: 95},
+		{AgeSeconds: 0},
+		nil,
+	}
+	for i, run := range got.Runs {
+		if !reflect.DeepEqual(run.Progress, want[i]) {
+			t.Fatalf("run %s progress = %s, want %s", run.Ticket, mustJSON(t, run.Progress), mustJSON(t, want[i]))
+		}
+	}
+}
+
+func TestRunningServesNullProgressWithoutAReader(t *testing.T) {
+	_, raw := servedRunning(t, &stubRunning{runs: []store.Running{
+		{Ticket: "DEMO-1", Repo: "octo/other", RunID: "run-1", Stage: dispatcher.StageBuild, ClaimedAt: claimedAt(10)},
+	}})
+	if !strings.Contains(raw, `"progress":null`) {
+		t.Fatalf("answered %s, want a null progress", raw)
 	}
 }

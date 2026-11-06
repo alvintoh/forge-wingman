@@ -1103,3 +1103,16 @@ func TestTheFrontEndLabelSurvivesTheRecordAndItsFinalization(t *testing.T) {
 		t.Fatal("finalizing the record dropped the ticket's front-end label")
 	}
 }
+
+func TestKnownPhase(t *testing.T) {
+	for _, p := range []Phase{PhaseProjection, PhaseWorktree, PhaseAgentStart, PhasePlan, PhaseBuild, PhaseReview, PhaseCommit, PhasePR} {
+		if !KnownPhase(p) {
+			t.Errorf("KnownPhase(%q) = false, want true", p)
+		}
+	}
+	for _, p := range []Phase{"", "hacking", "Build"} {
+		if KnownPhase(p) {
+			t.Errorf("KnownPhase(%q) = true, want false", p)
+		}
+	}
+}
