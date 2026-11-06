@@ -40,6 +40,8 @@ func planStage(ctx context.Context, logger *slog.Logger, e env, args []string) e
 	out := fs.String("out", "", "path to write the plan artifact to")
 	agentImage := fs.String("agent-image", "", agentImageRequiredUsage)
 	agentEgress := fs.String("agent-egress", "", agentEgressUsage)
+	runID := fs.String("run-id", "", runIDProgressUsage)
+	claimAttempt := fs.String("attempt", "", attemptProgressUsage)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -64,11 +66,13 @@ func planStage(ctx context.Context, logger *slog.Logger, e env, args []string) e
 			defer func() { _ = gcs.Close() }()
 
 			logger = logger.With("attempt", e.attemptID, "ticket", t.ID)
+			completions := store.NewBucket(gcs, e.project+"-completions")
 			res, err := runner.PlanStage(ctx, runner.BuildDeps{
 				Projections: store.NewBucket(gcs, e.project+"-projections"),
-				Completions: store.NewBucket(gcs, e.project+"-completions"),
+				Completions: completions,
 				PlanAgent:   runner.NewRouter(runner.ProfilePlan, e.harnesses...),
 				AgentProbe:  probe,
+				Progress:    progressReporter(logger, e, *runID, *claimAttempt, string(runner.PhasePlan), completions),
 				Logger:      logger,
 				Now:         time.Now,
 			}, runner.BuildConfig{

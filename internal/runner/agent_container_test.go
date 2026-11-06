@@ -455,13 +455,13 @@ func TestModelWorkflowPassesTheAgentImageVariableToTheBuild(t *testing.T) {
 		"AGENT_IMAGE: ${{ vars.WINGMAN_AGENT_IMAGE }}": 3,
 		`runner" build `:      1,
 		`runner" plan-stage `: 1,
-		`-agent-image "$AGENT_IMAGE" -agent-egress "$AGENT_EGRESS"'`: 2,
-		"AGENT_EGRESS: ${{ vars.WINGMAN_AGENT_EGRESS }}":             2,
-		`if: vars.WINGMAN_AGENT_IMAGE != ''`:                         0,
-		`docker pull "$AGENT_IMAGE"`:                                 1,
-		"--filter name=" + egressProxyPrefix:                         1,
-		"--filter name=" + egressNetworkPrefix:                       1,
-		"./cmd/runner":                                               0,
+		`-agent-image "$AGENT_IMAGE" -agent-egress "$AGENT_EGRESS"`: 2,
+		"AGENT_EGRESS: ${{ vars.WINGMAN_AGENT_EGRESS }}":            2,
+		`if: vars.WINGMAN_AGENT_IMAGE != ''`:                        0,
+		`docker pull "$AGENT_IMAGE"`:                                1,
+		"--filter name=" + egressProxyPrefix:                        1,
+		"--filter name=" + egressNetworkPrefix:                      1,
+		"./cmd/runner":                                              0,
 	} {
 		if got := strings.Count(yml, want); got != count {
 			t.Errorf("model.yml has %d of %q, want %d", got, want, count)

@@ -174,3 +174,45 @@ func TestRunWorkflowStampsTheClaimAttemptOnEverySettlingStep(t *testing.T) {
 		t.Errorf("run.yml reads the attempt input into %d jobs, want 2: record-plan-stage and record", got)
 	}
 }
+
+func TestModelWorkflowPassesTheRunAndAttemptToTheRunnerAndUploadsNoProgress(t *testing.T) {
+	model, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "model.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(model)
+	for _, want := range []string{
+		"      run_id:\n        type: string\n        required: true\n",
+		"      attempt:\n        type: string\n        required: true\n",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("model.yml lacks the input %q", want)
+		}
+	}
+	for want, n := range map[string]int{
+		"RUN_ID: ${{ inputs.run_id }}":           2,
+		"ATTEMPT: ${{ inputs.attempt }}":         2,
+		`-run-id "$RUN_ID" -attempt "$ATTEMPT"'`: 2,
+	} {
+		if got := strings.Count(s, want); got != n {
+			t.Errorf("model.yml has %q %d times, want %d: the build and plan steps", want, got, n)
+		}
+	}
+	for _, line := range strings.Split(s, "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "#") && strings.Contains(line, "progress") {
+			t.Errorf("model.yml names progress in %q; the runner writes it to the completions bucket, never an artifact or output", line)
+		}
+	}
+
+	run, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "run.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, job, _ := strings.Cut(string(run), "\n  model:\n")
+	job, _, _ = strings.Cut(job, "\n    secrets:\n")
+	for _, want := range []string{"      run_id: ${{ inputs.run_id }}\n", "      attempt: ${{ inputs.attempt }}\n"} {
+		if !strings.Contains(job, want) {
+			t.Errorf("run.yml's model job does not pass %q", want)
+		}
+	}
+}

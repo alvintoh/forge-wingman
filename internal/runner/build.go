@@ -77,9 +77,11 @@ type BuildDeps struct {
 	// AgentProbe, when set, proves the agent container starts over dir before
 	// any agent runs; nil runs agents on the host.
 	AgentProbe func(ctx context.Context, dir string) error
-	Report     func(Summary) error
-	Logger     *slog.Logger
-	Now        func() time.Time
+	// Progress writes the running build's progress; nil writes none.
+	Progress *ProgressReporter
+	Report   func(Summary) error
+	Logger   *slog.Logger
+	Now      func() time.Time
 }
 
 // BuildConfig identifies one build.
@@ -202,6 +204,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 	// phase.
 	timed := func(p Phase, agent Agent, model string, f func() error) error {
 		sum.Phase = p
+		d.Progress.setPhase(p)
 		attrs := []any{"phase", string(p)}
 		if agent != nil {
 			attrs = append(attrs, "harness", harnessFor(agent, model), "model", model)
@@ -289,6 +292,7 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 	}); err != nil {
 		return BuildResult{}, err
 	}
+	defer d.Progress.Start(ctx, wt)()
 
 	if d.AgentProbe != nil {
 		if err := timed(PhaseAgentStart, nil, "", func() error {
@@ -615,7 +619,7 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 	}
 	agentCtx, cancel := context.WithTimeout(ctx, timeout)
 	runCtx, stopRun := context.WithCancel(agentCtx)
-	tap := newProgressTap(call.Phase, stopRun)
+	tap := newProgressTap(call.Phase, stopRun, d.Progress.countStep)
 	runErr := agent.Run(runCtx, dir, call.Session, prompt, call.Rules, io.MultiWriter(out, tap), errOut)
 	tap.finish()
 	delivered := runCtx.Err() != nil

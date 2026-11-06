@@ -5,10 +5,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // ErrPorcelain reports `git status --porcelain -z` output that does not parse.
@@ -62,6 +68,110 @@ func (w Worktree) PendingFiles(ctx context.Context) ([]string, error) {
 	all := append(paths, splitNUL(diff)...)
 	slices.Sort(all)
 	return slices.Compact(all), nil
+}
+
+const (
+	diffStatTimeout     = 20 * time.Second
+	maxCountedFileBytes = 1 << 20
+	maxCountedFiles     = 1000
+	binarySniffBytes    = 8000
+)
+
+// DiffStat counts the lines the worktree adds and removes against the base,
+// committed or not, without taking the index lock the agent may hold. An
+// untracked file counts as added lines, read up to maxCountedFileBytes; a
+// binary file counts as none.
+func (w Worktree) DiffStat(ctx context.Context) (DiffLines, error) {
+	ctx, cancel := context.WithTimeout(ctx, diffStatTimeout)
+	defer cancel()
+	out, err := w.git(ctx, "--no-optional-locks", "diff", "--numstat", "-z", w.Base)
+	if err != nil {
+		return DiffLines{}, err
+	}
+	lines := parseNumstat(out)
+	untracked, err := w.git(ctx, "--no-optional-locks", "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return DiffLines{}, err
+	}
+	added, err := countUntracked(ctx, w.Dir, splitNUL(untracked))
+	if err != nil {
+		return DiffLines{}, err
+	}
+	lines.Added += added
+	return lines, nil
+}
+
+// countUntracked sums the lines of the first maxCountedFiles paths under dir,
+// stopping as soon as ctx is done.
+func countUntracked(ctx context.Context, dir string, paths []string) (int64, error) {
+	var total int64
+	for _, p := range paths[:min(len(paths), maxCountedFiles)] {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		n, err := countFileLines(filepath.Join(dir, p))
+		if err != nil {
+			return 0, fmt.Errorf("counting an untracked file: %w", err)
+		}
+		total += n
+	}
+	return total, nil
+}
+
+// parseNumstat sums `git diff --numstat -z`, where a binary file's "-" counts
+// as no lines and a rename's two NUL-terminated paths follow its counts.
+func parseNumstat(out []byte) DiffLines {
+	var d DiffLines
+	for _, e := range bytes.Split(out, []byte{0}) {
+		fields := bytes.SplitN(e, []byte{'\t'}, 3)
+		if len(fields) < 3 {
+			continue
+		}
+		added, _ := strconv.ParseInt(string(fields[0]), 10, 64)
+		removed, _ := strconv.ParseInt(string(fields[1]), 10, 64)
+		d.Added += added
+		d.Removed += removed
+	}
+	return d
+}
+
+// countFileLines counts a regular file's lines as git would, reading at most
+// maxCountedFileBytes; anything else, or a binary file, counts as none.
+func countFileLines(path string) (int64, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	if !info.Mode().IsRegular() {
+		return 0, nil
+	}
+	f, err := openForCount(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ELOOP) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	defer func() { _ = f.Close() }()
+	// The path can change between Lstat and open, so the opened file decides.
+	if opened, err := f.Stat(); err != nil || !opened.Mode().IsRegular() {
+		return 0, err
+	}
+	b, err := io.ReadAll(io.LimitReader(f, maxCountedFileBytes))
+	if err != nil {
+		return 0, err
+	}
+	if bytes.IndexByte(b[:min(len(b), binarySniffBytes)], 0) >= 0 {
+		return 0, nil
+	}
+	n := int64(bytes.Count(b, []byte{'\n'}))
+	if len(b) > 0 && b[len(b)-1] != '\n' {
+		n++
+	}
+	return n, nil
 }
 
 // ErrSecretInBranch reports a branch whose objects contain a withheld secret.

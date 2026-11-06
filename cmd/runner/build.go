@@ -28,6 +28,8 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 	checksImage := fs.String("checks-image", "", "Go image, pinned by digest, to run the pre-PR checks in; required")
 	agentImage := fs.String("agent-image", "", agentImageRequiredUsage)
 	agentEgress := fs.String("agent-egress", "", agentEgressUsage)
+	runID := fs.String("run-id", "", runIDProgressUsage)
+	claimAttempt := fs.String("attempt", "", attemptProgressUsage)
 	if err := fs.Parse(args); err != nil {
 		return setupFailed(logger, e.output, err)
 	}
@@ -66,12 +68,13 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 			defer func() { _ = gcs.Close() }()
 
 			logger = logger.With("attempt", e.attemptID, "ticket", t.ID)
+			completions := store.NewBucket(gcs, e.project+"-completions")
 			// These routers are given no harness opt-in: a run job holds no plan
 			// record, so it runs the plan's next harness rather than one that is
 			// not open-source, which only the owner's own commands admit.
 			res, err := runner.Build(ctx, runner.BuildDeps{
 				Projections:  store.NewBucket(gcs, e.project+"-projections"),
-				Completions:  store.NewBucket(gcs, e.project+"-completions"),
+				Completions:  completions,
 				Agent:        runner.NewRouter(runner.ProfileBuild, e.harnesses...),
 				PlanAgent:    runner.NewRouter(runner.ProfilePlan, e.harnesses...),
 				ReviewAgent:  runner.NewRouter(runner.ProfileReview, e.harnesses...),
@@ -79,6 +82,7 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 				Format:       format,
 				PackageTests: packageTests,
 				AgentProbe:   probe,
+				Progress:     progressReporter(logger, e, *runID, *claimAttempt, string(runner.PhaseBuild), completions),
 				Report:       func(s runner.Summary) error { return writeSummary(e.output, s) },
 				Logger:       logger,
 				Now:          time.Now,
@@ -109,6 +113,32 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 		return setupFailed(logger, e.output, err)
 	}
 	return err
+}
+
+const (
+	runIDProgressUsage   = "run record the build reports progress for, empty to report none"
+	attemptProgressUsage = "attempt the dispatcher claimed the run at, empty to report no progress"
+)
+
+// progressReporter writes the progress of run runID at the claim attempt in
+// stage to objects, or is nil, logged, when the workflow named no run or an
+// unusable one.
+func progressReporter(logger *slog.Logger, e env, runID, claimAttempt, stage string, objects runner.ObjectCreator) *runner.ProgressReporter {
+	attempt, err := parseClaimAttempt(claimAttempt)
+	if err != nil {
+		logger.Warn("progressOff", "err", err.Error())
+		return nil
+	}
+	if attempt == nil {
+		logger.Warn("progressOff", "reason", "no claim attempt")
+		return nil
+	}
+	r, err := runner.NewProgressReporter(runner.ProgressRun{RunID: runID, Attempt: *attempt, Stage: stage}, e.attemptID, objects, logger)
+	if err != nil {
+		logger.Warn("progressOff", "err", err.Error())
+		return nil
+	}
+	return r
 }
 
 // checkRunners are the pre-PR loop's checks: the repository's own gates, and one

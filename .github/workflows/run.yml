@@ -153,6 +153,8 @@ jobs:
       review_models: ${{ needs.ticket.outputs.override_review_models || inputs.review_models }}
       plan_models: ${{ needs.ticket.outputs.override_plan_models || inputs.plan_models }}
       stage: ${{ inputs.stage }}
+      run_id: ${{ inputs.run_id }}
+      attempt: ${{ inputs.attempt }}
       runner_sha256: ${{ needs.ticket.outputs.runner_sha256 }}
     secrets:
       COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
