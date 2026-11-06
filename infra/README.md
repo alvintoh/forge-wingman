@@ -536,7 +536,7 @@ grant.
 
 | Service account | Grants |
 |---|---|
-| `surface` | Firestore read/write; `secretAccessor` on `surface-merge-token` |
+| `surface` | Firestore read/write; `secretAccessor` on `surface-merge-token`; `objectViewer` on `gs://<project>-completions`, objects under `progress/` and a listing of that prefix, to show a running build's progress |
 
 ### The service
 

@@ -22,6 +22,19 @@ resource "google_project_iam_member" "surface_datastore" {
   depends_on = [google_project_service.this]
 }
 
+# The surface reads a running build's progress objects and lists their prefix,
+# and nothing else in the completions bucket.
+resource "google_storage_bucket_iam_member" "surface_progress" {
+  bucket = google_storage_bucket.completions.name
+  role   = "roles/storage.objectViewer"
+  member = google_service_account.surface.member
+
+  condition {
+    title      = "progress-prefix-only"
+    expression = "resource.name.startsWith(\"projects/_/buckets/${google_storage_bucket.completions.name}/objects/progress/\") || (resource.name == \"projects/_/buckets/${google_storage_bucket.completions.name}\" && api.getAttribute(\"storage.googleapis.com/objectListPrefix\", \"\").startsWith(\"progress/\"))"
+  }
+}
+
 # The token the merge route acts with: its value is added by hand, and the
 # surface's identity is the only one that may read it.
 resource "google_secret_manager_secret" "surface_merge_token" {

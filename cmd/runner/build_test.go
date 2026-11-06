@@ -173,3 +173,30 @@ func TestCheckRunnersRunOnTheHostWithNoImage(t *testing.T) {
 		t.Fatalf("checkRunners with no image = %v, %v; want the host runner and no lookups", checks != nil, err)
 	}
 }
+
+type discardObjects struct{}
+
+func (discardObjects) CreateObject(context.Context, string, io.Reader) error { return nil }
+
+func TestProgressReporterReportsOnlyANamedRunAndAttempt(t *testing.T) {
+	var logs strings.Builder
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	e := env{attemptID: "1234-1"}
+	if r := progressReporter(logger, e, "run1", "3", "build", discardObjects{}); r == nil {
+		t.Fatalf("no reporter for a named run and attempt: %s", logs.String())
+	}
+	for _, tc := range []struct{ name, runID, attempt, stage, why string }{
+		{"no run", "", "3", "build", "run id is not an object name segment"},
+		{"no attempt", "run1", "", "build", "reason=\"no claim attempt\""},
+		{"an attempt that is not a number", "run1", "x", "build", "is not a claim attempt"},
+		{"a run id that is not a name", "run/1", "3", "plan", "run id is not an object name segment"},
+	} {
+		logs.Reset()
+		if r := progressReporter(logger, e, tc.runID, tc.attempt, tc.stage, discardObjects{}); r != nil {
+			t.Errorf("%s: a reporter was made", tc.name)
+		}
+		if out := logs.String(); !strings.Contains(out, "msg=progressOff") || !strings.Contains(out, tc.why) {
+			t.Errorf("%s: logs = %s, want progressOff naming %q", tc.name, out, tc.why)
+		}
+	}
+}

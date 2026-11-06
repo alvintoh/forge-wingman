@@ -1,7 +1,11 @@
 package runner
 
 import (
+	"bytes"
+	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 )
@@ -53,5 +57,79 @@ func TestParseShortstat(t *testing.T) {
 		if got := parseShortstat([]byte(tc.out)); got != tc.want {
 			t.Errorf("parseShortstat(%q) = %+v, want %+v", tc.out, got, tc.want)
 		}
+	}
+}
+
+func TestDiffStatCountsTrackedUntrackedAndBinaryChanges(t *testing.T) {
+	repo := initRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "logo.bin"), []byte{0, 1, 2, '\n'}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "add", "logo.bin")
+	mustGit(t, repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "bin")
+	wt, err := AddWorktree(context.Background(), repo, filepath.Join(t.TempDir(), "wt"), "wingman/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	write := func(name string, b []byte) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(wt.Dir, name), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("README.md", []byte("y\nz\n"))
+	write("logo.bin", []byte{0, 9, 9, 9, '\n', '\n'})
+	write("new.go", []byte("package x\n\nfunc f() {}"))
+	write("blob.dat", append([]byte{0}, []byte("a\nb\nc\n")...))
+	if err := os.Symlink(filepath.Join(repo, "README.md"), filepath.Join(wt.Dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := wt.DiffStat(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// README: +2 -1; new.go: +3 untracked, its last line unterminated; the
+	// binaries and the symlink count none.
+	if want := (DiffLines{Added: 5, Removed: 1}); got != want {
+		t.Fatalf("DiffStat = %+v, want %+v", got, want)
+	}
+}
+
+func TestDiffStatCapsAnUntrackedFile(t *testing.T) {
+	repo := initRepo(t)
+	wt, err := AddWorktree(context.Background(), repo, filepath.Join(t.TempDir(), "wt"), "wingman/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	big := bytes.Repeat([]byte("\n"), maxCountedFileBytes+100)
+	if err := os.WriteFile(filepath.Join(wt.Dir, "big.txt"), big, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := wt.DiffStat(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Added != maxCountedFileBytes {
+		t.Fatalf("added = %d, want the file counted up to %d bytes", got.Added, maxCountedFileBytes)
+	}
+}
+
+func TestParseNumstat(t *testing.T) {
+	out := "3\t1\ta.go\x00-\t-\tlogo.png\x002\t0\t\x00old.go\x00new.go\x00"
+	if got, want := parseNumstat([]byte(out)), (DiffLines{Added: 5, Removed: 1}); got != want {
+		t.Fatalf("parseNumstat = %+v, want %+v: a binary counts none and a rename's paths are skipped", got, want)
+	}
+}
+
+func TestCountUntrackedStopsWhenCancelled(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := countUntracked(ctx, dir, []string{"a.txt"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want the cancel", err)
 	}
 }

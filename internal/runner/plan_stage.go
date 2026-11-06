@@ -66,6 +66,8 @@ func PlanStage(ctx context.Context, d BuildDeps, c BuildConfig) (PlanStageResult
 		}
 		d.Logger.Info("agentStartProbed", "ms", d.Now().Sub(start).Milliseconds())
 	}
+	d.Progress.setPhase(PhasePlan)
+	defer d.Progress.Start(ctx, nil)()
 	sum := Summary{DurationsMS: map[string]int64{}, StartedAt: d.Now()}
 	files, decision, err := runPlanPhase(ctx, d, c, dir, &sum)
 	if err != nil {

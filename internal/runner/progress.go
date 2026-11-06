@@ -84,6 +84,7 @@ type progressTap struct {
 	mu      sync.Mutex
 	phase   Phase
 	stop    func()
+	onStep  func()
 	p       agentProgress
 	buf     []byte
 	skip    bool
@@ -91,8 +92,10 @@ type progressTap struct {
 	stopped bool
 }
 
-func newProgressTap(phase Phase, stop func()) *progressTap {
-	return &progressTap{phase: phase, stop: stop}
+// newProgressTap is the tap for one agent call; onStep, when set, is called on
+// every step the stream finishes.
+func newProgressTap(phase Phase, stop, onStep func()) *progressTap {
+	return &progressTap{phase: phase, stop: stop, onStep: onStep}
 }
 
 // Write implements io.Writer over the stream's newline-delimited events.
@@ -129,6 +132,7 @@ func (t *progressTap) line() {
 	if t.skip {
 		if t.unknown {
 			t.p.noProgress = 0
+			t.stepFinished()
 		}
 		return
 	}
@@ -139,10 +143,19 @@ func (t *progressTap) line() {
 	if json.Unmarshal(t.buf, &e) != nil {
 		return
 	}
+	if e.Type == "step_finish" {
+		t.stepFinished()
+	}
 	t.p.observe(e)
 	if !t.stopped && t.p.stalled(t.phase) {
 		t.stopped = true
 		t.stop()
+	}
+}
+
+func (t *progressTap) stepFinished() {
+	if t.onStep != nil {
+		t.onStep()
 	}
 }
 

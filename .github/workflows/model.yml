@@ -36,6 +36,13 @@ on:
       stage:
         type: string
         required: true
+      # run_id and attempt name the run record and the claim attempt the runner reports progress under.
+      run_id:
+        type: string
+        required: true
+      attempt:
+        type: string
+        required: true
       # runner_sha256 is the checksum run.yml's ticket job reported for the runner binary it uploaded.
       runner_sha256:
         type: string
@@ -142,6 +149,8 @@ jobs:
         env:
           GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}
           MODEL: ${{ inputs.model }}
+          RUN_ID: ${{ inputs.run_id }}
+          ATTEMPT: ${{ inputs.attempt }}
           REVIEW_MODELS: ${{ inputs.review_models }}
           PLAN_MODELS: ${{ inputs.plan_models }}
           AGENT_IMAGE: ${{ vars.WINGMAN_AGENT_IMAGE }}
@@ -149,7 +158,7 @@ jobs:
           WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
           COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: '"$RUNNER_TEMP/runner" build -model "$MODEL" -review-models "$REVIEW_MODELS" -plan-models "$PLAN_MODELS" -ticket-file "$RUNNER_TEMP/ticket.json" -checks-image "$CHECKS_IMAGE" -agent-image "$AGENT_IMAGE" -agent-egress "$AGENT_EGRESS"'
+        run: '"$RUNNER_TEMP/runner" build -model "$MODEL" -review-models "$REVIEW_MODELS" -plan-models "$PLAN_MODELS" -ticket-file "$RUNNER_TEMP/ticket.json" -checks-image "$CHECKS_IMAGE" -agent-image "$AGENT_IMAGE" -agent-egress "$AGENT_EGRESS" -run-id "$RUN_ID" -attempt "$ATTEMPT"'
 
       # The plan stage (FRG-33) runs the plan phase alone, under the plan profile's read-only
       # harnesses; the plan artifact travels to the trusted record-plan-stage job, which re-checks it.
@@ -159,12 +168,14 @@ jobs:
         env:
           GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}
           PLAN_MODELS: ${{ inputs.plan_models }}
+          RUN_ID: ${{ inputs.run_id }}
+          ATTEMPT: ${{ inputs.attempt }}
           AGENT_IMAGE: ${{ vars.WINGMAN_AGENT_IMAGE }}
           AGENT_EGRESS: ${{ vars.WINGMAN_AGENT_EGRESS }}
           WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
           COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: '"$RUNNER_TEMP/runner" plan-stage -plan-models "$PLAN_MODELS" -ticket-file "$RUNNER_TEMP/ticket.json" -out "$RUNNER_TEMP/plan.json" -agent-image "$AGENT_IMAGE" -agent-egress "$AGENT_EGRESS"'
+        run: '"$RUNNER_TEMP/runner" plan-stage -plan-models "$PLAN_MODELS" -ticket-file "$RUNNER_TEMP/ticket.json" -out "$RUNNER_TEMP/plan.json" -agent-image "$AGENT_IMAGE" -agent-egress "$AGENT_EGRESS" -run-id "$RUN_ID" -attempt "$ATTEMPT"'
 
       - if: inputs.stage == 'plan'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

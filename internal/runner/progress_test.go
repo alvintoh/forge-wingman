@@ -124,7 +124,7 @@ func TestHarnessStreamCountsItsFileChangingToolsAsProgress(t *testing.T) {
 // TestProgressTapStopsOnTheStallingStepAndSurvivesSplitWrites feeds the stream in odd chunks and asserts the stop fires exactly once, at the limit.
 func TestProgressTapStopsOnTheStallingStepAndSurvivesSplitWrites(t *testing.T) {
 	stops := 0
-	tap := newProgressTap(PhaseBuild, func() { stops++ })
+	tap := newProgressTap(PhaseBuild, func() { stops++ }, nil)
 	stream := readsOnlyEvents(DEFAULT_NO_PROGRESS_STEPS + 5)
 	for i := 0; i < len(stream); i += 7 {
 		if _, err := tap.Write([]byte(stream[i:min(i+7, len(stream))])); err != nil {
@@ -137,9 +137,9 @@ func TestProgressTapStopsOnTheStallingStepAndSurvivesSplitWrites(t *testing.T) {
 }
 
 func TestProgressTapStaysQuietBelowTheLimitAndOutsideBuild(t *testing.T) {
-	under := newProgressTap(PhaseBuild, func() { t.Fatal("stopped under the limit") })
+	under := newProgressTap(PhaseBuild, func() { t.Fatal("stopped under the limit") }, nil)
 	_, _ = under.Write([]byte(readsOnlyEvents(DEFAULT_NO_PROGRESS_STEPS - 1)))
-	plan := newProgressTap(PhasePlan, func() { t.Fatal("stopped a plan phase") })
+	plan := newProgressTap(PhasePlan, func() { t.Fatal("stopped a plan phase") }, nil)
 	_, _ = plan.Write([]byte(readsOnlyEvents(2 * DEFAULT_NO_PROGRESS_STEPS)))
 }
 
@@ -148,7 +148,7 @@ func TestProgressTapFailsOpenOnAnUnreadableStream(t *testing.T) {
 	old := maxEventLine
 	maxEventLine = 32
 	t.Cleanup(func() { maxEventLine = old })
-	tap := newProgressTap(PhaseBuild, func() { t.Fatal("stopped on unreadable input") })
+	tap := newProgressTap(PhaseBuild, func() { t.Fatal("stopped on unreadable input") }, nil)
 	for _, chunk := range []string{"not json\n", strings.Repeat("x", 100) + "\n", "{\"type\":\"step_finish\"}"} {
 		if n, err := tap.Write([]byte(chunk)); err != nil || n != len(chunk) {
 			t.Fatalf("Write = %d, %v", n, err)
@@ -193,7 +193,7 @@ func TestProgressTapDoesNotCountAnOverlongStepAsIdle(t *testing.T) {
 	old := maxEventLine
 	maxEventLine = 200
 	t.Cleanup(func() { maxEventLine = old })
-	tap := newProgressTap(PhaseBuild, func() {})
+	tap := newProgressTap(PhaseBuild, func() {}, nil)
 	_, _ = tap.Write([]byte(readsOnlyEvents(3)))
 	long := `{"type":"step_finish","part":{"tools":[{"tool":"edit","path":"a.go"}],"pad":"` + strings.Repeat("x", 400) + `"}}` + "\n"
 	_, _ = tap.Write([]byte(long))
@@ -204,5 +204,26 @@ func TestProgressTapDoesNotCountAnOverlongStepAsIdle(t *testing.T) {
 	_, _ = tap.Write([]byte(readsOnlyEvents(1)))
 	if tap.p.noProgress != 1 {
 		t.Fatalf("no progress = %d, want a long non-step line left the count alone", tap.p.noProgress)
+	}
+}
+
+func TestProgressTapCountsEveryFinishedStepAcrossCalls(t *testing.T) {
+	old := maxEventLine
+	maxEventLine = 200
+	t.Cleanup(func() { maxEventLine = old })
+	steps := 0
+	count := func() { steps++ }
+
+	first := newProgressTap(PhaseBuild, func() {}, count)
+	_, _ = first.Write([]byte(readsOnlyEvents(2) + `{"type":"text","part":{"text":"hi"}}` + "\n"))
+	first.finish()
+	second := newProgressTap(PhaseReview, func() {}, count)
+	long := `{"type":"step_finish","part":{"pad":"` + strings.Repeat("x", 400) + `"}}` + "\n"
+	_, _ = second.Write([]byte(readsOnlyEvents(1) + long + strings.Repeat("y", 400) + "\n"))
+	_, _ = second.Write([]byte(`{"type":"step_finish","part":{}}`))
+	second.finish()
+
+	if steps != 5 {
+		t.Fatalf("steps = %d, want 5: two then three finished steps, an overlong one included, other events not", steps)
 	}
 }
