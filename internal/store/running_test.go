@@ -43,7 +43,7 @@ func TestRunningListsOneEntryPerReservationWithItsRowsTitle(t *testing.T) {
 	seedRunRow(t, client, untitled, stateClaimed, "")
 	seedLedger(t, client, 4, bookedReservations(
 		reservationEntry{TicketID: plan, Repo: "octo/scratch", Stage: dispatcher.StagePlan, ClaimedAt: queueAt},
-		reservationEntry{TicketID: single, Repo: "octo/scratch", ClaimedAt: queueAt.Add(time.Minute)},
+		reservationEntry{TicketID: single, Repo: "octo/scratch", ClaimedAt: queueAt.Add(time.Minute), Attempt: 2},
 		reservationEntry{TicketID: build, Repo: "octo/scratch", Stage: dispatcher.StageBuild, ClaimedAt: queueAt.Add(2 * time.Minute)},
 		reservationEntry{TicketID: untitled, Repo: "octo/scratch", Stage: dispatcher.StageBuild, ClaimedAt: queueAt.Add(3 * time.Minute)},
 	))
@@ -52,10 +52,10 @@ func TestRunningListsOneEntryPerReservationWithItsRowsTitle(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]Running{
-		plan:     {Ticket: plan, Repo: "octo/scratch", Stage: "plan", ClaimedAt: queueAt, Title: "Plan the widget"},
-		single:   {Ticket: single, Repo: "octo/scratch", ClaimedAt: queueAt.Add(time.Minute), Title: "Build the widget"},
-		build:    {Ticket: build, Repo: "octo/scratch", Stage: "build", ClaimedAt: queueAt.Add(2 * time.Minute), Title: "Build the gadget"},
-		untitled: {Ticket: untitled, Repo: "octo/scratch", Stage: "build", ClaimedAt: queueAt.Add(3 * time.Minute)},
+		plan:     {Ticket: plan, Repo: "octo/scratch", RunID: plan, Stage: "plan", ClaimedAt: queueAt, Title: "Plan the widget"},
+		single:   {Ticket: single, Repo: "octo/scratch", RunID: single, Attempt: 2, ClaimedAt: queueAt.Add(time.Minute), Title: "Build the widget"},
+		build:    {Ticket: build, Repo: "octo/scratch", RunID: build, Stage: "build", ClaimedAt: queueAt.Add(2 * time.Minute), Title: "Build the gadget"},
+		untitled: {Ticket: untitled, Repo: "octo/scratch", RunID: untitled, Stage: "build", ClaimedAt: queueAt.Add(3 * time.Minute)},
 	}
 	if len(runs) != len(want) {
 		t.Fatalf("runs = %+v, want one entry per reservation", runs)
@@ -66,7 +66,8 @@ func TestRunningListsOneEntryPerReservationWithItsRowsTitle(t *testing.T) {
 			t.Errorf("unexpected entry %+v", run)
 			continue
 		}
-		if run.Repo != entry.Repo || run.Stage != entry.Stage || run.Title != entry.Title || !run.ClaimedAt.Equal(entry.ClaimedAt) {
+		if run.Repo != entry.Repo || run.RunID != entry.RunID || run.Attempt != entry.Attempt || run.Stage != entry.Stage ||
+			run.Title != entry.Title || !run.ClaimedAt.Equal(entry.ClaimedAt) {
 			t.Errorf("entry %s = %+v, want %+v", run.Ticket, run, entry)
 		}
 	}
