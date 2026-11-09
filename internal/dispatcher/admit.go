@@ -140,6 +140,11 @@ type Facts struct {
 	Tuning         Tuning
 	Relations      Relations
 	ProviderHalted bool
+	// GoUsageHeld names the OpenCode Go window withholding the candidate, with
+	// its reset time, and is empty when the plan has room or the run is on
+	// another plan. It is read live at admission, so a run is admitted on the
+	// first poll after its window resets.
+	GoUsageHeld string
 	// BreakerTripped is set while a systemic stop holds every dispatch.
 	BreakerTripped bool
 	// OwnerPaused is set while the owner holds the candidate's project, for a claim
@@ -189,9 +194,10 @@ type AdmitInput struct {
 
 // Admit reports whether the candidate may start now, and otherwise the first
 // condition that withholds it, checked in this order: the circuit breaker,
-// owner pause, provider halt, peak hours, platform cap, N, the concurrent-L cap,
-// the runs-per-repo cap, a planned write set shared with a run in flight, a
-// blocker, review WIP, then the budget ceilings. It does no IO.
+// owner pause, provider halt, a spent OpenCode Go window, peak hours, platform
+// cap, N, the concurrent-L cap, the runs-per-repo cap, a planned write set
+// shared with a run in flight, a blocker, review WIP, then the budget ceilings.
+// It does no IO.
 //
 // The blocker condition holds a candidate back while a blocked-by issue Linear
 // has not completed or canceled still holds it, or while a run in flight bears
@@ -232,6 +238,8 @@ func HeldBeforeBudget(in AdmitInput) string {
 		return ConditionOwnerPaused
 	case in.Facts.ProviderHalted:
 		return CeilingProviderHalted
+	case in.Facts.GoUsageHeld != "":
+		return in.Facts.GoUsageHeld
 	case in.Facts.PeakHeld:
 		return ConditionPeakHours
 	case running >= in.Facts.Limits.PlatformCap:

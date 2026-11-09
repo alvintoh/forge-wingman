@@ -382,6 +382,9 @@ func (q *fakeQueue) TryClaim(_ context.Context, runID string, _ time.Time, cfg B
 			return false, "", err
 		}
 	}
+	if facts.GoUsageHeld != "" {
+		return false, facts.GoUsageHeld, nil
+	}
 	if facts.PeakHeld {
 		return false, ConditionPeakHours, nil
 	}
@@ -1234,6 +1237,203 @@ func TestPollDispatchesNothingWhenEveryCandidateBreachesItsCeiling(t *testing.T)
 	}
 	if got := deferredCeilings(res.Deferrals); !slices.Equal(got, []string{CeilingCash, "5h"}) {
 		t.Fatalf("deferrals named %v", got)
+	}
+}
+
+// goPollConfig is a poll whose default model is the OpenCode Go plan, so every
+// candidate's own tier is that plan and the live usage read applies to it.
+var goPollConfig = Config{Repos: buildConfig.Repos, Model: "opencode-go/deepseek-v4.1-flash"}
+
+// fakeGoUsage is the plan's usage reader, counting its reads so a test can
+// assert a poll reads it at most once.
+type fakeGoUsage struct {
+	usage GoUsage
+	err   error
+	reads int
+}
+
+func (f *fakeGoUsage) Read(context.Context) (GoUsage, error) {
+	f.reads++
+	return f.usage, f.err
+}
+
+func TestPollHoldsRunsOnTheOpenCodeGoPlanWhileAWindowIsSpent(t *testing.T) {
+	reset := pollAt.Add(3 * time.Hour)
+	reader := &fakeGoUsage{usage: GoUsage{Windows: []GoUsageWindow{
+		{Name: "5h", Status: goUsageOKStatus, Percent: 40, ResetsAt: pollAt.Add(time.Hour)},
+		{Name: "week", Status: GoUsageRateLimited, Percent: 100, ResetsAt: reset},
+		{Name: "month", Status: goUsageOKStatus, Percent: 60, ResetsAt: pollAt.Add(20 * 24 * time.Hour)},
+	}}}
+	q := &fakeQueue{candidates: []Candidate{
+		{RunID: "FRG-18", Repo: "octo/scratch", Size: "S", Priority: 1},
+		{RunID: "FRG-19", Repo: "octo/scratch", Size: "S", Priority: 2},
+	}}
+	d := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	d.GoUsage = reader
+	notices := &fakeNotices{}
+	d.Notices = notices
+	res, err := Poll(context.Background(), d, goPollConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "go-usage week resets " + reset.UTC().Format(time.RFC3339)
+	if len(q.claimed) != 0 || len(res.Dispatched) != 0 {
+		t.Fatalf("claimed %v and dispatched %q, want both runs held", q.claimed, res.Dispatched)
+	}
+	if got := deferredCeilings(res.Deferrals); !slices.Equal(got, []string{want, want}) {
+		t.Fatalf("deferrals named %v, want both on %q", got, want)
+	}
+	if reader.reads != 1 {
+		t.Fatalf("the usage route was read %d times for %d runs, want once", reader.reads, len(q.candidates))
+	}
+	if len(notices.raised) != 0 {
+		t.Fatalf("raised %+v, want none: the binding carries its own reset time and needs no owner decision", notices.raised)
+	}
+}
+
+// A held run needs no owner action: each poll reads the windows afresh, and one
+// whose reset has passed holds nothing.
+func TestPollAdmitsARunOnTheFirstPollAfterItsWindowResets(t *testing.T) {
+	spent := &fakeGoUsage{usage: GoUsage{Windows: []GoUsageWindow{
+		{Name: "5h", Status: goUsageOKStatus, Percent: 10, ResetsAt: pollAt.Add(time.Hour)},
+		{Name: "week", Status: GoUsageRateLimited, Percent: 100, ResetsAt: pollAt.Add(3 * time.Hour)},
+		{Name: "month", Status: goUsageOKStatus, Percent: 60, ResetsAt: pollAt.Add(20 * 24 * time.Hour)},
+	}}}
+	q := &fakeQueue{candidates: []Candidate{{RunID: "FRG-18", Repo: "octo/scratch", Size: "S", Priority: 1}}}
+	d := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	d.GoUsage = spent
+	if res, err := Poll(context.Background(), d, goPollConfig); err != nil || len(res.Dispatched) != 0 {
+		t.Fatalf("first poll: dispatched %q, err %v, want the run held", res.Dispatched, err)
+	}
+
+	reset := &fakeGoUsage{usage: GoUsage{Windows: []GoUsageWindow{
+		{Name: "5h", Status: goUsageOKStatus, Percent: 10, ResetsAt: pollAt.Add(time.Hour)},
+		{Name: "week", Status: GoUsageRateLimited, Percent: 100, ResetsAt: pollAt.Add(-time.Minute)},
+		{Name: "month", Status: goUsageOKStatus, Percent: 60, ResetsAt: pollAt.Add(20 * 24 * time.Hour)},
+	}}}
+	next := &fakeQueue{candidates: []Candidate{{RunID: "FRG-18", Repo: "octo/scratch", Size: "S", Priority: 1}}}
+	d = pollDeps(fakeSource{}, next, &fakeWorkflow{})
+	d.GoUsage = reset
+	res, err := Poll(context.Background(), d, goPollConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(res.Dispatched, []string{"FRG-18"}) {
+		t.Fatalf("dispatched %q, want the run admitted once its window had reset", res.Dispatched)
+	}
+}
+
+// A usage read that fails falls back to the plan's fixed limits: the run is
+// still held by the window those limits meter, and the failure is logged once
+// however many runs the poll walks.
+func TestPollFallsBackToTheFixedLimitsWhenTheUsageCannotBeRead(t *testing.T) {
+	q := &fakeQueue{
+		candidates: []Candidate{
+			{RunID: "FRG-18", Repo: "octo/scratch", Size: "S", Priority: 1},
+			{RunID: "FRG-19", Repo: "octo/scratch", Size: "S", Priority: 2},
+		},
+		bindings: map[string]string{"FRG-18": "5h", "FRG-19": "5h"},
+	}
+	reader := &fakeGoUsage{err: errors.New("the usage route is unreachable")}
+	var logged bytes.Buffer
+	d := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	d.GoUsage = reader
+	d.Logger = slog.New(slog.NewTextHandler(&logged, nil))
+	res, err := Poll(context.Background(), d, goPollConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := deferredCeilings(res.Deferrals); !slices.Equal(got, []string{"5h", "5h"}) {
+		t.Fatalf("deferrals named %v, want both held on the fixed 5h window", got)
+	}
+	if reader.reads != 1 {
+		t.Fatalf("the usage route was read %d times, want once", reader.reads)
+	}
+	if got := strings.Count(logged.String(), "goUsageNotRead"); got != 1 {
+		t.Fatalf("goUsageNotRead logged %d times, want once", got)
+	}
+}
+
+// A run whose plan stage put it on the Go plan is read against that plan at its
+// build claim too, not only at a single-stage claim, and a run on another plan
+// in the same walk is admitted.
+func TestPollHoldsABuildStageOnTheGoPlanWhileAWindowIsSpent(t *testing.T) {
+	reset := pollAt.Add(2 * time.Hour)
+	reader := &fakeGoUsage{usage: GoUsage{Windows: []GoUsageWindow{
+		{Name: "5h", Status: goUsageOKStatus, Percent: 10, ResetsAt: pollAt.Add(time.Hour)},
+		{Name: "week", Status: GoUsageRateLimited, Percent: 100, ResetsAt: reset},
+		{Name: "month", Status: goUsageOKStatus, Percent: 20, ResetsAt: pollAt.Add(20 * 24 * time.Hour)},
+	}}}
+	cfg := paidPlan
+	cfg.PlanBudgets = []PaidPlan{laterPlan(GoUsagePlan)}
+	cfg.TwoStage = true
+	q := &fakeQueue{candidates: []Candidate{
+		{RunID: "run-p", Repo: "octo/scratch", Size: "M", Priority: 1},
+		{RunID: "run-go", Repo: "octo/scratch", Size: "M", Stage: StageBuild, Plan: GoUsagePlan, Priority: 2},
+	}}
+	d := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	d.GoUsage = reader
+	res, err := Poll(context.Background(), d, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(res.Dispatched, []string{"run-p"}) {
+		t.Fatalf("dispatched %q, want the run on the other plan admitted and the Go build held", res.Dispatched)
+	}
+	want := "go-usage week resets " + reset.UTC().Format(time.RFC3339)
+	if got := deferredCeilings(res.Deferrals); !slices.Equal(got, []string{want}) {
+		t.Fatalf("deferrals named %v, want the Go build held on %q", got, want)
+	}
+	if reader.reads != 1 {
+		t.Fatalf("the usage route was read %d times, want once", reader.reads)
+	}
+}
+
+// A poll none of whose candidates is on the Go plan reads no usage: the route
+// is that plan's, so a run on another tier must not spend a call on it.
+func TestPollReadsNoUsageWhenNoCandidateIsOnTheGoPlan(t *testing.T) {
+	reader := &fakeGoUsage{usage: GoUsage{Windows: []GoUsageWindow{
+		{Name: "week", Status: GoUsageRateLimited, Percent: 100, ResetsAt: pollAt.Add(3 * time.Hour)},
+	}}}
+	q := &fakeQueue{candidates: []Candidate{
+		{RunID: "run-p", Repo: "octo/scratch", Size: "S", Priority: 1},
+		{RunID: "run-q", Repo: "octo/scratch", Size: "S", Stage: StageBuild, Plan: "q", Priority: 2},
+	}}
+	cfg := laterPlansConfig()
+	cfg.TwoStage = true
+	d := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	d.GoUsage = reader
+	res, err := Poll(context.Background(), d, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(res.Dispatched, []string{"run-p", "run-q"}) {
+		t.Fatalf("dispatched %q, want both runs on other plans admitted", res.Dispatched)
+	}
+	if reader.reads != 0 {
+		t.Fatalf("the usage route was read %d times for runs on other plans, want none", reader.reads)
+	}
+}
+
+// With no reader wired, admission falls back to the plan's fixed limits and
+// says so once, however many runs the poll walks.
+func TestPollFallsBackWhenNoUsageReaderIsWired(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{
+		{RunID: "FRG-18", Repo: "octo/scratch", Size: "S", Priority: 1},
+		{RunID: "FRG-19", Repo: "octo/scratch", Size: "S", Priority: 2},
+	}}
+	var logged bytes.Buffer
+	d := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	d.Logger = slog.New(slog.NewTextHandler(&logged, nil))
+	res, err := Poll(context.Background(), d, goPollConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(res.Dispatched, []string{"FRG-18", "FRG-19"}) {
+		t.Fatalf("dispatched %q, want both runs admitted on the fixed limits", res.Dispatched)
+	}
+	if got := strings.Count(logged.String(), "goUsageNotRead"); got != 1 {
+		t.Fatalf("goUsageNotRead logged %d times, want once", got)
 	}
 }
 
