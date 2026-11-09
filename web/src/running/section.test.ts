@@ -2,11 +2,11 @@ import { describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { RunningRun } from "./run";
-import { RunningList } from "./section";
+import { LoadingRows, RunningList } from "./section";
 
 const NOW = Date.UTC(2026, 2, 1, 12, 0, 0);
 
-function run(ticket: string, minutes: number, limit: number): RunningRun {
+function run(ticket: string, minutes: number, limit: number, progress?: unknown): RunningRun {
   return {
     ticket,
     repo: "acme/widgets",
@@ -14,12 +14,21 @@ function run(ticket: string, minutes: number, limit: number): RunningRun {
     claimed_at: new Date(NOW - minutes * 60_000).toISOString(),
     title: "",
     limit_minutes: limit,
+    ...(progress === undefined ? {} : { progress }),
   };
 }
 
 function draw(runs: RunningRun[], count = runs.length): string {
   return renderToStaticMarkup(
     createElement(RunningList, { runs, count, now: NOW, named: false, projects: [] }),
+  );
+}
+
+type Caption = { title: string; classes: string; html: string };
+
+function captions(markup: string): Caption[] {
+  return [...markup.matchAll(/<p title="([^"]*)" class="([^"]*text-cap[^"]*)">(.*?)<\/p>/g)].map(
+    (m) => ({ title: m[1], classes: m[2], html: m[3] }),
   );
 }
 
@@ -96,5 +105,60 @@ describe("RunningList line", () => {
     const markup = draw([run("A", 5, 90)]);
     expect(markup).toContain("grow-10000 basis-24");
     expect(markup).toContain("gap-x-3 gap-y-2");
+  });
+});
+
+describe("RunningList caption", () => {
+  it("draws one caption under each bar with the newest report's counts and age", () => {
+    const markup = draw([
+      run("A", 5, 90, { phase: "build", steps: 14, lines: 128, age_seconds: 126 }),
+      run("B", 6, 90, { phase: "", steps: 3, lines: 0, age_seconds: 30 }),
+      run("C", 7, 90, null),
+    ]);
+    expect(captions(markup).map((c) => c.html.replace(/<[^>]*>/g, ""))).toEqual([
+      "Step 14 · 128 lines · 2m ago",
+      "Step 3 · 0 lines · just now",
+      "No progress yet",
+    ]);
+  });
+
+  it("colours a stale age defer and leaves a recent one plain", () => {
+    const [stale, fresh] = captions(
+      draw([
+        run("A", 5, 90, { phase: "build", steps: 12, lines: 40, age_seconds: 1260 }),
+        run("B", 6, 90, { phase: "build", steps: 14, lines: 128, age_seconds: 126 }),
+      ]),
+    );
+    expect(stale.html).toContain('<span class="text-defer">no update for 21m</span>');
+    expect(fresh.html).not.toContain("text-defer");
+  });
+
+  it("reads a malformed report as no progress and keeps the other rows", () => {
+    const markup = draw([
+      run("A", 5, 90, { phase: "build", steps: 14, lines: 128, age_seconds: 126 }),
+      run("B", 6, 90, { phase: "build", steps: "12", lines: 40, age_seconds: 60 }),
+      run("C", 7, 90, { phase: "build", steps: 7, lines: 0, age_seconds: 140 }),
+    ]);
+    expect(captions(markup).map((c) => c.title)).toEqual([
+      "Step 14 · 128 lines · 2m ago",
+      "No progress yet",
+      "Step 7 · 0 lines · 2m ago",
+    ]);
+  });
+
+  it("cuts the caption at one line and titles it with the full words", () => {
+    const [only] = captions(
+      draw([run("A", 5, 90, { phase: "build", steps: 41, lines: 286, age_seconds: 95 })]),
+    );
+    expect(only.classes).toContain("truncate");
+    expect(only.title).toBe("Step 41 · 286 lines · 1m ago");
+  });
+});
+
+describe("LoadingRows", () => {
+  it("holds the caption slot under every skeleton bar", () => {
+    const markup = renderToStaticMarkup(createElement(LoadingRows));
+    const slots = markup.match(/<span class="mt-1 block h-4 w-40 rounded-tag bg-track"><\/span>/g);
+    expect(slots).toHaveLength(3);
   });
 });

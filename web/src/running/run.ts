@@ -1,3 +1,5 @@
+import { ago } from "../ago";
+
 /** One run in flight, as GET /api/running serves it. */
 export type RunningRun = {
   ticket: string;
@@ -9,10 +11,25 @@ export type RunningRun = {
   title: string;
   // The minutes the run's stage may take.
   limit_minutes: number;
+  // The run's newest progress report, read through progressWords: absent or null where it wrote
+  // none, and whatever the endpoint sent where the report was malformed.
+  progress?: unknown;
 };
 
 // The percentage a bar turns defer at: the stage is close to the run limit.
 export const DEFER_FROM_PERCENT = 80;
+
+// The age past which a run's newest progress reads as stalled rather than recent, in seconds.
+const STALE_AFTER_SECONDS = 6 * 60;
+
+// The part of a run's newest progress report the row draws: its step count, the diff's added and
+// removed lines, and how long ago the report was written. The report the endpoint serves also
+// carries its phase, which the caption does not show.
+type RunningProgress = {
+  steps: number;
+  lines: number;
+  age_seconds: number;
+};
 
 function isRunningRun(row: unknown): row is RunningRun {
   if (typeof row !== "object" || row === null) {
@@ -74,6 +91,46 @@ export function figureWords(minutes: number, limit: number): string {
 /** timeWords is a run's elapsed minutes against its limit: "41m of 60m". */
 export function timeWords(minutes: number, limit: number): string {
   return `${minutes}m of ${limit}m`;
+}
+
+// isProgress is the guard for one report: every count a whole number from 0, as the endpoint
+// bounds them. A report that fails it is one the row draws as absent.
+function isProgress(value: unknown): value is RunningProgress {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const report = value as Record<string, unknown>;
+  return [report.steps, report.lines, report.age_seconds].every(
+    (count) => typeof count === "number" && Number.isInteger(count) && count >= 0,
+  );
+}
+
+/** A run's caption: the counts its newest report carries, then how long ago it was written. */
+export type ProgressWords = {
+  // "Step 14 · 128 lines", or "No progress yet".
+  lead: string;
+  // "2m ago", or "no update for 21m" once the report is stale; empty with no progress.
+  age: string;
+  // Whether the age is stale, and so reads in the defer colour.
+  stale: boolean;
+};
+
+/**
+ * progressWords is the caption under a run's bar: its step count and diff lines, then the age of
+ * its newest report in the app's ago form, or "No progress yet" for a run that has written none.
+ * A report the endpoint sent malformed draws as none rather than failing the read.
+ */
+export function progressWords(progress: unknown, now: number): ProgressWords {
+  if (!isProgress(progress)) {
+    return { lead: "No progress yet", age: "", stale: false };
+  }
+  const stale = progress.age_seconds > STALE_AFTER_SECONDS;
+  const at = now - progress.age_seconds * 1000;
+  return {
+    lead: `Step ${progress.steps} · ${plural(progress.lines, "line")}`,
+    age: stale ? `no update for ${ago(at, now, "")}` : ago(at, now),
+    stale,
+  };
 }
 
 /** The longest figure and time, in characters, across the runs of one card. */

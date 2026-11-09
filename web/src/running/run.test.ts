@@ -6,6 +6,7 @@ import {
   isRunning,
   overdueBy,
   percentOf,
+  progressWords,
   timeWords,
   type RunningRun,
 } from "./run";
@@ -34,6 +35,11 @@ describe("isRunning", () => {
     expect(isRunning({ runs: [run(5, 0)] })).toBe(false);
     expect(isRunning({ runs: [run(5, 7.5)] })).toBe(false);
     expect(isRunning({ runs: [{ ...run(5, 60), limit_minutes: "90" }] })).toBe(false);
+  });
+
+  it("accepts a run whose progress is malformed, so one report cannot reject the read", () => {
+    expect(isRunning({ runs: [{ ...run(5, 60), progress: { steps: "12" } }] })).toBe(true);
+    expect(isRunning({ runs: [{ ...run(5, 60), progress: "no report" }] })).toBe(true);
   });
 });
 
@@ -111,6 +117,68 @@ describe("barWords", () => {
     expect(barWords("DEMO-1", 91, 90)).toBe(
       "DEMO-1: 91 minutes used, 1 minute over the 90 minute limit",
     );
+  });
+});
+
+// A run's newest progress report, in the shape the endpoint serves it, phase included.
+const REPORT = { phase: "build", steps: 14, lines: 128, age_seconds: 126 };
+
+describe("progressWords", () => {
+  it("reads the counts and the age in the app's ago form", () => {
+    expect(progressWords(REPORT, NOW)).toEqual({
+      lead: "Step 14 · 128 lines",
+      age: "2m ago",
+      stale: false,
+    });
+  });
+
+  it("uses the singular for one line and reads under a minute as just now", () => {
+    expect(progressWords({ ...REPORT, steps: 1, lines: 1, age_seconds: 30 }, NOW)).toEqual({
+      lead: "Step 1 · 1 line",
+      age: "just now",
+      stale: false,
+    });
+  });
+
+  it("reads exactly a minute as 1m ago", () => {
+    expect(progressWords({ ...REPORT, age_seconds: 60 }, NOW).age).toBe("1m ago");
+  });
+
+  it("keeps the ago form up to six minutes, then reads no update for the age", () => {
+    expect(progressWords({ ...REPORT, age_seconds: 360 }, NOW)).toEqual({
+      lead: "Step 14 · 128 lines",
+      age: "6m ago",
+      stale: false,
+    });
+    expect(progressWords({ ...REPORT, age_seconds: 361 }, NOW)).toEqual({
+      lead: "Step 14 · 128 lines",
+      age: "no update for 6m",
+      stale: true,
+    });
+    expect(progressWords({ ...REPORT, age_seconds: 540 }, NOW).age).toBe("no update for 9m");
+  });
+
+  it("reads a stale age an hour old in the ago form's hours", () => {
+    expect(progressWords({ ...REPORT, age_seconds: 3720 }, NOW).age).toBe("no update for 1h");
+  });
+
+  it("reads no progress for a report that is absent, null or not an object", () => {
+    const none = { lead: "No progress yet", age: "", stale: false };
+    expect(progressWords(undefined, NOW)).toEqual(none);
+    expect(progressWords(null, NOW)).toEqual(none);
+    expect(progressWords("Step 14", NOW)).toEqual(none);
+    expect(progressWords(14, NOW)).toEqual(none);
+    expect(progressWords(true, NOW)).toEqual(none);
+    expect(progressWords([14, 128, 126], NOW)).toEqual(none);
+  });
+
+  it("reads no progress for a report missing a count or carrying a bad one", () => {
+    const none = { lead: "No progress yet", age: "", stale: false };
+    expect(progressWords({}, NOW)).toEqual(none);
+    expect(progressWords({ phase: "build", steps: 14, lines: 128 }, NOW)).toEqual(none);
+    expect(progressWords({ ...REPORT, steps: "14" }, NOW)).toEqual(none);
+    expect(progressWords({ ...REPORT, lines: -1 }, NOW)).toEqual(none);
+    expect(progressWords({ ...REPORT, age_seconds: 12.5 }, NOW)).toEqual(none);
   });
 });
 

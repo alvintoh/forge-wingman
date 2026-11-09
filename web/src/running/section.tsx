@@ -18,6 +18,7 @@ import {
   minutesOf,
   overdueBy,
   percentOf,
+  progressWords,
   queueWords,
   timeWords,
 } from "./run";
@@ -57,13 +58,15 @@ type RowProps = {
 };
 
 // RunningRow is one run in flight: its stage, ticket and project over its title, then the bar of the
-// time its stage has used. The row goes nowhere: a run in flight has no PR, and the bar is time,
-// never work done.
+// time its stage has used, and under that bar the caption of its newest progress, whose age turns
+// defer once the report is stale. The row goes nowhere: a run in flight has no PR, and the bar is
+// time, never work done.
 function RunningRow({ run, now, named, projects, chars }: RowProps) {
   const minutes = minutesOf(run.claimed_at, now);
   const limit = run.limit_minutes;
   const percent = percentOf(minutes, limit);
   const over = overdueBy(minutes, limit);
+  const caption = progressWords(run.progress, now);
   const { ref: lineRef, wrapped } = useWrapped<HTMLDivElement>();
   return (
     <li className="border-t border-hair py-3 first:border-t-0">
@@ -112,6 +115,19 @@ function RunningRow({ run, now, named, projects, chars }: RowProps) {
           </span>
         </div>
       </div>
+      {/* One line, cut at the row's width; the tooltip carries the words the cut hides. */}
+      <p
+        title={caption.age === "" ? caption.lead : `${caption.lead} · ${caption.age}`}
+        className="mt-1 truncate text-cap leading-4 text-muted"
+      >
+        {caption.lead}
+        {caption.age !== "" && (
+          <>
+            {" · "}
+            <span className={caption.stale ? "text-defer" : undefined}>{caption.age}</span>
+          </>
+        )}
+      </p>
     </li>
   );
 }
@@ -147,8 +163,8 @@ export function RunningList({ runs, count, now, named, projects }: ListProps) {
 }
 
 // LoadingRows is the three skeleton rows the first read draws, shaped like the rows they stand in
-// for: a stage chip, a ticket and a project over a title and a bar.
-function LoadingRows() {
+// for: a stage chip, a ticket and a project over a title, a bar and the caption's slot.
+export function LoadingRows() {
   return (
     <div aria-hidden="true" className="card-frame mt-4 pb-1.25">
       {[0, 1, 2].map((row) => (
@@ -169,6 +185,8 @@ function LoadingRows() {
               <span className="h-3 w-14 rounded-tag bg-track" />
             </span>
           </div>
+          {/* The caption slot every drawn row holds under its bar, so each row is as tall. */}
+          <span className="mt-1 block h-4 w-40 rounded-tag bg-track" />
         </div>
       ))}
     </div>
@@ -187,7 +205,8 @@ type SectionProps = {
 /**
  * RunningSection is the Overview's RUNNING NOW section: the runs the dispatcher has claimed and not
  * settled, the longest running first, each with a bar of the time its stage has used against the run's
- * own limit. A project chosen in the filter narrows it at once, and its rows drop the project name.
+ * own limit and a caption of its newest progress under it. A project chosen in the filter narrows it
+ * at once, and its rows drop the project name.
  */
 export function RunningSection({ read, projects, refresh, className }: SectionProps) {
   const { state, retry } = read;
