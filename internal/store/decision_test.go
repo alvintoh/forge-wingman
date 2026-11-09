@@ -1101,10 +1101,12 @@ func TestReplyLandsOnTheNewestPostedDecisionNotAnUnpostedOne(t *testing.T) {
 	}
 }
 
-func TestSupersedeRefusesAnAbandonedRunAndAWaitingOneAsUnusable(t *testing.T) {
+func TestSupersedeRefusesAnOperatorOnlyRunAndAWaitingOneAsUnusable(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()
-	for name, state := range map[string]string{"abandoned": stateAbandoned, "waiting": stateWaiting} {
+	for name, state := range map[string]string{
+		"abandoned": stateAbandoned, "withdrawn": stateWithdrawn, "waiting": stateWaiting,
+	} {
 		id := postedProvisionalRun(t, q, client)
 		if _, err := q.Reply(ctx, id, "session-1", "new", queueAt.Add(2*time.Minute)); err != nil {
 			t.Fatal(err)

@@ -591,15 +591,15 @@ func (q *Queue) ClearProvisionalReply(ctx context.Context, runID string, replied
 // attempt it replaces and carries that attempt's settled spend forward as
 // RequeueAfterConflict does, and the run's reservations drop as Requeue's do.
 //
-// It refuses what Requeue refuses, and an abandoned run, which only an operator's
-// Requeue returns. A run still to run or in flight returns an error wrapping
+// It refuses what Requeue refuses, and a run abandoned or withdrawn for a closed
+// ticket, which only an operator's Requeue returns. A run still to run or in flight returns an error wrapping
 // dispatcher.ErrRunNotEnded, left for a later poll; a reply that can never be
 // acted on wraps dispatcher.ErrReplyUnusable. A reply since replaced by a newer
 // one is a no-op, left for the next poll.
 func (q *Queue) Supersede(ctx context.Context, runID string, index int, repliedAt time.Time, answer string, at time.Time) error {
 	_, err := q.requeue(ctx, runID, at, requeueOptions{}, func(row map[string]any, attempt int) (string, []firestore.Update, error) {
-		if str(row, stateField) == stateAbandoned {
-			return "", nil, fmt.Errorf("%w: %w", dispatcher.ErrReplyUnusable, ErrRunAbandoned)
+		if err := operatorOnlyRefusal(row); err != nil {
+			return "", nil, fmt.Errorf("%w: %w", dispatcher.ErrReplyUnusable, err)
 		}
 		if _, err := requeueState(row); err != nil {
 			switch {
