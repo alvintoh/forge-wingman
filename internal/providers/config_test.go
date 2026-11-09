@@ -713,28 +713,32 @@ func TestEmbeddedGoCarriesItsPlanFacts(t *testing.T) {
 }
 
 // TestSettingForNamesTheSettingEachRefusalAsksFor asserts each embedded
-// refusal phrase, in any case, names the plan setting that lifts it, and an
-// ordinary failure names none.
+// refusal phrase, in any case, names the plan setting that lifts it on the Go
+// plan's own failures, and an ordinary failure, or another plan's failure
+// carrying the phrase, names none.
 func TestSettingForNamesTheSettingEachRefusalAsksFor(t *testing.T) {
-	for stderr, want := range map[string]string{
-		`400 {"error":"This Go model is hosted outside Europe and the United States."}`: "Privacy > Regions: Global",
-		"error: THIS GO MODEL TRAINS ON REQUEST DATA":                                   "Privacy > Allow paid endpoints that train on request data",
-		"panic: nil pointer": "",
+	for _, tt := range []struct{ provider, stderr, want string }{
+		{"opencode-go", `400 {"error":"This Go model is hosted outside Europe and the United States."}`, "Privacy > Regions: Global"},
+		{"opencode-go", "error: THIS GO MODEL TRAINS ON REQUEST DATA", "Privacy > Allow paid endpoints that train on request data"},
+		{"opencode-go", "panic: nil pointer", ""},
+		{"command-code", "error: This Go model trains on request data", ""},
 	} {
-		if got, ok := SettingFor(stderr); got != want || ok != (want != "") {
-			t.Errorf("SettingFor(%q) = %q, %v, want %q", stderr, got, ok, want)
+		if got, ok := SettingFor(tt.provider, tt.stderr); got != tt.want || ok != (tt.want != "") {
+			t.Errorf("SettingFor(%s, %q) = %q, %v, want %q", tt.provider, tt.stderr, got, ok, tt.want)
 		}
 	}
 }
 
-func TestParseConfigRejectsASettingMarkerMissingAHalf(t *testing.T) {
-	for name, marker := range map[string]string{
-		"no phrase":  `{"marker":" ","setting":"Privacy"}`,
-		"no setting": `{"marker":"refused","setting":""}`,
+func TestParseConfigRejectsAnIncompleteSettingMarker(t *testing.T) {
+	for name, tc := range map[string]struct{ marker, want string }{
+		"no phrase":           {`{"provider":"p","marker":" ","setting":"Privacy"}`, "names no phrase or no setting"},
+		"no setting":          {`{"provider":"p","marker":"refused","setting":""}`, "names no phrase or no setting"},
+		"no provider":         {`{"marker":"refused","setting":"Privacy"}`, `names provider "", which is not configured`},
+		"an unknown provider": {`{"provider":"q","marker":"refused","setting":"Privacy"}`, `names provider "q", which is not configured`},
 	} {
-		doc := strings.Replace(configWith(providerFacts+`,"rates":{"p/m":{"input_usd_per_mtok":1}}`), `"providers"`, `"setting_markers":[`+marker+`],"providers"`, 1)
-		if _, err := parseConfig([]byte(doc)); err == nil || !strings.Contains(err.Error(), "names no phrase or no setting") {
-			t.Errorf("%s: parseConfig = %v, want the marker refused", name, err)
+		doc := strings.Replace(configWith(providerFacts+`,"rates":{"p/m":{"input_usd_per_mtok":1}}`), `"providers"`, `"setting_markers":[`+tc.marker+`],"providers"`, 1)
+		if _, err := parseConfig([]byte(doc)); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: parseConfig = %v, want %q", name, err, tc.want)
 		}
 	}
 }

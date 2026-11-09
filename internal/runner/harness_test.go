@@ -114,7 +114,7 @@ func TestClassifyAgentFailureDispatchesToTheAgentsHarness(t *testing.T) {
 	}
 	budget := func(string, error) (Outcome, StopReason) { return OutcomeBudgetStop, StopAllowanceExhausted }
 	router := testRouter(ProfileBuild, fakeHarness{classify: budget}).WithModel("p/x")
-	if outcome, reason, _ := classifyAgentFailure(router, path, errors.New("exit status 5")); outcome != OutcomeBudgetStop || reason != StopAllowanceExhausted {
+	if outcome, reason, _ := classifyAgentFailure(router, "p", path, errors.New("exit status 5")); outcome != OutcomeBudgetStop || reason != StopAllowanceExhausted {
 		t.Fatalf("classifyAgentFailure = %s/%s, want the harness's allowance classification", outcome, reason)
 	}
 }

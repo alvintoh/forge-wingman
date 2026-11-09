@@ -699,7 +699,7 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 		logAgentFailure(d.Logger, call, OutcomeAgentFailed, StopAgentTimeout, runErr, stderrPath, c.Secrets)
 		return text, sessionID, stopWith(OutcomeAgentFailed, StopAgentTimeout, fmt.Errorf("agent exceeded %s", timeout))
 	case runErr != nil && (!tap.didStop() || !endedByOurStop(runErr, delivered)):
-		outcome, reason, setting := classifyAgentFailure(agent, stderrPath, runErr)
+		outcome, reason, setting := classifyAgentFailure(agent, Provider(call.Model), stderrPath, runErr)
 		logAgentFailure(d.Logger, call, outcome, reason, runErr, stderrPath, c.Secrets)
 		if setting != "" {
 			runErr = fmt.Errorf("the provider refused %s until its plan setting %q is changed: %w", call.Model, setting, runErr)
@@ -921,16 +921,16 @@ const logStderrTail = 2 << 10
 const redactedMarker = "[redacted]"
 
 // classifyAgentFailure reads a bounded tail of the agent's stderr file and
-// classifies the failure: a provider refusal naming a plan setting first, with
-// that setting, then through the agent's own harness when it has one, else by
-// the assumed provider markers. A read it cannot perform falls back to the
-// ordinary agent-failure classification, never to a false budget stop.
-func classifyAgentFailure(agent Agent, stderrPath string, exitErr error) (Outcome, StopReason, string) {
+// classifies the failure: a refusal by provider naming a plan setting first,
+// with that setting, then through the agent's own harness when it has one,
+// else by the assumed provider markers. A read it cannot perform falls back to
+// the ordinary agent-failure classification, never to a false budget stop.
+func classifyAgentFailure(agent Agent, provider, stderrPath string, exitErr error) (Outcome, StopReason, string) {
 	raw, err := readTail(stderrPath, classifyStderrTail)
 	if err != nil {
 		return OutcomeAgentFailed, StopAgentExit, ""
 	}
-	if setting, ok := providers.SettingFor(string(raw)); ok {
+	if setting, ok := providers.SettingFor(provider, string(raw)); ok {
 		return OutcomeStopped, StopProviderSetting, setting
 	}
 	if c, ok := agent.(failureClassifier); ok {

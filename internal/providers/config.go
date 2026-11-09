@@ -216,11 +216,13 @@ type Config struct {
 	PaidPlans []string
 }
 
-// SettingMarker is a provider's refusal phrase, matched case-insensitively, and
-// the plan setting the owner changes to lift it.
+// SettingMarker is a provider's refusal phrase, matched case-insensitively on
+// that provider's failures alone, and the plan setting the owner changes to
+// lift it.
 type SettingMarker struct {
-	Marker  string `json:"marker"`
-	Setting string `json:"setting"`
+	Provider string `json:"provider"`
+	Marker   string `json:"marker"`
+	Setting  string `json:"setting"`
 }
 
 // configDoc is configJSON's own shape; the parsed Config is the converted one.
@@ -400,6 +402,9 @@ func (c Config) validate() error {
 	for _, m := range c.SettingMarkers {
 		if strings.TrimSpace(m.Marker) == "" || strings.TrimSpace(m.Setting) == "" {
 			return fmt.Errorf("setting marker %q names no phrase or no setting", m.Marker)
+		}
+		if _, ok := c.Providers[m.Provider]; !ok {
+			return fmt.Errorf("setting marker %q names provider %q, which is not configured", m.Marker, m.Provider)
 		}
 	}
 	paid := false
@@ -879,9 +884,11 @@ func AllowanceMarkers() []string { return embeddedConfig.AllowanceMarkers }
 // requested model is unavailable.
 func AvailabilityMarkers() []string { return embeddedConfig.AvailabilityMarkers }
 
-// SettingFor is the plan setting whose refusal phrase stderrTail carries, and
-// whether it carries one.
-func SettingFor(stderrTail string) (string, bool) { return embeddedConfig.settingFor(stderrTail) }
+// SettingFor is the plan setting whose refusal phrase, one of provider's own,
+// stderrTail carries, and whether it carries one.
+func SettingFor(provider, stderrTail string) (string, bool) {
+	return embeddedConfig.settingFor(provider, stderrTail)
+}
 
 // NamedSetting is the configured plan setting text names, and whether it names
 // one.
@@ -896,10 +903,10 @@ func (c Config) namedSetting(text string) (string, bool) {
 	return "", false
 }
 
-func (c Config) settingFor(stderrTail string) (string, bool) {
+func (c Config) settingFor(provider, stderrTail string) (string, bool) {
 	lower := strings.ToLower(stderrTail)
 	for _, m := range c.SettingMarkers {
-		if strings.Contains(lower, strings.ToLower(m.Marker)) {
+		if m.Provider == provider && strings.Contains(lower, strings.ToLower(m.Marker)) {
 			return m.Setting, true
 		}
 	}

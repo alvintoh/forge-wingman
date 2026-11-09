@@ -27,10 +27,12 @@
   ],
   "setting_markers": [
     {
+      "provider": "opencode-go",
       "marker": "This Go model is hosted outside Europe and the United States",
       "setting": "Privacy > Regions: Global"
     },
     {
+      "provider": "opencode-go",
       "marker": "This Go model trains on request data",
       "setting": "Privacy > Allow paid endpoints that train on request data"
     }
