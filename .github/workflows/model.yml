@@ -7,7 +7,7 @@
 # With `stage: plan` (FRG-33) the agent runs the plan phase alone and uploads its file list
 # as the `plan` artifact for run.yml's trusted record-plan-stage job instead.
 # Needs the GCP_WIF_PROVIDER, GCP_MODEL_SERVICE_ACCOUNT and WINGMAN_ACCOUNT variables and
-# the COMMANDCODE_API_KEY secret (infra/README.md), which both harnesses run on.
+# the OPENCODE_API_KEY secret (infra/README.md), which the harness runs on.
 # The WINGMAN_AGENT_IMAGE variable (an image pinned by digest providing omp, git and sh) is required:
 # the build and plan stages run the agent CLIs in a container that mounts only the worktree,
 # harness home and git directory, and refuse to start without it.
@@ -48,16 +48,13 @@ on:
         type: string
         required: true
     secrets:
-      # The plan's key: omp runs on it.
-      COMMANDCODE_API_KEY:
-        required: true
       # The free-tier plan's key, read only when a run falls through to it; not
       # required until the owner sets it (infra/README.md).
       GEMINI_API_KEY:
         required: false
-      # The OpenCode Go plan's key, read only for a model of that plan.
+      # The plan's key: omp runs on it.
       OPENCODE_API_KEY:
-        required: false
+        required: true
     outputs:
       attempt_id:
         value: ${{ jobs.build.outputs.attempt_id }}
@@ -159,7 +156,6 @@ jobs:
           AGENT_IMAGE: ${{ vars.WINGMAN_AGENT_IMAGE }}
           AGENT_EGRESS: ${{ vars.WINGMAN_AGENT_EGRESS }}
           WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
-          COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
         run: '"$RUNNER_TEMP/runner" build -model "$MODEL" -review-models "$REVIEW_MODELS" -plan-models "$PLAN_MODELS" -ticket-file "$RUNNER_TEMP/ticket.json" -checks-image "$CHECKS_IMAGE" -agent-image "$AGENT_IMAGE" -agent-egress "$AGENT_EGRESS" -run-id "$RUN_ID" -attempt "$ATTEMPT"'
@@ -177,7 +173,6 @@ jobs:
           AGENT_IMAGE: ${{ vars.WINGMAN_AGENT_IMAGE }}
           AGENT_EGRESS: ${{ vars.WINGMAN_AGENT_EGRESS }}
           WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
-          COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
         run: '"$RUNNER_TEMP/runner" plan-stage -plan-models "$PLAN_MODELS" -ticket-file "$RUNNER_TEMP/ticket.json" -out "$RUNNER_TEMP/plan.json" -agent-image "$AGENT_IMAGE" -agent-egress "$AGENT_EGRESS" -run-id "$RUN_ID" -attempt "$ATTEMPT"'

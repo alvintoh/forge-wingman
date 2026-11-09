@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
+	"github.com/alvintoh/forge-wingman/internal/providers"
 	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
@@ -61,6 +62,6 @@ func (d Deps) config(w http.ResponseWriter, _ *http.Request) {
 			PlatformCap: limits.PlatformCap,
 			PollMinutes: int(dispatcher.PollInterval / time.Minute),
 		},
-		PeakWindows: peakModels(),
+		PeakWindows: peakModels(providers.RunModels()),
 	})
 }

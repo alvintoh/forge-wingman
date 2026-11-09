@@ -932,7 +932,7 @@ func retriedPoll(t *testing.T, retried bool, issue Issue) *fakeQueue {
 	q := &fakeQueue{holds: map[string]bool{"FRG-18": true}, retried: map[string]bool{"FRG-18": retried}}
 	deps := pollDeps(fakeSource{issues: []Issue{issue}}, q, &fakeWorkflow{})
 	deps.ModelPlans = &fakeModelPlans{plans: modelPlans}
-	if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
+	if _, err := Poll(context.Background(), deps, planConfig()); err != nil {
 		t.Fatal(err)
 	}
 	return q
@@ -972,7 +972,7 @@ func TestPollRecordsNoRefusalForARetryAnotherPollClaimedFirst(t *testing.T) {
 	q := &fakeQueue{holds: map[string]bool{"FRG-18": true}, retried: map[string]bool{"FRG-18": true}, stopRaced: true}
 	deps := pollDeps(fakeSource{issues: []Issue{admitted("size:S", "repo:octo/scratch", "model:tokens/a")}}, q, &fakeWorkflow{})
 	deps.ModelPlans = &fakeModelPlans{plans: modelPlans}
-	if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
+	if _, err := Poll(context.Background(), deps, planConfig()); err != nil {
 		t.Fatal(err)
 	}
 	if len(q.rejected) != 0 {
@@ -993,7 +993,7 @@ func TestPollHoldsARetriedRunWhoseModelsCannotBeChecked(t *testing.T) {
 				candidates: []Candidate{{RunID: "FRG-18", Repo: "octo/scratch", Size: "S", Priority: 2, Attempt: 1}}}
 			deps := pollDeps(fakeSource{issues: []Issue{admitted("size:S", "repo:octo/scratch", "model:allowance/a")}}, q, &fakeWorkflow{})
 			deps.ModelPlans = &fakeModelPlans{plans: modelPlans, err: tc.err}
-			res, err := Poll(context.Background(), deps, buildConfig)
+			res, err := Poll(context.Background(), deps, planConfig())
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -48,7 +48,7 @@ func encoded(t *testing.T, s Summary) string {
 		s.Phase = PhaseCommit
 		s.Branch = BranchName(testTicket.BranchSegment(), "1-1")
 		s.Steps = []Step{{
-			Phase: PhaseBuild, Round: 1, Model: "command-code/x",
+			Phase: PhaseBuild, Round: 1, Model: "opencode-go/x",
 			CompletionsObject: completionsObject("1-1", PhaseBuild, 1),
 			At:                finalizeNow.Add(-30 * time.Minute),
 		}}
@@ -120,7 +120,7 @@ func TestFinalize(t *testing.T) {
 		{"a workflow change at commit is kept", func(t *testing.T) string {
 			return encoded(t, Summary{Outcome: OutcomeStopped, StopReason: StopWorkflowChange, Phase: PhaseCommit,
 				Branch: BranchName(testTicket.BranchSegment(), "1-1"),
-				Steps: []Step{{Phase: PhaseBuild, Round: 1, Model: "command-code/x",
+				Steps: []Step{{Phase: PhaseBuild, Round: 1, Model: "opencode-go/x",
 					CompletionsObject: completionsObject("1-1", PhaseBuild, 1), At: finalizeNow.Add(-30 * time.Minute)}}})
 		}, FinalizeInput{RunResult: "success", PRResult: "skipped"}, OutcomeStopped, StopWorkflowChange, OutcomeStopped},
 		{"an invalid summary", func(*testing.T) string { return `{"outcome":"pr-opened"}` },
@@ -267,7 +267,7 @@ func TestFinalizeWritesTheWholeRecordFromTheSummary(t *testing.T) {
 		Steps: []Step{{
 			Phase:             PhaseBuild,
 			Round:             1,
-			Model:             "command-code/x",
+			Model:             "opencode-go/x",
 			Harness:           "omp",
 			Tokens:            Usage{Input: 10, Output: 2, CacheRead: 90, Cost: 0.5, Steps: 1},
 			DurationMS:        1200,
@@ -311,9 +311,9 @@ func TestFinalizeSumsTokensAcrossSteps(t *testing.T) {
 		Phase:   PhaseCommit,
 		Branch:  BranchName(testTicket.BranchSegment(), "1-1"),
 		Steps: []Step{
-			{Phase: PhaseBuild, Round: 1, Model: "command-code/x", Tokens: Usage{Input: 10, Output: 2, Steps: 1},
+			{Phase: PhaseBuild, Round: 1, Model: "opencode-go/x", Tokens: Usage{Input: 10, Output: 2, Steps: 1},
 				CompletionsObject: completionsObject("1-1", PhaseBuild, 1), At: finalizeNow.Add(-30 * time.Minute)},
-			{Phase: PhaseBuild, Round: 2, Model: "command-code/x", Tokens: Usage{Input: 5, Output: 1, Steps: 1},
+			{Phase: PhaseBuild, Round: 2, Model: "opencode-go/x", Tokens: Usage{Input: 5, Output: 1, Steps: 1},
 				CompletionsObject: completionsObject("1-1", PhaseBuild, 2), At: finalizeNow.Add(-20 * time.Minute)},
 		},
 	}
@@ -405,7 +405,7 @@ func TestFinalizeSettlesTheLedgerWithTheRunsActualCost(t *testing.T) {
 		Phase:   PhaseCommit,
 		Branch:  BranchName(testTicket.BranchSegment(), "1-1"),
 		Steps: []Step{{
-			Phase: PhaseBuild, Round: 1, Model: "command-code/x",
+			Phase: PhaseBuild, Round: 1, Model: "opencode-go/x",
 			Tokens:            Usage{Input: 10, Output: 2, Cost: 0.123456, Steps: 1},
 			CompletionsObject: completionsObject("1-1", PhaseBuild, 1),
 			At:                finalizeNow.Add(-30 * time.Minute),
@@ -454,7 +454,7 @@ func TestFinalizeAddsWhatEarlierAttemptsSettledToTheSettledTotals(t *testing.T) 
 	rec.Private = true
 	rec.PriorSettledProviderCostMicros, rec.PriorSettledRunnerMinutes = 1_000_000, 3
 	store[testRunID] = rec
-	sum := settledOn("command-code/x", 0.5)
+	sum := settledOn("opencode-go/x", 0.5)
 	sum.DurationsMS = map[string]int64{"build": 90_000}
 	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: encoded(t, sum),
 		RunResult: "success", PRResult: "success", PRURL: "https://github.com/o/r/pull/1"}
@@ -490,7 +490,7 @@ func TestFinalizeKeepsEveryAttemptsBranch(t *testing.T) {
 	}
 	sum := Summary{
 		Outcome: OutcomeBuilt, Phase: PhaseCommit, Branch: second,
-		Steps: []Step{{Phase: PhaseBuild, Round: 1, Model: "command-code/x",
+		Steps: []Step{{Phase: PhaseBuild, Round: 1, Model: "opencode-go/x",
 			CompletionsObject: completionsObject("2-1", PhaseBuild, 1), At: finalizeNow.Add(-30 * time.Minute)}},
 	}
 	in = FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "2-1",
@@ -634,7 +634,7 @@ func TestFinalizeZeroesSettledRunnerMinutesForAPublicTarget(t *testing.T) {
 	store := seeded(t) // Private defaults to false
 	sum := Summary{
 		Outcome: OutcomeBuilt, Phase: PhaseCommit, Branch: BranchName(testTicket.BranchSegment(), "1-1"),
-		Steps: []Step{{Phase: PhaseBuild, Round: 1, Model: "command-code/x", Tokens: Usage{Cost: 1},
+		Steps: []Step{{Phase: PhaseBuild, Round: 1, Model: "opencode-go/x", Tokens: Usage{Cost: 1},
 			CompletionsObject: completionsObject("1-1", PhaseBuild, 1), At: finalizeNow.Add(-30 * time.Minute)}},
 		DurationsMS: map[string]int64{"build": 120_000},
 	}
@@ -879,10 +879,10 @@ func finalizeRun(t *testing.T, store fakeRecords, reader ProviderCostReader, raw
 }
 
 func TestFinalizeFlagsARunCostingWellAboveItsProvidersTrailingAverage(t *testing.T) {
-	store := seededOn(t, "command-code")
+	store := seededOn(t, "opencode-go")
 	reader := &fakeTrailing{mean: money.Dollar, sample: 10}
 
-	rec := finalizeRun(t, store, reader, encoded(t, settledOn("command-code/x", 2)), finalizeNow)
+	rec := finalizeRun(t, store, reader, encoded(t, settledOn("opencode-go/x", 2)), finalizeNow)
 	want := "cost $2.0000 is 100% above the $1.0000 average of 10 of this provider's runs"
 	if rec.CostDrift != want || store[testRunID].CostDrift != want {
 		t.Fatalf("cost drift = %q (record %q), want %q", rec.CostDrift, store[testRunID].CostDrift, want)
@@ -891,7 +891,7 @@ func TestFinalizeFlagsARunCostingWellAboveItsProvidersTrailingAverage(t *testing
 		t.Fatalf("the provider was asked %d times, want once", len(reader.calls))
 	}
 	call := reader.calls[0]
-	if call.plan != "command-code" || call.exclude != testRunID || !call.since.Equal(finalizeNow.Add(-TrailingWindow)) {
+	if call.plan != "opencode-go" || call.exclude != testRunID || !call.since.Equal(finalizeNow.Add(-TrailingWindow)) {
 		t.Fatalf("asked for %+v, want this run's plan over the trailing window with the run itself left out", call)
 	}
 }
@@ -911,10 +911,10 @@ func TestFinalizeFlagsOnlyARunPastTheDriftThreshold(t *testing.T) {
 		"below the average":      {0.5, false},
 	} {
 		t.Run(name, func(t *testing.T) {
-			store := seededOn(t, "command-code")
+			store := seededOn(t, "opencode-go")
 			reader := &fakeTrailing{mean: money.Dollar, sample: 10}
 
-			rec := finalizeRun(t, store, reader, encoded(t, settledOn("command-code/x", tt.cost)), finalizeNow)
+			rec := finalizeRun(t, store, reader, encoded(t, settledOn("opencode-go/x", tt.cost)), finalizeNow)
 			if got := rec.CostDrift != ""; got != tt.wantDrift {
 				t.Fatalf("cost drift = %q at $%v against a $1 average, want flagged %v", rec.CostDrift, tt.cost, tt.wantDrift)
 			}
@@ -926,10 +926,10 @@ func TestFinalizeFlagsOnlyARunPastTheDriftThreshold(t *testing.T) {
 }
 
 func TestFinalizeLeavesTheDriftFlagEmptyWithoutEnoughOfTheProvidersHistory(t *testing.T) {
-	store := seededOn(t, "command-code")
+	store := seededOn(t, "opencode-go")
 	reader := &fakeTrailing{mean: money.Dollar, sample: minDriftSample - 1}
 
-	rec := finalizeRun(t, store, reader, encoded(t, settledOn("command-code/x", 10)), finalizeNow)
+	rec := finalizeRun(t, store, reader, encoded(t, settledOn("opencode-go/x", 10)), finalizeNow)
 	if rec.CostDrift != "" {
 		t.Fatalf("cost drift = %q over %d settled runs, want none under %d", rec.CostDrift, reader.sample, minDriftSample)
 	}
@@ -945,10 +945,10 @@ func TestFinalizeLeavesTheDriftFlagEmptyWithoutAProviderToAsk(t *testing.T) {
 		wantAsked  bool
 		wantUnread bool
 	}{
-		"no reader":                          {plan: "command-code"},
-		"a history that cannot be read":      {plan: "command-code", trail: &fakeTrailing{err: errors.New("firestore unreachable")}, wantAsked: true, wantUnread: true},
+		"no reader":                          {plan: "opencode-go"},
+		"a history that cannot be read":      {plan: "opencode-go", trail: &fakeTrailing{err: errors.New("firestore unreachable")}, wantAsked: true, wantUnread: true},
 		"no provider on the record":          {trail: &fakeTrailing{mean: money.Dollar, sample: 10}},
-		"a provider history holding no cost": {plan: "command-code", trail: &fakeTrailing{sample: 10}, wantAsked: true},
+		"a provider history holding no cost": {plan: "opencode-go", trail: &fakeTrailing{sample: 10}, wantAsked: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			store := seededOn(t, tt.plan)
@@ -957,7 +957,7 @@ func TestFinalizeLeavesTheDriftFlagEmptyWithoutAProviderToAsk(t *testing.T) {
 				reader = tt.trail
 			}
 
-			rec := finalizeRun(t, store, reader, encoded(t, settledOn("command-code/x", 10)), finalizeNow)
+			rec := finalizeRun(t, store, reader, encoded(t, settledOn("opencode-go/x", 10)), finalizeNow)
 			if rec.CostDrift != "" {
 				t.Fatalf("cost drift = %q, want none", rec.CostDrift)
 			}
@@ -975,7 +975,7 @@ func TestFinalizeLeavesTheDriftFlagEmptyWithoutAProviderToAsk(t *testing.T) {
 }
 
 func TestFinalizeNeverComparesARunThatNeverReachedAnAgent(t *testing.T) {
-	store := seededOn(t, "command-code")
+	store := seededOn(t, "opencode-go")
 	reader := &fakeTrailing{mean: money.Dollar, sample: 10}
 
 	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", RunResult: "failure", PRResult: "skipped"}
@@ -989,7 +989,7 @@ func TestFinalizeNeverComparesARunThatNeverReachedAnAgent(t *testing.T) {
 }
 
 func TestFinalizeTagsTheRunWithTheTimeOfUseItsStepsFellIn(t *testing.T) {
-	const priced, free = "command-code/deepseek/deepseek-v4.1-flash", "command-code/poolside/laguna-s-2.1-free"
+	const priced, free = "opencode-go/deepseek-v4.1-flash", "gemini/gemini-3.8-flash"
 	// A Monday, inside the priced card's own 01:00-04:00 UTC window.
 	peak := time.Date(2026, 9, 28, 2, 0, 0, 0, time.UTC)
 	// The same Monday, outside every window.
@@ -1027,7 +1027,7 @@ func TestFinalizeTagsTheRunWithTheTimeOfUseItsStepsFellIn(t *testing.T) {
 }
 
 func TestTimeOfUseIsTheBucketTheRunsOwnStepsFellIn(t *testing.T) {
-	const priced = "command-code/deepseek/deepseek-v4.1-flash"
+	const priced = "opencode-go/deepseek-v4.1-flash"
 	peak := time.Date(2026, 9, 28, 2, 0, 0, 0, time.UTC)    // a Monday, inside the card's 01:00-04:00 window
 	offPeak := time.Date(2026, 9, 28, 5, 0, 0, 0, time.UTC) // the same Monday, outside every window
 	weekend := time.Date(2026, 9, 26, 2, 0, 0, 0, time.UTC) // a Saturday, inside the hours but never at peak
@@ -1044,7 +1044,7 @@ func TestTimeOfUseIsTheBucketTheRunsOwnStepsFellIn(t *testing.T) {
 		"a step that ends before the window opens":    {[]Step{{Model: priced, At: beforePeak, DurationMS: 5 * 60 * 1000}}, TimeOfUseOffPeak},
 		"a weekend step inside the hours":             {[]Step{{Model: priced, At: weekend}}, TimeOfUseOffPeak},
 		"any peak step wins over the rest":            {[]Step{{Model: priced, At: offPeak}, {Model: priced, At: peak}}, TimeOfUsePeak},
-		"a plan that does not price by the hour":      {[]Step{{Model: "command-code/poolside/laguna-s-2.1-free", At: peak}}, ""},
+		"a plan that does not price by the hour":      {[]Step{{Model: "gemini/gemini-3.8-flash", At: peak}}, ""},
 		"a model no plan prices":                      {[]Step{{Model: "nowhere/nothing", At: peak}}, ""},
 		"a step whose time is unknown prices at peak": {[]Step{{Model: priced}}, TimeOfUsePeak},
 		"no steps at all":                             {nil, ""},

@@ -42,6 +42,17 @@ var modelPlans = map[string]providers.Plan{
 
 const defaultBuild = "free/build"
 
+// testPlans are the plans the tests' runner reaches: each provider above, and
+// one with no plan record.
+var testPlans = []string{"allowance", "free", "nobody", "tokens", "tokens-opt", "unrecorded"}
+
+// planConfig is buildConfig reaching testPlans.
+func planConfig() Config {
+	c := buildConfig
+	c.Plans = testPlans
+	return c
+}
+
 func TestCheckModels(t *testing.T) {
 	for name, tt := range map[string]struct {
 		models runner.ModelLabels
@@ -57,6 +68,7 @@ func TestCheckModels(t *testing.T) {
 		"a review model that is the default build":       {runner.ModelLabels{Review: defaultBuild}, RefusalReviewIsBuild, nil},
 		"a build model that is the default review model": {runner.ModelLabels{Build: runner.DefaultReviewModels()[0]}, RefusalReviewIsBuild, nil},
 		"a provider with no plan record":                 {runner.ModelLabels{Build: "nobody/a"}, RefusalModelUnconfigured, []string{"nobody"}},
+		"a provider that is not a plan":                  {runner.ModelLabels{Build: "free/a", Review: "elsewhere/b"}, RefusalModelUnknownPlan, []string{"free"}},
 		"a plan with no billing recorded":                {runner.ModelLabels{Build: "unrecorded/a"}, RefusalModelUnconfigured, []string{"unrecorded"}},
 		"a per-token build model not opted in":           {runner.ModelLabels{Build: "tokens/a"}, RefusalModelNotOptedIn, []string{"tokens"}},
 		"a per-token review model not opted in":          {runner.ModelLabels{Review: "tokens/a"}, RefusalModelNotOptedIn, []string{"tokens"}},
@@ -68,7 +80,7 @@ func TestCheckModels(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			plans := &fakeModelPlans{plans: modelPlans}
-			got, detail, err := checkModels(context.Background(), plans, tt.models, defaultBuild)
+			got, detail, err := checkModels(context.Background(), plans, tt.models, defaultBuild, testPlans)
 			if err != nil || got != tt.want {
 				t.Fatalf("refusal %q (%s), err %v, want %q", got, detail, err, tt.want)
 			}
@@ -83,7 +95,7 @@ func TestCheckModels(t *testing.T) {
 }
 
 func TestCheckModelsNamesTheOptInAndTheProvider(t *testing.T) {
-	_, detail, _ := checkModels(context.Background(), &fakeModelPlans{plans: modelPlans}, runner.ModelLabels{Build: "tokens/a"}, defaultBuild)
+	_, detail, _ := checkModels(context.Background(), &fakeModelPlans{plans: modelPlans}, runner.ModelLabels{Build: "tokens/a"}, defaultBuild, testPlans)
 	if !strings.Contains(detail, "tokens") || !strings.Contains(detail, "opted in") {
 		t.Fatalf("detail = %q, want it to name the provider and the missing opt-in", detail)
 	}
@@ -91,7 +103,7 @@ func TestCheckModelsNamesTheOptInAndTheProvider(t *testing.T) {
 
 func TestCheckModelsReportsAFailedReadAsAnErrorNotARefusal(t *testing.T) {
 	plans := &fakeModelPlans{err: errFirestore}
-	reason, _, err := checkModels(context.Background(), plans, runner.ModelLabels{Build: "free/a"}, defaultBuild)
+	reason, _, err := checkModels(context.Background(), plans, runner.ModelLabels{Build: "free/a"}, defaultBuild, testPlans)
 	if err == nil || reason != "" {
 		t.Fatalf("refusal %q, err %v, want an error and no refusal", reason, err)
 	}
@@ -130,9 +142,42 @@ func modelPoll(t *testing.T, overrides ModelOverrides, plans *fakeModelPlans, q 
 	if logs != nil {
 		d.Logger = slog.New(slog.NewTextHandler(logs, nil))
 	}
-	c := buildConfig
+	c := planConfig()
 	c.Model = defaultBuild
 	return Poll(context.Background(), d, c)
+}
+
+// TestPollRefusesAModelOfAPlanTheRunnerDoesNotReachBeforeClaim asserts a
+// ticket naming a model of a plan absent from providers.json is refused at
+// admission even though its plan record still has billing recorded, while a
+// model of a configured plan with a billed record is queued.
+func TestPollRefusesAModelOfAPlanTheRunnerDoesNotReachBeforeClaim(t *testing.T) {
+	billed := map[string]providers.Plan{
+		"command-code": planBilled(providers.BillingAllowance, false),
+		"opencode-go":  planBilled(providers.BillingAllowance, false),
+	}
+	for label, want := range map[string]Refusal{
+		"model:command-code/deepseek/deepseek-v4.1-flash": RefusalModelUnknownPlan,
+		"model:opencode-go/deepseek-v4.1-flash":           "",
+	} {
+		t.Run(label, func(t *testing.T) {
+			q := &fakeQueue{}
+			d := pollDeps(fakeSource{issues: []Issue{admitted("size:M", "repo:octo/scratch", label)}}, q, &fakeWorkflow{})
+			d.Overrides, d.ModelPlans = LabelOverrides{}, &fakeModelPlans{plans: billed}
+			c := buildConfig
+			c.Model, c.Plans = "opencode-go/deepseek-v4.1-flash", providers.Plans()
+			res, err := Poll(context.Background(), d, c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := reasons(res.Rejections); want != "" && !slices.Equal(got, []Refusal{want}) || want == "" && len(got) != 0 {
+				t.Fatalf("refused %v, want %q", got, want)
+			}
+			if queued := len(q.queued) == 1; queued != (want == "") {
+				t.Fatalf("queued %d, want a run only for the configured plan", len(q.queued))
+			}
+		})
+	}
 }
 
 func TestPollQueuesTheRunWithTheModelsTheTicketNamed(t *testing.T) {

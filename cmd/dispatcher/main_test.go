@@ -5,11 +5,14 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
+	"github.com/alvintoh/forge-wingman/internal/money"
 	"github.com/alvintoh/forge-wingman/internal/providers"
 	"github.com/alvintoh/forge-wingman/internal/runner"
 )
@@ -146,24 +149,31 @@ func TestBudgetConfigCarriesTheProvidersWindows(t *testing.T) {
 	}
 }
 
-// TestBudgetConfigCarriesTheProvidersModelCaps asserts the dispatcher meters the
-// configured provider's own per-model caps, so a run on a capped model is
-// admitted only while that model has room too.
-func TestBudgetConfigCarriesTheProvidersModelCaps(t *testing.T) {
-	provider := runner.Provider(runner.DefaultModel())
-	want := providers.ModelCaps(provider)
-	got := budgetConfig(provider).ModelCaps
-	if len(want) == 0 || len(got) != len(want) {
-		t.Fatalf("model caps = %+v, want the configured %+v", got, want)
+// TestBudgetConfigMetersTheFirstPaidPlansWindows asserts a run on the default
+// model is held to its plan's stated spend windows.
+func TestBudgetConfigMetersTheFirstPaidPlansWindows(t *testing.T) {
+	plan := providers.PaidPlans()[0]
+	if plan != runner.Provider(runner.DefaultModel()) {
+		t.Fatalf("the first paid plan is %s, not the default model's", plan)
 	}
-	for model, w := range want {
-		g, ok := got[model]
-		if !ok || g.Name != w.Name || g.Period != w.Period || g.Limit != w.Limit {
-			t.Errorf("cap for %s = %+v, want %+v", model, g, w)
-		}
+	want := []dispatcher.Window{
+		{Name: "opencode-go-5h", Period: 5 * time.Hour, Limit: money.FromUSD(20)},
+		{Name: "opencode-go-week", Period: 168 * time.Hour, Limit: money.FromUSD(50)},
+		{Name: "opencode-go-month", Period: 720 * time.Hour, Limit: money.FromUSD(60)},
 	}
-	if b := budgetConfig("nobody"); len(b.ModelCaps) != 0 {
-		t.Errorf("unconfigured provider = %+v, want no model caps", b.ModelCaps)
+	if got := budgetConfig(plan).ProviderWindows; !slices.Equal(got, want) {
+		t.Fatalf("windows = %+v, want %+v", got, want)
+	}
+}
+
+func TestCapWindowsMetersEachModelsCap(t *testing.T) {
+	caps := map[string]providers.Window{"p/m": {Name: "p-m-month", Period: 720 * time.Hour, Limit: money.FromUSD(60)}}
+	want := map[string]dispatcher.Window{"p/m": {Name: "p-m-month", Period: 720 * time.Hour, Limit: money.FromUSD(60)}}
+	if got := capWindows(caps); !maps.Equal(got, want) {
+		t.Errorf("capWindows = %+v, want %+v", got, want)
+	}
+	if got := capWindows(nil); got != nil {
+		t.Errorf("capWindows(nil) = %+v, want nil", got)
 	}
 }
 
@@ -184,7 +194,7 @@ func TestLastResortPlansFollowTheConfiguredOrder(t *testing.T) {
 }
 
 func TestPlanBudgetsIsEmptyForAnOrderOfOnePlanOrNone(t *testing.T) {
-	for name, order := range map[string][]string{"none": nil, "one plan": {"command-code"}} {
+	for name, order := range map[string][]string{"none": nil, "one plan": {"opencode-go"}} {
 		t.Run(name, func(t *testing.T) {
 			others, err := planBudgets(order, runner.DefaultModel())
 			if err != nil || len(others) != 0 {
@@ -195,18 +205,18 @@ func TestPlanBudgetsIsEmptyForAnOrderOfOnePlanOrNone(t *testing.T) {
 }
 
 func TestPlanBudgetsListsEveryPlanAfterTheDefaultsWithItsOwnBudget(t *testing.T) {
-	others, err := planBudgets([]string{"command-code", "gemini"}, runner.DefaultModel())
+	others, err := planBudgets([]string{"opencode-go", "gemini"}, runner.DefaultModel())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(others) != 1 || others[0].Plan != "gemini" || others[0].Budget.Cash.Name != dispatcher.CeilingCash || len(others[0].Budget.ProviderWindows) != 0 {
-		t.Fatalf("planBudgets = %+v, want gemini with its own budget, not command-code's windows", others)
+		t.Fatalf("planBudgets = %+v, want gemini with its own budget, not opencode-go's windows", others)
 	}
 }
 
 func TestPlanBudgetsRefusesAnOrderNotStartingOnTheDefaultModelsPlan(t *testing.T) {
-	_, err := planBudgets([]string{"gemini", "command-code"}, runner.DefaultModel())
-	if err == nil || !strings.Contains(err.Error(), "the first paid plan is gemini, not command-code") {
+	_, err := planBudgets([]string{"gemini", "opencode-go"}, runner.DefaultModel())
+	if err == nil || !strings.Contains(err.Error(), "the first paid plan is gemini, not opencode-go") {
 		t.Fatalf("err = %v, want the first paid plan to be refused", err)
 	}
 }

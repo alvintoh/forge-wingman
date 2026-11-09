@@ -19,14 +19,7 @@ import (
 )
 
 // peakModelID is the configured model whose rate card prices peak hours.
-const peakModelID = "command-code/deepseek/deepseek-v4.1-flash"
-
-// goPeakModelID is the Go plan's model whose rate card prices the same peak hours.
-const goPeakModelID = "opencode-go/deepseek-v4.1-flash"
-
-// unpricedModelID is the configured model its plan holds no rate card for, so a
-// view tells it from a model priced the same at every hour.
-const unpricedModelID = "command-code/meta/muse-spark-1.3-contributor"
+const peakModelID = "opencode-go/deepseek-v4.1-flash"
 
 // peakAt is a Monday inside that model's first window, 01:00-04:00 UTC on
 // weekdays, so a run admitted then waits under off-peak-only.
@@ -99,13 +92,11 @@ func TestPeakShowsEveryModelsPricingAndWhetherAWindowIsOpen(t *testing.T) {
 		modelled[model.Model] = model
 	}
 	want := []peakHour{{From: 1, To: 4}, {From: 6, To: 10}}
-	for _, id := range []string{peakModelID, goPeakModelID} {
-		if window := modelled[id].Peak; window == nil || window.Multiplier != 2 || !slices.Equal(window.Hours, want) {
-			t.Errorf("window of %s = %+v, want x2 in %v", id, window, want)
-		}
+	if window := modelled[peakModelID].Peak; window == nil || window.Multiplier != 2 || !slices.Equal(window.Hours, want) {
+		t.Errorf("window of %s = %+v, want x2 in %v", peakModelID, window, want)
 	}
 	for name, model := range modelled {
-		if name == peakModelID || name == goPeakModelID {
+		if name == peakModelID {
 			if !model.Priced {
 				t.Errorf("%s is not priced, want the plan's rate card to price it", name)
 			}
@@ -114,12 +105,21 @@ func TestPeakShowsEveryModelsPricingAndWhetherAWindowIsOpen(t *testing.T) {
 		if model.Peak != nil {
 			t.Errorf("%s carries a window, want none for a model priced flat or not at all", name)
 		}
-		if name == unpricedModelID && model.Priced {
-			t.Errorf("%s is priced, want the plan to price it nowhere", name)
-		}
-		if name != unpricedModelID && !model.Priced {
+		if !model.Priced {
 			t.Errorf("%s is not priced, want the plan to price it the same at every hour", name)
 		}
+	}
+}
+
+// TestPeakModelsTellsAnUnpricedModelFromAFlatOne asserts a model no plan
+// prices renders unpriced and windowless, apart from one priced flat.
+func TestPeakModelsTellsAnUnpricedModelFromAFlatOne(t *testing.T) {
+	got := peakModels([]string{"gemini/gemini-3.8-flash", "nowhere/model"})
+	want := []peakModel{{Model: "gemini/gemini-3.8-flash", Priced: true}, {Model: "nowhere/model"}}
+	if !slices.EqualFunc(got, want, func(a, b peakModel) bool {
+		return a.Model == b.Model && a.Priced == b.Priced && a.Peak == nil && b.Peak == nil
+	}) {
+		t.Fatalf("peakModels = %+v, want %+v", got, want)
 	}
 }
 
@@ -161,20 +161,13 @@ func TestPeakServesTheStoredModeAndEveryModelsPricing(t *testing.T) {
 			t.Errorf("model keys = %v, want %v", got, want)
 		}
 		switch model["model"] {
-		case peakModelID, goPeakModelID:
+		case peakModelID:
 			window, ok = model["peak"].(map[string]any)
 			if !ok {
 				t.Fatalf("the peak-priced model's window = %v, want an object", model["peak"])
 			}
 			if got := model["priced"]; got != true {
 				t.Errorf("priced of %v = %v, want true", model["model"], got)
-			}
-		case unpricedModelID:
-			if model["peak"] != nil {
-				t.Errorf("%v carries a window, want null for a model the plan prices nowhere", model["model"])
-			}
-			if got := model["priced"]; got != false {
-				t.Errorf("priced of %s = %v, want false", unpricedModelID, got)
 			}
 		default:
 			if model["peak"] != nil {

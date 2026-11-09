@@ -71,20 +71,20 @@ func TestRecordNeedsTheRunsIdentity(t *testing.T) {
 // from the environment and keeps its HOME under the job's temp directory, so a
 // later round finds the earlier session, and that each plan's key is listed.
 func TestHarnessesWireTheKeyAndHome(t *testing.T) {
-	env := map[string]string{"COMMANDCODE_API_KEY": "k", "GEMINI_API_KEY": "g", "OPENCODE_API_KEY": "o", "RUNNER_TEMP": "/tmp/r"}
+	env := map[string]string{"GEMINI_API_KEY": "g", "OPENCODE_API_KEY": "o", "RUNNER_TEMP": "/tmp/r"}
 	var omp runner.OmpHarness
 	for _, h := range runner.Harnesses(func(k string) string { return env[k] }) {
 		if h, ok := h.(runner.OmpHarness); ok {
 			omp = h
 		}
 	}
-	if omp.Getenv == nil || omp.Getenv("COMMANDCODE_API_KEY") != "k" {
+	if omp.Getenv == nil || omp.Getenv("OPENCODE_API_KEY") != "o" {
 		t.Errorf("the harness does not resolve the plan's key from the environment")
 	}
 	if omp.Home != filepath.Join("/tmp/r", "omp-home") {
 		t.Errorf("home = %q, want it under RUNNER_TEMP", omp.Home)
 	}
-	if got := runner.HarnessSecrets(func(k string) string { return env[k] }); !slices.Equal(got, []string{"k", "g", "o"}) {
+	if got := runner.HarnessSecrets(func(k string) string { return env[k] }); !slices.Equal(got, []string{"g", "o"}) {
 		t.Errorf("secrets = %q, want each configured plan's key", got)
 	}
 }

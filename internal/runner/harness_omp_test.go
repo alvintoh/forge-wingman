@@ -18,7 +18,7 @@ import (
 	"github.com/alvintoh/forge-wingman/internal/providers"
 )
 
-const ompTestModel = "command-code/deepseek/deepseek-v4.1-flash"
+const ompTestModel = "opencode-go/deepseek-v4.1-flash"
 
 func init() { addConformanceCase(ompConformance()) }
 
@@ -199,17 +199,12 @@ func TestOmpAgentResumesUnderOneHomeWithTheKeyInItsEnvironment(t *testing.T) {
 		if !strings.Contains(a.config, "checkUpdate: false") || !strings.Contains(a.config, "enableProjectConfig: false") {
 			t.Errorf("attempt %d config = %q, want the update check and project MCP off", i, a.config)
 		}
-		for _, want := range []string{"HOME=" + home, "PI_CODING_AGENT_DIR=" + agentDir, "COMMAND_CODE_API_KEY=omp-secret"} {
+		for _, want := range []string{"HOME=" + home, "PI_CODING_AGENT_DIR=" + agentDir, "OPENCODE_API_KEY=omp-secret"} {
 			if !slices.Contains(a.env, want) {
 				t.Errorf("attempt %d env lacks %s", i, want)
 			}
 		}
-		for _, kv := range a.env {
-			if strings.HasPrefix(kv, "COMMANDCODE_API_KEY=") {
-				t.Errorf("attempt %d inherited the runner's secret variable: %s", i, kv)
-			}
-		}
-		if j := slices.Index(a.args, "--model"); j < 0 || a.args[j+1] != "commandcode/deepseek/deepseek-v4.1-flash" {
+		if j := slices.Index(a.args, "--model"); j < 0 || a.args[j+1] != "opencode-go/deepseek-v4.1-flash" {
 			t.Errorf("attempt %d args %v do not name omp's own model id", i, a.args)
 		}
 		if !slices.Contains(a.args, "--no-extensions") || !slices.Contains(a.args, "--no-skills") {
@@ -228,8 +223,8 @@ func TestOmpAgentResumesUnderOneHomeWithTheKeyInItsEnvironment(t *testing.T) {
 // API that caps lower rejects the request outright (ling 3.1 Flash answered 400
 // to max_tokens 64000 and 200 to 32768, run 37881527153).
 func TestOmpModelsWritesThePlansOutputCap(t *testing.T) {
-	got := ompModels("command-code", map[string]int{"command-code/poolside/laguna-s-2.1-free": 32768})
-	const want = "providers:\n  commandcode:\n    modelOverrides:\n      \"poolside/laguna-s-2.1-free\":\n        maxTokens: 32768\n"
+	got := ompModels("gemini", map[string]int{"gemini/gemini-3.8-flash": 32768})
+	const want = "providers:\n  google:\n    modelOverrides:\n      \"gemini-3.8-flash\":\n        maxTokens: 32768\n"
 	if got != want {
 		t.Fatalf("ompModels = %q, want %q", got, want)
 	}
@@ -260,10 +255,10 @@ func TestOmpModelsCapsOnlyThePlansOwnModels(t *testing.T) {
 	for name, caps := range map[string]map[string]int{
 		"no caps":           nil,
 		"another plan only": {"other/plan/model": 10},
-		"a bare model id":   {"poolside/laguna-s-2.1-free": 10},
-		"an empty model id": {"command-code/": 10},
+		"a bare model id":   {"deepseek-v4.1-flash": 10},
+		"an empty model id": {"opencode-go/": 10},
 	} {
-		if got := ompModels("command-code", caps); got != "" {
+		if got := ompModels("opencode-go", caps); got != "" {
 			t.Errorf("%s: ompModels = %q, want no file", name, got)
 		}
 	}
@@ -303,7 +298,7 @@ func TestOmpAgentChoosesTheApprovalMode(t *testing.T) {
 // named model of a plan it has a provider for, before starting omp — a model
 // whose plan it maps no provider to, or whose id carries no model, included.
 func TestOmpAgentRefusesAModelOfAnotherPlan(t *testing.T) {
-	for _, model := range []string{"other/model", "command-code/"} {
+	for _, model := range []string{"other/model", "opencode-go/", "command-code/deepseek/deepseek-v4.1-flash"} {
 		t.Run(model, func(t *testing.T) {
 			bin, attempts := scriptedOmp(t, "normal")
 			agent := OmpHarness{Bin: bin, Key: "k", Home: t.TempDir()}.Agent(ProfileBuild, model)
@@ -326,7 +321,7 @@ func TestOmpAgentNeedsAHomeAndAKey(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "home") {
 		t.Fatalf("err = %v, want the missing home refused", err)
 	}
-	if err := (OmpHarness{}).Ready("command-code"); err == nil || !strings.Contains(err.Error(), "COMMANDCODE_API_KEY") {
+	if err := (OmpHarness{}).Ready("opencode-go"); err == nil || !strings.Contains(err.Error(), "OPENCODE_API_KEY") {
 		t.Fatalf("Ready = %v, want the missing key named", err)
 	}
 }
@@ -418,7 +413,7 @@ func TestOmpHarnessClassifiesAnExhaustedPlanFromItsErrorText(t *testing.T) {
 func TestBuildRunsTheOmpHarnessFromTheRecordedFixtures(t *testing.T) {
 	bin, _ := scriptedOmp(t, "normal")
 	deps, completions, reported := testDeps(validObjects(), nil)
-	orders := planOrders(map[string][]string{"command-code": {"omp"}, "p": {"p"}})
+	orders := planOrders(map[string][]string{"opencode-go": {"omp"}, "p": {"p"}})
 	deps.Agent = newRouter(orders, ProfileBuild, OmpHarness{Bin: bin, Key: "k", Home: t.TempDir()}, fakeHarness{})
 	c := testConfig(t, initRepo(t))
 	c.Model = ompTestModel
@@ -459,7 +454,6 @@ func TestWorkflowsInstallThePinnedOmp(t *testing.T) {
 			"bun install --frozen-lockfile --cwd tools/omp",
 			"tools/omp/node_modules/.bin",
 			`jq -r '.dependencies["@oh-my-pi/pi-coding-agent"]' tools/omp/package.json`,
-			"COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}",
 			"OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}",
 		} {
 			if !strings.Contains(yml, want) {
@@ -517,26 +511,6 @@ func TestOmpRunsOnOneBunVersion(t *testing.T) {
 			b.WriteString("\n  " + n + ": " + pins[n])
 		}
 		t.Fatalf("omp runs on different bun versions; set one version in all of these:%s", b.String())
-	}
-}
-
-func TestOmpRunsAGoatFreeModelMeteredAtNothing(t *testing.T) {
-	const model = "command-code/poolside/laguna-s-2.1-free"
-	bin, attempts := scriptedOmp(t, "laguna-s-2.1-free")
-	var out strings.Builder
-	h := OmpHarness{Bin: bin, Key: conformanceKey, Home: t.TempDir()}
-	if err := h.Agent(ProfileBuild, model).Run(context.Background(), t.TempDir(), "", "p", "", &out, io.Discard); err != nil {
-		t.Fatal(err)
-	}
-	if got := attempts(); len(got) != 1 || !slices.Contains(got[0].args, "commandcode/poolside/laguna-s-2.1-free") {
-		t.Fatalf("attempts = %+v, want one run naming the free model to omp's own provider", got)
-	}
-	u, err := meterUsage(strings.NewReader(out.String()), model, providers.RatesFor)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if u.Input == 0 || u.Output == 0 || u.Cost != 0 {
-		t.Fatalf("usage = %+v, want tokens metered at $0", u)
 	}
 }
 
@@ -607,49 +581,22 @@ func TestOmpAgentReachesTheGoPlanOnItsOwnProviderAndKey(t *testing.T) {
 	}
 }
 
-// TestOmpRunsTheFreeListsTailModelMeteredAtNothing runs the free list's rung
-// through the harness and meters its transcript at $0, over the recording taken
-// from that same model (testdata/omp/laguna-s-2.1-free.ndjson, captured
-// 2026-10-08). ling 3.1 Flash, the rung before it, died at `exit status 1` here
-// until its 32768 output ceiling was configured (plan-smoke 37881527153, fixed
-// by 37884808729); its replacement candidate was dropped rather than capped —
-// ADR 0015 has the runs.
-func TestOmpRunsTheFreeListsTailModelMeteredAtNothing(t *testing.T) {
-	const model = "command-code/poolside/laguna-s-2.1-free"
-	bin, attempts := scriptedOmp(t, "laguna-s-2.1-free")
-	var out strings.Builder
-	h := OmpHarness{Bin: bin, Key: conformanceKey, Home: t.TempDir()}
-	if err := h.Agent(ProfileBuild, model).Run(context.Background(), t.TempDir(), "", "p", "", &out, io.Discard); err != nil {
-		t.Fatal(err)
-	}
-	if got := attempts(); len(got) != 1 || !slices.Contains(got[0].args, "commandcode/poolside/laguna-s-2.1-free") {
-		t.Fatalf("attempts = %+v, want one run naming the free model to omp's own provider", got)
-	}
-	u, err := meterUsage(strings.NewReader(out.String()), model, providers.RatesFor)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if u.Input != 7185 || u.Output != 107 || u.Cost != 0 {
-		t.Fatalf("usage = %+v, want the recorded 7185 in / 107 out at $0", u)
-	}
-}
-
 // TestOmpHarnessKeysEachPlanOnItsOwnSecret asserts a harness built from the
 // environment hands a model the key of that model's own plan, and reports a plan
 // ready only when that plan's key is present.
 func TestOmpHarnessKeysEachPlanOnItsOwnSecret(t *testing.T) {
-	env := map[string]string{"COMMANDCODE_API_KEY": "cc-key", "GEMINI_API_KEY": "g-key", "OPENCODE_API_KEY": "go-key"}
+	env := map[string]string{"GEMINI_API_KEY": "g-key", "OPENCODE_API_KEY": "go-key"}
 	h := OmpHarness{Getenv: func(k string) string { return env[k] }}
-	for model, want := range map[string]string{"command-code/m": "cc-key", "gemini/m": "g-key", "opencode-go/m": "go-key"} {
+	for model, want := range map[string]string{"gemini/m": "g-key", "opencode-go/m": "go-key"} {
 		if got := h.Agent(ProfileBuild, model).(OmpAgent).Key; got != want {
 			t.Errorf("Agent(%s).Key = %q, want %q", model, got, want)
 		}
 	}
-	onlyCommandCode := OmpHarness{Getenv: func(k string) string { return map[string]string{"COMMANDCODE_API_KEY": "cc-key"}[k] }}
-	if err := onlyCommandCode.Ready("command-code"); err != nil {
-		t.Errorf("Ready(command-code) = %v with its key set", err)
+	onlyGo := OmpHarness{Getenv: func(k string) string { return map[string]string{"OPENCODE_API_KEY": "go-key"}[k] }}
+	if err := onlyGo.Ready("opencode-go"); err != nil {
+		t.Errorf("Ready(opencode-go) = %v with its key set", err)
 	}
-	if err := onlyCommandCode.Ready("gemini"); err == nil || !strings.Contains(err.Error(), "GEMINI_API_KEY") {
+	if err := onlyGo.Ready("gemini"); err == nil || !strings.Contains(err.Error(), "GEMINI_API_KEY") {
 		t.Errorf("Ready(gemini) = %v, want the missing GEMINI_API_KEY named", err)
 	}
 }

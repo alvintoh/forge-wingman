@@ -49,15 +49,17 @@ func TestAgentContainerRunArgsJoinOnlyTheInternalNetworkThroughTheProxy(t *testi
 }
 
 func TestEgressHostsComeFromTheModelsPlans(t *testing.T) {
-	got, err := EgressHosts([]string{"gemini/gemini-3.8-flash", "command-code/deepseek/deepseek-v4.1-flash", "command-code/x", "opencode-go/deepseek-v4.1-flash"})
+	got, err := EgressHosts([]string{"gemini/gemini-3.8-flash", "opencode-go/deepseek-v4.1-flash", "opencode-go/x"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"api.commandcode.ai", "generativelanguage.googleapis.com", "opencode.ai"}; !slices.Equal(got, want) {
+	if want := []string{"generativelanguage.googleapis.com", "opencode.ai"}; !slices.Equal(got, want) {
 		t.Fatalf("hosts %v, want %v", got, want)
 	}
-	if _, err := EgressHosts([]string{"nowhere/model"}); err == nil {
-		t.Fatal("a model of an unknown plan produced hosts")
+	for _, model := range []string{"nowhere/model", "command-code/deepseek/deepseek-v4.1-flash"} {
+		if _, err := EgressHosts([]string{model}); err == nil {
+			t.Fatalf("%s, a model of an unconfigured plan, produced hosts", model)
+		}
 	}
 }
 
@@ -66,7 +68,7 @@ func TestStartEgressBuildsTheNetworkAndProxyAndTearsThemDownAfterCancel(t *testi
 	c := testAgentContainer(t)
 	bin := t.TempDir() + "/runner"
 
-	joined, teardown, err := StartEgress(context.Background(), c, bin, []string{"api.commandcode.ai"}, io.Discard)
+	joined, teardown, err := StartEgress(context.Background(), c, bin, []string{"opencode.ai"}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +80,7 @@ func TestStartEgressBuildsTheNetworkAndProxyAndTearsThemDownAfterCancel(t *testi
 		t.Errorf("first call %v, want an internal network create", calls[0])
 	}
 	run := calls[1]
-	if !slices.Contains(run, "--detach") || !slices.Contains(run, "--read-only") || !slices.Contains(run, "api.commandcode.ai") {
+	if !slices.Contains(run, "--detach") || !slices.Contains(run, "--read-only") || !slices.Contains(run, "opencode.ai") {
 		t.Errorf("proxy run %v lacks detach, read-only or the allowlist", run)
 	}
 	for _, f := range []string{"--cap-drop", "no-new-privileges", "--init"} {
@@ -132,7 +134,7 @@ func TestStartEgressRemovesWhatItCreatedWhenTheProxyFailsToStart(t *testing.T) {
 	t.Setenv("DOCKER_FAKE_FAIL", "--detach")
 	c := testAgentContainer(t)
 
-	if _, _, err := StartEgress(context.Background(), c, t.TempDir()+"/runner", []string{"api.commandcode.ai"}, io.Discard); err == nil {
+	if _, _, err := StartEgress(context.Background(), c, t.TempDir()+"/runner", []string{"opencode.ai"}, io.Discard); err == nil {
 		t.Fatal("StartEgress succeeded with a proxy that failed to start")
 	}
 	calls := dockerCalls(t, logFile)
@@ -159,7 +161,7 @@ func TestStartEgressRemovesWhatItCreatedWhenTheProxyNeverAcceptsConnections(t *t
 	egressReadyTimeout = 300 * time.Millisecond
 	t.Cleanup(func() { egressReadyTimeout = old })
 
-	_, _, err := StartEgress(context.Background(), testAgentContainer(t), t.TempDir()+"/runner", []string{"api.commandcode.ai"}, io.Discard)
+	_, _, err := StartEgress(context.Background(), testAgentContainer(t), t.TempDir()+"/runner", []string{"opencode.ai"}, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "not ready") {
 		t.Fatalf("StartEgress = %v, want a not-ready error", err)
 	}
@@ -173,7 +175,7 @@ func TestStartEgressTeardownRelaysOnlyTheProxysRefusalsAndFailures(t *testing.T)
 	bin := t.TempDir()
 	script := `#!/bin/sh
 if [ "$1" = logs ]; then
-	printf '%s\n' '{"msg":"egressProxyListening"}' '{"msg":"egressRefused","reason":"host-not-allowed","host":"evil.example.com"}' '{"msg":"egressFailed","reason":"dial-failed","host":"api.commandcode.ai"}'
+	printf '%s\n' '{"msg":"egressProxyListening"}' '{"msg":"egressRefused","reason":"host-not-allowed","host":"evil.example.com"}' '{"msg":"egressFailed","reason":"dial-failed","host":"opencode.ai"}'
 fi
 exit 0
 `
@@ -182,7 +184,7 @@ exit 0
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	var logs strings.Builder
-	_, teardown, err := StartEgress(context.Background(), testAgentContainer(t), t.TempDir()+"/runner", []string{"api.commandcode.ai"}, &logs)
+	_, teardown, err := StartEgress(context.Background(), testAgentContainer(t), t.TempDir()+"/runner", []string{"opencode.ai"}, &logs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +192,7 @@ exit 0
 		t.Fatal(err)
 	}
 	want := `{"msg":"egressRefused","reason":"host-not-allowed","host":"evil.example.com"}` + "\n" +
-		`{"msg":"egressFailed","reason":"dial-failed","host":"api.commandcode.ai"}` + "\n"
+		`{"msg":"egressFailed","reason":"dial-failed","host":"opencode.ai"}` + "\n"
 	if logs.String() != want {
 		t.Fatalf("relayed %q, want only the refusal and the failure %q", logs.String(), want)
 	}
@@ -210,7 +212,7 @@ exit 0
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	var logs strings.Builder
-	_, teardown, err := StartEgress(context.Background(), testAgentContainer(t), t.TempDir()+"/runner", []string{"api.commandcode.ai"}, &logs)
+	_, teardown, err := StartEgress(context.Background(), testAgentContainer(t), t.TempDir()+"/runner", []string{"opencode.ai"}, &logs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +247,7 @@ exit 0
 func relayThrough(t *testing.T) string {
 	t.Helper()
 	var logs strings.Builder
-	_, teardown, err := StartEgress(context.Background(), testAgentContainer(t), t.TempDir()+"/runner", []string{"api.commandcode.ai"}, &logs)
+	_, teardown, err := StartEgress(context.Background(), testAgentContainer(t), t.TempDir()+"/runner", []string{"opencode.ai"}, &logs)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -35,13 +35,13 @@ func TestPlanSmokeReportsWhetherTheRestrictedAgentWasRefused(t *testing.T) {
 }
 
 func TestPlanSmokeRunsTheScriptedBinaryUnderThePlanProfileOnTheGivenModel(t *testing.T) {
-	bin, attempts := scriptedCLIAgent(t, "", "command-code/given")
-	res, err := PlanSmoke(context.Background(), scriptedAgent(t, bin, ProfilePlan, "command-code/ignored"), "command-code/given", t.TempDir(), nil)
+	bin, attempts := scriptedCLIAgent(t, "", "opencode-go/given")
+	res, err := PlanSmoke(context.Background(), scriptedAgent(t, bin, ProfilePlan, "opencode-go/ignored"), "opencode-go/given", t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := attempts()
-	if len(got) != 1 || got[0] != (fallbackAttempt{"command-code/given", "always-ask"}) || !res.Refused {
+	if len(got) != 1 || got[0] != (fallbackAttempt{"opencode-go/given", "always-ask"}) || !res.Refused {
 		t.Fatalf("attempts %+v, result %+v", got, res)
 	}
 }

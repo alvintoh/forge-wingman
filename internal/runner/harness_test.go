@@ -317,11 +317,11 @@ func TestRouterRefusesAPlanWhoseHarnessesAreAllUnready(t *testing.T) {
 func TestRouterSelectsFromTheEmbeddedPlanConfiguration(t *testing.T) {
 	bin, attempts := scriptedOmp(t, "normal")
 	r := NewRouter(ProfileBuild, OmpHarness{Bin: bin, Key: "k", Home: t.TempDir()})
-	if err := r.Gate("command-code/x"); err != nil {
+	if err := r.Gate("opencode-go/x"); err != nil {
 		t.Fatalf("Gate = %v, want the plan's configured harness", err)
 	}
 	var out, errBuf strings.Builder
-	if err := r.WithModel("command-code/x").Run(context.Background(), t.TempDir(), "", "p", "", &out, &errBuf); err != nil {
+	if err := r.WithModel("opencode-go/x").Run(context.Background(), t.TempDir(), "", "p", "", &out, &errBuf); err != nil {
 		t.Fatal(err)
 	}
 	if len(attempts()) != 1 {

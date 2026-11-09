@@ -89,7 +89,7 @@ func TestTransientClassesListsEveryClassTheClassifierNames(t *testing.T) {
 // leaving every other ending unclassified.
 func TestFinalizeRecordsTheClassTheFailingStepNames(t *testing.T) {
 	branch := BranchName(testTicket.BranchSegment(), "1-1")
-	step := []Step{{Phase: PhaseBuild, Round: 1, Model: "command-code/x", CompletionsObject: completionsObject("1-1", PhaseBuild, 1), At: finalizeNow.Add(-30 * time.Minute)}}
+	step := []Step{{Phase: PhaseBuild, Round: 1, Model: "opencode-go/x", CompletionsObject: completionsObject("1-1", PhaseBuild, 1), At: finalizeNow.Add(-30 * time.Minute)}}
 	gaveUp := "checks: test still failing after 3 round(s)\n\n" + proxyReadLog
 	for _, tt := range []struct {
 		name string

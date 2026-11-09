@@ -11,6 +11,9 @@ import (
 // ModelLabelPrefix starts the ticket label naming the model a run's build runs on.
 const ModelLabelPrefix = "model:"
 
+// modelTier is where a model sits on its plan's escalation ladder.
+var modelTier = providers.TierOf
+
 // AttemptReader reads a run's ended attempts, which an owner's retry archives
 // before it requeues the run, numbered as the run's attempt is, from 0.
 type AttemptReader interface {
@@ -37,12 +40,16 @@ func (r Record) buildModel() string {
 	return ""
 }
 
-// escalationDetail is rec's stop detail opened by its escalation note. The
-// attempt the owner retried is read from store only when rec ran on an escalated
-// tier, and only where store archives attempts.
+// escalationDetail is rec's stop detail opened by its escalation note, or left
+// as it is when the model's plan has no ladder. The attempt the owner retried is
+// read from store only when rec ran on an escalated tier, and only where store
+// archives attempts.
 func escalationDetail(ctx context.Context, store RecordStore, in FinalizeInput, rec Record) string {
 	model := rec.buildModel()
-	tier := providers.TierOf(model)
+	tier := modelTier(model)
+	if !tier.Laddered {
+		return rec.StopDetail
+	}
 	attempt := 0
 	if in.Attempt != nil {
 		attempt = *in.Attempt

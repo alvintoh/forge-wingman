@@ -14,8 +14,10 @@ const NO_MODEL_WORD: Record<Phase, string> = {
 // The names the page gives the models it knows; any other id reads as it is, so
 // a new version never shows blank.
 const MODEL_NAMES: Record<string, string> = {
-  "command-code/deepseek/deepseek-v4.1-flash": "DeepSeek V4.1 Flash",
-  "command-code/meta/muse-spark-1.3-contributor": "Muse Spark 1.3 Contributor",
+  "command-code/deepseek/deepseek-v4.1-flash": "DeepSeek V4.1 Flash (Command Code)",
+  "command-code/meta/muse-spark-1.3-contributor": "Muse Spark 1.3 Contributor (Command Code)",
+  "opencode-go/deepseek-v4.1-flash": "DeepSeek V4.1 Flash",
+  "opencode-go/muse-spark-1.3-contributor": "Muse Spark 1.3 Contributor",
 };
 
 // evenTie is the fixed-point text of a value that sits exactly on a tie at the given decimal places

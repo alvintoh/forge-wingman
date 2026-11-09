@@ -59,6 +59,7 @@ const (
 	RefusalReviewIsBuild     Refusal = "review-model-is-build-model"
 	RefusalModelUnconfigured Refusal = "model-provider-unconfigured"
 	RefusalModelNotOptedIn   Refusal = "model-per-token-not-opted-in"
+	RefusalModelUnknownPlan  Refusal = "model-provider-not-a-plan"
 )
 
 // Rejection is the refusal kept against one ticket, with what made it.
@@ -115,6 +116,9 @@ type Config struct {
 	ReposErr error
 	Budget   BudgetConfig
 	Model    string
+	// Plans are the plans the runner is configured to reach; a named model of
+	// any other provider is refused.
+	Plans []string
 	// PlanBudgets are the paid plans after Model's in the owner's order, whose
 	// ceilings judge the build of a run its plan stage claimed on one of them.
 	// A ceiling that binds never moves a run onto one.
@@ -577,7 +581,7 @@ func admit(ctx context.Context, d Deps, c Config, issue Issue, res *Result) erro
 		return refreshRetriedModels(ctx, d, c, issue, q.RunID, res)
 	}
 	q.Models = d.Overrides.Overrides(issue)
-	reason, detail, err := checkModels(ctx, d.ModelPlans, q.Models, c.Model)
+	reason, detail, err := checkModels(ctx, d.ModelPlans, q.Models, c.Model, c.Plans)
 	if err != nil {
 		// A failed read is neither a refusal nor an admission: the ticket is
 		// seen again next poll, and admitting it unchecked would let a per-token
@@ -619,7 +623,7 @@ func refreshRetriedModels(ctx context.Context, d Deps, c Config, issue Issue, ru
 		return err
 	}
 	models := d.Overrides.Overrides(issue)
-	reason, detail, err := checkModels(ctx, d.ModelPlans, models, c.Model)
+	reason, detail, err := checkModels(ctx, d.ModelPlans, models, c.Model, c.Plans)
 	if err != nil {
 		d.Logger.Warn("retriedModelsUnchecked", "run", runID, "err", err.Error())
 		if res.unchecked == nil {

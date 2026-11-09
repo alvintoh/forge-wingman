@@ -12,10 +12,11 @@ import (
 // checkModels is the refusal a ticket's named models draw, empty when they may
 // run. Each model must be well formed; the review model (the default when none
 // is named, every entry of the default list) must differ from the build model
-// the run will use; and each provider
-// needs a plan record with its billing recorded, plus the owner's opt-in when it
-// bills per token. The error is a failed plan read, which is not a refusal.
-func checkModels(ctx context.Context, plans ModelPlans, m runner.ModelLabels, defaultModel string) (Refusal, string, error) {
+// the run will use; and each provider must be one of configured, the plans the
+// runner reaches, and needs a plan record with its billing recorded, plus the
+// owner's opt-in when it bills per token. The error is a failed plan read, which
+// is not a refusal.
+func checkModels(ctx context.Context, plans ModelPlans, m runner.ModelLabels, defaultModel string, configured []string) (Refusal, string, error) {
 	if reason, detail := malformedModel(m); reason != "" {
 		return reason, detail, nil
 	}
@@ -33,6 +34,9 @@ func checkModels(ctx context.Context, plans ModelPlans, m runner.ModelLabels, de
 			continue
 		}
 		seen[provider] = true
+		if !slices.Contains(configured, provider) {
+			return RefusalModelUnknownPlan, "provider " + provider + " is not a plan the runner is configured to reach", nil
+		}
 		if reason, detail, err := planRefusal(ctx, plans, provider); reason != "" || err != nil {
 			return reason, detail, err
 		}

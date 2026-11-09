@@ -782,6 +782,8 @@ type Tier struct {
 	Rung int
 	// Next is the tier above the model's, empty at the top or off the ladder.
 	Next string
+	// Laddered is whether the model's plan has a ladder at all.
+	Laddered bool
 }
 
 // TierOf is where model sits on its plan's escalation ladder.
@@ -791,9 +793,9 @@ func tierOf(cfg Config, model string) Tier {
 	ladder := cfg.Providers[planOf(model)].Escalation
 	i := slices.Index(ladder, model)
 	if i < 0 {
-		return Tier{}
+		return Tier{Laddered: len(ladder) > 0}
 	}
-	t := Tier{Rung: i}
+	t := Tier{Rung: i, Laddered: true}
 	if i+1 < len(ladder) {
 		t.Next = ladder[i+1]
 	}

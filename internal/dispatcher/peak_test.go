@@ -10,9 +10,8 @@ import (
 )
 
 const (
-	peakModel  = "command-code/deepseek/deepseek-v4.1-flash"
-	flatModel  = "gemini/gemini-3.8-flash"
-	trialModel = "command-code/xiaomi/mimo-v2.6-pro"
+	peakModel = "opencode-go/deepseek-v4.1-flash"
+	flatModel = "gemini/gemini-3.8-flash"
 )
 
 // fakePeakModes reports the peak mode configured, or fails to read it.
@@ -92,11 +91,8 @@ func TestPollNeverHoldsARunWhoseModelHasNoPeakWindow(t *testing.T) {
 	flat.Model = flatModel
 	unconfigured := peakConfig()
 	unconfigured.Model = "p/paid"
-	trial := peakConfig()
-	trial.Model = trialModel
 	for name, cfg := range map[string]Config{
-		"a flat-priced paid model": flat, "a model with no rate card": unconfigured,
-		"the build trial's model": trial,
+		"a flat-priced model": flat, "a model with no rate card": unconfigured,
 	} {
 		t.Run(name, func(t *testing.T) {
 			q, w, _ := peakPoll(t, Candidate{RunID: "run-a", Repo: "octo/scratch", Size: "M"}, cfg, PeakOffPeakOnly, monday(2, 0), 30)

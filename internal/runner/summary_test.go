@@ -18,7 +18,7 @@ func validSummary() Summary {
 		Steps: []Step{{
 			Phase:             PhaseBuild,
 			Round:             1,
-			Model:             "command-code/x",
+			Model:             "opencode-go/x",
 			CompletionsObject: completionsObject("1-1", PhaseBuild, 1),
 			At:                finalizeNow.Add(-30 * time.Minute),
 		}},
@@ -380,7 +380,7 @@ func TestParseSummaryAcceptsEveryBuildEnding(t *testing.T) {
 		}
 		if e.phase == PhaseCommit || e.outcome == OutcomeAgentFailed || e.outcome == OutcomeBudgetStop {
 			s.Steps = []Step{{
-				Phase: agentPhase, Round: 1, Model: "command-code/x",
+				Phase: agentPhase, Round: 1, Model: "opencode-go/x",
 				CompletionsObject: completionsObject("1-1", agentPhase, 1),
 				At:                finalizeNow.Add(-time.Minute),
 			}}
@@ -428,7 +428,7 @@ func TestParseSummaryRejectsEndingsABuildCannotReach(t *testing.T) {
 func TestParseSummaryAcceptsSeveralStepsEachUnderItsOwnCompletionsName(t *testing.T) {
 	s := validSummary()
 	s.Steps = append(s.Steps, Step{
-		Phase: PhaseBuild, Round: 2, Model: "command-code/x",
+		Phase: PhaseBuild, Round: 2, Model: "opencode-go/x",
 		CompletionsObject: completionsObject("1-1", PhaseBuild, 2),
 		At:                finalizeNow.Add(-29 * time.Minute),
 	})
@@ -450,7 +450,7 @@ func TestEncodeDropsTheOldestStepsWhenEditedFilesAloneIsNotEnough(t *testing.T) 
 	s.EditedFiles = nil
 	for i := range 700 {
 		s.Steps = append(s.Steps, Step{
-			Phase: PhaseBuild, Round: i + 2, Model: "command-code/x",
+			Phase: PhaseBuild, Round: i + 2, Model: "opencode-go/x",
 			CompletionsObject: completionsObject("1-1", PhaseBuild, i+2),
 		})
 	}

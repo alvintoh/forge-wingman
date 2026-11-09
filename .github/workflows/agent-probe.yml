@@ -129,12 +129,12 @@ jobs:
               sh -c 'unset HTTPS_PROXY HTTP_PROXY https_proxy http_proxy; exec bun -e "$1"' sh "$(js "$1")" \
               2> "$RUNNER_TEMP/proxy.log"
           }
-          for host in api.commandcode.ai opencode.ai; do
+          for host in opencode.ai; do
             out=$(try "https://$host/"); echo "model API $host: $out"
             echo "$out" | grep -q '^reached [0-9]' || { echo "FAIL: the model API host $host got no tunnelled response"; exit 1; }
             if grep -q "\"msg\":\"egressRefused\".*\"host\":\"$host\"" "$RUNNER_TEMP/proxy.log"; then echo "FAIL: the proxy refused the model API host $host"; exit 1; fi
           done
-          for host in example.com 169.254.169.254; do
+          for host in api.commandcode.ai example.com 169.254.169.254; do
             out=$(try "https://$host/"); echo "$host: $out"
             grep -q "\"msg\":\"egressRefused\".*\"host\":\"$host\"" "$RUNNER_TEMP/proxy.log" || { echo "LEAK: the proxy did not refuse $host"; exit 1; }
           done

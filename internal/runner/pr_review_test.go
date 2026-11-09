@@ -170,7 +170,7 @@ func replyWith(events string) func(context.Context, io.Writer) error {
 }
 
 func TestReviewPR(t *testing.T) {
-	const second = "command-code/second/model"
+	const second = "opencode-go/second/model"
 	failing := func(context.Context, io.Writer) error { return errors.New("exit status 1") }
 	hanging := func(ctx context.Context, _ io.Writer) error { <-ctx.Done(); return ctx.Err() }
 	for name, tt := range map[string]struct {
@@ -234,7 +234,7 @@ func TestReviewPRStopsWhenCancelled(t *testing.T) {
 	agent := modelAgent{replies: map[string]func(context.Context, io.Writer) error{
 		freeReviewModel: func(context.Context, io.Writer) error { cancel(); return errors.New("killed") },
 	}, prompts: &prompts}
-	if _, err := ReviewPR(ctx, agent, []string{freeReviewModel, "command-code/second/model"}, time.Minute, validPRContext(), nil); !errors.Is(err, context.Canceled) {
+	if _, err := ReviewPR(ctx, agent, []string{freeReviewModel, "opencode-go/second/model"}, time.Minute, validPRContext(), nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 	if len(prompts) != 1 {
