@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"net/http"
@@ -204,6 +205,54 @@ const ticketStateQuery = `query TicketState($id: String!) {
   }
 }`
 
+// ticketStatesBatch is how many tickets one state read asks for: one aliased
+// field per ticket, since the API filters issues by neither their identifier nor
+// a list of them.
+const ticketStatesBatch = 25
+
+// ticketStatesQuery is one batch's query, and the variables naming each ticket
+// beside its alias.
+func ticketStatesQuery(tickets []string) (string, map[string]any) {
+	declarations := make([]string, len(tickets))
+	fields := make([]string, len(tickets))
+	variables := make(map[string]any, len(tickets))
+	for i, ticket := range tickets {
+		declarations[i] = fmt.Sprintf("$id%d: String!", i)
+		fields[i] = fmt.Sprintf("  %s: issue(id: $id%d) {\n    state {\n      type\n    }\n  }", ticketStateAlias(i), i)
+		variables[fmt.Sprintf("id%d", i)] = ticket
+	}
+	query := "query TicketStates(" + strings.Join(declarations, ", ") + ") {\n  viewer {\n    id\n  }\n" +
+		strings.Join(fields, "\n") + "\n}"
+	return query, variables
+}
+
+// ticketStateAlias is the field one batch's query gives the ticket at i, which
+// the reply is read back by.
+func ticketStateAlias(i int) string {
+	return fmt.Sprintf("s%d", i)
+}
+
+// missingTickets returns the data of a state read of n tickets that Linear
+// refused only because some of those tickets do not exist, so the rest can be
+// read from it. A refusal naming any field other than a ticket alias is not
+// one: the read failed.
+func missingTickets(err error, n int) (json.RawMessage, bool) {
+	fields, data, ok := linear.MissingEntities(err)
+	if !ok {
+		return nil, false
+	}
+	aliases := make(map[string]bool, n)
+	for i := range n {
+		aliases[ticketStateAlias(i)] = true
+	}
+	for _, field := range fields {
+		if !aliases[field] {
+			return nil, false
+		}
+	}
+	return data, true
+}
+
 // setTicketStateMutation moves one ticket to a state, writing its manual order
 // back in the same update since a state change rewrites it. The reply carries
 // the state and the order read back, so the move is only counted where the
@@ -403,6 +452,65 @@ func (l Linear) DelegateIssue(ctx context.Context, issueID string) error {
 	delegate := resp.Data.IssueUpdate.Issue.Delegate
 	if !resp.Data.IssueUpdate.Success || delegate == nil || delegate.ID != l.Delegate {
 		return fmt.Errorf("delegating %s: Linear did not report it delegated to %s", issueID, l.Delegate)
+	}
+	return nil
+}
+
+// TicketStateTypes returns the Linear state type of each named ticket, keyed by
+// identifier, failing unless every batch was read and the token reads as the
+// configured agent. A ticket Linear does not return is absent from the result.
+func (l Linear) TicketStateTypes(ctx context.Context, tickets []string) (map[string]string, error) {
+	types := make(map[string]string, len(tickets))
+	for start := 0; start < len(tickets); start += ticketStatesBatch {
+		batch := tickets[start:min(start+ticketStatesBatch, len(tickets))]
+		if err := l.addTicketStateTypes(ctx, batch, types); err != nil {
+			return nil, err
+		}
+	}
+	return types, nil
+}
+
+// addTicketStateTypes reads one batch and adds each ticket's state type to
+// types, leaving a ticket the reply did not carry out of it. A ticket Linear
+// reports as not found is left out the same way, while the rest of the batch
+// is still read.
+func (l Linear) addTicketStateTypes(ctx context.Context, tickets []string, types map[string]string) error {
+	query, variables := ticketStatesQuery(tickets)
+	var resp struct {
+		Data map[string]json.RawMessage `json:"data"`
+	}
+	if err := l.request(ctx, query, variables, &resp.Data); err != nil {
+		data, ok := missingTickets(err, len(tickets))
+		if !ok {
+			return fmt.Errorf("reading the state of %d tickets: %w", len(tickets), err)
+		}
+		if err := json.Unmarshal(data, &resp.Data); err != nil {
+			return fmt.Errorf("reading the state of %d tickets: %w", len(tickets), err)
+		}
+	}
+	var viewer struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(resp.Data["viewer"], &viewer); err != nil || viewer.ID == "" {
+		return fmt.Errorf("reading the state of %d tickets: the reply carried no viewer", len(tickets))
+	}
+	if err := l.checkViewer(viewer.ID); err != nil {
+		return err
+	}
+	for i, ticket := range tickets {
+		raw := resp.Data[ticketStateAlias(i)]
+		if len(raw) == 0 {
+			continue
+		}
+		var node struct {
+			State linearState `json:"state"`
+		}
+		if err := json.Unmarshal(raw, &node); err != nil {
+			return fmt.Errorf("reading the state of %s: %w", ticket, err)
+		}
+		if node.State.Type != "" {
+			types[ticket] = node.State.Type
+		}
 	}
 	return nil
 }

@@ -91,6 +91,10 @@ func pollHistory(t *testing.T, q *Queue, n int, size string) {
 // every assertion in this file counts reads.
 type pollTicketStates struct{}
 
+func (pollTicketStates) TicketStateTypes(context.Context, []string) (map[string]string, error) {
+	return nil, nil
+}
+
 func (pollTicketStates) StartTicket(context.Context, string) (string, error) { return "", nil }
 
 func (pollTicketStates) RestoreTicket(context.Context, string, string) error { return nil }
@@ -131,9 +135,9 @@ func pollReadConfig() dispatcher.Config {
 
 // A poll reads a bounded number of documents however many candidates it walks:
 // twelve queued candidates cost the poll one read of the settled history, one
-// read of each of their rows and the ledger, and one estimate of their size, so
-// a day of 15-minute polls (about 100 of them) stays well inside the free read
-// quota (AC3, AC1).
+// read of each of their rows, one read of the runs waiting for a claim, and the
+// ledger, and one estimate of their size, so a day of 15-minute polls (about 100
+// of them) stays well inside the free read quota (AC3, AC1).
 func TestAPollReadsUnderThreeHundredDocumentsForTwelveCandidates(t *testing.T) {
 	q, reads := pollReadsQueue(t)
 	resetLedger(t, q.client, 1)

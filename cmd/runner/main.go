@@ -11,7 +11,7 @@
 //	runner reset-breaker                             clear the breaker a systemic stop tripped, admitting dispatch again
 //	runner peak-mode       [-mode off-peak-only|always] print the peak mode, or set whether a run waits out its model's peak-price hours
 //	runner auto-merge      [-mode on|off]            print whether auto-merge is on, or switch it for the next PR pr-meta handles
-//	runner requeue         -run-id <id>              return a stopped run to the queue for another attempt
+//	runner requeue         -run-id <id>              return a stopped, abandoned or withdrawn run to the queue for another attempt
 //	runner backfill-queued-at [-dry-run]             stamp queued_at on the queued and planned runs that lack it
 //	runner project-add     -linear-project <name> -repo <owner/name>  list a project and its repository in the owner database
 //	runner project-remove  -repo <owner/name>       unlist a project's repository
