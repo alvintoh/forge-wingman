@@ -129,6 +129,7 @@ describe("progressWords", () => {
       lead: "Step 14 · 128 lines",
       age: "2m ago",
       stale: false,
+      full: "Step 14 · 128 lines · 2m ago",
     });
   });
 
@@ -137,6 +138,7 @@ describe("progressWords", () => {
       lead: "Step 1 · 1 line",
       age: "just now",
       stale: false,
+      full: "Step 1 · 1 line · just now",
     });
   });
 
@@ -149,11 +151,13 @@ describe("progressWords", () => {
       lead: "Step 14 · 128 lines",
       age: "6m ago",
       stale: false,
+      full: "Step 14 · 128 lines · 6m ago",
     });
     expect(progressWords({ ...REPORT, age_seconds: 361 }, NOW)).toEqual({
       lead: "Step 14 · 128 lines",
       age: "no update for 6m",
       stale: true,
+      full: "Step 14 · 128 lines · no update for 6m",
     });
     expect(progressWords({ ...REPORT, age_seconds: 540 }, NOW).age).toBe("no update for 9m");
   });
@@ -163,7 +167,7 @@ describe("progressWords", () => {
   });
 
   it("reads no progress for a report that is absent, null or not an object", () => {
-    const none = { lead: "No progress yet", age: "", stale: false };
+    const none = { lead: "No progress yet", age: "", stale: false, full: "No progress yet" };
     expect(progressWords(undefined, NOW)).toEqual(none);
     expect(progressWords(null, NOW)).toEqual(none);
     expect(progressWords("Step 14", NOW)).toEqual(none);
@@ -173,7 +177,7 @@ describe("progressWords", () => {
   });
 
   it("reads no progress for a report missing a count or carrying a bad one", () => {
-    const none = { lead: "No progress yet", age: "", stale: false };
+    const none = { lead: "No progress yet", age: "", stale: false, full: "No progress yet" };
     expect(progressWords({}, NOW)).toEqual(none);
     expect(progressWords({ phase: "build", steps: 14, lines: 128 }, NOW)).toEqual(none);
     expect(progressWords({ ...REPORT, steps: "14" }, NOW)).toEqual(none);

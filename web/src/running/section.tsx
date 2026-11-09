@@ -116,10 +116,7 @@ function RunningRow({ run, now, named, projects, chars }: RowProps) {
         </div>
       </div>
       {/* One line, cut at the row's width; the tooltip carries the words the cut hides. */}
-      <p
-        title={caption.age === "" ? caption.lead : `${caption.lead} · ${caption.age}`}
-        className="mt-1 truncate text-cap leading-4 text-muted"
-      >
+      <p title={caption.full} className="mt-1 truncate text-cap leading-4 text-muted">
         {caption.lead}
         {caption.age !== "" && (
           <>

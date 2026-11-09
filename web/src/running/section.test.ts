@@ -32,10 +32,20 @@ function draw(runs: RunningRun[], count = runs.length): string {
 
 type Caption = { title: string; classes: string; html: string };
 
+// attr reads one attribute off a tag's attribute text, whatever order React wrote them in.
+function attr(attrs: string, name: string): string | undefined {
+  return new RegExp(`(?:^|\\s)${name}="([^"]*)"`).exec(attrs)?.[1];
+}
+
+// captions reads every caption paragraph: a <p> carrying a title and the text-cap class.
 function captions(markup: string): Caption[] {
-  return [...markup.matchAll(/<p title="([^"]*)" class="([^"]*text-cap[^"]*)">(.*?)<\/p>/g)].map(
-    (m) => ({ title: m[1], classes: m[2], html: m[3] }),
-  );
+  return [...markup.matchAll(/<p ([^>]*)>(.*?)<\/p>/g)].flatMap((m) => {
+    const title = attr(m[1], "title");
+    const classes = attr(m[1], "class");
+    return title !== undefined && classes?.includes("text-cap")
+      ? [{ title, classes, html: m[2] }]
+      : [];
+  });
 }
 
 type Cell = { classes: string; width: number; text: string };

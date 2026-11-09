@@ -19,7 +19,9 @@ export type RunningRun = {
 // The percentage a bar turns defer at: the stage is close to the run limit.
 export const DEFER_FROM_PERCENT = 80;
 
-// The age past which a run's newest progress reads as stalled rather than recent, in seconds.
+// The age past which a run's newest progress reads as stalled rather than recent, in seconds: two
+// missed writes of the runner's report (progressInterval, internal/runner/progress_report.go), so
+// the two change together.
 const STALE_AFTER_SECONDS = 6 * 60;
 
 // The part of a run's newest progress report the row draws: its step count, the diff's added and
@@ -113,6 +115,8 @@ export type ProgressWords = {
   age: string;
   // Whether the age is stale, and so reads in the defer colour.
   stale: boolean;
+  // The whole caption, lead and age, for the tooltip a cut caption carries.
+  full: string;
 };
 
 /**
@@ -122,15 +126,13 @@ export type ProgressWords = {
  */
 export function progressWords(progress: unknown, now: number): ProgressWords {
   if (!isProgress(progress)) {
-    return { lead: "No progress yet", age: "", stale: false };
+    return { lead: "No progress yet", age: "", stale: false, full: "No progress yet" };
   }
   const stale = progress.age_seconds > STALE_AFTER_SECONDS;
   const at = now - progress.age_seconds * 1000;
-  return {
-    lead: `Step ${progress.steps} · ${plural(progress.lines, "line")}`,
-    age: stale ? `no update for ${ago(at, now, "")}` : ago(at, now),
-    stale,
-  };
+  const lead = `Step ${progress.steps} · ${plural(progress.lines, "line")}`;
+  const age = stale ? `no update for ${ago(at, now, "")}` : ago(at, now);
+  return { lead, age, stale, full: `${lead} · ${age}` };
 }
 
 /** The longest figure and time, in characters, across the runs of one card. */
