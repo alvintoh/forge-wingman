@@ -201,6 +201,9 @@ type Config struct {
 	// are a documented assumption pending that verification.
 	AllowanceMarkers    []string
 	AvailabilityMarkers []string
+	// SettingMarkers are the phrases a provider refuses a model with until the
+	// owner changes one of the plan's own settings.
+	SettingMarkers []SettingMarker
 	// Providers maps each configured provider name to its plan facts.
 	Providers map[string]Provider
 	// LastResortPlans are the plans' free tiers, in the order the owner is
@@ -213,6 +216,13 @@ type Config struct {
 	PaidPlans []string
 }
 
+// SettingMarker is a provider's refusal phrase, matched case-insensitively, and
+// the plan setting the owner changes to lift it.
+type SettingMarker struct {
+	Marker  string `json:"marker"`
+	Setting string `json:"setting"`
+}
+
 // configDoc is configJSON's own shape; the parsed Config is the converted one.
 type configDoc struct {
 	CashLimitUSD        float64                `json:"cash_limit_usd"`
@@ -221,6 +231,7 @@ type configDoc struct {
 	PaidPlans           []string               `json:"paid_plans"`
 	AllowanceMarkers    []string               `json:"allowance_markers"`
 	AvailabilityMarkers []string               `json:"availability_markers"`
+	SettingMarkers      []SettingMarker        `json:"setting_markers"`
 	Providers           map[string]providerDoc `json:"providers"`
 }
 
@@ -316,6 +327,7 @@ func parseConfig(b []byte) (Config, error) {
 		PaidPlans:           doc.PaidPlans,
 		AllowanceMarkers:    doc.AllowanceMarkers,
 		AvailabilityMarkers: doc.AvailabilityMarkers,
+		SettingMarkers:      doc.SettingMarkers,
 		Providers:           make(map[string]Provider, len(doc.Providers)),
 	}
 	for name, p := range doc.Providers {
@@ -384,6 +396,11 @@ func (c Config) validate() error {
 	}
 	if len(c.Providers) == 0 {
 		return errors.New("no provider is configured")
+	}
+	for _, m := range c.SettingMarkers {
+		if strings.TrimSpace(m.Marker) == "" || strings.TrimSpace(m.Setting) == "" {
+			return fmt.Errorf("setting marker %q names no phrase or no setting", m.Marker)
+		}
 	}
 	paid := false
 	for name, p := range c.Providers {
@@ -861,3 +878,30 @@ func AllowanceMarkers() []string { return embeddedConfig.AllowanceMarkers }
 // AvailabilityMarkers are the phrases a failed run's stderr may carry when the
 // requested model is unavailable.
 func AvailabilityMarkers() []string { return embeddedConfig.AvailabilityMarkers }
+
+// SettingFor is the plan setting whose refusal phrase stderrTail carries, and
+// whether it carries one.
+func SettingFor(stderrTail string) (string, bool) { return embeddedConfig.settingFor(stderrTail) }
+
+// NamedSetting is the configured plan setting text names, and whether it names
+// one.
+func NamedSetting(text string) (string, bool) { return embeddedConfig.namedSetting(text) }
+
+func (c Config) namedSetting(text string) (string, bool) {
+	for _, m := range c.SettingMarkers {
+		if strings.Contains(text, m.Setting) {
+			return m.Setting, true
+		}
+	}
+	return "", false
+}
+
+func (c Config) settingFor(stderrTail string) (string, bool) {
+	lower := strings.ToLower(stderrTail)
+	for _, m := range c.SettingMarkers {
+		if strings.Contains(lower, strings.ToLower(m.Marker)) {
+			return m.Setting, true
+		}
+	}
+	return "", false
+}

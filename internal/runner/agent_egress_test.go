@@ -49,11 +49,11 @@ func TestAgentContainerRunArgsJoinOnlyTheInternalNetworkThroughTheProxy(t *testi
 }
 
 func TestEgressHostsComeFromTheModelsPlans(t *testing.T) {
-	got, err := EgressHosts([]string{"gemini/gemini-3.8-flash", "command-code/deepseek/deepseek-v4.1-flash", "command-code/x"})
+	got, err := EgressHosts([]string{"gemini/gemini-3.8-flash", "command-code/deepseek/deepseek-v4.1-flash", "command-code/x", "opencode-go/deepseek-v4.1-flash"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"api.commandcode.ai", "generativelanguage.googleapis.com"}; !slices.Equal(got, want) {
+	if want := []string{"api.commandcode.ai", "generativelanguage.googleapis.com", "opencode.ai"}; !slices.Equal(got, want) {
 		t.Fatalf("hosts %v, want %v", got, want)
 	}
 	if _, err := EgressHosts([]string{"nowhere/model"}); err == nil {

@@ -1,6 +1,6 @@
 # Proves the restricted plan agent refuses an edit, a new file and bash on the plan list's first and
 # last model, against a fixture, and writes each model and outcome to the job summary.
-# Manual: it spends model calls. Needs the COMMANDCODE_API_KEY secret; no cloud identity.
+# Manual: it spends model calls. Needs the COMMANDCODE_API_KEY or OPENCODE_API_KEY secret; no cloud identity.
 name: plan-smoke
 
 on:
@@ -54,5 +54,6 @@ jobs:
         env:
           PLAN_MODELS: ${{ inputs.plan_models }}
           COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           AGENT_IMAGE: ${{ vars.WINGMAN_AGENT_IMAGE }}
         run: '"$RUNNER_TEMP/runner" plan-smoke -plan-models "$PLAN_MODELS" -agent-image "$AGENT_IMAGE"'

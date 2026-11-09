@@ -471,6 +471,9 @@ func TestPRReviewWorkflow(t *testing.T) {
 	if !strings.Contains(jobs["review"], "COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}") || strings.Count(yml, "secrets.COMMANDCODE_API_KEY") != 1 {
 		t.Error("the model key is not the review job's alone")
 	}
+	if !strings.Contains(jobs["review"], "OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}") || strings.Count(yml, "secrets.OPENCODE_API_KEY") != 1 {
+		t.Error("the Go plan's key is not the review job's alone")
+	}
 	if strings.Contains(yml, "github.event.pull_request.head.ref") || strings.Contains(yml, "\n          ref:") ||
 		strings.Count(yml, "persist-credentials: false") != strings.Count(yml, "actions/checkout@") {
 		t.Error("pr-review.yml checks out something other than the base branch, or keeps a checkout's token")

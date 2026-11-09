@@ -50,19 +50,22 @@ func TestRaiseSystemicNoticesAndTripsByClass(t *testing.T) {
 	for name, tt := range map[string]struct {
 		reason        runner.StopReason
 		raised, trips bool
+		detail        string
 	}{
-		"an identity mismatch notifies and trips": {runner.StopIdentityMismatch, true, true},
-		"a model outage notifies only":            {runner.StopModelUnavailable, true, false},
-		"an agent failure does neither":           {runner.StopAgentExit, false, false},
+		"an identity mismatch notifies and trips":                  {runner.StopIdentityMismatch, true, true, ""},
+		"a model outage notifies only":                             {runner.StopModelUnavailable, true, false, ""},
+		"an agent failure does neither":                            {runner.StopAgentExit, false, false, ""},
+		"a provider setting notifies, trips and names the setting": {runner.StopProviderSetting, true, true, "Privacy > Regions: Global"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			notices, breaker := &fakeNotices{}, &fakeBreaker{}
-			rec := runner.Record{RunID: "ABC-1", StopReason: tt.reason, RunURL: runURL, TicketBody: "secret body"}
+			rec := runner.Record{RunID: "ABC-1", StopReason: tt.reason, RunURL: runURL, TicketBody: "secret body",
+				StopDetail: `the provider refused m until its plan setting "Privacy > Regions: Global" is changed: exit status 1`}
 			raiseSystemic(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)), notices, breaker, rec, "42-1", time.Now())
 			if tt.raised != (len(notices.raised) == 1) || tt.trips != (len(breaker.tripped) == 1) {
 				t.Fatalf("raised %v, tripped %v", notices.raised, breaker.tripped)
 			}
-			if tt.raised && notices.raised[0] != (dispatcher.Notice{ID: "ABC-1-42-1", Class: string(tt.reason), Link: runURL}) {
+			if tt.raised && notices.raised[0] != (dispatcher.Notice{ID: "ABC-1-42-1", Class: string(tt.reason), Detail: tt.detail, Link: runURL}) {
 				t.Fatalf("notice = %+v", notices.raised[0])
 			}
 		})

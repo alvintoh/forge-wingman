@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { isInbox } from "./run";
+import { isInbox, stopReasonOf } from "./run";
 
 const run = {
   run: "run-1",
@@ -16,5 +16,13 @@ describe("isInbox", () => {
     expect(isInbox({ runs: [{ ...run, stop_detail: "Next model tier: a/b." }] })).toBe(true);
     expect(isInbox({ runs: [run] })).toBe(true);
     expect(isInbox({ runs: [{ ...run, stop_detail: { html: "<b>x</b>" } }] })).toBe(false);
+  });
+});
+
+describe("stopReasonOf", () => {
+  it("words a provider-setting stop", () => {
+    expect(stopReasonOf({ ...run, stop_reason: "provider-setting" })).toBe(
+      "Stopped, a provider setting refused the model",
+    );
   });
 });

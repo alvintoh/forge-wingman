@@ -21,6 +21,9 @@ import (
 // peakModelID is the configured model whose rate card prices peak hours.
 const peakModelID = "command-code/deepseek/deepseek-v4.1-flash"
 
+// goPeakModelID is the Go plan's model whose rate card prices the same peak hours.
+const goPeakModelID = "opencode-go/deepseek-v4.1-flash"
+
 // unpricedModelID is the configured model its plan holds no rate card for, so a
 // view tells it from a model priced the same at every hour.
 const unpricedModelID = "command-code/meta/muse-spark-1.3-contributor"
@@ -80,7 +83,7 @@ func postPeak(t *testing.T, mux *http.ServeMux, contentType, body string) *httpt
 
 // TestPeakShowsEveryModelsPricingAndWhetherAWindowIsOpen asserts the view lists
 // every model a run may use with the window its rate prices peak hours in and
-// whether the plan prices it at all — the peak-priced model's own window, and
+// whether the plan prices it at all — each peak-priced model's own window, and
 // none for a model priced flat or not at all, which differ — and reports a
 // window open at a moment inside it (AC1, AC2).
 func TestPeakShowsEveryModelsPricingAndWhetherAWindowIsOpen(t *testing.T) {
@@ -96,11 +99,13 @@ func TestPeakShowsEveryModelsPricingAndWhetherAWindowIsOpen(t *testing.T) {
 		modelled[model.Model] = model
 	}
 	want := []peakHour{{From: 1, To: 4}, {From: 6, To: 10}}
-	if window := modelled[peakModelID].Peak; window == nil || window.Multiplier != 2 || !slices.Equal(window.Hours, want) {
-		t.Errorf("window of %s = %+v, want x2 in %v", peakModelID, window, want)
+	for _, id := range []string{peakModelID, goPeakModelID} {
+		if window := modelled[id].Peak; window == nil || window.Multiplier != 2 || !slices.Equal(window.Hours, want) {
+			t.Errorf("window of %s = %+v, want x2 in %v", id, window, want)
+		}
 	}
 	for name, model := range modelled {
-		if name == peakModelID {
+		if name == peakModelID || name == goPeakModelID {
 			if !model.Priced {
 				t.Errorf("%s is not priced, want the plan's rate card to price it", name)
 			}
@@ -128,7 +133,7 @@ func TestPeakReportsNoHoldWhileTheModeStartsRunsAtAnyHour(t *testing.T) {
 
 // TestPeakServesTheStoredModeAndEveryModelsPricing asserts the endpoint serves
 // the stored mode, whether a window is open, and its own keys per model — the
-// window the peak-priced one's rate states, null for the rest, and whether the
+// window each peak-priced one's rate states, null for the rest, and whether the
 // plan prices the model at all (AC1, AC2).
 func TestPeakServesTheStoredModeAndEveryModelsPricing(t *testing.T) {
 	rec := getPeak(t, &stubPeak{mode: dispatcher.PeakOffPeakOnly})
@@ -156,13 +161,13 @@ func TestPeakServesTheStoredModeAndEveryModelsPricing(t *testing.T) {
 			t.Errorf("model keys = %v, want %v", got, want)
 		}
 		switch model["model"] {
-		case peakModelID:
+		case peakModelID, goPeakModelID:
 			window, ok = model["peak"].(map[string]any)
 			if !ok {
 				t.Fatalf("the peak-priced model's window = %v, want an object", model["peak"])
 			}
 			if got := model["priced"]; got != true {
-				t.Errorf("priced of %s = %v, want true", peakModelID, got)
+				t.Errorf("priced of %v = %v, want true", model["model"], got)
 			}
 		case unpricedModelID:
 			if model["peak"] != nil {

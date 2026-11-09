@@ -372,11 +372,13 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 	}
 
 	ready := checksOK
+	var settingStop *StopError
 	if checksOK {
 		// Unlike the check loop above, a review-phase failure does not stop the
-		// build: it forces a draft naming the failure instead (FR-5). The one
-		// exception is a formatter that touched a file outside the run's diff,
-		// which must stop the build before the commit stages that file.
+		// build: it forces a draft naming the failure instead (FR-5). A formatter
+		// that touched a file outside the run's diff stops the build before the
+		// commit stages that file; a provider refusing the model over a plan
+		// setting keeps the draft but records the stop once the work is bundled.
 		var formatterStop *StopError
 		_ = timed(PhaseReview, d.ReviewAgent, c.ReviewModels[0], func() error {
 			var rerr error
@@ -390,6 +392,9 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 					reason = s.Reason
 					if reason == StopFormatterOutsideDiff {
 						formatterStop = s
+					}
+					if reason == StopProviderSetting {
+						settingStop = s
 					}
 				}
 				d.Logger.Error("reviewFailed", "reason", string(reason), "err", truncate(detail(rerr), logErrorLimit))
@@ -425,6 +430,11 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		return nil
 	}); err != nil {
 		return BuildResult{}, err
+	}
+	if settingStop != nil && sum.StopReason != StopWorkflowChange {
+		sum.Phase = PhaseReview
+		sum.Outcome, sum.StopReason = OutcomeStopped, StopProviderSetting
+		sum.StopDetail = truncate(detail(settingStop.Err), stopDetailLimit)
 	}
 	return res, nil
 }
@@ -689,8 +699,11 @@ func runAgent(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, a
 		logAgentFailure(d.Logger, call, OutcomeAgentFailed, StopAgentTimeout, runErr, stderrPath, c.Secrets)
 		return text, sessionID, stopWith(OutcomeAgentFailed, StopAgentTimeout, fmt.Errorf("agent exceeded %s", timeout))
 	case runErr != nil && (!tap.didStop() || !endedByOurStop(runErr, delivered)):
-		outcome, reason := classifyAgentFailure(agent, stderrPath, runErr)
+		outcome, reason, setting := classifyAgentFailure(agent, stderrPath, runErr)
 		logAgentFailure(d.Logger, call, outcome, reason, runErr, stderrPath, c.Secrets)
+		if setting != "" {
+			runErr = fmt.Errorf("the provider refused %s until its plan setting %q is changed: %w", call.Model, setting, runErr)
+		}
 		return text, sessionID, stopWith(outcome, reason, runErr)
 	case tap.didStop() || prog.stalled(call.Phase):
 		d.Logger.Warn("agentNoProgress", "phase", string(call.Phase), "round", call.Round,
@@ -908,18 +921,24 @@ const logStderrTail = 2 << 10
 const redactedMarker = "[redacted]"
 
 // classifyAgentFailure reads a bounded tail of the agent's stderr file and
-// classifies the failure through the agent's own harness when it has one, else
-// by the assumed provider markers. A read it cannot perform falls back to the
+// classifies the failure: a provider refusal naming a plan setting first, with
+// that setting, then through the agent's own harness when it has one, else by
+// the assumed provider markers. A read it cannot perform falls back to the
 // ordinary agent-failure classification, never to a false budget stop.
-func classifyAgentFailure(agent Agent, stderrPath string, exitErr error) (Outcome, StopReason) {
+func classifyAgentFailure(agent Agent, stderrPath string, exitErr error) (Outcome, StopReason, string) {
 	raw, err := readTail(stderrPath, classifyStderrTail)
 	if err != nil {
-		return OutcomeAgentFailed, StopAgentExit
+		return OutcomeAgentFailed, StopAgentExit, ""
+	}
+	if setting, ok := providers.SettingFor(string(raw)); ok {
+		return OutcomeStopped, StopProviderSetting, setting
 	}
 	if c, ok := agent.(failureClassifier); ok {
-		return c.Classify(string(raw), exitErr)
+		outcome, reason := c.Classify(string(raw), exitErr)
+		return outcome, reason, ""
 	}
-	return classifyMarkers(string(raw))
+	outcome, reason := classifyMarkers(string(raw))
+	return outcome, reason, ""
 }
 
 // logAgentFailure logs why an agent run failed: its classification, its exit

@@ -460,6 +460,7 @@ func TestWorkflowsInstallThePinnedOmp(t *testing.T) {
 			"tools/omp/node_modules/.bin",
 			`jq -r '.dependencies["@oh-my-pi/pi-coding-agent"]' tools/omp/package.json`,
 			"COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}",
+			"OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}",
 		} {
 			if !strings.Contains(yml, want) {
 				t.Errorf("%s has no %q", name, want)
@@ -588,6 +589,24 @@ func TestOmpAgentReachesTheGeminiPlan(t *testing.T) {
 	}
 }
 
+// TestOmpAgentReachesTheGoPlanOnItsOwnProviderAndKey asserts a Go model runs
+// through omp's own opencode-go provider with the plan's key in
+// OPENCODE_API_KEY, the variable that provider reads.
+func TestOmpAgentReachesTheGoPlanOnItsOwnProviderAndKey(t *testing.T) {
+	bin, attempts := scriptedOmp(t, "normal")
+	h := OmpHarness{Bin: bin, Key: "go-key", Home: t.TempDir()}
+	if err := h.Agent(ProfileBuild, "opencode-go/deepseek-v4.1-flash").Run(context.Background(), t.TempDir(), "", "p", "", io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	got := attempts()
+	if len(got) != 1 || !slices.Contains(got[0].env, "OPENCODE_API_KEY=go-key") {
+		t.Fatalf("attempts = %+v, want one run with the key in OPENCODE_API_KEY", got)
+	}
+	if j := slices.Index(got[0].args, "--model"); j < 0 || got[0].args[j+1] != "opencode-go/deepseek-v4.1-flash" {
+		t.Fatalf("args %v do not name omp's opencode-go provider and the plan's model", got[0].args)
+	}
+}
+
 // TestOmpRunsTheFreeListsTailModelMeteredAtNothing runs the free list's rung
 // through the harness and meters its transcript at $0, over the recording taken
 // from that same model (testdata/omp/laguna-s-2.1-free.ndjson, captured
@@ -619,9 +638,9 @@ func TestOmpRunsTheFreeListsTailModelMeteredAtNothing(t *testing.T) {
 // environment hands a model the key of that model's own plan, and reports a plan
 // ready only when that plan's key is present.
 func TestOmpHarnessKeysEachPlanOnItsOwnSecret(t *testing.T) {
-	env := map[string]string{"COMMANDCODE_API_KEY": "cc-key", "GEMINI_API_KEY": "g-key"}
+	env := map[string]string{"COMMANDCODE_API_KEY": "cc-key", "GEMINI_API_KEY": "g-key", "OPENCODE_API_KEY": "go-key"}
 	h := OmpHarness{Getenv: func(k string) string { return env[k] }}
-	for model, want := range map[string]string{"command-code/m": "cc-key", "gemini/m": "g-key"} {
+	for model, want := range map[string]string{"command-code/m": "cc-key", "gemini/m": "g-key", "opencode-go/m": "go-key"} {
 		if got := h.Agent(ProfileBuild, model).(OmpAgent).Key; got != want {
 			t.Errorf("Agent(%s).Key = %q, want %q", model, got, want)
 		}

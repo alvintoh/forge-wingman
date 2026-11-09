@@ -546,6 +546,47 @@ func TestBuildNeverSubstitutesOnAnOrdinaryAgentFailureEvenWithFallbacksConfigure
 	}
 }
 
+// TestBuildStopsOnAProviderSettingRefusalNamingTheSetting asserts a provider
+// refusing the model over a plan setting stops the run with that setting in its
+// detail, and never moves on to the next model, which the same setting refuses.
+func TestBuildStopsOnAProviderSettingRefusalNamingTheSetting(t *testing.T) {
+	agent := &fakeAgent{stderr: `Error: 400 {"error":"This Go model trains on request data"}`, err: errors.New("exit status 1")}
+	deps, _, reported := testDeps(validObjects(), agent)
+	c := testConfig(t, initRepo(t))
+	c.Model = DefaultModel()
+
+	if _, err := Build(context.Background(), deps, c); err == nil {
+		t.Fatal("Build succeeded with a refused model")
+	}
+	if agent.calls != 1 {
+		t.Fatalf("build agent ran %d times, want 1", agent.calls)
+	}
+	rec := reported.last(t)
+	if rec.Outcome != OutcomeStopped || rec.StopReason != StopProviderSetting ||
+		!strings.Contains(rec.StopDetail, `"Privacy > Allow paid endpoints that train on request data"`) {
+		t.Fatalf("record = %s/%s %q, want a provider-setting stop naming the setting", rec.Outcome, rec.StopReason, rec.StopDetail)
+	}
+}
+
+func TestBuildStopsAPlanRefusedOverAProviderSetting(t *testing.T) {
+	planAgent := &fakeAgent{stderr: "400 This Go model is hosted outside Europe and the United States", err: errors.New("exit status 1")}
+	objects := validObjects()
+	objects["projections/"+testSHA+"/"+planProjectionFile] = []byte("# Plan rules\n\n" + ticketSentinel)
+	deps, _, reported := testDeps(objects, &fakeAgent{})
+	deps.PlanAgent = planAgent
+	c := testConfig(t, initRepo(t))
+	c.Ticket.Size = "M"
+
+	if _, err := Build(context.Background(), deps, c); err == nil {
+		t.Fatal("Build succeeded with a refused plan model")
+	}
+	rec := reported.last(t)
+	if rec.Phase != PhasePlan || rec.Outcome != OutcomeStopped || rec.StopReason != StopProviderSetting ||
+		!strings.Contains(rec.StopDetail, `"Privacy > Regions: Global"`) {
+		t.Fatalf("record = %s %s/%s %q, want the plan stopped naming the setting", rec.Phase, rec.Outcome, rec.StopReason, rec.StopDetail)
+	}
+}
+
 // planEvent is one text event carrying the plan agent's final message.
 func planEvent(text string) string {
 	return `{"type":"text","part":{"type":"text","text":` + strconv.Quote(text) + `}}` + "\n"
@@ -1541,6 +1582,76 @@ func TestPrePRLoopFormatsFirstThenHandsTheModelOnlyTheRemainingGate(t *testing.T
 	}
 	if calls != 3 {
 		t.Fatalf("checks ran %d times, want 3: gofmt, vet after formatting, then green after the rebuild", calls)
+	}
+}
+
+// assertSettingDraft fails unless res bundles a draft and rec records the
+// review's provider-setting stop naming setting.
+func assertSettingDraft(t *testing.T, res BuildResult, rec Summary, setting string) {
+	t.Helper()
+	if !res.Changed || res.BundlePath == "" {
+		t.Fatalf("result = %+v, want the build's work bundled", res)
+	}
+	if _, err := os.Stat(res.BundlePath); err != nil {
+		t.Fatalf("bundle: %v", err)
+	}
+	if rec.Ready || rec.Phase != PhaseReview || rec.Outcome != OutcomeStopped || rec.StopReason != StopProviderSetting ||
+		!strings.Contains(rec.StopDetail, strconv.Quote(setting)) {
+		t.Fatalf("record = ready %v %s %s/%s %q, want a draft stopped at review naming %q",
+			rec.Ready, rec.Phase, rec.Outcome, rec.StopReason, rec.StopDetail, setting)
+	}
+}
+
+func TestPrePRLoopKeepsTheDraftWhenTheReviewModelIsRefusedOverAProviderSetting(t *testing.T) {
+	deps, _, reported := testDeps(validObjects(), &fakeAgent{edit: edit("version.go", "package x\n")})
+	deps.ReviewAgent = &fakeAgent{stderr: "400 This Go model trains on request data", err: errors.New("exit status 1")}
+
+	res, err := Build(context.Background(), deps, testConfig(t, initRepo(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSettingDraft(t, res, reported.last(t), "Privacy > Allow paid endpoints that train on request data")
+}
+
+func TestPrePRLoopKeepsTheDraftWhenAFixRoundIsRefusedOverAProviderSetting(t *testing.T) {
+	agent := &fakeAgent{
+		edit:   edit("version.go", "package x\n"),
+		stderr: "400 This Go model is hosted outside Europe and the United States",
+		errFn: func(call int) error {
+			if call == 2 {
+				return errors.New("exit status 1")
+			}
+			return nil
+		},
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	deps.ReviewAgent = &fakeAgent{events: reviewEvent("the retry never bounds its attempts")}
+
+	res, err := Build(context.Background(), deps, testConfig(t, initRepo(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 2 {
+		t.Fatalf("build agent ran %d times, want the build and the refused fix round", agent.calls)
+	}
+	assertSettingDraft(t, res, reported.last(t), "Privacy > Regions: Global")
+}
+
+func TestPrePRLoopKeepsTheWorkflowStopOverARefusedReview(t *testing.T) {
+	workflow := func(dir string) error {
+		if err := os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o700); err != nil {
+			return err
+		}
+		return edit(".github/workflows/ci.yml", "on: push\n")(dir)
+	}
+	deps, _, reported := testDeps(validObjects(), &fakeAgent{edit: workflow})
+	deps.ReviewAgent = &fakeAgent{stderr: "400 This Go model trains on request data", err: errors.New("exit status 1")}
+
+	if _, err := Build(context.Background(), deps, testConfig(t, initRepo(t))); err != nil {
+		t.Fatal(err)
+	}
+	if rec := reported.last(t); rec.Outcome != OutcomeStopped || rec.StopReason != StopWorkflowChange {
+		t.Fatalf("record = %s/%s, want the workflow change, which blocks the push", rec.Outcome, rec.StopReason)
 	}
 }
 
@@ -3200,21 +3311,26 @@ func TestClassifyAgentFailure(t *testing.T) {
 		return path
 	}
 	for _, tt := range []struct {
-		name       string
-		path       string
-		wantOut    Outcome
-		wantReason StopReason
+		name        string
+		path        string
+		wantOut     Outcome
+		wantReason  StopReason
+		wantSetting string
 	}{
-		{"an allowance marker", write("Error: allowance exhausted"), OutcomeBudgetStop, StopAllowanceExhausted},
-		{"a case-insensitive marker", write("QUOTA EXCEEDED for this account"), OutcomeBudgetStop, StopAllowanceExhausted},
-		{"an availability marker", write("Error: no endpoints found for this model"), OutcomeInfraFailure, StopModelUnavailable},
-		{"an ordinary failure", write("panic: nil pointer"), OutcomeAgentFailed, StopAgentExit},
-		{"an unreadable file", filepath.Join(dir, "does-not-exist"), OutcomeAgentFailed, StopAgentExit},
+		{"an allowance marker", write("Error: allowance exhausted"), OutcomeBudgetStop, StopAllowanceExhausted, ""},
+		{"a case-insensitive marker", write("QUOTA EXCEEDED for this account"), OutcomeBudgetStop, StopAllowanceExhausted, ""},
+		{"an availability marker", write("Error: no endpoints found for this model"), OutcomeInfraFailure, StopModelUnavailable, ""},
+		{"a region setting marker", write("400 This Go model is hosted outside Europe and the United States"),
+			OutcomeStopped, StopProviderSetting, "Privacy > Regions: Global"},
+		{"a training setting marker", write("400 This Go model trains on request data"),
+			OutcomeStopped, StopProviderSetting, "Privacy > Allow paid endpoints that train on request data"},
+		{"an ordinary failure", write("panic: nil pointer"), OutcomeAgentFailed, StopAgentExit, ""},
+		{"an unreadable file", filepath.Join(dir, "does-not-exist"), OutcomeAgentFailed, StopAgentExit, ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			gotOut, gotReason := classifyAgentFailure(&fakeAgent{}, tt.path, nil)
-			if gotOut != tt.wantOut || gotReason != tt.wantReason {
-				t.Fatalf("classifyAgentFailure = %s/%s, want %s/%s", gotOut, gotReason, tt.wantOut, tt.wantReason)
+			gotOut, gotReason, gotSetting := classifyAgentFailure(&fakeAgent{}, tt.path, nil)
+			if gotOut != tt.wantOut || gotReason != tt.wantReason || gotSetting != tt.wantSetting {
+				t.Fatalf("classifyAgentFailure = %s/%s %q, want %s/%s %q", gotOut, gotReason, gotSetting, tt.wantOut, tt.wantReason, tt.wantSetting)
 			}
 		})
 	}

@@ -109,6 +109,8 @@ func runKind(run store.SettledRun) (kind, words string) {
 		return kindAllowance, "stopped, allowance spent"
 	case run.StopReason == runner.StopCredentialAbsent:
 		return kindCredential, "stopped, credential missing"
+	case run.StopReason == runner.StopProviderSetting:
+		return kindFailed, "stopped, a provider setting refused the model"
 	case run.StopReason == runner.StopWaitingOnOwner:
 		return kindDecision, "stopped at an unconfirmed decision"
 	case run.Outcome == runner.OutcomeNoChanges:

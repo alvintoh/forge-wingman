@@ -55,6 +55,9 @@ on:
       # required until the owner sets it (infra/README.md).
       GEMINI_API_KEY:
         required: false
+      # The OpenCode Go plan's key, read only for a model of that plan.
+      OPENCODE_API_KEY:
+        required: false
     outputs:
       attempt_id:
         value: ${{ jobs.build.outputs.attempt_id }}
@@ -158,6 +161,7 @@ jobs:
           WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
           COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
         run: '"$RUNNER_TEMP/runner" build -model "$MODEL" -review-models "$REVIEW_MODELS" -plan-models "$PLAN_MODELS" -ticket-file "$RUNNER_TEMP/ticket.json" -checks-image "$CHECKS_IMAGE" -agent-image "$AGENT_IMAGE" -agent-egress "$AGENT_EGRESS" -run-id "$RUN_ID" -attempt "$ATTEMPT"'
 
       # The plan stage (FRG-33) runs the plan phase alone, under the plan profile's read-only
@@ -175,6 +179,7 @@ jobs:
           WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
           COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
         run: '"$RUNNER_TEMP/runner" plan-stage -plan-models "$PLAN_MODELS" -ticket-file "$RUNNER_TEMP/ticket.json" -out "$RUNNER_TEMP/plan.json" -agent-image "$AGENT_IMAGE" -agent-egress "$AGENT_EGRESS" -run-id "$RUN_ID" -attempt "$ATTEMPT"'
 
       - if: inputs.stage == 'plan'

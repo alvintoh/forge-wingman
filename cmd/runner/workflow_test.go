@@ -216,3 +216,29 @@ func TestModelWorkflowPassesTheRunAndAttemptToTheRunnerAndUploadsNoProgress(t *t
 		}
 	}
 }
+
+// TestRunPassesTheGoKeyToTheModelJob asserts run.yml hands the model job the Go
+// plan's key, model.yml declares it as an optional secret, and both of the
+// model job's agent steps read it.
+func TestRunPassesTheGoKeyToTheModelJob(t *testing.T) {
+	read := func(name string) string {
+		b, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	_, secrets, _ := strings.Cut(read("run.yml"), "\n  model:\n")
+	_, secrets, _ = strings.Cut(secrets, "\n    secrets:\n")
+	secrets, _, _ = strings.Cut(secrets, "\n\n")
+	if !strings.Contains(secrets, "\n      OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}") {
+		t.Errorf("run.yml's model job does not pass OPENCODE_API_KEY:\n%s", secrets)
+	}
+	model := read("model.yml")
+	if !strings.Contains(model, "      OPENCODE_API_KEY:\n        required: false\n") {
+		t.Error("model.yml does not declare OPENCODE_API_KEY as an optional secret")
+	}
+	if got := strings.Count(model, "          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}\n"); got != 2 {
+		t.Errorf("model.yml passes OPENCODE_API_KEY to %d steps, want 2: the build and plan steps", got)
+	}
+}
