@@ -100,6 +100,33 @@ func TestDoDefaultsToLinearsEndpoint(t *testing.T) {
 	}
 }
 
+// TestMissingEntities: only a refusal made wholly of not-found errors that each
+// name a field is reported, with the data Linear returned beside them.
+func TestMissingEntities(t *testing.T) {
+	const notFound = `{"message":"Entity not found: Issue","path":["t1"],"extensions":{"code":"INPUT_ERROR"}}`
+	for _, tc := range []struct {
+		name, reply string
+		status      int
+		want        bool
+	}{
+		{"not found", `{"data":{"t0":{},"t1":null},"errors":[` + notFound + `]}`, 200, true},
+		{"not found without a path", `{"data":{"t1":null},"errors":[{"message":"Entity not found: Issue"}]}`, 200, false},
+		{"beside another error", `{"data":{"t1":null},"errors":[` + notFound + `,{"message":"rate limited","path":["t0"]}]}`, 200, false},
+		{"unauthenticated", `{"errors":[` + strings.Replace(notFound, "INPUT_ERROR", authenticationError, 1) + `]}`, 200, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := Client{Endpoint: serve(t, tc.status, tc.reply), Token: "token-1"}.Do(context.Background(), "query", nil, &struct{}{})
+			fields, data, ok := MissingEntities(err)
+			if ok != tc.want {
+				t.Fatalf("ok = %v for %v, want %v", ok, err, tc.want)
+			}
+			if tc.want && (len(fields) != 1 || fields[0] != "t1" || !strings.Contains(string(data), `"t0":{}`)) {
+				t.Fatalf("fields = %v, data = %s, want t1 missing beside t0's data", fields, data)
+			}
+		})
+	}
+}
+
 func TestSnippetCutsOnACharacterBoundary(t *testing.T) {
 	got := snippet([]byte(strings.Repeat("é", maxErrorBytes)))
 	if !utf8.ValidString(got) || len(got) > maxErrorBytes+len("…") {
