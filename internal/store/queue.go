@@ -234,16 +234,17 @@ func (q *Queue) WithLogger(logger *slog.Logger) *Queue {
 	return &Queue{client: q.client, logger: logger}
 }
 
-// Exists reports whether a run record already exists for runID.
-func (q *Queue) Exists(ctx context.Context, runID string) (bool, error) {
-	_, err := q.client.Collection(runsCollection).Doc(runID).Get(ctx)
+// Exists reports whether a run record already exists for runID, and whether
+// that run was withdrawn for a closed ticket.
+func (q *Queue) Exists(ctx context.Context, runID string) (exists, withdrawn bool, err error) {
+	snap, err := q.client.Collection(runsCollection).Doc(runID).Get(ctx)
 	if status.Code(err) == codes.NotFound {
-		return false, nil
+		return false, false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("checking whether run %s exists: %w", runID, err)
+		return false, false, fmt.Errorf("checking whether run %s exists: %w", runID, err)
 	}
-	return true, nil
+	return true, str(snap.Data(), stateField) == stateWithdrawn, nil
 }
 
 // Enqueue writes the run record for a delegated ticket, queued, and clears any
@@ -1661,6 +1662,7 @@ func (q *Queue) requeue(ctx context.Context, runID string, at time.Time, opts re
 			{Path: abandonedAtField, Value: firestore.Delete},
 			{Path: withdrawnAtField, Value: firestore.Delete},
 			{Path: withdrawnReasonField, Value: firestore.Delete},
+			{Path: reopenedAtField, Value: firestore.Delete},
 			{Path: ticketStateField, Value: firestore.Delete},
 			{Path: queuedAtField, Value: at},
 			{Path: attemptField, Value: attempt},
@@ -1676,7 +1678,7 @@ func (q *Queue) requeue(ctx context.Context, runID string, at time.Time, opts re
 				return err
 			}
 		}
-		if err := tx.Update(rowRef, append(updates, extra...)); err != nil {
+		if err := tx.Update(rowRef, overriding(updates, extra)); err != nil {
 			return err
 		}
 		result = RequeueResult{State: state, Attempt: attempt, TicketState: str(row, ticketStateField)}

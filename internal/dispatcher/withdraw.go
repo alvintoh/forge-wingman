@@ -34,3 +34,22 @@ func withdrawClosed(ctx context.Context, d Deps) {
 		d.Logger.Warn("runsNotWithdrawn", "tickets", len(closed), "err", err.Error())
 	}
 }
+
+// requeueReopened returns the run of an already-queued ticket to the queue
+// when that run was withdrawn: Delegated lists only open tickets, so a withdrawn
+// run's ticket in the list was reopened and delegated again. Any other run is
+// logged as already queued.
+func requeueReopened(ctx context.Context, d Deps, q Queued, withdrawn bool) error {
+	if withdrawn {
+		requeued, err := d.Queue.RequeueReopened(ctx, q.RunID, d.Now())
+		if err != nil {
+			return err
+		}
+		if requeued {
+			d.Logger.Info("withdrawnRunRequeued", "run", q.RunID)
+			return nil
+		}
+	}
+	d.Logger.Info("ticketAlreadyQueued", "run", q.RunID, "repo", q.Repo, "priority", q.Priority)
+	return nil
+}

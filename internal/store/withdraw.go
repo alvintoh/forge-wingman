@@ -18,6 +18,9 @@ import (
 const (
 	withdrawnAtField     = "withdrawn_at"
 	withdrawnReasonField = "withdrawn_reason"
+	// reopenedAtField is when a poll found a withdrawn run's ticket delegated
+	// and open again, and requeued the run for it.
+	reopenedAtField = "reopened_at"
 )
 
 // UnclaimedTickets returns the ticket of every run still waiting for a claim:
@@ -25,6 +28,7 @@ const (
 func (q *Queue) UnclaimedTickets(ctx context.Context) ([]string, error) {
 	iter := q.client.Collection(runsCollection).
 		Where(stateField, "in", candidateStates).
+		Select().
 		Documents(ctx)
 	defer iter.Stop()
 	var tickets []string
@@ -91,4 +95,39 @@ func (q *Queue) withdrawRun(ctx context.Context, runID, reason string, at time.T
 		return false, fmt.Errorf("withdrawing run %s: %w", runID, err)
 	}
 	return withdrawn, nil
+}
+
+// errNotWithdrawn reports a reopened ticket's run that is no longer withdrawn
+// when its requeue reads it, so there is nothing to return.
+var errNotWithdrawn = errors.New("run is not withdrawn")
+
+// RequeueReopened returns a withdrawn run to the queue as its next attempt, for
+// a ticket delegated and open again, recording at as when it was reopened, and
+// reports whether it did. A run no longer withdrawn by then is left as it is.
+func (q *Queue) RequeueReopened(ctx context.Context, runID string, at time.Time) (bool, error) {
+	_, err := q.requeue(ctx, runID, at, requeueOptions{}, func(row map[string]any, _ int) (string, []firestore.Update, error) {
+		if str(row, stateField) != stateWithdrawn {
+			return "", nil, errNotWithdrawn
+		}
+		state, err := requeueState(row)
+		return state, []firestore.Update{{Path: reopenedAtField, Value: at}}, err
+	})
+	if errors.Is(err, errNotWithdrawn) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// overriding is base with every update extra also makes left out, then extra:
+// a requeue's own fields win over the clears every requeue makes.
+func overriding(base, extra []firestore.Update) []firestore.Update {
+	paths := make(map[string]bool, len(extra))
+	for _, u := range extra {
+		paths[u.Path] = true
+	}
+	kept := slices.DeleteFunc(slices.Clone(base), func(u firestore.Update) bool { return paths[u.Path] })
+	return append(kept, extra...)
 }

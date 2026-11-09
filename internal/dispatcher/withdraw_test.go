@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"slices"
 	"strings"
@@ -125,5 +126,48 @@ func TestPollReportsAFailedWithdrawalWithoutFailingThePoll(t *testing.T) {
 	}
 	if got := strings.Count(logs.String(), "msg=runsNotWithdrawn"); got != 1 {
 		t.Fatalf("log = %q, want one runsNotWithdrawn", logs.String())
+	}
+}
+
+// TestPollRequeuesAWithdrawnRunWhoseTicketIsDelegatedAgain: Delegated lists only
+// open tickets, so a withdrawn run's ticket among them was reopened and its run
+// goes back to the queue, while any other run already held is logged as already
+// queued and left as it is (AC7).
+func TestPollRequeuesAWithdrawnRunWhoseTicketIsDelegatedAgain(t *testing.T) {
+	for name, tc := range map[string]struct {
+		withdrawn    map[string]string
+		wantReopened []string
+		wantLog      string
+		notLog       string
+	}{
+		"withdrawn":     {map[string]string{"FRG-18": stateTypeCompleted}, []string{"FRG-18"}, "withdrawnRunRequeued", "ticketAlreadyQueued"},
+		"not withdrawn": {nil, nil, "ticketAlreadyQueued", "withdrawnRunRequeued"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			q := &fakeQueue{holds: map[string]bool{"FRG-18": true}, withdrawn: tc.withdrawn}
+			var logged bytes.Buffer
+			d := pollDeps(fakeSource{issues: []Issue{admitted("size:M", "repo:octo/scratch")}}, q, &fakeWorkflow{})
+			d.Logger = slog.New(slog.NewTextHandler(&logged, nil))
+			if _, err := Poll(context.Background(), d, buildConfig); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(q.reopened, tc.wantReopened) {
+				t.Fatalf("reopened = %v, want %v", q.reopened, tc.wantReopened)
+			}
+			if !strings.Contains(logged.String(), tc.wantLog) || strings.Contains(logged.String(), tc.notLog) {
+				t.Fatalf("log = %q, want %s and no %s", logged.String(), tc.wantLog, tc.notLog)
+			}
+		})
+	}
+}
+
+// TestPollFailsWhenAReopenedTicketsRunCannotBeRequeued: the requeue's failure is
+// the poll's, so the ticket is tried again next poll.
+func TestPollFailsWhenAReopenedTicketsRunCannotBeRequeued(t *testing.T) {
+	q := &fakeQueue{holds: map[string]bool{"FRG-18": true}, withdrawn: map[string]string{"FRG-18": stateTypeCompleted},
+		reopenErr: errFirestore}
+	d := pollDeps(fakeSource{issues: []Issue{admitted("size:M", "repo:octo/scratch")}}, q, &fakeWorkflow{})
+	if _, err := Poll(context.Background(), d, buildConfig); !errors.Is(err, errFirestore) {
+		t.Fatalf("err = %v, want the requeue's failure", err)
 	}
 }

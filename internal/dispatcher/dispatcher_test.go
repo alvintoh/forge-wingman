@@ -189,6 +189,10 @@ type fakeQueue struct {
 	withdrawn    map[string]string
 	withdrawErr  error
 	withdrawAt   time.Time
+	// reopened records each withdrawn run a poll requeued for its reopened
+	// ticket, and reopenErr fails that requeue.
+	reopened  []string
+	reopenErr error
 }
 
 func (q *fakeQueue) StuckRuns(_ context.Context, before, since time.Time) ([]Stuck, error) {
@@ -241,11 +245,26 @@ func (q *fakeQueue) SettledHistory(context.Context, time.Time) (SettledHistory, 
 	return q.history, q.historyErr
 }
 
-func (q *fakeQueue) Exists(_ context.Context, runID string) (bool, error) {
+func (q *fakeQueue) Exists(_ context.Context, runID string) (bool, bool, error) {
 	if q.existsErr != nil {
-		return false, q.existsErr
+		return false, false, q.existsErr
 	}
-	return q.holds[runID], nil
+	_, withdrawn := q.withdrawn[runID]
+	return q.holds[runID], withdrawn, nil
+}
+
+// RequeueReopened returns a withdrawn run to the queue, as the store does, and
+// leaves any other run as it is.
+func (q *fakeQueue) RequeueReopened(_ context.Context, runID string, _ time.Time) (bool, error) {
+	if q.reopenErr != nil {
+		return false, q.reopenErr
+	}
+	if _, withdrawn := q.withdrawn[runID]; !withdrawn {
+		return false, nil
+	}
+	delete(q.withdrawn, runID)
+	q.reopened = append(q.reopened, runID)
+	return true, nil
 }
 
 func (q *fakeQueue) TransientStops(context.Context) ([]TransientStop, error) {

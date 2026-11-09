@@ -129,6 +129,7 @@ func TestRequeueClearsTheWithdrawnMarkers(t *testing.T) {
 	row := map[string]any{stateField: stateWithdrawn}
 	row[withdrawnAtField] = queueAt
 	row[withdrawnReasonField] = "completed"
+	row[reopenedAtField] = queueAt
 	seedRow(t, client, id, row)
 
 	if _, err := q.Requeue(context.Background(), id, queueAt.Add(time.Minute)); err != nil {
@@ -143,6 +144,69 @@ func TestRequeueClearsTheWithdrawnMarkers(t *testing.T) {
 	}
 	if v, ok := requeued[withdrawnReasonField]; ok {
 		t.Fatalf("withdrawn reason = %v after a requeue, want it cleared", v)
+	}
+	if v, ok := requeued[reopenedAtField]; ok {
+		t.Fatalf("reopened at = %v after a requeue, want it cleared", v)
+	}
+}
+
+// TestRequeueReopenedReturnsOnlyAWithdrawnRun: a withdrawn run goes back to the
+// queue with the moment its ticket was found reopened and its withdrawn markers
+// cleared, and any other run is reported untouched (AC7).
+func TestRequeueReopenedReturnsOnlyAWithdrawnRun(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	at := queueAt.Add(time.Minute)
+	for name, tc := range map[string]struct {
+		state, wantState string
+		want             bool
+	}{
+		"withdrawn": {stateWithdrawn, stateQueued, true},
+		"claimed":   {stateClaimed, stateClaimed, false},
+	} {
+		id := fresh(fmt.Sprintf("reopened-%s-%d", name, time.Now().UnixNano()))
+		seedRow(t, client, id, map[string]any{
+			stateField: tc.state, withdrawnAtField: queueAt, withdrawnReasonField: "completed",
+		})
+		requeued, err := q.RequeueReopened(ctx, id, at)
+		if err != nil || requeued != tc.want {
+			t.Fatalf("%s run: requeued = %v, %v, want %v", name, requeued, err, tc.want)
+		}
+		row := readRow(t, client, id)
+		if row[stateField] != tc.wantState {
+			t.Fatalf("%s run: state = %v, want %v", name, row[stateField], tc.wantState)
+		}
+		reopened, _ := row[reopenedAtField].(time.Time)
+		if tc.want && (!reopened.Equal(at) || row[withdrawnReasonField] != nil) {
+			t.Fatalf("%s run: reopened at %v, reason %v, want the moment recorded and the withdrawal cleared",
+				name, reopened, row[withdrawnReasonField])
+		}
+		if !tc.want && !reopened.IsZero() {
+			t.Fatalf("%s run: reopened at %v, want the row left as it was", name, reopened)
+		}
+	}
+}
+
+// TestExistsReportsAWithdrawnRun: admission tells a withdrawn run from any other
+// held run by the read it already makes.
+func TestExistsReportsAWithdrawnRun(t *testing.T) {
+	q, client := queue(t)
+	for name, tc := range map[string]struct {
+		state               string
+		exists, isWithdrawn bool
+	}{
+		"withdrawn": {stateWithdrawn, true, true},
+		"queued":    {stateQueued, true, false},
+		"absent":    {"", false, false},
+	} {
+		id := fresh(fmt.Sprintf("exists-%s-%d", name, time.Now().UnixNano()))
+		if tc.state != "" {
+			seedRow(t, client, id, map[string]any{stateField: tc.state})
+		}
+		exists, withdrawn, err := q.Exists(context.Background(), id)
+		if err != nil || exists != tc.exists || withdrawn != tc.isWithdrawn {
+			t.Fatalf("%s: exists %v, withdrawn %v, err %v", name, exists, withdrawn, err)
+		}
 	}
 }
 

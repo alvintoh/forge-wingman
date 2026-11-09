@@ -287,10 +287,11 @@ type Source interface {
 // Enqueuer writes a run record and queues it, failing with ErrAlreadyQueued
 // when the ticket already has one. Exists reports whether a run record
 // already exists for runID, so a caller can skip resolving anything the
-// record would only need once, at creation.
+// record would only need once, at creation, and whether that run was withdrawn
+// for a closed ticket.
 type Enqueuer interface {
 	Enqueue(ctx context.Context, q Queued) error
-	Exists(ctx context.Context, runID string) (bool, error)
+	Exists(ctx context.Context, runID string) (exists, withdrawn bool, err error)
 }
 
 // TicketStates is Linear as a poll uses it: the state types of the tickets runs
@@ -379,6 +380,10 @@ type Withdrawer interface {
 	// withdrew. A run claimed, waiting or settled since the poll read it is left
 	// as it is.
 	WithdrawRuns(ctx context.Context, reasons map[string]string, at time.Time) (int, error)
+	// RequeueReopened returns a withdrawn run to the queue for a ticket
+	// delegated and open again, and reports whether it did; a run no longer
+	// withdrawn is left as it is.
+	RequeueReopened(ctx context.Context, runID string, at time.Time) (bool, error)
 }
 
 // Queue is the run store as a poll uses it.
@@ -591,12 +596,14 @@ func admit(ctx context.Context, d Deps, c Config, issue Issue, res *Result) erro
 	if rej.Reason != "" {
 		return refuse(ctx, d, rej, res)
 	}
-	exists, err := d.Queue.Exists(ctx, q.RunID)
+	exists, withdrawn, err := d.Queue.Exists(ctx, q.RunID)
 	if err != nil {
 		return err
 	}
 	if exists {
-		d.Logger.Info("ticketAlreadyQueued", "run", q.RunID, "repo", q.Repo, "priority", q.Priority)
+		if err := requeueReopened(ctx, d, q, withdrawn); err != nil {
+			return err
+		}
 		if _, err := d.Queue.UpdateQueuedPriority(ctx, q.RunID, q.Priority); err != nil {
 			d.Logger.Warn("priorityRefreshFailed", "run", q.RunID, "priority", q.Priority, "err", err.Error())
 		}
