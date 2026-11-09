@@ -293,10 +293,15 @@ type Enqueuer interface {
 	Exists(ctx context.Context, runID string) (bool, error)
 }
 
-// TicketStates is Linear as a claim uses it: the ticket a claimed run builds
-// shows In Progress while the run holds it, and shows what it showed before the
-// claim once that claim is undone.
+// TicketStates is Linear as a poll uses it: the state types of the tickets runs
+// wait on, which a ticket closed while its run was queued is withdrawn by, and
+// the moves a claim makes — the ticket a claimed run builds shows In Progress
+// while the run holds it, and shows what it showed before the claim once that
+// claim is undone.
 type TicketStates interface {
+	// TicketStateTypes returns the Linear state type of each named ticket,
+	// keyed by identifier. A ticket Linear does not return is absent.
+	TicketStateTypes(ctx context.Context, tickets []string) (map[string]string, error)
 	// StartTicket sets the ticket In Progress and reports the state it held
 	// before, empty when the claim moved none.
 	StartTicket(ctx context.Context, ticketID string) (string, error)
@@ -363,6 +368,19 @@ type TicketStateRecorder interface {
 	RecordTicketState(ctx context.Context, runID, stateID string) error
 }
 
+// Withdrawer withdraws the runs still waiting for a claim whose ticket closed
+// before a poll could claim them.
+type Withdrawer interface {
+	// UnclaimedTickets returns the ticket of every run waiting for a claim: the
+	// queued and the planned.
+	UnclaimedTickets(ctx context.Context) ([]string, error)
+	// WithdrawRuns withdraws the named tickets' runs while they still wait for a
+	// claim, recording each reason and at on its row, and returns how many it
+	// withdrew. A run claimed, waiting or settled since the poll read it is left
+	// as it is.
+	WithdrawRuns(ctx context.Context, reasons map[string]string, at time.Time) (int, error)
+}
+
 // Queue is the run store as a poll uses it.
 type Queue interface {
 	Enqueuer
@@ -377,6 +395,7 @@ type Queue interface {
 	StuckReader
 	TicketStateRecorder
 	TransientRequeuer
+	Withdrawer
 	// SettledHistory reads the settled run history at or after since: the one
 	// read a poll's budget ceilings are summed from, whatever it walks (AC1).
 	SettledHistory(ctx context.Context, since time.Time) (SettledHistory, error)
@@ -419,8 +438,9 @@ type Result struct {
 }
 
 // Poll admits every issue still delegated, then returns the runs that stopped
-// on a known transient fault to the queue and walks it in priority order
-// claiming every run Admit lets start, abandons the claims that outlived
+// on a known transient fault to the queue, withdraws the waiting runs whose
+// ticket Linear closed, and walks the queue in priority order claiming every
+// run Admit lets start, abandons the claims that outlived
 // their window, measures the merges that landed since the last poll, raises a
 // notice for each run stuck past its limit, records whether each listed
 // repository could be read and the names of the Linear projects an added one may
@@ -504,6 +524,11 @@ func poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	start = d.Now()
 	requeueErr := requeueStopped(ctx, d)
 	LogPhase(d.Logger, "requeue", start, d.Now())
+	// A run whose ticket closed while it waited is withdrawn before the claim
+	// walk, so this poll cannot take it.
+	start = d.Now()
+	withdrawClosed(ctx, d)
+	LogPhase(d.Logger, "withdraw", start, d.Now())
 	start = d.Now()
 	var prs openPRCount
 	if listed {

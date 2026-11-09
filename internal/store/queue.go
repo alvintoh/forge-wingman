@@ -160,6 +160,10 @@ const (
 	// stateAbandoned is a claim whose run never reported back within its
 	// window: it holds no reservation, and only an operator's requeue returns it.
 	stateAbandoned = "abandoned"
+	// stateWithdrawn is a run whose ticket closed while it waited for a claim:
+	// it never ran, holds no reservation, and only an operator's requeue returns
+	// it.
+	stateWithdrawn = "withdrawn"
 )
 
 // candidateStates are the states a poll may claim from.
@@ -1461,23 +1465,41 @@ type RequeueResult struct {
 	TicketState string
 }
 
-// The reasons Requeue refuses a run, each reporting a different operator action:
-// one already dispatchable needs no help, one waiting on a decision is resumed
-// by answering it, and one in flight would run its ticket twice.
+// The reasons a requeue refuses a run, each reporting a different operator
+// action: one already dispatchable needs no help, one waiting on a decision is
+// resumed by answering it, and one in flight would run its ticket twice. A run
+// the automatic requeues leave to an operator — an abandoned claim, and one
+// withdrawn for a closed ticket — is refused with the sentinel naming which.
 var (
 	ErrRunDispatchable = errors.New("run is already dispatchable")
 	ErrRunWaiting      = errors.New("run is waiting on a decision")
 	ErrRunInFlight     = errors.New("run is still in flight")
 	ErrRunAbandoned    = errors.New("run was abandoned and needs an operator's requeue")
+	ErrRunWithdrawn    = errors.New("run was withdrawn and needs an operator's requeue")
 )
 
-// Requeue returns a run that has ended — stopped, abandoned, or carrying a
-// recorded outcome, whether a claim or a manual run left it — to the queue, for
-// an operator asking that its ticket be attempted again: the row returns to
-// planned when its plan still stands and queued otherwise, with its claim, wait,
-// cancel, ticket-closed and outcome fields cleared and its ledger reservations dropped, and
-// records the attempt it was put back as. The owner's note from a retry is dropped,
-// since it was written for the attempt that ended.
+// operatorOnlyRefusal is the refusal for a run the automatic requeues leave
+// alone: an abandoned claim and a run withdrawn for a closed ticket are both the
+// operator's to return, so a poll or a rebase conflict reports which one held it
+// rather than requeueing it.
+func operatorOnlyRefusal(row map[string]any) error {
+	switch str(row, stateField) {
+	case stateAbandoned:
+		return ErrRunAbandoned
+	case stateWithdrawn:
+		return ErrRunWithdrawn
+	}
+	return nil
+}
+
+// Requeue returns a run that has ended — stopped, abandoned, withdrawn for a
+// closed ticket, or carrying a recorded outcome, whether a claim or a manual run
+// left it — to the queue, for an operator asking that its ticket be attempted
+// again: the row returns to planned when its plan still stands and queued
+// otherwise, with its claim, wait, cancel, ticket-closed, withdrawn and outcome
+// fields cleared and its ledger reservations dropped, and records the attempt it
+// was put back as. The owner's note from a retry is dropped, since it was
+// written for the attempt that ended.
 //
 // It refuses a run that is still to be dispatched, parked on a decision, or
 // still running, so a retry is never anything but the operator's own action.
@@ -1496,13 +1518,14 @@ var ErrRetriesExhausted = errors.New("run has no automatic retries left")
 // never to planned, so its plan stage runs again against the new base — as the
 // next attempt, and carries what the failed attempt settled into the row's
 // prior-settled fields for the next record to add to its own. It refuses the
-// runs Requeue refuses, an abandoned run, which only an operator's Requeue
-// returns, and a run whose next attempt would pass maxAttempts. A retry's note
-// stays, since this is the same attempt tried again.
+// runs Requeue refuses, a run the automatic requeues leave to an operator — an
+// abandoned claim or one withdrawn for a closed ticket — and a run whose next
+// attempt would pass maxAttempts. A retry's note stays, since this is the same
+// attempt tried again.
 func (q *Queue) RequeueAfterConflict(ctx context.Context, runID string, at time.Time, maxAttempts int) (RequeueResult, error) {
 	return q.requeue(ctx, runID, at, requeueOptions{keepNote: true}, func(row map[string]any, attempt int) (string, []firestore.Update, error) {
-		if str(row, stateField) == stateAbandoned {
-			return "", nil, ErrRunAbandoned
+		if err := operatorOnlyRefusal(row); err != nil {
+			return "", nil, err
 		}
 		if _, err := requeueState(row); err != nil {
 			return "", nil, err
@@ -1636,6 +1659,8 @@ func (q *Queue) requeue(ctx context.Context, runID string, at time.Time, opts re
 			{Path: retriedAtField, Value: at},
 			{Path: abandonedReasonField, Value: firestore.Delete},
 			{Path: abandonedAtField, Value: firestore.Delete},
+			{Path: withdrawnAtField, Value: firestore.Delete},
+			{Path: withdrawnReasonField, Value: firestore.Delete},
 			{Path: ticketStateField, Value: firestore.Delete},
 			{Path: queuedAtField, Value: at},
 			{Path: attemptField, Value: attempt},
@@ -1678,7 +1703,8 @@ func hasEnded(row map[string]any) bool {
 //
 // A queued or planned row still to be dispatched is refused; one that has ended
 // without a claim is requeued instead, so a manual run's result never strands
-// its row.
+// its row. A run withdrawn for a closed ticket is requeued the same way, so a
+// ticket the owner reopened has a way back to the queue.
 func requeueState(row map[string]any) (string, error) {
 	state := str(row, stateField)
 	switch state {
@@ -1692,7 +1718,7 @@ func requeueState(row map[string]any) (string, error) {
 		if !hasEnded(row) {
 			return "", ErrRunInFlight
 		}
-	case stateStopped, stateAbandoned:
+	case stateStopped, stateAbandoned, stateWithdrawn:
 	default:
 		return "", fmt.Errorf("run is in state %q, which cannot be requeued", state)
 	}

@@ -111,9 +111,9 @@ type PhaseSnapshot struct {
 	At              time.Time `firestore:"at" json:"at"`
 }
 
-// TicketRun is where one ticket's run row stands: ended (stopped, abandoned or
-// carrying an outcome, so only an operator's requeue takes it further), waiting
-// in the queue, or in flight at a stage.
+// TicketRun is where one ticket's run row stands: ended (stopped, abandoned,
+// withdrawn for a closed ticket, or carrying an outcome, so only an operator's
+// requeue takes it further), waiting in the queue, or in flight at a stage.
 type TicketRun struct {
 	Ended  bool
 	Queued bool

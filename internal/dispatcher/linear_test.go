@@ -554,6 +554,130 @@ func TestLinearRestoreTicketWritesNothingWithNoStateToPutBack(t *testing.T) {
 	}
 }
 
+// ticketStatesReply is one state read's reply: the viewer that proves which
+// agent the token reads as, and each aliased ticket's state.
+func ticketStatesReply(viewer string, nodes ...any) map[string]any {
+	data := map[string]any{"viewer": map[string]any{"id": viewer}}
+	for i, node := range nodes {
+		data[ticketStateAlias(i)] = node
+	}
+	return map[string]any{"data": data}
+}
+
+// ticketStateNode is one ticket as a state read carries it.
+func ticketStateNode(stateType string) map[string]any {
+	return map[string]any{"state": map[string]any{"type": stateType}}
+}
+
+// TestLinearReadsEachWaitingTicketsStateType: the read asks for every ticket in
+// one query, one aliased field each, and reports the types it read — a ticket
+// the reply carried as null, and one it left out, both absent from the result.
+func TestLinearReadsEachWaitingTicketsStateType(t *testing.T) {
+	data := map[string]any{"viewer": map[string]any{"id": "agent-1"}}
+	data[ticketStateAlias(0)] = ticketStateNode(stateTypeCompleted)
+	data[ticketStateAlias(1)] = ticketStateNode("started")
+	data[ticketStateAlias(2)] = nil
+	srv, seen := queryServer(t, map[string]any{"data": data})
+	types, err := Linear{Endpoint: linearURL(srv), Tokens: fixedToken("linear-token"), Delegate: "agent-1",
+		Client: srv.Client()}.TicketStateTypes(context.Background(), []string{"FRG-1", "FRG-2", "FRG-3", "FRG-4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(types) != 2 || types["FRG-1"] != stateTypeCompleted || types["FRG-2"] != "started" {
+		t.Fatalf("types = %v, want the two tickets Linear carried", types)
+	}
+	if len(*seen) != 1 {
+		t.Fatalf("requests = %+v, want one read for one batch", *seen)
+	}
+	call := (*seen)[0]
+	for _, field := range []string{"$id0: String!", "$id3: String!", "viewer {", "s0: issue(id: $id0)", "s3: issue(id: $id3)"} {
+		if !strings.Contains(call.query, field) {
+			t.Errorf("the query does not carry %q: %s", field, call.query)
+		}
+	}
+	if call.variables["id0"] != "FRG-1" || call.variables["id3"] != "FRG-4" {
+		t.Fatalf("variables = %v, want each ticket named by its own", call.variables)
+	}
+}
+
+// TestLinearReadsTicketStatesInBatches: a queue longer than one batch costs one
+// read per batch, and every batch's types are reported.
+func TestLinearReadsTicketStatesInBatches(t *testing.T) {
+	tickets := make([]string, ticketStatesBatch+1)
+	for i := range tickets {
+		tickets[i] = fmt.Sprintf("FRG-%d", i+1)
+	}
+	nodes := make([]any, ticketStatesBatch)
+	for i := range nodes {
+		nodes[i] = ticketStateNode("started")
+	}
+	srv, seen := queryServer(t,
+		ticketStatesReply("agent-1", nodes...),
+		ticketStatesReply("agent-1", ticketStateNode(stateTypeCanceled)))
+	types, err := Linear{Endpoint: linearURL(srv), Tokens: fixedToken("linear-token"), Delegate: "agent-1",
+		Client: srv.Client()}.TicketStateTypes(context.Background(), tickets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(*seen) != 2 {
+		t.Fatalf("requests = %d, want one read per batch of %d", len(*seen), ticketStatesBatch)
+	}
+	if len(types) != len(tickets) || types[tickets[len(tickets)-1]] != stateTypeCanceled {
+		t.Fatalf("types = %v, want every batch's state types", types)
+	}
+}
+
+func TestLinearRefusesTicketStatesFromATokenReadingAsAnotherAgent(t *testing.T) {
+	srv, _ := queryServer(t, ticketStatesReply("agent-2", ticketStateNode(stateTypeCompleted)))
+	types, err := Linear{Endpoint: linearURL(srv), Tokens: fixedToken("linear-token"), Delegate: "agent-1",
+		Client: srv.Client()}.TicketStateTypes(context.Background(), []string{"FRG-1"})
+	if !errors.Is(err, ErrDelegateMismatch) || types != nil {
+		t.Fatalf("types = %v, err = %v, want the read refused whole", types, err)
+	}
+}
+
+// TestLinearRefusesTicketStatesWithoutAViewer: a reply that carries no viewer
+// proves nothing about which agent read it, so the whole read is refused rather
+// than reported as every waiting run's state.
+func TestLinearRefusesTicketStatesWithoutAViewer(t *testing.T) {
+	srv, _ := queryServer(t, map[string]any{"data": map[string]any{}})
+	types, err := Linear{Endpoint: linearURL(srv), Tokens: fixedToken("linear-token"), Delegate: "agent-1",
+		Client: srv.Client()}.TicketStateTypes(context.Background(), []string{"FRG-1"})
+	if err == nil || types != nil || !strings.Contains(err.Error(), "carried no viewer") {
+		t.Fatalf("types = %v, err = %v, want the reply without a viewer refused", types, err)
+	}
+}
+
+// TestLinearRefusesTicketStatesFromARequestThatFailed: the failure Linear
+// answered with is reported as that failure, never as the reply shape a request
+// that never arrived leaves behind.
+func TestLinearRefusesTicketStatesFromARequestThatFailed(t *testing.T) {
+	srv, _ := queryServer(t, map[string]any{"errors": []map[string]any{{"message": "rate limited"}}})
+	types, err := Linear{Endpoint: linearURL(srv), Tokens: fixedToken("linear-token"), Delegate: "agent-1",
+		Client: srv.Client()}.TicketStateTypes(context.Background(), []string{"FRG-1"})
+	if err == nil || types != nil || !strings.Contains(err.Error(), "rate limited") {
+		t.Fatalf("types = %v, err = %v, want the failed read reported as Linear's own refusal", types, err)
+	}
+	if strings.Contains(err.Error(), "no viewer") {
+		t.Fatalf("err = %v, want the request's failure, not the reply's missing viewer", err)
+	}
+}
+
+// TestLinearRefusesATicketStateNodeItCannotRead: one aliased field of the wrong
+// shape fails the read whole, so a ticket whose state could not be read never
+// reads as one whose state is not closed.
+func TestLinearRefusesATicketStateNodeItCannotRead(t *testing.T) {
+	srv, _ := queryServer(t, map[string]any{"data": map[string]any{
+		"viewer": map[string]any{"id": "agent-1"},
+		"s0":     7,
+	}})
+	types, err := Linear{Endpoint: linearURL(srv), Tokens: fixedToken("linear-token"), Delegate: "agent-1",
+		Client: srv.Client()}.TicketStateTypes(context.Background(), []string{"FRG-1"})
+	if err == nil || types != nil || !strings.Contains(err.Error(), "reading the state of FRG-1") {
+		t.Fatalf("types = %v, err = %v, want the unreadable node refused whole", types, err)
+	}
+}
+
 // projectNamesReply is one page of the projects' names as the project names
 // query reads them.
 func projectNamesReply(viewer string, hasNext bool, cursor string, nodes ...map[string]any) map[string]any {

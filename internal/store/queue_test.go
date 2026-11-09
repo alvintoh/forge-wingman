@@ -2717,6 +2717,7 @@ func TestRequeueStateDecidesFromTheRowAlone(t *testing.T) {
 		{"abandoned with a settled plan returns to planned",
 			map[string]any{stateField: stateAbandoned, planFilesField: []any{"a.go"}, planSettledAtField: queueAt},
 			statePlanned, nil},
+		{"withdrawn returns to queued", map[string]any{stateField: stateWithdrawn}, stateQueued, nil},
 		{"claimed with a recorded outcome returns to queued",
 			map[string]any{stateField: stateClaimed, outcomeField: string(runner.OutcomeStopped)}, stateQueued, nil},
 		{"claimed with a stop reason returns to queued",

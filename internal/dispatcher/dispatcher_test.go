@@ -35,7 +35,7 @@ func (s fakeSource) Delegated(context.Context) ([]Issue, error) {
 	return s.issues, nil
 }
 
-// fakeTicketStates is Linear as a claim uses it: prior is the state each ticket
+// fakeTicketStates is Linear as a poll uses it: prior is the state each ticket
 // held before the claim moved it, empty for one already where the claim would
 // put it, and the moves each way are recorded.
 type fakeTicketStates struct {
@@ -46,6 +46,19 @@ type fakeTicketStates struct {
 	// startErr and restoreErr fail the write they belong to.
 	startErr   error
 	restoreErr error
+	// stateTypes is what a state read reports, and stateTypesErr fails it;
+	// stateReads records the tickets each read named.
+	stateTypes    map[string]string
+	stateTypesErr error
+	stateReads    [][]string
+}
+
+func (s *fakeTicketStates) TicketStateTypes(_ context.Context, tickets []string) (map[string]string, error) {
+	if s.stateTypesErr != nil {
+		return nil, s.stateTypesErr
+	}
+	s.stateReads = append(s.stateReads, tickets)
+	return s.stateTypes, nil
 }
 
 func (s *fakeTicketStates) StartTicket(_ context.Context, ticketID string) (string, error) {
@@ -167,11 +180,41 @@ type fakeQueue struct {
 	stuck       []Stuck
 	stuckErr    error
 	stuckWindow [2]time.Time
+
+	// unclaimed is the ticket of each run waiting for a claim, and unclaimedErr
+	// fails that read. withdrawn records each ticket withdrawn and the reason it
+	// was given, and withdrawErr fails that write.
+	unclaimed    []string
+	unclaimedErr error
+	withdrawn    map[string]string
+	withdrawErr  error
+	withdrawAt   time.Time
 }
 
 func (q *fakeQueue) StuckRuns(_ context.Context, before, since time.Time) ([]Stuck, error) {
 	q.stuckWindow = [2]time.Time{before, since}
 	return q.stuck, q.stuckErr
+}
+
+func (q *fakeQueue) UnclaimedTickets(context.Context) ([]string, error) {
+	if q.unclaimedErr != nil {
+		return nil, q.unclaimedErr
+	}
+	return q.unclaimed, nil
+}
+
+func (q *fakeQueue) WithdrawRuns(_ context.Context, reasons map[string]string, at time.Time) (int, error) {
+	if q.withdrawErr != nil {
+		return 0, q.withdrawErr
+	}
+	if q.withdrawn == nil {
+		q.withdrawn = map[string]string{}
+	}
+	q.withdrawAt = at
+	for ticket, reason := range reasons {
+		q.withdrawn[ticket] = reason
+	}
+	return len(reasons), nil
 }
 
 type sweepCall struct {
