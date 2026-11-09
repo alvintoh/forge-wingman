@@ -2308,6 +2308,41 @@ func TestPrePRLoopRecordsAGuardTheFixRoundCovered(t *testing.T) {
 	}
 }
 
+// TestPrePRLoopReportsTheGuardsTheBuildBudgetLeftUnprobed is AC3 at the run
+// level: probes that spend the build stage's budget leave the guards after them
+// unprobed, the summary the PR body is rendered from records how many, and the
+// run still opens ready — a guard no probe reached is not a finding.
+func TestPrePRLoopReportsTheGuardsTheBuildBudgetLeftUnprobed(t *testing.T) {
+	const guards = 3
+	var src strings.Builder
+	src.WriteString("package x\n")
+	for i := range guards {
+		fmt.Fprintf(&src, "\nfunc f%d(err error) error {\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn nil\n}\n", i)
+	}
+	agent := &fakeAgent{edit: edit("a.go", src.String())}
+	deps, _, reported := testDeps(validObjects(), agent)
+	now := time.Now()
+	// Each probe spends half the build stage's budget, so the scan reaches two
+	// of the three guards and the third finds it spent.
+	deps.PackageTests = func(context.Context, string, string) (bool, string, error) {
+		now = now.Add(nfr1BuildBudget / 2)
+		return true, "", nil // a test catches every break
+	}
+	deps.Now = func() time.Time { return now }
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	rec := reported.last(t)
+	if rec.GuardsUntested != 1 {
+		t.Fatalf("guards untested = %d, want the 1 the build stage's budget left", rec.GuardsUntested)
+	}
+	if !rec.Ready || rec.LoopDetail != "" {
+		t.Fatalf("record ready = %v, detail = %q, want ready with no detail: a guard no probe reached is not a finding", rec.Ready, rec.LoopDetail)
+	}
+}
+
 // TestPrePRLoopSecondFixRoundResolvesAFindingTheFirstLeftOpen is the second
 // round doing its job: a re-check that still reports the finding starts one more
 // fix round on the build session, and a clean second re-check leaves the run

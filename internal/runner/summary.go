@@ -26,8 +26,8 @@ const (
 )
 
 // maxReviewFindings and maxFindingBytes bound what a summary carries of the
-// pre-open review: room for every finding a review pass and a capped guard scan
-// can make, and never enough for one long finding to crowd out the rest.
+// pre-open review — a review pass's findings plus a guard scan's — and never let
+// one long finding crowd out the rest.
 const (
 	maxReviewFindings = 24
 	maxFindingBytes   = 512
@@ -78,6 +78,10 @@ type Summary struct {
 	// nil for a run that never took one: the PR notes publish it so the owner
 	// prices the round on the first run that spends it.
 	ReviewSecondRound *FixRoundCost `json:"review_second_round,omitempty"`
+	// GuardsUntested is how many guards the diff adds the guard scan left
+	// unprobed when its budget ran out: the PR notes report the count, so the
+	// owner sees what the run did not prove. Zero when it probed them all.
+	GuardsUntested int `json:"guards_untested,omitempty"`
 }
 
 // FixRoundCost is one fix round's own spend: the round its step ran as, its
@@ -480,6 +484,9 @@ func (s Summary) validate(attemptID string, t Ticket, now time.Time) error {
 	}
 	if s.PeakContextTokens < 0 || s.PeakContextTokens > maxCount {
 		return fmt.Errorf("peak context tokens %d is out of range", s.PeakContextTokens)
+	}
+	if s.GuardsUntested < 0 || int64(s.GuardsUntested) > maxCount {
+		return fmt.Errorf("untested guard count %d is out of range", s.GuardsUntested)
 	}
 	for _, n := range []int64{s.DiffLines.Added, s.DiffLines.Removed} {
 		if n < 0 || n > maxCount {

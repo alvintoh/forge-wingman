@@ -495,10 +495,11 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 	// The guard scan is charged to the build stage: it probes the diff the
 	// review reads, so it stops once the build's budget is spent and its time
 	// stays outside the review's own budget, which begins below.
-	guards, err := scanGuards(ctx, d, wt, sum.StartedAt, nfr1BuildBudget)
+	guards, untested, err := scanGuards(ctx, d, wt, sum.StartedAt, nfr1BuildBudget)
 	if err != nil {
 		return false, "", err
 	}
+	sum.GuardsUntested = untested
 	reviewStarted := d.Now()
 	// The review's budget begins here, so its first pass takes the stage's own
 	// clamp with nothing to gate — the budget is whole at the instant the stage
@@ -557,10 +558,11 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 		// spend the time the re-review needs. Both re-checks then run under the
 		// one gate below: a finding is open, or fixed, only once its own re-check
 		// has said so.
-		surviving, err := scanGuards(ctx, d, wt, reviewStarted, nfr1ReviewBudget)
+		surviving, untested, err := scanGuards(ctx, d, wt, reviewStarted, nfr1ReviewBudget)
 		if err != nil {
 			return false, "", err
 		}
+		sum.GuardsUntested = untested
 		recheckTimeout, inBudget := roundTimeout(c.AgentTimeout, reviewStarted, d.Now(), nfr1ReviewBudget)
 		if !inBudget {
 			rounds = append(rounds, fixRoundResult{round: round, issued: findings})

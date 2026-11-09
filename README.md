@@ -228,8 +228,9 @@ fills beforehand, those containers having no network.
 Once those gates pass, the pre-PR loop probes the guards the diff adds before it
 reviews anything: it replaces each added guard's condition with `false` and runs that
 package's tests in the same image, so a guard no test covers becomes a finding the fix
-round has to answer. At most five guards are probed per scan, one at a time, and each
-file is restored before the next.
+round has to answer. Every guard the diff adds is probed, one at a time with each file
+restored before the next, while the build stage's budget lasts; a scan the budget stops
+reports the guards it left in the PR's notes.
 
 Go's `go.mod` sets **`go 1.27`** (anything from 1.22 has the stdlib `ServeMux` routing the
 services use) and the **toolchain** that builds it; raise the toolchain deliberately.

@@ -56,11 +56,12 @@ var ErrNoScreenshotsSection = errors.New("pull request body has no screenshots s
 // itself. review is what the pre-open review found and how the run left it,
 // listed in the notes and empty for a run whose review found nothing.
 // secondRound is what the review's one extra fix round cost, nil for a run that
-// never took one. provisional are the decisions auto-pilot took the recommended
-// option on, empty for a run that took none. supersedes is the number of the PR
-// an owner's choice replaced, zero when none, and retried says that choice was a
-// retry with a note.
-func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail, overlap string, outOfPlan []string, writeSetUnread bool, frontEnd []string, noPlan bool, review []ReviewFinding, secondRound *FixRoundCost, provisional []Provisional, supersedes int, retried bool) (string, error) {
+// never took one. guardsUntested is how many guards the guard scan left unprobed
+// when its budget ran out, zero for a run that probed them all. provisional are
+// the decisions auto-pilot took the recommended option on, empty for a run that
+// took none. supersedes is the number of the PR an owner's choice replaced, zero
+// when none, and retried says that choice was a retry with a note.
+func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail, overlap string, outOfPlan []string, writeSetUnread bool, frontEnd []string, noPlan bool, review []ReviewFinding, secondRound *FixRoundCost, guardsUntested int, provisional []Provisional, supersedes int, retried bool) (string, error) {
 	summary := plainText(prSummary)
 	if summary == "" {
 		summary = "`" + t.ID + "`: " + t.Title
@@ -130,6 +131,9 @@ func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail
 				for _, f := range review {
 					notes = append(notes, "- "+plainText(f.Finding)+" — "+plainText(f.Resolution))
 				}
+			}
+			if guardsUntested > 0 {
+				notes = append(notes, "", guardsNote(guardsUntested))
 			}
 			if secondRound != nil {
 				notes = append(notes, "", secondRoundNote(secondRound))
@@ -283,6 +287,12 @@ func supersedeReason(retried bool) string {
 		return "the owner retried this run with a note."
 	}
 	return "the owner chose a different option."
+}
+
+// guardsNote is the PR notes' report of the guards the scan's budget left
+// unprobed, so the owner knows which part of the diff no probe proved.
+func guardsNote(n int) string {
+	return fmt.Sprintf("**Guards unprobed:** %d of the guards this diff adds went untested — the scan's budget ran out before they were broken", n)
 }
 
 // secondRoundNote is the PR notes' report of the pre-open review's one extra

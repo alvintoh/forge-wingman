@@ -185,6 +185,8 @@ func TestParseSummaryRejects(t *testing.T) {
 		{"a negative step peak context", func(s *Summary) { s.Steps[0].PeakContextTokens = -1 }},
 		{"a step peak context over the ceiling", func(s *Summary) { s.Steps[0].PeakContextTokens = maxCount + 1 }},
 		{"a peak context over the ceiling", func(s *Summary) { s.PeakContextTokens = maxCount + 1 }},
+		{"a negative untested guard count", func(s *Summary) { s.GuardsUntested = -1 }},
+		{"an untested guard count over the ceiling", func(s *Summary) { s.GuardsUntested = int(maxCount) + 1 }},
 		{"a second fix round numbered zero", func(s *Summary) {
 			s.ReviewSecondRound = &FixRoundCost{Round: 0, DurationMS: 1}
 		}},
