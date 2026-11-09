@@ -1,12 +1,18 @@
 import { describe, expect, it } from "bun:test";
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRouter,
+  RouterProvider,
+} from "@tanstack/react-router";
 import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderToStaticMarkup, renderToString } from "react-dom/server";
 import type { RunningRun } from "./run";
-import { RunningList } from "./section";
+import { RunningList, RunningSection } from "./section";
 
 const NOW = Date.UTC(2026, 2, 1, 12, 0, 0);
 
-function run(ticket: string, minutes: number, limit: number): RunningRun {
+function run(ticket: string, minutes: number, limit: number, progress?: unknown): RunningRun {
   return {
     ticket,
     repo: "acme/widgets",
@@ -14,6 +20,7 @@ function run(ticket: string, minutes: number, limit: number): RunningRun {
     claimed_at: new Date(NOW - minutes * 60_000).toISOString(),
     title: "",
     limit_minutes: limit,
+    ...(progress === undefined ? {} : { progress }),
   };
 }
 
@@ -21,6 +28,24 @@ function draw(runs: RunningRun[], count = runs.length): string {
   return renderToStaticMarkup(
     createElement(RunningList, { runs, count, now: NOW, named: false, projects: [] }),
   );
+}
+
+type Caption = { title: string; classes: string; html: string };
+
+// attr reads one attribute off a tag's attribute text, whatever order React wrote them in.
+function attr(attrs: string, name: string): string | undefined {
+  return new RegExp(`(?:^|\\s)${name}="([^"]*)"`).exec(attrs)?.[1];
+}
+
+// captions reads every caption paragraph: a <p> carrying a title and the text-cap class.
+function captions(markup: string): Caption[] {
+  return [...markup.matchAll(/<p ([^>]*)>(.*?)<\/p>/g)].flatMap((m) => {
+    const title = attr(m[1], "title");
+    const classes = attr(m[1], "class");
+    return title !== undefined && classes?.includes("text-cap")
+      ? [{ title, classes, html: m[2] }]
+      : [];
+  });
 }
 
 type Cell = { classes: string; width: number; text: string };
@@ -96,5 +121,80 @@ describe("RunningList line", () => {
     const markup = draw([run("A", 5, 90)]);
     expect(markup).toContain("grow-10000 basis-24");
     expect(markup).toContain("gap-x-3 gap-y-2");
+  });
+});
+
+describe("RunningList caption", () => {
+  it("draws one caption under each bar with the newest report's counts and age", () => {
+    const markup = draw([
+      run("A", 5, 90, { phase: "build", steps: 14, lines: 128, age_seconds: 126 }),
+      run("B", 6, 90, { phase: "", steps: 3, lines: 0, age_seconds: 30 }),
+      run("C", 7, 90, null),
+    ]);
+    expect(captions(markup).map((c) => c.html.replace(/<[^>]*>/g, ""))).toEqual([
+      "Step 14 · 128 lines · 2m ago",
+      "Step 3 · 0 lines · just now",
+      "No progress yet",
+    ]);
+  });
+
+  it("colours a stale age defer and leaves a recent one plain", () => {
+    const [stale, fresh] = captions(
+      draw([
+        run("A", 5, 90, { phase: "build", steps: 12, lines: 40, age_seconds: 1260 }),
+        run("B", 6, 90, { phase: "build", steps: 14, lines: 128, age_seconds: 126 }),
+      ]),
+    );
+    expect(stale.html).toContain('<span class="text-defer">no update for 21m</span>');
+    expect(fresh.html).not.toContain("text-defer");
+  });
+
+  it("reads a malformed report as no progress and keeps the other rows", () => {
+    const markup = draw([
+      run("A", 5, 90, { phase: "build", steps: 14, lines: 128, age_seconds: 126 }),
+      run("B", 6, 90, { phase: "build", steps: "12", lines: 40, age_seconds: 60 }),
+      run("C", 7, 90, { phase: "build", steps: 7, lines: 0, age_seconds: 140 }),
+    ]);
+    expect(captions(markup).map((c) => c.title)).toEqual([
+      "Step 14 · 128 lines · 2m ago",
+      "No progress yet",
+      "Step 7 · 0 lines · 2m ago",
+    ]);
+  });
+
+  it("cuts the caption at one line and titles it with the full words", () => {
+    const [only] = captions(
+      draw([run("A", 5, 90, { phase: "build", steps: 41, lines: 286, age_seconds: 95 })]),
+    );
+    expect(only.classes).toContain("truncate");
+    expect(only.title).toBe("Step 41 · 286 lines · 1m ago");
+  });
+});
+
+// drawLoading renders the section before its first read lands, inside a router, since the section
+// reads the project filter from the URL.
+async function drawLoading(): Promise<string> {
+  const section = createElement(RunningSection, {
+    read: {
+      state: { status: "loading", runs: [], readAt: 0, stale: false },
+      fetching: true,
+      refresh: () => {},
+      retry: () => {},
+    },
+    projects: { status: "loading", total: 0, projects: [], readAt: 0, stale: false },
+    refresh: { readAt: 0, stale: false, fetching: true, now: 0, ask: () => {} },
+    className: "",
+  });
+  const root = createRootRoute({ component: () => section });
+  const router = createRouter({ routeTree: root, history: createMemoryHistory() });
+  await router.load();
+  return renderToString(createElement(RouterProvider, { router }));
+}
+
+describe("RunningSection loading", () => {
+  it("holds the caption slot under every skeleton bar", async () => {
+    const markup = await drawLoading();
+    const slots = markup.match(/<span class="mt-1 block h-4 w-40 rounded-tag bg-track"><\/span>/g);
+    expect(slots).toHaveLength(3);
   });
 });

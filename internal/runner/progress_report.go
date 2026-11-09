@@ -12,6 +12,9 @@ import (
 	"time"
 )
 
+// progressInterval is how often a running build writes its progress report. The surface reads a
+// report older than two intervals as stalled (STALE_AFTER_SECONDS, web/src/running/run.ts), so the
+// two change together.
 const progressInterval = 3 * time.Minute
 
 // ProgressRun names the in-flight run a progress object reports on: its run
