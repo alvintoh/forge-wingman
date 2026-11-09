@@ -232,6 +232,27 @@ func ticketStateAlias(i int) string {
 	return fmt.Sprintf("s%d", i)
 }
 
+// missingTickets returns the data of a state read of n tickets that Linear
+// refused only because some of those tickets do not exist, so the rest can be
+// read from it. A refusal naming any field other than a ticket alias is not
+// one: the read failed.
+func missingTickets(err error, n int) (json.RawMessage, bool) {
+	fields, data, ok := linear.MissingEntities(err)
+	if !ok {
+		return nil, false
+	}
+	aliases := make(map[string]bool, n)
+	for i := range n {
+		aliases[ticketStateAlias(i)] = true
+	}
+	for _, field := range fields {
+		if !aliases[field] {
+			return nil, false
+		}
+	}
+	return data, true
+}
+
 // setTicketStateMutation moves one ticket to a state, writing its manual order
 // back in the same update since a state change rewrites it. The reply carries
 // the state and the order read back, so the move is only counted where the
@@ -450,14 +471,22 @@ func (l Linear) TicketStateTypes(ctx context.Context, tickets []string) (map[str
 }
 
 // addTicketStateTypes reads one batch and adds each ticket's state type to
-// types, leaving a ticket the reply did not carry out of it.
+// types, leaving a ticket the reply did not carry out of it. A ticket Linear
+// reports as not found is left out the same way, while the rest of the batch
+// is still read.
 func (l Linear) addTicketStateTypes(ctx context.Context, tickets []string, types map[string]string) error {
 	query, variables := ticketStatesQuery(tickets)
 	var resp struct {
 		Data map[string]json.RawMessage `json:"data"`
 	}
 	if err := l.request(ctx, query, variables, &resp.Data); err != nil {
-		return fmt.Errorf("reading the state of %d tickets: %w", len(tickets), err)
+		data, ok := missingTickets(err, len(tickets))
+		if !ok {
+			return fmt.Errorf("reading the state of %d tickets: %w", len(tickets), err)
+		}
+		if err := json.Unmarshal(data, &resp.Data); err != nil {
+			return fmt.Errorf("reading the state of %d tickets: %w", len(tickets), err)
+		}
 	}
 	var viewer struct {
 		ID string `json:"id"`

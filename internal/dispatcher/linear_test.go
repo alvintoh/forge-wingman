@@ -663,6 +663,60 @@ func TestLinearRefusesTicketStatesFromARequestThatFailed(t *testing.T) {
 	}
 }
 
+// ticketNotFound is the error Linear answers beside the data when an aliased
+// issue field names a ticket that does not exist, as observed live.
+func ticketNotFound(path ...any) map[string]any {
+	return map[string]any{
+		"message":    "Entity not found: Issue",
+		"path":       path,
+		"extensions": map[string]any{"code": "INPUT_ERROR"},
+	}
+}
+
+// TestLinearReadsTheOtherTicketsBesideOneNotFound: a deleted ticket leaves only
+// itself absent, so one such ticket cannot stop every other run's withdrawal.
+func TestLinearReadsTheOtherTicketsBesideOneNotFound(t *testing.T) {
+	srv, _ := queryServer(t, map[string]any{
+		"data": map[string]any{
+			"viewer": map[string]any{"id": "agent-1"},
+			"s0":     ticketStateNode(stateTypeCompleted),
+			"s1":     nil,
+		},
+		"errors": []map[string]any{ticketNotFound("s1")},
+	})
+	types, err := Linear{Endpoint: linearURL(srv), Tokens: fixedToken("linear-token"), Delegate: "agent-1",
+		Client: srv.Client()}.TicketStateTypes(context.Background(), []string{"FRG-313", "FRG-99999"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(types) != 1 || types["FRG-313"] != stateTypeCompleted {
+		t.Fatalf("types = %v, want the found ticket alone", types)
+	}
+}
+
+// TestLinearRefusesTicketStatesBesideAnErrorNotNamingATicket: a not-found error
+// that names no ticket alias, or any other error beside one that does, fails
+// the read whole.
+func TestLinearRefusesTicketStatesBesideAnErrorNotNamingATicket(t *testing.T) {
+	for name, errs := range map[string][]map[string]any{
+		"no path":       {ticketNotFound()},
+		"not an alias":  {ticketNotFound("viewer")},
+		"another error": {ticketNotFound("s1"), {"message": "rate limited", "path": []any{"s0"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv, _ := queryServer(t, map[string]any{
+				"data":   map[string]any{"viewer": map[string]any{"id": "agent-1"}, "s0": ticketStateNode(stateTypeCompleted), "s1": nil},
+				"errors": errs,
+			})
+			types, err := Linear{Endpoint: linearURL(srv), Tokens: fixedToken("linear-token"), Delegate: "agent-1",
+				Client: srv.Client()}.TicketStateTypes(context.Background(), []string{"FRG-1", "FRG-2"})
+			if err == nil || types != nil {
+				t.Fatalf("types = %v, err = %v, want the read refused whole", types, err)
+			}
+		})
+	}
+}
+
 // TestLinearRefusesATicketStateNodeItCannotRead: one aliased field of the wrong
 // shape fails the read whole, so a ticket whose state could not be read never
 // reads as one whose state is not closed.

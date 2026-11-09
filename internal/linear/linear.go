@@ -82,6 +82,7 @@ func (c Client) Do(ctx context.Context, query string, variables, out any) error 
 		Data   json.RawMessage `json:"data"`
 		Errors []struct {
 			Message    string `json:"message"`
+			Path       []any  `json:"path"`
 			Extensions struct {
 				Code string `json:"code"`
 			} `json:"extensions"`
@@ -99,11 +100,16 @@ func (c Client) Do(ctx context.Context, query string, variables, out any) error 
 	case decodeErr != nil:
 		return fmt.Errorf("decoding Linear's reply: %w", decodeErr)
 	case len(reply.Errors) > 0:
-		msgs := make([]string, 0, len(reply.Errors))
+		r := refusal{data: reply.Data}
 		for _, e := range reply.Errors {
-			msgs = append(msgs, e.Message)
+			var field string
+			if len(e.Path) > 0 {
+				field, _ = e.Path[0].(string)
+			}
+			r.messages = append(r.messages, e.Message)
+			r.fields = append(r.fields, field)
 		}
-		failure = refusal{messages: msgs}
+		failure = r
 	}
 	if failure != nil && unauthenticated {
 		return fmt.Errorf("%w: %w", ErrUnauthenticated, failure)
@@ -120,9 +126,31 @@ func (c Client) Do(ctx context.Context, query string, variables, out any) error 
 	return nil
 }
 
-// refusal is a query Linear answered with GraphQL errors.
+// refusal is a query Linear answered with GraphQL errors: each error's message
+// and the top-level field its path names ("" for none), and the data beside
+// them.
 type refusal struct {
 	messages []string
+	fields   []string
+	data     json.RawMessage
+}
+
+// MissingEntities reports whether err is Linear refusing a query only because
+// entities it names do not exist, as when one aliased field of a batched read
+// names a deleted issue. It returns the top-level field each missing entity
+// was asked under and the data Linear returned for the rest. Any other error,
+// or an entity-not-found error whose path names no field, reports false.
+func MissingEntities(err error) (fields []string, data json.RawMessage, ok bool) {
+	var r refusal
+	if !errors.As(err, &r) || errors.Is(err, ErrUnauthenticated) {
+		return nil, nil, false
+	}
+	for i, m := range r.messages {
+		if !strings.HasPrefix(m, entityNotFoundMessage) || r.fields[i] == "" {
+			return nil, nil, false
+		}
+	}
+	return r.fields, r.data, true
 }
 
 func (r refusal) Error() string {
