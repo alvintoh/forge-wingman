@@ -34,14 +34,6 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13.2
-      # Seeds the archive cache the runner's build restores, from merged code only; a
-      # failed seed leaves the runner downloading, so it never fails CI.
-      - name: Seed the golangci-lint cache
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        continue-on-error: true
-        uses: ./.github/actions/golangci-lint
-        with:
-          save: 'true'
       - name: Wait for the Firestore emulator
         run: |
           for _ in $(seq 60); do curl -fs http://localhost:8080 >/dev/null && exit 0; sleep 2; done

@@ -30,3 +30,22 @@ resource "google_storage_bucket" "projections" {
 
   depends_on = [google_project_service.this]
 }
+
+# The second source for the build tools the workflows download from GitHub releases, which
+# can answer 504 for many minutes. Public-read so a job with no credentials can fetch it,
+# writable only by the project's own identities; each download is checked against its pinned
+# checksum before extraction, so an object here never needs trusting on its own.
+resource "google_storage_bucket" "tools" {
+  name                        = "${var.project_id}-tools"
+  location                    = var.region
+  uniform_bucket_level_access = true
+
+  depends_on = [google_project_service.this]
+}
+
+# Read one object by name; unlike objectViewer it cannot list the bucket.
+resource "google_storage_bucket_iam_member" "tools_public_read" {
+  bucket = google_storage_bucket.tools.name
+  role   = "roles/storage.legacyObjectReader"
+  member = "allUsers"
+}

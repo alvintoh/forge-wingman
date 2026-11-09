@@ -3,51 +3,31 @@
 # ci.yml's golangci-lint-action version is the same version. The binary is built with
 # Go 1.27.0, so go.mod's `go` line moving past it needs a newer release here.
 #
-# The archive comes from the Actions cache, keyed on its version and checksum, and from
-# the release download only on a miss: that download can answer 504 for many minutes.
-# The checksum is checked after every restore, so a cache entry cannot swap the binary,
-# and only CI on a push to main saves it.
+# The release download can answer 504 for many minutes, so it is retried for up to five,
+# then the same archive is fetched from the project's tools bucket (infra/storage.tf),
+# which needs no credentials. Either way the checksum is checked before extraction. A new
+# version needs its archive uploaded there too (infra/README.md, "Tools mirror").
 name: golangci-lint
 description: Installs the pinned golangci-lint release and verifies its checksum.
-inputs:
-  version:
-    description: the golangci-lint release
-    default: 2.13.2
-  sha256:
-    description: the release's linux-amd64 archive checksum
-    default: 2277d43b98ec0054280f2ac26b53268bae97682444678a59a657dd565da021d6
-  save:
-    description: "'true' saves a freshly downloaded archive to the cache; only CI on a push to main passes it"
-    default: 'false'
 runs:
   using: composite
   steps:
-    - id: restore
-      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ${{ runner.temp }}/golangci-lint.tar.gz
-        key: golangci-lint-${{ inputs.version }}-${{ inputs.sha256 }}
-
     - shell: bash
       env:
-        VERSION: ${{ inputs.version }}
-        SHA256: ${{ inputs.sha256 }}
-        CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
+        VERSION: 2.13.2
+        SHA256: 2277d43b98ec0054280f2ac26b53268bae97682444678a59a657dd565da021d6
+        MIRROR: https://storage.googleapis.com/forge-wingman-tools
       run: |
         archive="golangci-lint-${VERSION}-linux-amd64"
-        tarball="$RUNNER_TEMP/golangci-lint.tar.gz"
-        if [ "$CACHE_HIT" != "true" ]; then
-          curl -fsSL --retry 10 --retry-all-errors --retry-max-time 300 -o "$tarball" \
-            "https://github.com/golangci/golangci-lint/releases/download/v${VERSION}/$archive.tar.gz"
+        tarball="$RUNNER_TEMP/$archive.tar.gz"
+        if ! curl -fsSL --retry 10 --retry-all-errors --retry-max-time 300 -o "$tarball" \
+          "https://github.com/golangci/golangci-lint/releases/download/v${VERSION}/$archive.tar.gz"; then
+          echo "::warning::the golangci-lint release download failed; fetching it from the tools bucket"
+          curl -fsSL --retry 5 --retry-all-errors --retry-max-time 120 -o "$tarball" \
+            "$MIRROR/$archive.tar.gz"
         fi
         echo "$SHA256  $tarball" | sha256sum --check --strict -
         mkdir -p "$HOME/.local/bin"
         tar -xzf "$tarball" -C "$HOME/.local/bin" --strip-components=1 "$archive/golangci-lint"
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
         "$HOME/.local/bin/golangci-lint" version
-
-    - if: inputs.save == 'true' && steps.restore.outputs.cache-hit != 'true'
-      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ${{ runner.temp }}/golangci-lint.tar.gz
-        key: golangci-lint-${{ inputs.version }}-${{ inputs.sha256 }}

@@ -956,3 +956,21 @@ gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.serv
    workflow bindings name.
 6. Remove `runner_wif` in its own change; `smoke` passing after it proves the
    workflow bindings alone admit the runner.
+
+## Tools mirror
+
+`forge-wingman-tools` (`storage.tf`) holds a copy of each build tool the workflows download
+from a GitHub release, read when that download fails (`.github/actions/golangci-lint`). It is
+public-read and writable only by the project's identities, and the action checks the pinned
+checksum before extracting, so a bad object fails the step rather than installing.
+
+When a tool's pinned version changes, upload the new archive under its release file name,
+then check the copy against the checksum the action pins:
+
+```sh
+V=2.13.2
+A="golangci-lint-${V}-linux-amd64.tar.gz"
+curl -fsSL -o "/tmp/$A" "https://github.com/golangci/golangci-lint/releases/download/v${V}/$A"
+gcloud storage cp "/tmp/$A" "gs://forge-wingman-tools/$A" --project=forge-wingman
+curl -fsSL "https://storage.googleapis.com/forge-wingman-tools/$A" | shasum -a 256
+```
