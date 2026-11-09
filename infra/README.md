@@ -52,8 +52,6 @@ Set from the outputs after `apply`:
 owner. When it does not, run.yml's ticket, model and pr-meta jobs refuse to run and
 the record job records identity-mismatch.
 
-The `COMMANDCODE_API_KEY` repository secret is the Command Code key every model slot runs on.
-
 The `GEMINI_API_KEY` repository secret is the Google Gemini API key the free-tier plan
 runs on. It is set by hand, like the other secrets, and a run reaches it only when its
 own plan's allowance is spent and the dispatcher moves it to the free tier
@@ -61,8 +59,9 @@ own plan's allowance is spent and the dispatcher moves it to the free tier
 plan: the free tier is reached with the key alone. Until it is set, a run that falls
 through to the free tier stops as credential-absent rather than starting.
 
-The `OPENCODE_API_KEY` repository secret is the OpenCode Go key the `opencode-go` plan
-runs on, read only for a model that plan names. Go refuses a model until the account's
+The `OPENCODE_API_KEY` repository secret is the OpenCode Go key every model slot runs on
+(`paid_plans` in `internal/providers/providers.json`). The `COMMANDCODE_API_KEY` secret is
+no longer read and can be deleted. Go refuses a model until the account's
 privacy settings allow it, and the run then stops as provider-setting, naming the
 setting to change.
 
@@ -89,7 +88,7 @@ able to invoke the job.
 
 `WINGMAN_PR_REVIEW_MODELS` is optional: the models `pr-review.yml` reviews with, in order,
 comma-separated provider/model. Unset, it reviews with
-`command-code/poolside/laguna-s-2.1-free`; a paid model is an edit of the variable.
+`opencode-go/muse-spark-1.3-contributor`.
 
 `WINGMAN_AGENT_IMAGE` is required by the build and plan stages and optional for the rest:
 an agent image pinned by digest that provides omp, git and sh. It runs those
@@ -512,14 +511,14 @@ request finds the prefix gone. The record reports how cold a run was, not why. (
 run planned by the separate plan-stage dispatch carries no plan entry there: that
 job reports no summary at all, its tokens included.)
 
-**Retention is not documented by the provider** (checked 2026-10-14). Command
-Code's docs (`https://api.commandcode.ai/docs`, all 60 pages) carry cache prices
-and a ~98% hit-rate claim, and one TTL — 15 minutes, on the CLI's own fetch-tool
-response cache — but no prompt-cache window. DeepSeek's own cache page is not
-reachable from the runner's egress allowlist (`api.commandcode.ai` and
-`generativelanguage.googleapis.com` alone), and the repository's own measurement
-(2026-10-05: whole-context misses 0.2-1.8 min apart, so not expiry) bounds
-nothing hours out.
+**Retention is not documented by the provider** (checked 2026-10-14, on Command
+Code, the runs' former plan; OpenCode Go's is unchecked). Command Code's docs
+(`https://api.commandcode.ai/docs`, all 60 pages) carry cache prices and a ~98%
+hit-rate claim, and one TTL — 15 minutes, on the CLI's own fetch-tool response
+cache — but no prompt-cache window. DeepSeek's own cache page is not reachable
+from the runner's egress allowlist (the plans' own API hosts alone), and the
+repository's own measurement (2026-10-05: whole-context misses 0.2-1.8 min
+apart, so not expiry) bounds nothing hours out.
 
 **Batch delegations that share a prefix.** Delegate the tickets of one sha
 together rather than one every few hours: each run's first request then reads the

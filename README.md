@@ -56,8 +56,10 @@ with its signals in the detail, `no-repository` for no repo label,
 ticket that fails its own checks. A model a run may not use is refused the
 same way: `model-malformed` for a label that is not `provider/model` (or a
 plan list with an empty or repeated entry), `review-model-is-build-model` for
-a review model equal to the build model, `model-provider-unconfigured` for
-a provider with no plan record with its billing recorded, and
+a review model equal to the build model, `model-provider-not-a-plan` for a
+provider that is not a plan in `internal/providers/providers.json`,
+`model-provider-unconfigured` for a provider with no plan record with its
+billing recorded, and
 `model-per-token-not-opted-in` for a per-token provider the owner has not
 opted in.
 

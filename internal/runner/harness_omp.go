@@ -33,9 +33,8 @@ type ompPlan struct {
 // ompPlans are the plans omp can reach. A plan absent here is one omp cannot
 // reach, and the adapter refuses its models before starting omp.
 var ompPlans = map[string]ompPlan{
-	"command-code": {provider: "commandcode", keyEnv: "COMMAND_CODE_API_KEY"},
-	"gemini":       {provider: "google", keyEnv: "GEMINI_API_KEY"},
-	"opencode-go":  {provider: "opencode-go", keyEnv: "OPENCODE_API_KEY"},
+	"gemini":      {provider: "google", keyEnv: "GEMINI_API_KEY"},
+	"opencode-go": {provider: "opencode-go", keyEnv: "OPENCODE_API_KEY"},
 }
 
 // ompAgentDir and ompSessionDir sit under the harness's HOME; omp reads its

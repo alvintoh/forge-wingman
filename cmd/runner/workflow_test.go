@@ -235,10 +235,36 @@ func TestRunPassesTheGoKeyToTheModelJob(t *testing.T) {
 		t.Errorf("run.yml's model job does not pass OPENCODE_API_KEY:\n%s", secrets)
 	}
 	model := read("model.yml")
-	if !strings.Contains(model, "      OPENCODE_API_KEY:\n        required: false\n") {
-		t.Error("model.yml does not declare OPENCODE_API_KEY as an optional secret")
+	if !strings.Contains(model, "      OPENCODE_API_KEY:\n        required: true\n") {
+		t.Error("model.yml does not declare OPENCODE_API_KEY as a required secret")
 	}
 	if got := strings.Count(model, "          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}\n"); got != 2 {
 		t.Errorf("model.yml passes OPENCODE_API_KEY to %d steps, want 2: the build and plan steps", got)
+	}
+}
+
+// TestNoWorkflowReachesCommandCode asserts no workflow passes the retired
+// plan's key, and the egress probe expects the proxy to refuse its API host.
+func TestNoWorkflowReachesCommandCode(t *testing.T) {
+	dir := filepath.Join("..", "..", ".github", "workflows")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), "COMMANDCODE_API_KEY") {
+			t.Errorf("%s passes COMMANDCODE_API_KEY", e.Name())
+		}
+	}
+	probe, err := os.ReadFile(filepath.Join(dir, "agent-probe.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(probe), "for host in api.commandcode.ai example.com 169.254.169.254; do") {
+		t.Error("agent-probe.yml does not expect the proxy to refuse api.commandcode.ai")
 	}
 }

@@ -24,7 +24,7 @@
 //	runner plan-list                                 print every plan side by side with its harnesses, their licences and its trailing runs' cached share per phase, flagging the ones to look at
 //	runner plans-refresh   [-provider <name>]        read each configured plan's own pages and model list, the leaderboard's scores and the free feed into a dated facts document
 //	runner plan-smoke      -plan-models <list>       prove the plan agent refuses edit, a new file and bash on the list's first and last model
-//	runner review-smoke    -review-models <list>     try the review agent on a fixture diff with each model, passing those whose findings parse at $0
+//	runner review-smoke    -review-models <list>     try the review agent on a fixture diff with each model, passing those whose findings parse on a priced run
 //	runner pr-review-context -pr <n> -out <path>     write a pull request's diff and the ticket it names, read from Linear
 //	runner pr-review       -context <path> ...       review the context on each model in turn and write the verdict
 //	runner pr-review-post  -pr <n> -verdict <path>   post the review comment and status, and decide the auto-merge request

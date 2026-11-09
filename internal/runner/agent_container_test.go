@@ -31,7 +31,7 @@ func containedAgents() []containedAgent {
 	return []containedAgent{
 		{"omp", func(c AgentContainer, home string) Harness {
 			return OmpHarness{Bin: "/host/bin/omp", Key: conformanceKey, Home: home, Container: c}
-		}, conformanceKey, "COMMAND_CODE_API_KEY", "omp", func(home string) []string { return []string{"HOME=" + home} }},
+		}, conformanceKey, "OPENCODE_API_KEY", "omp", func(home string) []string { return []string{"HOME=" + home} }},
 	}
 }
 

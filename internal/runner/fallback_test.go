@@ -34,7 +34,7 @@ func scriptedCLIAgent(t *testing.T, stderrMsg, okModel string) (bin string, atte
 	dir := t.TempDir()
 	bin, logPath, planPath := filepath.Join(dir, "omp"), filepath.Join(dir, "attempts.log"), filepath.Join(dir, "plan.ndjson")
 	script := "#!/bin/sh\nmodel=; flag=\n" +
-		"while [ $# -gt 0 ]; do\n  case \"$1\" in --model) model=command-code/${2#commandcode/}; shift;; --approval-mode) flag=$2; shift;; esac\n  shift\ndone\n" +
+		"while [ $# -gt 0 ]; do\n  case \"$1\" in --model) model=$2; shift;; --approval-mode) flag=$2; shift;; esac\n  shift\ndone\n" +
 		"printf '%s|%s\\n' \"$model\" \"$flag\" >> '" + logPath + "'\n" +
 		"cat > /dev/null\n" +
 		"if [ \"$model\" = '" + okModel + "' ]; then cat '" + planPath + "'; exit 0; fi\n" +
@@ -69,6 +69,7 @@ func scriptedAgent(t *testing.T, bin string, p Profile, model string) OmpAgent {
 }
 
 func TestBuildFallbackRunsEachSubstitutedModelUnderTheSameAgentShape(t *testing.T) {
+	withFallbacks(t, testFallbackModel)
 	wantModels := append([]string{DefaultModel()}, fallbackModels(DefaultModel())...)
 	tests := []struct {
 		name     string

@@ -1,10 +1,8 @@
 {
-  "default": "command-code/deepseek/deepseek-v4.1-flash",
-  "fallbacks": [
-    "command-code/poolside/laguna-s-2.1-free"
-  ],
-  "plan": "command-code/deepseek/deepseek-v4.1-flash",
+  "default": "opencode-go/deepseek-v4.1-flash",
+  "fallbacks": [],
+  "plan": "opencode-go/deepseek-v4.1-flash",
   "review": [
-    "command-code/meta/muse-spark-1.3-contributor"
+    "opencode-go/muse-spark-1.3-contributor"
   ]
 }

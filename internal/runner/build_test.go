@@ -469,6 +469,7 @@ func TestBuildClassifiesAnOrdinaryAgentFailureUnchanged(t *testing.T) {
 }
 
 func TestBuildSubstitutesTheNextModelOnAnAvailabilityFailureAndRecordsBothAttempts(t *testing.T) {
+	withFallbacks(t, testFallbackModel)
 	agent := &fakeAgent{
 		edit: edit("version.go", "package x\n"),
 		errFn: func(call int) error {
@@ -506,6 +507,7 @@ func TestBuildSubstitutesTheNextModelOnAnAvailabilityFailureAndRecordsBothAttemp
 }
 
 func TestBuildStopsWithModelUnavailableOnceTheAvailabilityOrderIsExhausted(t *testing.T) {
+	withFallbacks(t, testFallbackModel)
 	agent := &fakeAgent{stderr: "Error: no endpoints found for this model", err: errors.New("exit status 1")}
 	deps, _, reported := testDeps(validObjects(), agent)
 	c := testConfig(t, initRepo(t))
@@ -528,6 +530,7 @@ func TestBuildStopsWithModelUnavailableOnceTheAvailabilityOrderIsExhausted(t *te
 }
 
 func TestBuildNeverSubstitutesOnAnOrdinaryAgentFailureEvenWithFallbacksConfigured(t *testing.T) {
+	withFallbacks(t, testFallbackModel)
 	agent := &fakeAgent{stderr: "Error: the model returned malformed output", err: errors.New("exit status 1")}
 	deps, _, reported := testDeps(validObjects(), agent)
 	c := testConfig(t, initRepo(t))
@@ -1271,7 +1274,7 @@ func TestBuildIgnoresThePlanModelsOfATicketThatDoesNotPlan(t *testing.T) {
 }
 
 func TestBuildStopsOnAnInvalidModel(t *testing.T) {
-	for _, model := range []string{"", "big-pickle", "command-code/big pickle", "-x/y", "command-code/x;rm", overLongModel} {
+	for _, model := range []string{"", "big-pickle", "opencode-go/big pickle", "-x/y", "opencode-go/x;rm", overLongModel} {
 		t.Run(model, func(t *testing.T) {
 			agent := &fakeAgent{}
 			deps, _, reported := testDeps(validObjects(), agent)
@@ -1311,11 +1314,8 @@ func TestBuildStopsWhenTheReviewModelsAreInvalid(t *testing.T) {
 }
 
 func TestBuildStopsWhenAReviewModelIsABuildFallback(t *testing.T) {
-	fallbacks := fallbackModels(DefaultModel())
-	if len(fallbacks) == 0 {
-		t.Fatal("models.json names no build fallbacks for this test to cover")
-	}
-	for _, fallback := range fallbacks {
+	withFallbacks(t, testFallbackModel)
+	for _, fallback := range fallbackModels(DefaultModel()) {
 		t.Run(fallback, func(t *testing.T) {
 			agent := &fakeAgent{}
 			deps, _, reported := testDeps(validObjects(), agent)
@@ -1366,6 +1366,7 @@ func TestDefaultPlanModelsValidate(t *testing.T) {
 }
 
 func TestBuildAdvancesTheBuildOrderOnAllowanceExhaustion(t *testing.T) {
+	withFallbacks(t, testFallbackModel)
 	agent := &fakeAgent{stderr: "Error: allowance exhausted", err: errors.New("exit status 1")}
 	deps, _, reported := testDeps(validObjects(), agent)
 	c := testConfig(t, initRepo(t))
@@ -1373,7 +1374,7 @@ func TestBuildAdvancesTheBuildOrderOnAllowanceExhaustion(t *testing.T) {
 	if _, err := Build(context.Background(), deps, c); err == nil {
 		t.Fatal("Build succeeded with every model's allowance exhausted")
 	}
-	want := []string{"command-code/deepseek/deepseek-v4.1-flash", "command-code/poolside/laguna-s-2.1-free"}
+	want := []string{DefaultModel(), testFallbackModel}
 	if agent.calls != len(want) {
 		t.Fatalf("build agent ran %d times, want %d: an exhausted allowance moves to the fallback", agent.calls, len(want))
 	}
@@ -1933,6 +1934,7 @@ func TestPrePRLoopGivesUpAfterThreeRoundsStillFailing(t *testing.T) {
 }
 
 func TestPrePRLoopStillGetsThreeRebuildRoundsAfterAMidRoundModelSubstitution(t *testing.T) {
+	withFallbacks(t, testFallbackModel)
 	agent := &fakeAgent{
 		edit: edit("version.go", "package x\n"),
 		errFn: func(call int) error {
@@ -2630,11 +2632,8 @@ func TestReviewSubstitutionIsClampedByTheReviewBudget(t *testing.T) {
 // steps to its backup within the review's own 25 minutes even though the build
 // stage's 60 have gone.
 func TestFixRoundSubstitutionIsClampedByTheReviewBudget(t *testing.T) {
+	withFallbacks(t, testFallbackModel)
 	const finding = "version.go:1 the change is wrong"
-	fallbacks := fallbackModels(DefaultModel())
-	if len(fallbacks) == 0 {
-		t.Fatal("models.json names no build fallbacks for this test to cover")
-	}
 	buildAgent := &fakeAgent{
 		edit: edit("version.go", "package x\n"),
 		errFn: func(call int) error {
@@ -2781,6 +2780,7 @@ func TestPrePRLoopDraftsWithoutAReReviewWhenTheScanAfterAFixRoundFails(t *testin
 // next fix round is round 4, each round once, and the rows and the second
 // round's cost name the round that did the fixing.
 func TestPrePRLoopContinuesFromTheRoundASubstitutedFixModelAnswered(t *testing.T) {
+	withFallbacks(t, testFallbackModel)
 	const finding = "the retry never bounds its attempts"
 	agent := &fakeAgent{
 		edit: edit("version.go", "package x\n"),
@@ -3334,7 +3334,7 @@ func TestClassifyAgentFailure(t *testing.T) {
 			OutcomeStopped, StopProviderSetting, "Privacy > Regions: Global"},
 		{"a training setting marker", "opencode-go", write("400 This Go model trains on request data"),
 			OutcomeStopped, StopProviderSetting, "Privacy > Allow paid endpoints that train on request data"},
-		{"another provider's setting marker", "command-code", write("400 This Go model trains on request data"),
+		{"another provider's setting marker", "gemini", write("400 This Go model trains on request data"),
 			OutcomeAgentFailed, StopAgentExit, ""},
 		{"an ordinary failure", "p", write("panic: nil pointer"), OutcomeAgentFailed, StopAgentExit, ""},
 		{"an unreadable file", "p", filepath.Join(dir, "does-not-exist"), OutcomeAgentFailed, StopAgentExit, ""},
@@ -3367,7 +3367,7 @@ func TestTruncateKeepsValidUTF8(t *testing.T) {
 }
 
 func TestModelPatternAcceptsProviderIDs(t *testing.T) {
-	for _, model := range []string{"command-code/deepseek/deepseek-v4.1-flash", "openrouter/deepseek/deepseek-v4:free", "command-code/poolside/laguna-s-2.1-free"} {
+	for _, model := range []string{"opencode-go/deepseek-v4.1-flash", "openrouter/deepseek/deepseek-v4:free", "opencode-go/muse-spark-1.3-contributor"} {
 		if !modelPattern.MatchString(model) {
 			t.Errorf("rejected %q", model)
 		}
@@ -3376,7 +3376,7 @@ func TestModelPatternAcceptsProviderIDs(t *testing.T) {
 
 func TestProviderIsTheModelsPrefixBeforeItsFirstSlash(t *testing.T) {
 	for _, tt := range []struct{ model, want string }{
-		{"command-code/deepseek/deepseek-v4.1-flash", "command-code"},
+		{"opencode-go/deepseek-v4.1-flash", "opencode-go"},
 		{"openrouter/deepseek/deepseek-v4:free", "openrouter"},
 		{"noslash", "noslash"},
 	} {

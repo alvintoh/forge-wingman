@@ -111,15 +111,14 @@ type peakHour struct {
 
 // renderPeak renders the peak view as JSON at now.
 func renderPeak(mode dispatcher.PeakMode, now time.Time) peakResponse {
-	models := peakModels()
+	models := peakModels(providers.RunModels())
 	return peakResponse{Mode: string(mode), Models: models, Holding: holdingNow(mode, models, now)}
 }
 
-// peakModels converts each run model's rate card to the window the views
-// display. Every model is rendered whether or not it prices peak hours, so a
-// view narrowing to the peak-priced ones reads an empty list rather than a null.
-func peakModels() []peakModel {
-	models := providers.RunModels()
+// peakModels converts each model's rate card to the window the views display.
+// Every model is rendered whether or not it prices peak hours, so a view
+// narrowing to the peak-priced ones reads an empty list rather than a null.
+func peakModels(models []string) []peakModel {
 	out := make([]peakModel, 0, len(models))
 	for _, model := range models {
 		rates, priced := providers.RatesFor(model)

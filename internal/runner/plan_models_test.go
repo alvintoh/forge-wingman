@@ -16,7 +16,7 @@ const (
 // re-checks names the model the plan agent actually ran on: the main plan model
 // when it answers, and the backup that took over when it does not.
 func TestPlanStageCarriesTheModelThePlanRanOn(t *testing.T) {
-	list := []string{"command-code/a", "command-code/b"}
+	list := []string{"opencode-go/a", "opencode-go/b"}
 	tests := []struct {
 		name    string
 		stderr  string
@@ -32,7 +32,7 @@ func TestPlanStageCarriesTheModelThePlanRanOn(t *testing.T) {
 			objects := validObjects()
 			objects["projections/"+testSHA+"/"+planProjectionFile] = []byte("# Plan rules\n\n" + ticketSentinel)
 			deps, _, _ := testDeps(objects, nil)
-			deps.PlanAgent = scriptedAgent(t, bin, ProfilePlan, "command-code/ignored")
+			deps.PlanAgent = scriptedAgent(t, bin, ProfilePlan, "opencode-go/ignored")
 			c := testConfig(t, initRepo(t))
 			c.Ticket.Size = "M"
 			c.PlanModels = list
@@ -52,7 +52,7 @@ func TestPlanStageCarriesTheModelThePlanRanOn(t *testing.T) {
 }
 
 func TestBuildPlanPhaseWalksTheModelListOnTheRealAgent(t *testing.T) {
-	list := []string{"command-code/a", "command-code/b", "command-code/c"}
+	list := []string{"opencode-go/a", "opencode-go/b", "opencode-go/c"}
 	tests := []struct {
 		name          string
 		stderr        string
@@ -62,11 +62,11 @@ func TestBuildPlanPhaseWalksTheModelListOnTheRealAgent(t *testing.T) {
 		wantReason    StopReason
 		wantPlanSteps int
 	}{
-		{"allowance moves to the backup", allowanceStderr, "command-code/b", list[:2], OutcomeBuilt, "", 2},
-		{"unavailability moves to the backup", unavailableStderr, "command-code/c", list, OutcomeBuilt, "", 3},
+		{"allowance moves to the backup", allowanceStderr, "opencode-go/b", list[:2], OutcomeBuilt, "", 2},
+		{"unavailability moves to the backup", unavailableStderr, "opencode-go/c", list, OutcomeBuilt, "", 3},
 		{"every model out of allowance", allowanceStderr, "", list, OutcomeBudgetStop, StopAllowanceExhausted, 3},
 		{"every model unavailable", unavailableStderr, "", list, OutcomeInfraFailure, StopModelUnavailable, 3},
-		{"an ordinary failure never moves on", ordinaryFailStderr, "command-code/b", list[:1], OutcomeAgentFailed, StopAgentExit, 1},
+		{"an ordinary failure never moves on", ordinaryFailStderr, "opencode-go/b", list[:1], OutcomeAgentFailed, StopAgentExit, 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -74,7 +74,7 @@ func TestBuildPlanPhaseWalksTheModelListOnTheRealAgent(t *testing.T) {
 			objects := validObjects()
 			objects["projections/"+testSHA+"/"+planProjectionFile] = []byte("# Plan rules\n\n" + ticketSentinel)
 			deps, _, reported := testDeps(objects, &fakeAgent{edit: edit("version.go", "package x\n")})
-			deps.PlanAgent = scriptedAgent(t, bin, ProfilePlan, "command-code/ignored")
+			deps.PlanAgent = scriptedAgent(t, bin, ProfilePlan, "opencode-go/ignored")
 			c := testConfig(t, initRepo(t))
 			c.Ticket.Size = "M"
 			c.PlanModels = list
@@ -112,14 +112,14 @@ func TestBuildPlanPhaseWalksTheModelListOnTheRealAgent(t *testing.T) {
 
 func TestPlanModelIsTheLastPlanStepsModelAndIgnoresOtherPhases(t *testing.T) {
 	sum := Summary{Steps: []Step{
-		{Phase: PhasePlan, Model: "command-code/a"},
-		{Phase: PhasePlan, Model: "command-code/b"},
-		{Phase: PhaseBuild, Model: "command-code/c"},
+		{Phase: PhasePlan, Model: "opencode-go/a"},
+		{Phase: PhasePlan, Model: "opencode-go/b"},
+		{Phase: PhaseBuild, Model: "opencode-go/c"},
 	}}
-	if got := planModel(sum); got != "command-code/b" {
+	if got := planModel(sum); got != "opencode-go/b" {
 		t.Fatalf("plan model = %q, want the last plan step's, not a later phase's", got)
 	}
-	if got := planModel(Summary{Steps: []Step{{Phase: PhaseBuild, Model: "command-code/c"}}}); got != "" {
+	if got := planModel(Summary{Steps: []Step{{Phase: PhaseBuild, Model: "opencode-go/c"}}}); got != "" {
 		t.Fatalf("plan model = %q, want none for a summary with no plan step", got)
 	}
 }

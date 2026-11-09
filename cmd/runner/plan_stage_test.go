@@ -241,7 +241,7 @@ func TestRecordPlanStageRecordsTheModelThePlanRanOn(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	e := env{identity: runner.Identity{Account: "octo", Owner: "octo"}, project: "forge-wingman-test"}
 	for name, tc := range map[string]struct{ model, want string }{
-		"a plan with a model":  {"command-code/deepseek/deepseek-v4.1-flash", "command-code/deepseek/deepseek-v4.1-flash"},
+		"a plan with a model":  {"opencode-go/deepseek-v4.1-flash", "opencode-go/deepseek-v4.1-flash"},
 		"a plan with no model": {"", ""},
 	} {
 		t.Run(name, func(t *testing.T) {

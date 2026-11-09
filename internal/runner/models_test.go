@@ -18,36 +18,64 @@ func TestEmbeddedModelsNameTheDefault(t *testing.T) {
 	}
 }
 
-func TestFallbackModelsAreTheDefaultsOnly(t *testing.T) {
+// testFallbackModel is a backup a test configures beside the default model, on
+// the default model's own plan.
+const testFallbackModel = "opencode-go/glm-5.3-flash"
+
+// withFallbacks makes models the default model's fallbacks until t ends, so a
+// substitution test does not depend on what models.json configures.
+func withFallbacks(t *testing.T, models ...string) {
+	t.Helper()
+	saved := embeddedModels
+	embeddedModels.Fallbacks = models
+	t.Cleanup(func() { embeddedModels = saved })
+}
+
+// TestEmbeddedModelsRunOnOpenCodeGoWithNoFallbacks asserts every default model
+// is an OpenCode Go model, and that the default has no fallbacks, since the
+// plan serves no free model and a fallback must stay on the default's plan.
+func TestEmbeddedModelsRunOnOpenCodeGoWithNoFallbacks(t *testing.T) {
 	set, err := parseModelSet(modelsJSON)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := fallbackModels(DefaultModel()); !slices.Equal(got, set.Fallbacks) {
-		t.Fatalf("fallbackModels(default) = %v, want models.json's %v", got, set.Fallbacks)
+	for _, m := range append([]string{set.Default, set.Plan}, set.Review...) {
+		if Provider(m) != "opencode-go" {
+			t.Errorf("model %s is not an opencode-go model", m)
+		}
 	}
-	if got := fallbackModels("command-code/other"); got != nil {
+	if len(set.Fallbacks) != 0 {
+		t.Errorf("fallbacks = %v, want none", set.Fallbacks)
+	}
+}
+
+func TestFallbackModelsAreTheDefaultsOnly(t *testing.T) {
+	withFallbacks(t, testFallbackModel)
+	if got := fallbackModels(DefaultModel()); !slices.Equal(got, []string{testFallbackModel}) {
+		t.Fatalf("fallbackModels(default) = %v, want the configured %s", got, testFallbackModel)
+	}
+	if got := fallbackModels("opencode-go/other"); got != nil {
 		t.Fatalf("fallbackModels(other) = %v, want none", got)
 	}
 }
 
 func TestParseModelSetRejectsAnInvalidSet(t *testing.T) {
 	for name, tc := range map[string]struct{ doc, want string }{
-		"mixed providers":  {`{"default":"command-code/a","fallbacks":["p/a"]}`, "not a command-code model"},
+		"mixed providers":  {`{"default":"opencode-go/a","fallbacks":["p/a"]}`, "not a opencode-go model"},
 		"malformed name":   {`{"default":"big-pickle","fallbacks":[]}`, "not provider/model"},
 		"duplicate":        {`{"default":"p/a","fallbacks":["p/a"]}`, "listed twice"},
 		"empty default":    {`{"default":"","fallbacks":[]}`, "not provider/model"},
 		"unknown field":    {`{"default":"p/a","fallbacks":[],"extra":1}`, "unknown field"},
-		"fallback foreign": {`{"default":"p/a","fallbacks":["command-code/b"]}`, "not a p model"},
+		"fallback foreign": {`{"default":"p/a","fallbacks":["opencode-go/b"]}`, "not a p model"},
 		"malformed plan":   {`{"default":"p/a","fallbacks":[],"plan":"big-pickle","review":["p/r"]}`, "not provider/model"},
 		"foreign plan":     {`{"default":"p/a","fallbacks":[],"plan":"q/a","review":["p/r"]}`, "not a p model"},
 		"no review":        {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":[]}`, "at least one model"},
 		"malformed review": {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":["p/r",""]}`, "not provider/model"},
 		"foreign review":   {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":["p/r","q/r"]}`, "not a p model"},
 		"repeated review":  {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":["p/r","p/r"]}`, "listed twice"},
-		"a free model with no smoke run": {`{"default":"command-code/deepseek/deepseek-v4.1-flash",` +
-			`"fallbacks":["command-code/ling-3.0-flash-sante:free"],` +
-			`"plan":"command-code/deepseek/deepseek-v4.1-flash","review":["command-code/meta/muse-spark-1.3-contributor"]}`,
+		"a free model with no smoke run": {`{"default":"opencode-go/deepseek-v4.1-flash",` +
+			`"fallbacks":["opencode-go/ling-3.0-flash-sante:free"],` +
+			`"plan":"opencode-go/deepseek-v4.1-flash","review":["opencode-go/muse-spark-1.3-contributor"]}`,
 			"no recorded plan-smoke run"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -61,16 +89,17 @@ func TestParseModelSetRejectsAnInvalidSet(t *testing.T) {
 
 func TestDefaultReviewModelsReturnsACopy(t *testing.T) {
 	first := DefaultReviewModels()
-	first[0] = "command-code/mutated"
-	if got := DefaultReviewModels(); got[0] == "command-code/mutated" {
+	first[0] = "opencode-go/mutated"
+	if got := DefaultReviewModels(); got[0] == "opencode-go/mutated" {
 		t.Fatalf("DefaultReviewModels shares its backing array: %v", got)
 	}
 }
 
 func TestFallbackModelsReturnsACopy(t *testing.T) {
+	withFallbacks(t, testFallbackModel)
 	first := fallbackModels(DefaultModel())
-	first[0] = "command-code/mutated"
-	if got := fallbackModels(DefaultModel()); got[0] == "command-code/mutated" {
+	first[0] = "opencode-go/mutated"
+	if got := fallbackModels(DefaultModel()); got[0] == "opencode-go/mutated" {
 		t.Fatalf("fallbackModels shares its backing array: %v", got)
 	}
 }
@@ -85,16 +114,14 @@ func TestDefaultModelProviderHasConfiguredWindows(t *testing.T) {
 	}
 }
 
-// TestTheFreeRungAndTheReviewListAreEachOneModel asserts the state adr/0015
-// records, so it cannot drift silently: one model on the free rung, which the
-// free-tier walk skips because one model cannot staff both the build and its
-// review, and one on the review list, so a single vendor. A second entry on
-// either is deliberate, and updates adr/0015 with this test.
-func TestTheFreeRungAndTheReviewListAreEachOneModel(t *testing.T) {
-	if rung := providers.LastResortModels("command-code"); len(rung) != 1 {
-		t.Fatalf("command-code's free rung names %d models (%v), want one: adr/0015 states the free tier is one rung", len(rung), rung)
+// TestTheDefaultPlanHasNoFreeRungAndOneReviewModel asserts the default
+// model's plan offers no free rung to fall to and the review list is one
+// model, so a single vendor. A change to either is deliberate.
+func TestTheDefaultPlanHasNoFreeRungAndOneReviewModel(t *testing.T) {
+	if rung := providers.LastResortModels(Provider(DefaultModel())); len(rung) != 0 {
+		t.Fatalf("the default plan's free rung names %v, want none", rung)
 	}
 	if review := DefaultReviewModels(); len(review) != 1 {
-		t.Fatalf("the review list names %d models (%v), want one: adr/0015 states the review has one vendor", len(review), review)
+		t.Fatalf("the review list names %d models (%v), want one", len(review), review)
 	}
 }

@@ -6,12 +6,34 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/alvintoh/forge-wingman/internal/providers"
 )
 
 const (
-	flashModel = "command-code/deepseek/deepseek-v4.1-flash"
-	mimoModel  = "command-code/xiaomi/mimo-v2.6-pro"
+	flashModel = "p/flash"
+	mimoModel  = "p/mimo"
 )
+
+// withLadder makes flashModel and then mimoModel plan p's escalation ladder
+// until t ends, since the embedded configuration carries none; every other plan
+// has no ladder.
+func withLadder(t *testing.T) {
+	t.Helper()
+	saved := modelTier
+	modelTier = func(model string) providers.Tier {
+		switch {
+		case model == flashModel:
+			return providers.Tier{Next: mimoModel, Laddered: true}
+		case model == mimoModel:
+			return providers.Tier{Rung: 1, Laddered: true}
+		case strings.HasPrefix(model, "p/"):
+			return providers.Tier{Laddered: true}
+		}
+		return providers.Tier{}
+	}
+	t.Cleanup(func() { modelTier = saved })
+}
 
 // stoppedIn is a run that stopped with outcome and reason in phase, that
 // phase's agent having started on model, carrying detail.
@@ -52,6 +74,7 @@ func (a attemptRecords) GetAttempt(_ context.Context, _ string, n int) (Record, 
 
 func finalizeStop(t *testing.T, store RecordStore, attempt int, s Summary) Record {
 	t.Helper()
+	withLadder(t)
 	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: encoded(t, s),
 		RunResult: "failure", PRResult: "skipped", Attempt: &attempt}
 	rec, err := Finalize(context.Background(), store, &fakeLedger{}, nil, in, finalizeNow)
@@ -74,9 +97,16 @@ func TestFinalizeNamesTheNextTierWhenTheBuildAgentFails(t *testing.T) {
 }
 
 func TestFinalizeSaysNoTierIsConfiguredAboveAModelOffTheLadder(t *testing.T) {
-	rec := finalizeStop(t, seeded(t), 0, stoppedIn(PhaseBuild, OutcomeAgentFailed, StopAgentTimeout, "command-code/x", ""))
-	if want := "No model tier is configured above command-code/x."; rec.StopDetail != want {
+	rec := finalizeStop(t, seeded(t), 0, stoppedIn(PhaseBuild, OutcomeAgentFailed, StopAgentTimeout, "p/x", ""))
+	if want := "No model tier is configured above p/x."; rec.StopDetail != want {
 		t.Fatalf("stop detail = %q, want %q", rec.StopDetail, want)
+	}
+}
+
+func TestFinalizeLeavesTheDetailAsItIsWhenThePlanHasNoLadder(t *testing.T) {
+	rec := finalizeStop(t, seeded(t), 0, stoppedIn(PhaseBuild, OutcomeAgentFailed, StopAgentExit, "q/x", "agent exited 1"))
+	if rec.StopDetail != "agent exited 1" {
+		t.Fatalf("stop detail = %q, want the build's own", rec.StopDetail)
 	}
 }
 
@@ -100,7 +130,7 @@ func TestFinalizeNamesNoTierForAStopThatIsNotABuildAgentFailure(t *testing.T) {
 func TestFinalizeEndsAnEscalatedAttemptNamingTheOneBeforeIt(t *testing.T) {
 	spent := "Escalation spent: attempt 1 failed its build on the escalated tier " + mimoModel + ", so the run ends here."
 	earlier := Record{Outcome: OutcomeAgentFailed, StopReason: StopAgentExit,
-		Steps: []Step{{Phase: PhasePlan, Model: "command-code/plan"}, {Phase: PhaseBuild, Model: flashModel}}}
+		Steps: []Step{{Phase: PhasePlan, Model: "p/plan"}, {Phase: PhaseBuild, Model: flashModel}}}
 	for name, tc := range map[string]struct {
 		store RecordStore
 		want  string

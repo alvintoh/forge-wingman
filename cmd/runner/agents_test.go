@@ -76,7 +76,7 @@ func (hostOnlyHarness) Name() string { return "host-only" }
 
 func TestAgentRunnerWithEgressOnJoinsTheInternalNetworkAndStopRemovesIt(t *testing.T) {
 	logFile := fakeDockerLog(t)
-	s := agentSettings{Image: "golang:1.27.1@sha256:" + strings.Repeat("a", 64), Egress: "on", Plan: []string{"command-code/deepseek/deepseek-v4.1-flash"}}
+	s := agentSettings{Image: "golang:1.27.1@sha256:" + strings.Repeat("a", 64), Egress: "on", Plan: []string{"opencode-go/deepseek-v4.1-flash"}}
 	got, _, stop, err := agentRunner(context.Background(), s, ".", []runner.Harness{runner.OmpHarness{Bin: "omp"}})
 	if err != nil {
 		t.Fatal(err)
@@ -95,7 +95,7 @@ func TestAgentRunnerWithEgressOnJoinsTheInternalNetworkAndStopRemovesIt(t *testi
 
 func TestAgentRunnerRemovesTheEgressWhenAHarnessCannotBeContained(t *testing.T) {
 	logFile := fakeDockerLog(t)
-	s := agentSettings{Image: "golang:1.27.1@sha256:" + strings.Repeat("a", 64), Egress: "on", Plan: []string{"command-code/deepseek/deepseek-v4.1-flash"}}
+	s := agentSettings{Image: "golang:1.27.1@sha256:" + strings.Repeat("a", 64), Egress: "on", Plan: []string{"opencode-go/deepseek-v4.1-flash"}}
 	if _, _, _, err := agentRunner(context.Background(), s, ".", []runner.Harness{hostOnlyHarness{}}); err == nil {
 		t.Fatal("agentRunner contained a host-only harness")
 	}
@@ -109,7 +109,7 @@ func TestWithAgentsRemovesTheEgressAfterTheStageHoweverItEnds(t *testing.T) {
 	for name, stageErr := range map[string]error{"stage succeeds": nil, "stage fails": errors.New("stage failed")} {
 		t.Run(name, func(t *testing.T) {
 			logFile := fakeDockerLog(t)
-			s := agentSettings{Image: image, Egress: "on", Plan: []string{"command-code/deepseek/deepseek-v4.1-flash"}}
+			s := agentSettings{Image: image, Egress: "on", Plan: []string{"opencode-go/deepseek-v4.1-flash"}}
 			started, err := withAgents(context.Background(), slog.New(slog.DiscardHandler), s, ".", []runner.Harness{runner.OmpHarness{Bin: "omp"}},
 				func([]runner.Harness, func(context.Context, string) error) error {
 					for _, l := range dockerLines(t, logFile) {
@@ -139,7 +139,7 @@ func TestWithAgentsDoesNotRunTheStageWhenTheAgentsCannotBeSetUp(t *testing.T) {
 }
 
 func TestWithAgentsAllowsTheApiHostOfEveryModelTheStageNames(t *testing.T) {
-	const flash, gemini = "command-code/deepseek/deepseek-v4.1-flash", "gemini/gemini-3.8-flash"
+	const flash, gemini = "opencode-go/deepseek-v4.1-flash", "gemini/gemini-3.8-flash"
 	for name, s := range map[string]agentSettings{
 		"build model":  {Model: gemini, Plan: []string{flash}, Review: []string{flash}},
 		"plan models":  {Model: flash, Plan: []string{flash, gemini}, Review: []string{flash}},
@@ -159,7 +159,7 @@ func TestWithAgentsAllowsTheApiHostOfEveryModelTheStageNames(t *testing.T) {
 					sidecar = l
 				}
 			}
-			if !strings.Contains(sidecar, "-allow api.commandcode.ai,generativelanguage.googleapis.com") {
+			if !strings.Contains(sidecar, "-allow generativelanguage.googleapis.com,opencode.ai") {
 				t.Fatalf("sidecar %q, want both plans' hosts allowed", sidecar)
 			}
 		})
@@ -177,8 +177,8 @@ func TestAgentSubcommandsRunTheirAgentInAContainerOnlyWithAnImage(t *testing.T) 
 	if err := os.WriteFile(contextPath, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// laguna is the build fallback now, and the checker refuses a review model that
-	// is the build model or one of its fallbacks, so the fixtures use the configured list.
+	// The checker refuses a review model that is the build model or one of its
+	// fallbacks, so the fixtures use the configured list.
 	reviewModel := runner.DefaultReviewModels()[0]
 	subcommands := map[string]func(getenv func(string) string, args []string) error{
 		"pr-review": func(getenv func(string) string, args []string) error {
@@ -203,7 +203,7 @@ func TestAgentSubcommandsRunTheirAgentInAContainerOnlyWithAnImage(t *testing.T) 
 				}
 				t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 				summary := filepath.Join(t.TempDir(), "summary.md")
-				env := map[string]string{"COMMANDCODE_API_KEY": key, "RUNNER_TEMP": t.TempDir(), "GITHUB_STEP_SUMMARY": summary}
+				env := map[string]string{"OPENCODE_API_KEY": key, "RUNNER_TEMP": t.TempDir(), "GITHUB_STEP_SUMMARY": summary}
 				var args []string
 				if contained {
 					args = []string{"-agent-image", image}
@@ -225,7 +225,7 @@ func TestAgentSubcommandsRunTheirAgentInAContainerOnlyWithAnImage(t *testing.T) 
 							runs = append(runs, l)
 						}
 					}
-					if len(runs) == 0 || !strings.Contains(runs[0], image) || !strings.Contains(runs[0], "--env COMMAND_CODE_API_KEY ") || strings.Contains(runs[0], key) {
+					if len(runs) == 0 || !strings.Contains(runs[0], image) || !strings.Contains(runs[0], "--env OPENCODE_API_KEY ") || strings.Contains(runs[0], key) {
 						t.Fatalf("docker runs %q, want the agent in the image with the key by name only", runs)
 					}
 					return

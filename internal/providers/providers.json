@@ -2,10 +2,9 @@
   "cash_limit_usd": 30,
   "runner_free_minutes": 2000,
   "paid_plans": [
-    "command-code"
+    "opencode-go"
   ],
   "last_resort_plans": [
-    "command-code",
     "gemini"
   ],
   "allowance_markers": [
@@ -38,80 +37,6 @@
     }
   ],
   "providers": {
-    "command-code": {
-      "base_url": "https://api.commandcode.ai/provider/v1",
-      "key_secret": "COMMANDCODE_API_KEY",
-      "windows": [
-        {
-          "name": "command-code-goat-5h",
-          "hours": 5,
-          "limit_usd": 14
-        },
-        {
-          "name": "command-code-goat-week",
-          "hours": 168,
-          "limit_usd": 35
-        },
-        {
-          "name": "command-code-goat-month",
-          "hours": 720,
-          "limit_usd": 70
-        }
-      ],
-      "model_caps": {
-        "command-code/deepseek/deepseek-v4.1-flash": 60
-      },
-      "harnesses": {
-        "default": "omp"
-      },
-      "rates": {
-        "command-code/deepseek/deepseek-v4.1-flash": {
-          "input_usd_per_mtok": 0.15,
-          "output_usd_per_mtok": 0.6,
-          "cache_read_usd_per_mtok": 0.003,
-          "cache_write_usd_per_mtok": 0,
-          "peak": {
-            "multiplier": 2,
-            "weekday_utc_hours": [
-              { "from": 1, "to": 4 },
-              { "from": 6, "to": 10 }
-            ]
-          }
-        },
-        "command-code/xiaomi/mimo-v2.6-pro": {
-          "input_usd_per_mtok": 0.435,
-          "output_usd_per_mtok": 0.87,
-          "cache_read_usd_per_mtok": 0.0036,
-          "cache_write_usd_per_mtok": 0
-        },
-        "command-code/poolside/laguna-s-2.1-free": {
-          "input_usd_per_mtok": 0,
-          "output_usd_per_mtok": 0,
-          "cache_read_usd_per_mtok": 0,
-          "cache_write_usd_per_mtok": 0
-        }
-      },
-      "escalation": [
-        "command-code/deepseek/deepseek-v4.1-flash",
-        "command-code/xiaomi/mimo-v2.6-pro"
-      ],
-      "models": {
-        "build": "command-code/deepseek/deepseek-v4.1-flash",
-        "review": "command-code/meta/muse-spark-1.3-contributor",
-        "plan": [
-          "command-code/deepseek/deepseek-v4.1-flash"
-        ]
-      },
-      "last_resort": {
-        "models": [
-          "command-code/poolside/laguna-s-2.1-free"
-        ],
-        "measured_on": "unmeasured",
-        "smoke_runs": {
-          "command-code/poolside/laguna-s-2.1-free": 38702659143
-        }
-      }
-    },
     "gemini": {
       "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
       "key_secret": "GEMINI_API_KEY",

@@ -21,7 +21,7 @@ func fakeCLIAgent(t *testing.T, body string) (agent OmpAgent, dir string) {
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\ncat > /dev/null\n"+body), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return OmpAgent{Bin: bin, Key: "k", Home: t.TempDir(), Model: "command-code/x"}, dir
+	return OmpAgent{Bin: bin, Key: "k", Home: t.TempDir(), Model: "opencode-go/x"}, dir
 }
 
 func alive(pid int) bool {

@@ -67,19 +67,25 @@ const (
 // harness's runs do not yet fill; TODO(FRG-47) tracks that. A per-model cap
 // binds a run only on the model it names.
 func budgetConfig(provider string) dispatcher.BudgetConfig {
-	var modelCaps map[string]dispatcher.Window
-	if caps := providers.ModelCaps(provider); len(caps) > 0 {
-		modelCaps = make(map[string]dispatcher.Window, len(caps))
-		for model, w := range caps {
-			modelCaps[model] = dispatcher.Window{Name: w.Name, Period: w.Period, Limit: w.Limit}
-		}
-	}
 	return dispatcher.BudgetConfig{
 		ProviderWindows: dispatcher.ProviderWindows(provider),
-		ModelCaps:       modelCaps,
+		ModelCaps:       capWindows(providers.ModelCaps(provider)),
 		Cash:            dispatcher.Window{Name: dispatcher.CeilingCash, Calendar: true, Limit: providers.CashLimit()},
 		Runner:          dispatcher.RunnerMinutes{FreeMinutes: providers.RunnerFreeMinutes()},
 	}
+}
+
+// capWindows is a plan's per-model caps as the dispatcher meters them, or nil
+// when it caps none.
+func capWindows(caps map[string]providers.Window) map[string]dispatcher.Window {
+	if len(caps) == 0 {
+		return nil
+	}
+	windows := make(map[string]dispatcher.Window, len(caps))
+	for model, w := range caps {
+		windows[model] = dispatcher.Window{Name: w.Name, Period: w.Period, Limit: w.Limit}
+	}
+	return windows
 }
 
 func main() {
@@ -330,7 +336,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		Elicit:       webhook.Linear{Tokens: tokens},
 		Logger:       logger,
 		Now:          time.Now,
-	}, dispatcher.Config{Repos: repos, ReposErr: reposErr, Budget: budgetConfig(runner.Provider(model)), Model: model, PlanBudgets: others, Limits: c.limits, Tuning: c.tuning, LastResortPlans: lastResortPlans(), TwoStage: c.twoStage, DecisionTimeout: c.decisionTimeout, DecisionMode: c.decisionMode}); err != nil {
+	}, dispatcher.Config{Repos: repos, ReposErr: reposErr, Budget: budgetConfig(runner.Provider(model)), Model: model, Plans: providers.Plans(), PlanBudgets: others, Limits: c.limits, Tuning: c.tuning, LastResortPlans: lastResortPlans(), TwoStage: c.twoStage, DecisionTimeout: c.decisionTimeout, DecisionMode: c.decisionMode}); err != nil {
 		return err
 	}
 	return nil

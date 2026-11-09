@@ -11,7 +11,7 @@
 # With `stage: plan` (FRG-33) the model job runs the plan phase alone and
 # `record-plan-stage` records it instead, while check, pr-meta, pr and record are skipped.
 # Needs the GCP_WIF_PROVIDER, GCP_SERVICE_ACCOUNT, GCP_MODEL_SERVICE_ACCOUNT and
-# WINGMAN_ACCOUNT variables (infra/README.md) and the COMMANDCODE_API_KEY secret; whether
+# WINGMAN_ACCOUNT variables (infra/README.md) and the OPENCODE_API_KEY secret; whether
 # a PR may auto-merge is the owner's switch and the trailing rewrite rate (`runner auto-merge`).
 # Workload Identity Federation trusts main only, so dispatch from main.
 name: run
@@ -35,7 +35,7 @@ on:
           the main model and the rest are backups, used when the one before is unavailable or out of
           allowance. None may be the build model, so the review is never the builder checking its own work.
         type: string
-        default: command-code/meta/muse-spark-1.3-contributor
+        default: opencode-go/muse-spark-1.3-contributor
       # The plan phase has its own ordered list: the first entry is the main model and later ones are
       # backups, used when the one before is unavailable or out of allowance.
       plan_models:
@@ -43,7 +43,7 @@ on:
           the plan phase's models in order, comma-separated provider/model; the first is the main model
           and the rest are backups, used when the one before is unavailable or out of allowance.
         type: string
-        default: command-code/deepseek/deepseek-v4.1-flash
+        default: opencode-go/deepseek-v4.1-flash
       # stage is the two-stage dispatch's phase (FRG-33): `plan` runs the plan
       # phase alone under the read-only profile and records it; `build` (the
       # default) builds from a plan already recorded. Until the dispatcher sends
@@ -157,7 +157,6 @@ jobs:
       attempt: ${{ inputs.attempt }}
       runner_sha256: ${{ needs.ticket.outputs.runner_sha256 }}
     secrets:
-      COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
       # The free-tier plan's key, read only when a run falls through to it. Left
       # unset until the owner adds it (infra/README.md).
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

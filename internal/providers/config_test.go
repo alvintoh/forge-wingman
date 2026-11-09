@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"encoding/json"
 	"maps"
 	"slices"
 	"strings"
@@ -128,10 +129,10 @@ func TestTierOfReadsTheLadder(t *testing.T) {
 		t.Fatal(err)
 	}
 	for model, want := range map[string]Tier{
-		"p/a":     {Rung: 0, Next: "p/b"},
-		"p/b":     {Rung: 1, Next: "p/c"},
-		"p/c":     {Rung: 2},
-		"p/other": {},
+		"p/a":     {Rung: 0, Next: "p/b", Laddered: true},
+		"p/b":     {Rung: 1, Next: "p/c", Laddered: true},
+		"p/c":     {Rung: 2, Laddered: true},
+		"p/other": {Laddered: true},
 		"q/a":     {},
 	} {
 		if got := tierOf(cfg, model); got != want {
@@ -140,10 +141,26 @@ func TestTierOfReadsTheLadder(t *testing.T) {
 	}
 }
 
-func TestEmbeddedGoatEscalatesFlashToMiMo(t *testing.T) {
-	got := TierOf("command-code/deepseek/deepseek-v4.1-flash")
-	if want := (Tier{Next: "command-code/xiaomi/mimo-v2.6-pro"}); got != want {
-		t.Fatalf("TierOf(flash) = %+v, want %+v", got, want)
+// TestEmbeddedConfigHasNoCommandCodePlanAndNoLadder asserts the embedded
+// configuration names no Command Code plan and no plan escalates, read from
+// the document itself so a key the parser ignores still counts.
+func TestEmbeddedConfigHasNoCommandCodePlanAndNoLadder(t *testing.T) {
+	var doc struct {
+		Providers map[string]map[string]json.RawMessage `json:"providers"`
+	}
+	if err := json.Unmarshal(configJSON, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := doc.Providers["command-code"]; ok {
+		t.Error("providers.json configures the command-code plan")
+	}
+	for plan, facts := range doc.Providers {
+		if _, ok := facts["escalation"]; ok {
+			t.Errorf("plan %s carries an escalation ladder", plan)
+		}
+	}
+	if got := TierOf("opencode-go/deepseek-v4.1-flash"); got != (Tier{}) {
+		t.Errorf("TierOf(flash) = %+v, want no next tier", got)
 	}
 }
 
@@ -199,31 +216,6 @@ func TestParseConfigCountsAPlanWithAnythingPaidAsPaid(t *testing.T) {
 	}
 }
 
-func TestEmbeddedGoatFallsToItsOwnFreeModels(t *testing.T) {
-	want := []string{"command-code/poolside/laguna-s-2.1-free"}
-	if got := LastResortModels("command-code"); !slices.Equal(got, want) {
-		t.Fatalf("LastResortModels(command-code) = %v, want %v", got, want)
-	}
-	if got := LastResortModels("nobody"); len(got) != 0 {
-		t.Fatalf("LastResortModels(nobody) = %v, want none", got)
-	}
-}
-
-// TestEmbeddedGoatFreeRungRecordsItsSmokeRun asserts the free rung's model
-// carries the plan-smoke run that proved it serves a run, and that the
-// free-only plan records none: a free id is configured only once the smoke has
-// proved it, where a free-only plan's models are its whole inventory rather
-// than a rung to fall to (adr/0015).
-func TestEmbeddedGoatFreeRungRecordsItsSmokeRun(t *testing.T) {
-	want := map[string]int64{"command-code/poolside/laguna-s-2.1-free": 38702659143}
-	if got := embeddedConfig.Providers["command-code"].LastResort.SmokeRuns; !maps.Equal(got, want) {
-		t.Fatalf("command-code smoke runs = %v, want %v", got, want)
-	}
-	if got := embeddedConfig.Providers["gemini"].LastResort.SmokeRuns; len(got) != 0 {
-		t.Fatalf("gemini smoke runs = %v, want none for a free-only plan", got)
-	}
-}
-
 func TestParseConfigConvertsWindowsAndCeilings(t *testing.T) {
 	cfg, err := parseConfig([]byte(configWith(providerFacts +
 		`,"windows":[{"name":"p-5h","hours":5,"limit_usd":14}],"model_caps":{"p/model":60}`)))
@@ -270,8 +262,8 @@ func TestModelCapsOfAnUnconfiguredProviderAreEmpty(t *testing.T) {
 // and harnesses — is read from a document with no Go change.
 func TestASecondPlanIsAddedByConfigurationAlone(t *testing.T) {
 	doc := `{"cash_limit_usd":30,"runner_free_minutes":2000,"providers":{
-		"command-code":{"base_url":"https://api.example/v1","key_secret":"cc-key","harnesses":{"default":"command-code"},
-			"windows":[{"name":"cc-5h","hours":5,"limit_usd":14}]},
+		"first-plan":{"base_url":"https://api.example/v1","key_secret":"first-key","harnesses":{"default":"omp"},
+			"windows":[{"name":"first-5h","hours":5,"limit_usd":14}]},
 		"another-plan":{"base_url":"https://api.other/v1","key_secret":"other-key","harnesses":{"default":"one","fallbacks":["two"]},
 			"windows":[{"name":"other-month","hours":720,"limit_usd":40}],
 			"model_caps":{"another-plan/vendor/big":25}}}}`
@@ -303,56 +295,12 @@ func TestEmbeddedConfigIsValid(t *testing.T) {
 	}
 }
 
-// TestEmbeddedGoatCarriesItsPlanFacts asserts GOAT's entry keeps its plan-wide
-// windows and adds its per-model monthly cap, both read through the accessors
-// the dispatcher meters with.
-func TestEmbeddedGoatCarriesItsPlanFacts(t *testing.T) {
-	windows := Windows("command-code")
-	if len(windows) != 3 || windows[0].Limit != 14*money.Dollar || windows[1].Limit != 35*money.Dollar || windows[2].Limit != 70*money.Dollar {
-		t.Fatalf("windows = %+v, want $14/5h, $35/week and $70/month", windows)
-	}
-	caps := ModelCaps("command-code")
-	flashCap, ok := caps["command-code/deepseek/deepseek-v4.1-flash"]
-	if !ok || flashCap.Limit != 60*money.Dollar || flashCap.Period != monthlyPeriod {
-		t.Fatalf("flash cap = %+v (ok %v), want $60 over a month", flashCap, ok)
-	}
-}
-
-// trialModel is the model a build trial runs against the plan's own default.
-const trialModel = "command-code/xiaomi/mimo-v2.6-pro"
-
-// TestEmbeddedGoatPricesTheBuildTrialModel asserts the trial's MiMo model is
-// priced from the plan's own card, so a run of it is metered against the plan's
-// windows like any other paid model of the plan (AC3), and carries no peak hours
-// for a run to be held for (AC4).
-func TestEmbeddedGoatPricesTheBuildTrialModel(t *testing.T) {
-	rates, ok := RatesFor(trialModel)
-	if !ok {
-		t.Fatalf("RatesFor(%s) = no card, want the plan's own", trialModel)
-	}
-	if rates.Input != 0.435 || rates.Output != 0.87 || rates.CacheRead != 0.0036 {
-		t.Fatalf("rates = %+v, want $0.435 in, $0.87 out and $0.0036 a cache read per 1M", rates)
-	}
-	if got := rates.CostUSD(1_000_000, 0, 0, 0); got != 0.435 {
-		t.Errorf("a million input tokens cost %v, want $0.435", got)
-	}
-	if got := rates.CostUSD(0, 1_000_000, 0, 0); got != 0.87 {
-		t.Errorf("a million output tokens cost %v, want $0.87", got)
-	}
-	if got := rates.CostUSD(0, 0, 1_000_000, 0); got != 0.0036 {
-		t.Errorf("a million cache-read tokens cost %v, want $0.0036", got)
-	}
-	if rates.Peak != nil {
-		t.Fatalf("peak = %+v, want the model priced the same at every hour", rates.Peak)
-	}
-}
-
 // TestHarnessesReadsThePlansOrder asserts a plan's harness order reads back with
 // its default first, and is empty for a plan that is not configured, so the
 // router selects from configuration rather than the model prefix.
 func TestHarnessesReadsThePlansOrder(t *testing.T) {
-	if got := Harnesses("command-code"); !slices.Equal(got, []string{"omp"}) {
-		t.Fatalf("Harnesses(command-code) = %v, want omp alone", got)
+	if got := Harnesses("opencode-go"); !slices.Equal(got, []string{"omp"}) {
+		t.Fatalf("Harnesses(opencode-go) = %v, want omp alone", got)
 	}
 	if got := Harnesses("nobody"); got != nil {
 		t.Fatalf("Harnesses(nobody) = %v, want none", got)
@@ -538,10 +486,10 @@ func TestParseConfigReadsTheLastResortOrder(t *testing.T) {
 // walks the plans' free tiers in the configured order, so a paid plan whose
 // allowance is spent falls through to the next plan's free models.
 func TestEmbeddedConfigNamesTheFreeTierOrder(t *testing.T) {
-	if got := LastResortPlans(); !slices.Equal(got, []string{"command-code", "gemini"}) {
-		t.Fatalf("LastResortPlans() = %v, want command-code then gemini", got)
+	if got := LastResortPlans(); !slices.Equal(got, []string{"gemini"}) {
+		t.Fatalf("LastResortPlans() = %v, want gemini alone", got)
 	}
-	if got := Plans(); !slices.Equal(got, []string{"command-code", "gemini", "opencode-go"}) {
+	if got := Plans(); !slices.Equal(got, []string{"gemini", "opencode-go"}) {
 		t.Fatalf("Plans() = %v, want every configured plan, sorted", got)
 	}
 }
@@ -575,7 +523,7 @@ func TestEmbeddedGeminiIsAFreeTierPlan(t *testing.T) {
 func TestPlansListsEveryConfiguredPlanSorted(t *testing.T) {
 	// Map order is random, so one call can come out sorted by chance.
 	for range 32 {
-		if got, want := Plans(), []string{"command-code", "gemini", "opencode-go"}; !slices.Equal(got, want) {
+		if got, want := Plans(), []string{"gemini", "opencode-go"}; !slices.Equal(got, want) {
 			t.Fatalf("Plans() = %q, want %q", got, want)
 		}
 	}
@@ -637,13 +585,9 @@ func TestParseConfigReadsThePaidPlanOrderAndModels(t *testing.T) {
 
 // TestRunModelsListsEveryModelARunMayUseOnce asserts the models a run may use
 // are each plan's build, review and plan models and its free-tier ones, each
-// named once — the review model included, which its own plan's rate card does
-// not price.
+// named once.
 func TestRunModelsListsEveryModelARunMayUseOnce(t *testing.T) {
 	want := []string{
-		"command-code/deepseek/deepseek-v4.1-flash",
-		"command-code/meta/muse-spark-1.3-contributor",
-		"command-code/poolside/laguna-s-2.1-free",
 		"gemini/gemini-3.8-flash",
 		"gemini/gemini-3.5-flash-lite",
 		"opencode-go/deepseek-v4.1-flash",
@@ -671,24 +615,13 @@ func TestRunModelsWalksAPlansPlanModels(t *testing.T) {
 	}
 }
 
-func TestEmbeddedGoatIsTheOnlyPaidPlan(t *testing.T) {
-	if got := PaidPlans(); !slices.Equal(got, []string{"command-code"}) {
-		t.Fatalf("PaidPlans() = %v, want command-code alone", got)
-	}
-	m := PlanModels("command-code")
-	if m.Build != "command-code/deepseek/deepseek-v4.1-flash" || m.Review != "command-code/meta/muse-spark-1.3-contributor" ||
-		!slices.Equal(m.Plan, []string{"command-code/deepseek/deepseek-v4.1-flash"}) {
-		t.Fatalf("PlanModels(command-code) = %+v", m)
-	}
-}
-
-// TestEmbeddedGoCarriesItsPlanFacts asserts the OpenCode Go plan is configured
-// beside the paid plan without joining the paid-plan order: its endpoint, key,
-// harness, windows, models and rate cards, Flash's carrying the weekday peak.
+// TestEmbeddedGoCarriesItsPlanFacts asserts the OpenCode Go plan is the only
+// paid plan, with its endpoint, key, harness, windows, models and rate cards,
+// Flash's carrying the weekday peak.
 func TestEmbeddedGoCarriesItsPlanFacts(t *testing.T) {
 	const plan, flash, muse = "opencode-go", "opencode-go/deepseek-v4.1-flash", "opencode-go/muse-spark-1.3-contributor"
-	if slices.Contains(PaidPlans(), plan) {
-		t.Fatalf("PaidPlans() = %v, want %s left out", PaidPlans(), plan)
+	if got := PaidPlans(); !slices.Equal(got, []string{plan}) {
+		t.Fatalf("PaidPlans() = %v, want %s alone", got, plan)
 	}
 	if BaseURL(plan) != "https://opencode.ai/zen/go/v1" || KeySecret(plan) != "OPENCODE_API_KEY" || !slices.Equal(Harnesses(plan), []string{"omp"}) {
 		t.Fatalf("plan = %q, %q, %v", BaseURL(plan), KeySecret(plan), Harnesses(plan))
@@ -721,7 +654,7 @@ func TestSettingForNamesTheSettingEachRefusalAsksFor(t *testing.T) {
 		{"opencode-go", `400 {"error":"This Go model is hosted outside Europe and the United States."}`, "Privacy > Regions: Global"},
 		{"opencode-go", "error: THIS GO MODEL TRAINS ON REQUEST DATA", "Privacy > Allow paid endpoints that train on request data"},
 		{"opencode-go", "panic: nil pointer", ""},
-		{"command-code", "error: This Go model trains on request data", ""},
+		{"gemini", "error: This Go model trains on request data", ""},
 	} {
 		if got, ok := SettingFor(tt.provider, tt.stderr); got != tt.want || ok != (tt.want != "") {
 			t.Errorf("SettingFor(%s, %q) = %q, %v, want %q", tt.provider, tt.stderr, got, ok, tt.want)
@@ -745,17 +678,20 @@ func TestParseConfigRejectsAnIncompleteSettingMarker(t *testing.T) {
 
 // TestCheckFreeIDsRefusesAMarkedFreeIDWithNoSmokeRun asserts an id whose own
 // name marks it free is refused until a smoke run is recorded for it, even when
-// no plan names it on a free rung, while the proven rung model and a paid model
+// no plan names it on a free rung, while a proven rung model and a paid model
 // pass.
 func TestCheckFreeIDsRefusesAMarkedFreeIDWithNoSmokeRun(t *testing.T) {
-	for _, id := range []string{"command-code/vendor/model:free", "command-code/vendor/model-free"} {
+	for _, id := range []string{"opencode-go/vendor/model:free", "opencode-go/vendor/model-free"} {
 		if err := CheckFreeIDs([]string{id}); err == nil || !strings.Contains(err.Error(), "no recorded plan-smoke run") {
 			t.Fatalf("CheckFreeIDs(%s) = %v, want it refused for having no smoke run", id, err)
 		}
 	}
-	for _, id := range []string{"command-code/poolside/laguna-s-2.1-free", "command-code/deepseek/deepseek-v4.1-flash"} {
-		if err := CheckFreeIDs([]string{id}); err != nil {
-			t.Fatalf("CheckFreeIDs(%s) = %v, want a proven free model and a paid model accepted", id, err)
-		}
+	cfg, err := parseConfig([]byte(configWith(providerFacts + paidRates +
+		`,"last_resort":{"models":["p/free"],"measured_on":"unmeasured","smoke_runs":{"p/free":11}}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.checkFreeIDs([]string{"p/free", "p/paid"}); err != nil {
+		t.Fatalf("checkFreeIDs = %v, want a proven free model and a paid model accepted", err)
 	}
 }

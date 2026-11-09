@@ -211,7 +211,7 @@ func TestReadIssueAsReadsTheReviewAppsSecrets(t *testing.T) {
 
 func verdict(outcome, findings, model string) runner.PRVerdict {
 	return runner.PRVerdict{Outcome: outcome, Findings: findings, Model: model, Usage: runner.Usage{Input: 1200, Output: 80},
-		Attempts: []runner.PRReviewAttempt{{Model: freeModel, Outcome: runner.AttemptReviewed}}}
+		Attempts: []runner.PRReviewAttempt{{Model: museModel, Outcome: runner.AttemptReviewed}}}
 }
 
 func TestPlanPost(t *testing.T) {
@@ -224,10 +224,10 @@ func TestPlanPost(t *testing.T) {
 		wantComment         string
 		wantClean           bool
 	}{
-		"a clean review":         {"", "success", verdict("clean", "", freeModel), nil, "success", "### Wingman review: clean", true},
-		"findings":               {"", "success", verdict("findings", "x is missing", freeModel), nil, "failure", "### Wingman review: findings", false},
+		"a clean review":         {"", "success", verdict("clean", "", museModel), nil, "success", "### Wingman review: clean", true},
+		"findings":               {"", "success", verdict("findings", "x is missing", museModel), nil, "failure", "### Wingman review: findings", false},
 		"no verdict":             {"", "success", verdict("no-verdict", "", ""), nil, "failure", "### Wingman review: no verdict", false},
-		"an unreadable verdict":  {"", "success", verdict("clean", "", freeModel), errors.New("bad"), "failure", "### Wingman review: no verdict", false},
+		"an unreadable verdict":  {"", "success", verdict("clean", "", museModel), errors.New("bad"), "failure", "### Wingman review: no verdict", false},
 		"no ticket id":           {"no-ticket-id", "success", runner.PRVerdict{}, nil, "error", "", false},
 		"an unknown skip reason": {"<b>", "success", runner.PRVerdict{}, nil, "error", "", false},
 		"a failed context":       {"", "failure", runner.PRVerdict{}, nil, "error", "", false},
@@ -247,7 +247,7 @@ func TestPlanPost(t *testing.T) {
 
 func TestRenderReviewCommentNeutralisesTheFindings(t *testing.T) {
 	findings := "ping @octocat\n<img src=x onerror=alert(1)>\n```\n# not a heading"
-	got := renderReviewComment(verdict("findings", findings, freeModel), headSHA, "")
+	got := renderReviewComment(verdict("findings", findings, museModel), headSHA, "")
 	if !strings.HasPrefix(got, "<!-- wingman-review -->\n") {
 		t.Fatalf("comment lacks the marker: %q", got)
 	}
@@ -262,7 +262,7 @@ func TestRenderReviewCommentNeutralisesTheFindings(t *testing.T) {
 	if html := strings.Index(got, "<img"); html < open || html > end {
 		t.Errorf("the HTML is outside the fence: %q", got)
 	}
-	if !strings.Contains(got, "Model `"+freeModel+"` · 1200 in / 80 out tokens · $0 across 1 attempt(s)") {
+	if !strings.Contains(got, "Model `"+museModel+"` · 1200 in / 80 out tokens · $0 across 1 attempt(s)") {
 		t.Errorf("the footer lacks the model and its cost: %q", got)
 	}
 }
@@ -319,12 +319,12 @@ func TestPRReviewPost(t *testing.T) {
 		wantMerge   string
 		wantCreated int
 	}{
-		"clean, eligible and unchanged requests the merge": {verdict("clean", "", freeModel), openPull("t", "", headSHA, autoMergeEligibleLabel), nil, "success", false, "merge=true", 1},
-		"clean but not eligible does not":                  {verdict("clean", "", freeModel), openPull("t", "", headSHA), nil, "success", false, "merge=false", 1},
-		"clean after a push does not":                      {verdict("clean", "", freeModel), openPull("t", "", movedSHA, autoMergeEligibleLabel), nil, "success", false, "merge=false", 1},
-		"findings do not":                                  {verdict("findings", "x", freeModel), openPull("t", "", headSHA, autoMergeEligibleLabel), nil, "failure", false, "merge=false", 1},
-		"a second review edits its own comment":            {verdict("clean", "", freeModel), openPull("t", "", headSHA), []map[string]any{forged, ours}, "success", true, "merge=false", 0},
-		"another author's marker is not edited":            {verdict("clean", "", freeModel), openPull("t", "", headSHA), []map[string]any{forged}, "success", false, "merge=false", 1},
+		"clean, eligible and unchanged requests the merge": {verdict("clean", "", museModel), openPull("t", "", headSHA, autoMergeEligibleLabel), nil, "success", false, "merge=true", 1},
+		"clean but not eligible does not":                  {verdict("clean", "", museModel), openPull("t", "", headSHA), nil, "success", false, "merge=false", 1},
+		"clean after a push does not":                      {verdict("clean", "", museModel), openPull("t", "", movedSHA, autoMergeEligibleLabel), nil, "success", false, "merge=false", 1},
+		"findings do not":                                  {verdict("findings", "x", museModel), openPull("t", "", headSHA, autoMergeEligibleLabel), nil, "failure", false, "merge=false", 1},
+		"a second review edits its own comment":            {verdict("clean", "", museModel), openPull("t", "", headSHA), []map[string]any{forged, ours}, "success", true, "merge=false", 0},
+		"another author's marker is not edited":            {verdict("clean", "", museModel), openPull("t", "", headSHA), []map[string]any{forged}, "success", false, "merge=false", 1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := &fakePulls{pull: tt.pull, comments: tt.comments}
@@ -372,7 +372,7 @@ func TestPRReviewPostRefusesAMalformedSHA(t *testing.T) {
 
 func TestRunPRReviewWritesTheVerdict(t *testing.T) {
 	agent, _ := newSmokeAgent(map[string]smokeRun{
-		freeModel:   func(context.Context, string, io.Writer, io.Writer) error { return errors.New("exit status 1") },
+		museModel:   func(context.Context, string, io.Writer, io.Writer) error { return errors.New("exit status 1") },
 		pricedModel: reviewReply(tokensUsed, "x is missing"),
 	})
 	c := runner.PRReviewContext{PR: 7, HeadSHA: headSHA, Ticket: runner.Ticket{ID: "ABC-12", Title: "Add x", Body: "AC1"}, Diff: "+x"}
@@ -385,7 +385,7 @@ func TestRunPRReviewWritesTheVerdict(t *testing.T) {
 	if err := os.WriteFile(contextPath, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := runPRReview(context.Background(), quietLogger(), agent, []string{freeModel, pricedModel}, time.Minute, contextPath, out, summary, nil); err != nil {
+	if err := runPRReview(context.Background(), quietLogger(), agent, []string{museModel, pricedModel}, time.Minute, contextPath, out, summary, nil); err != nil {
 		t.Fatal(err)
 	}
 	v, err := readVerdict(out)
@@ -403,7 +403,7 @@ func TestRunPRReviewRefusesAMalformedContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent, dirs := newSmokeAgent(nil)
-	err := runPRReview(context.Background(), quietLogger(), agent, []string{freeModel}, time.Minute, path, filepath.Join(t.TempDir(), "v"), "", nil)
+	err := runPRReview(context.Background(), quietLogger(), agent, []string{museModel}, time.Minute, path, filepath.Join(t.TempDir(), "v"), "", nil)
 	if !errors.Is(err, runner.ErrPRReviewInvalid) || len(*dirs) != 0 {
 		t.Fatalf("err = %v, ran %d models", err, len(*dirs))
 	}
@@ -468,11 +468,8 @@ func TestPRReviewWorkflow(t *testing.T) {
 	if !strings.Contains(jobs["review"], "MODELS: ${{ vars.WINGMAN_PR_REVIEW_MODELS || ") {
 		t.Error("the review job does not read its models from WINGMAN_PR_REVIEW_MODELS")
 	}
-	if !strings.Contains(jobs["review"], "COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}") || strings.Count(yml, "secrets.COMMANDCODE_API_KEY") != 1 {
-		t.Error("the model key is not the review job's alone")
-	}
 	if !strings.Contains(jobs["review"], "OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}") || strings.Count(yml, "secrets.OPENCODE_API_KEY") != 1 {
-		t.Error("the Go plan's key is not the review job's alone")
+		t.Error("the model key is not the review job's alone")
 	}
 	if strings.Contains(yml, "github.event.pull_request.head.ref") || strings.Contains(yml, "\n          ref:") ||
 		strings.Count(yml, "persist-credentials: false") != strings.Count(yml, "actions/checkout@") {

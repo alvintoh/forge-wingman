@@ -10,9 +10,9 @@ import (
 )
 
 const (
-	freeReviewModel   = "command-code/poolside/laguna-s-2.1-free"
-	pricedReviewModel = "command-code/deepseek/deepseek-v4.1-flash"
-	unpricedModel     = "command-code/unpriced/model"
+	freeReviewModel   = "gemini/gemini-3.8-flash"
+	pricedReviewModel = "opencode-go/muse-spark-1.3-contributor"
+	unpricedModel     = "opencode-go/unpriced/model"
 	usedTokens        = `{"type":"step_finish","part":{"tokens":{"input":1000,"output":100},"cost":0}}` + "\n"
 )
 
@@ -100,12 +100,12 @@ func TestReviewSmokeFailsWhenTheDirectoryCannotBeWritten(t *testing.T) {
 }
 
 func TestReviewSmokeRunsTheScriptedBinaryUnderTheReviewProfileOnTheGivenModel(t *testing.T) {
-	bin, attempts := scriptedCLIAgent(t, "", "command-code/given")
-	_, err := ReviewSmoke(context.Background(), scriptedAgent(t, bin, ProfileReview, "command-code/ignored"), "command-code/given", t.TempDir(), nil)
+	bin, attempts := scriptedCLIAgent(t, "", "opencode-go/given")
+	_, err := ReviewSmoke(context.Background(), scriptedAgent(t, bin, ProfileReview, "opencode-go/ignored"), "opencode-go/given", t.TempDir(), nil)
 	if !errors.Is(err, ErrReviewOutput) {
 		t.Fatalf("err = %v, want the scripted plan reply read as no review", err)
 	}
-	if got := attempts(); len(got) != 1 || got[0] != (fallbackAttempt{"command-code/given", "always-ask"}) {
+	if got := attempts(); len(got) != 1 || got[0] != (fallbackAttempt{"opencode-go/given", "always-ask"}) {
 		t.Fatalf("attempts %+v", got)
 	}
 }

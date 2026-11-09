@@ -46,7 +46,7 @@ func TestBuildStopsAsTicketNotDeliveredWithoutATicketFile(t *testing.T) {
 	output := filepath.Join(dir, "out")
 	pinnedImagesOnPath(t)
 	err := build(context.Background(), logger, env{output: output, attemptID: "42-1", tempDir: dir},
-		append(pinnedImageArgs(), "-model", "command-code/p/m", "-ticket-file", filepath.Join(dir, "absent.json")))
+		append(pinnedImageArgs(), "-model", "opencode-go/p/m", "-ticket-file", filepath.Join(dir, "absent.json")))
 	if exitCode(err) != 0 {
 		t.Fatalf("exit %d, err %v; want a reported stop", exitCode(err), err)
 	}
