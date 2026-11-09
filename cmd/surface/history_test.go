@@ -59,6 +59,7 @@ func TestRunKindPlacesEveryOutcomeInOneKindWithItsWords(t *testing.T) {
 		{"budget stop", store.SettledRun{Outcome: runner.OutcomeBudgetStop}, "allowance", "stopped, allowance spent"},
 		{"allowance exhausted", store.SettledRun{Outcome: runner.OutcomeStopped, StopReason: runner.StopAllowanceExhausted}, "allowance", "stopped, allowance spent"},
 		{"credential absent", store.SettledRun{Outcome: runner.OutcomeStopped, StopReason: runner.StopCredentialAbsent}, "credential", "stopped, credential missing"},
+		{"provider setting", store.SettledRun{Outcome: runner.OutcomeStopped, StopReason: runner.StopProviderSetting}, "failed", "stopped, a provider setting refused the model"},
 		{"owner never answered", store.SettledRun{Outcome: runner.OutcomeStopped, StopReason: runner.StopWaitingOnOwner}, "decision", "stopped at an unconfirmed decision"},
 		{"no changes", store.SettledRun{Outcome: runner.OutcomeNoChanges}, "no-changes", "ended with no changes"},
 		{"stopped", store.SettledRun{Outcome: runner.OutcomeStopped, StopReason: runner.StopAgentExit}, "failed", "failed"},

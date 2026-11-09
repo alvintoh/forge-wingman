@@ -61,6 +61,11 @@ own plan's allowance is spent and the dispatcher moves it to the free tier
 plan: the free tier is reached with the key alone. Until it is set, a run that falls
 through to the free tier stops as credential-absent rather than starting.
 
+The `OPENCODE_API_KEY` repository secret is the OpenCode Go key the `opencode-go` plan
+runs on, read only for a model that plan names. Go refuses a model until the account's
+privacy settings allow it, and the run then stops as provider-setting, naming the
+setting to change.
+
 A second paid plan is added by hand: its entry in `internal/providers/providers.json`
 (base URL, key secret name, windows, rates, harnesses and the `models` a run moved onto it
 starts on), its name after the first in `paid_plans`, its key as a repository secret

@@ -114,7 +114,7 @@ func TestClassifyAgentFailureDispatchesToTheAgentsHarness(t *testing.T) {
 	}
 	budget := func(string, error) (Outcome, StopReason) { return OutcomeBudgetStop, StopAllowanceExhausted }
 	router := testRouter(ProfileBuild, fakeHarness{classify: budget}).WithModel("p/x")
-	if outcome, reason := classifyAgentFailure(router, path, errors.New("exit status 5")); outcome != OutcomeBudgetStop || reason != StopAllowanceExhausted {
+	if outcome, reason, _ := classifyAgentFailure(router, "p", path, errors.New("exit status 5")); outcome != OutcomeBudgetStop || reason != StopAllowanceExhausted {
 		t.Fatalf("classifyAgentFailure = %s/%s, want the harness's allowance classification", outcome, reason)
 	}
 }
@@ -491,7 +491,8 @@ func harnessNameAllowed(rel string) bool {
 }
 
 // TestNoRetiredModelSetIsNamed asserts no tracked file outside the vault copies
-// and the historical probe results names the retired free model set.
+// and the historical probe results names the retired free model set, bar a
+// path segment of a vendor URL such as the Go plan's endpoint.
 func TestNoRetiredModelSetIsNamed(t *testing.T) {
 	root := filepath.Join("..", "..")
 	// Copies stamped from elsewhere are exempt: the vault's docs, the agents
@@ -505,7 +506,7 @@ func TestNoRetiredModelSetIsNamed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("git ls-files: %v", err)
 	}
-	retired := regexp.MustCompile(`(?i:\bz[e]n\b)`)
+	retired := regexp.MustCompile(`(?i:(?:^|[^/])\bz[e]n\b)`)
 	var offenders []string
 	for _, rel := range strings.Split(strings.TrimRight(string(out), "\x00"), "\x00") {
 		b, err := os.ReadFile(filepath.Join(root, rel))

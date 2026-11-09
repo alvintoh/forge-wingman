@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/alvintoh/forge-wingman/internal/providers"
 	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
@@ -18,7 +19,7 @@ import (
 func agentProbe(ctx context.Context, stdout, stderr io.Writer, args []string) error {
 	fs := flag.NewFlagSet("agent-probe", flag.ContinueOnError)
 	image := fs.String("agent-image", "", "agent image, pinned by digest, to run the command in")
-	egress := fs.Bool("egress", false, "confine the container to its default plan model's API host, as -agent-egress on does")
+	egress := fs.Bool("egress", false, "confine the container to every configured plan's API host, as -agent-egress on does for a run's models")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -35,7 +36,7 @@ func agentProbe(ctx context.Context, stdout, stderr io.Writer, args []string) er
 	}
 	if *egress {
 		var stop func(context.Context) error
-		if c, stop, err = startEgress(ctx, c, []string{runner.DefaultPlanModel()}, stderr); err != nil {
+		if c, stop, err = startEgress(ctx, c, providers.RunModels(), stderr); err != nil {
 			return err
 		}
 		defer func() {

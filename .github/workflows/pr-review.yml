@@ -120,6 +120,7 @@ jobs:
           # the runner refuses one naming the build model or any of its fallbacks.
           MODELS: ${{ vars.WINGMAN_PR_REVIEW_MODELS || 'command-code/meta/muse-spark-1.3-contributor' }}
           COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           AGENT_IMAGE: ${{ vars.WINGMAN_AGENT_IMAGE }}
         run: '"$RUNNER_TEMP/runner" pr-review -context "$RUNNER_TEMP/context.json" -out "$RUNNER_TEMP/verdict.json" -models "$MODELS" -agent-image "$AGENT_IMAGE"'
 

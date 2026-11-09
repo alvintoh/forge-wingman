@@ -107,6 +107,7 @@ const stopWords: Record<string, string> = {
   "run-budget": "Stopped, the run's time budget was spent",
   "formatter-outside-diff": "Stopped, the formatter changed files outside the change",
   "model-refused": "Stopped, the ticket's model was refused",
+  "provider-setting": "Stopped, a provider setting refused the model",
 };
 
 // stopReasonOf words why a run stopped; a reason the table does not know is shown as the runner

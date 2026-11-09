@@ -133,6 +133,9 @@ const (
 	// StopModelRefused reports a retried run whose ticket now names a model
 	// admission refuses, so the retry never starts on it.
 	StopModelRefused StopReason = "model-refused"
+	// StopProviderSetting reports a provider refusing the model until the owner
+	// changes one of the plan's own settings, which the stop detail names.
+	StopProviderSetting StopReason = "provider-setting"
 )
 
 // WaitReason names why a run's PR waits for the owner rather than merging itself.
@@ -730,8 +733,9 @@ func (r Record) CachedShare() float64 { return CachedShare(r.Tokens.Input, r.Tok
 
 // breakerStops are the systemic stops that halt every dispatch until an
 // operator resets the breaker. An exhausted allowance is one only once the
-// plan's free models have refused too.
-var breakerStops = []StopReason{StopCredentialAbsent, StopIdentityMismatch, StopAllowanceExhausted}
+// plan's free models have refused too; a provider setting refuses every run
+// on that plan until the owner changes it.
+var breakerStops = []StopReason{StopCredentialAbsent, StopIdentityMismatch, StopAllowanceExhausted, StopProviderSetting}
 
 // Systemic reports whether the run's stop is one the owner is told of, and
 // whether it trips the dispatch breaker. A model outage notifies without

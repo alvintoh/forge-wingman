@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
+	"github.com/alvintoh/forge-wingman/internal/providers"
 	"github.com/alvintoh/forge-wingman/internal/runner"
 	"github.com/alvintoh/forge-wingman/internal/store"
 )
@@ -141,7 +142,8 @@ func finalize(ctx context.Context, logger *slog.Logger, records runner.RecordSto
 var attemptIDPattern = regexp.MustCompile(`^[0-9]{1,20}-[0-9]{1,10}$`)
 
 // raiseSystemic raises the notice for a systemic stop, linked to the run that
-// recorded it, and trips the breaker when its class does. The notice is keyed
+// recorded it and, for a provider-setting stop, naming the configured setting,
+// and trips the breaker when its class does. The notice is keyed
 // by run and attempt, so a later attempt after a reset raises its own; an
 // attempt id that cannot name a document falls back to the run alone. Both
 // writes create only what is absent, so a record job run twice raises and
@@ -157,7 +159,11 @@ func raiseSystemic(ctx context.Context, logger *slog.Logger, notices noticeRaise
 		logger.Error("noticeAttemptInvalid", "run", rec.RunID, "length", len(attemptID))
 		id = rec.RunID
 	}
-	if err := notices.Raise(ctx, dispatcher.Notice{ID: id, Class: class, Link: rec.RunURL}, at); err != nil {
+	notice := dispatcher.Notice{ID: id, Class: class, Link: rec.RunURL}
+	if rec.StopReason == runner.StopProviderSetting {
+		notice.Detail, _ = providers.NamedSetting(rec.StopDetail)
+	}
+	if err := notices.Raise(ctx, notice, at); err != nil {
 		logger.Error("noticeNotRaised", "run", rec.RunID, "class", class, "err", err.Error())
 	}
 	if !trips {

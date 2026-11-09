@@ -541,8 +541,8 @@ func TestEmbeddedConfigNamesTheFreeTierOrder(t *testing.T) {
 	if got := LastResortPlans(); !slices.Equal(got, []string{"command-code", "gemini"}) {
 		t.Fatalf("LastResortPlans() = %v, want command-code then gemini", got)
 	}
-	if got := Plans(); !slices.Equal(got, []string{"command-code", "gemini"}) {
-		t.Fatalf("Plans() = %v, want both configured plans, sorted", got)
+	if got := Plans(); !slices.Equal(got, []string{"command-code", "gemini", "opencode-go"}) {
+		t.Fatalf("Plans() = %v, want every configured plan, sorted", got)
 	}
 }
 
@@ -575,7 +575,7 @@ func TestEmbeddedGeminiIsAFreeTierPlan(t *testing.T) {
 func TestPlansListsEveryConfiguredPlanSorted(t *testing.T) {
 	// Map order is random, so one call can come out sorted by chance.
 	for range 32 {
-		if got, want := Plans(), []string{"command-code", "gemini"}; !slices.Equal(got, want) {
+		if got, want := Plans(), []string{"command-code", "gemini", "opencode-go"}; !slices.Equal(got, want) {
 			t.Fatalf("Plans() = %q, want %q", got, want)
 		}
 	}
@@ -646,6 +646,8 @@ func TestRunModelsListsEveryModelARunMayUseOnce(t *testing.T) {
 		"command-code/poolside/laguna-s-2.1-free",
 		"gemini/gemini-3.8-flash",
 		"gemini/gemini-3.5-flash-lite",
+		"opencode-go/deepseek-v4.1-flash",
+		"opencode-go/muse-spark-1.3-contributor",
 	}
 	if got := RunModels(); !slices.Equal(got, want) {
 		t.Fatalf("RunModels() = %v, want %v", got, want)
@@ -677,6 +679,67 @@ func TestEmbeddedGoatIsTheOnlyPaidPlan(t *testing.T) {
 	if m.Build != "command-code/deepseek/deepseek-v4.1-flash" || m.Review != "command-code/meta/muse-spark-1.3-contributor" ||
 		!slices.Equal(m.Plan, []string{"command-code/deepseek/deepseek-v4.1-flash"}) {
 		t.Fatalf("PlanModels(command-code) = %+v", m)
+	}
+}
+
+// TestEmbeddedGoCarriesItsPlanFacts asserts the OpenCode Go plan is configured
+// beside the paid plan without joining the paid-plan order: its endpoint, key,
+// harness, windows, models and rate cards, Flash's carrying the weekday peak.
+func TestEmbeddedGoCarriesItsPlanFacts(t *testing.T) {
+	const plan, flash, muse = "opencode-go", "opencode-go/deepseek-v4.1-flash", "opencode-go/muse-spark-1.3-contributor"
+	if slices.Contains(PaidPlans(), plan) {
+		t.Fatalf("PaidPlans() = %v, want %s left out", PaidPlans(), plan)
+	}
+	if BaseURL(plan) != "https://opencode.ai/zen/go/v1" || KeySecret(plan) != "OPENCODE_API_KEY" || !slices.Equal(Harnesses(plan), []string{"omp"}) {
+		t.Fatalf("plan = %q, %q, %v", BaseURL(plan), KeySecret(plan), Harnesses(plan))
+	}
+	windows := Windows(plan)
+	if len(windows) != 3 || windows[0].Period != 5*time.Hour || windows[0].Limit != 20*money.Dollar ||
+		windows[1].Period != 168*time.Hour || windows[1].Limit != 50*money.Dollar ||
+		windows[2].Period != 720*time.Hour || windows[2].Limit != 60*money.Dollar {
+		t.Fatalf("windows = %+v, want $20/5h, $50/week and $60/month", windows)
+	}
+	if m := PlanModels(plan); m.Build != flash || m.Review != muse || !slices.Equal(m.Plan, []string{flash}) {
+		t.Fatalf("PlanModels(%s) = %+v", plan, m)
+	}
+	f, ok := RatesFor(flash)
+	if !ok || f.Input != 0.15 || f.Output != 0.6 || f.CacheRead != 0.003 || f.Peak == nil || f.Peak.Multiplier != 2 ||
+		!slices.Equal(f.Peak.Hours, []HourRange{{From: 1, To: 4}, {From: 6, To: 10}}) {
+		t.Fatalf("RatesFor(%s) = %+v (ok %v)", flash, f, ok)
+	}
+	if m, ok := RatesFor(muse); !ok || m.Input != 0.1 || m.Output != 0.2 || m.CacheRead != 0.002 || m.Peak != nil {
+		t.Fatalf("RatesFor(%s) = %+v (ok %v)", muse, m, ok)
+	}
+}
+
+// TestSettingForNamesTheSettingEachRefusalAsksFor asserts each embedded
+// refusal phrase, in any case, names the plan setting that lifts it on the Go
+// plan's own failures, and an ordinary failure, or another plan's failure
+// carrying the phrase, names none.
+func TestSettingForNamesTheSettingEachRefusalAsksFor(t *testing.T) {
+	for _, tt := range []struct{ provider, stderr, want string }{
+		{"opencode-go", `400 {"error":"This Go model is hosted outside Europe and the United States."}`, "Privacy > Regions: Global"},
+		{"opencode-go", "error: THIS GO MODEL TRAINS ON REQUEST DATA", "Privacy > Allow paid endpoints that train on request data"},
+		{"opencode-go", "panic: nil pointer", ""},
+		{"command-code", "error: This Go model trains on request data", ""},
+	} {
+		if got, ok := SettingFor(tt.provider, tt.stderr); got != tt.want || ok != (tt.want != "") {
+			t.Errorf("SettingFor(%s, %q) = %q, %v, want %q", tt.provider, tt.stderr, got, ok, tt.want)
+		}
+	}
+}
+
+func TestParseConfigRejectsAnIncompleteSettingMarker(t *testing.T) {
+	for name, tc := range map[string]struct{ marker, want string }{
+		"no phrase":           {`{"provider":"p","marker":" ","setting":"Privacy"}`, "names no phrase or no setting"},
+		"no setting":          {`{"provider":"p","marker":"refused","setting":""}`, "names no phrase or no setting"},
+		"no provider":         {`{"marker":"refused","setting":"Privacy"}`, `names provider "", which is not configured`},
+		"an unknown provider": {`{"provider":"q","marker":"refused","setting":"Privacy"}`, `names provider "q", which is not configured`},
+	} {
+		doc := strings.Replace(configWith(providerFacts+`,"rates":{"p/m":{"input_usd_per_mtok":1}}`), `"providers"`, `"setting_markers":[`+tc.marker+`],"providers"`, 1)
+		if _, err := parseConfig([]byte(doc)); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: parseConfig = %v, want %q", name, err, tc.want)
+		}
 	}
 }
 

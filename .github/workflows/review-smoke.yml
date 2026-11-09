@@ -1,7 +1,7 @@
 # Runs the restricted review agent on a fixture diff with each review model in turn, and writes each
 # model's outcome, cost and whether it flagged the planted defect to the job summary. A model passes
 # when its findings parse and the plan meters its run at $0; the job fails only when none passes.
-# Manual: it spends model calls. Needs the COMMANDCODE_API_KEY secret; no cloud identity.
+# Manual: it spends model calls. Needs the COMMANDCODE_API_KEY or OPENCODE_API_KEY secret; no cloud identity.
 name: review-smoke
 
 on:
@@ -59,5 +59,6 @@ jobs:
           REVIEW_MODELS: ${{ inputs.review_models }}
           BUILD_MODEL: ${{ inputs.build_model }}
           COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           AGENT_IMAGE: ${{ vars.WINGMAN_AGENT_IMAGE }}
         run: '"$RUNNER_TEMP/runner" review-smoke -review-models "$REVIEW_MODELS" -build-model "$BUILD_MODEL" -agent-image "$AGENT_IMAGE"'

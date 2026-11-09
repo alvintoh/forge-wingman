@@ -1069,6 +1069,7 @@ func TestSystemicClassifiesEveryStopReason(t *testing.T) {
 		"identity-mismatch":   {true, true},
 		"allowance-exhausted": {true, true},
 		"model-unavailable":   {true, false},
+		"provider-setting":    {true, true},
 	}
 	declared := regexp.MustCompile(`Stop\w+\s+StopReason = "([a-z-]+)"`).FindAllSubmatch(src, -1)
 	if len(declared) < len(want) {
