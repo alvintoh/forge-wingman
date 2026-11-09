@@ -164,7 +164,7 @@ export function RunningList({ runs, count, now, named, projects }: ListProps) {
 
 // LoadingRows is the three skeleton rows the first read draws, shaped like the rows they stand in
 // for: a stage chip, a ticket and a project over a title, a bar and the caption's slot.
-export function LoadingRows() {
+function LoadingRows() {
   return (
     <div aria-hidden="true" className="card-frame mt-4 pb-1.25">
       {[0, 1, 2].map((row) => (

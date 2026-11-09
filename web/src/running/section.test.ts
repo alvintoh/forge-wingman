@@ -1,8 +1,14 @@
 import { describe, expect, it } from "bun:test";
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRouter,
+  RouterProvider,
+} from "@tanstack/react-router";
 import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderToStaticMarkup, renderToString } from "react-dom/server";
 import type { RunningRun } from "./run";
-import { LoadingRows, RunningList } from "./section";
+import { RunningList, RunningSection } from "./section";
 
 const NOW = Date.UTC(2026, 2, 1, 12, 0, 0);
 
@@ -155,9 +161,29 @@ describe("RunningList caption", () => {
   });
 });
 
-describe("LoadingRows", () => {
-  it("holds the caption slot under every skeleton bar", () => {
-    const markup = renderToStaticMarkup(createElement(LoadingRows));
+// drawLoading renders the section before its first read lands, inside a router, since the section
+// reads the project filter from the URL.
+async function drawLoading(): Promise<string> {
+  const section = createElement(RunningSection, {
+    read: {
+      state: { status: "loading", runs: [], readAt: 0, stale: false },
+      fetching: true,
+      refresh: () => {},
+      retry: () => {},
+    },
+    projects: { status: "loading", total: 0, projects: [], readAt: 0, stale: false },
+    refresh: { readAt: 0, stale: false, fetching: true, now: 0, ask: () => {} },
+    className: "",
+  });
+  const root = createRootRoute({ component: () => section });
+  const router = createRouter({ routeTree: root, history: createMemoryHistory() });
+  await router.load();
+  return renderToString(createElement(RouterProvider, { router }));
+}
+
+describe("RunningSection loading", () => {
+  it("holds the caption slot under every skeleton bar", async () => {
+    const markup = await drawLoading();
     const slots = markup.match(/<span class="mt-1 block h-4 w-40 rounded-tag bg-track"><\/span>/g);
     expect(slots).toHaveLength(3);
   });
