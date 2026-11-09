@@ -22,10 +22,13 @@ const COLUMNS =
 // own 104px apart on a phone.
 const LEFT =
   "flex min-w-0 flex-col gap-y-[calc(var(--spacing-band)*2)] @[51.25rem]:col-start-1 @[51.25rem]:row-span-3 @[51.25rem]:row-start-1 @[51.25rem]:grid @[51.25rem]:grid-rows-subgrid @[51.25rem]:gap-y-0";
-const RUNNING = "@[51.25rem]:row-span-2 @[51.25rem]:grid @[51.25rem]:grid-rows-subgrid";
+// A section that is a grid for its subgrid rows gets one minmax(0,1fr) column: an implicit auto
+// column grows to a truncated title's full width and pushes the card past its column.
+const RUNNING =
+  "@[51.25rem]:row-span-2 @[51.25rem]:grid @[51.25rem]:grid-cols-[minmax(0,1fr)] @[51.25rem]:grid-rows-subgrid";
 const ACTIONS = "min-w-0 @[51.25rem]:row-start-3 @[51.25rem]:mt-band";
 const RIGHT =
-  "min-w-0 @[51.25rem]:col-start-2 @[51.25rem]:row-span-3 @[51.25rem]:row-start-1 @[51.25rem]:grid @[51.25rem]:grid-rows-subgrid";
+  "min-w-0 @[51.25rem]:col-start-2 @[51.25rem]:row-span-3 @[51.25rem]:row-start-1 @[51.25rem]:grid @[51.25rem]:grid-cols-[minmax(0,1fr)] @[51.25rem]:grid-rows-subgrid";
 
 export function Inbox() {
   const { state: inbox, refresh: refreshInbox, fetching: inboxFetching } = useInbox();
