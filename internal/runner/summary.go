@@ -74,6 +74,9 @@ type Summary struct {
 	// left it, which the PR body publishes so a reader sees what the run fixed
 	// before opening the pull request (AC5).
 	ReviewFindings []ReviewFinding `json:"review_findings,omitempty"`
+	// ReviewFindingsOmitted is how many more findings the review made than
+	// ReviewFindings carries, which the PR notes count rather than drop.
+	ReviewFindingsOmitted int `json:"review_findings_omitted,omitempty"`
 	// ReviewSecondRound is what the pre-open review's one extra fix round cost,
 	// nil for a run that never took one: the PR notes publish it so the owner
 	// prices the round on the first run that spends it.
@@ -324,6 +327,7 @@ func (s Summary) Encode() (string, error) {
 		case len(s.Steps) > 0:
 			s.Steps = s.Steps[1:]
 		case len(s.ReviewFindings) > 0:
+			s.ReviewFindingsOmitted += len(s.ReviewFindings) - len(s.ReviewFindings)/2
 			s.ReviewFindings = s.ReviewFindings[:len(s.ReviewFindings)/2]
 		default:
 			return "", fmt.Errorf("summary is %d bytes, over %d", len(b), maxSummaryBytes)
@@ -354,6 +358,12 @@ func capFindings(findings []ReviewFinding) []ReviewFinding {
 		out[i] = ReviewFinding{Finding: truncate(f.Finding, maxFindingBytes), Resolution: truncate(f.Resolution, maxFindingBytes)}
 	}
 	return out
+}
+
+// setReviewFindings records rows, capped, and how many the cap left out.
+func (s *Summary) setReviewFindings(rows []ReviewFinding) {
+	s.ReviewFindings = capFindings(rows)
+	s.ReviewFindingsOmitted = len(rows) - len(s.ReviewFindings)
 }
 
 // mergePaths appends add's repository paths to paths in first-seen order and
@@ -484,6 +494,9 @@ func (s Summary) validate(attemptID string, t Ticket, now time.Time) error {
 	}
 	if s.PeakContextTokens < 0 || s.PeakContextTokens > maxCount {
 		return fmt.Errorf("peak context tokens %d is out of range", s.PeakContextTokens)
+	}
+	if s.ReviewFindingsOmitted < 0 || int64(s.ReviewFindingsOmitted) > maxCount {
+		return fmt.Errorf("omitted review finding count %d is out of range", s.ReviewFindingsOmitted)
 	}
 	if s.GuardsUntested < 0 || int64(s.GuardsUntested) > maxCount {
 		return fmt.Errorf("untested guard count %d is out of range", s.GuardsUntested)

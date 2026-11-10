@@ -185,6 +185,7 @@ func TestParseSummaryRejects(t *testing.T) {
 		{"a negative step peak context", func(s *Summary) { s.Steps[0].PeakContextTokens = -1 }},
 		{"a step peak context over the ceiling", func(s *Summary) { s.Steps[0].PeakContextTokens = maxCount + 1 }},
 		{"a peak context over the ceiling", func(s *Summary) { s.PeakContextTokens = maxCount + 1 }},
+		{"a negative omitted review finding count", func(s *Summary) { s.ReviewFindingsOmitted = -1 }},
 		{"a negative untested guard count", func(s *Summary) { s.GuardsUntested = -1 }},
 		{"an untested guard count over the ceiling", func(s *Summary) { s.GuardsUntested = int(maxCount) + 1 }},
 		{"a second fix round numbered zero", func(s *Summary) {
@@ -544,6 +545,50 @@ func TestParseSummaryKeepsTheReviewFindings(t *testing.T) {
 	}
 	if !slices.Equal(got.ReviewFindings, s.ReviewFindings) {
 		t.Fatalf("findings = %+v, want %+v", got.ReviewFindings, s.ReviewFindings)
+	}
+}
+
+// TestSetReviewFindingsCountsWhatTheCapLeavesOut keeps the findings past the
+// cap as a count that reaches the job rendering the PR.
+func TestSetReviewFindingsCountsWhatTheCapLeavesOut(t *testing.T) {
+	s := validSummary()
+	rows := make([]ReviewFinding, maxReviewFindings+3)
+	for i := range rows {
+		rows[i] = ReviewFinding{Finding: "a finding", Resolution: "still open"}
+	}
+	s.setReviewFindings(rows)
+	raw, err := s.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParseSummary(raw, "1-1", testTicket, finalizeNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.ReviewFindings) != maxReviewFindings || got.ReviewFindingsOmitted != 3 {
+		t.Fatalf("findings = %d, omitted = %d, want %d and 3", len(got.ReviewFindings), got.ReviewFindingsOmitted, maxReviewFindings)
+	}
+}
+
+// TestEncodeCountsTheFindingsItDropsToFit covers the last thing Encode trims:
+// findings it halves to fit the limit are counted, not lost.
+func TestEncodeCountsTheFindingsItDropsToFit(t *testing.T) {
+	s := validSummary()
+	// JSON escapes each "<" to six bytes, so the full set cannot fit.
+	s.ReviewFindings = make([]ReviewFinding, maxReviewFindings)
+	for i := range s.ReviewFindings {
+		s.ReviewFindings[i] = ReviewFinding{Finding: strings.Repeat("<", maxFindingBytes), Resolution: "still open"}
+	}
+	raw, err := s.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Summary
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatal(err)
+	}
+	if kept := len(got.ReviewFindings); kept == maxReviewFindings || kept+got.ReviewFindingsOmitted != maxReviewFindings {
+		t.Fatalf("kept %d, omitted %d, want some dropped and all %d accounted for", kept, got.ReviewFindingsOmitted, maxReviewFindings)
 	}
 }
 

@@ -54,14 +54,15 @@ var ErrNoScreenshotsSection = errors.New("pull request body has no screenshots s
 // the owner, empty when nothing did. noPlan is set for a run no plan stage
 // recorded a write set for, which waits for the owner rather than merging
 // itself. review is what the pre-open review found and how the run left it,
-// listed in the notes and empty for a run whose review found nothing.
+// listed in the notes and empty for a run whose review found nothing, and
+// reviewOmitted is how many more findings the summary's cap left out of it.
 // secondRound is what the review's one extra fix round cost, nil for a run that
 // never took one. guardsUntested is how many guards the guard scan left unprobed
 // when its budget ran out, zero for a run that probed them all. provisional are
 // the decisions auto-pilot took the recommended option on, empty for a run that
 // took none. supersedes is the number of the PR an owner's choice replaced, zero
 // when none, and retried says that choice was a retry with a note.
-func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail, overlap string, outOfPlan []string, writeSetUnread bool, frontEnd []string, noPlan bool, review []ReviewFinding, secondRound *FixRoundCost, guardsUntested int, provisional []Provisional, supersedes int, retried bool) (string, error) {
+func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail, overlap string, outOfPlan []string, writeSetUnread bool, frontEnd []string, noPlan bool, review []ReviewFinding, reviewOmitted int, secondRound *FixRoundCost, guardsUntested int, provisional []Provisional, supersedes int, retried bool) (string, error) {
 	summary := plainText(prSummary)
 	if summary == "" {
 		summary = "`" + t.ID + "`: " + t.Title
@@ -126,10 +127,13 @@ func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail
 					notes = append(notes, "- "+plainText(p.Question)+" — took "+codeSpan(p.Choice)+", "+plainText(p.Cost))
 				}
 			}
-			if len(review) > 0 {
+			if len(review) > 0 || reviewOmitted > 0 {
 				notes = append(notes, "", "**Pre-open review:** every finding it made, and how the run left it")
 				for _, f := range review {
 					notes = append(notes, "- "+plainText(f.Finding)+" — "+plainText(f.Resolution))
+				}
+				if reviewOmitted > 0 {
+					notes = append(notes, fmt.Sprintf("- +%d more, not listed: the run's summary carries at most %d", reviewOmitted, maxReviewFindings))
 				}
 			}
 			if guardsUntested > 0 {

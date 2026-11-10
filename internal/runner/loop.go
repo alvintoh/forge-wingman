@@ -460,7 +460,7 @@ func reviewRows(rounds []fixRoundResult) []ReviewFinding {
 			rows = append(rows, ReviewFinding{Finding: f.text, Resolution: res})
 		}
 	}
-	return capFindings(rows)
+	return rows
 }
 
 // runReview runs the pre-PR loop (FR-28) once the checks have passed: the
@@ -570,7 +570,7 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 		recheckTimeout, inBudget := roundTimeout(c.AgentTimeout, reviewStarted, d.Now(), nfr1ReviewBudget)
 		if !inBudget {
 			rounds = append(rounds, fixRoundResult{round: round, issued: findings})
-			sum.ReviewFindings = reviewRows(rounds)
+			sum.setReviewFindings(reviewRows(rounds))
 			return false, detailParts("findings addressed by a fix round, not re-reviewed: "+
 				text+" ("+stageBudgetSpent("review", nfr1ReviewBudget)+")", checksDetail), nil
 		}
@@ -581,16 +581,16 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 		open := append(surviving, reviewPending(remaining)...)
 		rounds = append(rounds, fixRoundResult{round: round, issued: findings, open: open, rechecked: true})
 		if len(open) == 0 {
-			sum.ReviewFindings = reviewRows(rounds)
+			sum.setReviewFindings(reviewRows(rounds))
 			return checksDetail == "", checksDetail, nil
 		}
 		findings = open
 	}
 	if len(rounds) == 0 {
 		// The budget left no round at all: nothing was done about the findings.
-		sum.ReviewFindings = capFindings(resolveFindings(pending, nil, noFixRound, false))
+		sum.setReviewFindings(resolveFindings(pending, nil, noFixRound, false))
 		return false, "findings open: " + findingsText(pending) + " (fix round skipped: " + stageBudgetSpent("review", nfr1ReviewBudget) + ")", nil
 	}
-	sum.ReviewFindings = reviewRows(rounds)
+	sum.setReviewFindings(reviewRows(rounds))
 	return false, detailParts("findings open: "+findingsText(findings), checksDetail), nil
 }
