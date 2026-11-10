@@ -32,7 +32,11 @@ func failingCommitQueue(t *testing.T, failDoc string) *Queue {
 	fail := func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 		if commit, ok := req.(*firestorepb.CommitRequest); ok {
 			for _, w := range commit.Writes {
-				if strings.HasSuffix(w.Document.GetName(), "/"+failDoc) {
+				name := w.GetUpdate().GetName()
+				if name == "" {
+					name = w.GetDelete()
+				}
+				if strings.HasSuffix(name, "/"+failDoc) {
 					return status.Error(codes.PermissionDenied, "commit refused")
 				}
 			}
@@ -306,7 +310,7 @@ func TestRequeueClearsAStaleChange(t *testing.T) {
 	id := fresh("ticket-change-requeue")
 	seedRow(t, client, id, map[string]any{
 		stateField: stateStopped, outcomeField: string(runner.OutcomeStopped),
-		stopReasonField: string(runner.StopWaitingOnOwner),
+		stopReasonField:      string(runner.StopWaitingOnOwner),
 		ticketChangedAtField: queueAt, ticketChangedBodyField: "new",
 	})
 	if _, err := q.Requeue(context.Background(), id, queueAt.Add(time.Minute)); err != nil {
@@ -323,7 +327,7 @@ func TestRequeueToPlannedKeepsTheRecordedChange(t *testing.T) {
 	seedRow(t, client, id, map[string]any{
 		stateField: stateStopped, outcomeField: string(runner.OutcomeStopped),
 		stopReasonField: string(runner.StopWaitingOnOwner),
-		planFilesField: []string{"a.go"}, planSettledAtField: queueAt,
+		planFilesField:  []string{"a.go"}, planSettledAtField: queueAt,
 		ticketChangedAtField: queueAt, ticketChangedBodyField: "new",
 	})
 	result, err := q.Requeue(context.Background(), id, queueAt.Add(time.Minute))
