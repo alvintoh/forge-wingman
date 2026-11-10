@@ -111,7 +111,8 @@ type inboxChecks struct {
 // are not green shows checks-not-green unless a draft or an unconfirmed decision,
 // which block the merge first, names it; a run whose PR no reason holds shows
 // auto-merge-off while the switch is off, so a change to the switch shows
-// without a new run.
+// without a new run. A PR marked for auto-merge that names no reason is left out
+// while the switch is on and no latch holds, and listed once either changes.
 func (d Deps) readInbox(ctx context.Context, now time.Time) (inboxResponse, error) {
 	runs, err := d.Inbox.Inbox(ctx, now.Add(-runner.TrailingWindow), inboxLimit)
 	if err != nil {
@@ -133,6 +134,11 @@ func (d Deps) readInbox(ctx context.Context, now time.Time) (inboxResponse, erro
 	out := inboxResponse{Runs: make([]inboxRun, 0, len(runs))}
 	for _, r := range runs {
 		reason := r.WaitReason
+		// An auto-merging PR waits on nobody while auto-merge stands; once the switch is
+		// off or a latch holds, pr-review-post declines its merge and the owner must see it.
+		if r.AutoMerged && switchOn && setting.Escaped.PR == 0 {
+			continue
+		}
 		row := inboxRun{Run: r.Run, Ticket: r.Ticket, Repo: r.Repo, Size: r.Size,
 			PRURL: r.PRURL, UpdatedAt: r.UpdatedAt, Attempt: r.Attempt, Outcome: r.Outcome, StopReason: r.StopReason}
 		if r.Stopped {
@@ -157,8 +163,14 @@ func (d Deps) readInbox(ctx context.Context, now time.Time) (inboxResponse, erro
 				}
 			}
 		}
-		if reason == "" && !switchOn {
-			reason = runner.WaitAutoMergeOff
+		if reason == "" {
+			// The latch is named before the switch, as pr-meta names it.
+			switch {
+			case settingsRead && setting.Escaped.PR > 0:
+				reason = runner.WaitEscapedPR
+			case !switchOn:
+				reason = runner.WaitAutoMergeOff
+			}
 		}
 		row.WaitReason = string(reason)
 		// The detail explains the reason the record named; a reason GitHub's

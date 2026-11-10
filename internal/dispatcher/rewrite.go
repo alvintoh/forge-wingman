@@ -177,14 +177,6 @@ type Sample struct {
 	MergedBy string
 }
 
-// MergedItself reports whether the sample's PR merged itself: the account GitHub
-// resolved the merge to is a bot, which is what the runner's own token is. A PR
-// the owner merged by hand, through the surface or on GitHub, carries the
-// owner's login instead.
-func (s Sample) MergedItself() bool {
-	return MergedItself(s.MergedBy)
-}
-
 // HumanMerged reports whether the sample counts in the rate's window: its row
 // names the account that merged the PR, and that account is not a bot. A row
 // measured before the account was kept names none, and an unknown account is

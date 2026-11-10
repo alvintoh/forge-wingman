@@ -116,8 +116,7 @@ const measuredShown = 200
 // links, run ids and repository names — and no field of it sets anything; the
 // switch is set through its own endpoint.
 type autonomyResponse struct {
-	// AutoMerge is the owner's switch beside the rate's verdict, which the page
-	// words as information beside it.
+	// AutoMerge is the owner's switch beside the rate's verdict; both gate auto-merge.
 	AutoMerge autoMergeState `json:"auto_merge"`
 	// Rewrite is the measured merges' own figures, the rates a page draws, or
 	// one repository's alone when the request names it.
@@ -172,6 +171,9 @@ type autoMergeState struct {
 	// Reason is the first thing that turns auto-merge off: an unreadable switch
 	// or bar, the switch off, an escaped PR, or the rate's own reason.
 	Reason string `json:"reason"`
+	// RateReason is the rate's own reason, which Reason replaces while the switch is
+	// off or a latch holds, so the page can still say whether a rate exists to show.
+	RateReason string `json:"rate_reason"`
 	// EscapedPR, EscapedRepo, EscapedBy and EscapedReason name the auto-merged PR
 	// that escaped the owner's reading, zero and empty while none holds.
 	EscapedPR     int    `json:"escaped_pr"`
@@ -198,6 +200,7 @@ func renderAutoMerge(samples []dispatcher.Sample, setting store.AutoMergeSetting
 		Window:        dispatcher.TrailingPRs,
 		Effective:     on && rate.WithinBar && setting.Escaped.PR == 0,
 		Reason:        rate.Reason,
+		RateReason:    rate.Reason,
 		EscapedPR:     setting.Escaped.PR,
 		EscapedRepo:   setting.Escaped.Repo,
 		EscapedBy:     setting.Escaped.By,

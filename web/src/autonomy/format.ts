@@ -143,6 +143,20 @@ export function reasonText(reason: string): string {
   }
 }
 
+/** rateMissing words why the rate cannot be computed, or is empty where the reason is not one of those. */
+function rateMissing(merge: MergeState, reason: string): string {
+  switch (reason) {
+    case "too-few-measured":
+      return `the rate cannot be computed: fewer than ${merge.window} PRs a human merged are measured`;
+    case "no-agent-lines":
+      return "the rate cannot be computed: the measured PRs carry no agent lines";
+    case "evidence-unread":
+      return "the rate cannot be computed: the measured merges could not be read";
+    default:
+      return "";
+  }
+}
+
 /**
  * rateLine words what holds auto-merge: the trailing rate over the PRs a human merged and its place
  * against the bar, or the reason the rate cannot be used. The rate gates, so a rate above the bar,
@@ -156,8 +170,12 @@ export function rateLine(merge: MergeState): string {
       return "off: the auto-merge settings could not be read";
     case "bar-invalid":
       return "off: the stored bar is not a whole number from 1 to 100";
-    case "switch-off":
-      return `off: switched off by you; ${trailing}, ${isRed(barOf(merge.rate_value), barOf(merge.limit)) ? "above" : "at or under"} the ${bar} bar`;
+    case "switch-off": {
+      const missing = rateMissing(merge, merge.rate_reason);
+      return missing
+        ? `off: switched off by you; ${missing}`
+        : `off: switched off by you; ${trailing}, ${isRed(barOf(merge.rate_value), barOf(merge.limit)) ? "above" : "at or under"} the ${bar} bar`;
+    }
     case "escaped": {
       const how =
         merge.escaped_reason === "fixed"
@@ -168,11 +186,9 @@ export function rateLine(merge: MergeState): string {
     case "rate-above-bar":
       return `off: ${trailing}, above the ${bar} bar`;
     case "too-few-measured":
-      return `off: the rate cannot be computed: fewer than ${merge.window} PRs a human merged are measured`;
     case "no-agent-lines":
-      return "off: the rate cannot be computed: the measured PRs carry no agent lines";
     case "evidence-unread":
-      return "off: the rate cannot be computed: the measured merges could not be read";
+      return `off: ${rateMissing(merge, merge.reason)}`;
     case "on":
       return `on: ${trailing}, at or under the ${bar} bar`;
     default:

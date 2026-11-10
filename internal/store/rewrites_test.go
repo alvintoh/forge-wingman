@@ -230,11 +230,11 @@ func TestRecentReturnsTheMeasuredMergesNewestFirst(t *testing.T) {
 			t.Fatalf("Recent(3) = %+v, want the newest merge first, %d agent lines at %d", samples, want, i)
 		}
 	}
-	if oldest := samples[2]; oldest.Repo != "octo/scratch" || !oldest.MergedItself() ||
+	if oldest := samples[2]; oldest.Repo != "octo/scratch" || !dispatcher.MergedItself(oldest.MergedBy) ||
 		oldest.PRURL != "https://github.com/octo/scratch/pull/7" {
 		t.Fatalf("oldest = %+v, want its repo, the account that merged it and PR read with it", oldest)
 	}
-	if newest := samples[0]; newest.MergedItself() || newest.PRURL != "" {
+	if newest := samples[0]; dispatcher.MergedItself(newest.MergedBy) || newest.PRURL != "" {
 		t.Fatalf("newest = %+v, want only the fields that row carries", newest)
 	}
 	if one, err := r.Recent(ctx, 1); err != nil || len(one) != 1 || one[0].AgentLines != 102 {

@@ -411,7 +411,7 @@ func TestAutonomyReportsTheAutoMergeSettingsAndTheRatesVerdict(t *testing.T) {
 	state := readAutoMerge(t, ratedMerges(measuredAt(), 98), &stubAutoMerge{enabled: true})
 
 	want := []string{"effective", "escape_days", "escaped_by", "escaped_pr", "escaped_reason", "escaped_repo", "limit",
-		"rate_allows", "rate_value", "reason", "switch_on", "window"}
+		"rate_allows", "rate_reason", "rate_value", "reason", "switch_on", "window"}
 	if got := slices.Sorted(maps.Keys(state)); !slices.Equal(got, want) {
 		t.Fatalf("auto_merge keys = %v, want %v", got, want)
 	}
@@ -530,9 +530,18 @@ func TestAutonomyReportsASwitchItCannotReadAsOff(t *testing.T) {
 func TestRenderAutoMergeReportsUnreadSettingsOffWhateverTheyHold(t *testing.T) {
 	got := renderAutoMerge(ratedMerges(measuredAt(), 0),
 		store.AutoMergeSetting{Enabled: true, BarPercent: store.DefaultBarPercent}, errors.New("firestore unreachable"))
-	want := autoMergeState{RateAllows: true, RateValue: "0.0%", Limit: "20.0%", Window: 10, Reason: "switch-unread", EscapeDays: 7}
+	want := autoMergeState{RateAllows: true, RateValue: "0.0%", Limit: "20.0%", Window: 10, Reason: "switch-unread", RateReason: "on", EscapeDays: 7}
 	if got != want {
 		t.Fatalf("auto_merge = %+v, want %+v", got, want)
+	}
+}
+
+// TestRenderAutoMergeKeepsTheRatesOwnReasonWhileTheSwitchIsOff asserts the page can tell a
+// switched-off auto-merge with a rate from one with none, since Reason names the switch.
+func TestRenderAutoMergeKeepsTheRatesOwnReasonWhileTheSwitchIsOff(t *testing.T) {
+	got := renderAutoMerge(nil, store.AutoMergeSetting{BarPercent: store.DefaultBarPercent}, nil)
+	if got.Reason != "switch-off" || got.RateReason != "too-few-measured" {
+		t.Fatalf("reason = %q, rate reason = %q, want the switch named and the rate's own reason kept", got.Reason, got.RateReason)
 	}
 }
 

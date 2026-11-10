@@ -12,6 +12,9 @@ export type MergeState = {
   // Reason is the endpoint's own stable token for what turns auto-merge off,
   // which reasonText words.
   reason: string;
+  // RateReason is the rate's own token, which reason replaces while the switch is off or
+  // a latch holds: it says whether a rate exists to show.
+  rate_reason: string;
   // EscapedPR, EscapedRepo, EscapedBy and EscapedReason name the auto-merged PR
   // that escaped the owner's reading, zero and empty while none holds.
   escaped_pr: number;

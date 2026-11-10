@@ -35,6 +35,10 @@ type InboxRun struct {
 	WaitReason runner.WaitReason
 	// WaitDetail names what holds auto-merge, in the run record's own words.
 	WaitDetail string
+	// AutoMerged is set for an open PR marked for auto-merge that names no wait reason:
+	// nothing waits on the owner unless the switch has since gone off or a latch holds,
+	// which the store cannot see, so the reader decides whether to list it.
+	AutoMerged bool
 	Attempt    int
 	Outcome    string
 	StopReason string
@@ -50,9 +54,9 @@ type InboxRun struct {
 }
 
 // Inbox returns the runs updated since that the owner has not cancelled, whose
-// ticket a poll has not found closed while they were stopped, and that either have an open, unmerged PR naming a wait reason or not marked for
-// auto-merge, or stopped with no automatic requeue due, newest first, up to
-// limit.
+// ticket a poll has not found closed while they were stopped, and that either have an open, unmerged PR
+// or stopped with no automatic requeue due, newest first, up to limit. An open PR marked for auto-merge
+// that names no wait reason carries AutoMerged, for the reader to drop while auto-merge stands.
 //
 // A PR closed unmerged on GitHub is not known here, so it stays listed until
 // the owner's merge attempt finds it closed.
@@ -108,7 +112,8 @@ func inboxRun(id string, row map[string]any) (InboxRun, bool) {
 		return run, true
 	}
 	open := run.PRURL != "" && run.Outcome == string(runner.OutcomePROpened) && !mergedRow(row)
-	return run, open && (run.WaitReason != "" || !autoMerged)
+	run.AutoMerged = autoMerged && run.WaitReason == ""
+	return run, open
 }
 
 // cancelledRow reports whether the owner cancelled row's run. Finalize writes the

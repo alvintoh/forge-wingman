@@ -504,7 +504,7 @@ func decideAutoMerge(ctx context.Context, logger *slog.Logger, runID string, swi
 		}
 	}
 	return autoMergeVerdict{
-		Merge:      switchOn && autoMerge(switchOn, runID, t, sum, failedGate, check, hold),
+		Merge:      autoMerge(switchOn, runID, t, sum, failedGate, check, hold),
 		SwitchOn:   switchOn,
 		Bar:        bar,
 		Rate:       rate,

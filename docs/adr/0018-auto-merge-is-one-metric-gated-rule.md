@@ -34,6 +34,8 @@ A size-S run is now eligible without a recorded plan, because an S ticket has no
 
 **Addressed (2026-11-10):** the measurement records GitHub's `merged_by` login, and the rate window leaves out every PR that merged itself. The rate still cannot see a defect in a PR nobody read, which is why the escape latch (a revert or a `fixes #<n>` within 7 days) holds auto-merge off until the owner switches it on again. The 20% sample (FR-17) stays the unbiased check.
 
+**Accepted (2026-11-11): a request already made is not withdrawn by a later switch-off or latch.** `pr-review-post` re-reads the switch and the latch just before it requests the merge, but once GitHub holds the request only a push to the branch withdraws it (`automerge-withdraw.yml`), so the window is the PR's remaining CI time. The rate and the bar are checked at pr-meta, not again at the request. Revisit if an auto-merge ever lands inside that window after the owner switched it off.
+
 ## Alternatives
 
 | # | Option | Why not |

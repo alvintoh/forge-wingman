@@ -17,6 +17,7 @@ const merge: MergeState = {
   window: 10,
   effective: true,
   reason: "on",
+  rate_reason: "on",
   escaped_pr: 0,
   escaped_repo: "",
   escaped_by: 0,

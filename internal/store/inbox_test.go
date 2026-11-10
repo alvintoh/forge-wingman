@@ -63,8 +63,11 @@ func TestInboxListsOpenPRsWaitingOnTheOwnerNewestFirst(t *testing.T) {
 	for _, r := range got {
 		names = append(names, r.Run[len(prefix)+1:])
 	}
-	if want := []string{"newest", "older", "auto-merge held", "owner not merged"}; !slices.Equal(names, want) {
+	if want := []string{"newest", "older", "auto-merging", "auto-merge held", "owner not merged"}; !slices.Equal(names, want) {
 		t.Fatalf("inbox = %v, want %v", names, want)
+	}
+	if !got[2].AutoMerged || got[3].AutoMerged {
+		t.Fatalf("auto-merging = %+v, held = %+v, want only the row naming no reason marked AutoMerged", got[2], got[3])
 	}
 	first := got[0]
 	if first.Stopped || first.Title != "" || first.StopDetail != "" {

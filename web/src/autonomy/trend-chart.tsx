@@ -135,8 +135,8 @@ export function TrendPlot(props: TrendPlotProps) {
           strokeDasharray="3 3"
           className="stroke-ink2"
         />
-        <RefLine x1={axis.x0} x2={axis.x1} y={y(bar)} />
-        {sample && <RefLine x1={axis.x1 + 12} x2={axis.x1 + 34} y={y(bar)} />}
+        <RefLine x1={axis.x0} x2={axis.x1} y={y(Math.min(bar, CAP))} />
+        {sample && <RefLine x1={axis.x1 + 12} x2={axis.x1 + 34} y={y(Math.min(bar, CAP))} />}
         {paths.map((path) => (
           <path
             key={path[0]?.x ?? 0}
@@ -265,7 +265,7 @@ export function TrendCard({ series, prs, bar, aside, lead }: TrendCardProps) {
         });
         const height = side ? PH_SIDE : compact ? PH_COMPACT : PH_UNDER;
         const clipped = series.some((point) => point.rate_value !== null && point.rate_value > CAP);
-        const refY = yOf(bar, clipped ? BAND_H : PLOT_TOP, height, CAP);
+        const refY = yOf(Math.min(bar, CAP), clipped ? BAND_H : PLOT_TOP, height, CAP);
         return (
           <>
             {lead !== undefined && (

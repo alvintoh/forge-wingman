@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -235,6 +236,40 @@ func TestInboxNamesTheEscapedPRWhileTheLatchHolds(t *testing.T) {
 	// The row keeps the reason it had; the escape is the detail, not a new reason.
 	if raw.Runs[0]["wait_reason"] != "draft" {
 		t.Fatalf("row 0 = %v, want its own reason kept", raw.Runs[0])
+	}
+}
+
+func TestInboxListsAnAutoMergingPROnlyOnceAutoMergeStopsStanding(t *testing.T) {
+	tests := []struct {
+		name     string
+		switches *stubAutoMerge
+		want     []string
+	}{
+		{"switch on, no latch", &stubAutoMerge{enabled: true}, nil},
+		{"switch off", &stubAutoMerge{}, []string{"auto-merge-off"}},
+		{"latch holds", &stubAutoMerge{enabled: true,
+			escaped: dispatcher.MergeEscape{Repo: "octo/scratch", PR: 341, Reason: dispatcher.EscapeReverted}}, []string{"escaped-pr"}},
+		{"settings unread", &stubAutoMerge{enabled: true, readErr: errors.New("down")}, []string{"auto-merge-off"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inbox := &stubInbox{runs: []store.InboxRun{{Run: "eligible", Ticket: "ABC-1", AutoMerged: true, UpdatedAt: measuredAt()}}}
+			rec := getInbox(newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Inbox: inbox, AutoMerge: tt.switches}))
+			var raw struct {
+				Runs []map[string]any `json:"runs"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+				t.Fatalf("body = %s, %v", rec.Body.String(), err)
+			}
+			var got []string
+			for _, row := range raw.Runs {
+				reason, _ := row["wait_reason"].(string)
+				got = append(got, reason)
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Fatalf("reasons listed = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

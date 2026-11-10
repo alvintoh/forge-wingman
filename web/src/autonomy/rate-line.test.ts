@@ -14,6 +14,7 @@ function state(overrides: Partial<MergeState>): MergeState {
     window: 10,
     effective: true,
     reason: "on",
+    rate_reason: "on",
     escaped_pr: 0,
     escaped_repo: "",
     escaped_by: 0,
@@ -24,6 +25,15 @@ function state(overrides: Partial<MergeState>): MergeState {
 }
 
 describe("rateLine", () => {
+  it("does not claim a rate under a switched-off line when none can be computed", () => {
+    const line = rateLine(
+      state({ switch_on: false, reason: "switch-off", rate_reason: "too-few-measured", rate_value: "0.0%" }),
+    );
+    expect(line).toBe(
+      "off: switched off by you; the rate cannot be computed: fewer than 10 PRs a human merged are measured",
+    );
+  });
+
   it("words a rate at or under the bar as allowing auto-merge", () => {
     expect(rateLine(state({}))).toBe(
       "on: the trailing rewrite rate is 9.8% over the last 10 PRs a human merged, at or under the 20% bar",
