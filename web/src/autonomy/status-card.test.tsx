@@ -21,6 +21,7 @@ const merge: MergeState = {
   escaped_repo: "",
   escaped_by: 0,
   escaped_reason: "",
+  escape_days: 7,
 };
 
 // The settings pill is a router Link, so the card renders inside a one-route memory router.

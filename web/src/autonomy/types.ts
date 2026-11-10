@@ -18,6 +18,8 @@ export type MergeState = {
   escaped_repo: string;
   escaped_by: number;
   escaped_reason: string;
+  // EscapeDays is how many days after an auto-merge a revert or a fix still counts as an escape.
+  escape_days: number;
 };
 
 export type TrendDirection = "up" | "down" | "flat";

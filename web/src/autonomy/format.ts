@@ -131,7 +131,7 @@ export function reasonText(reason: string): string {
     case "escaped":
       return "An auto-merged PR escaped the owner's read.";
     case "too-few-measured":
-      return "Fewer than ten PRs a human merged are measured, or one carries an unmeasured commit.";
+      return "Too few PRs a human merged are measured, or one carries an unmeasured commit.";
     case "no-agent-lines":
       return "The measured PRs carry no agent lines, so there is no rate.";
     case "rate-above-bar":
@@ -163,12 +163,12 @@ export function rateLine(merge: MergeState): string {
         merge.escaped_reason === "fixed"
           ? `was named as fixed by #${merge.escaped_by}`
           : "was reverted";
-      return `off: ${merge.escaped_repo}#${merge.escaped_pr} ${how} within 7 days of merging; auto-merge is off until you switch it on again`;
+      return `off: ${merge.escaped_repo}#${merge.escaped_pr} ${how} within ${merge.escape_days} days of merging; auto-merge is off until you switch it on again`;
     }
     case "rate-above-bar":
       return `off: ${trailing}, above the ${bar} bar`;
     case "too-few-measured":
-      return "off: the rate cannot be computed: fewer than ten PRs a human merged are measured";
+      return `off: the rate cannot be computed: fewer than ${merge.window} PRs a human merged are measured`;
     case "no-agent-lines":
       return "off: the rate cannot be computed: the measured PRs carry no agent lines";
     case "evidence-unread":

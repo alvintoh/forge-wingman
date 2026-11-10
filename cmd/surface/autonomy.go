@@ -127,21 +127,14 @@ type autonomyResponse struct {
 // renderAutonomy renders the auto-merge state and the rewrite figures of the
 // measured merges as JSON. The verdict reads only known human merges: a PR that
 // merged itself and one whose row names no merge account are left out of the
-// rate auto-merge follows. The figures drawn beside it leave out a PR that merged
-// itself, and keep one measured before the merge account was kept, so the page
-// still shows the measured history while the verdict holds off until its window
-// fills with known merges. A repo scopes the figures to its merges and never the
-// verdict, which reads every merge given.
+// rate auto-merge follows. The figures drawn beside it cover every measured
+// merge. A repo scopes the figures to its merges and never the verdict, which
+// reads every merge given.
 func renderAutonomy(samples []dispatcher.Sample, repo string, setting store.AutoMergeSetting, readErr error) autonomyResponse {
 	human := dispatcher.Evidence{Trailing: samples}.HumanWindow(len(samples))
-	shown := make([]dispatcher.Sample, 0, len(samples))
-	for _, s := range samples {
-		if !s.MergedItself() {
-			shown = append(shown, s)
-		}
-	}
+	shown := samples
 	if repo != "" {
-		shown = dispatcher.ForRepo(shown, repo)
+		shown = dispatcher.ForRepo(samples, repo)
 	}
 	return autonomyResponse{
 		AutoMerge: renderAutoMerge(human, setting, readErr),
@@ -185,6 +178,9 @@ type autoMergeState struct {
 	EscapedRepo   string `json:"escaped_repo"`
 	EscapedBy     int    `json:"escaped_by"`
 	EscapedReason string `json:"escaped_reason"`
+	// EscapeDays is how many days after an auto-merge a revert or a fix still
+	// counts as an escape.
+	EscapeDays int `json:"escape_days"`
 }
 
 // renderAutoMerge renders the auto-merge settings beside the rate's verdict over
@@ -206,6 +202,7 @@ func renderAutoMerge(samples []dispatcher.Sample, setting store.AutoMergeSetting
 		EscapedRepo:   setting.Escaped.Repo,
 		EscapedBy:     setting.Escaped.By,
 		EscapedReason: setting.Escaped.Reason,
+		EscapeDays:    int(dispatcher.EscapeWindow / (24 * time.Hour)),
 	}
 	// The escape latch is named before the switch, as pr-meta and the inbox
 	// name it: the latch is the fact that holds auto-merge off until the owner

@@ -51,6 +51,7 @@ const isMergeState = shape<MergeState>({
   escaped_repo: isString,
   escaped_by: isNumber,
   escaped_reason: isString,
+  escape_days: isNumber,
 });
 
 const isTile = shape<Tile>({

@@ -364,8 +364,8 @@ func ratedMerges(at time.Time, ownerPerPR int64) []dispatcher.Sample {
 }
 
 // TestAutonomyLeavesOutThePRsThatMergedThemselves asserts a PR that merged
-// itself neither lowers the rate the verdict gates on nor reaches the figures
-// drawn beside it (AC6).
+// itself does not lower the rate the verdict gates on (AC6), while the figures
+// drawn beside it still list every measured merge.
 func TestAutonomyLeavesOutThePRsThatMergedThemselves(t *testing.T) {
 	// Ten PRs a human merged, plus the self-merged one whose 300% rewrite would
 	// put the trailing ten above the 20% bar if it were counted.
@@ -383,8 +383,8 @@ func TestAutonomyLeavesOutThePRsThatMergedThemselves(t *testing.T) {
 	if err := json.Unmarshal(blocksOf(t, autonomyBody(t, merges, "/api/autonomy")).Rewrite, &rewrite); err != nil {
 		t.Fatal(err)
 	}
-	if len(rewrite.PRs) != 10 {
-		t.Fatalf("rewrite PRs = %d, want the ten a human merged", len(rewrite.PRs))
+	if len(rewrite.PRs) != 11 {
+		t.Fatalf("rewrite PRs = %d, want every measured merge listed", len(rewrite.PRs))
 	}
 }
 
@@ -410,7 +410,7 @@ func readAutoMerge(t *testing.T, merges []dispatcher.Sample, switches AutoMergeS
 func TestAutonomyReportsTheAutoMergeSettingsAndTheRatesVerdict(t *testing.T) {
 	state := readAutoMerge(t, ratedMerges(measuredAt(), 98), &stubAutoMerge{enabled: true})
 
-	want := []string{"effective", "escaped_by", "escaped_pr", "escaped_reason", "escaped_repo", "limit",
+	want := []string{"effective", "escape_days", "escaped_by", "escaped_pr", "escaped_reason", "escaped_repo", "limit",
 		"rate_allows", "rate_value", "reason", "switch_on", "window"}
 	if got := slices.Sorted(maps.Keys(state)); !slices.Equal(got, want) {
 		t.Fatalf("auto_merge keys = %v, want %v", got, want)
@@ -530,7 +530,7 @@ func TestAutonomyReportsASwitchItCannotReadAsOff(t *testing.T) {
 func TestRenderAutoMergeReportsUnreadSettingsOffWhateverTheyHold(t *testing.T) {
 	got := renderAutoMerge(ratedMerges(measuredAt(), 0),
 		store.AutoMergeSetting{Enabled: true, BarPercent: store.DefaultBarPercent}, errors.New("firestore unreachable"))
-	want := autoMergeState{RateAllows: true, RateValue: "0.0%", Limit: "20.0%", Window: 10, Reason: "switch-unread"}
+	want := autoMergeState{RateAllows: true, RateValue: "0.0%", Limit: "20.0%", Window: 10, Reason: "switch-unread", EscapeDays: 7}
 	if got != want {
 		t.Fatalf("auto_merge = %+v, want %+v", got, want)
 	}

@@ -18,6 +18,7 @@ function state(overrides: Partial<MergeState>): MergeState {
     escaped_repo: "",
     escaped_by: 0,
     escaped_reason: "",
+    escape_days: 7,
     ...overrides,
   };
 }
@@ -50,7 +51,7 @@ describe("rateLine", () => {
   it("says which rate could not be computed", () => {
     expect(
       rateLine(state({ rate_allows: false, effective: false, reason: "too-few-measured" })),
-    ).toContain("fewer than ten PRs a human merged are measured");
+    ).toContain("fewer than 10 PRs a human merged are measured");
     expect(
       rateLine(state({ rate_allows: false, effective: false, reason: "no-agent-lines" })),
     ).toContain("the measured PRs carry no agent lines");
@@ -72,6 +73,17 @@ describe("rateLine", () => {
       }),
     );
     expect(reverted).toContain("octo/scratch#341 was reverted within 7 days of merging");
+    expect(
+      rateLine(
+        state({
+          reason: "escaped",
+          escaped_pr: 341,
+          escaped_repo: "octo/scratch",
+          escaped_reason: "reverted",
+          escape_days: 14,
+        }),
+      ),
+    ).toContain("within 14 days of merging");
     expect(reverted).toContain("until you switch it on again");
     const fixed = rateLine(
       state({

@@ -10,7 +10,8 @@
     "escaped_pr": 0,
     "escaped_repo": "",
     "escaped_by": 0,
-    "escaped_reason": ""
+    "escaped_reason": "",
+    "escape_days": 7
   },
   "rewrite": {
     "tiles": [
