@@ -21,7 +21,7 @@ import (
 // The rewrite measurement the dispatcher writes onto a run row, beside
 // runner.Record rather than inside it: the record job rebuilds the fields Record
 // names, so a measurement kept among them would be wiped by the next attempt's
-// Finalize. The row's own repo, branch, auto_merge, failed_gate and pr_url are
+// Finalize. The row's own repo, branch, merged_by, failed_gate and pr_url are
 // read with them, so one query builds a whole sample.
 const (
 	rewriteAgentLinesField  = "rewrite_agent_lines"
@@ -33,7 +33,7 @@ const (
 	prTitleField            = "pr_title"
 	rewriteUnmeasuredField  = "rewrite_unmeasured_commits"
 	rewriteMergedAtField    = "rewrite_merged_at"
-	rewriteRevertedField    = "rewrite_reverted"
+	mergedByField           = "merged_by"
 	branchField             = "branch"
 	branchesField           = "branches"
 	autoMergeField          = "auto_merge"
@@ -100,13 +100,14 @@ func (r *Rewrites) RunForMerged(ctx context.Context, repo string, pr dispatcher.
 	return dispatcher.RunRow{}, false, nil
 }
 
-// runRow reads the row a query matched: what it is called, and when a merge last
-// measured it.
+// runRow reads the row a query matched: what it is called, and when and by whom
+// a merge last measured it.
 func runRow(snap *firestore.DocumentSnapshot) dispatcher.RunRow {
 	row := dispatcher.RunRow{RunID: snap.Ref.ID}
 	if at, ok := snap.Data()[rewriteMergedAtField].(time.Time); ok {
 		row.Measured = at
 	}
+	row.MergedBy = str(snap.Data(), mergedByField)
 	return row
 }
 
@@ -146,8 +147,7 @@ func unfoundDocID(repo string, number int) string {
 	return fmt.Sprintf("%s%s#%d", unfoundPrefix, strings.ReplaceAll(repo, "/", "#"), number)
 }
 
-// Record writes m onto run id's row, clearing any revert a previous merge of the
-// row was flagged with: the measurement is of the merge the row now carries.
+// Record writes m onto run id's row.
 func (r *Rewrites) Record(ctx context.Context, id string, m dispatcher.Measured) error {
 	_, err := r.client.Collection(runsCollection).Doc(id).Set(ctx, map[string]any{
 		rewriteAgentLinesField:  m.AgentLines,
@@ -159,7 +159,7 @@ func (r *Rewrites) Record(ctx context.Context, id string, m dispatcher.Measured)
 		prNumberField:           int64(m.PR),
 		prTitleField:            titleText(m.Title),
 		rewriteMergedAtField:    m.MergedAt,
-		rewriteRevertedField:    false,
+		mergedByField:           m.MergedBy,
 	}, firestore.MergeAll)
 	if err != nil {
 		return fmt.Errorf("recording run %s's rewrite: %w", id, err)
@@ -167,37 +167,39 @@ func (r *Rewrites) Record(ctx context.Context, id string, m dispatcher.Measured)
 	return nil
 }
 
-// FlagReverted flags run id's row as one a merged revert names.
-func (r *Rewrites) FlagReverted(ctx context.Context, id string) error {
-	_, err := r.client.Collection(runsCollection).Doc(id).Set(ctx,
-		map[string]any{rewriteRevertedField: true}, firestore.MergeAll)
-	if err != nil {
-		return fmt.Errorf("flagging run %s reverted: %w", id, err)
-	}
-	return nil
-}
-
 // Recent returns the merged PRs' samples, newest merge first, up to limit.
 func (r *Rewrites) Recent(ctx context.Context, limit int) ([]dispatcher.Sample, error) {
-	return recentSamples(ctx, r.client, limit)
+	return mergedSamples(ctx, r.client, limit, func(dispatcher.Sample) bool { return true })
 }
 
-// recentSamples reads the rows a rewrite measurement sits on, newest merge
-// first, projected to the fields a sample reads. The measurement fields are the
-// store's own, so the range filter is what tells a measured row from one no
-// merge has reached.
-func recentSamples(ctx context.Context, client *firestore.Client, limit int) ([]dispatcher.Sample, error) {
+// RecentHumanMerged returns the merged PRs a human merged, newest first, up to
+// limit: a PR that merged itself, and one whose row names no merge account, are
+// skipped, so the rate it is read over is what the owner's own reading caught.
+func (r *Rewrites) RecentHumanMerged(ctx context.Context, limit int) ([]dispatcher.Sample, error) {
+	return mergedSamples(ctx, r.client, limit, func(s dispatcher.Sample) bool { return s.HumanMerged() })
+}
+
+// mergedSamples reads the rows a rewrite measurement sits on, newest merge
+// first, keeping the samples keep admits until limit are collected. The range
+// filter is what tells a measured row from one no merge has reached; the query
+// is left unbounded rather than limited, because a skipped sample must not cost
+// the window a PR — the iterator streams the rest, so only the skipped rows are
+// read.
+func mergedSamples(ctx context.Context, client *firestore.Client, limit int, keep func(dispatcher.Sample) bool) ([]dispatcher.Sample, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
 	iter := client.Collection(runsCollection).
 		Where(rewriteMergedAtField, ">", time.Time{}).
 		OrderBy(rewriteMergedAtField, firestore.Desc).
-		Select(sizeField, repoField, prURLField, prTitleField, autoMergeField, prNumberField,
-			rewriteMergedAtField, rewriteRevertedField, rewriteAgentLinesField, rewriteOwnerLinesField,
+		Select(sizeField, repoField, prURLField, prTitleField, prNumberField,
+			rewriteMergedAtField, mergedByField, rewriteAgentLinesField, rewriteOwnerLinesField,
 			rewriteReviewFoundField, rewriteOwnerChangeField, rewriteUnlabelledField, rewriteUnmeasuredField,
 			planModelField, stepsField).
-		Limit(limit).Documents(ctx)
+		Documents(ctx)
 	defer iter.Stop()
 	var out []dispatcher.Sample
-	for {
+	for len(out) < limit {
 		snap, err := iter.Next()
 		if errors.Is(err, iterator.Done) {
 			break
@@ -205,15 +207,15 @@ func recentSamples(ctx context.Context, client *firestore.Client, limit int) ([]
 		if err != nil {
 			return nil, fmt.Errorf("listing the measured runs: %w", err)
 		}
-		out = append(out, sample(snap.Ref.ID, snap.Data()))
+		if s := sample(snap.Ref.ID, snap.Data()); keep(s) {
+			out = append(out, s)
+		}
 	}
 	return out, nil
 }
 
 // sample reads one measured row, id, as the rewrite rate reads it.
 func sample(id string, row map[string]any) dispatcher.Sample {
-	autoMerged, _ := row[autoMergeField].(bool)
-	reverted, _ := row[rewriteRevertedField].(bool)
 	steps := stepModels(row)
 	s := dispatcher.Sample{
 		Run:         id,
@@ -224,8 +226,7 @@ func sample(id string, row map[string]any) dispatcher.Sample {
 		PlanModel:   str(row, planModelField),
 		BuildModel:  runner.PhaseModel(steps, runner.PhaseBuild),
 		ReviewModel: runner.PhaseModel(steps, runner.PhaseReview),
-		AutoMerged:  autoMerged,
-		Reverted:    reverted,
+		MergedBy:    str(row, mergedByField),
 	}
 	if at, ok := row[rewriteMergedAtField].(time.Time); ok {
 		s.MergedAt = at

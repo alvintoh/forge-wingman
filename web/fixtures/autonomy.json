@@ -3,10 +3,14 @@
     "switch_on": true,
     "rate_allows": true,
     "rate_value": "7.4%",
-    "limit": "10.0%",
+    "limit": "20.0%",
     "window": 10,
     "effective": true,
-    "reason": "on"
+    "reason": "on",
+    "escaped_pr": 0,
+    "escaped_repo": "",
+    "escaped_by": 0,
+    "escaped_reason": ""
   },
   "rewrite": {
     "tiles": [
@@ -621,6 +625,6 @@
         }
       }
     ],
-    "bars": { "rollback": 0.1 }
+    "bars": { "rollback": 0.2 }
   }
 }

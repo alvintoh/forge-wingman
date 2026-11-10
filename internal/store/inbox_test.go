@@ -164,7 +164,7 @@ func TestRecordMergeAndSetWaitReasonKeepTheRestOfTheRow(t *testing.T) {
 	recs := NewRecords(client)
 
 	at := time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC)
-	if err := recs.SetWaitReason(ctx, id, runner.WaitSizeL); err != nil {
+	if err := recs.SetWaitReason(ctx, id, runner.WaitRateAboveBar, "the trailing rewrite rate is 23.4% over the last 10 PRs a human merged, above the 20% bar"); err != nil {
 		t.Fatal(err)
 	}
 	if err := recs.RecordMerge(ctx, id, "def456", at); err != nil {
@@ -178,8 +178,9 @@ func TestRecordMergeAndSetWaitReasonKeepTheRestOfTheRow(t *testing.T) {
 	if data["ticket_id"] != "ABC-1" || data["pr_url"] != "https://github.com/octo/scratch/pull/7" {
 		t.Errorf("a field neither write names was lost: %v", data)
 	}
-	if data["wait_reason"] != "size-l" || data["merged_sha"] != "def456" || !data["merged_by_owner_at"].(time.Time).Equal(at) {
-		t.Errorf("row = %v, want the reason and the merge recorded", data)
+	if data["wait_reason"] != "rate-above-bar" || data["wait_detail"] != "the trailing rewrite rate is 23.4% over the last 10 PRs a human merged, above the 20% bar" ||
+		data["merged_sha"] != "def456" || !data["merged_by_owner_at"].(time.Time).Equal(at) {
+		t.Errorf("row = %v, want the reason, its words and the merge recorded", data)
 	}
 }
 

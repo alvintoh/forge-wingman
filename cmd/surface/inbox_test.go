@@ -189,6 +189,55 @@ func TestInboxShowsAutoMergeOffOnlyWhereNoNamedReasonHoldsThePR(t *testing.T) {
 	}
 }
 
+func TestInboxNamesWhatHoldsAutoMerge(t *testing.T) {
+	inbox := &stubInbox{runs: []store.InboxRun{{
+		Run: "held", Ticket: "ABC-1", WaitReason: runner.WaitRateAboveBar,
+		WaitDetail: "the trailing rewrite rate is 23.4% over the last 10 PRs a human merged, above the 20% bar",
+		UpdatedAt:  measuredAt(),
+	}}}
+	rec := getInbox(newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Inbox: inbox, AutoMerge: &stubAutoMerge{enabled: true}}))
+	var raw struct {
+		Runs []map[string]any `json:"runs"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil || len(raw.Runs) != 1 {
+		t.Fatalf("body = %s, %v", rec.Body.String(), err)
+	}
+	if raw.Runs[0]["wait_reason"] != "rate-above-bar" ||
+		raw.Runs[0]["wait_detail"] != "the trailing rewrite rate is 23.4% over the last 10 PRs a human merged, above the 20% bar" {
+		t.Fatalf("row = %v, want the rate and the bar named beside the reason", raw.Runs[0])
+	}
+}
+
+func TestInboxNamesTheEscapedPRWhileTheLatchHolds(t *testing.T) {
+	words := "auto-merge is off until you switch it on again: octo/scratch#341 was reverted within 7 days of merging"
+	inbox := &stubInbox{runs: []store.InboxRun{
+		{Run: "named", Ticket: "ABC-1", WaitReason: runner.WaitDraft, UpdatedAt: measuredAt()},
+		{Run: "written", Ticket: "ABC-2", WaitReason: runner.WaitEscapedPR, WaitDetail: words, UpdatedAt: measuredAt()},
+	}}
+	switches := &stubAutoMerge{enabled: true,
+		escaped: dispatcher.MergeEscape{Repo: "octo/scratch", PR: 341, Reason: dispatcher.EscapeReverted}}
+	rec := getInbox(newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Inbox: inbox, AutoMerge: switches}))
+	var raw struct {
+		Runs []map[string]any `json:"runs"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil || len(raw.Runs) != 2 {
+		t.Fatalf("body = %s, %v", rec.Body.String(), err)
+	}
+	for i, row := range raw.Runs {
+		detail, _ := row["wait_detail"].(string)
+		if detail != words && !strings.HasSuffix(detail, "; "+words) {
+			t.Fatalf("row %d = %v, want the escaped PR named", i, row)
+		}
+		if strings.Count(detail, "octo/scratch#341") != 1 {
+			t.Fatalf("row %d detail = %q, want the escaped PR named once", i, detail)
+		}
+	}
+	// The row keeps the reason it had; the escape is the detail, not a new reason.
+	if raw.Runs[0]["wait_reason"] != "draft" {
+		t.Fatalf("row 0 = %v, want its own reason kept", raw.Runs[0])
+	}
+}
+
 func TestInboxReadsTheTrailingWindowUpToItsLimit(t *testing.T) {
 	inbox := &stubInbox{}
 	now := time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC)

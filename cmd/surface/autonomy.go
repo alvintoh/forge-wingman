@@ -20,13 +20,13 @@ type MeasuredReader interface {
 	Recent(ctx context.Context, limit int) ([]dispatcher.Sample, error)
 }
 
-// AutoMergeStore reads and sets the auto-merge switch: the dispatch/auto-merge
+// AutoMergeStore reads and sets the auto-merge settings: the dispatch/auto-merge
 // document the runner's pr-meta reads and the runner auto-merge command sets.
 // Like the peak mode's, the Configuration page's switch sets it and the service
 // sits behind IAP, whose only authorised principal is the owner.
 type AutoMergeStore interface {
-	Enabled(ctx context.Context) (bool, error)
-	Set(ctx context.Context, enabled bool, at time.Time) error
+	Read(ctx context.Context) (store.AutoMergeSetting, error)
+	SetEnabled(ctx context.Context, enabled bool, at time.Time) error
 }
 
 // autonomy serves GET /api/autonomy: the auto-merge state, and the rewrite
@@ -47,9 +47,9 @@ func (d Deps) autonomy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "reading the measured merges", http.StatusInternalServerError)
 		return
 	}
-	switchOn, switchRead := d.autoMergeSwitch(r.Context())
+	setting, readErr := d.autoMergeReading(r.Context())
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(renderAutonomy(measured, repo, switchOn, switchRead))
+	_ = json.NewEncoder(w).Encode(renderAutonomy(measured, repo, setting, readErr))
 }
 
 // scopeRepo reads the repository a request scopes the figures to: empty when the
@@ -91,7 +91,7 @@ func (d Deps) setAutoMerge(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "the request body is not JSON saying whether auto-merge is enabled", http.StatusBadRequest)
 		return
 	}
-	if err := d.AutoMerge.Set(r.Context(), *body.Enabled, time.Now()); err != nil {
+	if err := d.AutoMerge.SetEnabled(r.Context(), *body.Enabled, time.Now()); err != nil {
 		d.Logger.Error("autoMergeSwitchNotSet", "err", err.Error())
 		http.Error(w, "setting the auto-merge switch", http.StatusInternalServerError)
 		return
@@ -125,79 +125,114 @@ type autonomyResponse struct {
 }
 
 // renderAutonomy renders the auto-merge state and the rewrite figures of the
-// measured merges as JSON. A repo scopes the rewrite figures to its merges and
-// never the rate's verdict, which reads every merge given. switchRead is false
-// for a switch that could not be read, which reports off whatever switchOn holds.
-func renderAutonomy(samples []dispatcher.Sample, repo string, switchOn, switchRead bool) autonomyResponse {
-	shown := samples
+// measured merges as JSON. The verdict reads only known human merges: a PR that
+// merged itself and one whose row names no merge account are left out of the
+// rate auto-merge follows. The figures drawn beside it leave out a PR that merged
+// itself, and keep one measured before the merge account was kept, so the page
+// still shows the measured history while the verdict holds off until its window
+// fills with known merges. A repo scopes the figures to its merges and never the
+// verdict, which reads every merge given.
+func renderAutonomy(samples []dispatcher.Sample, repo string, setting store.AutoMergeSetting, readErr error) autonomyResponse {
+	human := dispatcher.Evidence{Trailing: samples}.HumanWindow(len(samples))
+	shown := make([]dispatcher.Sample, 0, len(samples))
+	for _, s := range samples {
+		if !s.MergedItself() {
+			shown = append(shown, s)
+		}
+	}
 	if repo != "" {
-		shown = dispatcher.ForRepo(samples, repo)
+		shown = dispatcher.ForRepo(shown, repo)
 	}
 	return autonomyResponse{
-		AutoMerge: renderAutoMerge(samples, switchOn, switchRead),
-		Rewrite:   renderRewrite(shown),
+		AutoMerge: renderAutoMerge(human, setting, readErr),
+		Rewrite:   renderRewrite(shown, barFraction(setting, readErr)),
 	}
 }
 
-// autoMergeState is the owner's auto-merge switch beside the rate's verdict,
-// which the switch alone makes effective, computed here so the page decides
-// nothing.
+// barFraction is the bar as a fraction: the stored one, or the default where the
+// settings could not be read.
+func barFraction(setting store.AutoMergeSetting, readErr error) float64 {
+	if readErr != nil {
+		return dispatcher.DefaultAutoMergeBar
+	}
+	return float64(setting.BarPercent) / 100
+}
+
+// autoMergeState is the owner's auto-merge settings beside the rate's verdict,
+// computed here so the page decides nothing: auto-merge is on while the switch
+// is on, the bar is readable, no escaped PR holds it and the rate is at or under
+// the bar.
 type autoMergeState struct {
 	// SwitchOn is the owner's setting, on while no document is stored.
 	SwitchOn bool `json:"switch_on"`
-	// RateAllows is whether the rate is within its bar. It is information, and
-	// it does not change Effective.
+	// RateAllows is whether the rate is at or under the bar.
 	RateAllows bool `json:"rate_allows"`
 	// RateValue is the trailing rate as the view prints it.
 	RateValue string `json:"rate_value"`
 	// Limit is the bar the rate is compared to.
 	Limit string `json:"limit"`
-	// Window is how many trailing merged PRs the rate covers.
+	// Window is how many trailing PRs a human merged the rate covers.
 	Window int `json:"window"`
-	// Effective is the switch on and readable. The rate does not enter it.
+	// Effective is the switch on and readable, no escaped PR holding it and the
+	// rate at or under the bar.
 	Effective bool `json:"effective"`
-	// Reason is switch-unread for a switch that could not be read and switch-off
-	// for one that is off; for a switch that is on it is the rate's own reason,
-	// which Effective does not follow.
+	// Reason is the first thing that turns auto-merge off: an unreadable switch
+	// or bar, the switch off, an escaped PR, or the rate's own reason.
 	Reason string `json:"reason"`
+	// EscapedPR, EscapedRepo, EscapedBy and EscapedReason name the auto-merged PR
+	// that escaped the owner's reading, zero and empty while none holds.
+	EscapedPR     int    `json:"escaped_pr"`
+	EscapedRepo   string `json:"escaped_repo"`
+	EscapedBy     int    `json:"escaped_by"`
+	EscapedReason string `json:"escaped_reason"`
 }
 
-// renderAutoMerge renders the owner's switch beside the rate's verdict over the
-// measured merges. The switch alone decides Effective; the rate is served as
-// information. switchRead is false for a switch that could not be read, which
-// reports off whatever switchOn holds.
-func renderAutoMerge(samples []dispatcher.Sample, switchOn, switchRead bool) autoMergeState {
-	rate := dispatcher.AutoMergeOn(dispatcher.Evidence{Trailing: samples})
-	on := switchOn && switchRead
+// renderAutoMerge renders the auto-merge settings beside the rate's verdict over
+// the PRs a human merged, each computed here so the page decides nothing.
+func renderAutoMerge(samples []dispatcher.Sample, setting store.AutoMergeSetting, readErr error) autoMergeState {
+	bar := barFraction(setting, readErr)
+	rate := dispatcher.AutoMergeOn(dispatcher.Evidence{Trailing: samples}, bar)
+	read := readErr == nil
+	on := setting.Enabled && read
 	out := autoMergeState{
-		SwitchOn:   on,
-		RateAllows: rate.WithinBar,
-		RateValue:  rate.RateText(),
-		Limit:      rateText(dispatcher.AutoMergeRate),
-		Window:     dispatcher.TrailingPRs,
-		Effective:  on,
-		Reason:     rate.Reason,
+		SwitchOn:      on,
+		RateAllows:    rate.WithinBar,
+		RateValue:     rate.RateText(),
+		Limit:         rateText(bar),
+		Window:        dispatcher.TrailingPRs,
+		Effective:     on && rate.WithinBar && setting.Escaped.PR == 0,
+		Reason:        rate.Reason,
+		EscapedPR:     setting.Escaped.PR,
+		EscapedRepo:   setting.Escaped.Repo,
+		EscapedBy:     setting.Escaped.By,
+		EscapedReason: setting.Escaped.Reason,
 	}
+	// The escape latch is named before the switch, as pr-meta and the inbox
+	// name it: the latch is the fact that holds auto-merge off until the owner
+	// switches it on again, whether or not the switch is already off.
 	switch {
-	case !switchRead:
+	case readErr != nil && errors.Is(readErr, store.ErrBarNotInRange):
+		out.Reason = dispatcher.AutoMergeReasonBarInvalid
+	case readErr != nil:
 		out.Reason = dispatcher.AutoMergeReasonSwitchUnread
-	case !on:
+	case setting.Escaped.PR > 0:
+		out.Reason = dispatcher.AutoMergeReasonEscaped
+	case !setting.Enabled:
 		out.Reason = dispatcher.AutoMergeReasonSwitchOff
 	}
 	return out
 }
 
-// autoMergeSwitch reads the owner's auto-merge switch, reporting it and whether
-// it could be read. A switch that cannot be read is off and is logged, so the
-// view never reports auto-merge on from a switch nobody read.
-func (d Deps) autoMergeSwitch(ctx context.Context) (on, read bool) {
+// autoMergeReading reads the owner's auto-merge settings, returning the stored
+// ones and why they could not be read. A settings read that fails is logged and
+// holds auto-merge off, so the view never reports it on from what nobody read.
+func (d Deps) autoMergeReading(ctx context.Context) (store.AutoMergeSetting, error) {
 	if d.AutoMerge == nil {
-		return false, false
+		return store.AutoMergeSetting{}, errors.New("the surface holds no auto-merge store")
 	}
-	on, err := d.AutoMerge.Enabled(ctx)
+	setting, err := d.AutoMerge.Read(ctx)
 	if err != nil {
-		d.Logger.Warn("autoMergeSwitchUnread", "err", err.Error())
-		return false, false
+		d.Logger.Warn("autoMergeSettingsUnread", "err", err.Error())
 	}
-	return on, true
+	return setting, err
 }

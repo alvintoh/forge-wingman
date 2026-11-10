@@ -13,10 +13,14 @@ const merge: MergeState = {
   switch_on: true,
   rate_allows: true,
   rate_value: "7.4%",
-  limit: "10.0%",
+  limit: "20.0%",
   window: 10,
   effective: true,
   reason: "on",
+  escaped_pr: 0,
+  escaped_repo: "",
+  escaped_by: 0,
+  escaped_reason: "",
 };
 
 // The settings pill is a router Link, so the card renders inside a one-route memory router.
@@ -30,7 +34,9 @@ async function card(): Promise<string> {
 describe("MergeStatusCard", () => {
   it("states the pooled rate with no all-projects label", async () => {
     const markup = await card();
-    expect(markup).toContain("rewrite rate over the trailing 10 PRs is 7.4%");
+    expect(markup).toContain(
+      "the trailing rewrite rate is 7.4% over the last 10 PRs a human merged, at or under the 20% bar",
+    );
     expect(markup).not.toContain("all projects");
   });
 });

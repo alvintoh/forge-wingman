@@ -15,6 +15,7 @@ import (
 
 const (
 	waitReasonField         = "wait_reason"
+	waitDetailField         = "wait_detail"
 	mergedByOwnerAtField    = "merged_by_owner_at"
 	mergedSHAField          = "merged_sha"
 	ticketTitleField        = "ticket_title"
@@ -32,6 +33,8 @@ type InboxRun struct {
 	Size       string
 	PRURL      string
 	WaitReason runner.WaitReason
+	// WaitDetail names what holds auto-merge, in the run record's own words.
+	WaitDetail string
 	Attempt    int
 	Outcome    string
 	StopReason string
@@ -58,7 +61,7 @@ func (r *Records) Inbox(ctx context.Context, since time.Time, limit int) ([]Inbo
 		Where(updatedAtField, ">", since).
 		OrderBy(updatedAtField, firestore.Desc).
 		Select(repoField, sizeField, prURLField, autoMergeField, outcomeField, ticketIDField, updatedAtField,
-			waitReasonField, mergedByOwnerAtField, rewriteMergedAtField, stateField, stopReasonField, stopDetailField, attemptField,
+			waitReasonField, waitDetailField, mergedByOwnerAtField, rewriteMergedAtField, stateField, stopReasonField, stopDetailField, attemptField,
 			settledAtField, claimedAtField, transientField, transientRequeuesField, ticketTitleField,
 			cancelledByOwnerAtField, ticketClosedAtField).
 		Documents(ctx)
@@ -89,6 +92,7 @@ func inboxRun(id string, row map[string]any) (InboxRun, bool) {
 		Size:       str(row, sizeField),
 		PRURL:      str(row, prURLField),
 		WaitReason: runner.WaitReason(str(row, waitReasonField)),
+		WaitDetail: str(row, waitDetailField),
 		Attempt:    rowAttempt(row),
 		Outcome:    str(row, outcomeField),
 		StopReason: str(row, stopReasonField),

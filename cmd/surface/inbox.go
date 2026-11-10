@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/sync/singleflight"
@@ -70,7 +71,10 @@ type inboxRun struct {
 	PRURL  string `json:"pr_url"`
 	// WaitReason is why the PR waits for the owner, empty for a PR nothing but a
 	// switch or a failed gate holds.
-	WaitReason string    `json:"wait_reason"`
+	WaitReason string `json:"wait_reason"`
+	// WaitDetail names what holds auto-merge — the rate against the bar, or the
+	// escaped PR — in the run record's own words, absent when the reason needs none.
+	WaitDetail string    `json:"wait_detail,omitempty"`
 	UpdatedAt  time.Time `json:"updated_at"`
 	// Attempt is the attempt the row is on, from 0, which a retry sends back to say
 	// which it saw. Outcome and StopReason are how that attempt ended, Stopped says
@@ -113,7 +117,18 @@ func (d Deps) readInbox(ctx context.Context, now time.Time) (inboxResponse, erro
 	if err != nil {
 		return inboxResponse{}, err
 	}
-	switchOn, _ := d.autoMergeSwitch(ctx)
+	// The switch decides the fallback reason: a run with no reason of its own
+	// shows auto-merge-off while the switch is off, so a change to it shows
+	// without a new run. A settings read that fails leaves it off. The escape
+	// latch is read live beside it, so every PR listed names the PR that holds
+	// auto-merge off, however long ago its row was written.
+	setting, settingsRead := store.AutoMergeSetting{}, false
+	if d.AutoMerge != nil {
+		if read, err := d.AutoMerge.Read(ctx); err == nil {
+			setting, settingsRead = read, true
+		}
+	}
+	switchOn := settingsRead && setting.Enabled
 	pulls := d.pullSummaries(ctx, runs)
 	out := inboxResponse{Runs: make([]inboxRun, 0, len(runs))}
 	for _, r := range runs {
@@ -146,6 +161,21 @@ func (d Deps) readInbox(ctx context.Context, now time.Time) (inboxResponse, erro
 			reason = runner.WaitAutoMergeOff
 		}
 		row.WaitReason = string(reason)
+		// The detail explains the reason the record named; a reason GitHub's
+		// reading replaces it with carries no detail of its own.
+		if reason == r.WaitReason {
+			row.WaitDetail = r.WaitDetail
+		}
+		// Every PR named while the latch holds says which PR escaped, whatever
+		// its row recorded when it was written.
+		if settingsRead && setting.Escaped.PR > 0 {
+			words := setting.Escaped.Words()
+			if row.WaitDetail == "" {
+				row.WaitDetail = words
+			} else if !strings.Contains(row.WaitDetail, words) {
+				row.WaitDetail += "; " + words
+			}
+		}
 		out.Runs = append(out.Runs, row)
 	}
 	return out, nil

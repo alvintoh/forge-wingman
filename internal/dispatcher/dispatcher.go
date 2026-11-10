@@ -202,9 +202,12 @@ type Deps struct {
 	// the rate is read over.
 	PullRequests PullRequests
 	Rewrites     Rewrites
-	Workflow     Workflow
-	Logger       *slog.Logger
-	Now          func() time.Time
+	// Escapes is optional: left unset, an auto-merged PR a later merge takes back
+	// or fixes is measured but records no escape latch.
+	Escapes  EscapeRecorder
+	Workflow Workflow
+	Logger   *slog.Logger
+	Now      func() time.Time
 	// Overrides yields the models a ticket names and ModelPlans is what they are
 	// checked against; both are required, as an unchecked model could spend per token.
 	Overrides  ModelOverrides

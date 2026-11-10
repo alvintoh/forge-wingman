@@ -11,12 +11,16 @@ import (
 	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
-// The window the rewrite rate is measured over, and the rate that binds.
+// The window the rewrite rate is measured over, and the bar it is measured
+// against when the owner has set none.
 const (
 	// TrailingPRs is the window the trailing rate covers.
 	TrailingPRs = 10
-	// AutoMergeRate is the bar the trailing rate is measured against.
-	AutoMergeRate = 0.10
+	// DefaultAutoMergeBarPercent is the bar while the owner has set none, as the
+	// percentage the stored setting holds; the store reads it for its own default.
+	DefaultAutoMergeBarPercent = 20
+	// DefaultAutoMergeBar is the same bar as a fraction, which the rate compares.
+	DefaultAutoMergeBar = float64(DefaultAutoMergeBarPercent) / 100
 )
 
 // Rewrite is one merged agent PR's measured lines: what the agent wrote, and
@@ -125,6 +129,10 @@ func RewriteOf(commits []Commit) Rewrite {
 type Measured struct {
 	Rewrite
 	MergedAt time.Time
+	// MergedBy is the account GitHub resolved the merge to, empty when it
+	// resolved none: a login ending in [bot] is a merge the runner's own token
+	// made, so the PR merged itself.
+	MergedBy string
 	PR       int
 	Title    string
 }
@@ -136,6 +144,8 @@ type RunRow struct {
 	// Measured is the merge the row already carries a measurement for, the zero
 	// time when none: a merge is measured once.
 	Measured time.Time
+	// MergedBy is the account the measured merge was resolved to, empty when none.
+	MergedBy string
 }
 
 // Sample is one merged agent PR as the rewrite rate reads it.
@@ -159,11 +169,26 @@ type Sample struct {
 	// PlanModel, BuildModel and ReviewModel are the phase's one model, empty for none or several.
 	PlanModel, BuildModel, ReviewModel string
 	Rewrite
-	// AutoMerged is whether the run's PR merged itself, recorded on the run row
-	// when the claim was made.
-	AutoMerged bool
-	// Reverted is whether a merged revert names the PR.
-	Reverted bool
+	// MergedBy is the account GitHub resolved the merge to, empty for a merge
+	// measured before it was kept.
+	MergedBy string
+}
+
+// MergedItself reports whether the sample's PR merged itself: the account GitHub
+// resolved the merge to is a bot, which is what the runner's own token is. A PR
+// the owner merged by hand, through the surface or on GitHub, carries the
+// owner's login instead.
+func (s Sample) MergedItself() bool {
+	return MergedItself(s.MergedBy)
+}
+
+// HumanMerged reports whether the sample counts in the rate's window: its row
+// names the account that merged the PR, and that account is not a bot. A row
+// measured before the account was kept names none, and an unknown account is
+// neither the owner's reading nor proof the PR merged itself, so it counts for
+// neither: the window holds off until it fills with known merges.
+func (s Sample) HumanMerged() bool {
+	return s.MergedBy != "" && !MergedItself(s.MergedBy)
 }
 
 // Evidence is what the rewrite rate is read from.
@@ -182,6 +207,26 @@ func (e Evidence) Window(n int) []Sample {
 	return e.Trailing[:n]
 }
 
+// HumanWindow is the newest n samples a human merged, newest first: a PR that
+// merged itself and a PR whose merge account is unknown are left out, so neither
+// lowers the rate nor counts as one of the window's PRs.
+func (e Evidence) HumanWindow(n int) []Sample {
+	if n < 0 {
+		n = 0
+	}
+	out := make([]Sample, 0, n)
+	for _, s := range e.Trailing {
+		if len(out) == n {
+			break
+		}
+		if !s.HumanMerged() {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
 // Lines is the measured lines of samples summed.
 func Lines(samples []Sample) Rewrite {
 	var lines Rewrite
@@ -194,18 +239,6 @@ func Lines(samples []Sample) Rewrite {
 		lines.UnmeasuredCommits += s.UnmeasuredCommits
 	}
 	return lines
-}
-
-// Reverts is how many of samples were reverted after they auto-merged: a revert
-// of a PR the owner merged by hand is the owner's own doing, so it counts none.
-func Reverts(samples []Sample) int {
-	n := 0
-	for _, s := range samples {
-		if s.AutoMerged && s.Reverted {
-			n++
-		}
-	}
-	return n
 }
 
 // The windows the Autonomy page draws as tiles and the length of its series.

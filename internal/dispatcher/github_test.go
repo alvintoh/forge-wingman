@@ -458,7 +458,8 @@ func TestGitHubReadsOnePullRequestFromItsOwnReply(t *testing.T) {
 			t.Errorf("path = %q, want the pull request", r.URL.Path)
 		}
 		_, _ = io.WriteString(w, `{"number":7,"title":"feat(x): add a file","body":"",
-			"merged_at":"2026-10-14T03:00:00Z","head":{"ref":"wingman/FRG-1-9-1"}}`)
+			"merged_at":"2026-10-14T03:00:00Z","merged_by":{"login":"wingman[bot]"},
+			"head":{"ref":"wingman/FRG-1-9-1"}}`)
 	}))
 	defer srv.Close()
 
@@ -467,8 +468,8 @@ func TestGitHubReadsOnePullRequestFromItsOwnReply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pr.Number != 7 || pr.Head != "wingman/FRG-1-9-1" || pr.MergedAt.IsZero() {
-		t.Fatalf("Pull = %+v, want the run's PR and its merge time", pr)
+	if pr.Number != 7 || pr.Head != "wingman/FRG-1-9-1" || pr.MergedAt.IsZero() || pr.MergedBy != "wingman[bot]" {
+		t.Fatalf("Pull = %+v, want the run's PR, its merge time and the account that merged it", pr)
 	}
 }
 

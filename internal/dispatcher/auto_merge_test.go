@@ -8,32 +8,42 @@ import (
 func TestAutoMergeOn(t *testing.T) {
 	// rated is ten PRs of 1000 agent lines each, ownerPerPR of them rewritten.
 	rated := func(ownerPerPR int64) []Sample { return samples(scratch, 10, 1000, ownerPerPR) }
+	autoMerged := func(n int) []Sample {
+		out := make([]Sample, 0, n)
+		for range n {
+			out = append(out, sample(scratch, 1000, 0, "wingman[bot]"))
+		}
+		return out
+	}
 	unmeasured := rated(0)
 	unmeasured[3].UnmeasuredCommits = 1
-	reverted := rated(0)
-	reverted[9] = sample(scratch, 1000, 0, true, true)
-	revertedByHand := rated(0)
-	revertedByHand[0] = sample(scratch, 1000, 0, false, true)
+	unaccounted := make([]Sample, 0, TrailingPRs)
+	for range TrailingPRs {
+		unaccounted = append(unaccounted, Sample{Rewrite: Rewrite{AgentLines: 1_000}})
+	}
 	for name, tt := range map[string]struct {
 		trailing []Sample
+		bar      float64
 		want     AutoMergeDecision
 	}{
-		"9.8% over ten is within the bar":      {rated(98), AutoMergeDecision{WithinBar: true, Reason: "on", PRs: 10, Rate: 0.098}},
-		"exactly 10.0% is within the bar":      {rated(100), AutoMergeDecision{WithinBar: true, Reason: "on", PRs: 10, Rate: 0.1}},
-		"15.3% is over the bar":                {rated(153), AutoMergeDecision{Reason: "rate-above-bar", PRs: 10, Rate: 0.153}},
-		"nine measured PRs is unmeasured":      {samples(scratch, 9, 1000, 0), AutoMergeDecision{Reason: "too-few-measured", PRs: 9}},
-		"an unmeasured commit is unmeasured":   {unmeasured, AutoMergeDecision{Reason: "too-few-measured", PRs: 10}},
-		"no agent lines has no rate":           {samples(scratch, 10, 0, 0), AutoMergeDecision{Reason: "no-agent-lines", PRs: 10}},
-		"a reverted auto-merge is reported":    {reverted, AutoMergeDecision{Reason: "reverted", PRs: 10, Reverted: 1}},
-		"a revert of a hand merge is ignored":  {revertedByHand, AutoMergeDecision{WithinBar: true, Reason: "on", PRs: 10}},
-		"an older PR is not consulted":         {joined(rated(0), samples(scratch, 5, 100, 100)), AutoMergeDecision{WithinBar: true, Reason: "on", PRs: 10}},
-		"the order is newest first":            {joined(rated(0), []Sample{sample(scratch, 1000, 0, true, true)}), AutoMergeDecision{WithinBar: true, Reason: "on", PRs: 10}},
-		"the pooled rate weighs lines not PRs": {joined(samples(scratch, 9, 100, 0), []Sample{sample(scratch, 10000, 1000, false, false)}), AutoMergeDecision{WithinBar: true, Reason: "on", PRs: 10, Rate: 1000.0 / 10900}},
+		"9.8% over ten is within the bar":      {rated(98), 0.20, AutoMergeDecision{WithinBar: true, Reason: "on", PRs: 10, Rate: 0.098}},
+		"exactly the bar is within it":         {rated(200), 0.20, AutoMergeDecision{WithinBar: true, Reason: "on", PRs: 10, Rate: 0.2}},
+		"20.1% is over the bar":                {rated(201), 0.20, AutoMergeDecision{Reason: "rate-above-bar", PRs: 10, Rate: 0.201}},
+		"15.3% is over a 10% bar":              {rated(153), 0.10, AutoMergeDecision{Reason: "rate-above-bar", PRs: 10, Rate: 0.153}},
+		"nine measured PRs is unmeasured":      {samples(scratch, 9, 1000, 0), 0.20, AutoMergeDecision{Reason: "too-few-measured", PRs: 9}},
+		"an unmeasured commit is unmeasured":   {unmeasured, 0.20, AutoMergeDecision{Reason: "too-few-measured", PRs: 10}},
+		"no agent lines has no rate":           {samples(scratch, 10, 0, 0), 0.20, AutoMergeDecision{Reason: "no-agent-lines", PRs: 10}},
+		"a PR that merged itself is left out":  {joined(rated(100), autoMerged(1)), 0.20, AutoMergeDecision{WithinBar: true, Reason: "on", PRs: 10, Rate: 0.1}},
+		"a window of self-merged PRs is empty": {autoMerged(10), 0.20, AutoMergeDecision{Reason: "too-few-measured", PRs: 0}},
+		"no merge account at all":              {unaccounted, 0.20, AutoMergeDecision{Reason: "too-few-measured", PRs: 0}},
+		"an older PR is not consulted":         {joined(rated(0), samples(scratch, 5, 100, 100)), 0.20, AutoMergeDecision{WithinBar: true, Reason: "on", PRs: 10}},
+		"the order is newest first":            {joined(rated(0), []Sample{sample(scratch, 1000, 0, "alvintoh")}), 0.20, AutoMergeDecision{WithinBar: true, Reason: "on", PRs: 10}},
+		"the pooled rate weighs lines not PRs": {joined(samples(scratch, 9, 100, 0), []Sample{sample(scratch, 10000, 1000, "alvintoh")}), 0.20, AutoMergeDecision{WithinBar: true, Reason: "on", PRs: 10, Rate: 1000.0 / 10900}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			got := AutoMergeOn(Evidence{Trailing: tt.trailing})
+			got := AutoMergeOn(Evidence{Trailing: tt.trailing}, tt.bar)
 			if got.WithinBar != tt.want.WithinBar || got.Reason != tt.want.Reason || got.PRs != tt.want.PRs ||
-				got.Reverted != tt.want.Reverted || math.Abs(got.Rate-tt.want.Rate) > 1e-9 {
+				math.Abs(got.Rate-tt.want.Rate) > 1e-9 {
 				t.Fatalf("AutoMergeOn = %+v, want %+v", got, tt.want)
 			}
 		})
@@ -50,6 +60,7 @@ func TestAutoMergeDecisionLogsOnlyWhatWasMeasured(t *testing.T) {
 		"no agent lines":                   {AutoMergeDecision{Reason: AutoMergeReasonNoAgentLines, Rate: math.Inf(1)}, true, "no agent lines"},
 		"too few measured, no agent lines": {AutoMergeDecision{Reason: AutoMergeReasonTooFewMeasured, Rate: math.Inf(1)}, true, "no agent lines"},
 		"the switch off":                   {AutoMergeDecision{Reason: AutoMergeReasonSwitchOff}, false, "0.0%"},
+		"a bar that cannot be read":        {AutoMergeDecision{Reason: AutoMergeReasonBarInvalid}, false, "0.0%"},
 		"unreadable":                       {AutoMergeDecision{Reason: AutoMergeReasonEvidenceUnread}, false, "0.0%"},
 	} {
 		t.Run(name, func(t *testing.T) {

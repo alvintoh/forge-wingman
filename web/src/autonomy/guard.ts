@@ -47,6 +47,10 @@ const isMergeState = shape<MergeState>({
   window: isNumber,
   effective: isBoolean,
   reason: isString,
+  escaped_pr: isNumber,
+  escaped_repo: isString,
+  escaped_by: isNumber,
+  escaped_reason: isString,
 });
 
 const isTile = shape<Tile>({

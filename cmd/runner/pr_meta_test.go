@@ -16,6 +16,7 @@ import (
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 	"github.com/alvintoh/forge-wingman/internal/runner"
+	"github.com/alvintoh/forge-wingman/internal/store"
 )
 
 // prRecord is a run record as pr-meta reads it: the ticket, and none of the
@@ -56,28 +57,32 @@ func encodedSummary(t *testing.T, attemptID string, now time.Time, edits ...func
 func TestAutoMerge(t *testing.T) {
 	// run-0 falls in the review sample and run-abc-12 does not.
 	const unsampled, sampled = "run-abc-12", "run-0"
+	hold := autoMergeHold{Reason: runner.WaitRateAboveBar, Detail: "the rate"}
 	for name, tt := range map[string]struct {
 		runID, size, failedGate string
 		edit                    func(*runner.Summary)
 		check                   prCheck
+		hold                    autoMergeHold
 		want                    bool
 	}{
-		"a ready M run requests it":                    {unsampled, "M", "", nil, prCheck{Planned: true}, true},
-		"an unplanned S run does not":                  {unsampled, "S", "", nil, prCheck{}, false},
-		"a run with no recorded plan does not":         {unsampled, "M", "", nil, prCheck{}, false},
-		"an L run does not":                            {unsampled, "L", "", nil, prCheck{Planned: true}, false},
-		"a sampled run does not":                       {sampled, "M", "", nil, prCheck{Planned: true}, false},
-		"a draft does not":                             {unsampled, "M", "", func(s *runner.Summary) { s.Ready = false }, prCheck{Planned: true}, false},
-		"an out-of-plan edit does not":                 {unsampled, "M", "", nil, prCheck{Planned: true, OutOfPlan: []string{"x.go"}}, false},
-		"a concurrent run's plan does not":             {unsampled, "S", "", nil, prCheck{Planned: true, Overlap: "M-2"}, false},
-		"an unread bundle does not":                    {unsampled, "M", "", nil, prCheck{Planned: true, Unread: true}, false},
-		"front-end paths do not":                       {unsampled, "M", "", nil, prCheck{Planned: true, FrontEnd: []string{"web/"}}, false},
-		"the front-end label does not":                 {unsampled, "S", "", nil, prCheck{Planned: true, FrontEnd: []string{"area:fe"}}, false},
-		"a workflow change does not":                   {unsampled, "M", "", func(s *runner.Summary) { s.StopReason = runner.StopWorkflowChange }, prCheck{Planned: true}, false},
-		"a failed check gate does not":                 {unsampled, "M", "test", nil, prCheck{Planned: true}, false},
-		"an unconfirmed provisional decision does not": {unsampled, "M", "", nil, prCheck{Planned: true, Provisional: []runner.Provisional{{Question: "Q?", Choice: "A"}}}, false},
-		"unreadable provisional decisions do not":      {unsampled, "M", "", nil, prCheck{Planned: true, ProvisionalUnread: true}, false},
-		"a confirmed provisional decision does":        {unsampled, "M", "", nil, prCheck{Planned: true, Provisional: []runner.Provisional{{Question: "Q?", Choice: "A", Confirmed: true}}}, true},
+		"a ready M run requests it":                    {unsampled, "M", "", nil, prCheck{Planned: true}, autoMergeHold{}, true},
+		"an unplanned S run requests it":               {unsampled, "S", "", nil, prCheck{}, autoMergeHold{}, true},
+		"a run with no recorded plan does not":         {unsampled, "M", "", nil, prCheck{}, autoMergeHold{}, false},
+		"an unplanned L run does not":                  {unsampled, "L", "", nil, prCheck{}, autoMergeHold{}, false},
+		"an L run does not":                            {unsampled, "L", "", nil, prCheck{Planned: true}, autoMergeHold{}, false},
+		"a sampled run does not":                       {sampled, "M", "", nil, prCheck{Planned: true}, autoMergeHold{}, false},
+		"a draft does not":                             {unsampled, "M", "", func(s *runner.Summary) { s.Ready = false }, prCheck{Planned: true}, autoMergeHold{}, false},
+		"an out-of-plan edit does not":                 {unsampled, "M", "", nil, prCheck{Planned: true, OutOfPlan: []string{"x.go"}}, autoMergeHold{}, false},
+		"a concurrent run's plan does not":             {unsampled, "S", "", nil, prCheck{Planned: true, Overlap: "M-2"}, autoMergeHold{}, false},
+		"an unread bundle does not":                    {unsampled, "M", "", nil, prCheck{Planned: true, Unread: true}, autoMergeHold{}, false},
+		"front-end paths do not":                       {unsampled, "M", "", nil, prCheck{Planned: true, FrontEnd: []string{"web/"}}, autoMergeHold{}, false},
+		"the front-end label does not":                 {unsampled, "S", "", nil, prCheck{Planned: true, FrontEnd: []string{"area:fe"}}, autoMergeHold{}, false},
+		"a workflow change does not":                   {unsampled, "M", "", func(s *runner.Summary) { s.StopReason = runner.StopWorkflowChange }, prCheck{Planned: true}, autoMergeHold{}, false},
+		"a failed check gate does not":                 {unsampled, "M", "test", nil, prCheck{Planned: true}, autoMergeHold{}, false},
+		"an unconfirmed provisional decision does not": {unsampled, "M", "", nil, prCheck{Planned: true, Provisional: []runner.Provisional{{Question: "Q?", Choice: "A"}}}, autoMergeHold{}, false},
+		"unreadable provisional decisions do not":      {unsampled, "M", "", nil, prCheck{Planned: true, ProvisionalUnread: true}, autoMergeHold{}, false},
+		"a confirmed provisional decision does":        {unsampled, "M", "", nil, prCheck{Planned: true, Provisional: []runner.Provisional{{Question: "Q?", Choice: "A", Confirmed: true}}}, autoMergeHold{}, true},
+		"an auto-merge hold does not":                  {unsampled, "S", "", nil, prCheck{Planned: true}, hold, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			sum := runner.Summary{Outcome: runner.OutcomeBuilt, Ready: true}
@@ -86,7 +91,7 @@ func TestAutoMerge(t *testing.T) {
 			}
 			tk := prRecord.Ticket()
 			tk.Size = tt.size
-			if got := autoMerge(true, tt.runID, tk, sum, tt.failedGate, tt.check); got != tt.want {
+			if got := autoMerge(true, tt.runID, tk, sum, tt.failedGate, tt.check, tt.hold); got != tt.want {
 				t.Fatalf("autoMerge = %v, want %v", got, tt.want)
 			}
 		})
@@ -96,10 +101,10 @@ func TestAutoMerge(t *testing.T) {
 func TestAutoMergeNeedsTheSwitchOn(t *testing.T) {
 	sum := runner.Summary{Outcome: runner.OutcomeBuilt, Ready: true}
 	clear := prRecord.Ticket()
-	if autoMerge(false, "run-abc-12", clear, sum, "", prCheck{Planned: true}) {
+	if autoMerge(false, "run-abc-12", clear, sum, "", prCheck{Planned: true}, autoMergeHold{}) {
 		t.Error("switch off: autoMerge = true, want false for a run nothing else holds back")
 	}
-	if !autoMerge(true, "run-abc-12", clear, sum, "", prCheck{Planned: true}) {
+	if !autoMerge(true, "run-abc-12", clear, sum, "", prCheck{Planned: true}, autoMergeHold{}) {
 		t.Error("switch on: autoMerge = false, want true")
 	}
 }
@@ -111,23 +116,26 @@ func TestWaitReasonPutsTheReasonsThatBlockAMergeFirst(t *testing.T) {
 		runID, size string
 		ready       bool
 		check       prCheck
+		hold        runner.WaitReason
 		want        runner.WaitReason
 	}{
-		"nothing holds it":                     {unsampled, "M", true, prCheck{Planned: true}, ""},
-		"a decision hides every other reason":  {sampled, "L", false, prCheck{Planned: true, FrontEnd: []string{"web/"}, Provisional: unconfirmed}, runner.WaitUnconfirmedDecision},
-		"unread decisions count as unsettled":  {unsampled, "M", true, prCheck{Planned: true, ProvisionalUnread: true}, runner.WaitUnconfirmedDecision},
-		"a draft hides front-end":              {unsampled, "L", false, prCheck{Planned: true, FrontEnd: []string{"web/"}}, runner.WaitDraft},
-		"an unread bundle makes a draft":       {unsampled, "M", true, prCheck{Planned: true, Unread: true}, runner.WaitDraft},
-		"front-end comes before size L":        {sampled, "L", true, prCheck{Planned: true, FrontEnd: []string{"web/"}}, runner.WaitFrontEnd},
-		"size L comes before the sample":       {sampled, "L", true, prCheck{Planned: true}, runner.WaitSizeL},
-		"the sample alone":                     {sampled, "M", true, prCheck{Planned: true}, runner.WaitSampled},
-		"an unplanned run has no named reason": {unsampled, "M", true, prCheck{}, ""},
+		"nothing holds it":                      {unsampled, "M", true, prCheck{Planned: true}, "", ""},
+		"a decision hides every other reason":   {sampled, "L", false, prCheck{Planned: true, FrontEnd: []string{"web/"}, Provisional: unconfirmed}, "", runner.WaitUnconfirmedDecision},
+		"unread decisions count as unsettled":   {unsampled, "M", true, prCheck{Planned: true, ProvisionalUnread: true}, "", runner.WaitUnconfirmedDecision},
+		"a draft hides front-end":               {unsampled, "L", false, prCheck{Planned: true, FrontEnd: []string{"web/"}}, "", runner.WaitDraft},
+		"an unread bundle makes a draft":        {unsampled, "M", true, prCheck{Planned: true, Unread: true}, "", runner.WaitDraft},
+		"front-end comes before size L":         {sampled, "L", true, prCheck{Planned: true, FrontEnd: []string{"web/"}}, "", runner.WaitFrontEnd},
+		"front-end hides the hold":              {unsampled, "M", true, prCheck{Planned: true, FrontEnd: []string{"web/"}}, runner.WaitRateAboveBar, runner.WaitFrontEnd},
+		"size L comes before the sample":        {sampled, "L", true, prCheck{Planned: true}, "", runner.WaitSizeL},
+		"the sample alone":                      {sampled, "M", true, prCheck{Planned: true}, "", runner.WaitSampled},
+		"the hold names what nothing else does": {unsampled, "S", true, prCheck{}, runner.WaitRateAboveBar, runner.WaitRateAboveBar},
+		"an unplanned run has no named reason":  {unsampled, "M", true, prCheck{}, "", ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			tk := prRecord.Ticket()
 			tk.Size = tt.size
 			sum := runner.Summary{Outcome: runner.OutcomeBuilt, Ready: tt.ready}
-			if got := waitReason(tt.runID, tk, sum, tt.check); got != tt.want {
+			if got := waitReason(tt.runID, tk, sum, tt.check, tt.hold); got != tt.want {
 				t.Fatalf("waitReason = %q, want %q", got, tt.want)
 			}
 		})
@@ -142,7 +150,7 @@ type fakeRecentRewrites struct {
 	reads   *int
 }
 
-func (f fakeRecentRewrites) Recent(_ context.Context, limit int) ([]dispatcher.Sample, error) {
+func (f fakeRecentRewrites) RecentHumanMerged(_ context.Context, limit int) ([]dispatcher.Sample, error) {
 	if f.limit != nil {
 		*f.limit, *f.reads = limit, *f.reads+1
 	}
@@ -152,73 +160,118 @@ func (f fakeRecentRewrites) Recent(_ context.Context, limit int) ([]dispatcher.S
 func TestAutoMergeRate(t *testing.T) {
 	clean := make([]dispatcher.Sample, dispatcher.TrailingPRs)
 	for i := range clean {
-		clean[i] = dispatcher.Sample{Rewrite: dispatcher.Rewrite{AgentLines: 100}}
+		clean[i] = dispatcher.Sample{Rewrite: dispatcher.Rewrite{AgentLines: 100}, MergedBy: "alvintoh"}
+	}
+	over := make([]dispatcher.Sample, dispatcher.TrailingPRs)
+	for i := range over {
+		over[i] = dispatcher.Sample{Rewrite: dispatcher.Rewrite{AgentLines: 100, OwnerLines: 30}, MergedBy: "alvintoh"}
+	}
+	atBar := make([]dispatcher.Sample, dispatcher.TrailingPRs)
+	for i := range atBar {
+		atBar[i] = dispatcher.Sample{Rewrite: dispatcher.Rewrite{AgentLines: 100, OwnerLines: 20}, MergedBy: "alvintoh"}
 	}
 	for name, tt := range map[string]struct {
 		store     fakeRecentRewrites
-		switchOn  bool
+		bar       int
 		want      bool
 		reason    string
 		wantWarn  bool
 		wantReads int
 	}{
-		"ten measured PRs and the switch on": {fakeRecentRewrites{samples: clean}, true, true, "on", false, 1},
-		"the switch off skips the read":      {fakeRecentRewrites{samples: clean}, false, false, "switch-off", false, 0},
-		"too few measured PRs":               {fakeRecentRewrites{samples: clean[:3]}, true, false, "too-few-measured", false, 1},
-		"an unreadable read":                 {fakeRecentRewrites{samples: clean, err: errors.New("firestore is unreachable")}, true, false, "evidence-unread", true, 1},
+		"ten measured PRs at the default bar": {fakeRecentRewrites{samples: clean}, 20, true, "on", false, 1},
+		"exactly at the bar":                  {fakeRecentRewrites{samples: atBar}, 20, true, "on", false, 1},
+		"a rate above the bar":                {fakeRecentRewrites{samples: over}, 20, false, "rate-above-bar", false, 1},
+		"too few measured PRs":                {fakeRecentRewrites{samples: clean[:3]}, 20, false, "too-few-measured", false, 1},
+		"an unreadable read":                  {fakeRecentRewrites{samples: clean, err: errors.New("firestore is unreachable")}, 20, false, "evidence-unread", true, 1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var logs strings.Builder
 			var reads, limit int
 			tt.store.reads, tt.store.limit = &reads, &limit
-			got := autoMergeRate(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), "run-abc-12", tt.store, tt.switchOn)
+			got := autoMergeRate(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), "run-abc-12", tt.store, tt.bar)
 			if got.WithinBar != tt.want || got.Reason != tt.reason || strings.Contains(logs.String(), "msg=autoMergeEvidenceUnread") != tt.wantWarn || reads != tt.wantReads {
 				t.Fatalf("decision = %+v, log %q, reads %d, want within the bar = %v, reason %q, warned = %v, reads %d", got, logs.String(), reads, tt.want, tt.reason, tt.wantWarn, tt.wantReads)
 			}
 			if reads > 0 && limit != dispatcher.TrailingPRs {
-				t.Fatalf("Recent limit = %d, want %d", limit, dispatcher.TrailingPRs)
+				t.Fatalf("RecentHumanMerged limit = %d, want %d", limit, dispatcher.TrailingPRs)
 			}
 		})
 	}
 }
 
-// TestAutoMergeFollowsTheSwitchAlone asserts the owner's switch is the only
-// thing that decides whether an eligible PR is marked for auto-merge: the rate,
-// how much of the window is measured and a revert are read as information.
-func TestAutoMergeFollowsTheSwitchAlone(t *testing.T) {
+// TestAutoMergeIsGatedByTheSwitchTheBarAndTheRate asserts what has to hold for
+// an eligible PR to be marked for auto-merge: the switch on and readable, a
+// readable bar, no escaped PR, and a rate at or under the bar over the PRs a
+// human merged.
+func TestAutoMergeIsGatedByTheSwitchTheBarAndTheRate(t *testing.T) {
 	rated := func(ownerPerPR int64) []dispatcher.Sample {
 		window := make([]dispatcher.Sample, 0, dispatcher.TrailingPRs)
 		for range dispatcher.TrailingPRs {
-			window = append(window, dispatcher.Sample{Rewrite: dispatcher.Rewrite{AgentLines: 1_000, OwnerLines: ownerPerPR}})
+			window = append(window, dispatcher.Sample{Rewrite: dispatcher.Rewrite{AgentLines: 1_000, OwnerLines: ownerPerPR}, MergedBy: "alvintoh"})
 		}
 		return window
 	}
-	reverted := rated(0)
-	reverted[4].AutoMerged, reverted[4].Reverted = true, true
 	noAgentLines := make([]dispatcher.Sample, dispatcher.TrailingPRs)
+	for i := range noAgentLines {
+		noAgentLines[i] = dispatcher.Sample{MergedBy: "alvintoh"}
+	}
 	unreadable := errors.New("firestore is unreachable")
+	on := func(bar int) *fakeAutoMergeSwitchStore {
+		return &fakeAutoMergeSwitchStore{setting: store.AutoMergeSetting{Enabled: true, BarPercent: bar}}
+	}
+	escaped := on(20)
+	escaped.setting.Escaped = dispatcher.MergeEscape{Repo: "octo/scratch", PR: 341, Reason: dispatcher.EscapeReverted}
 	for name, tt := range map[string]struct {
 		store    *fakeAutoMergeSwitchStore
 		rewrites fakeRecentRewrites
 		want     bool
 		reason   string
+		hold     runner.WaitReason
 	}{
-		"the switch on at 15.3%":                     {&fakeAutoMergeSwitchStore{enabled: true}, fakeRecentRewrites{samples: rated(153)}, true, "rate-above-bar"},
-		"the switch on with fewer than ten measured": {&fakeAutoMergeSwitchStore{enabled: true}, fakeRecentRewrites{samples: rated(0)[:9]}, true, "too-few-measured"},
-		"the switch on with no agent lines":          {&fakeAutoMergeSwitchStore{enabled: true}, fakeRecentRewrites{samples: noAgentLines}, true, "no-agent-lines"},
-		"the switch on with a reverted auto-merge":   {&fakeAutoMergeSwitchStore{enabled: true}, fakeRecentRewrites{samples: reverted}, true, "reverted"},
-		"the switch on with unreadable evidence":     {&fakeAutoMergeSwitchStore{enabled: true}, fakeRecentRewrites{err: unreadable}, true, "evidence-unread"},
-		"the switch off with a good rate":            {&fakeAutoMergeSwitchStore{}, fakeRecentRewrites{samples: rated(0)}, false, "switch-off"},
-		"a switch that cannot be read":               {&fakeAutoMergeSwitchStore{enabled: true, readErr: unreadable}, fakeRecentRewrites{samples: rated(0)}, false, "switch-off"},
+		"the switch on under the bar":                {on(20), fakeRecentRewrites{samples: rated(100)}, true, "on", ""},
+		"the switch on exactly at the bar":           {on(20), fakeRecentRewrites{samples: rated(200)}, true, "on", ""},
+		"the switch on over the bar":                 {on(20), fakeRecentRewrites{samples: rated(201)}, false, "rate-above-bar", runner.WaitRateAboveBar},
+		"the switch on over a bar the owner set":     {on(10), fakeRecentRewrites{samples: rated(153)}, false, "rate-above-bar", runner.WaitRateAboveBar},
+		"the switch on with fewer than ten measured": {on(20), fakeRecentRewrites{samples: rated(0)[:9]}, false, "too-few-measured", runner.WaitRateTooFewMeasured},
+		"the switch on with no agent lines":          {on(20), fakeRecentRewrites{samples: noAgentLines}, false, "no-agent-lines", runner.WaitRateNoAgentLines},
+		"the switch on with unreadable evidence":     {on(20), fakeRecentRewrites{err: unreadable}, false, "evidence-unread", runner.WaitRateUnread},
+		"the switch on with an escaped PR":           {escaped, fakeRecentRewrites{samples: rated(0)}, false, "on", runner.WaitEscapedPR},
+		"an escaped PR with the rate above the bar":  {escaped, fakeRecentRewrites{samples: rated(250)}, false, "rate-above-bar", runner.WaitEscapedPR},
+		"the switch off under the bar":               {&fakeAutoMergeSwitchStore{setting: store.AutoMergeSetting{BarPercent: 20}}, fakeRecentRewrites{samples: rated(0)}, false, "switch-off", ""},
+		"a settings read that fails":                 {&fakeAutoMergeSwitchStore{readErr: unreadable}, fakeRecentRewrites{samples: rated(0)}, false, "switch-off", runner.WaitAutoMergeUnread},
+		"a bar that is not a number": {
+			&fakeAutoMergeSwitchStore{readErr: store.ErrBarNotInRange},
+			fakeRecentRewrites{samples: rated(0)}, false, "switch-off", runner.WaitBarInvalid,
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 			sum := runner.Summary{Outcome: runner.OutcomeBuilt, Ready: true}
 			got := decideAutoMerge(context.Background(), logger, "run-abc-12", tt.store, tt.rewrites, prRecord.Ticket(), sum, "", prCheck{Planned: true})
-			if got.Merge != tt.want || got.SwitchOn != tt.want || got.Rate.Reason != tt.reason {
-				t.Fatalf("verdict = %+v, want merge and switch %v with the rate's reason %q", got, tt.want, tt.reason)
+			if got.Merge != tt.want || got.SwitchOn != (tt.reason != "switch-off") || got.Rate.Reason != tt.reason || got.Hold.Reason != tt.hold {
+				t.Fatalf("verdict = %+v, want merge %v, the rate's reason %q and the hold %q", got, tt.want, tt.reason, tt.hold)
+			}
+			if got.WaitReason != tt.hold {
+				t.Fatalf("wait reason = %q, want the hold %q", got.WaitReason, tt.hold)
 			}
 		})
+	}
+}
+
+func TestDecideAutoMergeNamesBothHoldsWhenTheLatchAndTheRateHold(t *testing.T) {
+	escaped := &fakeAutoMergeSwitchStore{setting: store.AutoMergeSetting{Enabled: true, BarPercent: 20,
+		Escaped: dispatcher.MergeEscape{Repo: "octo/scratch", PR: 341, Reason: dispatcher.EscapeReverted}}}
+	rated := make([]dispatcher.Sample, 0, dispatcher.TrailingPRs)
+	for range dispatcher.TrailingPRs {
+		rated = append(rated, dispatcher.Sample{Rewrite: dispatcher.Rewrite{AgentLines: 1_000, OwnerLines: 250}, MergedBy: "alvintoh"})
+	}
+	got := decideAutoMerge(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)), "run-abc-12",
+		escaped, fakeRecentRewrites{samples: rated}, prRecord.Ticket(), runner.Summary{Outcome: runner.OutcomeBuilt, Ready: true}, "", prCheck{Planned: true})
+	if got.Merge || got.Hold.Reason != runner.WaitEscapedPR {
+		t.Fatalf("verdict = %+v, want the latch holding auto-merge off", got)
+	}
+	if !strings.Contains(got.Hold.Detail, "until you switch it on again") || !strings.Contains(got.Hold.Detail, "above the 20% bar") {
+		t.Fatalf("detail = %q, want both holds named", got.Hold.Detail)
 	}
 }
 
@@ -252,35 +305,53 @@ func TestRateAttrsEncodeAsJSONAndOmitWhatWasNotMeasured(t *testing.T) {
 	}
 }
 
-func TestAutoMergeVerdictLogsTheSwitchBesideTheRatesReason(t *testing.T) {
-	v := autoMergeVerdict{Merge: true, SwitchOn: true,
-		Rate: dispatcher.AutoMergeDecision{Reason: dispatcher.AutoMergeReasonRateAboveBar, PRs: 10, Rate: 0.153}}
+func TestAutoMergeVerdictLogsTheBarTheSwitchAndTheHold(t *testing.T) {
+	v := autoMergeVerdict{Merge: false, SwitchOn: true, Bar: 20,
+		Rate: dispatcher.AutoMergeDecision{Reason: dispatcher.AutoMergeReasonRateAboveBar, PRs: 10, Rate: 0.153},
+		Hold: autoMergeHold{Reason: runner.WaitRateAboveBar, Detail: "the rate"}}
 	var buf strings.Builder
 	slog.New(slog.NewJSONHandler(&buf, nil)).Info("autoMergeDecided", v.attrs()...)
 	var line map[string]any
 	if err := json.Unmarshal([]byte(buf.String()), &line); err != nil {
 		t.Fatalf("log %q is not JSON: %v", buf.String(), err)
 	}
-	if line["reason"] != "rate-above-bar" || line["autoMerge"] != true || line["switchOn"] != true {
-		t.Fatalf("log %q, want reason rate-above-bar beside autoMerge and switchOn both true", buf.String())
+	if line["reason"] != "rate-above-bar" || line["autoMerge"] != false || line["switchOn"] != true ||
+		line["rateBar"] != "20%" || line["hold"] != "rate-above-bar" {
+		t.Fatalf("log %q, want the bar, the reason and the hold beside autoMerge false and switchOn true", buf.String())
 	}
 }
 
-func TestAutoMergeSwitchOnHoldsWhenTheSwitchCannotBeRead(t *testing.T) {
+func TestHoldingRateNamesEveryRateThatCannotBeUsed(t *testing.T) {
 	for name, tt := range map[string]struct {
-		store    *fakeAutoMergeSwitchStore
-		want     bool
-		wantWarn bool
+		decision dispatcher.AutoMergeDecision
+		want     runner.WaitReason
+		detail   string
 	}{
-		"on":         {&fakeAutoMergeSwitchStore{enabled: true}, true, false},
-		"off":        {&fakeAutoMergeSwitchStore{}, false, false},
-		"unreadable": {&fakeAutoMergeSwitchStore{enabled: true, readErr: errors.New("firestore is unreachable")}, false, true},
+		"at or under the bar holds nothing": {dispatcher.AutoMergeDecision{Reason: dispatcher.AutoMergeReasonOn, WithinBar: true, PRs: 10, Rate: 0.1}, "", ""},
+		"above the bar": {
+			dispatcher.AutoMergeDecision{Reason: dispatcher.AutoMergeReasonRateAboveBar, PRs: 10, Rate: 0.234},
+			runner.WaitRateAboveBar, "23.4%",
+		},
+		"too few measured": {
+			dispatcher.AutoMergeDecision{Reason: dispatcher.AutoMergeReasonTooFewMeasured, PRs: 4},
+			runner.WaitRateTooFewMeasured, "4 of 10",
+		},
+		"no agent lines": {
+			dispatcher.AutoMergeDecision{Reason: dispatcher.AutoMergeReasonNoAgentLines, PRs: 10},
+			runner.WaitRateNoAgentLines, "no agent lines",
+		},
+		"evidence unread": {
+			dispatcher.AutoMergeDecision{Reason: dispatcher.AutoMergeReasonEvidenceUnread},
+			runner.WaitRateUnread, "could not be read",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			var logs strings.Builder
-			got := autoMergeSwitchOn(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), "run-abc-12", tt.store)
-			if got != tt.want || strings.Contains(logs.String(), "msg=autoMergeSwitchUnread") != tt.wantWarn {
-				t.Fatalf("on = %v, log %q, want on = %v and warned = %v", got, logs.String(), tt.want, tt.wantWarn)
+			hold := holdingRate(tt.decision, 20)
+			if hold.Reason != tt.want {
+				t.Fatalf("hold = %+v, want the reason %q", hold, tt.want)
+			}
+			if tt.detail != "" && !strings.Contains(hold.Detail, tt.detail) {
+				t.Fatalf("detail = %q, want it to name %q", hold.Detail, tt.detail)
 			}
 		})
 	}
@@ -386,6 +457,47 @@ func TestRenderPRNamesWhatPRMetaComputedNotWhatTheModelClaimed(t *testing.T) {
 	}
 	if !strings.Contains(body, "**Concurrent run:** kept this a draft — `M-2`") {
 		t.Fatalf("body does not name the run whose plan these files touch:\n%s", body)
+	}
+}
+
+// The body names what holds auto-merge, so a reader sees why a PR that could
+// have merged itself did not (AC2, AC8). The words themselves are the hold's;
+// prbody escapes punctuation, so this checks the note and its prefix.
+func TestRenderPRNamesWhatHoldsAutoMerge(t *testing.T) {
+	now := time.Now()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	sum := buildSummary(logger, encodedSummary(t, "42-1", now), "42-1", prRecord.Ticket(), now)
+	hold := autoMergeHold{Reason: runner.WaitRateAboveBar, Detail: "the rate is above the bar"}
+	_, body, err := renderPR(prTemplate(t), prRecord, sum, "", "https://example.test/run", "", prCheck{Planned: true, Hold: hold})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "**Auto-merge held:** the rate is above the bar"; !strings.Contains(body, want) {
+		t.Fatalf("body does not name what holds auto-merge:\n%s", body)
+	}
+}
+
+// A size-S run has no plan stage, so its body does not claim a missing plan
+// keeps it from auto-merge, while a size-M run's does (AC1).
+func TestRenderPRSaysAMissingPlanHoldsOnlyAnMOrLRun(t *testing.T) {
+	now := time.Now()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	sum := buildSummary(logger, encodedSummary(t, "42-1", now), "42-1", prRecord.Ticket(), now)
+	s := prRecord
+	s.Size = "S"
+	_, body, err := renderPR(prTemplate(t), s, sum, "", "https://example.test/run", "", prCheck{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(body, "No recorded plan") {
+		t.Fatalf("a size-S body claims a missing plan holds it:\n%s", body)
+	}
+	_, bodyM, err := renderPR(prTemplate(t), prRecord, sum, "", "https://example.test/run", "", prCheck{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(bodyM, "No recorded plan") {
+		t.Fatalf("a size-M body does not name the missing plan:\n%s", bodyM)
 	}
 }
 

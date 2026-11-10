@@ -32,7 +32,11 @@ export function AutoMergeSection({ read, on, disabled, onToggle }: AutoMergeSect
           </p>
         )}
         {merge !== null && on !== null && (
-          <p>{on ? "Size S and M PRs merge themselves." : "Every PR waits for you to merge it."}</p>
+          <p>
+            {on
+              ? "Size S and M PRs merge themselves while the rate is at or under the bar."
+              : "Every PR waits for you to merge it."}
+          </p>
         )}
       </SwitchRow>
       {merge !== null && <p className="text-label leading-5 text-ink2">{rateLine(merge)}</p>}

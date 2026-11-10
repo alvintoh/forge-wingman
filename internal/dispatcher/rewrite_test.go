@@ -92,8 +92,8 @@ func TestWindowCapsTheTrailingSamples(t *testing.T) {
 
 func TestLinesAndRateSumTheWindow(t *testing.T) {
 	window := []Sample{
-		sample(scratch, 100, 10, true, false),
-		sample(scratch, 100, 0, true, false),
+		sample(scratch, 100, 10, "wingman[bot]"),
+		sample(scratch, 100, 0, "alvintoh"),
 	}
 	if got := Lines(window); got != (Rewrite{AgentLines: 200, OwnerLines: 10}) {
 		t.Fatalf("Lines() = %+v, want 200 agent lines and 10 owner lines", got)
@@ -104,13 +104,23 @@ func TestLinesAndRateSumTheWindow(t *testing.T) {
 	}
 }
 
-func TestRevertsCountsTheAutoMergedRevertsAlone(t *testing.T) {
+// A PR that merged itself and one whose row names no merge account both stay out
+// of the human window: neither is the owner's reading, and an unknown account is
+// no proof of a self-merge either.
+func TestHumanWindowLeavesOutThePRsThatMergedThemselves(t *testing.T) {
 	window := []Sample{
-		sample(scratch, 100, 0, true, true),
-		sample(scratch, 100, 0, false, true),
+		sample(scratch, 100, 0, "wingman[bot]"),
+		{PR: 4, Rewrite: Rewrite{AgentLines: 70}},
+		sample(scratch, 100, 0, "alvintoh"),
+		{PR: 3, Rewrite: Rewrite{AgentLines: 50}, MergedBy: "alvintoh"},
 	}
-	if got := Reverts(window); got != 1 {
-		t.Fatalf("Reverts() = %d, want the auto-merged revert alone", got)
+	got := Evidence{Trailing: window}.HumanWindow(2)
+	if len(got) != 2 || got[0].MergedBy != "alvintoh" || got[1].AgentLines != 50 {
+		t.Fatalf("HumanWindow(2) = %+v, want the two newest a human merged", got)
+	}
+	all := Evidence{Trailing: window}.HumanWindow(10)
+	if len(all) != 2 {
+		t.Fatalf("HumanWindow(10) = %d samples, want the two a human merged", len(all))
 	}
 }
 

@@ -15,7 +15,9 @@ describe("RewriteRateView", () => {
         read: { status: "ready", body: autonomy, url: "/api/autonomy" },
       }),
     );
-    expect(markup).toContain("Rewrite rate over the trailing 10 PRs is 7.4%; guide 10%");
+    expect(markup).toContain(
+      "Rewrite rate over the trailing 10 PRs a human merged is 7.4%; bar 20%",
+    );
     expect(markup).not.toContain("all projects");
   });
 });

@@ -259,9 +259,6 @@ func (pollRewrites) MarkUnfound(context.Context, string, int, time.Time) (bool, 
 func (pollRewrites) Record(context.Context, string, dispatcher.Measured) error {
 	return nil
 }
-func (pollRewrites) FlagReverted(context.Context, string) error {
-	return nil
-}
 func (pollRewrites) Recent(context.Context, int) ([]dispatcher.Sample, error) {
 	return nil, nil
 }
