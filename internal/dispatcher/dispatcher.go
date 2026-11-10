@@ -372,6 +372,17 @@ type TicketStateRecorder interface {
 	RecordTicketState(ctx context.Context, runID, stateID string) error
 }
 
+// TicketChanger compares each ticket's current description with the copy its
+// run was claimed with, recording on the run that it changed and when.
+type TicketChanger interface {
+	// RecordTicketChanges records each in-flight run whose ticket description
+	// differs from the copy it was claimed with, reporting the runs it stamped
+	// this call so a caller logs each once. A run whose ticket still matches, or
+	// whose PR has opened, is left alone; a later edit refreshes the stored text,
+	// and a ticket that matches its copy again clears the stamp.
+	RecordTicketChanges(ctx context.Context, tickets map[string]string, at time.Time) ([]string, error)
+}
+
 // Withdrawer withdraws the runs still waiting for a claim whose ticket closed
 // before a poll could claim them.
 type Withdrawer interface {
@@ -402,6 +413,7 @@ type Queue interface {
 	Sweeper
 	StuckReader
 	TicketStateRecorder
+	TicketChanger
 	TransientRequeuer
 	Withdrawer
 	// SettledHistory reads the settled run history at or after since: the one
@@ -445,10 +457,11 @@ type Result struct {
 	unchecked map[string]bool
 }
 
-// Poll admits every issue still delegated, then returns the runs that stopped
-// on a known transient fault to the queue, withdraws the waiting runs whose
-// ticket Linear closed, and walks the queue in priority order claiming every
-// run Admit lets start, abandons the claims that outlived
+// Poll admits every issue still delegated, records each in-flight run whose
+// ticket description changed since it was claimed, then returns the runs that
+// stopped on a known transient fault to the queue, withdraws the waiting runs
+// whose ticket Linear closed, and walks the queue in priority order claiming
+// every run Admit lets start, abandons the claims that outlived
 // their window, measures the merges that landed since the last poll, raises a
 // notice for each run stuck past its limit, records whether each listed
 // repository could be read and the names of the Linear projects an added one may
@@ -495,6 +508,24 @@ func LogPhase(logger *slog.Logger, phase string, start, end time.Time) {
 	logger.Info("pollPhase", "phase", phase, "ms", end.Sub(start).Milliseconds())
 }
 
+// recordTicketChanges compares each delegated ticket's description with the copy
+// its run was claimed with, logging every run the comparison stamped. A read
+// that fails changes nothing and never fails the poll: the comparison is a
+// report, and the dispatch it runs beside must still happen.
+func recordTicketChanges(ctx context.Context, d Deps, issues []Issue) {
+	descriptions := make(map[string]string, len(issues))
+	for _, issue := range issues {
+		descriptions[issue.ID] = issue.Body
+	}
+	changed, err := d.Queue.RecordTicketChanges(ctx, descriptions, d.Now())
+	if err != nil {
+		d.Logger.Warn("ticketChangesUnread", "err", err.Error())
+	}
+	for _, runID := range changed {
+		d.Logger.Info("ticketChangedMidRun", "run", runID)
+	}
+}
+
 func poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	// One loader for the whole poll: the claim walk and the delegation share it,
 	// so the settled run history is read once whichever of them reaches for it
@@ -507,6 +538,9 @@ func poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	}
 	LogPhase(d.Logger, "delegated", start, d.Now())
 	res := Result{Seen: len(issues), issues: issues}
+	start = d.Now()
+	recordTicketChanges(ctx, d, issues)
+	LogPhase(d.Logger, "ticketChange", start, d.Now())
 	listed := allowlistRead(d, c)
 	start = d.Now()
 	if listed {

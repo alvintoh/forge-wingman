@@ -33,6 +33,13 @@ const (
 // runner.Ticket validates.
 var sizes = map[string]bool{"S": true, "M": true, "L": true}
 
+// TicketChange is a run whose ticket description changed after the run was
+// claimed: when the change was first seen, and the description Linear held then.
+type TicketChange struct {
+	At   time.Time
+	Body string
+}
+
 // build turns a delegated issue into a queued run, or names the refusal that
 // keeps it out of the queue. An empty rejection reason means the issue is
 // admissible. The repository is checked before the size, so a ticket the

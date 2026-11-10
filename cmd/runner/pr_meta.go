@@ -72,6 +72,15 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	if err != nil {
 		return err
 	}
+	ticketChange, err := store.NewQueue(fsc).TicketChange(ctx, *runID)
+	ticketChangedUnread := err != nil
+	if ticketChangedUnread {
+		logger.Warn("ticketChangeUnread", "run", *runID, "err", err.Error())
+	}
+	var ticketChanged *dispatcher.TicketChange
+	if !ticketChangedUnread && !ticketChange.At.IsZero() {
+		ticketChanged = &ticketChange
+	}
 	plan, err := records.GetPlan(ctx, *runID)
 	if err != nil && !errors.Is(err, runner.ErrRecordNotFound) {
 		return err
@@ -104,16 +113,18 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		logger.Warn("changedFilesUnread", "run", *runID, "err", err.Error())
 	}
 	check := prCheck{
-		Planned:           planRecorded(plan),
-		Changed:           changed,
-		Unread:            err != nil || unreadPlanned,
-		OutOfPlan:         outOfPlan(plan, changed),
-		Overlap:           planOverlap(rec.Ticket().Size, *repository, changed, planned),
-		FrontEnd:          frontEnd(logger, rec.Ticket().FrontEnd, *repository, *frontEndPaths, changed),
-		Provisional:       provisional,
-		ProvisionalUnread: unreadProvisional,
-		Supersedes:        superseded,
-		Retried:           retried,
+		Planned:             planRecorded(plan),
+		Changed:             changed,
+		Unread:              err != nil || unreadPlanned,
+		OutOfPlan:           outOfPlan(plan, changed),
+		Overlap:             planOverlap(rec.Ticket().Size, *repository, changed, planned),
+		FrontEnd:            frontEnd(logger, rec.Ticket().FrontEnd, *repository, *frontEndPaths, changed),
+		Provisional:         provisional,
+		ProvisionalUnread:   unreadProvisional,
+		Supersedes:          superseded,
+		Retried:             retried,
+		TicketChanged:       ticketChanged,
+		TicketChangedUnread: ticketChangedUnread,
 	}
 	// A workflow file in the write set is refused from the write set the
 	// branch carries — the run's own App cannot push one — and falls back to
@@ -196,6 +207,30 @@ type prCheck struct {
 	Supersedes int
 	// Retried is set when the owner replaced it by retrying the run with a note.
 	Retried bool
+	// TicketChanged is the change recorded on the run's ticket after it was
+	// claimed, nil when the ticket did not change.
+	TicketChanged *dispatcher.TicketChange
+	// TicketChangedUnread is set when that record could not be read, which
+	// leaves the change unknown rather than absent.
+	TicketChangedUnread bool
+}
+
+// ticketChanged reports whether the run's ticket changed after it read it, or
+// that the record could not be read.
+func (c prCheck) ticketChanged() bool {
+	return c.TicketChanged != nil || c.TicketChangedUnread
+}
+
+// ticketDrift is the note PRBody carries for the ticket change this run found,
+// nil when the ticket did not change.
+func (c prCheck) ticketDrift(built string) *runner.TicketDrift {
+	if c.TicketChangedUnread {
+		return &runner.TicketDrift{Unread: true}
+	}
+	if c.TicketChanged == nil {
+		return nil
+	}
+	return &runner.TicketDrift{Lines: runner.TicketDriftLines(built, c.TicketChanged.Body)}
 }
 
 // unconfirmed reports whether auto-pilot took an option the owner has not confirmed,
@@ -297,18 +332,19 @@ func writeSetsTouch(planned, changed []string) bool {
 }
 
 // draftPR reports whether the PR opens as a draft (FR-5): the pre-PR loop found
-// something open, or the run's write set is not clear — an edit outside the
-// plan, a concurrent run's plan these files touch, or a write set that could not
-// be read.
+// something open, the run's write set is not clear — an edit outside the plan, a
+// concurrent run's plan these files touch, or a write set that could not be
+// read — or the run's ticket changed after it read it.
 func draftPR(sum runner.Summary, check prCheck) bool {
-	return !sum.Ready || !check.clear()
+	return !sum.Ready || !check.clear() || check.ticketChanged()
 }
 
 // ownerAttention reports whether the run's PR must wait for the owner rather
-// than merge itself (FR-5, FR-17): a draft, sized L, in the review sample,
-// touching a workflow, failing a check gate, changing front-end code, or having
-// no recorded plan, or holding a provisional decision the owner has not
-// confirmed, which hold the PR without making it a draft.
+// than merge itself (FR-5, FR-17): a draft — which includes a ticket that
+// changed after the run read it — sized L, in the review sample, touching a
+// workflow, failing a check gate, changing front-end code, or having no recorded
+// plan, or holding a provisional decision the owner has not confirmed, which
+// hold the PR without making it a draft.
 func ownerAttention(runID string, t runner.Ticket, sum runner.Summary, failedGate string, check prCheck) bool {
 	return waitReason(runID, t, sum, check) != "" ||
 		sum.StopReason == runner.StopWorkflowChange || failedGate != "" || !check.Planned
@@ -448,7 +484,7 @@ func buildSummary(logger *slog.Logger, raw, attemptID string, t runner.Ticket, n
 // report is part of the body whether or not they kept it a draft.
 func renderPR(tmpl string, rec runner.Record, sum runner.Summary, failedGate, runURL, loopDetail string, check prCheck) (title, body string, err error) {
 	t := rec.Ticket()
-	body, err = runner.PRBody(tmpl, t, sum.PRSummary, failedGate, runURL, loopDetail, check.Overlap, check.OutOfPlan, check.Unread, check.FrontEnd, !check.Planned, sum.ReviewFindings, sum.ReviewFindingsOmitted, sum.ReviewSecondRound, sum.GuardsUntested, check.Provisional, check.Supersedes, check.Retried)
+	body, err = runner.PRBody(tmpl, t, sum.PRSummary, failedGate, runURL, loopDetail, check.Overlap, check.OutOfPlan, check.Unread, check.FrontEnd, !check.Planned, sum.ReviewFindings, sum.ReviewFindingsOmitted, sum.ReviewSecondRound, sum.GuardsUntested, check.Provisional, check.Supersedes, check.Retried, check.ticketDrift(t.Body))
 	if err != nil {
 		return "", "", err
 	}

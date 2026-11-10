@@ -145,6 +145,13 @@ type fakeQueue struct {
 	ticketStates   map[string]string
 	ticketStateErr error
 
+	// ticketChanges is what RecordTicketChanges reports it stamped, and
+	// ticketChangeErr fails that call. ticketReads records the descriptions each
+	// poll compared.
+	ticketChanges   []string
+	ticketChangeErr error
+	ticketReads     []map[string]string
+
 	// reprioritized records each rank the poll refreshed, by run id.
 	reprioritized map[string]int
 	priorityErr   error
@@ -301,6 +308,13 @@ func (q *fakeQueue) RecordTicketState(_ context.Context, runID, stateID string) 
 	}
 	q.ticketStates[runID] = stateID
 	return nil
+}
+
+// RecordTicketChanges records what each poll compared and reports the runs it
+// stamped.
+func (q *fakeQueue) RecordTicketChanges(_ context.Context, tickets map[string]string, _ time.Time) ([]string, error) {
+	q.ticketReads = append(q.ticketReads, tickets)
+	return q.ticketChanges, q.ticketChangeErr
 }
 
 func (q *fakeQueue) UpdateQueuedPriority(_ context.Context, runID string, rank int) (bool, error) {
@@ -1611,6 +1625,53 @@ func TestPollEstimatesEachSizeOnceHoweverManyCandidatesHoldIt(t *testing.T) {
 	}
 	if est.builds["M"] != 1 || est.plans["M"] != 1 {
 		t.Fatalf("three M candidates read the estimator %d times for the build and %d for the plan, want once each", est.builds["M"], est.plans["M"])
+	}
+}
+
+func TestPollLogsEachChangedTicketWithItsRunID(t *testing.T) {
+	q := &fakeQueue{ticketChanges: []string{"FRG-1", "FRG-2"}}
+	var log bytes.Buffer
+	deps := pollDeps(fakeSource{issues: []Issue{{ID: "FRG-1", Body: "the new text"}}}, q, &fakeWorkflow{})
+	deps.Logger = slog.New(slog.NewTextHandler(&log, nil))
+	if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"msg=ticketChangedMidRun", "run=FRG-1", "run=FRG-2"} {
+		if !strings.Contains(log.String(), want) {
+			t.Fatalf("log lacks %q: %q", want, log.String())
+		}
+	}
+	if len(q.ticketReads) != 1 || q.ticketReads[0]["FRG-1"] != "the new text" {
+		t.Fatalf("ticket reads = %v, want the poll's own description for FRG-1", q.ticketReads)
+	}
+}
+
+func TestPollChangesNothingWhenTheLinearReadFails(t *testing.T) {
+	q := &fakeQueue{ticketChanges: []string{"FRG-1"}}
+	var log bytes.Buffer
+	deps := pollDeps(fakeSource{err: errFirestore}, q, &fakeWorkflow{})
+	deps.Logger = slog.New(slog.NewTextHandler(&log, nil))
+	if _, err := Poll(context.Background(), deps, buildConfig); !errors.Is(err, errFirestore) {
+		t.Fatalf("err = %v, want the Linear read's failure", err)
+	}
+	if len(q.ticketReads) != 0 {
+		t.Fatalf("ticket reads = %v, want none on a poll whose Linear read failed", q.ticketReads)
+	}
+	if strings.Contains(log.String(), "ticketChangedMidRun") {
+		t.Fatalf("log reports a change on a poll that read nothing: %q", log.String())
+	}
+}
+
+func TestPollLogsAnUnreadTicketChangeAndStillRuns(t *testing.T) {
+	q := &fakeQueue{ticketChangeErr: errFirestore}
+	var log bytes.Buffer
+	deps := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	deps.Logger = slog.New(slog.NewTextHandler(&log, nil))
+	if _, err := Poll(context.Background(), deps, buildConfig); err != nil {
+		t.Fatalf("err = %v, want a failed ticket-change read to leave the poll running", err)
+	}
+	if !strings.Contains(log.String(), "msg=ticketChangesUnread") {
+		t.Fatalf("log lacks the unread ticket change: %q", log.String())
 	}
 }
 

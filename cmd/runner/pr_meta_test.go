@@ -570,7 +570,7 @@ func TestRenderPRNamesAMissingPlan(t *testing.T) {
 	}
 }
 
-func TestDraftPRNamesEveryReasonTheWriteSetHoldsItBack(t *testing.T) {
+func TestDraftPRNamesEveryReasonTheRunHoldsItBack(t *testing.T) {
 	now := time.Now()
 	ready := buildSummary(slog.New(slog.NewTextHandler(io.Discard, nil)),
 		encodedSummary(t, "42-1", now), "42-1", prRecord.Ticket(), now)
@@ -585,12 +585,59 @@ func TestDraftPRNamesEveryReasonTheWriteSetHoldsItBack(t *testing.T) {
 		"an edit outside the plan":   {prCheck{OutOfPlan: []string{"a.go"}}, true},
 		"a concurrent run's plan":    {prCheck{Overlap: "FRG-79"}, true},
 		"a planned read that failed": {prCheck{Overlap: "", Unread: true}, true},
+		"a ticket changed mid-run":   {prCheck{TicketChanged: &dispatcher.TicketChange{At: now, Body: "new"}}, true},
+		"an unread ticket change":    {prCheck{TicketChangedUnread: true}, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := draftPR(ready, tt.check); got != tt.want {
 				t.Fatalf("draftPR = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRenderPRQuotesTheTicketLinesThatChangedMidRun(t *testing.T) {
+	now := time.Now()
+	sum := buildSummary(slog.New(slog.NewTextHandler(io.Discard, nil)),
+		encodedSummary(t, "42-1", now), "42-1", prRecord.Ticket(), now)
+	change := &dispatcher.TicketChange{At: now, Body: prRecord.TicketBody + "\n\nAC5: also do X"}
+	_, body, err := renderPR(prTemplate(t), prRecord, sum, "", "https://example.test/run", "",
+		prCheck{Planned: true, TicketChanged: change})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "**Ticket changed mid-run:**") {
+		t.Fatalf("body does not name the ticket change:\n%s", body)
+	}
+	if !strings.Contains(body, "+ AC5: also do X") {
+		t.Fatalf("body does not quote the line the owner added:\n%s", body)
+	}
+}
+
+func TestTicketDriftReportsAnUnreadRecord(t *testing.T) {
+	if got := (prCheck{TicketChangedUnread: true}).ticketDrift("built"); got == nil || !got.Unread {
+		t.Fatalf("ticketDrift = %+v, want an unread drift", got)
+	}
+	if got := (prCheck{}).ticketDrift("built"); got != nil {
+		t.Fatalf("ticketDrift = %+v, want none for a ticket that did not change", got)
+	}
+	got := (prCheck{TicketChanged: &dispatcher.TicketChange{At: time.Now(), Body: "built\n\nAC5: also do X"}}).ticketDrift("built")
+	if got == nil || got.Unread || len(got.Lines) == 0 {
+		t.Fatalf("ticketDrift = %+v, want the differing lines", got)
+	}
+}
+
+func TestRenderPRNamesAnUnreadTicketChange(t *testing.T) {
+	now := time.Now()
+	sum := buildSummary(slog.New(slog.NewTextHandler(io.Discard, nil)),
+		encodedSummary(t, "42-1", now), "42-1", prRecord.Ticket(), now)
+	_, body, err := renderPR(prTemplate(t), prRecord, sum, "", "https://example.test/run", "",
+		prCheck{Planned: true, TicketChangedUnread: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "**Ticket change unread:**") {
+		t.Fatalf("body does not name the unread ticket change:\n%s", body)
 	}
 }
 
