@@ -2343,6 +2343,103 @@ func TestPrePRLoopReportsTheGuardsTheBuildBudgetLeftUnprobed(t *testing.T) {
 	}
 }
 
+// guardsSource is a file adding n guards with distinct headers, so each has a
+// key of its own: f0 guards e0, f1 guards e1, and so on.
+func guardsSource(n int) string {
+	var src strings.Builder
+	src.WriteString("package x\n")
+	for i := range n {
+		fmt.Fprintf(&src, "\nfunc f%d(e%d error) error {\n\tif e%d != nil {\n\t\treturn e%d\n\t}\n\treturn nil\n}\n", i, i, i, i)
+	}
+	return src.String()
+}
+
+// probedGuard is the header of the guard a probe broke in dir's a.go, read
+// from the `false && (` the break wraps the condition in.
+func probedGuard(t *testing.T, dir string) string {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join(dir, "a.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rest, ok := strings.Cut(string(body), "false && (")
+	if !ok {
+		t.Fatal("probe ran with no guard broken")
+	}
+	cond, _, _ := strings.Cut(rest, ")")
+	return cond
+}
+
+// TestPrePRLoopReScanSkipsAGuardTheBuildScanProvedCovered keeps the post-fix
+// scan off the review's budget: it re-probes the guard that was a finding, and
+// not the one the build stage's scan already proved a test covers.
+func TestPrePRLoopReScanSkipsAGuardTheBuildScanProvedCovered(t *testing.T) {
+	agent := &fakeAgent{
+		edit:   edit("a.go", guardsSource(2)),
+		events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{}}}` + "\n",
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	var probed []string
+	deps.PackageTests = func(_ context.Context, dir, _ string) (bool, string, error) {
+		cond := probedGuard(t, dir)
+		probed = append(probed, cond)
+		return cond == "e1 != nil", "", nil // only e1's break fails a test
+	}
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"e0 != nil", "e1 != nil", "e0 != nil", "e0 != nil"}; !slices.Equal(probed, want) {
+		t.Fatalf("probed %v, want %v: both guards once, then only the finding after each fix round", probed, want)
+	}
+	if rec := reported.last(t); rec.Ready {
+		t.Fatal("ready = true, want false: e0 is still uncovered")
+	}
+}
+
+// TestPrePRLoopLogsAndKeepsTheBuildScansUntestedCountAcrossReScans is AC3 over
+// a run that re-scans: the count the build stage's budget left is logged once
+// and survives the fix rounds' scans, which neither log nor overwrite it.
+func TestPrePRLoopLogsAndKeepsTheBuildScansUntestedCountAcrossReScans(t *testing.T) {
+	agent := &fakeAgent{
+		edit:   edit("a.go", guardsSource(3)),
+		events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{}}}` + "\n",
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	var logs bytes.Buffer
+	deps.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	now := time.Now()
+	probes := 0
+	// The build scan's two probes spend its budget, so e2 is left untested;
+	// e0 stays a finding, so two fix rounds each re-scan.
+	deps.PackageTests = func(_ context.Context, dir, _ string) (bool, string, error) {
+		probes++
+		if probes <= 2 {
+			now = now.Add(nfr1BuildBudget / 2)
+		}
+		return probedGuard(t, dir) != "e0 != nil", "", nil
+	}
+	deps.Now = func() time.Time { return now }
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if probes != 4 {
+		t.Fatalf("probed %d times, want 4: e0 and e1, then e0 alone after each fix round", probes)
+	}
+	if rec := reported.last(t); rec.GuardsUntested != 1 {
+		t.Fatalf("guards untested = %d, want the build scan's 1 kept through the re-scans", rec.GuardsUntested)
+	}
+	if got := strings.Count(logs.String(), "msg=guardsUntested"); got != 1 {
+		t.Fatalf("logged guardsUntested %d times, want once", got)
+	}
+	if !strings.Contains(logs.String(), "msg=guardsUntested count=1 reason=budget") {
+		t.Fatalf("logs = %q, want the count and the budget as the reason", logs.String())
+	}
+}
+
 // TestPrePRLoopSecondFixRoundResolvesAFindingTheFirstLeftOpen is the second
 // round doing its job: a re-check that still reports the finding starts one more
 // fix round on the build session, and a clean second re-check leaves the run

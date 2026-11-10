@@ -495,11 +495,15 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 	// The guard scan is charged to the build stage: it probes the diff the
 	// review reads, so it stops once the build's budget is spent and its time
 	// stays outside the review's own budget, which begins below.
-	guards, untested, err := scanGuards(ctx, d, wt, sum.StartedAt, nfr1BuildBudget)
+	settled := make(map[string]bool)
+	guards, untested, err := scanGuards(ctx, d, wt, sum.StartedAt, nfr1BuildBudget, settled)
 	if err != nil {
 		return false, "", err
 	}
-	sum.GuardsUntested = untested
+	if untested > 0 {
+		d.Logger.Info("guardsUntested", "count", untested, "reason", "budget")
+		sum.GuardsUntested = untested
+	}
 	reviewStarted := d.Now()
 	// The review's budget begins here, so its first pass takes the stage's own
 	// clamp with nothing to gate — the budget is whole at the instant the stage
@@ -553,16 +557,16 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 			checksDetail = "checks: " + gate + " failing after the fix round\n\n" + truncate(output, checkFeedbackLimit)
 		}
 
-		// The post-fix scan is charged to the review stage, and each probe is
-		// itself bounded by what the review's budget leaves, so the guards cannot
-		// spend the time the re-review needs. Both re-checks then run under the
-		// one gate below: a finding is open, or fixed, only once its own re-check
+		// The post-fix scan is charged to the review stage and probes only the
+		// guards still open as findings and those a fix round added: a guard an
+		// earlier scan settled is not probed again, so the re-review's time goes
+		// to what the fix round changed. Both re-checks then run under the one
+		// gate below: a finding is open, or fixed, only once its own re-check
 		// has said so.
-		surviving, untested, err := scanGuards(ctx, d, wt, reviewStarted, nfr1ReviewBudget)
+		surviving, _, err := scanGuards(ctx, d, wt, reviewStarted, nfr1ReviewBudget, settled)
 		if err != nil {
 			return false, "", err
 		}
-		sum.GuardsUntested = untested
 		recheckTimeout, inBudget := roundTimeout(c.AgentTimeout, reviewStarted, d.Now(), nfr1ReviewBudget)
 		if !inBudget {
 			rounds = append(rounds, fixRoundResult{round: round, issued: findings})
