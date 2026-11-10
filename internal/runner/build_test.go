@@ -2379,6 +2379,8 @@ func TestPrePRLoopReScanSkipsAGuardTheBuildScanProvedCovered(t *testing.T) {
 		events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{}}}` + "\n",
 	}
 	deps, _, reported := testDeps(validObjects(), agent)
+	var logs bytes.Buffer
+	deps.Logger = slog.New(slog.NewTextHandler(&logs, nil))
 	var probed []string
 	deps.PackageTests = func(_ context.Context, dir, _ string) (bool, string, error) {
 		cond := probedGuard(t, dir)
@@ -2393,8 +2395,11 @@ func TestPrePRLoopReScanSkipsAGuardTheBuildScanProvedCovered(t *testing.T) {
 	if want := []string{"e0 != nil", "e1 != nil", "e0 != nil", "e0 != nil"}; !slices.Equal(probed, want) {
 		t.Fatalf("probed %v, want %v: both guards once, then only the finding after each fix round", probed, want)
 	}
-	if rec := reported.last(t); rec.Ready {
-		t.Fatal("ready = true, want false: e0 is still uncovered")
+	if rec := reported.last(t); rec.Ready || rec.GuardsUntested != 0 {
+		t.Fatalf("ready = %v, guards untested = %d, want a draft with every guard probed", rec.Ready, rec.GuardsUntested)
+	}
+	if strings.Contains(logs.String(), "msg=guardsUntested") {
+		t.Fatalf("logs = %q, want no guardsUntested line for a run that probed every guard", logs.String())
 	}
 }
 
