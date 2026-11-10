@@ -146,6 +146,9 @@ type RunRow struct {
 	Measured time.Time
 	// MergedBy is the account the measured merge was resolved to, empty when none.
 	MergedBy string
+	// AutoMerge is whether the PR was marked eligible for auto-merge, the proof a
+	// row measured before the merge account was kept has that the PR merged itself.
+	AutoMerge bool
 }
 
 // Sample is one merged agent PR as the rewrite rate reads it.

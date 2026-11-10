@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -96,11 +97,32 @@ func (e MergeEscape) Words() string {
 		e.Repo, e.PR, how, int(EscapeWindow/(24*time.Hour)))
 }
 
+// EscapeKey names an escaped PR the way the owner's acknowledgement of it is kept.
+func EscapeKey(repo string, pr int) string { return fmt.Sprintf("%s#%d", repo, pr) }
+
+// EscapeState is what the owner's document holds about escapes.
+type EscapeState struct {
+	// Latched is whether an escape holds auto-merge off now.
+	Latched bool
+	// Cleared are the escaped PRs the owner acknowledged by switching auto-merge
+	// on again, as EscapeKey names them.
+	Cleared []string
+}
+
+// Settled reports whether recording an escape of repo#pr can change nothing: one
+// is latched already, or the owner has acknowledged this PR's.
+func (s EscapeState) Settled(repo string, pr int) bool {
+	return s.Latched || slices.Contains(s.Cleared, EscapeKey(repo, pr))
+}
+
 // EscapeRecorder records the escaped PR beside the auto-merge switch, and
 // reports whether this is the first record of it: the first escape holds until
-// the owner clears it.
+// the owner clears it, and a PR the owner cleared does not latch again.
 type EscapeRecorder interface {
 	RecordEscape(ctx context.Context, e MergeEscape) (bool, error)
+	// State reads what is latched and cleared, so a poll skips the lookups an
+	// escape it would not record needs.
+	State(ctx context.Context) (EscapeState, error)
 }
 
 // MergedItself reports whether login is a bot account, which is how a merge the
@@ -189,14 +211,21 @@ func measureRepo(ctx context.Context, d Deps, repo string, prs []ClosedPR, trunc
 	if truncated && tailFresh {
 		errs = append(errs, fmt.Errorf("%s: %w with a merge first measured on its last page", repo, ErrClosedTruncated))
 	}
+	// A state that cannot be read leaves nothing settled here, and the store
+	// still refuses a latch the owner cleared, so the escape is looked for rather
+	// than skipped.
+	state, err := d.Escapes.State(ctx)
+	if err != nil {
+		errs = append(errs, err)
+	}
 	for _, pr := range prs {
-		if reverted := revertedPR(pr, repo, byTitle); reverted > 0 {
+		if reverted := revertedPR(pr, repo, byTitle); reverted > 0 && !state.Settled(repo, reverted) {
 			if err := recordRevertEscape(ctx, d, repo, pr, reverted, byNumber); err != nil {
 				errs = append(errs, err)
 			}
 		}
 	}
-	if err := recordFixEscapes(ctx, d, repo, prs); err != nil {
+	if err := recordFixEscapes(ctx, d, repo, prs, byNumber, state); err != nil {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
@@ -295,9 +324,13 @@ func recordRevertEscape(ctx context.Context, d Deps, repo string, revert ClosedP
 		return reportUnfoundPR(ctx, d, "revertedPRUnfound", repo, reverted, original.Head)
 	}
 	d.Logger.Warn("runPRReverted", "run", row.RunID, "repo", repo, "pr", reverted)
-	// A revert of a PR the owner merged is the owner's own doing, and a row that
-	// names no account proves neither way, so only a row naming a bot latches.
-	if !MergedItself(row.MergedBy) {
+	// A revert of a PR the owner merged is the owner's own doing, so only a merge
+	// proven to be the product's latches.
+	itself, err := rowMergedItself(ctx, d, repo, row, original)
+	if err != nil {
+		return err
+	}
+	if !itself {
 		return nil
 	}
 	mergedAt := row.Measured
@@ -312,7 +345,7 @@ func recordRevertEscape(ctx context.Context, d Deps, repo string, revert ClosedP
 
 // fixesPR matches a line naming a pull request as closed or fixed: GitHub's
 // closing keywords, each followed by the number.
-var fixesPR = regexp.MustCompile(`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b`)
+var fixesPR = regexp.MustCompile(`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+#(\d+)\b`)
 
 // fixedPRs is the numbers a merged PR's body names as fixed.
 func fixedPRs(body string) []int {
@@ -325,26 +358,60 @@ func fixedPRs(body string) []int {
 	return out
 }
 
+// rowMergedItself reports whether the PR a run row names merged itself. The row
+// names the merge account once it is measured; a row measured before that was
+// kept names none, so the account comes from GitHub's own record of the merge, and
+// where that names none either the row's eligibility mark stands in for it: an
+// escape that cannot be told from the owner's own merge latches rather than
+// passes, which is the side that keeps auto-merge off.
+func rowMergedItself(ctx context.Context, d Deps, repo string, row RunRow, pr ClosedPR) (bool, error) {
+	if row.MergedBy != "" {
+		return MergedItself(row.MergedBy), nil
+	}
+	mergedBy := pr.MergedBy
+	if mergedBy == "" && pr.Number != 0 {
+		one, err := d.PullRequests.Pull(ctx, repo, pr.Number)
+		if err != nil {
+			return false, err
+		}
+		mergedBy = one.MergedBy
+	}
+	if mergedBy != "" {
+		return MergedItself(mergedBy), nil
+	}
+	return row.AutoMerge, nil
+}
+
 // recordFixEscapes records the escape each merged PR names as fixed within
 // EscapeWindow of the fixed PR's merge: a defect nobody read is why a later
-// merge came to fix it. The referenced PR is looked up by its run row, so a body
-// naming a pull request no run opened costs one query and no GitHub read.
-func recordFixEscapes(ctx context.Context, d Deps, repo string, prs []ClosedPR) error {
-	if d.Escapes == nil {
-		return nil
-	}
+// merge came to fix it. A reference to an escape that is settled is not looked
+// up, and one to a pull request no run opened costs one query and no GitHub read.
+func recordFixEscapes(ctx context.Context, d Deps, repo string, prs []ClosedPR, byNumber map[int]ClosedPR, state EscapeState) error {
 	var errs []error
 	for _, fixing := range prs {
 		for _, number := range fixedPRs(fixing.Body) {
+			if state.Settled(repo, number) {
+				continue
+			}
 			row, ok, err := d.Rewrites.RunForMerged(ctx, repo, ClosedPR{Number: number})
 			if err != nil {
 				errs = append(errs, err)
 				continue
 			}
-			// Only a measured row that names a bot proves the PR merged itself:
-			// an unknown account proves neither way, so it is not latchable.
-			if !ok || row.Measured.IsZero() || !MergedItself(row.MergedBy) ||
-				!row.Measured.Before(fixing.MergedAt) || fixing.MergedAt.Sub(row.Measured) > EscapeWindow {
+			// Only a measured merge inside the window can have escaped.
+			if !ok || row.Measured.IsZero() || !row.Measured.Before(fixing.MergedAt) || fixing.MergedAt.Sub(row.Measured) > EscapeWindow {
+				continue
+			}
+			fixed, listed := byNumber[number]
+			if !listed {
+				fixed = ClosedPR{Number: number}
+			}
+			itself, err := rowMergedItself(ctx, d, repo, row, fixed)
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			if !itself {
 				continue
 			}
 			if err := recordEscape(ctx, d, MergeEscape{Repo: repo, PR: number, By: fixing.Number, Reason: EscapeFixed, At: d.Now()}); err != nil {
@@ -359,9 +426,6 @@ func recordFixEscapes(ctx context.Context, d Deps, repo string, prs []ClosedPR) 
 // first record of it: that one holds auto-merge off until the owner switches it
 // on again.
 func recordEscape(ctx context.Context, d Deps, e MergeEscape) error {
-	if d.Escapes == nil {
-		return nil
-	}
 	fresh, err := d.Escapes.RecordEscape(ctx, e)
 	if err != nil {
 		return err

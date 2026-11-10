@@ -54,6 +54,42 @@ func TestAutoMergeSwitchSetIsReadBackAndRecordsWhen(t *testing.T) {
 	}
 }
 
+// An empty document carries nothing a renamed key could have lost, so it reads as
+// no document does.
+func TestAutoMergeSettingReadsOnFromAnEmptyDocument(t *testing.T) {
+	a, client := autoMergeSwitchesOver(t)
+	ctx := context.Background()
+	if _, err := client.Collection(dispatchCollection).Doc(autoMergeSwitchDocID).Set(ctx, map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	if setting, err := a.Read(ctx); err != nil || !setting.Enabled {
+		t.Fatalf("Read = %+v, %v, want on from an empty document", setting, err)
+	}
+}
+
+// A bar set before any switch creates the document, and the settings it leaves
+// must still read.
+func TestAutoMergeBarSetFirstLeavesTheSwitchOn(t *testing.T) {
+	a, _ := autoMergeSwitchesOver(t)
+	ctx := context.Background()
+	if err := a.SetBar(ctx, 35, noticeAt); err != nil {
+		t.Fatal(err)
+	}
+	setting, err := a.Read(ctx)
+	if err != nil || !setting.Enabled || setting.BarPercent != 35 {
+		t.Fatalf("Read = %+v, %v, want on at the stored bar", setting, err)
+	}
+	if err := a.SetEnabled(ctx, false, noticeAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SetBar(ctx, 40, noticeAt); err != nil {
+		t.Fatal(err)
+	}
+	if setting, err := a.Read(ctx); err != nil || setting.Enabled {
+		t.Fatalf("Read = %+v, %v, want a later bar to leave the switch off", setting, err)
+	}
+}
+
 func TestAutoMergeBarIsSetAndReadBack(t *testing.T) {
 	a, _ := autoMergeSwitchesOver(t)
 	ctx := context.Background()
@@ -79,6 +115,10 @@ func TestAutoMergeSettingRefusesValuesItCannotRead(t *testing.T) {
 		bar bool
 	}{
 		"a switch that is a string":        {map[string]any{enabledField: "off"}, false},
+		"no switch beside set_at":          {map[string]any{setAtField: noticeAt}, false},
+		"no switch beside a bar":           {map[string]any{barField: int64(20)}, false},
+		"no switch beside a latch":         {map[string]any{escapedPRField: int64(7)}, false},
+		"a renamed switch":                 {map[string]any{"enable": true, setAtField: noticeAt}, false},
 		"a bar that is a string":           {map[string]any{enabledField: true, barField: "20"}, true},
 		"a bar of zero":                    {map[string]any{enabledField: true, barField: int64(0)}, true},
 		"a bar above 100":                  {map[string]any{enabledField: true, barField: int64(101)}, true},
@@ -144,5 +184,48 @@ func TestAutoMergeEscapeIsRecordedOnceAndClearedBySwitchingOn(t *testing.T) {
 	}
 	if setting, err := a.Read(ctx); err != nil || !setting.Enabled || setting.Escaped.PR != 0 {
 		t.Fatalf("Read = %+v, %v, want the escape cleared by switching on", setting, err)
+	}
+}
+
+// The owner switching on acknowledges the escaped PR: a poll reads the same revert
+// again, and it must not latch a second time, while an escape of another PR still
+// does.
+func TestAnAcknowledgedEscapeStaysClearedAcrossPolls(t *testing.T) {
+	a, _ := autoMergeSwitchesOver(t)
+	ctx := context.Background()
+	escaped := dispatcher.MergeEscape{Repo: "octo/scratch", PR: 341, By: 350, Reason: dispatcher.EscapeReverted, At: noticeAt}
+	if fresh, err := a.RecordEscape(ctx, escaped); err != nil || !fresh {
+		t.Fatalf("RecordEscape = %v, %v, want the first recorded", fresh, err)
+	}
+	if err := a.SetEnabled(ctx, true, noticeAt.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if fresh, err := a.RecordEscape(ctx, escaped); err != nil || fresh {
+		t.Fatalf("RecordEscape = %v, %v, want the acknowledged PR to stay cleared", fresh, err)
+	}
+	if setting, err := a.Read(ctx); err != nil || setting.Escaped.PR != 0 || !setting.Enabled {
+		t.Fatalf("Read = %+v, %v, want nothing latched after the re-read", setting, err)
+	}
+	state, err := a.State(ctx)
+	if err != nil || state.Latched || !state.Settled("octo/scratch", 341) || state.Settled("octo/scratch", 342) {
+		t.Fatalf("State = %+v, %v, want only PR 341 settled", state, err)
+	}
+	next := dispatcher.MergeEscape{Repo: "octo/scratch", PR: 342, By: 351, Reason: dispatcher.EscapeFixed, At: noticeAt.Add(2 * time.Hour)}
+	if fresh, err := a.RecordEscape(ctx, next); err != nil || !fresh {
+		t.Fatalf("RecordEscape = %v, %v, want a new escape to latch again", fresh, err)
+	}
+}
+
+// Switching on with nothing latched acknowledges nothing, so a first escape
+// reported after it still latches.
+func TestSwitchingOnWithNothingLatchedClearsNothing(t *testing.T) {
+	a, _ := autoMergeSwitchesOver(t)
+	ctx := context.Background()
+	if err := a.SetEnabled(ctx, true, noticeAt); err != nil {
+		t.Fatal(err)
+	}
+	escaped := dispatcher.MergeEscape{Repo: "octo/scratch", PR: 341, By: 350, Reason: dispatcher.EscapeReverted, At: noticeAt}
+	if fresh, err := a.RecordEscape(ctx, escaped); err != nil || !fresh {
+		t.Fatalf("RecordEscape = %v, %v, want it to latch", fresh, err)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -149,18 +150,25 @@ func (r *fakeRewrites) Recent(_ context.Context, limit int) ([]Sample, error) {
 // off until the owner clears it, so a later one does not replace it.
 type fakeEscapes struct {
 	escapes []MergeEscape
-	err     error
+	// cleared are the escaped PRs the owner acknowledged, which never latch again.
+	cleared  []string
+	err      error
+	stateErr error
 }
 
 func (f *fakeEscapes) RecordEscape(_ context.Context, e MergeEscape) (bool, error) {
 	if f.err != nil {
 		return false, f.err
 	}
-	if len(f.escapes) > 0 {
+	if len(f.escapes) > 0 || slices.Contains(f.cleared, EscapeKey(e.Repo, e.PR)) {
 		return false, nil
 	}
 	f.escapes = append(f.escapes, e)
 	return true, nil
+}
+
+func (f *fakeEscapes) State(_ context.Context) (EscapeState, error) {
+	return EscapeState{Latched: len(f.escapes) > 0, Cleared: f.cleared}, f.stateErr
 }
 
 var (
@@ -180,6 +188,7 @@ func rewriteDeps(prs *fakePullRequests, rows *fakeRewrites) (Deps, *fakeNotices)
 	return Deps{
 		PullRequests: prs,
 		Rewrites:     rows,
+		Escapes:      &fakeEscapes{},
 		Notices:      notices,
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Now:          func() time.Time { return mergedAt },
@@ -590,33 +599,118 @@ func TestFixOfAHandMergedPRRecordsNothing(t *testing.T) {
 	}
 }
 
-// A revert only latches when the row proves the PR merged itself: a merge the
-// owner made, and a row that names no account, are no escape.
-func TestRevertOfAMergeThatDidNotProveItselfRecordsNothing(t *testing.T) {
-	for name, mergedBy := range map[string]string{"the owner's login": "the-owner", "no account kept": ""} {
+// A revert only latches a merge proven to be the product's: a merge the owner
+// made is no escape, and a row measured before the merge account was kept is told
+// by GitHub's own record of the merge, then by its eligibility mark.
+func TestRevertLatchesOnlyAMergeProvenToBeTheProducts(t *testing.T) {
+	for name, tt := range map[string]struct {
+		row      RunRow
+		mergedBy string
+		want     bool
+	}{
+		"the owner's login on the row":         {RunRow{MergedBy: "the-owner", AutoMerge: true}, "wingman[bot]", false},
+		"a bot on the row":                     {RunRow{MergedBy: "wingman[bot]"}, "", true},
+		"no account, GitHub names a bot":       {RunRow{}, "wingman[bot]", true},
+		"no account, GitHub names the owner":   {RunRow{AutoMerge: true}, "the-owner", false},
+		"no account anywhere, marked eligible": {RunRow{AutoMerge: true}, "", true},
+		"no account anywhere, not eligible":    {RunRow{}, "", false},
+	} {
 		t.Run(name, func(t *testing.T) {
-			prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {
-				{Number: 7, Title: "a run's PR", Head: runBranch, MergedAt: mergedAt},
-				{Number: 9, Title: "reverts by hand", Body: "Reverts octo/scratch#7", MergedAt: mergedAt.Add(time.Hour)},
-			}}}
-			rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {
-				RunID: runOnBranch, MergedBy: mergedBy, Measured: mergedAt}}}
+			prs := &fakePullRequests{
+				closed: map[string][]ClosedPR{scratch: {
+					{Number: 7, Title: "a run's PR", Head: runBranch, MergedAt: mergedAt},
+					{Number: 9, Title: "reverts by hand", Body: "Reverts octo/scratch#7", MergedAt: mergedAt.Add(time.Hour)},
+				}},
+				pulls: map[int]ClosedPR{7: {Number: 7, MergedBy: tt.mergedBy}},
+			}
+			tt.row.RunID, tt.row.Measured = runOnBranch, mergedAt
+			rows := &fakeRewrites{rows: map[string]RunRow{runBranch: tt.row}}
 			deps, _ := rewriteDeps(prs, rows)
 			escapes := &fakeEscapes{}
 			deps.Escapes = escapes
 			if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
 				t.Fatal(err)
 			}
-			if len(escapes.escapes) != 0 {
-				t.Fatalf("escapes = %+v, want no latch from a merge that did not prove itself", escapes.escapes)
+			if got := len(escapes.escapes) == 1; got != tt.want {
+				t.Fatalf("escapes = %+v, want a latch = %v", escapes.escapes, tt.want)
 			}
 		})
 	}
 }
 
-// The escape recorder is optional: without one the revert still logs, records
-// nothing and fails at nothing.
-func TestEscapeNeedsARecorder(t *testing.T) {
+// A fix reference to a PR measured before the merge account was kept is told the
+// same way.
+func TestFixOfAMergeWithNoAccountOnItsRowIsToldByGitHub(t *testing.T) {
+	prs := &fakePullRequests{
+		closed: map[string][]ClosedPR{scratch: {
+			{Number: 20, Title: "fix the widget", Head: "wingman/FRG-1-999-1", Body: "Fixes: #7", MergedAt: mergedAt.Add(time.Hour)},
+		}},
+		pulls: map[int]ClosedPR{7: {Number: 7, MergedBy: "wingman[bot]"}},
+	}
+	rows := &fakeRewrites{prs: map[int]RunRow{7: {RunID: runOnBranch, Measured: mergedAt}}}
+	deps, _ := rewriteDeps(prs, rows)
+	escapes := &fakeEscapes{}
+	deps.Escapes = escapes
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	if len(escapes.escapes) != 1 || escapes.escapes[0].PR != 7 || escapes.escapes[0].Reason != EscapeFixed {
+		t.Fatalf("escapes = %+v, want PR 7 latched from \"Fixes: #7\"", escapes.escapes)
+	}
+}
+
+// The owner switching auto-merge on clears the latch, and the same revert is read
+// again on every poll: the PR the owner acknowledged must not latch a second time,
+// while one they have not seen still does.
+func TestAnAcknowledgedEscapeDoesNotLatchAgain(t *testing.T) {
+	prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {
+		{Number: 7, Title: "a run's PR", Head: runBranch, MergedAt: mergedAt},
+		{Number: 9, Title: "reverts by hand", Body: "Reverts octo/scratch#7", MergedAt: mergedAt.Add(time.Hour)},
+		{Number: 8, Title: "another run's PR", Head: "wingman/FRG-2-456-1", MergedAt: mergedAt},
+		{Number: 21, Title: "fix the other widget", Head: "wingman/FRG-2-999-1", Body: "Fixes #8", MergedAt: mergedAt.Add(3 * time.Hour)},
+	}}}
+	rows := &fakeRewrites{
+		rows: map[string]RunRow{runBranch: {RunID: runOnBranch, MergedBy: "wingman[bot]", Measured: mergedAt}},
+		prs:  map[int]RunRow{8: {RunID: "456", MergedBy: "wingman[bot]", Measured: mergedAt}},
+	}
+	deps, _ := rewriteDeps(prs, rows)
+	escapes := &fakeEscapes{cleared: []string{EscapeKey(scratch, 7)}}
+	deps.Escapes = escapes
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	if len(escapes.escapes) != 1 || escapes.escapes[0].PR != 8 {
+		t.Fatalf("escapes = %+v, want the cleared PR 7 skipped and the unseen PR 8 latched", escapes.escapes)
+	}
+}
+
+// A settled escape is not looked up at all: a latched one means nothing else can
+// latch, and a cleared PR's reference is read again on every poll.
+func TestASettledEscapeIsNotLookedUp(t *testing.T) {
+	for name, escapes := range map[string]*fakeEscapes{
+		"an escape latched":   {escapes: []MergeEscape{{Repo: scratch, PR: 3}}},
+		"the PR acknowledged": {cleared: []string{EscapeKey(scratch, 7)}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {
+				{Number: 20, Title: "fix the widget", Body: "Fixes #7", MergedAt: mergedAt.Add(time.Hour)},
+			}}}
+			rows := &fakeRewrites{}
+			deps, _ := rewriteDeps(prs, rows)
+			deps.Escapes = escapes
+			if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+				t.Fatal(err)
+			}
+			if rows.queries != 0 {
+				t.Fatalf("queries = %d, want no lookup for a settled escape", rows.queries)
+			}
+		})
+	}
+}
+
+// A state that cannot be read is reported and the escape is still looked for, so
+// a failed read never silences it.
+func TestUnreadEscapeStateIsReportedAndEscapesAreStillRecorded(t *testing.T) {
 	prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {
 		{Number: 7, Title: "a run's PR", Head: runBranch, MergedAt: mergedAt},
 		{Number: 9, Title: "reverts by hand", Body: "Reverts octo/scratch#7", MergedAt: mergedAt.Add(time.Hour)},
@@ -624,23 +718,28 @@ func TestEscapeNeedsARecorder(t *testing.T) {
 	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {
 		RunID: runOnBranch, MergedBy: "wingman[bot]", Measured: mergedAt}}}
 	deps, _ := rewriteDeps(prs, rows)
-	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
-		t.Fatalf("err = %v, want no recorder to record nothing", err)
+	escapes := &fakeEscapes{stateErr: errFirestore}
+	deps.Escapes = escapes
+	err := measureRewrites(context.Background(), deps, oneRepo)
+	if !errors.Is(err, errFirestore) || len(escapes.escapes) != 1 {
+		t.Fatalf("err = %v, escapes = %+v, want the failure reported and the revert recorded", err, escapes.escapes)
 	}
 }
 
-// A fix reference is not looked up at all while no recorder is wired.
-func TestFixEscapesAreSkippedWithoutARecorder(t *testing.T) {
-	prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {
-		{Number: 20, Title: "fix the widget", Body: "Fixes #7", MergedAt: mergedAt.Add(time.Hour)},
-	}}}
-	rows := &fakeRewrites{}
-	deps, _ := rewriteDeps(prs, rows)
-	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
-		t.Fatal(err)
+// A failed read of the reverted PR's merge is returned, so the poll retries
+// rather than reading the merge as the owner's.
+func TestRevertWhoseMergeAccountCannotBeReadIsReported(t *testing.T) {
+	prs := &fakePullRequests{
+		closed: map[string][]ClosedPR{scratch: {
+			{Number: 7, Title: "a run's PR", Head: runBranch, MergedAt: mergedAt},
+			{Number: 9, Title: "reverts by hand", Body: "Reverts octo/scratch#7", MergedAt: mergedAt.Add(time.Hour)},
+		}},
+		pullErr: errFirestore,
 	}
-	if rows.queries != 0 {
-		t.Fatalf("queries = %d, want no lookup without a recorder", rows.queries)
+	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch, Measured: mergedAt}}}
+	deps, _ := rewriteDeps(prs, rows)
+	if err := measureRewrites(context.Background(), deps, oneRepo); !errors.Is(err, errFirestore) {
+		t.Fatalf("err = %v, want the read failure returned", err)
 	}
 }
 

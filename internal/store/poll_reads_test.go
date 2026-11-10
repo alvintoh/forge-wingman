@@ -115,6 +115,7 @@ func pollReadDeps(q *Queue, openPRs int) dispatcher.Deps {
 		OpenPRs:      pollOpenPRs{count: openPRs},
 		PullRequests: pollPullRequests{},
 		Rewrites:     pollRewrites{},
+		Escapes:      pollEscapes{},
 		Checks:       dispatcher.ChecksDeps{Runs: pollChecksRuns{}, GitHub: pollChecksGitHub{}, Branch: "main"},
 		Workflow:     pollWorkflow{},
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -261,6 +262,17 @@ func (pollRewrites) Record(context.Context, string, dispatcher.Measured) error {
 }
 func (pollRewrites) Recent(context.Context, int) ([]dispatcher.Sample, error) {
 	return nil, nil
+}
+
+// pollEscapes records nothing: the polls here count the queue's reads.
+type pollEscapes struct{}
+
+func (pollEscapes) RecordEscape(context.Context, dispatcher.MergeEscape) (bool, error) {
+	return false, nil
+}
+
+func (pollEscapes) State(context.Context) (dispatcher.EscapeState, error) {
+	return dispatcher.EscapeState{}, nil
 }
 
 // pollChecksRuns lists no run awaiting a checks result.

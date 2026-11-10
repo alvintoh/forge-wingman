@@ -171,7 +171,10 @@ which must exist in the repository. A size-M or L run with no recorded plan is n
 labelled, and its PR body says so; a size-S run is labelled without one.
 `pr-review.yml` reviews every ready PR against its Linear ticket and, only when the review is clean, the PR carries that
 label and its head is still the commit it reviewed, requests a squash auto-merge
-pinned to that commit, and only on a run's `wingman/` branch. A push to that branch
+pinned to that commit, and only on a run's `wingman/` branch. `pr-review-post` first reads
+`dispatch/auto-merge` again and declines the request while the switch is off, an escaped PR holds
+it, or the document cannot be read, so its job needs the pr-review identity's credentials, the
+`GOOGLE_CLOUD_PROJECT` variable and read access to that document; without them it never requests a merge. A push to that branch
 removes the label and withdraws any request (`automerge-withdraw.yml`). The request is made only while `main` requires `go`
 and `web`.
 

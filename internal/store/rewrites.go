@@ -108,6 +108,7 @@ func runRow(snap *firestore.DocumentSnapshot) dispatcher.RunRow {
 		row.Measured = at
 	}
 	row.MergedBy = str(snap.Data(), mergedByField)
+	row.AutoMerge, _ = snap.Data()[autoMergeField].(bool)
 	return row
 }
 

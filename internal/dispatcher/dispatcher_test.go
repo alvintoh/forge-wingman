@@ -555,6 +555,7 @@ func pollDeps(source Source, q *fakeQueue, w *fakeWorkflow) Deps {
 		// merged PR to see does nothing with either.
 		PullRequests: &fakePullRequests{},
 		Rewrites:     &fakeRewrites{},
+		Escapes:      &fakeEscapes{},
 		Checks:       ChecksDeps{Runs: &fakeChecksRuns{}, GitHub: &fakeChecksGitHub{}, Branch: "main"},
 	}
 }
@@ -793,6 +794,7 @@ func TestPollNamesTheDependencyItWasNotGiven(t *testing.T) {
 		// The rewrite measurement's own reads.
 		"PullRequests": func(d *Deps) { d.PullRequests = nil },
 		"Rewrites":     func(d *Deps) { d.Rewrites = nil },
+		"Escapes":      func(d *Deps) { d.Escapes = nil },
 	}
 	for name, clear := range unset {
 		t.Run(name, func(t *testing.T) {

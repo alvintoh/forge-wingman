@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"time"
 
 	"cloud.google.com/go/firestore"
@@ -23,6 +24,7 @@ const (
 	escapedByField       = "escaped_by"
 	escapedReasonField   = "escaped_reason"
 	escapedAtField       = "escaped_at"
+	clearedEscapesField  = "cleared_escapes"
 )
 
 // The bar's own bounds and the value it takes while the owner has set none.
@@ -78,15 +80,17 @@ func (a *AutoMergeSwitches) Read(ctx context.Context) (AutoMergeSetting, error) 
 		return AutoMergeSetting{}, fmt.Errorf("reading the auto-merge settings: %w", err)
 	}
 	row := snap.Data()
-	// A document written by the escape latch alone carries no switch; absent is
-	// on, as no document is, while a stored value that is not a boolean is an
-	// error so a caller does not guess what it meant.
+	// A stored document always carries the switch: the writers materialise it
+	// when they create the document. One without it is a switch key lost or
+	// renamed, which reads as an error rather than as on.
 	if raw, stored := row[enabledField]; stored {
 		enabled, ok := raw.(bool)
 		if !ok {
 			return AutoMergeSetting{}, fmt.Errorf("reading the auto-merge settings: %q is not a boolean", enabledField)
 		}
 		out.Enabled = enabled
+	} else if len(row) > 0 {
+		return AutoMergeSetting{}, fmt.Errorf("reading the auto-merge settings: %q is missing from a stored document", enabledField)
 	}
 	if raw, stored := row[barField]; stored && raw != nil {
 		n, whole := wholeNumber(raw)
@@ -131,29 +135,91 @@ func escapedOf(row map[string]any) dispatcher.MergeEscape {
 	return e
 }
 
-// SetEnabled stores the switch, effective from the next pr-meta, and clears the
-// escape latch when it is switched on: the owner switching it on again is what
-// acknowledges the escaped PR.
-func (a *AutoMergeSwitches) SetEnabled(ctx context.Context, enabled bool, at time.Time) error {
-	write := map[string]any{enabledField: enabled, setAtField: at}
-	if enabled {
-		for _, field := range []string{escapedPRField, escapedRepoField, escapedByField, escapedReasonField, escapedAtField} {
-			write[field] = firestore.Delete
+// escapeSnapshot reads the stored document inside tx: its fields, and whether a
+// document exists at all.
+func (a *AutoMergeSwitches) escapeSnapshot(tx *firestore.Transaction) (map[string]any, bool, error) {
+	snap, err := tx.Get(a.doc())
+	if status.Code(err) == codes.NotFound {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return snap.Data(), true, nil
+}
+
+// clearedOf reads the escaped PRs the owner has acknowledged, as EscapeKey names them.
+func clearedOf(row map[string]any) []string {
+	list, _ := row[clearedEscapesField].([]any)
+	out := make([]string, 0, len(list))
+	for _, v := range list {
+		if key, ok := v.(string); ok {
+			out = append(out, key)
 		}
 	}
-	if _, err := a.doc().Set(ctx, write, firestore.MergeAll); err != nil {
+	return out
+}
+
+// State reads what the document holds about escapes: whether one is latched and
+// which escaped PRs the owner has acknowledged.
+func (a *AutoMergeSwitches) State(ctx context.Context) (dispatcher.EscapeState, error) {
+	snap, err := a.doc().Get(ctx)
+	if status.Code(err) == codes.NotFound {
+		return dispatcher.EscapeState{}, nil
+	}
+	if err != nil {
+		return dispatcher.EscapeState{}, fmt.Errorf("reading the escaped pull requests: %w", err)
+	}
+	row := snap.Data()
+	return dispatcher.EscapeState{Latched: escapedOf(row).PR > 0, Cleared: clearedOf(row)}, nil
+}
+
+// SetEnabled stores the switch, effective from the next pr-meta. Switching on
+// clears the escape latch and remembers the PR it named as acknowledged: the
+// owner switching it on again is what accepts that escape, and the same revert or
+// fix is read again on every poll, so without the memory it would latch again.
+func (a *AutoMergeSwitches) SetEnabled(ctx context.Context, enabled bool, at time.Time) error {
+	err := a.client.RunTransaction(ctx, func(_ context.Context, tx *firestore.Transaction) error {
+		write := map[string]any{enabledField: enabled, setAtField: at}
+		if enabled {
+			row, _, err := a.escapeSnapshot(tx)
+			if err != nil {
+				return err
+			}
+			if latched := escapedOf(row); latched.PR > 0 {
+				write[clearedEscapesField] = firestore.ArrayUnion(dispatcher.EscapeKey(latched.Repo, latched.PR))
+			}
+			for _, field := range []string{escapedPRField, escapedRepoField, escapedByField, escapedReasonField, escapedAtField} {
+				write[field] = firestore.Delete
+			}
+		}
+		return tx.Set(a.doc(), write, firestore.MergeAll)
+	})
+	if err != nil {
 		return fmt.Errorf("setting the auto-merge switch: %w", err)
 	}
 	return nil
 }
 
 // SetBar stores the bar the trailing rewrite rate is measured against, as a
-// percentage from 1 to 100, effective from the next pr-meta.
+// percentage from 1 to 100, effective from the next pr-meta. A document it
+// creates carries the switch at its default, on, so the settings stay readable.
 func (a *AutoMergeSwitches) SetBar(ctx context.Context, percent int, at time.Time) error {
 	if percent < MinBarPercent || percent > MaxBarPercent {
 		return fmt.Errorf("setting the auto-merge bar: %d is %w", percent, ErrBarNotInRange)
 	}
-	if _, err := a.doc().Set(ctx, map[string]any{barField: percent, setAtField: at}, firestore.MergeAll); err != nil {
+	err := a.client.RunTransaction(ctx, func(_ context.Context, tx *firestore.Transaction) error {
+		_, exists, err := a.escapeSnapshot(tx)
+		if err != nil {
+			return err
+		}
+		write := map[string]any{barField: percent, setAtField: at}
+		if !exists {
+			write[enabledField] = true
+		}
+		return tx.Set(a.doc(), write, firestore.MergeAll)
+	})
+	if err != nil {
 		return fmt.Errorf("setting the auto-merge bar: %w", err)
 	}
 	return nil
@@ -161,28 +227,31 @@ func (a *AutoMergeSwitches) SetBar(ctx context.Context, percent int, at time.Tim
 
 // RecordEscape records the escaped PR the latch names, reporting whether this is
 // the first record of it: the first escape holds auto-merge off until the owner
-// switches it on again, so a later one does not replace it.
+// switches it on again, so a later one does not replace it, and a PR the owner
+// has already acknowledged does not latch again.
 func (a *AutoMergeSwitches) RecordEscape(ctx context.Context, e dispatcher.MergeEscape) (bool, error) {
 	fresh := false
 	err := a.client.RunTransaction(ctx, func(_ context.Context, tx *firestore.Transaction) error {
 		fresh = false
-		snap, err := tx.Get(a.doc())
-		if err != nil && status.Code(err) != codes.NotFound {
+		row, exists, err := a.escapeSnapshot(tx)
+		if err != nil {
 			return err
 		}
-		if err == nil {
-			if pr, _ := snap.Data()[escapedPRField].(int64); pr > 0 {
-				return nil
-			}
+		if escapedOf(row).PR > 0 || slices.Contains(clearedOf(row), dispatcher.EscapeKey(e.Repo, e.PR)) {
+			return nil
 		}
 		fresh = true
-		return tx.Set(a.doc(), map[string]any{
+		write := map[string]any{
 			escapedPRField:     int64(e.PR),
 			escapedRepoField:   e.Repo,
 			escapedByField:     int64(e.By),
 			escapedReasonField: e.Reason,
 			escapedAtField:     e.At,
-		}, firestore.MergeAll)
+		}
+		if !exists {
+			write[enabledField] = true
+		}
+		return tx.Set(a.doc(), write, firestore.MergeAll)
 	})
 	if err != nil {
 		return false, fmt.Errorf("recording the escaped pull request: %w", err)
