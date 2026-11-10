@@ -539,12 +539,12 @@ func runPlanPhase(ctx context.Context, d BuildDeps, c BuildConfig, dir string, s
 	if err != nil {
 		return nil, nil, stopWith(OutcomeStopped, StopProjectionInvalid, err)
 	}
-	timeout, inBudget := roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now(), nfr1BuildBudget)
+	timeout, inBudget := roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now(), nfr1BuildBudget, 0)
 	if !inBudget {
 		return nil, nil, stopWith(OutcomeStopped, StopRunBudget, errors.New(stageBudgetSpent("build", nfr1BuildBudget)))
 	}
 	call := agentCall{Phase: PhasePlan, Round: 1, Model: c.PlanModels[0], Rules: planRules, Timeout: timeout}
-	text, session, round, err := runAgentInOrder(ctx, d, c, call, c.PlanModels, d.PlanAgent, dir, planPrompt, sum, sum.StartedAt, nfr1BuildBudget)
+	text, session, round, err := runAgentInOrder(ctx, d, c, call, c.PlanModels, d.PlanAgent, dir, planPrompt, sum, sum.StartedAt, nfr1BuildBudget, 0)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -553,7 +553,7 @@ func runPlanPhase(ctx context.Context, d BuildDeps, c BuildConfig, dir string, s
 		// A decision that broke a bound is the one plan artifact the model can
 		// be asked to correct: one more round in the same session, told which
 		// rule it broke, judged by the same re-check.
-		timeout, inBudget := roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now(), nfr1BuildBudget)
+		timeout, inBudget := roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now(), nfr1BuildBudget, 0)
 		if !inBudget {
 			return nil, nil, stopWith(OutcomeStopped, StopRunBudget, errors.New(stageBudgetSpent("build", nfr1BuildBudget)))
 		}
@@ -565,7 +565,7 @@ func runPlanPhase(ctx context.Context, d BuildDeps, c BuildConfig, dir string, s
 		correction := agentCall{Phase: PhasePlan, Round: round, Model: remaining[0], Session: session,
 			Rules: planRules, Timeout: timeout}
 		text, _, _, err = runAgentInOrder(ctx, d, c, correction, remaining, d.PlanAgent, dir,
-			planDecisionCorrectionPrompt(err), sum, sum.StartedAt, nfr1BuildBudget)
+			planDecisionCorrectionPrompt(err), sum, sum.StartedAt, nfr1BuildBudget, 0)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -838,18 +838,18 @@ func validateModelList(label string, models []string) error {
 // Once the order is exhausted it stops the build with the last failure's own
 // classification: OutcomeInfraFailure/StopModelUnavailable, or
 // OutcomeBudgetStop/StopAllowanceExhausted, neither of which names an escalation
-// tier. started and budget are the stage that owns the call's budget, so a
-// later attempt's deadline is recomputed from the time then left in that stage:
-// earlier attempts cannot stretch the stage past its own budget, and a
+// tier. started, budget and minStart are the stage that owns the call's budget,
+// so a later attempt's deadline is recomputed from the time then left in that
+// stage: earlier attempts cannot stretch the stage past its own budget, and a
 // substitution the stage no longer leaves time for is not attempted at all.
-func runAgentInOrder(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, models []string, agent Agent, dir, prompt string, sum *Summary, started time.Time, budget time.Duration) (text, session string, round int, err error) {
+func runAgentInOrder(ctx context.Context, d BuildDeps, c BuildConfig, call agentCall, models []string, agent Agent, dir, prompt string, sum *Summary, started time.Time, budget, minStart time.Duration) (text, session string, round int, err error) {
 	round = call.Round
 	var lastErr *StopError
 	for i, model := range models {
 		attempt := call
 		attempt.Model, attempt.Round = model, round
 		if i > 0 {
-			timeout, inBudget := roundTimeout(c.AgentTimeout, started, d.Now(), budget)
+			timeout, inBudget := roundTimeout(c.AgentTimeout, started, d.Now(), budget, minStart)
 			if !inBudget {
 				d.Logger.Info("modelSubstitutionSkipped", "phase", string(call.Phase), "reason", "budget")
 				break
