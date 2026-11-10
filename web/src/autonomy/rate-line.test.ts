@@ -53,6 +53,9 @@ describe("rateLine", () => {
       rateLine(state({ rate_allows: false, effective: false, reason: "too-few-measured" })),
     ).toContain("fewer than 10 PRs a human merged are measured");
     expect(
+      rateLine(state({ reason: "too-few-measured", window: 12, rate_allows: false })),
+    ).toContain("fewer than 12 PRs a human merged are measured");
+    expect(
       rateLine(state({ rate_allows: false, effective: false, reason: "no-agent-lines" })),
     ).toContain("the measured PRs carry no agent lines");
     expect(
