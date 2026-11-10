@@ -230,7 +230,8 @@ reviews anything: it replaces each added guard's condition with `false` and runs
 package's tests in the same image, so a guard no test covers becomes a finding the fix
 round has to answer. Every guard the diff adds is probed, one at a time with each file
 restored before the next, while the build stage's budget lasts; a scan the budget stops
-reports the guards it left in the PR's notes.
+reports the guards it left in the PR's notes. After a fix round, only the guards still
+open as findings and any the round added are probed again.
 
 Go's `go.mod` sets **`go 1.27`** (anything from 1.22 has the stdlib `ServeMux` routing the
 services use) and the **toolchain** that builds it; raise the toolchain deliberately.
