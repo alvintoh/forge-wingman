@@ -848,9 +848,16 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 			recordHold(ctx, d, cand, ConditionPrivateOptIn, budget)
 			continue
 		}
-		var goHeld string
+		var (
+			goWindow GoUsageWindow
+			goSpent  bool
+			goHeld   string
+		)
 		if tier.plan == GoUsagePlan {
-			goHeld = goUsageHeld(d.Now())
+			goWindow, goSpent = goUsageHeld(d.Now())
+		}
+		if goSpent {
+			goHeld = goWindow.Binding()
 		}
 		facts := Facts{Limits: limits, Tuning: c.Tuning.OrDefault(), History: history, ProviderHalted: halted(candPlan), BreakerTripped: tripped,
 			OpenPRs: reviewWIPFor(ctx, d, cand, prs), OpenPRsKnown: prs.known, Relations: relations[cand.RunID], Model: candModel,
@@ -869,8 +876,9 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 			// Another poll already claimed this row: not an admission matter.
 			continue
 		}
-		d.Logger.Info("runDeferred", "run", cand.RunID, "ceiling", binding)
-		res.Deferrals = append(res.Deferrals, Deferral{RunID: cand.RunID, Ceiling: binding, At: d.Now()})
+		ceiling, attrs := goUsageDeferral(binding, goWindow, goSpent)
+		d.Logger.Info("runDeferred", append([]any{"run", cand.RunID, "ceiling", ceiling}, attrs...)...)
+		res.Deferrals = append(res.Deferrals, Deferral{RunID: cand.RunID, Ceiling: ceiling, At: d.Now()})
 		recordHold(ctx, d, cand, binding, budget)
 		if !noticed[binding] {
 			choices := deferralChoices(budget, binding, tier.plan, c.LastResortPlans)

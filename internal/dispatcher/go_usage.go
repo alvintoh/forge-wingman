@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -62,11 +63,12 @@ type GoUsageWindow struct {
 	ResetsAt time.Time
 }
 
-// SpentBinding names the window withholding a run at at, empty when every
+// SpentWindow is the window withholding a run at at, and false when every
 // window has room: the window that frees last, since that is when the run can
 // start. A window whose reset has passed holds nothing, so a run is admitted on
-// the first poll after its window resets with no owner action.
-func (u GoUsage) SpentBinding(at time.Time) string {
+// the first poll after its window resets with no owner action. A status other
+// than rate-limited holds nothing by itself; the percent still decides.
+func (u GoUsage) SpentWindow(at time.Time) (GoUsageWindow, bool) {
 	var held *GoUsageWindow
 	for i := range u.Windows {
 		w := &u.Windows[i]
@@ -81,38 +83,74 @@ func (u GoUsage) SpentBinding(at time.Time) string {
 		}
 	}
 	if held == nil {
-		return ""
+		return GoUsageWindow{}, false
 	}
-	return CeilingGoUsage + " " + held.Name + " resets " + held.ResetsAt.UTC().Format(time.RFC3339)
+	return *held, true
+}
+
+// Binding is the words a run held on w waits on, naming the window and when it
+// resets, e.g. "go-usage week resets 2026-11-10T00:00:00Z".
+func (w GoUsageWindow) Binding() string {
+	return CeilingGoUsage + " " + w.Name + " resets " + w.resets()
+}
+
+func (w GoUsageWindow) resets() string {
+	return w.ResetsAt.UTC().Format(time.RFC3339)
+}
+
+// unknownStatuses lists each window whose status is neither ok nor
+// rate-limited as "<window>=<status>", empty when every status is known.
+func (u GoUsage) unknownStatuses() []string {
+	var out []string
+	for _, w := range u.Windows {
+		if w.Status != goUsageOKStatus && w.Status != GoUsageRateLimited {
+			out = append(out, w.Name+"="+w.Status)
+		}
+	}
+	return out
 }
 
 // newGoUsageHold is a poll's live OpenCode Go usage: the first candidate on
-// that plan reads it and every later one reuses the binding, so the route is
+// that plan reads it and every later one reuses the answer, so the route is
 // read at most once a poll. A read that fails, times out or comes back in an
 // unknown shape is logged once as goUsageNotRead and holds nothing, leaving the
 // plan's fixed limits to decide.
-func newGoUsageHold(ctx context.Context, d Deps) func(at time.Time) string {
+func newGoUsageHold(ctx context.Context, d Deps) func(at time.Time) (GoUsageWindow, bool) {
 	var (
-		read bool
-		held string
+		read  bool
+		usage GoUsage
 	)
-	return func(at time.Time) string {
+	return func(at time.Time) (GoUsageWindow, bool) {
 		if read {
-			return held
+			return usage.SpentWindow(at)
 		}
 		read = true
 		if d.GoUsage == nil {
 			d.Logger.Warn("goUsageNotRead", "err", "no usage reader configured")
-			return ""
+			return GoUsageWindow{}, false
 		}
-		usage, err := d.GoUsage.Read(ctx)
+		got, err := d.GoUsage.Read(ctx)
 		if err != nil {
 			d.Logger.Warn("goUsageNotRead", "err", err.Error())
-			return ""
+			return GoUsageWindow{}, false
 		}
-		held = usage.SpentBinding(at)
-		return held
+		usage = got
+		if unknown := usage.unknownStatuses(); len(unknown) > 0 {
+			d.Logger.Warn("goUsageStatusUnknown", "statuses", strings.Join(unknown, ","))
+		}
+		return usage.SpentWindow(at)
 	}
+}
+
+// goUsageDeferral is the ceiling a deferral on binding is counted under and
+// the log attributes it adds: a hold on the spent Go window counts under the
+// stable CeilingGoUsage, with the window and its reset as separate attributes,
+// so one log token groups every such hold whatever its reset time.
+func goUsageDeferral(binding string, held GoUsageWindow, spent bool) (string, []any) {
+	if !spent || binding != held.Binding() {
+		return binding, nil
+	}
+	return CeilingGoUsage, []any{"window", held.Name, "resets", held.resets()}
 }
 
 // GoUsageClient reads the plan's usage with the key Token yields: the same key
@@ -210,15 +248,13 @@ func parseGoUsage(body []byte) (GoUsage, error) {
 }
 
 // parseGoUsageWindow decodes one window, rejecting a shape carrying a value
-// admission could not act on.
+// admission could not act on. Any status string and a percent above 100
+// (overage) are accepted, since the percent alone can still hold a run.
 func parseGoUsageWindow(name string, doc *goUsageWindowDoc) (GoUsageWindow, error) {
 	if doc == nil || doc.Status == nil || doc.Percent == nil || doc.ResetsAt == nil {
 		return GoUsageWindow{}, fmt.Errorf("OpenCode Go usage has no complete %s window", name)
 	}
-	if *doc.Status != goUsageOKStatus && *doc.Status != GoUsageRateLimited {
-		return GoUsageWindow{}, fmt.Errorf("OpenCode Go usage reports the %s window as %q", name, *doc.Status)
-	}
-	if *doc.Percent < 0 || *doc.Percent > 100 {
+	if *doc.Percent < 0 {
 		return GoUsageWindow{}, fmt.Errorf("OpenCode Go usage reports the %s window at %v percent", name, *doc.Percent)
 	}
 	resetsAt, err := time.Parse(time.RFC3339, *doc.ResetsAt)

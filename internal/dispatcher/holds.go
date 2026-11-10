@@ -108,7 +108,7 @@ func holdReason(binding string, budget BudgetConfig) string {
 	case ConditionPrivateOptIn:
 		return HoldPrivateOptIn
 	}
-	if strings.HasPrefix(binding, CeilingGoUsage) {
+	if strings.HasPrefix(binding, CeilingGoUsage+" ") {
 		return HoldBudget
 	}
 	if budget.isProviderCeiling(binding) {

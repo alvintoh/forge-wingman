@@ -106,14 +106,6 @@ func TestGoUsageClientRefusesAShapeItCannotActOn(t *testing.T) {
 		{"no weekly window", `{"usage":{
 			"rolling":{"status":"ok","percent":42,"resetsAt":"2026-11-09T12:00:00Z"},
 			"monthly":{"status":"ok","percent":12,"resetsAt":"2026-12-01T00:00:00Z"}}}`},
-		{"a status the route has not carried", `{"usage":{
-			"rolling":{"status":"paused","percent":42,"resetsAt":"2026-11-09T12:00:00Z"},
-			"weekly":{"status":"ok","percent":30,"resetsAt":"2026-11-10T00:00:00Z"},
-			"monthly":{"status":"ok","percent":12,"resetsAt":"2026-12-01T00:00:00Z"}}}`},
-		{"a percent above 100", `{"usage":{
-			"rolling":{"status":"ok","percent":101,"resetsAt":"2026-11-09T12:00:00Z"},
-			"weekly":{"status":"ok","percent":30,"resetsAt":"2026-11-10T00:00:00Z"},
-			"monthly":{"status":"ok","percent":12,"resetsAt":"2026-12-01T00:00:00Z"}}}`},
 		{"a percent below 0", `{"usage":{
 			"rolling":{"status":"ok","percent":-1,"resetsAt":"2026-11-09T12:00:00Z"},
 			"weekly":{"status":"ok","percent":30,"resetsAt":"2026-11-10T00:00:00Z"},
@@ -138,6 +130,33 @@ func TestGoUsageClientRefusesAShapeItCannotActOn(t *testing.T) {
 				t.Fatal("Read accepted a shape admission cannot act on")
 			}
 		})
+	}
+}
+
+// A status the route has not carried and a percent past 100 are still read, so
+// at the spent moment the percent holds the run rather than the read failing
+// over to the fixed limits.
+func TestGoUsageClientReadsAnUnknownStatusAndAnOverage(t *testing.T) {
+	srv := goUsageServer(t, `{"usage":{
+		"rolling":{"status":"limited","percent":100,"resetsAt":"2026-11-09T12:00:00Z"},
+		"weekly":{"status":"ok","percent":130,"resetsAt":"2026-11-10T00:00:00Z"},
+		"monthly":{"status":"ok","percent":12,"resetsAt":"2026-12-01T00:00:00Z"}}}`, nil)
+	client := GoUsageClient{
+		Token:  func(context.Context) (string, error) { return "go-key", nil },
+		URL:    srv.URL,
+		Client: srv.Client(),
+	}
+	usage, err := client.Read(context.Background())
+	if err != nil {
+		t.Fatalf("Read refused a reading admission can act on: %v", err)
+	}
+	got := []GoUsageWindow{usage.Windows[0], usage.Windows[1]}
+	want := []GoUsageWindow{
+		{Name: "5h", Status: "limited", Percent: 100, ResetsAt: time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)},
+		{Name: "week", Status: goUsageOKStatus, Percent: 130, ResetsAt: time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("windows = %+v, want %+v", got, want)
 	}
 }
 
@@ -195,7 +214,7 @@ func TestGoUsageClientBoundsTheRead(t *testing.T) {
 	}
 }
 
-func TestGoUsageSpentBinding(t *testing.T) {
+func TestGoUsageSpentWindow(t *testing.T) {
 	at := time.Date(2026, 11, 9, 9, 0, 0, 0, time.UTC)
 	ok := func(name string, percent float64, resets time.Time) GoUsageWindow {
 		return GoUsageWindow{Name: name, Status: goUsageOKStatus, Percent: percent, ResetsAt: resets}
@@ -219,6 +238,16 @@ func TestGoUsageSpentBinding(t *testing.T) {
 			"go-usage 5h resets " + at.Add(time.Hour).Format(time.RFC3339),
 		},
 		{
+			"an unknown status below the threshold",
+			[]GoUsageWindow{{Name: "5h", Status: "limited", Percent: 40, ResetsAt: at.Add(time.Hour)}},
+			"",
+		},
+		{
+			"a window past 100 percent",
+			[]GoUsageWindow{ok("week", 130, at.Add(3*time.Hour))},
+			"go-usage week resets " + at.Add(3*time.Hour).Format(time.RFC3339),
+		},
+		{
 			"every window below the threshold",
 			[]GoUsageWindow{ok("5h", GoUsageHeldPercent-0.1, at.Add(time.Hour)), ok("week", 40, at.Add(3*time.Hour))},
 			"",
@@ -240,8 +269,12 @@ func TestGoUsageSpentBinding(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := (GoUsage{Windows: tt.windows}).SpentBinding(at); got != tt.want {
-				t.Fatalf("SpentBinding = %q, want %q", got, tt.want)
+			var got string
+			if w, spent := (GoUsage{Windows: tt.windows}).SpentWindow(at); spent {
+				got = w.Binding()
+			}
+			if got != tt.want {
+				t.Fatalf("held on %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -270,6 +303,11 @@ func TestHeldBeforeBudgetNamesTheSpentGoWindow(t *testing.T) {
 func TestHoldReasonCountsAGoUsageHoldAsABudget(t *testing.T) {
 	if got := holdReason(CeilingGoUsage+" week resets 2026-11-10T00:00:00Z", BudgetConfig{}); got != HoldBudget {
 		t.Fatalf("holdReason = %q, want %q", got, HoldBudget)
+	}
+	// Only the go-usage ceiling itself counts: a later name that merely starts
+	// with the same letters is not this hold.
+	if got := holdReason(CeilingGoUsage+"-cap", BudgetConfig{}); got != "" {
+		t.Fatalf("holdReason = %q for another ceiling, want none", got)
 	}
 }
 

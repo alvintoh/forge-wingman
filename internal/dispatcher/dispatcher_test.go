@@ -1272,22 +1272,62 @@ func TestPollHoldsRunsOnTheOpenCodeGoPlanWhileAWindowIsSpent(t *testing.T) {
 	d.GoUsage = reader
 	notices := &fakeNotices{}
 	d.Notices = notices
+	var logged bytes.Buffer
+	d.Logger = slog.New(slog.NewTextHandler(&logged, nil))
 	res, err := Poll(context.Background(), d, goPollConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "go-usage week resets " + reset.UTC().Format(time.RFC3339)
 	if len(q.claimed) != 0 || len(res.Dispatched) != 0 {
 		t.Fatalf("claimed %v and dispatched %q, want both runs held", q.claimed, res.Dispatched)
 	}
-	if got := deferredCeilings(res.Deferrals); !slices.Equal(got, []string{want, want}) {
-		t.Fatalf("deferrals named %v, want both on %q", got, want)
+	if got := deferredCeilings(res.Deferrals); !slices.Equal(got, []string{CeilingGoUsage, CeilingGoUsage}) {
+		t.Fatalf("deferrals named %v, want both on %q", got, CeilingGoUsage)
+	}
+	line := "ceiling=go-usage window=week resets=" + reset.UTC().Format(time.RFC3339)
+	if got := strings.Count(logged.String(), line); got != 2 {
+		t.Fatalf("logged %q %d times, want once per held run:\n%s", line, got, logged.String())
+	}
+	// waiting_on keeps the full words: the claim is handed the window and its
+	// reset, and the store records the binding it returns.
+	words := "go-usage week resets " + reset.UTC().Format(time.RFC3339)
+	for _, call := range q.tryClaims {
+		if call.facts.GoUsageHeld != words {
+			t.Fatalf("claim of %s was held on %q, want %q", call.runID, call.facts.GoUsageHeld, words)
+		}
 	}
 	if reader.reads != 1 {
 		t.Fatalf("the usage route was read %d times for %d runs, want once", reader.reads, len(q.candidates))
 	}
 	if len(notices.raised) != 0 {
 		t.Fatalf("raised %+v, want none: the binding carries its own reset time and needs no owner decision", notices.raised)
+	}
+}
+
+// A status the route has not carried is logged once per read, however many
+// runs the poll walks, and holds nothing by itself.
+func TestPollLogsAnUnknownGoUsageStatusOncePerRead(t *testing.T) {
+	reader := &fakeGoUsage{usage: GoUsage{Windows: []GoUsageWindow{
+		{Name: "5h", Status: "limited", Percent: 40, ResetsAt: pollAt.Add(time.Hour)},
+		{Name: "week", Status: goUsageOKStatus, Percent: 30, ResetsAt: pollAt.Add(3 * time.Hour)},
+	}}}
+	q := &fakeQueue{candidates: []Candidate{
+		{RunID: "FRG-18", Repo: "octo/scratch", Size: "S", Priority: 1},
+		{RunID: "FRG-19", Repo: "octo/scratch", Size: "S", Priority: 2},
+	}}
+	var logged bytes.Buffer
+	d := pollDeps(fakeSource{}, q, &fakeWorkflow{})
+	d.GoUsage = reader
+	d.Logger = slog.New(slog.NewTextHandler(&logged, nil))
+	res, err := Poll(context.Background(), d, goPollConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(res.Dispatched, []string{"FRG-18", "FRG-19"}) {
+		t.Fatalf("dispatched %q, want both runs admitted below the threshold", res.Dispatched)
+	}
+	if got := strings.Count(logged.String(), `msg=goUsageStatusUnknown statuses="5h=limited"`); got != 1 {
+		t.Fatalf("goUsageStatusUnknown logged %d times, want once:\n%s", got, logged.String())
 	}
 }
 
@@ -1380,9 +1420,8 @@ func TestPollHoldsABuildStageOnTheGoPlanWhileAWindowIsSpent(t *testing.T) {
 	if !slices.Equal(res.Dispatched, []string{"run-p"}) {
 		t.Fatalf("dispatched %q, want the run on the other plan admitted and the Go build held", res.Dispatched)
 	}
-	want := "go-usage week resets " + reset.UTC().Format(time.RFC3339)
-	if got := deferredCeilings(res.Deferrals); !slices.Equal(got, []string{want}) {
-		t.Fatalf("deferrals named %v, want the Go build held on %q", got, want)
+	if got := deferredCeilings(res.Deferrals); !slices.Equal(got, []string{CeilingGoUsage}) {
+		t.Fatalf("deferrals named %v, want the Go build held on %q", got, CeilingGoUsage)
 	}
 	if reader.reads != 1 {
 		t.Fatalf("the usage route was read %d times, want once", reader.reads)
