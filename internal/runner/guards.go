@@ -15,11 +15,6 @@ import (
 	"time"
 )
 
-// guardScanMax bounds how many guards one scan breaks and tests. Every probe
-// runs a package's whole test suite, so a diff adding more guards than this is
-// probed from the top and the rest are logged as untested.
-const guardScanMax = 5
-
 // guardProbeTimeout bounds one probe, under whatever the run's budget leaves:
 // one package's tests, with the module cache warm and the package built from
 // scratch inside the checks container.
@@ -60,43 +55,62 @@ func guardFinding(g guard) string {
 // host that the checks themselves keep off it. The scan is charged to the stage
 // that owns it — started and budget — so a scan with no package-test runner, or
 // one whose stage has spent its budget, probes nothing.
-func scanGuards(ctx context.Context, d BuildDeps, wt Worktree, started time.Time, budget time.Duration) ([]pendingFinding, error) {
+//
+// It breaks every guard the diff adds while that budget lasts, in the order
+// changedGuards returns them, skipping any whose key is in settled. untested is
+// how many it left when the budget ran out, zero for a scan that probed them
+// all. Every guard it does not report as a finding — covered, unprobeable, or
+// left untested — goes into settled, and every finding's key leaves it, so a
+// later scan sharing the set probes only the earlier findings and the guards
+// added since. Two guards in one file with the same header share a key, so a
+// finding keeps both probed. A nil settled skips and records nothing.
+func scanGuards(ctx context.Context, d BuildDeps, wt Worktree, started time.Time, budget time.Duration, settled map[string]bool) ([]pendingFinding, int, error) {
 	if d.PackageTests == nil {
-		return nil, nil
+		return nil, 0, nil
 	}
 	added, err := wt.PendingAddedLines(ctx)
 	if err != nil {
-		return nil, stopWith(OutcomeInfraFailure, StopChecksRun, err)
+		return nil, 0, stopWith(OutcomeInfraFailure, StopChecksRun, err)
 	}
-	guards := changedGuards(d.Logger, wt.Dir, added)
-	if len(guards) > guardScanMax {
-		d.Logger.Info("guardsUntested", "count", len(guards)-guardScanMax, "reason", "cap")
-		guards = guards[:guardScanMax]
-	}
+	guards := slices.DeleteFunc(changedGuards(d.Logger, wt.Dir, added), func(g guard) bool {
+		return settled[g.key()]
+	})
 	var findings []pendingFinding
+	var done []guard
+	var untested int
 	for i, g := range guards {
 		now := d.Now()
 		if !withinBudget(started, now, budget) {
-			d.Logger.Info("guardsUntested", "count", len(guards)-i, "reason", "budget")
+			untested = len(guards) - i
+			done = append(done, guards[i:]...)
 			break
 		}
 		uncovered, err := probeGuard(ctx, d, wt, g, budget-now.Sub(started))
 		if err != nil {
-			return nil, stopWith(OutcomeInfraFailure, StopChecksRun, err)
+			return nil, 0, stopWith(OutcomeInfraFailure, StopChecksRun, err)
 		}
 		if !uncovered {
+			done = append(done, g)
 			continue
 		}
 		findings = append(findings, pendingFinding{key: g.key(), text: guardFinding(g), stable: true})
 		d.Logger.Info("guardFinding", "file", g.file, "line", g.line)
 	}
-	return findings, nil
+	if settled != nil {
+		for _, g := range done {
+			settled[g.key()] = true
+		}
+		for _, f := range findings {
+			delete(settled, f.key)
+		}
+	}
+	return findings, untested, nil
 }
 
 // changedGuards is every guard the changed files add, in path order and then in
-// source order within a file, so a capped scan always probes the same ones. A
-// file it cannot read or parse — a deleted one, or one this run never wrote —
-// is skipped and logged.
+// source order within a file, so a scan stopped at its budget always probes the
+// same ones first. A file it cannot read or parse — a deleted one, or one this
+// run never wrote — is skipped and logged.
 func changedGuards(logger *slog.Logger, dir string, added map[string][]int) []guard {
 	files := make([]string, 0, len(added))
 	for name := range added {

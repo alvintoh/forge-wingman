@@ -181,7 +181,7 @@ func TestGuardScanReportsAGuardNoTestCovers(t *testing.T) {
 		return false, "", nil // every test passes: nothing covers the guard
 	})
 
-	findings, err := scanGuards(context.Background(), deps, w, sum.StartedAt, nfr1BuildBudget)
+	findings, _, err := scanGuards(context.Background(), deps, w, sum.StartedAt, nfr1BuildBudget, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestGuardScanLogsABreakThatDoesNotBuild(t *testing.T) {
 	})
 	deps.Logger = slog.New(slog.NewTextHandler(&logs, nil))
 
-	findings, err := scanGuards(context.Background(), deps, w, sum.StartedAt, nfr1BuildBudget)
+	findings, _, err := scanGuards(context.Background(), deps, w, sum.StartedAt, nfr1BuildBudget, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func TestGuardScanRestoresTheFileWhateverTheProbeAnswers(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			w := guardWorktree(t, "", guardedFile)
 			deps, sum := guardDeps(tt.tests)
-			findings, err := scanGuards(context.Background(), deps, w, sum.StartedAt, nfr1BuildBudget)
+			findings, _, err := scanGuards(context.Background(), deps, w, sum.StartedAt, nfr1BuildBudget, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -266,10 +266,14 @@ func TestGuardScanRestoresTheFileWhateverTheProbeAnswers(t *testing.T) {
 	}
 }
 
-func TestGuardScanProbesAtMostItsCap(t *testing.T) {
+// TestGuardScanProbesEveryGuardTheDiffAdds is AC1: no fixed count stops the
+// scan, so a diff adding more guards than the old cap probes every one of them
+// while the stage's budget lasts.
+func TestGuardScanProbesEveryGuardTheDiffAdds(t *testing.T) {
+	const guards = 12
 	var src strings.Builder
 	src.WriteString("package x\n")
-	for i := 0; i <= guardScanMax; i++ {
+	for i := range guards {
 		fmt.Fprintf(&src, "\nfunc f%d(err error) error {\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn nil\n}\n", i)
 	}
 	w := guardWorktree(t, "", src.String())
@@ -279,15 +283,141 @@ func TestGuardScanProbesAtMostItsCap(t *testing.T) {
 		return true, "", nil
 	})
 
-	findings, err := scanGuards(context.Background(), deps, w, sum.StartedAt, nfr1BuildBudget)
+	findings, untested, err := scanGuards(context.Background(), deps, w, sum.StartedAt, nfr1BuildBudget, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls != guardScanMax {
-		t.Fatalf("probed %d guards, want the cap of %d", calls, guardScanMax)
+	if calls != guards {
+		t.Fatalf("probed %d guards, want all %d the diff adds", calls, guards)
+	}
+	if untested != 0 {
+		t.Fatalf("untested = %d, want 0: the budget lasted for every guard", untested)
 	}
 	if len(findings) != 0 {
 		t.Fatalf("findings = %+v, want none: every probe was covered", findings)
+	}
+}
+
+// TestGuardScanProbesInPathThenSourceOrder is AC2: a scan stopped part-way
+// probes the same guards first for the same diff, so the order is the paths'
+// and then each file's own source order.
+func TestGuardScanProbesInPathThenSourceOrder(t *testing.T) {
+	const first = "package x\n\nfunc a1(err error) error {\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn nil\n}\n\nfunc a2(err error) error {\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn nil\n}\n"
+	const second = "package x\n\nfunc b1(err error) error {\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn nil\n}\n\nfunc b2(err error) error {\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn nil\n}\n"
+	w := guardWorktree(t, "", "")
+	for name, src := range map[string]string{"b.go": second, "a.go": first} {
+		if err := os.WriteFile(filepath.Join(w.Dir, name), []byte(src), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var probed []string
+	deps, sum := guardDeps(func(_ context.Context, dir, _ string) (bool, string, error) {
+		for _, name := range []string{"a.go", "b.go"} {
+			body, err := os.ReadFile(filepath.Join(dir, name))
+			if err != nil {
+				return false, "", err
+			}
+			if i := strings.Index(string(body), "false && ("); i >= 0 {
+				line := strings.Count(string(body[:i]), "\n") + 1
+				probed = append(probed, fmt.Sprintf("%s:%d", name, line))
+				break
+			}
+		}
+		return true, "", nil
+	})
+
+	if _, _, err := scanGuards(context.Background(), deps, w, sum.StartedAt, nfr1BuildBudget, nil); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"a.go:4", "a.go:11", "b.go:4", "b.go:11"}; !slices.Equal(probed, want) {
+		t.Fatalf("probed %v, want %v: path order, then each file's own source order", probed, want)
+	}
+}
+
+// TestGuardScanStopsOnBudgetAndCountsTheGuardsItLeft is AC3: the scan stops
+// when the stage's budget runs out and reports how many guards it left; the
+// run logs that count once, after the build stage's scan.
+func TestGuardScanStopsOnBudgetAndCountsTheGuardsItLeft(t *testing.T) {
+	const guards = 3
+	var src strings.Builder
+	src.WriteString("package x\n")
+	for i := range guards {
+		fmt.Fprintf(&src, "\nfunc f%d(err error) error {\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn nil\n}\n", i)
+	}
+	w := guardWorktree(t, "", src.String())
+	now := time.Now()
+	calls := 0
+	deps := BuildDeps{
+		// Each probe spends half the stage's budget, so the scan reaches two
+		// of the three guards and the third finds the budget spent.
+		PackageTests: func(context.Context, string, string) (bool, string, error) {
+			calls++
+			now = now.Add(nfr1BuildBudget / 2)
+			return true, "", nil
+		},
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Now:    func() time.Time { return now },
+	}
+
+	findings, untested, err := scanGuards(context.Background(), deps, w, now, nfr1BuildBudget, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("probed %d guards, want the 2 the budget lasted for", calls)
+	}
+	if untested != 1 {
+		t.Fatalf("untested = %d, want the 1 guard the budget left", untested)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("findings = %+v, want none: every probe was covered", findings)
+	}
+}
+
+// TestGuardScanSkipsSettledGuardsAndSettlesAllButFindings covers the set a
+// later scan shares: a covered guard and one the budget left are settled and
+// not probed again, while a finding stays unsettled so the next scan
+// re-probes it.
+func TestGuardScanSkipsSettledGuardsAndSettlesAllButFindings(t *testing.T) {
+	const guards = 3
+	var src strings.Builder
+	src.WriteString("package x\n")
+	for i := range guards {
+		fmt.Fprintf(&src, "\nfunc f%d(e%d error) error {\n\tif e%d != nil {\n\t\treturn e%d\n\t}\n\treturn nil\n}\n", i, i, i, i)
+	}
+	w := guardWorktree(t, "", src.String())
+	now := time.Now()
+	calls := 0
+	deps := BuildDeps{
+		// The first probe finds the guard uncovered, the second covered, and
+		// together they spend the budget, so the third guard is left.
+		PackageTests: func(context.Context, string, string) (bool, string, error) {
+			calls++
+			now = now.Add(nfr1BuildBudget / 2)
+			return calls > 1, "", nil
+		},
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Now:    func() time.Time { return now },
+	}
+	settled := make(map[string]bool)
+
+	findings, untested, err := scanGuards(context.Background(), deps, w, now, nfr1BuildBudget, settled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 1 || untested != 1 || len(settled) != 2 {
+		t.Fatalf("findings = %+v, untested = %d, settled = %d, want 1 finding, 1 untested, 2 settled", findings, untested, len(settled))
+	}
+	if settled[findings[0].key] {
+		t.Fatalf("settled = %v, want the finding left unsettled so a later scan re-probes it", settled)
+	}
+
+	calls = 0
+	if _, _, err := scanGuards(context.Background(), deps, w, now, nfr1BuildBudget*4, settled); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("second scan probed %d guards, want only the earlier finding", calls)
 	}
 }
 
@@ -300,12 +430,15 @@ func TestGuardScanProbesNothingOnceTheBudgetIsSpent(t *testing.T) {
 	})
 	sum.StartedAt = time.Now().Add(-nfr1BuildBudget - time.Minute)
 
-	findings, err := scanGuards(context.Background(), deps, w, sum.StartedAt, nfr1BuildBudget)
+	findings, untested, err := scanGuards(context.Background(), deps, w, sum.StartedAt, nfr1BuildBudget, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if calls != 0 || len(findings) != 0 {
 		t.Fatalf("probed %d guards and found %+v, want neither: the budget was spent", calls, findings)
+	}
+	if untested != 1 {
+		t.Fatalf("untested = %d, want the 1 guard the diff adds", untested)
 	}
 }
 
@@ -323,11 +456,33 @@ func TestGuardScanReadsOnlyAddedLinesAndSourceFiles(t *testing.T) {
 		return false, "", nil
 	})
 
-	findings, err := scanGuards(context.Background(), deps, w, sum.StartedAt, nfr1BuildBudget)
+	findings, _, err := scanGuards(context.Background(), deps, w, sum.StartedAt, nfr1BuildBudget, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if calls != 0 || len(findings) != 0 {
 		t.Fatalf("probed %d guards and found %+v, want neither: nothing the diff added is a guard", calls, findings)
+	}
+}
+
+// TestGuardScanKeepsAFindingsKeyUnsettledWhenAnotherGuardSharesIt covers two
+// guards in one file with the same header, which share a key: one covered must
+// not settle the other's finding, or the re-scan would never re-probe it.
+func TestGuardScanKeepsAFindingsKeyUnsettledWhenAnotherGuardSharesIt(t *testing.T) {
+	const src = "package x\n\nfunc a(err error) error {\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn nil\n}\n\nfunc b(err error) error {\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn nil\n}\n"
+	w := guardWorktree(t, "", src)
+	calls := 0
+	deps, sum := guardDeps(func(context.Context, string, string) (bool, string, error) {
+		calls++
+		return calls > 1, "", nil // the first guard is uncovered, the second covered
+	})
+	settled := make(map[string]bool)
+
+	findings, _, err := scanGuards(context.Background(), deps, w, sum.StartedAt, nfr1BuildBudget, settled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 1 || settled[findings[0].key] {
+		t.Fatalf("findings = %+v, settled = %v, want the finding's shared key left unsettled", findings, settled)
 	}
 }

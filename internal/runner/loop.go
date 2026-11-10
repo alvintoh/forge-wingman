@@ -460,7 +460,7 @@ func reviewRows(rounds []fixRoundResult) []ReviewFinding {
 			rows = append(rows, ReviewFinding{Finding: f.text, Resolution: res})
 		}
 	}
-	return capFindings(rows)
+	return rows
 }
 
 // runReview runs the pre-PR loop (FR-28) once the checks have passed: the
@@ -495,9 +495,14 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 	// The guard scan is charged to the build stage: it probes the diff the
 	// review reads, so it stops once the build's budget is spent and its time
 	// stays outside the review's own budget, which begins below.
-	guards, err := scanGuards(ctx, d, wt, sum.StartedAt, nfr1BuildBudget)
+	settled := make(map[string]bool)
+	guards, untested, err := scanGuards(ctx, d, wt, sum.StartedAt, nfr1BuildBudget, settled)
 	if err != nil {
 		return false, "", err
+	}
+	if untested > 0 {
+		d.Logger.Info("guardsUntested", "count", untested, "reason", "budget")
+		sum.GuardsUntested = untested
 	}
 	reviewStarted := d.Now()
 	// The review's budget begins here, so its first pass takes the stage's own
@@ -552,19 +557,20 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 			checksDetail = "checks: " + gate + " failing after the fix round\n\n" + truncate(output, checkFeedbackLimit)
 		}
 
-		// The post-fix scan is charged to the review stage, and each probe is
-		// itself bounded by what the review's budget leaves, so the guards cannot
-		// spend the time the re-review needs. Both re-checks then run under the
-		// one gate below: a finding is open, or fixed, only once its own re-check
+		// The post-fix scan is charged to the review stage and probes only the
+		// guards still open as findings and those a fix round added: a guard an
+		// earlier scan settled is not probed again, so the re-review's time goes
+		// to what the fix round changed. Both re-checks then run under the one
+		// gate below: a finding is open, or fixed, only once its own re-check
 		// has said so.
-		surviving, err := scanGuards(ctx, d, wt, reviewStarted, nfr1ReviewBudget)
+		surviving, _, err := scanGuards(ctx, d, wt, reviewStarted, nfr1ReviewBudget, settled)
 		if err != nil {
 			return false, "", err
 		}
 		recheckTimeout, inBudget := roundTimeout(c.AgentTimeout, reviewStarted, d.Now(), nfr1ReviewBudget)
 		if !inBudget {
 			rounds = append(rounds, fixRoundResult{round: round, issued: findings})
-			sum.ReviewFindings = reviewRows(rounds)
+			sum.setReviewFindings(reviewRows(rounds))
 			return false, detailParts("findings addressed by a fix round, not re-reviewed: "+
 				text+" ("+stageBudgetSpent("review", nfr1ReviewBudget)+")", checksDetail), nil
 		}
@@ -575,16 +581,16 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 		open := append(surviving, reviewPending(remaining)...)
 		rounds = append(rounds, fixRoundResult{round: round, issued: findings, open: open, rechecked: true})
 		if len(open) == 0 {
-			sum.ReviewFindings = reviewRows(rounds)
+			sum.setReviewFindings(reviewRows(rounds))
 			return checksDetail == "", checksDetail, nil
 		}
 		findings = open
 	}
 	if len(rounds) == 0 {
 		// The budget left no round at all: nothing was done about the findings.
-		sum.ReviewFindings = capFindings(resolveFindings(pending, nil, noFixRound, false))
+		sum.setReviewFindings(resolveFindings(pending, nil, noFixRound, false))
 		return false, "findings open: " + findingsText(pending) + " (fix round skipped: " + stageBudgetSpent("review", nfr1ReviewBudget) + ")", nil
 	}
-	sum.ReviewFindings = reviewRows(rounds)
+	sum.setReviewFindings(reviewRows(rounds))
 	return false, detailParts("findings open: "+findingsText(findings), checksDetail), nil
 }
