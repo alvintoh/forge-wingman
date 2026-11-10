@@ -371,6 +371,12 @@ func holdingRate(d dispatcher.AutoMergeDecision, barPercent int) autoMergeHold {
 		return autoMergeHold{runner.WaitRateUnread,
 			"the trailing rewrite rate cannot be computed: the measured merges could not be read"}
 	}
+	// A reason this does not know holds, unless the decision says the rate is within
+	// the bar: a new reason must not release auto-merge by being unhandled.
+	if !d.WithinBar {
+		return autoMergeHold{runner.WaitRateUnread,
+			"the trailing rewrite rate cannot be computed: its verdict was not one this build reads"}
+	}
 	return autoMergeHold{}
 }
 

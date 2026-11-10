@@ -16,11 +16,13 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"cloud.google.com/go/firestore"
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 	"github.com/alvintoh/forge-wingman/internal/linear"
 	"github.com/alvintoh/forge-wingman/internal/runner"
+	"github.com/alvintoh/forge-wingman/internal/store"
 )
 
 const (
@@ -237,11 +239,56 @@ func readCapped(path string) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(f, maxPRReviewArtifactBytes+1))
 }
 
+// autoMergeSettings reads the owner's auto-merge settings.
+type autoMergeSettings func(ctx context.Context) (store.AutoMergeSetting, error)
+
+// storedAutoMergeSettings reads the settings from Firestore with the job's own
+// credentials, opening the client for the one read: only a clean review of an
+// eligible PR gets here.
+func storedAutoMergeSettings(getenv func(string) string) autoMergeSettings {
+	return func(ctx context.Context) (store.AutoMergeSetting, error) {
+		project := getenv("GOOGLE_CLOUD_PROJECT")
+		if project == "" {
+			return store.AutoMergeSetting{}, errors.New("missing environment: GOOGLE_CLOUD_PROJECT")
+		}
+		fsc, err := firestore.NewClient(ctx, project)
+		if err != nil {
+			return store.AutoMergeSetting{}, fmt.Errorf("firestore client: %w", err)
+		}
+		defer func() { _ = fsc.Close() }()
+		return store.NewAutoMergeSwitches(fsc).Read(ctx)
+	}
+}
+
+// mergeHold is why a clean review must not request the merge, as a stable reason
+// and the words for it; the reason is empty when the owner's switch is on and no
+// escaped PR holds it. Settings that cannot be read hold: eligibility was decided
+// at pr-meta, and this is the last look before the request.
+func mergeHold(ctx context.Context, read autoMergeSettings) (reason, detail string) {
+	setting, err := read(ctx)
+	switch {
+	case err != nil:
+		return "settings-unread", err.Error()
+	case !setting.Enabled:
+		return dispatcher.AutoMergeReasonSwitchOff, "the owner's auto-merge switch is off"
+	case setting.Escaped.PR > 0:
+		return dispatcher.AutoMergeReasonEscaped, setting.Escaped.Words()
+	}
+	return "", ""
+}
+
 // prReviewPost publishes a review: one marked comment, created or edited, and
 // the wingman-review status on the reviewed sha. It writes merge=true only when
 // the review is clean, the pull request is a run's, labelled eligible, open,
-// not a draft, and its head is still the reviewed sha.
+// not a draft, its head is still the reviewed sha, and the owner's switch is
+// still on with no escaped PR holding it.
 func prReviewPost(ctx context.Context, logger *slog.Logger, getenv func(string) string, args []string) error {
+	return prReviewPostWith(ctx, logger, getenv, storedAutoMergeSettings(getenv), args)
+}
+
+// prReviewPostWith is prReviewPost with settings reading the owner's auto-merge
+// settings.
+func prReviewPostWith(ctx context.Context, logger *slog.Logger, getenv func(string) string, settings autoMergeSettings, args []string) error {
 	fs := flag.NewFlagSet("pr-review-post", flag.ContinueOnError)
 	number := fs.Int("pr", 0, "the reviewed pull request")
 	sha := fs.String("reviewed-sha", "", "the head sha the review read")
@@ -280,6 +327,17 @@ func prReviewPost(ctx context.Context, logger *slog.Logger, getenv func(string) 
 			return err
 		}
 		merge = mergeReady(p, *sha)
+	}
+	if merge {
+		// The eligibility label was set when the PR opened, and the review took
+		// minutes: a switch turned off or an escape latched since must still stop it.
+		readCtx, cancel := context.WithTimeout(ctx, prReviewRequestTimeout)
+		reason, detail := mergeHold(readCtx, settings)
+		cancel()
+		if reason != "" {
+			merge = false
+			logger.Warn("prReviewMergeDeclined", "pr", *number, "reason", reason, "detail", detail)
+		}
 	}
 	logger.Info("prReviewPosted", "pr", *number, "state", post.status.State, "merge", merge)
 	return writeOutputs(getenv("GITHUB_OUTPUT"), map[string]string{"merge": strconv.FormatBool(merge)})

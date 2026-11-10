@@ -344,6 +344,10 @@ func TestHoldingRateNamesEveryRateThatCannotBeUsed(t *testing.T) {
 			dispatcher.AutoMergeDecision{Reason: dispatcher.AutoMergeReasonEvidenceUnread},
 			runner.WaitRateUnread, "could not be read",
 		},
+		"a reason this build does not know": {
+			dispatcher.AutoMergeDecision{Reason: "reason-from-a-later-build", PRs: 10, Rate: 0.1},
+			runner.WaitRateUnread, "not one this build reads",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			hold := holdingRate(tt.decision, 20)
