@@ -456,7 +456,7 @@ func TestPRReviewWorkflow(t *testing.T) {
 	for job, want := range map[string]string{
 		"context": "    permissions:\n      id-token: write\n      pull-requests: read\n    outputs:",
 		"review":  "    permissions: {}\n",
-		"post":    "    permissions:\n      pull-requests: write\n      statuses: write\n    steps:",
+		"post":    "    permissions:\n      id-token: write\n      pull-requests: write\n      statuses: write\n    steps:",
 	} {
 		if !strings.Contains(jobs[job], want) {
 			t.Errorf("the %s job's permissions are not %q", job, want)
@@ -481,6 +481,11 @@ func TestPRReviewWorkflow(t *testing.T) {
 		`any(. == "go") and any(. == "web")`,
 		`gh pr merge "$PR" --auto --squash --match-head-commit "$REVIEWED_SHA"`,
 		"GH_TOKEN: ${{ steps.app-token.outputs.token }}",
+		// The settings re-read signs in as the pr-review identity, and a failed sign-in must not
+		// stop the review being posted.
+		"google-github-actions/auth@",
+		"service_account: ${{ vars.GCP_PR_REVIEW_SERVICE_ACCOUNT }}",
+		"GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}",
 	} {
 		if !strings.Contains(jobs["post"], want) {
 			t.Errorf("the post job lacks %q", want)
