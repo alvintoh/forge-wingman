@@ -116,6 +116,14 @@ this file as project memory, so the rules below reach the run.
   block the other on it. *(Judgment call, owner's instruction 2026-11-06, after FRG-297 grounded at
   12 files and was split into FRG-297 and FRG-298.)*
 
+- **Edit a ticket before delegating it: a claimed run never re-reads it.** The run copies the
+  ticket's title and description onto its run row at claim, and the plan and build read that copy,
+  so an edit made after the claim changes Linear and nothing else (the surface shows the stale
+  copy). To change a delegated ticket mid-run, cancel the run's workflow (`gh run cancel`), wait
+  for the row to read `stopped`, then `runner requeue`; the next poll refreshes the copy.
+  *(Judgment call. Verified 2026-11-10 on FRG-319: a 10% to 20% edit never reached the plan
+  already running; FRG-317 will make the runner flag such a change.)*
+
 ## Fixing a runner PR: add commits, never rewrite the agent's
 
 Fix a runner PR with new commits on top, each with `Rework: review-found` or `Rework: owner-change`
