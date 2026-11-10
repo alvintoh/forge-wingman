@@ -273,7 +273,7 @@ schedule can only start the job.
 
 | Service account | Grants |
 |---|---|
-| `dispatcher` | Firestore read/write on the queue, read both tokens and `notice-webhook-url` |
+| `dispatcher` | Firestore read/write on the queue, read `github-token`, `opencode-api-key` and `notice-webhook-url` |
 | `dispatcher-schedule` | start one execution of the `forge-wingman-dispatcher` job |
 
 Three variables name what OpenTofu cannot guess, and a fourth is optional:
@@ -350,6 +350,17 @@ business and not a redeploy's.
 
 ```sh
 printf %s "$GITHUB_TOKEN" | gcloud secrets versions add github-token --data-file=-
+```
+
+The apply also creates `opencode-api-key` with no value in it: admission reads
+the OpenCode Go plan's live usage windows with that key before it starts a run
+on the plan, so a window already spent by interactive use holds the run rather
+than being discovered by a failed call. Set it to the same value as the
+repository's `OPENCODE_API_KEY` secret; unset, the read logs `goUsageNotRead`
+and admission falls back to the plan's fixed limits.
+
+```sh
+printf %s "$OPENCODE_API_KEY" | gcloud secrets versions add opencode-api-key --data-file=-
 ```
 
 The GitHub token also needs two permissions on every listed repository.

@@ -119,6 +119,10 @@ func postNotices(ctx context.Context, d Deps) error {
 // window, reporting whether it raised one; detail is the notice's detail. A
 // run with no issue link raises none, since a notice carries one. A failed read
 // or write is logged, and the next poll asks again.
+//
+// A hold from a plan's live usage raises none: its binding carries the window's
+// reset time, so the run row already says what a notice would, and the run
+// resumes on the first poll after that reset with nothing for the owner to do.
 func noticeDeferral(ctx context.Context, d Deps, cfg BudgetConfig, model string, estimate Reservation, ceiling, link, detail string, history HistoryLoader) bool {
 	at := d.Now()
 	start, ok := cfg.ceilingStart(ceiling, at)

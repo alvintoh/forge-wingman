@@ -4,14 +4,15 @@
 // ones it can build, and dispatches the queued runs admission lets start, in
 // priority order, each into the repository its ticket names. Everything it
 // holds is a reference to a value provisioned with the job: the Linear app's
-// client credentials and the GitHub token are read from Secret Manager as the
-// run starts, and the allowlist a ticket's repo: label must name is read from
-// the owner database. Each poll mints its own Linear token and revokes it as
-// the poll ends.
+// client credentials, the GitHub token and the OpenCode Go key admission reads
+// the plan's live usage with are read from Secret Manager as the run starts,
+// and the allowlist a ticket's repo: label must name is read from the owner
+// database. Each poll mints its own Linear token and revokes it as the poll
+// ends.
 //
 // The job runs under its own service account, holds the store, the Linear
-// credentials, the GitHub token and the notice webhook, and holds nothing that
-// reaches a repository.
+// credentials, the GitHub token, the OpenCode Go key and the notice webhook,
+// and holds nothing that reaches a repository.
 package main
 
 import (
@@ -50,6 +51,10 @@ const (
 	// noticeWebhookSecret names the Slack webhook notices are posted to, read
 	// only when a notice is waiting.
 	noticeWebhookSecret = "notice-webhook-url"
+	// goUsageKeySecret names the Secret Manager secret holding the OpenCode Go
+	// key the live usage read authenticates with: the same key the runner's
+	// model calls bill against, so the windows it reports are the runs' own.
+	goUsageKeySecret = "opencode-api-key"
 	// requestTimeout bounds one call to Linear or GitHub, so a poll cannot sit
 	// on a hung connection until Cloud Run's own deadline.
 	requestTimeout = 30 * time.Second
@@ -317,6 +322,12 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		Estimator:  store.NewEstimates(fsc),
 		Visibility: gh,
 		Providers:  store.NewProviders(fsc),
+		// Admission reads the OpenCode Go plan's live windows with the key the
+		// runs bill against, held in Secret Manager rather than the environment.
+		GoUsage: dispatcher.GoUsageClient{
+			Token:  func(ctx context.Context) (string, error) { return secrets.Token(ctx, goUsageKeySecret) },
+			Client: client,
+		},
 		Breaker:    store.NewBreaker(fsc),
 		Phases:     store.NewPhases(owner),
 		PeakModes:  store.NewPeakModes(fsc),

@@ -1208,6 +1208,39 @@ func TestTryClaimDefersARunTheProviderWindowWouldBreach(t *testing.T) {
 	}
 }
 
+// TestTryClaimRecordsTheGoUsageWindowARunWaitsOn asserts the live-usage hold
+// reaches the row: waiting_on names the window the run is held on and its reset
+// time, which is what the owner reads to know when it will start.
+func TestTryClaimRecordsTheGoUsageWindowARunWaitsOn(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	run := queuedRun(fresh("queue-defer-go-usage"), 1)
+	forget(t, client, run.RunID)
+	resetLedger(t, client, 1)
+	if err := q.Enqueue(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	facts := openFacts
+	facts.GoUsageHeld = "go-usage week resets 2026-10-04T09:15:00Z"
+	ok, binding, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, facts, dispatcher.Reservation{ProviderCost: money.Dollar})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok || binding != facts.GoUsageHeld {
+		t.Fatalf("ok = %v, binding = %q, want deferred on %q", ok, binding, facts.GoUsageHeld)
+	}
+	snap, err := client.Collection(runsCollection).Doc(run.RunID).Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Data()[stateField] != stateQueued {
+		t.Fatalf("a held run's state = %v, want it to stay queued", snap.Data()[stateField])
+	}
+	if got := snap.Data()[waitingOnField]; got != facts.GoUsageHeld {
+		t.Fatalf("waiting on %v, want the window and its reset time recorded", got)
+	}
+}
+
 // TestTryClaimDefersARunTheModelsOwnCapWouldBreach asserts the plan's per-model
 // cap binds beside its windows: the plan's month window has room for
 // the estimate, but the run's model has spent its own cap.

@@ -190,10 +190,13 @@ type Deps struct {
 	Estimator    Estimator
 	Visibility   RepoVisibility
 	Providers    ProviderHalts
-	Breaker      Breaker
-	Phases       Phases
-	PeakModes    PeakModes
-	OpenPRs      OpenPRCounter
+	// GoUsage is optional: left unset, admission holds nothing on the OpenCode
+	// Go plan's live windows and logs goUsageNotRead.
+	GoUsage   GoUsageReader
+	Breaker   Breaker
+	Phases    Phases
+	PeakModes PeakModes
+	OpenPRs   OpenPRCounter
 	// PullRequests reads the merged run PRs the rewrite rate is measured from,
 	// and Rewrites records each measurement on its run row and reads the samples
 	// the rate is read over.
@@ -727,7 +730,8 @@ func claimStage(cand Candidate, twoStage bool) string {
 // rather than once per candidate: a backlog costs the poll one read of the
 // history and one estimate of each size it holds, however many candidates are
 // queued (AC1), and a walk whose candidates a non-budget limit withholds reads
-// no history at all (AC5).
+// no history at all (AC5). The OpenCode Go plan's live usage is read at most
+// once too, and only when a candidate's tier is that plan.
 func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Relations, links map[string]string, res *Result, history HistoryLoader, prs openPRCount) ([]Claim, error) {
 	candidates, err := d.Queue.Candidates(ctx)
 	if err != nil {
@@ -793,6 +797,9 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		optIns[plan] = v
 		return v
 	}
+	// The plan's live usage is read at most once in the walk, and only when a
+	// candidate's own tier is that plan.
+	goUsageHeld := newGoUsageHold(ctx, d)
 	var claims []Claim
 	noticed := map[string]bool{}
 	for _, cand := range candidates {
@@ -841,9 +848,20 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 			recordHold(ctx, d, cand, ConditionPrivateOptIn, budget)
 			continue
 		}
+		var (
+			goWindow GoUsageWindow
+			goSpent  bool
+			goHeld   string
+		)
+		if tier.plan == GoUsagePlan {
+			goWindow, goSpent = goUsageHeld(d.Now())
+		}
+		if goSpent {
+			goHeld = goWindow.Binding()
+		}
 		facts := Facts{Limits: limits, Tuning: c.Tuning.OrDefault(), History: history, ProviderHalted: halted(candPlan), BreakerTripped: tripped,
 			OpenPRs: reviewWIPFor(ctx, d, cand, prs), OpenPRsKnown: prs.known, Relations: relations[cand.RunID], Model: candModel,
-			PeakHeld: PeakHeld(mode, candModel, d.Now(), est.Minutes), DecisionMode: c.DecisionMode,
+			PeakHeld: PeakHeld(mode, candModel, d.Now(), est.Minutes), DecisionMode: c.DecisionMode, GoUsageHeld: goHeld,
 			OwnerPaused: paused.holds(cand.Repo) && stage != StageBuild}
 		claimVerdict := verdictOf(candPlan)
 		ok, binding, err := d.Queue.TryClaim(ctx, cand.RunID, d.Now(), budget, facts, reservation)
@@ -858,8 +876,9 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 			// Another poll already claimed this row: not an admission matter.
 			continue
 		}
-		d.Logger.Info("runDeferred", "run", cand.RunID, "ceiling", binding)
-		res.Deferrals = append(res.Deferrals, Deferral{RunID: cand.RunID, Ceiling: binding, At: d.Now()})
+		ceiling, attrs := goUsageDeferral(binding, goWindow, goSpent)
+		d.Logger.Info("runDeferred", append([]any{"run", cand.RunID, "ceiling", ceiling}, attrs...)...)
+		res.Deferrals = append(res.Deferrals, Deferral{RunID: cand.RunID, Ceiling: ceiling, At: d.Now()})
 		recordHold(ctx, d, cand, binding, budget)
 		if !noticed[binding] {
 			choices := deferralChoices(budget, binding, tier.plan, c.LastResortPlans)

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 	// The zone database is linked into the binary, so the distroless image,
 	// which may carry none, still resolves the owner's zone.
@@ -106,6 +107,9 @@ func holdReason(binding string, budget BudgetConfig) string {
 		return HoldNoEstimate
 	case ConditionPrivateOptIn:
 		return HoldPrivateOptIn
+	}
+	if strings.HasPrefix(binding, CeilingGoUsage+" ") {
+		return HoldBudget
 	}
 	if budget.isProviderCeiling(binding) {
 		return HoldBudget
