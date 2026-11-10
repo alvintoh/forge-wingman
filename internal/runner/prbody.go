@@ -63,8 +63,10 @@ var ErrNoScreenshotsSection = errors.New("pull request body has no screenshots s
 // took none. supersedes is the number of the PR an owner's choice replaced, zero
 // when none, and retried says that choice was a retry with a note. autoMergeHold
 // names what keeps auto-merge off — the rate against the bar, or the escaped PR
-// — and is empty while auto-merge is on.
-func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail, overlap string, outOfPlan []string, writeSetUnread bool, frontEnd []string, noPlan bool, review []ReviewFinding, reviewOmitted int, secondRound *FixRoundCost, guardsUntested int, provisional []Provisional, supersedes int, retried bool, autoMergeHold string) (string, error) {
+// — and is empty while auto-merge is on. drift is the
+// ticket change the run found after it read its ticket, nil when the ticket did
+// not change.
+func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail, overlap string, outOfPlan []string, writeSetUnread bool, frontEnd []string, noPlan bool, review []ReviewFinding, reviewOmitted int, secondRound *FixRoundCost, guardsUntested int, provisional []Provisional, supersedes int, retried bool, autoMergeHold string, drift *TicketDrift) (string, error) {
 	summary := plainText(prSummary)
 	if summary == "" {
 		summary = "`" + t.ID + "`: " + t.Title
@@ -93,6 +95,23 @@ func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail
 		case strings.HasPrefix(line, "| ") && filled[templateTableRule] && section == templateVerification:
 		case line == templateNotes:
 			notes := []string{line, "Built unattended by forge-wingman. Run: " + runURL}
+			if drift != nil {
+				if drift.Unread {
+					notes = append(notes, "", "**Ticket change unread:** this run could not check whether its ticket changed after it read it, so this PR opens as a draft. Compare the ticket in Linear with the copy under \"The ticket as built\" before merging")
+				} else {
+					intro := "**Ticket changed mid-run:** this ticket changed after the build read it, so this PR opens as a draft"
+					if len(drift.Lines) == 0 {
+						notes = append(notes, "", intro)
+					} else {
+						quoted, omitted := CapDriftLines(drift.Lines)
+						diff := strings.Join(quoted, "\n")
+						notes = append(notes, "", intro+" — the lines that differ:", "", fence(diff)+"\n"+diff+"\n"+fence(diff))
+						if omitted > 0 {
+							notes = append(notes, "", fmt.Sprintf("%d more lines omitted: the PR quotes at most %d lines of the difference", omitted, maxDriftQuoteLines))
+						}
+					}
+				}
+			}
 			if loopDetail != "" {
 				notes = append(notes, "", "**Pre-PR loop:** kept this a draft — "+plainText(loopDetail))
 			}

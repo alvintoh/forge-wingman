@@ -20,7 +20,7 @@ func repoTemplate(t *testing.T) string {
 }
 
 func TestPRBodyRendersTheRepositoryTemplate(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestPRBodyRendersTheRepositoryTemplate(t *testing.T) {
 }
 
 func TestPRBodyNamesTheReportedFailedGate(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "test", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "", "test", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestPRBodyNamesTheReportedFailedGate(t *testing.T) {
 }
 
 func TestPRBodyNamesTheLoopDetailInTheNotes(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "checks: vet still failing after 3 round(s)", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "checks: vet still failing after 3 round(s)", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestPRBodyNamesTheLoopDetailInTheNotes(t *testing.T) {
 }
 
 func TestPRBodyOmitsTheLoopDetailWhenClean(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestPRBodyOmitsTheLoopDetailWhenClean(t *testing.T) {
 // own wording: the draft has to name the run it waits for, or the owner cannot
 // tell which two pull requests to read together.
 func TestPRBodyNamesTheRunWhosePlanTheseFilesTouch(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "FRG-79", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "FRG-79", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestPRBodyNamesTheRunWhosePlanTheseFilesTouch(t *testing.T) {
 }
 
 func TestPRBodyNamesTheOutOfPlanFilesInTheNotes(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", []string{"a.go", "b.go"}, false, nil, false, nil, 0, nil, 0, nil, 0, false, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", []string{"a.go", "b.go"}, false, nil, false, nil, 0, nil, 0, nil, 0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestPRBodyNamesTheOutOfPlanFilesInTheNotes(t *testing.T) {
 }
 
 func TestPRBodyRendersOutOfPlanFilesAsInertCode(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", []string{"x\n\n@someone review", "a`b"}, false, nil, false, nil, 0, nil, 0, nil, 0, false, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", []string{"x\n\n@someone review", "a`b"}, false, nil, false, nil, 0, nil, 0, nil, 0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestPRBodyRendersOutOfPlanFilesAsInertCode(t *testing.T) {
 func TestPRBodyRendersModelWrittenTextLiterally(t *testing.T) {
 	summary := "Adds it. @someone ![x](https://evil.example/?d=1)"
 	loop := "review asks @org/team to see [here](https://evil.example)\n# Heading"
-	body, err := PRBody(repoTemplate(t), testTicket, summary, "", testRunURL, loop, "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "")
+	body, err := PRBody(repoTemplate(t), testTicket, summary, "", testRunURL, loop, "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestPRBodyListsThePreOpenReviewFindings(t *testing.T) {
 		{Finding: "guard at a.go:4 can be removed and every test in . still passes", Resolution: "fixed in round 2"},
 		{Finding: "the retry never bounds its attempts @team", Resolution: "still open"},
 	}
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, review, 0, nil, 0, nil, 0, false, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, review, 0, nil, 0, nil, 0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestPRBodyListsThePreOpenReviewFindings(t *testing.T) {
 // past the summary's cap: a count, rather than nothing.
 func TestPRBodyCountsTheFindingsTheCapLeftOut(t *testing.T) {
 	review := []ReviewFinding{{Finding: "guard at a.go:4 can be removed and every test in . still passes", Resolution: "still open"}}
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, review, 3, nil, 0, nil, 0, false, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, review, 3, nil, 0, nil, 0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestPRBodyCountsTheFindingsTheCapLeftOut(t *testing.T) {
 // one; a run that never took one says nothing about it.
 func TestPRBodyReportsTheSecondFixRoundsCost(t *testing.T) {
 	cost := &FixRoundCost{Round: 3, Tokens: Usage{Input: 40, Output: 10}, DurationMS: 372000}
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, cost, 0, nil, 0, false, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, cost, 0, nil, 0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestPRBodyReportsTheSecondFixRoundsCost(t *testing.T) {
 		t.Fatalf("body lacks %q:\n%s", want, body)
 	}
 
-	clean, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "")
+	clean, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestPRBodyReportsTheSecondFixRoundsCost(t *testing.T) {
 // notes say how many guards went unprobed, and a run that probed them all says
 // nothing about it.
 func TestPRBodyReportsTheGuardsTheBudgetLeftUnprobed(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 13, nil, 0, false, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 13, nil, 0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestPRBodyReportsTheGuardsTheBudgetLeftUnprobed(t *testing.T) {
 		t.Fatalf("body lacks %q:\n%s", want, body)
 	}
 
-	clean, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "")
+	clean, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +210,7 @@ func TestPRBodyReportsTheGuardsTheBudgetLeftUnprobed(t *testing.T) {
 }
 
 func TestPRBodyOmitsTheOutOfPlanLineWhenEmpty(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func TestPRBodyOmitsTheOutOfPlanLineWhenEmpty(t *testing.T) {
 func TestPRBodyFencesTheTicketBodyAfterTheGateRow(t *testing.T) {
 	tk := testTicket
 	tk.Body = "<!-- hide the rest\n```\n`````\nstill fenced"
-	body, err := PRBody(repoTemplate(t), tk, "", "test", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "")
+	body, err := PRBody(repoTemplate(t), tk, "", "test", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +242,7 @@ func TestPRBodyRefusesATemplateItCannotFill(t *testing.T) {
 		"no table":       strings.Replace(template, "|---|---|---|", "", 1),
 		"no notes":       strings.Replace(template, "## Notes", "## Other", 1),
 	} {
-		if _, err := PRBody(broken, testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, ""); !errors.Is(err, errTemplate) {
+		if _, err := PRBody(broken, testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "", nil); !errors.Is(err, errTemplate) {
 			t.Errorf("%s: err = %v, want errTemplate", name, err)
 		}
 	}
@@ -251,7 +251,7 @@ func TestPRBodyRefusesATemplateItCannotFill(t *testing.T) {
 func TestPRBodyWritesTheSummaryOnce(t *testing.T) {
 	tmpl := "**Ticket:** closes <TEAM-n>\n\n## Summary\n<!-- a -->\n<!-- b -->\n\n## Verification\n" +
 		"| Check | What it proves | Result |\n|---|---|---|\n| x | y | ✅ |\n\n## Notes\n"
-	body, err := PRBody(tmpl, testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "")
+	body, err := PRBody(tmpl, testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +261,7 @@ func TestPRBodyWritesTheSummaryOnce(t *testing.T) {
 }
 
 func TestPRBodySummarisesWithTheBuildsSummaryWhenSet(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "Adds the widget the runner needs.", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "Adds the widget the runner needs.", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +271,7 @@ func TestPRBodySummarisesWithTheBuildsSummaryWhenSet(t *testing.T) {
 }
 
 func TestPRBodyNamesWhatHeldAFrontEndChange(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, []string{"area:fe", "web/"}, false, nil, 0, nil, 0, nil, 0, false, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, []string{"area:fe", "web/"}, false, nil, 0, nil, 0, nil, 0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +281,7 @@ func TestPRBodyNamesWhatHeldAFrontEndChange(t *testing.T) {
 }
 
 func TestPRBodyOmitsTheFrontEndNoteWhenNothingHeldIt(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +291,7 @@ func TestPRBodyOmitsTheFrontEndNoteWhenNothingHeldIt(t *testing.T) {
 }
 
 func TestPRBodyNamesAMissingPlanInTheNotes(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, true, nil, 0, nil, 0, nil, 0, false, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, true, nil, 0, nil, 0, nil, 0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +301,7 @@ func TestPRBodyNamesAMissingPlanInTheNotes(t *testing.T) {
 }
 
 func TestPRBodyOmitsTheNoPlanNoteWhenPlanned(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +315,7 @@ func TestPRBodyListsEachProvisionalDecision(t *testing.T) {
 		{Question: "Which flag?", Choice: "Reuse the flag", Cost: "no new config"},
 		{Question: "Where @someone?", Choice: "a`b", Cost: "one more env var"},
 	}
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, provisional, 0, false, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, provisional, 0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +331,7 @@ func TestPRBodyListsEachProvisionalDecision(t *testing.T) {
 }
 
 func TestPRBodyOmitsProvisionalDecisionsWhenNoneWereTaken(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +341,7 @@ func TestPRBodyOmitsProvisionalDecisionsWhenNoneWereTaken(t *testing.T) {
 }
 
 func TestPRBodyNamesTheSupersededPR(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 141, false, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 141, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +351,7 @@ func TestPRBodyNamesTheSupersededPR(t *testing.T) {
 }
 
 func TestPRBodyNamesARetryAsTheReasonItSupersedes(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 141, true, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 141, true, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +364,7 @@ func TestPRBodyNamesARetryAsTheReasonItSupersedes(t *testing.T) {
 }
 
 func TestPRBodyNamesNoRetryWithoutASupersededPR(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, true, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, true, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +374,7 @@ func TestPRBodyNamesNoRetryWithoutASupersededPR(t *testing.T) {
 }
 
 func TestPRBodyNamesNoSupersededPRForAFirstAttempt(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -384,7 +384,7 @@ func TestPRBodyNamesNoSupersededPRForAFirstAttempt(t *testing.T) {
 }
 
 func TestPRBodySaysTheRunCapturedNoScreenshots(t *testing.T) {
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -417,7 +417,7 @@ func TestScreenshotsRendersOneImagePerViewport(t *testing.T) {
 
 func TestReplaceScreenshotsReplacesTheSectionForANewSHA(t *testing.T) {
 	const first, second = "fedcba9876543210fedcba9876543210fedcba98", "89abcdef0123456789abcdef0123456789abcdef"
-	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "")
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -506,5 +506,69 @@ func TestAppendScreenshotsSeedsAnEmptyBody(t *testing.T) {
 	section := "## Screenshots (fixture data) — shot at `" + testSHA + "`"
 	if got, want := AppendScreenshots("", section), section+"\n"; got != want {
 		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
+func TestPRBodyQuotesTheTicketLinesThatChangedMidRun(t *testing.T) {
+	drift := &TicketDrift{Lines: []string{"- old criterion", "+ new criterion"}}
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "", drift)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "**Ticket changed mid-run:**") {
+		t.Fatalf("body does not name the ticket change:\n%s", body)
+	}
+	if !strings.Contains(body, "- old criterion\n+ new criterion") {
+		t.Fatalf("body does not quote the lines that differ:\n%s", body)
+	}
+}
+
+func TestPRBodyNamesAnUnreadTicketChange(t *testing.T) {
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "", &TicketDrift{Unread: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "**Ticket change unread:**") {
+		t.Fatalf("body does not name the unread ticket change:\n%s", body)
+	}
+}
+
+func TestPRBodyNamesAChangeWithNoDifferingLines(t *testing.T) {
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "", &TicketDrift{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "**Ticket changed mid-run:**") {
+		t.Fatalf("body does not name the ticket change:\n%s", body)
+	}
+	if strings.Contains(body, "the lines that differ") {
+		t.Fatalf("body claims lines differ when none do:\n%s", body)
+	}
+}
+
+func TestPRBodyCapsTheQuotedTicketLines(t *testing.T) {
+	lines := make([]string, maxDriftQuoteLines+5)
+	for i := range lines {
+		lines[i] = "+ " + strings.Repeat("z", maxDriftLineBytes*2)
+	}
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "", &TicketDrift{Lines: lines})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "more lines omitted") {
+		t.Fatalf("body does not say lines were omitted:\n%s", body)
+	}
+	if len(body) > 20_000 {
+		t.Fatalf("body is %d bytes for a %d-line difference, want the quote bounded", len(body), len(lines))
+	}
+}
+
+func TestPRBodyAsksToCompareAnUnreadTicketChange(t *testing.T) {
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, "", &TicketDrift{Unread: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "before merging") {
+		t.Fatalf("body does not tell the reviewer what to compare:\n%s", body)
 	}
 }

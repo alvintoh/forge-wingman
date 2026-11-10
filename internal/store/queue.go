@@ -124,6 +124,12 @@ const (
 	ticketBodyField = "ticket_body"
 	sizedByField    = "sized_by"
 	frontEndField   = "front_end"
+	// ticketChangedAtField and ticketChangedBodyField are the ticket change a
+	// poll records on an in-flight run whose Linear description no longer
+	// matches the copy it was claimed with. They sit outside the record, which
+	// Finalize rebuilds whole.
+	ticketChangedAtField   = "ticket_changed_at"
+	ticketChangedBodyField = "ticket_changed_body"
 	// planField is Record's own, written with the claim.
 	planField = "plan"
 	// settledAtField, settledProviderCostField and settledRunnerMinutesField
@@ -386,6 +392,13 @@ func (q *Queue) RefreshQueuedTicket(ctx context.Context, run dispatcher.Queued) 
 		set(frontEndField, frontEnd == run.Ticket.FrontEnd, run.Ticket.FrontEnd)
 		setList(blockedByField, run.BlockedBy)
 		setList(blocksField, run.Blocks)
+		// The queued copy is current after a refresh, so a change an earlier
+		// attempt recorded no longer differs from it.
+		if !ticketChangedAt(row).IsZero() {
+			updates = append(updates,
+				firestore.Update{Path: ticketChangedAtField, Value: firestore.Delete},
+				firestore.Update{Path: ticketChangedBodyField, Value: firestore.Delete})
+		}
 		if len(updates) == 0 {
 			return nil
 		}
@@ -1384,11 +1397,19 @@ func (q *Queue) Release(ctx context.Context, runID string, at time.Time) error {
 		if has && entry.Stage == dispatcher.StageBuild {
 			state = statePlanned
 		}
-		if err := tx.Update(rowRef, []firestore.Update{
+		updates := []firestore.Update{
 			{Path: stateField, Value: state},
 			{Path: updatedAtField, Value: at},
 			{Path: claimedAtField, Value: firestore.Delete},
-		}); err != nil {
+		}
+		if state == stateQueued {
+			// The next poll refreshes the queued copy, so a change recorded
+			// against the released claim no longer applies.
+			updates = append(updates,
+				firestore.Update{Path: ticketChangedAtField, Value: firestore.Delete},
+				firestore.Update{Path: ticketChangedBodyField, Value: firestore.Delete})
+		}
+		if err := tx.Update(rowRef, updates); err != nil {
 			return err
 		}
 		if !has {
@@ -1669,6 +1690,14 @@ func (q *Queue) requeue(ctx context.Context, runID string, at time.Time, opts re
 			{Path: decisionModeField, Value: firestore.Delete},
 			{Path: prHeadSHAField, Value: firestore.Delete},
 			{Path: checksResultField, Value: firestore.Delete},
+		}
+		// A queued retry reads a refreshed copy, so a change the prior attempt
+		// recorded no longer differs from it. A planned retry keeps its old
+		// copy, so its recorded change stands.
+		if state == stateQueued {
+			updates = append(updates,
+				firestore.Update{Path: ticketChangedAtField, Value: firestore.Delete},
+				firestore.Update{Path: ticketChangedBodyField, Value: firestore.Delete})
 		}
 		if !opts.keepNote {
 			updates = append(updates, clearNote()...)
