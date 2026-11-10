@@ -26,7 +26,9 @@ jobs:
       # Deletes the folder through the git data API: a tree over the tip's with the folder's
       # entry removed, a commit on the tip, then a fast-forward of the ref. A run pushing
       # screenshots between the read and the ref update makes the update fail, so it starts
-      # again from the new tip.
+      # again from the new tip. The new tree lists the tip's top level minus the folder, plus a
+      # root README.md, rather than deleting from a base tree: GitHub applies a deletion before
+      # any addition and refuses (404) the empty tree removing the last folder would leave.
       - name: Remove the PR's folder from the evidence branch
         env:
           GH_TOKEN: ${{ github.token }}
@@ -49,8 +51,12 @@ jobs:
               echo "evidenceCleanupSkipped reason=no-folder pr=${NUMBER}"
               exit 0
             fi
-            pruned="$(jq -n --arg base "$tree" --arg path "$folder" \
-              '{base_tree: $base, tree: [{path: $path, mode: "040000", type: "tree", sha: null}]}' \
+            pruned="$(gh api "repos/${REPO}/git/trees/${tree}" \
+              | jq --arg path "$folder" '{tree: ([.tree[]
+                  | select(.path != $path and .path != "README.md")
+                  | {path, mode, type, sha}]
+                + [{path: "README.md", mode: "100644", type: "blob",
+                    content: "Screenshots for open forge-wingman PRs, one pr-<n> folder each; a folder is removed when its PR closes.\n"}])}' \
               | gh api "repos/${REPO}/git/trees" --input - --jq .sha)"
             commit="$(jq -n --arg tree "$pruned" --arg parent "$tip" --arg message "chore(evidence): remove ${folder}" \
               '{message: $message, tree: $tree, parents: [$parent]}' \
