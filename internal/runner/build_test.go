@@ -2199,7 +2199,7 @@ func TestPrePRLoopLabelsFindingsNotReReviewedWhenTheBudgetIsSpent(t *testing.T) 
 	deps.Checks = func(context.Context, string, []string) (string, string, error) {
 		checkCalls++
 		if checkCalls == 2 {
-			clock = started.Add(nfr1ReviewBudget + time.Minute)
+			clock = runCapSpentAt(started)
 		}
 		return "", "", nil
 	}
@@ -2224,7 +2224,8 @@ func TestPrePRLoopLabelsFindingsNotReReviewedWhenTheBudgetIsSpent(t *testing.T) 
 	if strings.Contains(rec.LoopDetail, "review findings open") {
 		t.Fatalf("loop detail = %q, must not call the findings open when they were not re-reviewed", rec.LoopDetail)
 	}
-	if !strings.Contains(rec.LoopDetail, "the review stage's 25-minute budget was spent") {
+	if !strings.Contains(rec.LoopDetail, "the review stage's") ||
+		!strings.Contains(rec.LoopDetail, "budget was spent") {
 		t.Fatalf("loop detail = %q, want it to name the budget that ran out", rec.LoopDetail)
 	}
 }
@@ -2523,7 +2524,7 @@ func TestPrePRLoopTakesNoSecondFixRoundWithoutBudget(t *testing.T) {
 		if review.calls == 2 {
 			// The pass and the re-review spend the whole review budget, so no
 			// second fix round may start.
-			clock = started.Add(nfr1ReviewBudget + time.Minute)
+			clock = runCapSpentAt(started)
 		}
 		return nil
 	}
@@ -2545,6 +2546,10 @@ func TestPrePRLoopTakesNoSecondFixRoundWithoutBudget(t *testing.T) {
 	}
 	if !strings.Contains(rec.LoopDetail, finding) {
 		t.Fatalf("loop detail = %q, want it to name the finding still open", rec.LoopDetail)
+	}
+	if !strings.Contains(rec.LoopDetail, "fix round skipped") ||
+		!strings.Contains(rec.LoopDetail, "the review stage's") {
+		t.Fatalf("loop detail = %q, want the refused round to name the spent budget", rec.LoopDetail)
 	}
 	// One round ran, so the rows read as they did before there was a second one.
 	if want := []ReviewFinding{{Finding: finding, Resolution: "still open"}}; !slices.Equal(rec.ReviewFindings, want) {
@@ -2575,7 +2580,7 @@ func TestPrePRLoopRecordsTheSecondRoundWhenItsBudgetIsSpent(t *testing.T) {
 		if checks == 3 {
 			// The second fix round's checks find the review budget spent, so the
 			// re-check that would settle its findings never runs.
-			clock = started.Add(nfr1ReviewBudget + time.Minute)
+			clock = runCapSpentAt(started)
 		}
 		return "", "", nil
 	}
@@ -2593,7 +2598,8 @@ func TestPrePRLoopRecordsTheSecondRoundWhenItsBudgetIsSpent(t *testing.T) {
 		t.Fatal("ready = true, want false: the last round's findings were never re-checked")
 	}
 	if !strings.Contains(rec.LoopDetail, "addressed by a fix round, not re-reviewed") ||
-		!strings.Contains(rec.LoopDetail, "the review stage's 25-minute budget was spent") {
+		!strings.Contains(rec.LoopDetail, "the review stage's") ||
+		!strings.Contains(rec.LoopDetail, "budget was spent") {
 		t.Fatalf("loop detail = %q, want the addressed-not-re-reviewed label naming the spent budget", rec.LoopDetail)
 	}
 	if want := []ReviewFinding{{Finding: finding, Resolution: "addressed in round 3, not re-checked"}}; !slices.Equal(rec.ReviewFindings, want) {
@@ -2654,7 +2660,7 @@ func TestPrePRLoopRecordsFindingsAsOpenWhenNoFixRoundRan(t *testing.T) {
 	review := &fakeAgent{events: reviewEvent(""), edit: func(string) error {
 		// The review pass spends the whole review budget, so nothing is left
 		// for the fix round the guard's finding would otherwise get.
-		clock = started.Add(nfr1ReviewBudget + time.Minute)
+		clock = runCapSpentAt(started)
 		return nil
 	}}
 	deps.ReviewAgent = review
@@ -2758,8 +2764,8 @@ func TestReviewSubstitutionIsClampedByTheReviewBudget(t *testing.T) {
 	if review.calls != 2 {
 		t.Fatalf("review agent ran %d times, want 2: an exhausted allowance steps to the backup on the review's own budget", review.calls)
 	}
-	if got := time.Until(review.deadlines[1]); got < nfr1ReviewBudget-2*time.Second || got > nfr1ReviewBudget+2*time.Second {
-		t.Fatalf("the backup is bounded by %s, want the review's own budget %s, not what the build stage had left", got, nfr1ReviewBudget)
+	if got := time.Until(review.deadlines[1]); got < 25*time.Minute-2*time.Second || got > 25*time.Minute+2*time.Second {
+		t.Fatalf("the backup is bounded by %s, want the review's 25 minutes, not what the build stage had left", got)
 	}
 }
 
@@ -2812,8 +2818,8 @@ func TestFixRoundSubstitutionIsClampedByTheReviewBudget(t *testing.T) {
 	if buildAgent.calls != 3 {
 		t.Fatalf("build agent ran %d times, want 3: the fix round's exhausted allowance steps to its backup on the review's own budget", buildAgent.calls)
 	}
-	if got := time.Until(buildAgent.deadlines[2]); got < nfr1ReviewBudget-2*time.Second || got > nfr1ReviewBudget+2*time.Second {
-		t.Fatalf("the fix round's backup is bounded by %s, want the review's own budget %s, not what the build stage had left", got, nfr1ReviewBudget)
+	if got := time.Until(buildAgent.deadlines[2]); got < 25*time.Minute-2*time.Second || got > 25*time.Minute+2*time.Second {
+		t.Fatalf("the fix round's backup is bounded by %s, want the review's 25 minutes, not what the build stage had left", got)
 	}
 }
 
@@ -3224,8 +3230,8 @@ func TestReviewKeepsItsOwnBudgetOnceTheBuildStageSpentItsOwn(t *testing.T) {
 	if len(review.deadlines) == 0 {
 		t.Fatal("the review ran no pass")
 	}
-	if got := time.Until(review.deadlines[0]); got < nfr1ReviewBudget-2*time.Second || got > nfr1ReviewBudget+2*time.Second {
-		t.Fatalf("the review pass is bounded by %s, want the review's own budget %s, not the %s default", got, nfr1ReviewBudget, defaultAgentTimeout)
+	if got := time.Until(review.deadlines[0]); got < 25*time.Minute-2*time.Second || got > 25*time.Minute+2*time.Second {
+		t.Fatalf("the review pass is bounded by %s, want the review's 25 minutes, not the %s default", got, defaultAgentTimeout)
 	}
 	if buildAgent.calls != 2 {
 		t.Fatalf("build agent ran %d times, want the build round and the fix round", buildAgent.calls)
@@ -3251,7 +3257,7 @@ func TestReviewDraftsWhenItsOwnBudgetIsSpent(t *testing.T) {
 	deps.Now = func() time.Time { return clock }
 	review := &fakeAgent{events: reviewEvent(finding), edit: func(string) error {
 		// The pass spends the whole review budget before the fix round.
-		clock = started.Add(nfr1ReviewBudget + time.Minute)
+		clock = runCapSpentAt(started)
 		return nil
 	}}
 	deps.ReviewAgent = review
@@ -3267,11 +3273,255 @@ func TestReviewDraftsWhenItsOwnBudgetIsSpent(t *testing.T) {
 	if rec.Ready {
 		t.Fatal("ready = true, want false: the fix round never ran")
 	}
-	if !strings.Contains(rec.LoopDetail, "the review stage's 25-minute budget was spent") {
+	if !strings.Contains(rec.LoopDetail, "the review stage's") ||
+		!strings.Contains(rec.LoopDetail, "budget was spent") {
 		t.Fatalf("loop detail = %q, want it to name the review stage's budget", rec.LoopDetail)
 	}
 	if !strings.Contains(rec.LoopDetail, finding) {
 		t.Fatalf("loop detail = %q, want it to carry the finding", rec.LoopDetail)
+	}
+}
+
+// runCapSpentAt is the instant the run has spent everything the cap leaves it
+// after the commit reserve — the point from which a review stage that began
+// while the cap still had more than its floor to give has spent its budget.
+func runCapSpentAt(started time.Time) time.Time {
+	return started.Add(nfr1RunCap - nfr1CommitReserve)
+}
+
+// reviewFloorStart is the clock at which a review begins on its floor: the run's
+// start plus the build stage's whole budget.
+func reviewFloorStart(started time.Time) time.Time {
+	return started.Add(nfr1BuildBudget + time.Minute)
+}
+
+// reviewFloorSpent is the clock at which that review has spent all but left of
+// its floor.
+func reviewFloorSpent(started time.Time, left time.Duration) time.Time {
+	return reviewFloorStart(started).Add(nfr1ReviewFloor - left)
+}
+
+// TestReviewBudgetIsWhatTheRunCapLeavesAfterTheBuild is AC1: the review stage's
+// budget is the run cap less what the run has already spent and the commit
+// reserve, so a build that finished 55 minutes in leaves the review 30 minutes
+// rather than the 25 it got whatever the build did.
+func TestReviewBudgetIsWhatTheRunCapLeavesAfterTheBuild(t *testing.T) {
+	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
+	deps, _, reported := testDeps(validObjects(), agent)
+	started := time.Now()
+	clock := started
+	deps.Now = func() time.Time { return clock }
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		// The build and its checks are done 55 minutes into the run.
+		clock = started.Add(55 * time.Minute)
+		return "", "", nil
+	}
+	review := &fakeAgent{events: reviewEvent("")}
+	deps.ReviewAgent = review
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if len(review.deadlines) != 1 {
+		t.Fatalf("the review ran %d passes, want 1", len(review.deadlines))
+	}
+	// The 90-minute cap less the 55 spent and the 5-minute commit reserve.
+	if got := time.Until(review.deadlines[0]); got < 30*time.Minute-2*time.Second || got > 30*time.Minute+2*time.Second {
+		t.Fatalf("the review pass is bounded by %s, want the 30 minutes the cap leaves after the build's 55", got)
+	}
+	if rec := reported.last(t); !rec.Ready {
+		t.Fatalf("ready = false (%q), want the clean review to leave the run ready", rec.LoopDetail)
+	}
+}
+
+// TestPrePRLoopStartsNoFixRoundWithUnderThreeMinutesLeft is AC2's fix-round
+// half: a pass that leaves the review stage two minutes starts no round, because
+// that round's deadline would be those two minutes and the run would record an
+// agent timeout for what is really the stage's budget running out.
+func TestPrePRLoopStartsNoFixRoundWithUnderThreeMinutesLeft(t *testing.T) {
+	const finding = "version.go:1 the change is wrong"
+	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
+	deps, _, reported := testDeps(validObjects(), agent)
+	started := time.Now()
+	clock := started
+	deps.Now = func() time.Time { return clock }
+	checks := 0
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		checks++
+		if checks == 1 {
+			// The build stage's whole budget is spent, so the review starts on its
+			// floor.
+			clock = reviewFloorStart(started)
+		}
+		return "", "", nil
+	}
+	review := &fakeAgent{events: reviewEvent(finding), edit: func(string) error {
+		// The pass leaves a minute less than a call needs to start.
+		clock = reviewFloorSpent(started, reviewStartRoom-time.Minute)
+		return nil
+	}}
+	deps.ReviewAgent = review
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 1 {
+		t.Fatalf("build agent ran %d times, want the build round alone: two minutes cannot start a fix round", agent.calls)
+	}
+	rec := reported.last(t)
+	if rec.Outcome == OutcomeAgentFailed || rec.StopReason == StopAgentTimeout {
+		t.Fatalf("record = %s/%s, want no agent timeout: the review stage's budget ran out", rec.Outcome, rec.StopReason)
+	}
+	if rec.Ready {
+		t.Fatal("ready = true, want false: nothing was done about the finding")
+	}
+	if !strings.Contains(rec.LoopDetail, "fix round skipped") ||
+		!strings.Contains(rec.LoopDetail, "the review stage's 25-minute budget was spent") {
+		t.Fatalf("loop detail = %q, want the skipped fix round to name the spent budget", rec.LoopDetail)
+	}
+}
+
+// TestPrePRLoopNamesTheExtendedReviewBudgetWhenItIsSpent is AC2's label with a
+// review stage a run that finished its build early left more than its floor: the
+// refusal names those 55 minutes, not the 25 the stage gets at its floor.
+func TestPrePRLoopNamesTheExtendedReviewBudgetWhenItIsSpent(t *testing.T) {
+	const finding = "version.go:1 the change is wrong"
+	const builtIn = 30 * time.Minute
+	// What the cap leaves a review that begins after those 30 minutes.
+	const budget = nfr1RunCap - builtIn - nfr1CommitReserve
+	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
+	deps, _, reported := testDeps(validObjects(), agent)
+	started := time.Now()
+	clock := started
+	deps.Now = func() time.Time { return clock }
+	checks := 0
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		checks++
+		if checks == 1 {
+			// The build and its checks finish 30 minutes into the run, so the
+			// review begins with what the cap still leaves it.
+			clock = started.Add(builtIn)
+		}
+		return "", "", nil
+	}
+	review := &fakeAgent{events: reviewEvent(finding), edit: func(string) error {
+		// The pass spends all but a minute less than a call needs to start.
+		clock = started.Add(builtIn).Add(budget - reviewStartRoom + time.Minute)
+		return nil
+	}}
+	deps.ReviewAgent = review
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 1 {
+		t.Fatalf("build agent ran %d times, want the build round alone: no room was left for a fix round", agent.calls)
+	}
+	rec := reported.last(t)
+	if rec.Ready {
+		t.Fatal("ready = true, want false: nothing was done about the finding")
+	}
+	if !strings.Contains(rec.LoopDetail, "the review stage's 55-minute budget was spent") {
+		t.Fatalf("loop detail = %q, want the refusal to name the 55 minutes the cap left this review", rec.LoopDetail)
+	}
+}
+
+// TestPrePRLoopStartsAFixRoundOnTheThreeMinuteFloor is AC2's boundary: three
+// minutes left is enough to start a round, and the round is bounded by those
+// three rather than by the default agent timeout.
+func TestPrePRLoopStartsAFixRoundOnTheThreeMinuteFloor(t *testing.T) {
+	const finding = "version.go:1 the change is wrong"
+	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
+	deps, _, _ := testDeps(validObjects(), agent)
+	started := time.Now()
+	clock := started
+	deps.Now = func() time.Time { return clock }
+	checks := 0
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		checks++
+		if checks == 1 {
+			clock = reviewFloorStart(started)
+		}
+		return "", "", nil
+	}
+	review := &fakeAgent{eventsFn: func(call int) string {
+		if call == 1 {
+			return reviewEvent(finding)
+		}
+		return reviewEvent("")
+	}}
+	review.edit = func(string) error {
+		if review.calls == 1 {
+			// The pass leaves exactly the room a call needs to start.
+			clock = reviewFloorSpent(started, reviewStartRoom)
+		}
+		return nil
+	}
+	deps.ReviewAgent = review
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 2 {
+		t.Fatalf("build agent ran %d times, want the fix round too: three minutes is enough to start one", agent.calls)
+	}
+	if got := time.Until(agent.deadlines[1]); got < 3*time.Minute-2*time.Second || got > 3*time.Minute+2*time.Second {
+		t.Fatalf("the fix round is bounded by %s, want the 3 minutes the review had left", got)
+	}
+}
+
+// TestPrePRLoopSkipsAReCheckWithUnderThreeMinutesLeft is AC2's re-check half: a
+// fix round that leaves the review stage two minutes gets no re-check, and the
+// run labels the finding addressed by the round rather than re-reviewed.
+func TestPrePRLoopSkipsAReCheckWithUnderThreeMinutesLeft(t *testing.T) {
+	const finding = "the retry never bounds its attempts"
+	started := time.Now()
+	clock := started
+	agent := &fakeAgent{}
+	agent.edit = func(dir string) error {
+		if agent.calls == 2 {
+			// The fix round leaves a minute less than a call needs to start.
+			clock = reviewFloorSpent(started, reviewStartRoom-time.Minute)
+		}
+		return edit("version.go", "package x\n")(dir)
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	deps.Now = func() time.Time { return clock }
+	checks := 0
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		checks++
+		if checks == 1 {
+			clock = reviewFloorStart(started)
+		}
+		return "", "", nil
+	}
+	review := &fakeAgent{events: reviewEvent(finding)}
+	deps.ReviewAgent = review
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if review.calls != 1 {
+		t.Fatalf("review agent ran %d times, want 1: two minutes cannot start a re-check", review.calls)
+	}
+	if agent.calls != 2 {
+		t.Fatalf("build agent ran %d times, want the build round and the fix round", agent.calls)
+	}
+	rec := reported.last(t)
+	if rec.Ready {
+		t.Fatal("ready = true, want false: the finding was never re-checked")
+	}
+	if !strings.Contains(rec.LoopDetail, "addressed by a fix round, not re-reviewed") ||
+		!strings.Contains(rec.LoopDetail, "the review stage's 25-minute budget was spent") {
+		t.Fatalf("loop detail = %q, want the addressed-not-re-reviewed label naming the spent budget", rec.LoopDetail)
+	}
+	if want := []ReviewFinding{{Finding: finding, Resolution: "addressed in round 2, not re-checked"}}; !slices.Equal(rec.ReviewFindings, want) {
+		t.Fatalf("findings = %+v, want %+v", rec.ReviewFindings, want)
 	}
 }
 

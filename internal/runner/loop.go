@@ -32,15 +32,23 @@ const (
 	// the run's start: the plan phase, the build and check rounds, and the
 	// guard scan the review pass follows.
 	nfr1BuildBudget = 60 * time.Minute
-	// nfr1ReviewBudget is how much of nfr1RunCap the review stage may spend,
-	// from the review's own start: the review pass, its fix rounds and the
-	// re-checks that follow them.
-	nfr1ReviewBudget = 25 * time.Minute
+	// nfr1ReviewFloor is the least the review stage may spend, from the
+	// review's own start: the review pass, its fix rounds and the re-checks
+	// that follow them. It is the share nfr1RunCap keeps for the review once
+	// the build stage has spent its own and the commit reserve is set aside, so
+	// a run that spent the whole build budget still gets this much.
+	nfr1ReviewFloor = 25 * time.Minute
 	// nfr1CommitReserve is what nfr1RunCap leaves once both stages have spent
-	// their own — nfr1RunCap - nfr1BuildBudget - nfr1ReviewBudget — for the
+	// their own — nfr1RunCap - nfr1BuildBudget - nfr1ReviewFloor — for the
 	// commit, bundle and report steps that still run after the review.
 	nfr1CommitReserve = 5 * time.Minute
 )
+
+// reviewStartRoom is the least the review stage must have left for another
+// pass, fix round or re-check to start. A call started with less would run out
+// on the stage's spent budget rather than on its own work, so the run would
+// record an agent timeout for what is really the budget running out.
+const reviewStartRoom = 3 * time.Minute
 
 // The stage words a run in flight is shown with.
 const (
@@ -73,13 +81,15 @@ func withinBudget(started, now time.Time, budget time.Duration) bool {
 
 // roundTimeout is a round's own deadline within budget, measured from started —
 // the smaller of the configured agent timeout and what the stage has left — and
-// whether the stage had any budget left for a round at all. The deadline is
-// clamped at zero so a spent stage is never a negative duration, and the caller
-// must read the flag: runAgent turns a non-positive timeout into the full
-// defaultAgentTimeout, so a spent stage that passed it on would buy 50 minutes.
-func roundTimeout(configured time.Duration, started, now time.Time, budget time.Duration) (time.Duration, bool) {
+// whether the stage has room to start a round at all: more than minStart of its
+// budget left, zero for a stage that starts a round whatever remains. The
+// deadline is clamped at zero so a spent stage is never a negative duration, and
+// the caller must read the flag: runAgent turns a non-positive timeout into the
+// full defaultAgentTimeout, so a spent stage that passed it on would buy 50
+// minutes.
+func roundTimeout(configured time.Duration, started, now time.Time, budget, minStart time.Duration) (time.Duration, bool) {
 	remaining := budget - now.Sub(started)
-	if remaining <= 0 {
+	if remaining <= 0 || remaining < minStart {
 		return 0, false
 	}
 	upper := effectiveAgentTimeout(configured)
@@ -89,10 +99,31 @@ func roundTimeout(configured time.Duration, started, now time.Time, budget time.
 	return upper, true
 }
 
-// stageBudgetSpent names the stage whose own budget ran out, so a review cut
-// short at 25 minutes reads differently from a build cut at 60.
+// stageBudgetSpent names the stage whose own budget ran out and how much it
+// had, so a review cut short reads differently from a build cut at 60 minutes.
 func stageBudgetSpent(stage string, budget time.Duration) string {
 	return fmt.Sprintf("the %s stage's %d-minute budget was spent", stage, int(budget.Minutes()))
+}
+
+// reviewBudget is how much of nfr1RunCap the review stage may spend from now:
+// what the cap leaves once the time the run has already spent and the commit
+// reserve are set aside, so a build that finished early leaves the review the
+// time it did not use. It is never below nfr1ReviewFloor, so the review keeps
+// the share the cap always gave it however late it begins.
+func reviewBudget(runStarted, now time.Time) time.Duration {
+	return max(nfr1ReviewFloor, nfr1RunCap-now.Sub(runStarted)-nfr1CommitReserve)
+}
+
+// reviewCallError relabels a review call that timed out on the stage's own
+// remaining budget: its deadline was what the stage had left rather than the
+// agent's allowance, so the run records the budget running out instead of an
+// agent timeout that never happened.
+func reviewCallError(err error, timeout, configured, budget time.Duration) error {
+	var s *StopError
+	if !errors.As(err, &s) || s.Reason != StopAgentTimeout || timeout >= effectiveAgentTimeout(configured) {
+		return err
+	}
+	return stopWith(OutcomeStopped, StopRunBudget, errors.New(stageBudgetSpent("review", budget)))
 }
 
 // checkFeedbackPrompt is what a rebuild round receives: the failing gate's
@@ -157,13 +188,13 @@ func lastFixRoundCost(sum *Summary) *FixRoundCost {
 // the same across the loop.
 func runCheckLoop(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum *Summary, rules, prompt string, msg *CommitMessage) (ok bool, detail, session string, round int, err error) {
 	round = 1
-	timeout, inBudget := roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now(), nfr1BuildBudget)
+	timeout, inBudget := roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now(), nfr1BuildBudget, 0)
 	if !inBudget {
 		return false, "", "", noFixRound, stopWith(OutcomeStopped, StopRunBudget,
 			errors.New(stageBudgetSpent("build", nfr1BuildBudget)))
 	}
 	var text string
-	text, session, round, err = runAgentInOrder(ctx, d, c, agentCall{Phase: PhaseBuild, Round: round, Model: c.Model, Rules: rules, Timeout: timeout}, buildOrder(c), d.Agent, wt.Dir, withCommitInstruction(prompt), sum, sum.StartedAt, nfr1BuildBudget)
+	text, session, round, err = runAgentInOrder(ctx, d, c, agentCall{Phase: PhaseBuild, Round: round, Model: c.Model, Rules: rules, Timeout: timeout}, buildOrder(c), d.Agent, wt.Dir, withCommitInstruction(prompt), sum, sum.StartedAt, nfr1BuildBudget, 0)
 	if err != nil {
 		return false, "", "", round, err
 	}
@@ -187,14 +218,14 @@ func runCheckLoop(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, 
 			return true, "", session, round, nil
 		}
 		lastGate, lastOutput = gate, output
-		timeout, inBudget := roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now(), nfr1BuildBudget)
+		timeout, inBudget := roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now(), nfr1BuildBudget, 0)
 		if rebuildRound >= checkLoopMaxRounds || !inBudget {
 			break
 		}
 		round++
 		call := agentCall{Phase: PhaseBuild, Round: round, Model: c.Model, Session: session, Rules: rules, Detail: gate,
 			Timeout: timeout}
-		text, session, round, err = runAgentInOrder(ctx, d, c, call, buildOrder(c), d.Agent, wt.Dir, withCommitInstruction(checkFeedbackPrompt(gate, output)), sum, sum.StartedAt, nfr1BuildBudget)
+		text, session, round, err = runAgentInOrder(ctx, d, c, call, buildOrder(c), d.Agent, wt.Dir, withCommitInstruction(checkFeedbackPrompt(gate, output)), sum, sum.StartedAt, nfr1BuildBudget, 0)
 		if err != nil {
 			return false, "", session, round, err
 		}
@@ -272,14 +303,15 @@ func formatInPlace(ctx context.Context, d BuildDeps, sum *Summary, wt Worktree, 
 // what that session carries — the build projection's rules, which is what the
 // pass checks the diff against. timeout is what the review's own budget leaves
 // the pass, and started and budget are the review stage's, so a pass that steps
-// to its backup model is bounded by the review's budget rather than the build's.
+// to its backup model is bounded by the review's budget rather than the build's,
+// and starts no backup attempt with under reviewStartRoom of it left.
 func reviewPass(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum *Summary, round int, rules string, timeout time.Duration, started time.Time, budget time.Duration) (string, error) {
 	diff, err := wt.DiffPending(ctx)
 	if err != nil {
 		return "", stopWith(OutcomeInfraFailure, StopChecksRun, err)
 	}
 	call := agentCall{Phase: PhaseReview, Round: round, Model: c.ReviewModels[0], Rules: rules, Timeout: timeout}
-	text, _, _, err := runAgentInOrder(ctx, d, c, call, c.ReviewModels, d.ReviewAgent, wt.Dir, PreOpenReviewPrompt(diff, c.Ticket), sum, started, budget)
+	text, _, _, err := runAgentInOrder(ctx, d, c, call, c.ReviewModels, d.ReviewAgent, wt.Dir, PreOpenReviewPrompt(diff, c.Ticket), sum, started, budget, reviewStartRoom)
 	if err != nil {
 		return "", err
 	}
@@ -481,16 +513,19 @@ func reviewRows(rounds []fixRoundResult) []ReviewFinding {
 // review found nothing is untouched by any of this (AC6).
 //
 // The review's budget runs from when the review begins, after the guard scan,
-// so a build stage that spent its own share of the cap leaves the review stage
-// the whole of its own. It gives up — running no fix round — once that budget
-// would not leave enough time for one, and skips a re-check alone once it would
-// not leave enough time for that, labelling the findings as addressed by a fix
-// round rather than re-checked. A valid commit-message block from a fix round
-// replaces msg. Each review pass starts a fresh session, so it carries no
-// history of its own; rules is the build projection's rules, which the review
-// needs to check the diff against them, and every fix round resumes the build
-// agent's own session with the same rules it was built under — dropping them
-// there would change the resumed session's system prompt mid-conversation.
+// and is what the run cap still leaves once the time the run has spent and the
+// commit reserve are set aside — never below nfr1ReviewFloor — so a build that
+// finished early leaves the review the time it did not use. No pass, fix round
+// or re-check starts with under reviewStartRoom of that budget left: the run
+// gives up — running no fix round — once the budget would not leave enough time
+// for one, and skips a re-check alone once it would not leave enough time for
+// that, labelling the findings as addressed by a fix round rather than
+// re-checked. A valid commit-message block from a fix round replaces msg. Each
+// review pass starts a fresh session, so it carries no history of its own;
+// rules is the build projection's rules, which the review needs to check the
+// diff against them, and every fix round resumes the build agent's own session
+// with the same rules it was built under — dropping them there would change the
+// resumed session's system prompt mid-conversation.
 func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum *Summary, rules, session string, buildRound int, msg *CommitMessage) (ready bool, detail string, err error) {
 	// The guard scan is charged to the build stage: it probes the diff the
 	// review reads, so it stops once the build's budget is spent and its time
@@ -505,14 +540,15 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 		sum.GuardsUntested = untested
 	}
 	reviewStarted := d.Now()
-	// The review's budget begins here, so its first pass takes the stage's own
-	// clamp with nothing to gate — the budget is whole at the instant the stage
-	// starts. Only the fix rounds and the re-checks below run late enough in the
-	// stage to need one.
-	passTimeout := min(effectiveAgentTimeout(c.AgentTimeout), nfr1ReviewBudget)
-	found, err := reviewPass(ctx, d, c, wt, sum, 1, rules, passTimeout, reviewStarted, nfr1ReviewBudget)
+	budget := reviewBudget(sum.StartedAt, reviewStarted)
+	// The budget is whole at the instant the stage starts and never below
+	// nfr1ReviewFloor, which is more than reviewStartRoom, so the first pass
+	// always has room to start; only the fix rounds and the re-checks below run
+	// late enough in the stage to need the start floor.
+	passTimeout := min(effectiveAgentTimeout(c.AgentTimeout), budget)
+	found, err := reviewPass(ctx, d, c, wt, sum, 1, rules, passTimeout, reviewStarted, budget)
 	if err != nil {
-		return false, "", err
+		return false, "", reviewCallError(err, passTimeout, c.AgentTimeout, budget)
 	}
 	pending := append(guards, reviewPending(found)...)
 	if len(pending) == 0 {
@@ -522,21 +558,24 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 	rounds := make([]fixRoundResult, 0, maxFixRounds)
 	findings, checksDetail := pending, ""
 	round := buildRound
+	skipped := ""
 	for n := 1; n <= maxFixRounds; n++ {
 		round++
-		timeout, inBudget := roundTimeout(c.AgentTimeout, reviewStarted, d.Now(), nfr1ReviewBudget)
+		timeout, inBudget := roundTimeout(c.AgentTimeout, reviewStarted, d.Now(), budget, reviewStartRoom)
 		if !inBudget {
-			// A stage with no budget left starts no round: the findings stay open
-			// and the PR says so, exactly as it did before there was a second one.
+			// A stage with no budget left, or too little to finish a round,
+			// starts no round: the findings stay open and the PR says so, exactly
+			// as it did before there was a second one.
+			skipped = "fix round skipped: " + stageBudgetSpent("review", budget)
 			break
 		}
 		text := findingsText(findings)
 		fixes := buildOrder(c)
 		call := agentCall{Phase: PhaseBuild, Round: round, Model: fixes[0], Session: session, Rules: rules, Detail: text,
 			Timeout: timeout}
-		fixText, resumed, ran, err := runAgentInOrder(ctx, d, c, call, fixes, d.Agent, wt.Dir, withCommitInstruction(fixPrompt(text)), sum, reviewStarted, nfr1ReviewBudget)
+		fixText, resumed, ran, err := runAgentInOrder(ctx, d, c, call, fixes, d.Agent, wt.Dir, withCommitInstruction(fixPrompt(text)), sum, reviewStarted, budget, reviewStartRoom)
 		if err != nil {
-			return false, "", err
+			return false, "", reviewCallError(err, timeout, c.AgentTimeout, budget)
 		}
 		// A substitution inside the round advanced it, so the checks, the
 		// re-review and the next round continue from the round that answered.
@@ -563,20 +602,20 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 		// to what the fix round changed. Both re-checks then run under the one
 		// gate below: a finding is open, or fixed, only once its own re-check
 		// has said so.
-		surviving, _, err := scanGuards(ctx, d, wt, reviewStarted, nfr1ReviewBudget, settled)
+		surviving, _, err := scanGuards(ctx, d, wt, reviewStarted, budget, settled)
 		if err != nil {
 			return false, "", err
 		}
-		recheckTimeout, inBudget := roundTimeout(c.AgentTimeout, reviewStarted, d.Now(), nfr1ReviewBudget)
+		recheckTimeout, inBudget := roundTimeout(c.AgentTimeout, reviewStarted, d.Now(), budget, reviewStartRoom)
 		if !inBudget {
 			rounds = append(rounds, fixRoundResult{round: round, issued: findings})
 			sum.setReviewFindings(reviewRows(rounds))
 			return false, detailParts("findings addressed by a fix round, not re-reviewed: "+
-				text+" ("+stageBudgetSpent("review", nfr1ReviewBudget)+")", checksDetail), nil
+				text+" ("+stageBudgetSpent("review", budget)+")", checksDetail), nil
 		}
-		remaining, err := reviewPass(ctx, d, c, wt, sum, round, rules, recheckTimeout, reviewStarted, nfr1ReviewBudget)
+		remaining, err := reviewPass(ctx, d, c, wt, sum, round, rules, recheckTimeout, reviewStarted, budget)
 		if err != nil {
-			return false, "", err
+			return false, "", reviewCallError(err, recheckTimeout, c.AgentTimeout, budget)
 		}
 		open := append(surviving, reviewPending(remaining)...)
 		rounds = append(rounds, fixRoundResult{round: round, issued: findings, open: open, rechecked: true})
@@ -589,8 +628,8 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 	if len(rounds) == 0 {
 		// The budget left no round at all: nothing was done about the findings.
 		sum.setReviewFindings(resolveFindings(pending, nil, noFixRound, false))
-		return false, "findings open: " + findingsText(pending) + " (fix round skipped: " + stageBudgetSpent("review", nfr1ReviewBudget) + ")", nil
+		return false, "findings open: " + findingsText(pending) + " (" + skipped + ")", nil
 	}
 	sum.setReviewFindings(reviewRows(rounds))
-	return false, detailParts("findings open: "+findingsText(findings), checksDetail), nil
+	return false, detailParts("findings open: "+findingsText(findings), skipped, checksDetail), nil
 }
