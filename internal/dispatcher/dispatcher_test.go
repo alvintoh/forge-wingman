@@ -1648,12 +1648,17 @@ func TestPollLogsEachChangedTicketWithItsRunID(t *testing.T) {
 
 func TestPollChangesNothingWhenTheLinearReadFails(t *testing.T) {
 	q := &fakeQueue{ticketChanges: []string{"FRG-1"}}
-	if _, err := Poll(context.Background(), pollDeps(fakeSource{err: errFirestore}, q, &fakeWorkflow{}),
-		buildConfig); !errors.Is(err, errFirestore) {
+	var log bytes.Buffer
+	deps := pollDeps(fakeSource{err: errFirestore}, q, &fakeWorkflow{})
+	deps.Logger = slog.New(slog.NewTextHandler(&log, nil))
+	if _, err := Poll(context.Background(), deps, buildConfig); !errors.Is(err, errFirestore) {
 		t.Fatalf("err = %v, want the Linear read's failure", err)
 	}
 	if len(q.ticketReads) != 0 {
 		t.Fatalf("ticket reads = %v, want none on a poll whose Linear read failed", q.ticketReads)
+	}
+	if strings.Contains(log.String(), "ticketChangedMidRun") {
+		t.Fatalf("log reports a change on a poll that read nothing: %q", log.String())
 	}
 }
 

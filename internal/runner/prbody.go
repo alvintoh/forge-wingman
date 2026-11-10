@@ -95,14 +95,18 @@ func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail
 			notes := []string{line, "Built unattended by forge-wingman. Run: " + runURL}
 			if drift != nil {
 				if drift.Unread {
-					notes = append(notes, "", "**Ticket change unread:** this run could not check whether its ticket changed after it read it, so this PR opens as a draft")
+					notes = append(notes, "", "**Ticket change unread:** this run could not check whether its ticket changed after it read it, so this PR opens as a draft. Compare the ticket in Linear with the copy under \"The ticket as built\" before merging")
 				} else {
 					intro := "**Ticket changed mid-run:** this ticket changed after the build read it, so this PR opens as a draft"
 					if len(drift.Lines) == 0 {
 						notes = append(notes, "", intro)
 					} else {
-						diff := strings.Join(drift.Lines, "\n")
+						quoted, omitted := CapDriftLines(drift.Lines)
+						diff := strings.Join(quoted, "\n")
 						notes = append(notes, "", intro+" — the lines that differ:", "", fence(diff)+"\n"+diff+"\n"+fence(diff))
+						if omitted > 0 {
+							notes = append(notes, "", fmt.Sprintf("%d more lines omitted: the PR quotes at most %d lines of the difference", omitted, maxDriftQuoteLines))
+						}
 					}
 				}
 			}

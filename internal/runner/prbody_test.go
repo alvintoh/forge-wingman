@@ -545,3 +545,30 @@ func TestPRBodyNamesAChangeWithNoDifferingLines(t *testing.T) {
 		t.Fatalf("body claims lines differ when none do:\n%s", body)
 	}
 }
+
+func TestPRBodyCapsTheQuotedTicketLines(t *testing.T) {
+	lines := make([]string, maxDriftQuoteLines+5)
+	for i := range lines {
+		lines[i] = "+ " + strings.Repeat("z", maxDriftLineBytes*2)
+	}
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, &TicketDrift{Lines: lines})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "more lines omitted") {
+		t.Fatalf("body does not say lines were omitted:\n%s", body)
+	}
+	if len(body) > 20_000 {
+		t.Fatalf("body is %d bytes for a %d-line difference, want the quote bounded", len(body), len(lines))
+	}
+}
+
+func TestPRBodyAsksToCompareAnUnreadTicketChange(t *testing.T) {
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, nil, 0, nil, 0, nil, 0, false, &TicketDrift{Unread: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "before merging") {
+		t.Fatalf("body does not tell the reviewer what to compare:\n%s", body)
+	}
+}

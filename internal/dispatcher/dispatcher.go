@@ -378,7 +378,8 @@ type TicketChanger interface {
 	// RecordTicketChanges records each in-flight run whose ticket description
 	// differs from the copy it was claimed with, reporting the runs it stamped
 	// this call so a caller logs each once. A run whose ticket still matches, or
-	// whose PR has opened, is left alone; a later edit refreshes the stored text.
+	// whose PR has opened, is left alone; a later edit refreshes the stored text,
+	// and a ticket that matches its copy again clears the stamp.
 	RecordTicketChanges(ctx context.Context, tickets map[string]string, at time.Time) ([]string, error)
 }
 

@@ -6,6 +6,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -150,6 +151,32 @@ func TestRecordTicketChangesRefreshesTheStoredDescriptionOnALaterEdit(t *testing
 	}
 }
 
+func TestRecordTicketChangesClearsTheStampWhenTheTicketReverts(t *testing.T) {
+	q, client := queue(t)
+	ctx := context.Background()
+	id := fresh(fmt.Sprintf("ticket-change-revert-%d", time.Now().UnixNano()))
+	seedRow(t, client, id, map[string]any{
+		stateField: stateClaimed, ticketIDField: id, ticketBodyField: "built",
+	})
+	if changed, err := q.RecordTicketChanges(ctx, map[string]string{id: "edited"}, queueAt); err != nil || len(changed) != 1 {
+		t.Fatalf("first poll changed = %q, %v, want the run stamped", changed, err)
+	}
+	if changed, err := q.RecordTicketChanges(ctx, map[string]string{id: "built"}, queueAt.Add(time.Minute)); err != nil || len(changed) != 0 {
+		t.Fatalf("revert poll changed = %q, %v, want no stamp", changed, err)
+	}
+	change, err := q.TicketChange(ctx, id)
+	if err != nil || !change.At.IsZero() || change.Body != "" {
+		t.Fatalf("TicketChange = %+v, %v, want the reverted run to read no change", change, err)
+	}
+	later := queueAt.Add(2 * time.Minute)
+	if changed, err := q.RecordTicketChanges(ctx, map[string]string{id: "edited again"}, later); err != nil || len(changed) != 1 {
+		t.Fatalf("later edit changed = %q, %v, want the run stamped afresh", changed, err)
+	}
+	if change, _ := q.TicketChange(ctx, id); !change.At.Equal(later) {
+		t.Fatalf("change time = %v, want the new sighting %v", change.At, later)
+	}
+}
+
 func TestRecordTicketChangesReadsNothingWithoutTickets(t *testing.T) {
 	q, queries, _, _ := countingQueue(t, false)
 	changed, err := q.RecordTicketChanges(context.Background(), nil, queueAt)
@@ -162,12 +189,73 @@ func TestRecordTicketChangesReadsNothingWithoutTickets(t *testing.T) {
 }
 
 func TestRecordTicketChangesIgnoresARunWithNoDelegatedTicket(t *testing.T) {
-	q, _ := queue(t)
+	q, client := queue(t)
+	id := fresh("ticket-change-undelegated")
+	seedRow(t, client, id, map[string]any{
+		stateField: stateClaimed, ticketIDField: id, ticketBodyField: "old",
+	})
 	changed, err := q.RecordTicketChanges(context.Background(),
 		map[string]string{fresh("ticket-change-missing"): "new"}, queueAt)
 	if err != nil || len(changed) != 0 {
 		t.Fatalf("changed = %q, %v, want no change", changed, err)
 	}
+	if v, ok := readRow(t, client, id)[ticketChangedAtField]; ok {
+		t.Fatalf("an in-flight run absent from the poll's tickets has change time %v, want none", v)
+	}
+}
+
+func TestRecordTicketChangesOpensNoTransactionWhenNothingDiffers(t *testing.T) {
+	q, client, begins := beginCountingQueue(t)
+	prefix := fresh(fmt.Sprintf("ticket-change-quiet-%d", time.Now().UnixNano()))
+	tickets := map[string]string{}
+	for _, name := range []string{"a", "b"} {
+		id := prefix + "-" + name
+		seedRow(t, client, id, map[string]any{
+			stateField: stateClaimed, ticketIDField: id, ticketBodyField: "same\n",
+		})
+		tickets[id] = "same\r\n"
+	}
+	if changed, err := q.RecordTicketChanges(context.Background(), tickets, queueAt); err != nil || len(changed) != 0 {
+		t.Fatalf("changed = %q, %v, want nothing", changed, err)
+	}
+	if got := begins.Load(); got != 0 {
+		t.Fatalf("opened %d transactions for runs whose tickets match, want none", got)
+	}
+	tickets[prefix+"-a"] = "different"
+	if changed, err := q.RecordTicketChanges(context.Background(), tickets, queueAt); err != nil || len(changed) != 1 {
+		t.Fatalf("changed = %q, %v, want the one run whose ticket differs", changed, err)
+	}
+	if got := begins.Load(); got != 1 {
+		t.Fatalf("opened %d transactions for one differing run, want 1", got)
+	}
+}
+
+// beginCountingQueue is a Queue over the emulator whose client counts the
+// transactions it begins.
+func beginCountingQueue(t *testing.T) (*Queue, *firestore.Client, *atomic.Int64) {
+	t.Helper()
+	if os.Getenv("FIRESTORE_EMULATOR_HOST") == "" {
+		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
+	}
+	begins := new(atomic.Int64)
+	count := func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		if _, ok := req.(*firestorepb.BeginTransactionRequest); ok {
+			begins.Add(1)
+		}
+		return invoker(metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer owner"), method, req, reply, cc, opts...)
+	}
+	conn, err := grpc.NewClient(os.Getenv("FIRESTORE_EMULATOR_HOST"),
+		grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithChainUnaryInterceptor(count))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	client, err := firestore.NewClient(context.Background(), "forge-wingman-test", option.WithGRPCConn(conn))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	return NewQueue(client), client, begins
 }
 
 func TestRecordTicketChangesReturnsAnIteratorFailure(t *testing.T) {
@@ -207,7 +295,9 @@ func TestRecordTicketChangeRefusesWhatItMustNotStamp(t *testing.T) {
 		{"a matching ticket", map[string]any{stateField: stateClaimed, ticketBodyField: "same"}, "same", time.Time{}, ""},
 		{"a stamped run with the same description", map[string]any{stateField: stateClaimed, ticketBodyField: "old", ticketChangedAtField: queueAt, ticketChangedBodyField: "new"}, "new", queueAt, "new"},
 		{"a stamped run with a later description", map[string]any{stateField: stateClaimed, ticketBodyField: "old", ticketChangedAtField: queueAt, ticketChangedBodyField: "first"}, "second", queueAt, "second"},
-		{"a stamped run whose ticket reverted", map[string]any{stateField: stateClaimed, ticketBodyField: "old", ticketChangedAtField: queueAt, ticketChangedBodyField: "changed"}, "old", queueAt, "old"},
+		{"a stamped run whose ticket reverted", map[string]any{stateField: stateClaimed, ticketBodyField: "old", ticketChangedAtField: queueAt, ticketChangedBodyField: "changed"}, "old", time.Time{}, ""},
+		{"a stamped run whose ticket reverted with a re-render", map[string]any{stateField: stateClaimed, ticketBodyField: "see https://example.com\n", ticketChangedAtField: queueAt, ticketChangedBodyField: "changed"}, "see <https://example.com>\r\n", time.Time{}, ""},
+		{"a ticket only re-rendered", map[string]any{stateField: stateClaimed, ticketBodyField: "see https://example.com\n"}, "see <https://example.com>  \r\n\r\n", time.Time{}, ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			id := fresh("ticket-change-refuse")
