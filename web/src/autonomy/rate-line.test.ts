@@ -27,7 +27,12 @@ function state(overrides: Partial<MergeState>): MergeState {
 describe("rateLine", () => {
   it("does not claim a rate under a switched-off line when none can be computed", () => {
     const line = rateLine(
-      state({ switch_on: false, reason: "switch-off", rate_reason: "too-few-measured", rate_value: "0.0%" }),
+      state({
+        switch_on: false,
+        reason: "switch-off",
+        rate_reason: "too-few-measured",
+        rate_value: "0.0%",
+      }),
     );
     expect(line).toBe(
       "off: switched off by you; the rate cannot be computed: fewer than 10 PRs a human merged are measured",
