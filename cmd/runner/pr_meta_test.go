@@ -529,6 +529,27 @@ func TestPRBodyNamesAnUnreadWriteSetAsWhyThePRIsADraft(t *testing.T) {
 	}
 }
 
+// TestRenderPRCarriesTheSummarysGuardAndFindingCounts keeps the summary's
+// counts wired to the notes: the guards left unprobed, and the findings the
+// cap left out of the list.
+func TestRenderPRCarriesTheSummarysGuardAndFindingCounts(t *testing.T) {
+	now := time.Now()
+	sum := buildSummary(slog.New(slog.NewTextHandler(io.Discard, nil)),
+		encodedSummary(t, "42-1", now), "42-1", prRecord.Ticket(), now)
+	sum.GuardsUntested = 2
+	sum.ReviewFindings = []runner.ReviewFinding{{Finding: "a finding", Resolution: "still open"}}
+	sum.ReviewFindingsOmitted = 5
+	_, body, err := renderPR(prTemplate(t), prRecord, sum, "", "https://example.test/run", "", prCheck{Planned: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"**Guards unprobed:** 2 of the guards", "- +5 more, not listed"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body lacks %q:\n%s", want, body)
+		}
+	}
+}
+
 func TestRenderPRNamesAMissingPlan(t *testing.T) {
 	now := time.Now()
 	sum := buildSummary(slog.New(slog.NewTextHandler(io.Discard, nil)),
