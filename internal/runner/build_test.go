@@ -3301,13 +3301,12 @@ func reviewFloorSpent(started time.Time, left time.Duration) time.Time {
 	return reviewFloorStart(started).Add(nfr1ReviewFloor - left)
 }
 
-// TestReviewBudgetIsWhatTheRunCapLeavesAfterTheBuild is AC1: the review stage's
-// budget is the run cap less what the run has already spent and the commit
-// reserve, so a build that finished 55 minutes in leaves the review 30 minutes
-// rather than the 25 it got whatever the build did.
-func TestReviewBudgetIsWhatTheRunCapLeavesAfterTheBuild(t *testing.T) {
+// TestReviewPassIsBoundedByWhatTheRunCapLeavesAfterTheBuild is AC1's wiring:
+// the review pass's deadline is the budget the run cap leaves, measured from
+// the run's own start (reviewBudget's arithmetic is its own table test).
+func TestReviewPassIsBoundedByWhatTheRunCapLeavesAfterTheBuild(t *testing.T) {
 	agent := &fakeAgent{edit: edit("version.go", "package x\n")}
-	deps, _, reported := testDeps(validObjects(), agent)
+	deps, _, _ := testDeps(validObjects(), agent)
 	started := time.Now()
 	clock := started
 	deps.Now = func() time.Time { return clock }
@@ -3329,9 +3328,6 @@ func TestReviewBudgetIsWhatTheRunCapLeavesAfterTheBuild(t *testing.T) {
 	// The 90-minute cap less the 55 spent and the 5-minute commit reserve.
 	if got := time.Until(review.deadlines[0]); got < 30*time.Minute-2*time.Second || got > 30*time.Minute+2*time.Second {
 		t.Fatalf("the review pass is bounded by %s, want the 30 minutes the cap leaves after the build's 55", got)
-	}
-	if rec := reported.last(t); !rec.Ready {
-		t.Fatalf("ready = false (%q), want the clean review to leave the run ready", rec.LoopDetail)
 	}
 }
 
@@ -3523,6 +3519,163 @@ func TestPrePRLoopSkipsAReCheckWithUnderThreeMinutesLeft(t *testing.T) {
 	if want := []ReviewFinding{{Finding: finding, Resolution: "addressed in round 2, not re-checked"}}; !slices.Equal(rec.ReviewFindings, want) {
 		t.Fatalf("findings = %+v, want %+v", rec.ReviewFindings, want)
 	}
+}
+
+// stageEndingAgent is a fakeAgent whose call-th call spends what is left of the
+// review stage, by running spend, and then waits out its own deadline.
+type stageEndingAgent struct {
+	*fakeAgent
+	call  int
+	spend func()
+}
+
+func (a stageEndingAgent) Run(ctx context.Context, dir, session, prompt, rules string, stdout, stderr io.Writer) error {
+	if err := a.fakeAgent.Run(ctx, dir, session, prompt, rules, stdout, stderr); err != nil {
+		return err
+	}
+	if a.calls != a.call {
+		return nil
+	}
+	a.spend()
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// assertReviewBudgetRecorded checks a review that timed out as its stage's
+// budget ran out is recorded as that budget, never as an agent timeout.
+func assertReviewBudgetRecorded(t *testing.T, rec Summary, logs string) {
+	t.Helper()
+	if rec.Ready {
+		t.Fatal("ready = true, want false: the review stage ran out")
+	}
+	if !strings.Contains(rec.LoopDetail, "the review stage's 25-minute budget was spent") ||
+		strings.Contains(rec.LoopDetail, "agent exceeded") {
+		t.Fatalf("loop detail = %q, want the review stage's spent budget, not an agent timeout", rec.LoopDetail)
+	}
+	if !strings.Contains(logs, `"msg":"reviewFailed","reason":"`+string(StopRunBudget)+`"`) {
+		t.Fatalf("logs = %s, want reviewFailed naming the run budget", logs)
+	}
+}
+
+// TestFixRoundTimingOutAtTheStageEndRecordsTheReviewBudget is AC2 through the
+// loop: a fix round whose deadline is the review stage's end times out there,
+// and the run records the stage's budget as spent.
+func TestFixRoundTimingOutAtTheStageEndRecordsTheReviewBudget(t *testing.T) {
+	started := time.Now()
+	clock := started
+	agent := stageEndingAgent{fakeAgent: &fakeAgent{edit: edit("version.go", "package x\n")}, call: 2,
+		spend: func() { clock = reviewFloorSpent(started, 0) }}
+	deps, _, reported := testDeps(validObjects(), agent.fakeAgent)
+	deps.Agent = agent
+	deps.Now = func() time.Time { return clock }
+	var logs bytes.Buffer
+	deps.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
+	checks := 0
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		checks++
+		if checks == 1 {
+			clock = reviewFloorStart(started)
+		}
+		return "", "", nil
+	}
+	deps.ReviewAgent = &fakeAgent{events: reviewEvent("version.go:1 the change is wrong")}
+	c := testConfig(t, initRepo(t))
+	c.AgentTimeout = 200 * time.Millisecond
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 2 {
+		t.Fatalf("build agent ran %d times, want the build round and the fix round", agent.calls)
+	}
+	assertReviewBudgetRecorded(t, reported.last(t), logs.String())
+}
+
+// TestBackupReviewModelTimingOutAtTheStageEndRecordsTheReviewBudget is AC2 on
+// the substitution path: the first review model fails within its allowance, and
+// the backup, whose deadline is what the stage has left, times out at the
+// stage's end — the budget ran out, not the backup's allowance.
+func TestBackupReviewModelTimingOutAtTheStageEndRecordsTheReviewBudget(t *testing.T) {
+	started := time.Now()
+	clock := started
+	deps, _, reported := testDeps(validObjects(), &fakeAgent{edit: edit("version.go", "package x\n")})
+	deps.Now = func() time.Time { return clock }
+	var logs bytes.Buffer
+	deps.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		clock = reviewFloorStart(started)
+		return "", "", nil
+	}
+	review := stageEndingAgent{fakeAgent: &fakeAgent{
+		events: reviewEvent(""),
+		errFn: func(call int) error {
+			if call == 1 {
+				return errors.New("exit status 1")
+			}
+			return nil
+		},
+		stderrFn: func(call int) string {
+			if call == 1 {
+				return allowanceStderr
+			}
+			return ""
+		},
+	}, call: 2, spend: func() { clock = reviewFloorSpent(started, 0) }}
+	deps.ReviewAgent = review
+	c := testConfig(t, initRepo(t))
+	c.ReviewModels = []string{"p/r1", "p/r2"}
+	c.AgentTimeout = 200 * time.Millisecond
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if review.calls != 2 {
+		t.Fatalf("review agent ran %d times, want the first model and its backup", review.calls)
+	}
+	assertReviewBudgetRecorded(t, reported.last(t), logs.String())
+}
+
+// TestPostFixChecksStopAtTheReviewStageEnd bounds the checks after a fix round
+// by what the review stage has left, so they cannot run into the commit
+// reserve, and records the stage's budget as spent when they hit that bound.
+func TestPostFixChecksStopAtTheReviewStageEnd(t *testing.T) {
+	started := time.Now()
+	clock := started
+	agent := &fakeAgent{}
+	agent.edit = func(dir string) error {
+		if agent.calls == 2 {
+			// The fix round leaves the stage a moment, which the checks overrun.
+			clock = reviewFloorSpent(started, 100*time.Millisecond)
+		}
+		return edit("version.go", "package x\n")(dir)
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	deps.Now = func() time.Time { return clock }
+	var logs bytes.Buffer
+	deps.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
+	checks := 0
+	deps.Checks = func(ctx context.Context, _ string, _ []string) (string, string, error) {
+		checks++
+		if checks == 1 {
+			clock = reviewFloorStart(started)
+			return "", "", nil
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			return "", "", nil
+		}
+		<-ctx.Done()
+		return "", "", ctx.Err()
+	}
+	deps.ReviewAgent = &fakeAgent{events: reviewEvent("version.go:1 the change is wrong")}
+	c := testConfig(t, initRepo(t))
+
+	if _, err := Build(context.Background(), deps, c); err != nil {
+		t.Fatal(err)
+	}
+	if checks != 2 {
+		t.Fatalf("checks ran %d times, want the build's and the fix round's", checks)
+	}
+	assertReviewBudgetRecorded(t, reported.last(t), logs.String())
 }
 
 // fakeClockElapsed returns a Now func whose first call anchors sum.StartedAt

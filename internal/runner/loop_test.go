@@ -155,25 +155,26 @@ func TestReviewCallTimeoutStartsNothingWithUnderThreeMinutesLeft(t *testing.T) {
 }
 
 // TestReviewCallErrorNamesTheBudgetForACallTheStageClamped is AC2's labelling: a
-// review call whose deadline was the stage's remaining time reports the budget
-// running out, and one that got the agent's own allowance keeps its timeout.
+// review call that timed out once the stage's budget was spent reports the
+// budget running out, and one that timed out with budget left keeps its timeout.
 func TestReviewCallErrorNamesTheBudgetForACallTheStageClamped(t *testing.T) {
 	timedOut := stopWith(OutcomeAgentFailed, StopAgentTimeout, errors.New("agent exceeded 3m0s"))
+	started := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
 	budget := nfr1ReviewFloor
 
-	got := reviewCallError(timedOut, reviewStartRoom, 0, budget)
+	got := reviewCallError(timedOut, started.Add(budget), started, budget)
 	var s *StopError
 	if !errors.As(got, &s) || s.Outcome != OutcomeStopped || s.Reason != StopRunBudget {
-		t.Fatalf("clamped call = %v, want the review stage's spent-budget stop", got)
+		t.Fatalf("call at the stage's end = %v, want the review stage's spent-budget stop", got)
 	}
 	if want := "the review stage's 25-minute budget was spent"; s.Err.Error() != want {
 		t.Fatalf("detail = %q, want %q", s.Err.Error(), want)
 	}
-	if got := reviewCallError(timedOut, defaultAgentTimeout, 0, budget); got != timedOut {
-		t.Fatalf("call bounded by the agent allowance = %v, want it unchanged", got)
+	if got := reviewCallError(timedOut, started.Add(budget-time.Second), started, budget); got != timedOut {
+		t.Fatalf("call with budget left = %v, want it unchanged", got)
 	}
 	other := errors.New("exit status 1")
-	if got := reviewCallError(other, reviewStartRoom, 0, budget); got != other {
+	if got := reviewCallError(other, started.Add(budget), started, budget); got != other {
 		t.Fatalf("non-timeout error = %v, want it unchanged", got)
 	}
 }

@@ -111,19 +111,29 @@ func stageBudgetSpent(stage string, budget time.Duration) string {
 // time it did not use. It is never below nfr1ReviewFloor, so the review keeps
 // the share the cap always gave it however late it begins.
 func reviewBudget(runStarted, now time.Time) time.Duration {
+	// A build that ran past its 60 minutes still gets the floor, so that run
+	// can total more than nfr1RunCap: AC1 puts the floor ahead of the cap.
 	return max(nfr1ReviewFloor, nfr1RunCap-now.Sub(runStarted)-nfr1CommitReserve)
 }
 
-// reviewCallError relabels a review call that timed out on the stage's own
-// remaining budget: its deadline was what the stage had left rather than the
-// agent's allowance, so the run records the budget running out instead of an
-// agent timeout that never happened.
-func reviewCallError(err error, timeout, configured, budget time.Duration) error {
+// reviewBudgetSpent is the stop a review call, or the checks after a fix
+// round, ends with when the review stage's budget ran out under it.
+func reviewBudgetSpent(budget time.Duration) error {
+	return stopWith(OutcomeStopped, StopRunBudget, errors.New(stageBudgetSpent("review", budget)))
+}
+
+// reviewCallError relabels a review call that timed out once the review
+// stage's budget, measured from started, was spent at now: the deadline it hit
+// was the stage's, not the agent's allowance, so the run records the budget
+// running out rather than an agent timeout. It judges by the stage, not by the
+// first attempt's deadline, because a backup model's deadline is re-clamped to
+// what the stage has left when that attempt starts.
+func reviewCallError(err error, now, started time.Time, budget time.Duration) error {
 	var s *StopError
-	if !errors.As(err, &s) || s.Reason != StopAgentTimeout || timeout >= effectiveAgentTimeout(configured) {
+	if !errors.As(err, &s) || s.Reason != StopAgentTimeout || withinBudget(started, now, budget) {
 		return err
 	}
-	return stopWith(OutcomeStopped, StopRunBudget, errors.New(stageBudgetSpent("review", budget)))
+	return reviewBudgetSpent(budget)
 }
 
 // checkFeedbackPrompt is what a rebuild round receives: the failing gate's
@@ -548,7 +558,7 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 	passTimeout := min(effectiveAgentTimeout(c.AgentTimeout), budget)
 	found, err := reviewPass(ctx, d, c, wt, sum, 1, rules, passTimeout, reviewStarted, budget)
 	if err != nil {
-		return false, "", reviewCallError(err, passTimeout, c.AgentTimeout, budget)
+		return false, "", reviewCallError(err, d.Now(), reviewStarted, budget)
 	}
 	pending := append(guards, reviewPending(found)...)
 	if len(pending) == 0 {
@@ -575,7 +585,7 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 			Timeout: timeout}
 		fixText, resumed, ran, err := runAgentInOrder(ctx, d, c, call, fixes, d.Agent, wt.Dir, withCommitInstruction(fixPrompt(text)), sum, reviewStarted, budget, reviewStartRoom)
 		if err != nil {
-			return false, "", reviewCallError(err, timeout, c.AgentTimeout, budget)
+			return false, "", reviewCallError(err, d.Now(), reviewStarted, budget)
 		}
 		// A substitution inside the round advanced it, so the checks, the
 		// re-review and the next round continue from the round that answered.
@@ -587,7 +597,15 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 			sum.ReviewSecondRound = lastFixRoundCost(sum)
 		}
 
-		gate, output, cerr := checksFormatted(ctx, d, sum, wt, round)
+		// The checks get only what the review stage has left, so a fix round
+		// started near the stage's end cannot run them into the commit reserve.
+		cctx, cancel := context.WithTimeout(ctx, budget-d.Now().Sub(reviewStarted))
+		gate, output, cerr := checksFormatted(cctx, d, sum, wt, round)
+		expired := ctx.Err() == nil && errors.Is(cctx.Err(), context.DeadlineExceeded)
+		cancel()
+		if expired {
+			return false, "", reviewBudgetSpent(budget)
+		}
 		if cerr != nil {
 			return false, "", cerr
 		}
@@ -615,7 +633,7 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 		}
 		remaining, err := reviewPass(ctx, d, c, wt, sum, round, rules, recheckTimeout, reviewStarted, budget)
 		if err != nil {
-			return false, "", reviewCallError(err, recheckTimeout, c.AgentTimeout, budget)
+			return false, "", reviewCallError(err, d.Now(), reviewStarted, budget)
 		}
 		open := append(surviving, reviewPending(remaining)...)
 		rounds = append(rounds, fixRoundResult{round: round, issued: findings, open: open, rechecked: true})
