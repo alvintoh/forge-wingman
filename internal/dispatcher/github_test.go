@@ -391,6 +391,36 @@ func TestGitHubMeasuresARunsLinesFromTheFixtureCommits(t *testing.T) {
 	}
 }
 
+func TestGitHubLeavesMergeCommitsOutOfARunsLines(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/octo/scratch/pulls/7/commits":
+			_, _ = io.WriteString(w, `[
+				{"sha":"aaaa","parents":[{"sha":"p1"}],"author":{"login":"github-actions[bot]"},"commit":{"author":{"name":"github-actions[bot]","email":"41898282+github-actions[bot]@users.noreply.github.com"}}},
+				{"sha":"mmmm","parents":[{"sha":"aaaa"},{"sha":"main1"}],"author":{"login":"alvintoh"},"commit":{"message":"Merge origin/main","author":{"name":"alvintoh","email":"o@example.com"}}},
+				{"sha":"bbbb","parents":[{"sha":"mmmm"}],"author":{"login":"alvintoh"},"commit":{"author":{"name":"alvintoh","email":"o@example.com"}}}
+			]`)
+		case "/repos/octo/scratch/commits/aaaa":
+			_, _ = io.WriteString(w, `{"stats":{"additions":120,"deletions":8,"total":128}}`)
+		case "/repos/octo/scratch/commits/bbbb":
+			_, _ = io.WriteString(w, `{"stats":{"additions":3,"deletions":1,"total":4}}`)
+		default:
+			t.Errorf("read %q, want the merge commit's lines left unread", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	commits, err := (GitHub{Endpoint: srv.URL, Token: "gh-token", Client: srv.Client()}).
+		Commits(context.Background(), "octo/scratch", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := RewriteOf(commits), (Rewrite{AgentLines: 128, OwnerLines: 4, UnlabelledLines: 4}); got != want {
+		t.Fatalf("RewriteOf = %+v, want %+v with the merge of main left out", got, want)
+	}
+}
+
 func TestGitHubReadsACommitGitHubReportsNoStatsForAsNoLines(t *testing.T) {
 	// GitHub answers null stats for a commit of more than 300 files, which counts
 	// as no lines rather than withholding the measurement.
