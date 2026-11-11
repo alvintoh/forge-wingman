@@ -14,11 +14,15 @@ const NO_MODEL_WORD: Record<Phase, string> = {
 // The names the page gives the models it knows; any other id reads as it is, so
 // a new version never shows blank.
 const MODEL_NAMES: Record<string, string> = {
-  "command-code/deepseek/deepseek-v4.1-flash": "DeepSeek V4.1 Flash (Command Code)",
-  "command-code/meta/muse-spark-1.3-contributor": "Muse Spark 1.3 Contributor (Command Code)",
-  "opencode-go/deepseek-v4.1-flash": "DeepSeek V4.1 Flash",
-  "opencode-go/muse-spark-1.3-contributor": "Muse Spark 1.3 Contributor",
+  "deepseek-v4.1-flash": "DeepSeek V4.1 Flash",
+  "muse-spark-1.3": "Muse Spark 1.3",
 };
+
+// modelKey is a model id without its provider and vendor path and without the "-contributor"
+// suffix, as the endpoint names a model: the same model through two providers is one.
+function modelKey(id: string): string {
+  return id.slice(id.lastIndexOf("/") + 1).replace(/-contributor$/, "");
+}
 
 // evenTie is the fixed-point text of a value that sits exactly on a tie at the given decimal places
 // and whose last kept digit is even, or null. There the endpoint's rounding keeps the digit, where
@@ -108,7 +112,7 @@ export function utcDay(timestamp: string | number): string {
 }
 
 export function modelName(id: string): string {
-  return MODEL_NAMES[id] ?? id;
+  return MODEL_NAMES[modelKey(id)] ?? id;
 }
 
 // phaseWord is what a phase's group is called: the model, or the words for a phase that has none.

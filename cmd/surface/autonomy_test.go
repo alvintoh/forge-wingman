@@ -257,7 +257,7 @@ func TestAutonomyScopedToARepositoryServesItsOwnFigures(t *testing.T) {
 	if want := map[string]int{"S": 0, "M": 12, "L": 0, "unsized": 0}; !maps.Equal(sizes, want) {
 		t.Errorf("by_size = %v, want scratch's twelve merges, all size M", sizes)
 	}
-	if build := figures.ByModel.Build; len(build) != 1 || build[0].Model != "p/a" || build[0].PRs != 12 {
+	if build := figures.ByModel.Build; len(build) != 1 || build[0].Model != "a" || build[0].PRs != 12 {
 		t.Errorf("by_model.build = %+v, want scratch's model alone", build)
 	}
 

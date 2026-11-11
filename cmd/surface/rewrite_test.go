@@ -444,11 +444,11 @@ func TestAutonomyServesTheByModelFigures(t *testing.T) {
 		}
 	}
 	x, _ := build[0].(map[string]any)
-	// The two PRs built on p/x: 60 owner lines split 30, 15 and 15 over 200 agent lines.
-	if x["model"] != "p/x" || x["prs"] != 2.0 || x["agent_lines"] != 200.0 || x["owner_lines"] != 60.0 ||
+	// The two PRs built on p/x (named x): 60 owner lines split 30, 15 and 15 over 200 agent lines.
+	if x["model"] != "x" || x["prs"] != 2.0 || x["agent_lines"] != 200.0 || x["owner_lines"] != 60.0 ||
 		x["review_found_lines"] != 30.0 || x["owner_change_lines"] != 15.0 || x["unlabelled_lines"] != 15.0 ||
 		x["rate"] != "30.0%" || x["median"] != nil {
-		t.Errorf("p/x = %v, want its two PRs' lines, split and pooled rate", x)
+		t.Errorf("x = %v, want its two PRs' lines, split and pooled rate", x)
 	}
 	// The PR whose review ran no model is the unknown group, listed last.
 	review, _ := models["review"].([]any)
@@ -649,6 +649,26 @@ func TestAutonomyKeepsTheKeysThePageAlreadyReads(t *testing.T) {
 	}
 }
 
+func TestAutonomyGroupsOneModelRunThroughTwoProviders(t *testing.T) {
+	rewrite := rewriteFigures(t, []dispatcher.Sample{
+		{PR: 3, BuildModel: "opencode-go/muse-spark-1.3-contributor", Rewrite: dispatcher.Rewrite{AgentLines: 100, OwnerLines: 10}},
+		{PR: 2, BuildModel: "command-code/meta/muse-spark-1.3-contributor", Rewrite: dispatcher.Rewrite{AgentLines: 100, OwnerLines: 30}},
+	})
+	models, _ := rewrite["by_model"].(map[string]any)
+	build, _ := models["build"].([]any)
+	if len(build) != 1 {
+		t.Fatalf("build = %v, want one row for the one model", models["build"])
+	}
+	row, _ := build[0].(map[string]any)
+	if row["model"] != "muse-spark-1.3" || row["prs"] != 2.0 || row["rate"] != "20.0%" {
+		t.Errorf("build row = %v, want muse-spark-1.3 over both PRs at 20.0%%", row)
+	}
+	prs, _ := rewrite["prs"].([]any)
+	if pr, _ := prs[0].(map[string]any); pr["build_model"] != "muse-spark-1.3" {
+		t.Errorf("prs[0] = %v, want the build model without its provider and suffix", pr)
+	}
+}
+
 func TestAutonomyServesEachPRsPhaseModels(t *testing.T) {
 	rewrite := rewriteFigures(t, []dispatcher.Sample{
 		{PR: 3, PlanModel: "p/plan", BuildModel: "p/build", ReviewModel: "p/review", Rewrite: dispatcher.Rewrite{AgentLines: 1}},
@@ -659,8 +679,8 @@ func TestAutonomyServesEachPRsPhaseModels(t *testing.T) {
 	})
 	prs, _ := rewrite["prs"].([]any)
 	for i, want := range []struct{ plan, build, review string }{
-		{"p/plan", "p/build", "p/review"},
-		{"unknown", "unknown", "p/review"},
+		{"plan", "build", "review"},
+		{"unknown", "unknown", "review"},
 		{"unknown", "unknown", "unknown"},
 	} {
 		pr, _ := prs[i].(map[string]any)
