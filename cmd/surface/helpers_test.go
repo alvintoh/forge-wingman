@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
+	"github.com/alvintoh/forge-wingman/internal/store"
 )
 
 func discardLogger() *slog.Logger {
@@ -58,28 +59,38 @@ func getAutonomy(t *testing.T, reader *stubMeasured) *httptest.ResponseRecorder 
 	return getAutonomyAt(t, reader, nil, "/api/autonomy")
 }
 
-// stubAutoMerge is an AutoMergeStore that answers with the switch it holds,
-// recording what a write set it to.
+// stubAutoMerge is an AutoMergeStore that answers with the settings it holds,
+// recording what a write set them to.
 type stubAutoMerge struct {
 	enabled bool
+	// bar is the bar it answers with, the default while zero.
+	bar     int
+	escaped dispatcher.MergeEscape
 	readErr error
 	setErr  error
 	// setAt is when the last write happened, zero while none did.
 	setAt time.Time
 }
 
-func (s *stubAutoMerge) Enabled(context.Context) (bool, error) {
+func (s *stubAutoMerge) Read(context.Context) (store.AutoMergeSetting, error) {
 	if s.readErr != nil {
-		return false, s.readErr
+		return store.AutoMergeSetting{}, s.readErr
 	}
-	return s.enabled, nil
+	bar := s.bar
+	if bar == 0 {
+		bar = store.DefaultBarPercent
+	}
+	return store.AutoMergeSetting{Enabled: s.enabled, BarPercent: bar, Escaped: s.escaped}, nil
 }
 
-func (s *stubAutoMerge) Set(_ context.Context, enabled bool, at time.Time) error {
+func (s *stubAutoMerge) SetEnabled(_ context.Context, enabled bool, at time.Time) error {
 	if s.setErr != nil {
 		return s.setErr
 	}
 	s.enabled, s.setAt = enabled, at
+	if enabled {
+		s.escaped = dispatcher.MergeEscape{}
+	}
 	return nil
 }
 

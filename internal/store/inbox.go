@@ -15,6 +15,7 @@ import (
 
 const (
 	waitReasonField         = "wait_reason"
+	waitDetailField         = "wait_detail"
 	mergedByOwnerAtField    = "merged_by_owner_at"
 	mergedSHAField          = "merged_sha"
 	ticketTitleField        = "ticket_title"
@@ -32,6 +33,12 @@ type InboxRun struct {
 	Size       string
 	PRURL      string
 	WaitReason runner.WaitReason
+	// WaitDetail names what holds auto-merge, in the run record's own words.
+	WaitDetail string
+	// AutoMerged is set for an open PR marked for auto-merge that names no wait reason:
+	// nothing waits on the owner unless the switch has since gone off or a latch holds,
+	// which the store cannot see, so the reader decides whether to list it.
+	AutoMerged bool
 	Attempt    int
 	Outcome    string
 	StopReason string
@@ -47,9 +54,9 @@ type InboxRun struct {
 }
 
 // Inbox returns the runs updated since that the owner has not cancelled, whose
-// ticket a poll has not found closed while they were stopped, and that either have an open, unmerged PR naming a wait reason or not marked for
-// auto-merge, or stopped with no automatic requeue due, newest first, up to
-// limit.
+// ticket a poll has not found closed while they were stopped, and that either have an open, unmerged PR
+// or stopped with no automatic requeue due, newest first, up to limit. An open PR marked for auto-merge
+// that names no wait reason carries AutoMerged, for the reader to drop while auto-merge stands.
 //
 // A PR closed unmerged on GitHub is not known here, so it stays listed until
 // the owner's merge attempt finds it closed.
@@ -58,7 +65,7 @@ func (r *Records) Inbox(ctx context.Context, since time.Time, limit int) ([]Inbo
 		Where(updatedAtField, ">", since).
 		OrderBy(updatedAtField, firestore.Desc).
 		Select(repoField, sizeField, prURLField, autoMergeField, outcomeField, ticketIDField, updatedAtField,
-			waitReasonField, mergedByOwnerAtField, rewriteMergedAtField, stateField, stopReasonField, stopDetailField, attemptField,
+			waitReasonField, waitDetailField, mergedByOwnerAtField, rewriteMergedAtField, stateField, stopReasonField, stopDetailField, attemptField,
 			settledAtField, claimedAtField, transientField, transientRequeuesField, ticketTitleField,
 			cancelledByOwnerAtField, ticketClosedAtField).
 		Documents(ctx)
@@ -89,6 +96,7 @@ func inboxRun(id string, row map[string]any) (InboxRun, bool) {
 		Size:       str(row, sizeField),
 		PRURL:      str(row, prURLField),
 		WaitReason: runner.WaitReason(str(row, waitReasonField)),
+		WaitDetail: str(row, waitDetailField),
 		Attempt:    rowAttempt(row),
 		Outcome:    str(row, outcomeField),
 		StopReason: str(row, stopReasonField),
@@ -104,7 +112,8 @@ func inboxRun(id string, row map[string]any) (InboxRun, bool) {
 		return run, true
 	}
 	open := run.PRURL != "" && run.Outcome == string(runner.OutcomePROpened) && !mergedRow(row)
-	return run, open && (run.WaitReason != "" || !autoMerged)
+	run.AutoMerged = autoMerged && run.WaitReason == ""
+	return run, open
 }
 
 // cancelledRow reports whether the owner cancelled row's run. Finalize writes the

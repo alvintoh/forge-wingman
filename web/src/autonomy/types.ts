@@ -1,17 +1,28 @@
-// MergeState is the auto-merge state the endpoint serves: the owner's switch
-// beside the rate over the trailing window, the guide it is compared to and the
-// reason the endpoint gives for both.
+// MergeState is the auto-merge state the endpoint serves: the owner's switch, the
+// trailing rewrite rate over the PRs a human merged, the bar it is gated on, the
+// escaped PR that holds it off and the reason the endpoint gives for both.
 export type MergeState = {
   switch_on: boolean;
   rate_allows: boolean;
   rate_value: string;
   limit: string;
-  // Window is how many trailing merged PRs the rate covers.
+  // Window is how many trailing PRs a human merged the rate covers.
   window: number;
   effective: boolean;
-  // Reason is the endpoint's own stable token for the rate's state, or the
-  // switch's, which reasonText words.
+  // Reason is the endpoint's own stable token for what turns auto-merge off,
+  // which reasonText words.
   reason: string;
+  // RateReason is the rate's own token, which reason replaces while the switch is off or
+  // a latch holds: it says whether a rate exists to show.
+  rate_reason: string;
+  // EscapedPR, EscapedRepo, EscapedBy and EscapedReason name the auto-merged PR
+  // that escaped the owner's reading, zero and empty while none holds.
+  escaped_pr: number;
+  escaped_repo: string;
+  escaped_by: number;
+  escaped_reason: string;
+  // EscapeDays is how many days after an auto-merge a revert or a fix still counts as an escape.
+  escape_days: number;
 };
 
 export type TrendDirection = "up" | "down" | "flat";

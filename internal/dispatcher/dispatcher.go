@@ -202,9 +202,12 @@ type Deps struct {
 	// the rate is read over.
 	PullRequests PullRequests
 	Rewrites     Rewrites
-	Workflow     Workflow
-	Logger       *slog.Logger
-	Now          func() time.Time
+	// Escapes records the auto-merged PR a later merge takes back or fixes; it is
+	// required, as without it nothing latches.
+	Escapes  EscapeRecorder
+	Workflow Workflow
+	Logger   *slog.Logger
+	Now      func() time.Time
 	// Overrides yields the models a ticket names and ModelPlans is what they are
 	// checked against; both are required, as an unchecked model could spend per token.
 	Overrides  ModelOverrides
@@ -255,6 +258,7 @@ func (d Deps) missing() string {
 		{"OpenPRs", d.OpenPRs != nil},
 		{"PullRequests", d.PullRequests != nil},
 		{"Rewrites", d.Rewrites != nil},
+		{"Escapes", d.Escapes != nil},
 		{"Checks", d.Checks.ready()},
 		{"Workflow", d.Workflow != nil},
 		{"Logger", d.Logger != nil},

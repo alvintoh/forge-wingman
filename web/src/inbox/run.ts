@@ -9,6 +9,9 @@ export type InboxRun = {
   repo: string;
   pr_url: string;
   wait_reason: string;
+  // wait_detail names what holds auto-merge — the rate against the bar, or the
+  // escaped PR — in the run record's own words.
+  wait_detail?: string;
   updated_at: string;
   title?: string;
   head_sha?: string;
@@ -47,6 +50,7 @@ function isInboxRun(row: unknown): row is InboxRun {
     !fields.has(key) || typeof fields.get(key) === kind;
   return (
     ["run", "ticket", "repo", "pr_url", "wait_reason", "updated_at"].every(text) &&
+    optional("wait_detail", "string") &&
     optional("title", "string") &&
     optional("head_sha", "string") &&
     optional("draft", "boolean") &&

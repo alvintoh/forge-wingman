@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -62,20 +63,24 @@ type fakeRewrites struct {
 	rows map[string]RunRow
 	// prs is keyed by the PR a row opened, or the one a supersede of it
 	// replaced.
-	prs         map[int]RunRow
-	recent      []Sample
-	recorded    map[string]Measured
-	reverted    []string
-	marked      map[string]bool
-	rowErr      error
-	recordErr   error
-	revertedErr error
-	recentErr   error
-	markErr     error
+	prs      map[int]RunRow
+	recent   []Sample
+	recorded map[string]Measured
+	marked   map[string]bool
+	rowErr   error
+	// rowErrAt scopes rowErr to one PR's number, so a lookup for another PR
+	// still answers.
+	rowErrAt int
+	// queries counts the lookups made, so a test can prove one did not happen.
+	queries   int
+	recordErr error
+	recentErr error
+	markErr   error
 }
 
 func (r *fakeRewrites) RunForMerged(_ context.Context, _ string, pr ClosedPR) (RunRow, bool, error) {
-	if r.rowErr != nil {
+	r.queries++
+	if r.rowErr != nil && (r.rowErrAt == 0 || pr.Number == r.rowErrAt) {
 		return RunRow{}, false, r.rowErr
 	}
 	if pr.Head != "" {
@@ -114,36 +119,20 @@ func (r *fakeRewrites) Record(_ context.Context, id string, m Measured) error {
 		r.recorded = map[string]Measured{}
 	}
 	r.recorded[id] = m
-	// The real Record clears a revert flag, so the fake does too.
-	kept := r.reverted[:0]
-	for _, rid := range r.reverted {
-		if rid != id {
-			kept = append(kept, rid)
-		}
-	}
-	r.reverted = kept
 	// The row carries the measurement once recorded, so a later pass over the
 	// same listing measures nothing.
 	for branch, row := range r.rows {
 		if row.RunID == id {
-			row.Measured = m.MergedAt
+			row.Measured, row.MergedBy = m.MergedAt, m.MergedBy
 			r.rows[branch] = row
 		}
 	}
 	for number, row := range r.prs {
 		if row.RunID == id {
-			row.Measured = m.MergedAt
+			row.Measured, row.MergedBy = m.MergedAt, m.MergedBy
 			r.prs[number] = row
 		}
 	}
-	return nil
-}
-
-func (r *fakeRewrites) FlagReverted(_ context.Context, id string) error {
-	if r.revertedErr != nil {
-		return r.revertedErr
-	}
-	r.reverted = append(r.reverted, id)
 	return nil
 }
 
@@ -155,6 +144,31 @@ func (r *fakeRewrites) Recent(_ context.Context, limit int) ([]Sample, error) {
 		return r.recent[:limit], nil
 	}
 	return r.recent, nil
+}
+
+// fakeEscapes keeps the first escape, as the store does: it holds auto-merge
+// off until the owner clears it, so a later one does not replace it.
+type fakeEscapes struct {
+	escapes []MergeEscape
+	// cleared are the escaped PRs the owner acknowledged, which never latch again.
+	cleared  []string
+	err      error
+	stateErr error
+}
+
+func (f *fakeEscapes) RecordEscape(_ context.Context, e MergeEscape) (bool, error) {
+	if f.err != nil {
+		return false, f.err
+	}
+	if len(f.escapes) > 0 || slices.Contains(f.cleared, EscapeKey(e.Repo, e.PR)) {
+		return false, nil
+	}
+	f.escapes = append(f.escapes, e)
+	return true, nil
+}
+
+func (f *fakeEscapes) State(_ context.Context) (EscapeState, error) {
+	return EscapeState{Latched: len(f.escapes) > 0, Cleared: f.cleared}, f.stateErr
 }
 
 var (
@@ -174,6 +188,7 @@ func rewriteDeps(prs *fakePullRequests, rows *fakeRewrites) (Deps, *fakeNotices)
 	return Deps{
 		PullRequests: prs,
 		Rewrites:     rows,
+		Escapes:      &fakeEscapes{},
 		Notices:      notices,
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Now:          func() time.Time { return mergedAt },
@@ -209,6 +224,43 @@ func TestMeasureRecordsTheLinesOfAMergedPR(t *testing.T) {
 	}
 	if len(prs.commitCalls) != 1 {
 		t.Fatalf("commitCalls = %v, want the merge measured once", prs.commitCalls)
+	}
+}
+
+// A listing that carries no merge account is read again for it, so the row
+// records who merged the PR rather than reading it as the owner's.
+func TestMeasureReadsTheMergeAccountTheListingLacks(t *testing.T) {
+	prs := &fakePullRequests{
+		closed:  map[string][]ClosedPR{scratch: {{Number: 7, Head: runBranch, MergedAt: mergedAt}}},
+		pulls:   map[int]ClosedPR{7: {Number: 7, Head: runBranch, MergedAt: mergedAt, MergedBy: "wingman[bot]"}},
+		commits: map[int][]Commit{7: {{Login: runner.CommitAuthorLogin, Additions: 5}}},
+	}
+	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch}}}
+	deps, _ := rewriteDeps(prs, rows)
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	if got := rows.recorded[runOnBranch]; got.MergedBy != "wingman[bot]" {
+		t.Fatalf("recorded %+v, want the merge account read from the PR", got)
+	}
+	if len(prs.pulled) != 1 || prs.pulled[0] != 7 {
+		t.Fatalf("pulled = %v, want PR 7 read for its merge account", prs.pulled)
+	}
+}
+
+// A merge account that cannot be read fails the measurement rather than being
+// recorded as the owner's, so the next poll retries it.
+func TestMeasureFailsWhenTheMergeAccountCannotBeRead(t *testing.T) {
+	prs := &fakePullRequests{
+		closed:  map[string][]ClosedPR{scratch: {{Number: 7, Head: runBranch, MergedAt: mergedAt}}},
+		pullErr: errFirestore,
+		commits: map[int][]Commit{7: {{Login: runner.CommitAuthorLogin, Additions: 5}}},
+	}
+	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch}}}
+	deps, _ := rewriteDeps(prs, rows)
+	err := measureRewrites(context.Background(), deps, oneRepo)
+	if !errors.Is(err, errFirestore) || len(rows.recorded) != 0 {
+		t.Fatalf("err = %v with %v recorded, want the read's failure and nothing measured", err, rows.recorded)
 	}
 }
 
@@ -304,36 +356,67 @@ func TestMeasureFailsWhenNoRepositoryCanBeListed(t *testing.T) {
 	}
 }
 
-func TestRevertFlagsTheRunRowItNames(t *testing.T) {
+// TestMergeEscapeWordsNamesTheEscapedPR asserts the words the wait reason and
+// the PR body carry name the PR that escaped and how (AC8).
+func TestMergeEscapeWordsNamesTheEscapedPR(t *testing.T) {
+	for name, tt := range map[string]struct {
+		escape MergeEscape
+		want   string
+	}{
+		"reverted": {MergeEscape{Repo: "octo/scratch", PR: 341, Reason: EscapeReverted},
+			"octo/scratch#341 was reverted within 7 days of merging"},
+		"fixed": {MergeEscape{Repo: "octo/scratch", PR: 344, By: 350, Reason: EscapeFixed},
+			"octo/scratch#344 was named as fixed by #350 within 7 days of merging"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := tt.escape.Words()
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("Words = %q, want it to name %q", got, tt.want)
+			}
+			if !strings.Contains(got, "until you switch it on again") {
+				t.Fatalf("Words = %q, want it to say the owner must switch auto-merge on again", got)
+			}
+		})
+	}
+}
+
+func TestRevertRecordsTheEscapeOfAnAutoMergedPR(t *testing.T) {
 	prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {
 		{Number: 7, Title: "a run's PR", Head: runBranch, MergedAt: mergedAt},
 		{Number: 9, Title: `Revert "a run's PR"`, Body: "Reverts octo/scratch#7\n", MergedAt: mergedAt.Add(time.Hour)},
 	}}}
-	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch}}}
+	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {
+		RunID: runOnBranch, MergedBy: "wingman[bot]", Measured: mergedAt}}}
 	deps, _ := rewriteDeps(prs, rows)
+	escapes := &fakeEscapes{}
+	deps.Escapes = escapes
 	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
 		t.Fatal(err)
 	}
-	if len(rows.reverted) != 1 || rows.reverted[0] != runOnBranch {
-		t.Fatalf("reverted = %v, want the run row the revert names", rows.reverted)
+	want := MergeEscape{Repo: scratch, PR: 7, By: 9, Reason: EscapeReverted, At: mergedAt}
+	if len(escapes.escapes) != 1 || escapes.escapes[0] != want {
+		t.Fatalf("escapes = %+v, want %+v", escapes.escapes, want)
 	}
 	if len(prs.pulled) != 0 {
 		t.Fatalf("pulled = %v, want the listing's own entry used", prs.pulled)
 	}
 }
 
-func TestRevertTitledByHandFlagsThePRItQuotes(t *testing.T) {
+func TestRevertTitledByHandRecordsTheEscape(t *testing.T) {
 	prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {
 		{Number: 7, Title: "a run's PR", Head: runBranch, MergedAt: mergedAt},
 		{Number: 9, Title: `Revert "a run's PR"`, MergedAt: mergedAt.Add(time.Hour)},
 	}}}
-	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch}}}
+	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {
+		RunID: runOnBranch, MergedBy: "wingman[bot]", Measured: mergedAt}}}
 	deps, _ := rewriteDeps(prs, rows)
+	escapes := &fakeEscapes{}
+	deps.Escapes = escapes
 	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
 		t.Fatal(err)
 	}
-	if len(rows.reverted) != 1 || rows.reverted[0] != runOnBranch {
-		t.Fatalf("reverted = %v, want the run whose title the revert quotes", rows.reverted)
+	if len(escapes.escapes) != 1 || escapes.escapes[0].PR != 7 {
+		t.Fatalf("escapes = %+v, want the PR the revert's title quotes", escapes.escapes)
 	}
 }
 
@@ -344,18 +427,21 @@ func TestRevertOfAPROutsideTheListingIsRead(t *testing.T) {
 		}},
 		pulls: map[int]ClosedPR{7: {Number: 7, Head: runBranch, MergedAt: mergedAt}},
 	}
-	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch}}}
+	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {
+		RunID: runOnBranch, MergedBy: "wingman[bot]", Measured: mergedAt}}}
 	deps, _ := rewriteDeps(prs, rows)
+	escapes := &fakeEscapes{}
+	deps.Escapes = escapes
 	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
 		t.Fatal(err)
 	}
-	if len(prs.pulled) != 1 || prs.pulled[0] != 7 || len(rows.reverted) != 1 {
-		t.Fatalf("pulled = %v, reverted = %v, want PR 7 read and its run flagged", prs.pulled, rows.reverted)
+	if len(prs.pulled) != 1 || prs.pulled[0] != 7 || len(escapes.escapes) != 1 {
+		t.Fatalf("pulled = %v, escapes = %+v, want PR 7 read and its escape recorded", prs.pulled, escapes.escapes)
 	}
 }
 
-// A revert of a PR the run's own branch no longer names still flags that run.
-func TestRevertFlagsTheRunThePRItNamesBelongsTo(t *testing.T) {
+// A revert of a PR the run's own branch no longer names still records that run's escape.
+func TestRevertOfTheRunThePRItNamesBelongsTo(t *testing.T) {
 	prs := &fakePullRequests{
 		closed: map[string][]ClosedPR{scratch: {
 			{Number: 9, Title: `Revert "a run's PR"`, Body: "Reverts octo/scratch#7", MergedAt: mergedAt.Add(time.Hour)},
@@ -365,13 +451,16 @@ func TestRevertFlagsTheRunThePRItNamesBelongsTo(t *testing.T) {
 			URL: "https://github.com/octo/scratch/pull/7", MergedAt: mergedAt,
 		}},
 	}
-	rows := &fakeRewrites{prs: map[int]RunRow{7: {RunID: runOnBranch}}}
+	rows := &fakeRewrites{prs: map[int]RunRow{7: {
+		RunID: runOnBranch, MergedBy: "wingman[bot]", Measured: mergedAt}}}
 	deps, _ := rewriteDeps(prs, rows)
+	escapes := &fakeEscapes{}
+	deps.Escapes = escapes
 	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
 		t.Fatal(err)
 	}
-	if len(rows.reverted) != 1 || rows.reverted[0] != runOnBranch {
-		t.Fatalf("reverted = %v, want the run the reverted PR names", rows.reverted)
+	if len(escapes.escapes) != 1 || escapes.escapes[0].PR != 7 {
+		t.Fatalf("escapes = %+v, want the run the reverted PR names", escapes.escapes)
 	}
 }
 
@@ -380,64 +469,368 @@ func TestRevertOfAPRWhenTheRevertNeverMerged(t *testing.T) {
 		{Number: 7, Title: "a run's PR", Head: runBranch, MergedAt: mergedAt},
 		{Number: 9, Title: `Revert "a run's PR"`, Body: "Reverts octo/scratch#7"},
 	}}}
-	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch}}}
+	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {
+		RunID: runOnBranch, MergedBy: "wingman[bot]", Measured: mergedAt}}}
 	deps, _ := rewriteDeps(prs, rows)
+	escapes := &fakeEscapes{}
+	deps.Escapes = escapes
 	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
 		t.Fatal(err)
 	}
-	if len(rows.reverted) != 0 {
-		t.Fatalf("reverted = %v, want a revert that never merged to flag nothing", rows.reverted)
+	if len(escapes.escapes) != 0 {
+		t.Fatalf("escapes = %+v, want a revert that never merged to record nothing", escapes.escapes)
 	}
 }
 
-func TestRevertBodyWithCRLFFlagsTheRun(t *testing.T) {
+func TestRevertAfterTheWindowRecordsNothing(t *testing.T) {
+	prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {
+		{Number: 7, Title: "a run's PR", Head: runBranch, MergedAt: mergedAt},
+		{Number: 9, Title: "reverts by hand", Body: "Reverts octo/scratch#7", MergedAt: mergedAt.Add(EscapeWindow + time.Hour)},
+	}}}
+	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {
+		RunID: runOnBranch, MergedBy: "wingman[bot]", Measured: mergedAt}}}
+	deps, _ := rewriteDeps(prs, rows)
+	escapes := &fakeEscapes{}
+	deps.Escapes = escapes
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	if len(escapes.escapes) != 0 {
+		t.Fatalf("escapes = %+v, want a revert past the window to record nothing", escapes.escapes)
+	}
+}
+
+func TestRevertBodyWithCRLFRecordsTheEscape(t *testing.T) {
 	prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {
 		{Number: 7, Title: "a run's PR", Head: runBranch, MergedAt: mergedAt},
 		{Number: 9, Title: "reverts by hand", Body: "Reverts octo/scratch#7\r\n\r\nextra\r\n", MergedAt: mergedAt.Add(time.Hour)},
 	}}}
-	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch}}}
+	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {
+		RunID: runOnBranch, MergedBy: "wingman[bot]", Measured: mergedAt}}}
 	deps, _ := rewriteDeps(prs, rows)
+	escapes := &fakeEscapes{}
+	deps.Escapes = escapes
 	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
 		t.Fatal(err)
 	}
-	if len(rows.reverted) != 1 {
-		t.Fatalf("reverted = %v, want a CRLF revert body read", rows.reverted)
+	if len(escapes.escapes) != 1 {
+		t.Fatalf("escapes = %+v, want a CRLF revert body read", escapes.escapes)
 	}
 }
 
-func TestRevertListedBeforeItsOriginalStaysFlagged(t *testing.T) {
-	// Listings run most recently updated first, so the revert precedes the merge
-	// it takes back and the measurement must not clear its flag.
+func TestRevertRecordsTheEscapeOnceAcrossPolls(t *testing.T) {
+	// A listing runs most recently updated first, and every poll reads the same
+	// revert: the first record holds until the owner clears it.
 	prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {
 		{Number: 9, Title: "reverts by hand", Body: "Reverts octo/scratch#7", MergedAt: mergedAt.Add(time.Hour)},
-		{Number: 7, Title: "a run's PR", Head: runBranch, MergedAt: mergedAt},
+		{Number: 7, Title: "a run's PR", Head: runBranch, MergedAt: mergedAt, MergedBy: "wingman[bot]"},
 	}}}
 	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch}}}
 	deps, _ := rewriteDeps(prs, rows)
-	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
-		t.Fatal(err)
-	}
-	if len(rows.recorded) != 1 || len(rows.reverted) != 1 {
-		t.Fatalf("recorded = %v, reverted = %v, want the run measured and still flagged", rows.recorded, rows.reverted)
+	escapes := &fakeEscapes{}
+	deps.Escapes = escapes
+	for poll := 1; poll <= 2; poll++ {
+		if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+			t.Fatal(err)
+		}
+		if len(escapes.escapes) != 1 {
+			t.Fatalf("after poll %d escapes = %+v, want the escape recorded once", poll, escapes.escapes)
+		}
 	}
 }
 
-func TestRevertOfAPRThatNeverMergedFlagsNothing(t *testing.T) {
+// A PR that names an auto-merged PR as fixed is the other way one escapes the
+// owner's read.
+func TestFixPRRecordsTheEscapeOfAnAutoMergedPR(t *testing.T) {
+	prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {
+		{Number: 7, Title: "a run's PR", Head: runBranch, MergedAt: mergedAt},
+		{Number: 20, Title: "fix the widget", Head: "wingman/FRG-1-999-1", Body: "Fixes #7", MergedAt: mergedAt.Add(48 * time.Hour)},
+	}}}
+	rows := &fakeRewrites{prs: map[int]RunRow{
+		7: {RunID: runOnBranch, MergedBy: "wingman[bot]", Measured: mergedAt},
+	}}
+	deps, _ := rewriteDeps(prs, rows)
+	escapes := &fakeEscapes{}
+	deps.Escapes = escapes
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	want := MergeEscape{Repo: scratch, PR: 7, By: 20, Reason: EscapeFixed, At: mergedAt}
+	if len(escapes.escapes) != 1 || escapes.escapes[0] != want {
+		t.Fatalf("escapes = %+v, want %+v", escapes.escapes, want)
+	}
+}
+
+func TestFixPRAfterTheWindowRecordsNothing(t *testing.T) {
+	prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {
+		{Number: 7, Title: "a run's PR", Head: runBranch, MergedAt: mergedAt},
+		{Number: 20, Title: "fix the widget", Head: "wingman/FRG-1-999-1", Body: "Fixes #7", MergedAt: mergedAt.Add(EscapeWindow + time.Hour)},
+	}}}
+	rows := &fakeRewrites{prs: map[int]RunRow{
+		7: {RunID: runOnBranch, MergedBy: "wingman[bot]", Measured: mergedAt},
+	}}
+	deps, _ := rewriteDeps(prs, rows)
+	escapes := &fakeEscapes{}
+	deps.Escapes = escapes
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	if len(escapes.escapes) != 0 {
+		t.Fatalf("escapes = %+v, want a fix past the window to record nothing", escapes.escapes)
+	}
+}
+
+func TestFixOfAHandMergedPRRecordsNothing(t *testing.T) {
+	prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {
+		{Number: 7, Title: "a run's PR", Head: runBranch, MergedAt: mergedAt},
+		{Number: 20, Title: "fix the widget", Head: "wingman/FRG-1-999-1", Body: "Fixes #7", MergedAt: mergedAt.Add(time.Hour)},
+	}}}
+	rows := &fakeRewrites{prs: map[int]RunRow{
+		7: {RunID: runOnBranch, MergedBy: "the-owner", Measured: mergedAt},
+	}}
+	deps, _ := rewriteDeps(prs, rows)
+	escapes := &fakeEscapes{}
+	deps.Escapes = escapes
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	if len(escapes.escapes) != 0 {
+		t.Fatalf("escapes = %+v, want a merge the owner made to record nothing", escapes.escapes)
+	}
+}
+
+// A revert only latches a merge proven to be the product's: a merge the owner
+// made is no escape, and a row measured before the merge account was kept is told
+// by GitHub's own record of the merge, then by its eligibility mark.
+func TestRevertLatchesOnlyAMergeProvenToBeTheProducts(t *testing.T) {
+	for name, tt := range map[string]struct {
+		row      RunRow
+		mergedBy string
+		want     bool
+	}{
+		"the owner's login on the row":         {RunRow{MergedBy: "the-owner", AutoMerge: true}, "wingman[bot]", false},
+		"a bot on the row":                     {RunRow{MergedBy: "wingman[bot]"}, "", true},
+		"no account, GitHub names a bot":       {RunRow{}, "wingman[bot]", true},
+		"no account, GitHub names the owner":   {RunRow{AutoMerge: true}, "the-owner", false},
+		"no account anywhere, marked eligible": {RunRow{AutoMerge: true}, "", true},
+		"no account anywhere, not eligible":    {RunRow{}, "", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			prs := &fakePullRequests{
+				closed: map[string][]ClosedPR{scratch: {
+					{Number: 7, Title: "a run's PR", Head: runBranch, MergedAt: mergedAt},
+					{Number: 9, Title: "reverts by hand", Body: "Reverts octo/scratch#7", MergedAt: mergedAt.Add(time.Hour)},
+				}},
+				pulls: map[int]ClosedPR{7: {Number: 7, MergedBy: tt.mergedBy}},
+			}
+			tt.row.RunID, tt.row.Measured = runOnBranch, mergedAt
+			rows := &fakeRewrites{rows: map[string]RunRow{runBranch: tt.row}}
+			deps, _ := rewriteDeps(prs, rows)
+			escapes := &fakeEscapes{}
+			deps.Escapes = escapes
+			if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+				t.Fatal(err)
+			}
+			if got := len(escapes.escapes) == 1; got != tt.want {
+				t.Fatalf("escapes = %+v, want a latch = %v", escapes.escapes, tt.want)
+			}
+		})
+	}
+}
+
+// A fix reference to a PR measured before the merge account was kept is told the
+// same way.
+func TestFixOfAMergeWithNoAccountOnItsRowIsToldByGitHub(t *testing.T) {
+	prs := &fakePullRequests{
+		closed: map[string][]ClosedPR{scratch: {
+			{Number: 20, Title: "fix the widget", Head: "wingman/FRG-1-999-1", Body: "Fixes: #7", MergedAt: mergedAt.Add(time.Hour)},
+		}},
+		pulls: map[int]ClosedPR{7: {Number: 7, MergedBy: "wingman[bot]"}},
+	}
+	rows := &fakeRewrites{prs: map[int]RunRow{7: {RunID: runOnBranch, Measured: mergedAt}}}
+	deps, _ := rewriteDeps(prs, rows)
+	escapes := &fakeEscapes{}
+	deps.Escapes = escapes
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	if len(escapes.escapes) != 1 || escapes.escapes[0].PR != 7 || escapes.escapes[0].Reason != EscapeFixed {
+		t.Fatalf("escapes = %+v, want PR 7 latched from \"Fixes: #7\"", escapes.escapes)
+	}
+}
+
+// The owner switching auto-merge on clears the latch, and the same revert is read
+// again on every poll: the PR the owner acknowledged must not latch a second time,
+// while one they have not seen still does.
+func TestAnAcknowledgedEscapeDoesNotLatchAgain(t *testing.T) {
+	prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {
+		{Number: 7, Title: "a run's PR", Head: runBranch, MergedAt: mergedAt},
+		{Number: 9, Title: "reverts by hand", Body: "Reverts octo/scratch#7", MergedAt: mergedAt.Add(time.Hour)},
+		{Number: 8, Title: "another run's PR", Head: "wingman/FRG-2-456-1", MergedAt: mergedAt},
+		{Number: 21, Title: "fix the other widget", Head: "wingman/FRG-2-999-1", Body: "Fixes #8", MergedAt: mergedAt.Add(3 * time.Hour)},
+	}}}
+	rows := &fakeRewrites{
+		rows: map[string]RunRow{runBranch: {RunID: runOnBranch, MergedBy: "wingman[bot]", Measured: mergedAt}},
+		prs:  map[int]RunRow{8: {RunID: "456", MergedBy: "wingman[bot]", Measured: mergedAt}},
+	}
+	deps, _ := rewriteDeps(prs, rows)
+	escapes := &fakeEscapes{cleared: []string{EscapeKey(scratch, 7)}}
+	deps.Escapes = escapes
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	if len(escapes.escapes) != 1 || escapes.escapes[0].PR != 8 {
+		t.Fatalf("escapes = %+v, want the cleared PR 7 skipped and the unseen PR 8 latched", escapes.escapes)
+	}
+}
+
+// A settled escape is not looked up at all: a latched one means nothing else can
+// latch, and a cleared PR's reference is read again on every poll.
+func TestASettledEscapeIsNotLookedUp(t *testing.T) {
+	for name, escapes := range map[string]*fakeEscapes{
+		"an escape latched":   {escapes: []MergeEscape{{Repo: scratch, PR: 3}}},
+		"the PR acknowledged": {cleared: []string{EscapeKey(scratch, 7)}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {
+				{Number: 20, Title: "fix the widget", Body: "Fixes #7", MergedAt: mergedAt.Add(time.Hour)},
+			}}}
+			rows := &fakeRewrites{}
+			deps, _ := rewriteDeps(prs, rows)
+			deps.Escapes = escapes
+			if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+				t.Fatal(err)
+			}
+			if rows.queries != 0 {
+				t.Fatalf("queries = %d, want no lookup for a settled escape", rows.queries)
+			}
+		})
+	}
+}
+
+// A state that cannot be read is reported and the escape is still looked for, so
+// a failed read never silences it.
+func TestUnreadEscapeStateIsReportedAndEscapesAreStillRecorded(t *testing.T) {
+	prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {
+		{Number: 7, Title: "a run's PR", Head: runBranch, MergedAt: mergedAt},
+		{Number: 9, Title: "reverts by hand", Body: "Reverts octo/scratch#7", MergedAt: mergedAt.Add(time.Hour)},
+	}}}
+	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {
+		RunID: runOnBranch, MergedBy: "wingman[bot]", Measured: mergedAt}}}
+	deps, _ := rewriteDeps(prs, rows)
+	escapes := &fakeEscapes{stateErr: errFirestore}
+	deps.Escapes = escapes
+	err := measureRewrites(context.Background(), deps, oneRepo)
+	if !errors.Is(err, errFirestore) || len(escapes.escapes) != 1 {
+		t.Fatalf("err = %v, escapes = %+v, want the failure reported and the revert recorded", err, escapes.escapes)
+	}
+}
+
+// A failed read of the reverted PR's merge is returned, so the poll retries
+// rather than reading the merge as the owner's.
+func TestRevertWhoseMergeAccountCannotBeReadIsReported(t *testing.T) {
+	prs := &fakePullRequests{
+		closed: map[string][]ClosedPR{scratch: {
+			{Number: 7, Title: "a run's PR", Head: runBranch, MergedAt: mergedAt},
+			{Number: 9, Title: "reverts by hand", Body: "Reverts octo/scratch#7", MergedAt: mergedAt.Add(time.Hour)},
+		}},
+		pullErr: errFirestore,
+	}
+	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch, Measured: mergedAt}}}
+	deps, _ := rewriteDeps(prs, rows)
+	if err := measureRewrites(context.Background(), deps, oneRepo); !errors.Is(err, errFirestore) {
+		t.Fatalf("err = %v, want the read failure returned", err)
+	}
+}
+
+// A fix PR that never merged names no escape: nothing merged later than it.
+func TestFixPRThatNeverMergedRecordsNothing(t *testing.T) {
+	prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {
+		{Number: 20, Title: "fix the widget", Body: "Fixes #7"},
+	}}}
+	rows := &fakeRewrites{prs: map[int]RunRow{
+		7: {RunID: runOnBranch, MergedBy: "wingman[bot]", Measured: mergedAt},
+	}}
+	deps, _ := rewriteDeps(prs, rows)
+	escapes := &fakeEscapes{}
+	deps.Escapes = escapes
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	if len(escapes.escapes) != 0 {
+		t.Fatalf("escapes = %+v, want an unmerged fix to record nothing", escapes.escapes)
+	}
+}
+
+// A PR naming its own number fixes nothing.
+func TestFixPRNamingItselfRecordsNothing(t *testing.T) {
+	prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {
+		{Number: 20, Title: "fix the widget", Body: "Fixes #20", MergedAt: mergedAt.Add(time.Hour)},
+	}}}
+	rows := &fakeRewrites{prs: map[int]RunRow{
+		20: {RunID: "999", MergedBy: "wingman[bot]", Measured: mergedAt.Add(time.Hour)},
+	}}
+	deps, _ := rewriteDeps(prs, rows)
+	escapes := &fakeEscapes{}
+	deps.Escapes = escapes
+	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
+		t.Fatal(err)
+	}
+	if len(escapes.escapes) != 0 {
+		t.Fatalf("escapes = %+v, want a self-reference to record nothing", escapes.escapes)
+	}
+}
+
+// A lookup failure on a fix reference is returned, so the poll retries rather
+// than reading the escape as absent.
+func TestFixEscapeLookupFailureIsReported(t *testing.T) {
+	prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {
+		{Number: 20, Title: "fix the widget", Body: "Fixes #7", MergedAt: mergedAt.Add(time.Hour)},
+	}}}
+	rows := &fakeRewrites{rowErr: errFirestore, rowErrAt: 7}
+	deps, _ := rewriteDeps(prs, rows)
+	deps.Escapes = &fakeEscapes{}
+	err := measureRewrites(context.Background(), deps, oneRepo)
+	if !errors.Is(err, errFirestore) {
+		t.Fatalf("err = %v, want the lookup's failure returned", err)
+	}
+}
+
+// A recorder that fails is reported, not read as an escape recorded.
+func TestEscapeRecordFailureIsReported(t *testing.T) {
+	prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {
+		{Number: 7, Title: "a run's PR", Head: runBranch, MergedAt: mergedAt},
+		{Number: 9, Title: "reverts by hand", Body: "Reverts octo/scratch#7", MergedAt: mergedAt.Add(time.Hour)},
+	}}}
+	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {
+		RunID: runOnBranch, MergedBy: "wingman[bot]", Measured: mergedAt}}}
+	deps, _ := rewriteDeps(prs, rows)
+	deps.Escapes = &fakeEscapes{err: errFirestore}
+	err := measureRewrites(context.Background(), deps, oneRepo)
+	if !errors.Is(err, errFirestore) {
+		t.Fatalf("err = %v, want the recorder's failure returned", err)
+	}
+}
+
+func TestRevertOfAPRThatNeverMergedRecordsNothing(t *testing.T) {
 	prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {
 		{Number: 7, Title: "a run's PR", Head: runBranch},
 		{Number: 9, Title: "reverts by hand", Body: "Reverts octo/scratch#7", MergedAt: mergedAt},
 	}}}
-	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch}}}
+	rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {
+		RunID: runOnBranch, MergedBy: "wingman[bot]"}}}
 	deps, _ := rewriteDeps(prs, rows)
+	escapes := &fakeEscapes{}
+	deps.Escapes = escapes
 	if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
 		t.Fatal(err)
 	}
-	if len(rows.reverted) != 0 {
-		t.Fatalf("reverted = %v, want a revert of an unmerged PR to flag nothing", rows.reverted)
+	if len(escapes.escapes) != 0 {
+		t.Fatalf("escapes = %+v, want a revert of an unmerged PR to record nothing", escapes.escapes)
 	}
 }
 
-func TestRevertsThatNameNoRunPRFlagNothing(t *testing.T) {
+func TestRevertsThatNameNoRunPRRecordNothing(t *testing.T) {
 	for name, tt := range map[string]struct {
 		revert ClosedPR
 		pulls  map[int]ClosedPR
@@ -461,13 +854,18 @@ func TestRevertsThatNameNoRunPRFlagNothing(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			prs := &fakePullRequests{closed: map[string][]ClosedPR{scratch: {tt.revert}}, pulls: tt.pulls}
-			rows := &fakeRewrites{rows: map[string]RunRow{runBranch: {RunID: runOnBranch}, "feature/by-hand": {RunID: "other"}}}
+			rows := &fakeRewrites{rows: map[string]RunRow{
+				runBranch:         {RunID: runOnBranch, MergedBy: "wingman[bot]", Measured: mergedAt},
+				"feature/by-hand": {RunID: "other", MergedBy: "wingman[bot]", Measured: mergedAt},
+			}}
 			deps, _ := rewriteDeps(prs, rows)
+			escapes := &fakeEscapes{}
+			deps.Escapes = escapes
 			if err := measureRewrites(context.Background(), deps, oneRepo); err != nil {
 				t.Fatal(err)
 			}
-			if len(rows.reverted) != 0 {
-				t.Fatalf("reverted = %v, want the revert to flag no run", rows.reverted)
+			if len(escapes.escapes) != 0 {
+				t.Fatalf("escapes = %+v, want the revert to record nothing", escapes.escapes)
 			}
 		})
 	}

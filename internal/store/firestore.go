@@ -89,11 +89,12 @@ func (r *Records) PutRecord(ctx context.Context, id string, rec runner.Record) e
 	return merge(ctx, r.client.Collection(runsCollection).Doc(id), rec)
 }
 
-// SetWaitReason sets only why run id's PR waits for the owner, which the record
-// job later carries through Finalize.
-func (r *Records) SetWaitReason(ctx context.Context, id string, reason runner.WaitReason) error {
+// SetWaitReason sets only why run id's PR waits for the owner, and the words
+// naming the rate, the bar or the escaped PR, which the record job later carries
+// through Finalize.
+func (r *Records) SetWaitReason(ctx context.Context, id string, reason runner.WaitReason, detail string) error {
 	_, err := r.client.Collection(runsCollection).Doc(id).Update(ctx,
-		[]firestore.Update{{Path: waitReasonField, Value: string(reason)}})
+		[]firestore.Update{{Path: waitReasonField, Value: string(reason)}, {Path: waitDetailField, Value: detail}})
 	if err != nil {
 		return fmt.Errorf("setting run %s's wait reason: %w", id, err)
 	}

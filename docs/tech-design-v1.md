@@ -326,6 +326,16 @@ auto-merge is on when the switch is on; the trailing rewrite rate over the ten n
 merged PRs, and any auto-merged PR a merged revert names, are shown against a 10% guide and
 gate nothing. pr-meta marks a PR eligible when the switch is on. It replaces the
 `WINGMAN_AUTO_MERGE` repository variable, which the dispatcher could not read.
+**Updated (2026-11-10):** the rate gates again, under the switch. pr-meta marks a PR
+eligible only while the switch is on and the trailing-10 rate over the merged PRs a
+**human** merged (a PR that merged itself is left out, and so is a row measured before
+GitHub's `merged_by` login was kept) is at or under the bar; exactly at the bar allows it.
+The bar is stored beside the switch, defaults to 20%, and is set with `runner auto-merge -bar
+<percent>`; a rate that cannot be computed, a bar that is not a number from 1 to 100 and a
+settings read that fails all hold auto-merge off, each named in the run's wait reason and
+the PR body. An auto-merged PR a later merge reverted or named as fixed (`fixes #<n>`)
+within 7 days latches auto-merge off until the owner switches it on again. A size-S run is
+eligible without a recorded plan; a size-M or L run without one still waits.
 
 **Front-end hold — *Updated (2026-10-13)*, forge-wingman #115.** Eligibility for auto-merge
 (`FR-5`) excludes an S or M PR that touches the front end, which stays ready, not a draft.

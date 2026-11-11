@@ -733,7 +733,12 @@ type closedPR struct {
 	Body     string     `json:"body"`
 	URL      string     `json:"html_url"`
 	MergedAt *time.Time `json:"merged_at"`
-	Head     struct {
+	// MergedBy is present on a single pull request's reply; a listing may omit
+	// it, and the caller reads the PR again for it.
+	MergedBy *struct {
+		Login string `json:"login"`
+	} `json:"merged_by"`
+	Head struct {
 		Ref string `json:"ref"`
 	} `json:"head"`
 }
@@ -771,6 +776,9 @@ func decodeClosedPRs(body io.Reader, repo string) ([]ClosedPR, error) {
 		pr := ClosedPR{Number: p.Number, Title: p.Title, Body: p.Body, Head: p.Head.Ref, URL: p.URL}
 		if p.MergedAt != nil {
 			pr.MergedAt = *p.MergedAt
+		}
+		if p.MergedBy != nil {
+			pr.MergedBy = p.MergedBy.Login
 		}
 		out = append(out, pr)
 	}

@@ -77,6 +77,12 @@ export function InboxRow({
   let reason = draft
     ? DRAFT_WORDS
     : (wait?.words ?? (plainReason === "" ? undefined : plainReason));
+  // The record's own words name what holds auto-merge: the rate against the bar,
+  // or the escaped PR.
+  const held = run.wait_detail?.trim();
+  if (!stopped && held !== undefined && held !== "") {
+    reason = reason === undefined ? held : `${reason} — ${held}`;
+  }
   if (!blocked && unread) {
     reason = UNREAD_WORDS;
   }

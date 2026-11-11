@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
+	"github.com/alvintoh/forge-wingman/internal/store"
 )
 
 // TestAutonomyRefusesAWriteMethod asserts the autonomy endpoint refuses every
@@ -93,6 +94,7 @@ func twoRepositories() []dispatcher.Sample {
 		merge := dispatcher.Sample{
 			Run: fmt.Sprintf("run-%d", i), Repo: "octo/scratch", Size: "M", PR: 200 - i,
 			MergedAt:   measuredAt().Add(-time.Duration(i) * time.Hour),
+			MergedBy:   "alvintoh",
 			BuildModel: "p/a",
 			Rewrite:    dispatcher.Rewrite{AgentLines: 100, OwnerLines: 5},
 		}
@@ -135,8 +137,8 @@ func TestAutonomyWithoutARepoIsTheWholeAnswer(t *testing.T) {
 	merges := twoRepositories()
 	var want strings.Builder
 	if err := json.NewEncoder(&want).Encode(autonomyResponse{
-		AutoMerge: renderAutoMerge(merges, true, true),
-		Rewrite:   renderRewrite(merges),
+		AutoMerge: renderAutoMerge(merges, store.AutoMergeSetting{Enabled: true, BarPercent: store.DefaultBarPercent}, nil),
+		Rewrite:   renderRewrite(merges, dispatcher.DefaultAutoMergeBar),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -354,11 +356,36 @@ func ratedMerges(at time.Time, ownerPerPR int64) []dispatcher.Sample {
 	measured := make([]dispatcher.Sample, 0, dispatcher.TrailingPRs)
 	for i := range dispatcher.TrailingPRs {
 		measured = append(measured, dispatcher.Sample{
-			PR: 140 - i, MergedAt: at.Add(-time.Duration(i) * time.Hour),
+			PR: 140 - i, MergedAt: at.Add(-time.Duration(i) * time.Hour), MergedBy: "alvintoh",
 			Rewrite: dispatcher.Rewrite{AgentLines: 1_000, OwnerLines: ownerPerPR},
 		})
 	}
 	return measured
+}
+
+// TestAutonomyLeavesOutThePRsThatMergedThemselves asserts a PR that merged
+// itself does not lower the rate the verdict gates on (AC6), while the figures
+// drawn beside it still list every measured merge.
+func TestAutonomyLeavesOutThePRsThatMergedThemselves(t *testing.T) {
+	// Ten PRs a human merged, plus the self-merged one whose 300% rewrite would
+	// put the trailing ten above the 20% bar if it were counted.
+	merges := append([]dispatcher.Sample{{
+		PR: 150, MergedAt: measuredAt().Add(time.Hour), MergedBy: "wingman[bot]",
+		Rewrite: dispatcher.Rewrite{AgentLines: 1_000, OwnerLines: 3_000},
+	}}, ratedMerges(measuredAt(), 0)...)
+	state := readAutoMerge(t, merges, &stubAutoMerge{enabled: true})
+	if state["rate_value"] != "0.0%" || state["rate_allows"] != true {
+		t.Fatalf("auto_merge = %v, want the self-merged PR left out of the rate", state)
+	}
+	var rewrite struct {
+		PRs []map[string]any `json:"prs"`
+	}
+	if err := json.Unmarshal(blocksOf(t, autonomyBody(t, merges, "/api/autonomy")).Rewrite, &rewrite); err != nil {
+		t.Fatal(err)
+	}
+	if len(rewrite.PRs) != 11 {
+		t.Fatalf("rewrite PRs = %d, want every measured merge listed", len(rewrite.PRs))
+	}
 }
 
 // readAutoMerge reads the auto-merge state through the autonomy endpoint, which
@@ -377,36 +404,36 @@ func readAutoMerge(t *testing.T, merges []dispatcher.Sample, switches AutoMergeS
 	return state
 }
 
-// TestAutonomyReportsTheAutoMergeSwitchAndTheRatesVerdict asserts the autonomy
-// view carries the owner's switch beside the rate's verdict, which the switch
-// alone makes effective, with the bar read from the dispatcher's own constant
-// (AC1).
-func TestAutonomyReportsTheAutoMergeSwitchAndTheRatesVerdict(t *testing.T) {
+// TestAutonomyReportsTheAutoMergeSettingsAndTheRatesVerdict asserts the autonomy
+// view carries the owner's switch beside the rate's verdict, with the bar from
+// the stored setting and the escape latch beside it (AC2, AC7, AC8).
+func TestAutonomyReportsTheAutoMergeSettingsAndTheRatesVerdict(t *testing.T) {
 	state := readAutoMerge(t, ratedMerges(measuredAt(), 98), &stubAutoMerge{enabled: true})
 
-	if got, want := slices.Sorted(maps.Keys(state)), []string{"effective", "limit", "rate_allows", "rate_value", "reason", "switch_on", "window"}; !slices.Equal(got, want) {
+	want := []string{"effective", "escape_days", "escaped_by", "escaped_pr", "escaped_reason", "escaped_repo", "limit",
+		"rate_allows", "rate_reason", "rate_value", "reason", "switch_on", "window"}
+	if got := slices.Sorted(maps.Keys(state)); !slices.Equal(got, want) {
 		t.Fatalf("auto_merge keys = %v, want %v", got, want)
 	}
 	if state["switch_on"] != true || state["rate_allows"] != true || state["effective"] != true {
 		t.Errorf("auto_merge = %v, want the switch on and the 9.8%% rate allowing it", state)
 	}
-	if state["rate_value"] != "9.8%" || state["limit"] != "10.0%" || state["window"] != 10.0 || state["reason"] != "on" {
+	if state["rate_value"] != "9.8%" || state["limit"] != "20.0%" || state["window"] != 10.0 || state["reason"] != "on" {
 		t.Errorf("auto_merge = %v, want the rate against its own bar", state)
 	}
 }
 
-// TestAutonomyEffectiveIsTheSwitchAlone asserts the endpoint's effective state
-// is the switch on and readable alone, with the rate still served beside it as
-// information a page words.
-func TestAutonomyEffectiveIsTheSwitchAlone(t *testing.T) {
+// TestAutonomyEffectiveIsTheSwitchTheBarTheRateAndTheLatch asserts the endpoint
+// decides auto-merge from the switch, the bar, the rate and the escape latch,
+// with a rate at or under the bar allowing it and everything else holding it off.
+func TestAutonomyEffectiveIsTheSwitchTheBarTheRateAndTheLatch(t *testing.T) {
 	at := measuredAt()
-	reverted := ratedMerges(at, 0)
-	reverted[3].AutoMerged, reverted[3].Reverted = true, true
 	noAgentLines := make([]dispatcher.Sample, dispatcher.TrailingPRs)
 	for i := range noAgentLines {
-		noAgentLines[i] = dispatcher.Sample{PR: 140 - i, MergedAt: at.Add(-time.Duration(i) * time.Hour)}
+		noAgentLines[i] = dispatcher.Sample{PR: 140 - i, MergedAt: at.Add(-time.Duration(i) * time.Hour), MergedBy: "alvintoh"}
 	}
 	unreadable := errors.New("firestore unreachable")
+	escaped := &stubAutoMerge{enabled: true, escaped: dispatcher.MergeEscape{Repo: "octo/scratch", PR: 341, Reason: dispatcher.EscapeReverted}}
 	for name, tt := range map[string]struct {
 		merges     []dispatcher.Sample
 		switches   AutoMergeStore
@@ -415,12 +442,21 @@ func TestAutonomyEffectiveIsTheSwitchAlone(t *testing.T) {
 		rateValue  string
 		reason     string
 	}{
-		"the switch on at 15.3%":                     {ratedMerges(at, 153), &stubAutoMerge{enabled: true}, true, false, "15.3%", "rate-above-bar"},
-		"the switch on with fewer than ten measured": {ratedMerges(at, 0)[:9], &stubAutoMerge{enabled: true}, true, false, "0.0%", "too-few-measured"},
-		"the switch on with no agent lines":          {noAgentLines, &stubAutoMerge{enabled: true}, true, false, "no agent lines", "no-agent-lines"},
-		"the switch on with a reverted auto-merge":   {reverted, &stubAutoMerge{enabled: true}, true, false, "0.0%", "reverted"},
-		"the switch off with a good rate":            {ratedMerges(at, 0), &stubAutoMerge{}, false, true, "0.0%", "switch-off"},
-		"a switch that cannot be read":               {ratedMerges(at, 0), &stubAutoMerge{enabled: true, readErr: unreadable}, false, true, "0.0%", "switch-unread"},
+		"under the bar":                  {ratedMerges(at, 98), &stubAutoMerge{enabled: true}, true, true, "9.8%", "on"},
+		"exactly at the bar":             {ratedMerges(at, 200), &stubAutoMerge{enabled: true}, true, true, "20.0%", "on"},
+		"over the bar":                   {ratedMerges(at, 250), &stubAutoMerge{enabled: true}, false, false, "25.0%", "rate-above-bar"},
+		"over a bar the owner set lower": {ratedMerges(at, 98), &stubAutoMerge{enabled: true, bar: 5}, false, false, "9.8%", "rate-above-bar"},
+		"fewer than ten measured":        {ratedMerges(at, 0)[:9], &stubAutoMerge{enabled: true}, false, false, "0.0%", "too-few-measured"},
+		"no agent lines":                 {noAgentLines, &stubAutoMerge{enabled: true}, false, false, "no agent lines", "no-agent-lines"},
+		"an escaped PR":                  {ratedMerges(at, 0), escaped, false, true, "0.0%", "escaped"},
+		"the switch off with an escaped PR": {
+			ratedMerges(at, 0),
+			&stubAutoMerge{escaped: dispatcher.MergeEscape{Repo: "octo/scratch", PR: 341, Reason: dispatcher.EscapeReverted}},
+			false, true, "0.0%", "escaped",
+		},
+		"the switch off with a good rate": {ratedMerges(at, 0), &stubAutoMerge{}, false, true, "0.0%", "switch-off"},
+		"a switch that cannot be read":    {ratedMerges(at, 0), &stubAutoMerge{enabled: true, readErr: unreadable}, false, true, "0.0%", "switch-unread"},
+		"a bar that is not a number":      {ratedMerges(at, 0), &stubAutoMerge{enabled: true, readErr: store.ErrBarNotInRange}, false, true, "0.0%", "bar-invalid"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			state := readAutoMerge(t, tt.merges, tt.switches)
@@ -430,6 +466,18 @@ func TestAutonomyEffectiveIsTheSwitchAlone(t *testing.T) {
 					state, tt.effective, tt.rateAllows, tt.rateValue, tt.reason)
 			}
 		})
+	}
+}
+
+// TestAutonomyNamesTheEscapedPR asserts the state names the PR whose escape
+// holds auto-merge off (AC8).
+func TestAutonomyNamesTheEscapedPR(t *testing.T) {
+	escaped := &stubAutoMerge{enabled: true,
+		escaped: dispatcher.MergeEscape{Repo: "octo/scratch", PR: 341, By: 350, Reason: dispatcher.EscapeFixed}}
+	state := readAutoMerge(t, ratedMerges(measuredAt(), 0), escaped)
+	if state["escaped_pr"] != 341.0 || state["escaped_repo"] != "octo/scratch" ||
+		state["escaped_by"] != 350.0 || state["escaped_reason"] != "fixed" {
+		t.Fatalf("auto_merge = %v, want the escaped PR and how it escaped", state)
 	}
 }
 
@@ -472,18 +520,28 @@ func TestAutonomyReportsASwitchItCannotReadAsOff(t *testing.T) {
 	if state["switch_on"] != false || state["effective"] != false || state["reason"] != "switch-unread" {
 		t.Errorf("auto_merge = %v, want the unread switch reported off with the reason", state)
 	}
-	if !strings.Contains(log.String(), "autoMergeSwitchUnread") {
-		t.Errorf("log = %q, want the unread switch reported", log.String())
+	if !strings.Contains(log.String(), "autoMergeSettingsUnread") {
+		t.Errorf("log = %q, want the unread settings reported", log.String())
 	}
 }
 
-// TestRenderAutoMergeReportsAnUnreadSwitchOffWhateverItHolds asserts a switch
-// that could not be read is off even where the value it was read as is on.
-func TestRenderAutoMergeReportsAnUnreadSwitchOffWhateverItHolds(t *testing.T) {
-	got := renderAutoMerge(ratedMerges(measuredAt(), 0), true, false)
-	want := autoMergeState{RateAllows: true, RateValue: "0.0%", Limit: "10.0%", Window: 10, Reason: "switch-unread"}
+// TestRenderAutoMergeReportsUnreadSettingsOffWhateverTheyHold asserts settings
+// that could not be read are off even where the value they were read as is on.
+func TestRenderAutoMergeReportsUnreadSettingsOffWhateverTheyHold(t *testing.T) {
+	got := renderAutoMerge(ratedMerges(measuredAt(), 0),
+		store.AutoMergeSetting{Enabled: true, BarPercent: store.DefaultBarPercent}, errors.New("firestore unreachable"))
+	want := autoMergeState{RateAllows: true, RateValue: "0.0%", Limit: "20.0%", Window: 10, Reason: "switch-unread", RateReason: "on", EscapeDays: 7}
 	if got != want {
 		t.Fatalf("auto_merge = %+v, want %+v", got, want)
+	}
+}
+
+// TestRenderAutoMergeKeepsTheRatesOwnReasonWhileTheSwitchIsOff asserts the page can tell a
+// switched-off auto-merge with a rate from one with none, since Reason names the switch.
+func TestRenderAutoMergeKeepsTheRatesOwnReasonWhileTheSwitchIsOff(t *testing.T) {
+	got := renderAutoMerge(nil, store.AutoMergeSetting{BarPercent: store.DefaultBarPercent}, nil)
+	if got.Reason != "switch-off" || got.RateReason != "too-few-measured" {
+		t.Fatalf("reason = %q, rate reason = %q, want the switch named and the rate's own reason kept", got.Reason, got.RateReason)
 	}
 }
 

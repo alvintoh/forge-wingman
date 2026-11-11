@@ -16,6 +16,13 @@ export const waits: Record<string, Wait> = {
   "size-l": { words: "size L", blocks: false, kind: "REVIEW" },
   sampled: { words: "sampled", blocks: false, kind: "REVIEW" },
   "auto-merge-off": { words: "auto-merge is off", blocks: false, kind: "REVIEW" },
+  "auto-merge-unread": { words: "auto-merge unread", blocks: false, kind: "REVIEW" },
+  "bar-invalid": { words: "bar invalid", blocks: false, kind: "REVIEW" },
+  "escaped-pr": { words: "auto-merge held by an escaped PR", blocks: false, kind: "REVIEW" },
+  "rate-above-bar": { words: "rate above the bar", blocks: false, kind: "REVIEW" },
+  "rate-no-agent-lines": { words: "rate unmeasurable", blocks: false, kind: "REVIEW" },
+  "rate-too-few-measured": { words: "rate unmeasured", blocks: false, kind: "REVIEW" },
+  "rate-unread": { words: "rate unread", blocks: false, kind: "REVIEW" },
 };
 
 /** The kind chips above the list, in the order they are drawn. */

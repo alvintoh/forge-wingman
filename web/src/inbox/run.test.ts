@@ -17,6 +17,14 @@ describe("isInbox", () => {
     expect(isInbox({ runs: [run] })).toBe(true);
     expect(isInbox({ runs: [{ ...run, stop_detail: { html: "<b>x</b>" } }] })).toBe(false);
   });
+
+  it("reads what holds auto-merge as text, and refuses one that is not", () => {
+    const held = { ...run, stopped: false, wait_reason: "rate-above-bar" };
+    expect(
+      isInbox({ runs: [{ ...held, wait_detail: "the trailing rewrite rate is 25.0%" }] }),
+    ).toBe(true);
+    expect(isInbox({ runs: [{ ...held, wait_detail: 7 }] })).toBe(false);
+  });
 });
 
 describe("stopReasonOf", () => {

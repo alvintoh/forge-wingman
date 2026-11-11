@@ -16,8 +16,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 	"github.com/alvintoh/forge-wingman/internal/linear"
 	"github.com/alvintoh/forge-wingman/internal/runner"
+	"github.com/alvintoh/forge-wingman/internal/store"
 )
 
 const (
@@ -331,7 +333,7 @@ func TestPRReviewPost(t *testing.T) {
 			getenv := f.start(t)
 			args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-verdict", writeVerdict(t, tt.v), "-context-result", "success",
 				"-run-url", "https://github.com/o/r/actions/runs/9"}
-			if err := prReviewPost(context.Background(), quietLogger(), getenv, args); err != nil {
+			if err := prReviewPostWith(context.Background(), quietLogger(), getenv, switchedOn, args); err != nil {
 				t.Fatal(err)
 			}
 			if s, ok := f.statuses[headSHA]; !ok || s.State != tt.wantState || len(f.statuses) != 1 {
@@ -347,11 +349,74 @@ func TestPRReviewPost(t *testing.T) {
 	}
 }
 
+// switchedOn reads the owner's settings as on with nothing escaped.
+func switchedOn(context.Context) (store.AutoMergeSetting, error) {
+	return store.AutoMergeSetting{Enabled: true, BarPercent: store.DefaultBarPercent}, nil
+}
+
+// A clean review of an eligible PR still requests nothing once the switch has
+// been turned off, an escaped PR holds auto-merge or the settings cannot be read:
+// the eligibility label was set before the review ran.
+func TestPRReviewPostDeclinesTheMergeWhileTheSettingsHold(t *testing.T) {
+	for name, tt := range map[string]struct {
+		settings autoMergeSettings
+		reason   string
+	}{
+		"the switch is off": {func(context.Context) (store.AutoMergeSetting, error) {
+			return store.AutoMergeSetting{Enabled: false, BarPercent: 20}, nil
+		}, dispatcher.AutoMergeReasonSwitchOff},
+		"an escaped PR holds it": {func(context.Context) (store.AutoMergeSetting, error) {
+			return store.AutoMergeSetting{Enabled: true, BarPercent: 20,
+				Escaped: dispatcher.MergeEscape{Repo: "o/r", PR: 5, By: 9, Reason: dispatcher.EscapeReverted}}, nil
+		}, dispatcher.AutoMergeReasonEscaped},
+		"the settings cannot be read": {func(context.Context) (store.AutoMergeSetting, error) {
+			return store.AutoMergeSetting{}, errors.New("permission denied")
+		}, "settings-unread"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &fakePulls{pull: openPull("t", "", headSHA, autoMergeEligibleLabel)}
+			getenv := f.start(t)
+			var logs bytes.Buffer
+			args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-verdict", writeVerdict(t, verdict("clean", "", museModel)), "-context-result", "success"}
+			if err := prReviewPostWith(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), getenv, tt.settings, args); err != nil {
+				t.Fatal(err)
+			}
+			if got := readOutput(t, getenv); !strings.Contains(got, "merge=false") {
+				t.Fatalf("output = %q, want the merge declined", got)
+			}
+			if got := logs.String(); !strings.Contains(got, "prReviewMergeDeclined") || !strings.Contains(got, "reason="+tt.reason) {
+				t.Fatalf("log = %q, want the decline and reason %s", got, tt.reason)
+			}
+			if s := f.statuses[headSHA]; s.State != "success" {
+				t.Fatalf("status = %+v, want the clean review still posted", s)
+			}
+		})
+	}
+}
+
+// Settings are read only for a review that would otherwise request the merge.
+func TestPRReviewPostReadsTheSettingsOnlyForAMergeItWouldRequest(t *testing.T) {
+	f := &fakePulls{pull: openPull("t", "", headSHA)}
+	getenv := f.start(t)
+	reads := 0
+	counting := func(ctx context.Context) (store.AutoMergeSetting, error) {
+		reads++
+		return switchedOn(ctx)
+	}
+	args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-verdict", writeVerdict(t, verdict("clean", "", museModel)), "-context-result", "success"}
+	if err := prReviewPostWith(context.Background(), quietLogger(), getenv, counting, args); err != nil {
+		t.Fatal(err)
+	}
+	if reads != 0 {
+		t.Fatalf("reads = %d, want none for a PR that is not eligible", reads)
+	}
+}
+
 func TestPRReviewPostSetsAnErrorStatusForASkippedReview(t *testing.T) {
 	f := &fakePulls{}
 	getenv := f.start(t)
 	args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-skip-reason", "no-ticket-id", "-context-result", "success"}
-	if err := prReviewPost(context.Background(), quietLogger(), getenv, args); err != nil {
+	if err := prReviewPostWith(context.Background(), quietLogger(), getenv, switchedOn, args); err != nil {
 		t.Fatal(err)
 	}
 	if s := f.statuses[headSHA]; s.State != "error" || !strings.Contains(s.Description, "no ticket id") || len(f.created) != 0 {

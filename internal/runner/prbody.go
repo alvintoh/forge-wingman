@@ -61,10 +61,12 @@ var ErrNoScreenshotsSection = errors.New("pull request body has no screenshots s
 // when its budget ran out, zero for a run that probed them all. provisional are
 // the decisions auto-pilot took the recommended option on, empty for a run that
 // took none. supersedes is the number of the PR an owner's choice replaced, zero
-// when none, and retried says that choice was a retry with a note. drift is the
+// when none, and retried says that choice was a retry with a note. autoMergeHold
+// names what keeps auto-merge off — the rate against the bar, or the escaped PR
+// — and is empty while auto-merge is on. drift is the
 // ticket change the run found after it read its ticket, nil when the ticket did
 // not change.
-func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail, overlap string, outOfPlan []string, writeSetUnread bool, frontEnd []string, noPlan bool, review []ReviewFinding, reviewOmitted int, secondRound *FixRoundCost, guardsUntested int, provisional []Provisional, supersedes int, retried bool, drift *TicketDrift) (string, error) {
+func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail, overlap string, outOfPlan []string, writeSetUnread bool, frontEnd []string, noPlan bool, review []ReviewFinding, reviewOmitted int, secondRound *FixRoundCost, guardsUntested int, provisional []Provisional, supersedes int, retried bool, autoMergeHold string, drift *TicketDrift) (string, error) {
 	summary := plainText(prSummary)
 	if summary == "" {
 		summary = "`" + t.ID + "`: " + t.Title
@@ -136,6 +138,9 @@ func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail
 			}
 			if noPlan {
 				notes = append(notes, "", "**No recorded plan:** not eligible for auto-merge, so this waits for the owner — no plan stage recorded a write set for this run, so nothing it changed could be checked against one")
+			}
+			if autoMergeHold != "" {
+				notes = append(notes, "", "**Auto-merge held:** "+plainText(autoMergeHold))
 			}
 			if supersedes > 0 {
 				notes = append(notes, "", "Supersedes #"+strconv.Itoa(supersedes)+": "+supersedeReason(retried))

@@ -144,11 +144,23 @@ type WaitReason string
 // The reasons a PR waits for the owner. The inbox adds WaitAutoMergeOff from
 // the live switch and WaitChecksNotGreen from GitHub's check state; the merge
 // refuses on WaitChecksNotGreen, WaitDraft and WaitUnconfirmedDecision.
+//
+// The auto-merge holds are what the switch, the bar and the escape latch add to
+// a PR that would otherwise merge itself; the wait detail set beside them names
+// the rate, the bar or the escaped PR. A rate that cannot be computed holds the
+// same way, each condition with its own token.
 const (
 	WaitAutoMergeOff        WaitReason = "auto-merge-off"
+	WaitAutoMergeUnread     WaitReason = "auto-merge-unread"
+	WaitBarInvalid          WaitReason = "bar-invalid"
 	WaitChecksNotGreen      WaitReason = "checks-not-green"
 	WaitDraft               WaitReason = "draft"
+	WaitEscapedPR           WaitReason = "escaped-pr"
 	WaitFrontEnd            WaitReason = "front-end"
+	WaitRateAboveBar        WaitReason = "rate-above-bar"
+	WaitRateNoAgentLines    WaitReason = "rate-no-agent-lines"
+	WaitRateTooFewMeasured  WaitReason = "rate-too-few-measured"
+	WaitRateUnread          WaitReason = "rate-unread"
 	WaitSampled             WaitReason = "sampled"
 	WaitSizeL               WaitReason = "size-l"
 	WaitUnconfirmedDecision WaitReason = "unconfirmed-decision"
@@ -249,6 +261,9 @@ type Record struct {
 	AutoMerge bool `firestore:"auto_merge"`
 	// WaitReason is why the PR waits for the owner, empty when none is named.
 	WaitReason WaitReason `firestore:"wait_reason"`
+	// WaitDetail names what holds auto-merge — the rate against the bar, or the
+	// escaped PR — in words, empty when the reason needs none.
+	WaitDetail string `firestore:"wait_detail"`
 	// MergedByOwnerAt and MergedSHA are when, and as what, the owner merged it.
 	MergedByOwnerAt time.Time `firestore:"merged_by_owner_at"`
 	MergedSHA       string    `firestore:"merged_sha"`
@@ -529,7 +544,7 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, reader Prov
 	rec.Plan = existing.Plan
 	rec.PriorSettledProviderCostMicros, rec.PriorSettledRunnerMinutes = existing.PriorSettledProviderCostMicros, existing.PriorSettledRunnerMinutes
 	rec.DecisionMode = existing.DecisionMode
-	rec.WaitReason, rec.MergedByOwnerAt, rec.MergedSHA = existing.WaitReason, existing.MergedByOwnerAt, existing.MergedSHA
+	rec.WaitReason, rec.WaitDetail, rec.MergedByOwnerAt, rec.MergedSHA = existing.WaitReason, existing.WaitDetail, existing.MergedByOwnerAt, existing.MergedSHA
 	rec.CancelledByOwnerAt, rec.CancelledBy = existing.CancelledByOwnerAt, existing.CancelledBy
 	identityErr := in.Identity.CheckAccount()
 	sum, err := ParseSummary(in.Summary, in.AttemptID, t, now)

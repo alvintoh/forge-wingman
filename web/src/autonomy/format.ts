@@ -57,7 +57,7 @@ export function whole(fraction: number): string {
 }
 
 // barOf is the bar a rate is compared to, as a fraction, from the endpoint's own text for it:
-// "10.0%" is 0.1.
+// "20.0%" — the default bar — is 0.2.
 export function barOf(limit: string): number {
   return Number.parseFloat(limit) / 100;
 }
@@ -117,23 +117,25 @@ export function phaseWord(phase: Phase, model: string): string {
 }
 
 // reasonText is what the endpoint's reason token says about the rate, or about
-// the switch where the token is the switch's own. The rate is information.
+// the switch where the token is the switch's own. The rate gates auto-merge.
 export function reasonText(reason: string): string {
   switch (reason) {
     case "on":
-      return "The rewrite rate is within the guide.";
+      return "The rewrite rate is at or under the bar.";
     case "switch-off":
       return "The owner's switch is off.";
     case "switch-unread":
-      return "The owner's switch could not be read.";
+      return "The auto-merge settings could not be read.";
+    case "bar-invalid":
+      return "The stored bar is not a whole number from 1 to 100.";
+    case "escaped":
+      return "An auto-merged PR escaped the owner's read.";
     case "too-few-measured":
-      return "Fewer merged PRs than the window holds are measured, or one carries an unmeasured commit.";
+      return "Too few PRs a human merged are measured, or one carries an unmeasured commit.";
     case "no-agent-lines":
       return "The measured PRs carry no agent lines, so there is no rate.";
     case "rate-above-bar":
-      return "The trailing rate is above the guide.";
-    case "reverted":
-      return "An auto-merged PR of the window was reverted.";
+      return "The trailing rate is above the bar.";
     case "evidence-unread":
       return "The measured merges could not be read.";
     default:
@@ -141,40 +143,61 @@ export function reasonText(reason: string): string {
   }
 }
 
+/** rateMissing words why the rate cannot be computed, or is empty where the reason is not one of those. */
+function rateMissing(merge: MergeState, reason: string): string {
+  switch (reason) {
+    case "too-few-measured":
+      return `the rate cannot be computed: fewer than ${merge.window} PRs a human merged are measured`;
+    case "no-agent-lines":
+      return "the rate cannot be computed: the measured PRs carry no agent lines";
+    case "evidence-unread":
+      return "the rate cannot be computed: the measured merges could not be read";
+    default:
+      return "";
+  }
+}
+
 /**
- * rateLine words the rate beside its guide: the figure over the window, and its place against the
- * guide. Where the switch is off the line says so, and the rate never decides auto-merge.
+ * rateLine words what holds auto-merge: the trailing rate over the PRs a human merged and its place
+ * against the bar, or the reason the rate cannot be used. The rate gates, so a rate above the bar,
+ * exactly as much as a rate that cannot be computed, turns auto-merge off.
  */
 export function rateLine(merge: MergeState): string {
-  const trailing = `rewrite rate over the trailing ${merge.window} PRs is ${merge.rate_value}`;
-  const guide = whole(barOf(merge.limit));
-  const above = isRed(barOf(merge.rate_value), barOf(merge.limit));
-  if (merge.reason === "switch-unread") {
-    return reasonText(merge.reason);
-  }
-  if (merge.reason === "switch-off") {
-    if (merge.rate_allows) {
-      return `off: switched off by you; the rewrite rate is within the ${guide} guide`;
+  const trailing = `the trailing rewrite rate is ${merge.rate_value} over the last ${merge.window} PRs a human merged`;
+  const bar = whole(barOf(merge.limit));
+  switch (merge.reason) {
+    case "switch-unread":
+      return "off: the auto-merge settings could not be read";
+    case "bar-invalid":
+      return "off: the stored bar is not a whole number from 1 to 100";
+    case "switch-off": {
+      const missing = rateMissing(merge, merge.rate_reason);
+      return missing
+        ? `off: switched off by you; ${missing}`
+        : `off: switched off by you; ${trailing}, ${isRed(barOf(merge.rate_value), barOf(merge.limit)) ? "above" : "at or under"} the ${bar} bar`;
     }
-    return above
-      ? `off: switched off by you; ${trailing}, above the ${guide} guide`
-      : "off: switched off by you";
+    case "escaped": {
+      const how =
+        merge.escaped_reason === "fixed"
+          ? `was named as fixed by #${merge.escaped_by}`
+          : "was reverted";
+      return `off: ${merge.escaped_repo}#${merge.escaped_pr} ${how} within ${merge.escape_days} days of merging; auto-merge is off until you switch it on again`;
+    }
+    case "rate-above-bar":
+      return `off: ${trailing}, above the ${bar} bar`;
+    case "too-few-measured":
+    case "no-agent-lines":
+    case "evidence-unread":
+      return `off: ${rateMissing(merge, merge.reason)}`;
+    case "on":
+      return `on: ${trailing}, at or under the ${bar} bar`;
+    default:
+      return reasonText(merge.reason);
   }
-  if (merge.reason === "too-few-measured") {
-    return reasonText(merge.reason);
-  }
-  if (merge.rate_allows) {
-    return `Recommended: ${trailing}; guide ${guide}`;
-  }
-  if (!above) {
-    return reasonText(merge.reason);
-  }
-  const rate = `${trailing}, above the ${guide} guide`;
-  return merge.reason === "rate-above-bar" ? `on: ${rate}` : `${rate}. ${reasonText(merge.reason)}`;
 }
 
 // isRed is whether a rate is strictly above the bar, which the page draws in red
-// beside a triangle and the words, and never to decide auto-merge.
+// beside a triangle and the words.
 export function isRed(value: number | null, bar: number): boolean {
   return value !== null && value > bar;
 }
@@ -289,9 +312,9 @@ export function wrap(text: string, size: number, width: number): string[] {
   return lines;
 }
 
-// referenceLabel names the reference line at the guide.
+// referenceLabel names the reference line at the bar.
 export function referenceLabel(bar: number): string {
-  return `${whole(bar)}: the guide`;
+  return `${whole(bar)}: the bar`;
 }
 
 // seriesLabel is the one sentence a screen reader gets for the trend; the Data
