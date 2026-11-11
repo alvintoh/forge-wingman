@@ -794,6 +794,8 @@ type PullCommit struct {
 	Name    string
 	Email   string
 	Message string
+	// Merge is set for a commit with more than one parent.
+	Merge bool
 }
 
 // PullCommits lists the commits of pull request number in oldest-first order,
@@ -818,7 +820,10 @@ func (g GitHub) listPullCommits(ctx context.Context, repo string, number int) ([
 	var out []PullCommit
 	capped, err := g.paged(ctx, endpoint, fmt.Sprintf("list the commits of %s#%d", repo, number), func(body io.Reader) error {
 		var commits []struct {
-			SHA    string `json:"sha"`
+			SHA     string `json:"sha"`
+			Parents []struct {
+				SHA string `json:"sha"`
+			} `json:"parents"`
 			Author *struct {
 				Login string `json:"login"`
 			} `json:"author"`
@@ -834,7 +839,7 @@ func (g GitHub) listPullCommits(ctx context.Context, repo string, number int) ([
 			return fmt.Errorf("decoding the commits of %s#%d: %w", repo, number, err)
 		}
 		for _, c := range commits {
-			commit := PullCommit{SHA: c.SHA, Name: c.Commit.Author.Name, Email: c.Commit.Author.Email, Message: c.Commit.Message}
+			commit := PullCommit{SHA: c.SHA, Name: c.Commit.Author.Name, Email: c.Commit.Author.Email, Message: c.Commit.Message, Merge: len(c.Parents) > 1}
 			if c.Author != nil {
 				commit.Login = c.Author.Login
 			}
@@ -853,6 +858,9 @@ func (g GitHub) listPullCommits(ctx context.Context, repo string, number int) ([
 // line counts, so each commit is read once. A listing cut at the page cap ends in
 // an unmeasured commit, so a window holding it measures nothing for the
 // rewrite rate.
+//
+// A merge commit is left out: GitHub counts its lines against the first parent,
+// so a merge of main into the branch reports every line main brought in.
 func (g GitHub) Commits(ctx context.Context, repo string, number int) ([]Commit, error) {
 	listed, capped, err := g.listPullCommits(ctx, repo, number)
 	if err != nil {
@@ -860,6 +868,9 @@ func (g GitHub) Commits(ctx context.Context, repo string, number int) ([]Commit,
 	}
 	out := make([]Commit, 0, len(listed)+1)
 	for _, c := range listed {
+		if c.Merge {
+			continue
+		}
 		added, removed, measured, err := g.commitLines(ctx, repo, c.SHA)
 		if err != nil {
 			return nil, err
