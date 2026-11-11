@@ -462,6 +462,15 @@ func TestPRReviewWorkflow(t *testing.T) {
 			t.Errorf("the %s job's permissions are not %q", job, want)
 		}
 	}
+	// The sign-in step must not stop the review being posted: it is the only step before the
+	// build, so a failure there would otherwise skip the post and its status.
+	_, afterAuth, _ := strings.Cut(jobs["post"], "      - id: auth\n")
+	authStep, _, _ := strings.Cut(afterAuth, "\n      - ")
+	for _, want := range []string{"continue-on-error: true", "workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}"} {
+		if !strings.Contains(authStep, want) {
+			t.Errorf("the post job's sign-in step lacks %q", want)
+		}
+	}
 	if strings.Contains(jobs["review"], "GH_TOKEN") || strings.Contains(jobs["review"], "google-github-actions/auth") {
 		t.Error("the review job holds a GitHub or GCP credential")
 	}
