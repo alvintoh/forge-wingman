@@ -1,23 +1,12 @@
-import {
-  BAND_H,
-  BAND_LABEL,
-  CAP,
-  PLOT_TOP,
-  TREND_TICKS,
-  bandLabelSide,
-  dotRadius,
-  prKey,
-  radiiFor,
-  yOf,
-} from "./axis";
-import type { Axis, Radii } from "./axis";
+import { BAND_H, BAND_LABEL, CAP, PLOT_TOP, TREND_TICKS, bandLabelSide, prKey, yOf } from "./axis";
+import type { Axis } from "./axis";
 import { ChartHeader } from "./chart-card";
-import { UNKNOWN_MODEL, count, phaseWord, textWidth, whole, wrap } from "./format";
+import { UNKNOWN_MODEL, phaseWord, textWidth, whole, wrap } from "./format";
 import { Dot, Triangle } from "./marks";
 import { PHASES } from "./types";
 import type { Phase, PR } from "./types";
 
-const PLOT_H = 100;
+const PLOT_H = 140;
 const LANE_H = 28;
 const LANE_LINE = 13;
 // How many of the newest PRs the strip draws, however many the list behind it holds.
@@ -44,6 +33,10 @@ type Lane = { label: string; labelX: number; pills: Pill[]; height: number; rowH
 
 // The rows of wrapped names a lane may stack when neighbours' names would touch.
 const MAX_LEVELS = 3;
+
+// Every dot is one size and carries its PR's rate; the compact (phone) card's is smaller.
+const DOT_R = 14;
+const DOT_R_COMPACT = 12;
 
 const SHORT_BAND_LABEL = `above ${whole(CAP)}`;
 
@@ -123,11 +116,6 @@ function layoutLane(
   };
 }
 
-// keySamples are the three dot sizes the strip's key shows, up to its biggest.
-function keySamples(most: number): number[] {
-  return [Math.max(1, Math.round(most * 0.02)), Math.round(most * 0.5), most];
-}
-
 type PrStripProps = {
   axis: Axis;
   prs: PR[];
@@ -138,9 +126,9 @@ type PrStripProps = {
   alone: boolean;
 };
 
-// PrStrip draws each PR's own rate as a dot on its own merge axis, so its PRs fill its width: its area is
-// the PR's agent lines on one scale across the strip, its size letter and number
-// sit under it, and a rate above 30% is a triangle in a labelled band. Under it,
+// PrStrip draws each PR's own rate as a same-size dot on its own merge axis, so its PRs fill its width,
+// the rate printed inside it; its size letter and number sit under it, and a rate above 60% is a
+// triangle in a labelled band with its rate beside it. Under it,
 // where the room allows, the models each PR ran as one pill per run of equal ones.
 export function PrStrip({ axis, prs, width, padx, compact, alone }: PrStripProps) {
   const placed: Placed[] = prs
@@ -151,9 +139,7 @@ export function PrStrip({ axis, prs, width, padx, compact, alone }: PrStripProps
     })
     .sort((a, b) => a.x - b.x);
   const index = new Map(axis.slots.map((slot, i) => [prKey(slot.repo, slot.pr), i]));
-  const radii: Radii = compact ? { max: 6.5, min: 2.5 } : radiiFor(axis.step);
-  const rMax = radii.max;
-  const mostLines = Math.max(0, ...placed.map(({ pr }) => pr.agent_lines));
+  const rMax = compact ? DOT_R_COMPACT : DOT_R;
   const clipped = placed.filter(({ pr }) => pr.rate_value !== null && pr.rate_value > CAP);
   const band = clipped.length > 0 ? BAND_H : 0;
   const top = band > 0 ? BAND_H : PLOT_TOP;
@@ -162,26 +148,12 @@ export function PrStrip({ axis, prs, width, padx, compact, alone }: PrStripProps
   // A PR number is mono, so its width is exact: no margin for an estimate.
   const widest = Math.max(0, ...placed.map(({ pr }) => `#${pr.pr}`.length));
   const numbers = !compact && widest * 11 * 0.6 + 3 <= axis.step;
-  const firstX = placed[0]?.x ?? axis.x1;
-  const samples = keySamples(mostLines);
-  // A figure is mono, so its width is exact: three of them, each with room beside it.
-  const keyFit = 3 * (count(mostLines).length * 11 * 0.6 + 8);
-  const keyRight = width - padx - (axis.x1 + 12) >= keyFit;
-  const keyWidth = keyRight ? width - padx - (axis.x1 + 12) : firstX - rMax - 8 - axis.x0 - 4;
-  const keyLeft = keyRight || (!alone && keyWidth >= keyFit);
-  const keyX = keyRight ? axis.x1 + 12 : axis.x0 + 4;
   const clippedXs = clipped.map(({ x }) => x);
   const fullSide = bandLabelSide(clippedXs, axis.x0, axis.x1);
   // A short strip: the full words would run into the first triangle, so the band says only the rate.
   const bandWord = fullSide !== null ? BAND_LABEL : SHORT_BAND_LABEL;
   const labelSide = fullSide ?? bandLabelSide(clippedXs, axis.x0, axis.x1, SHORT_BAND_LABEL);
-  // The key's three samples in a row, each as wide as its dot and its figure.
-  const keyPitch = 2 * rMax + 6 + textWidth(count(mostLines), 11, true) + 18;
   let cy = base + rMax + (numbers ? 36 : 22) + 6;
-  const keyRowY = cy;
-  if (!keyLeft && placed.length > 0) {
-    cy += 2 * rMax + 14;
-  }
   const lanes =
     compact || alone ? [] : PHASES.map((phase) => layoutLane(axis, placed, index, phase));
   const drawLanes = lanes.length > 0 && lanes.every((lane) => lane !== null);
@@ -197,14 +169,14 @@ export function PrStrip({ axis, prs, width, padx, compact, alone }: PrStripProps
   return (
     <div className="pb-3">
       <div className="mt-4">
-        <ChartHeader title="each PR's own rate" aside="dot area = agent lines" padx={padx} />
+        <ChartHeader title="each PR's own rate" aside="rate inside each dot" padx={padx} />
       </div>
       <svg
         width={width}
         height={height}
         viewBox={`0 0 ${width} ${height}`}
         role="img"
-        aria-label={`Each of the last ${placed.length} merged PRs' own rate, the area of its dot its agent lines. The Data section lists every figure.`}
+        aria-label={`Each of the last ${placed.length} merged PRs' own rate, printed inside its dot. The Data section lists every figure.`}
         className="mt-3"
         data-chart="strip"
       >
@@ -246,63 +218,54 @@ export function PrStrip({ axis, prs, width, padx, compact, alone }: PrStripProps
             strokeDasharray="3 3"
             className="stroke-ink2"
           />
-          {keyLeft && placed.length > 0 && (
-            <g data-mark="key">
-              {!keyRight && (
-                <rect x={keyX} y={top + 14} width={keyWidth} height={72} className="fill-card" />
-              )}
-              {samples.map((lines, i) => (
-                <g key={i}>
-                  <Dot
-                    cx={keyX + (keyWidth / 3) * (i + 0.5)}
-                    cy={top + 38}
-                    r={dotRadius(lines, mostLines, radii)}
-                  />
-                  <text
-                    x={keyX + (keyWidth / 3) * (i + 0.5)}
-                    y={top + 70}
-                    textAnchor="middle"
-                    className="fill-ink2 font-mono text-micro font-semibold"
-                  >
-                    {count(lines)}
-                  </text>
-                </g>
-              ))}
-              <text x={keyX + 4} y={top + 84} className="fill-ink2 text-micro font-semibold">
-                agent lines
-              </text>
-            </g>
-          )}
+          <line x1={axis.x0} x2={axis.x1} y1={base} y2={base} className="stroke-ink2" />
           {placed.map(({ pr, x }) => {
             if (pr.rate_value === null) {
               return null;
             }
+            const rate = `${Math.round(pr.rate_value * 100)}%`;
             return pr.rate_value > CAP ? (
-              <Triangle
-                key={prKey(pr.repo, pr.pr)}
-                cx={x}
-                cy={BAND_H / 2 + 1}
-                className="fill-accent"
-                data-mark="strip-dot"
-                data-repo={pr.repo}
-                data-pr={pr.pr}
-                data-rate={pr.rate_value}
-                data-clipped=""
-              />
+              <g key={prKey(pr.repo, pr.pr)}>
+                <Triangle
+                  cx={x}
+                  cy={BAND_H / 2 + 1}
+                  className="fill-accent"
+                  data-mark="strip-dot"
+                  data-repo={pr.repo}
+                  data-pr={pr.pr}
+                  data-rate={pr.rate_value}
+                  data-clipped=""
+                />
+                <text
+                  x={x + 11}
+                  y={BAND_H / 2 + 5}
+                  className="fill-ink font-mono text-micro font-semibold"
+                >
+                  {rate}
+                </text>
+              </g>
             ) : (
-              <Dot
-                key={prKey(pr.repo, pr.pr)}
-                cx={x}
-                cy={y(pr.rate_value)}
-                r={dotRadius(pr.agent_lines, mostLines, radii)}
-                data-mark="strip-dot"
-                data-repo={pr.repo}
-                data-pr={pr.pr}
-                data-rate={pr.rate_value}
-              />
+              <g key={prKey(pr.repo, pr.pr)}>
+                <Dot
+                  cx={x}
+                  cy={y(pr.rate_value)}
+                  r={rMax}
+                  data-mark="strip-dot"
+                  data-repo={pr.repo}
+                  data-pr={pr.pr}
+                  data-rate={pr.rate_value}
+                />
+                <text
+                  x={x}
+                  y={y(pr.rate_value) + 4}
+                  textAnchor="middle"
+                  className="fill-card font-mono text-micro font-semibold"
+                >
+                  {rate}
+                </text>
+              </g>
             );
           })}
-          <line x1={axis.x0} x2={axis.x1} y1={base} y2={base} className="stroke-ink2" />
           {placed.map(({ pr, x }) => (
             <g key={prKey(pr.repo, pr.pr)}>
               <line x1={x} x2={x} y1={base} y2={base + 4} className="stroke-ink2" />
@@ -326,25 +289,6 @@ export function PrStrip({ axis, prs, width, padx, compact, alone }: PrStripProps
               )}
             </g>
           ))}
-          {!keyLeft && placed.length > 0 && (
-            <g data-mark="key">
-              {samples.map((lines, i) => {
-                const x = axis.x0 + keyPitch * i;
-                return (
-                  <g key={i}>
-                    <Dot cx={x + rMax} cy={keyRowY + rMax} r={dotRadius(lines, mostLines, radii)} />
-                    <text
-                      x={x + rMax * 2 + 6}
-                      y={keyRowY + rMax + 4}
-                      className="fill-ink2 font-mono text-micro font-semibold"
-                    >
-                      {count(lines)}
-                    </text>
-                  </g>
-                );
-              })}
-            </g>
-          )}
           {drawLanes &&
             lanes.map((lane, i) => {
               const laneTop = laneTops[i];

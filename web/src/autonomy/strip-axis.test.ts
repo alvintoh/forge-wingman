@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import autonomy from "../../fixtures/autonomy.json";
-import { buildAxis, mergeSlots } from "./axis";
+import { CAP, TREND_TICKS, buildAxis, mergeSlots } from "./axis";
 import { isAutonomy } from "./guard";
 import { STRIP_PRS } from "./pr-strip";
 
@@ -23,5 +23,10 @@ describe("the strip's own axis", () => {
     const [oldest] = strip.slots;
     const onShared = oldest && shared.xOfPR(oldest.repo, oldest.pr);
     expect(onShared).toBeGreaterThan(first);
+  });
+
+  it("draws the trend and the strip on a 0 to 60% axis whose last tick is the cap", () => {
+    expect(CAP).toBe(0.6);
+    expect(TREND_TICKS).toEqual([0, 0.2, 0.4, 0.6]);
   });
 });

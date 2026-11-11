@@ -2,7 +2,7 @@ import { textWidth, utcDay, whole } from "./format";
 import type { PR, Point } from "./types";
 
 // The rate a trend and a strip stop at; a value above it is a triangle in a band.
-export const CAP = 0.3;
+export const CAP = 0.6;
 // The axes of the by-size chart and of the model and repository bars.
 export const SIZE_CAP = 0.4;
 export const ROW_CAP = 0.8;
@@ -105,26 +105,6 @@ export function buildAxis(slots: Slot[], options: AxisOptions): Axis {
 
 export function yOf(value: number, top: number, height: number, cap: number): number {
   return top + height * (1 - value / cap);
-}
-
-// Radii is the dot radius range at a slot step: the drawing's 13 where the steps
-// allow it, shrinking toward a floor so neighbours never touch.
-export type Radii = { max: number; min: number };
-
-const R_CEIL = 13;
-const R_FLOOR = 2.5;
-
-export function radiiFor(step: number): Radii {
-  const max = Math.min(R_CEIL, Math.max(R_FLOOR, (step - 1) / 2));
-  return { max, min: max < R_CEIL ? R_FLOOR : 3 };
-}
-
-// dotRadius makes a dot's AREA proportional to its agent lines on one scale.
-export function dotRadius(lines: number, mostLines: number, radii: Radii): number {
-  if (mostLines <= 0) {
-    return radii.min;
-  }
-  return Math.max(radii.min, radii.max * Math.sqrt(lines / mostLines));
 }
 
 type Vertex = { x: number; y: number };
@@ -275,5 +255,5 @@ const STAGE_BAR_MIN = 160;
 export const WIDE_STAGE =
   2 * DESKTOP_PADX + STAGE_NAME_COL + STAGE_RATE_COL + 2 * STAGE_GAP + STAGE_BAR_MIN;
 
-// The ticks of the trend and the strip, on the 0 to 30% axis.
-export const TREND_TICKS = [0, 0.1, 0.2, 0.3];
+// The ticks of the trend and the strip, on the 0 to 60% axis.
+export const TREND_TICKS = [0, 0.2, 0.4, 0.6];
