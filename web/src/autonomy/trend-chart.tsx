@@ -21,12 +21,13 @@ import type { Axis } from "./axis";
 import { ChartCard, ChartHeader } from "./chart-card";
 import { referenceLabel, seriesLabel, whole } from "./format";
 import { Dot, RefLine, Triangle } from "./marks";
-import { PrStrip } from "./pr-strip";
+import { PrStrip, STRIP_PRS } from "./pr-strip";
 import type { PR, Point } from "./types";
 
 const GUTTER = 168;
 // The gutter the strip keeps right of its plot for its size key, with no trend above it.
 const KEY_GUTTER = 140;
+const STRIP_LABELS_W = 64;
 const MEASURED_HEAD = "How this is measured";
 const MEASURED =
   "The rewrite rate is the lines changed by anyone other than the runner after it opened a PR, over the lines the runner wrote, pooled over the last ten merged PRs. It measures human effort, not code quality.";
@@ -244,9 +245,9 @@ type TrendCardProps = {
   lead?: ReactNode;
 };
 
-// TrendCard is the trailing-ten trend with the per-PR strip under it on the same
-// merge axis. Under ten measured PRs there is no series, so the trend is one
-// line saying so and the strip stands on its own axis.
+// TrendCard is the trailing-ten trend with the per-PR strip under it. The strip has
+// its own merge axis, so its ten PRs fill its width whatever the trend spans. Under
+// ten measured PRs there is no series, so the trend is one line saying so.
 export function TrendCard({ series, prs, bar, aside, lead }: TrendCardProps) {
   return (
     <ChartCard>
@@ -262,6 +263,15 @@ export function TrendCard({ series, prs, bar, aside, lead }: TrendCardProps) {
           padx,
           gutter,
           blank: hasTrend ? 0 : 1,
+        });
+        // Half a step in from each end keeps a dot off the axis labels; the desktop's wider label column
+        // holds the model lanes' names.
+        const stripAxis = buildAxis(mergeSlots([], prs.slice(0, STRIP_PRS)), {
+          width,
+          padx,
+          gutter,
+          blank: 0.5,
+          labels: compact ? undefined : STRIP_LABELS_W,
         });
         const height = side ? PH_SIDE : compact ? PH_COMPACT : PH_UNDER;
         const clipped = series.some((point) => point.rate_value !== null && point.rate_value > CAP);
@@ -343,7 +353,7 @@ export function TrendCard({ series, prs, bar, aside, lead }: TrendCardProps) {
             )}
             <hr className="mt-4 border-hair" style={{ marginInline: padx }} />
             <PrStrip
-              axis={axis}
+              axis={stripAxis}
               prs={prs}
               width={width}
               padx={padx}
