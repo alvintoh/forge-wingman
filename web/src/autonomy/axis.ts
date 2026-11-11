@@ -2,7 +2,7 @@ import { textWidth, utcDay, whole } from "./format";
 import type { PR, Point } from "./types";
 
 // The rate a trend and a strip stop at; a value above it is a triangle in a band.
-export const CAP = 0.3;
+export const CAP = 0.6;
 // The axes of the by-size chart and of the model and repository bars.
 export const SIZE_CAP = 0.4;
 export const ROW_CAP = 0.8;
@@ -275,5 +275,26 @@ const STAGE_BAR_MIN = 160;
 export const WIDE_STAGE =
   2 * DESKTOP_PADX + STAGE_NAME_COL + STAGE_RATE_COL + 2 * STAGE_GAP + STAGE_BAR_MIN;
 
-// The ticks of the trend and the strip, on the 0 to 30% axis.
-export const TREND_TICKS = [0, 0.1, 0.2, 0.3];
+// The ticks of the trend and the strip, on the 0 to 60% axis.
+export const TREND_TICKS = [0, 0.2, 0.4, 0.6];
+
+// niceDown is the largest of 1, 2 and 5 times a power of ten at most the value: 1411 is 1000.
+function niceDown(value: number): number {
+  const power = 10 ** Math.floor(Math.log10(value));
+  return [5, 2, 1].map((m) => m * power).find((n) => n <= value) ?? 1;
+}
+
+// keySamples are the three dot sizes the strip's key shows, up to its biggest: round sizes, the top
+// the biggest dot's size rounded down, the middle half of it and the first a twentieth. A strip too
+// small to give three different round sizes keeps the figures it has.
+export function keySamples(most: number): number[] {
+  if (most < 1) {
+    return [1, 1, 1];
+  }
+  const top = niceDown(most);
+  const round = [niceDown(Math.max(top / 20, 1)), niceDown(Math.max(top / 2, 1)), top];
+  const [low = 1, mid = 1] = round;
+  return low < mid && mid < top
+    ? round
+    : [Math.max(1, Math.round(most * 0.02)), Math.round(most * 0.5), most];
+}

@@ -1,5 +1,4 @@
 import { useEffect } from "react";
-import { CAP } from "../autonomy/axis";
 import {
   UNKNOWN_MODEL,
   isRed,
@@ -15,11 +14,14 @@ import { PHASES } from "../autonomy/types";
 import type { ModelRow, Phase } from "../autonomy/types";
 import { captionClass } from "../caption";
 
+// The rate at which a model's median bar is full.
+const MEDIAN_CAP = 0.3;
+
 type RowProps = { phase: Phase; row: ModelRow; bar: number };
 
 // One model: its name, its median PR rewrite rate on the right with the bar it is above on its
-// own line, the pooled rate and PR count beneath, and a thin bar for the median on the 0 to 30%
-// axis the charts share. A model with a rate and under ten PRs has no right-hand cell: the count
+// own line, the pooled rate and PR count beneath, and a thin bar for the median on a 0 to 30%
+// axis. A model with a rate and under ten PRs has no right-hand cell: the count
 // beneath is the only place it prints.
 function ModelLine({ phase, row, bar }: RowProps) {
   const above = isRed(row.median_value, bar);
@@ -54,7 +56,7 @@ function ModelLine({ phase, row, bar }: RowProps) {
         <div
           aria-hidden="true"
           className={`mt-1.5 h-1 min-w-0.5 rounded-tag ${above ? "bg-defer" : "bg-ink"}`}
-          style={{ width: `${Math.min(row.median_value / CAP, 1) * 100}%` }}
+          style={{ width: `${Math.min(row.median_value / MEDIAN_CAP, 1) * 100}%` }}
         />
       )}
     </li>

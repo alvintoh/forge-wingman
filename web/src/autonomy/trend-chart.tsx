@@ -65,7 +65,7 @@ function boxOf(plot: number, clipped: boolean, dates: boolean): Box {
 }
 
 // TrendPlot draws a series on the shared merge axis: its line, cut where it
-// crosses the 30% cap with a triangle in a labelled band for each value above it,
+// crosses the 60% cap with a triangle in a labelled band for each value above it,
 // the reference line at the bar and the dates the slots fall on. A point with no
 // rate is a gap.
 export function TrendPlot(props: TrendPlotProps) {

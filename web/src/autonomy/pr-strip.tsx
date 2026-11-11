@@ -10,6 +10,7 @@ import {
   radiiFor,
   yOf,
 } from "./axis";
+import { keySamples } from "./axis";
 import type { Axis, Radii } from "./axis";
 import { ChartHeader } from "./chart-card";
 import { UNKNOWN_MODEL, count, phaseWord, textWidth, whole, wrap } from "./format";
@@ -17,7 +18,7 @@ import { Dot, Triangle } from "./marks";
 import { PHASES } from "./types";
 import type { Phase, PR } from "./types";
 
-const PLOT_H = 100;
+const PLOT_H = 140;
 const LANE_H = 28;
 const LANE_LINE = 13;
 // How many of the newest PRs the strip draws, however many the list behind it holds.
@@ -123,11 +124,6 @@ function layoutLane(
   };
 }
 
-// keySamples are the three dot sizes the strip's key shows, up to its biggest.
-function keySamples(most: number): number[] {
-  return [Math.max(1, Math.round(most * 0.02)), Math.round(most * 0.5), most];
-}
-
 type PrStripProps = {
   axis: Axis;
   prs: PR[];
@@ -140,7 +136,7 @@ type PrStripProps = {
 
 // PrStrip draws each PR's own rate as a dot on its own merge axis, so its PRs fill its width: its area is
 // the PR's agent lines on one scale across the strip, its size letter and number
-// sit under it, and a rate above 30% is a triangle in a labelled band. Under it,
+// sit under it, and a rate above 60% is a triangle in a labelled band. Under it,
 // where the room allows, the models each PR ran as one pill per run of equal ones.
 export function PrStrip({ axis, prs, width, padx, compact, alone }: PrStripProps) {
   const placed: Placed[] = prs
