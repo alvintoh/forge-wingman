@@ -21,18 +21,15 @@ describe("wholePercent", () => {
 });
 
 describe("modelName", () => {
-  it("names the OpenCode Go models plainly", () => {
+  it("names a model once whatever provider ran it", () => {
     expect(modelName("opencode-go/deepseek-v4.1-flash")).toBe("DeepSeek V4.1 Flash");
-    expect(modelName("opencode-go/muse-spark-1.3-contributor")).toBe("Muse Spark 1.3 Contributor");
+    expect(modelName("command-code/deepseek/deepseek-v4.1-flash")).toBe("DeepSeek V4.1 Flash");
+    expect(modelName("deepseek-v4.1-flash")).toBe("DeepSeek V4.1 Flash");
   });
 
-  it("marks a past run's Command Code model apart from the Go model of the same name", () => {
-    expect(modelName("command-code/deepseek/deepseek-v4.1-flash")).toBe(
-      "DeepSeek V4.1 Flash (Command Code)",
-    );
-    expect(modelName("command-code/meta/muse-spark-1.3-contributor")).toBe(
-      "Muse Spark 1.3 Contributor (Command Code)",
-    );
+  it("leaves the contributor suffix out of a model's name", () => {
+    expect(modelName("opencode-go/muse-spark-1.3-contributor")).toBe("Muse Spark 1.3");
+    expect(modelName("command-code/meta/muse-spark-1.3-contributor")).toBe("Muse Spark 1.3");
   });
 
   it("reads an unknown id as it is", () => {

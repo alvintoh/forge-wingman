@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
@@ -128,6 +129,7 @@ type repoRewrite struct {
 // first. Every list is rendered whether or not it holds anything, so a view
 // narrowing to one of them reads an empty list rather than a null.
 func renderRewrite(samples []dispatcher.Sample, bar float64) rewriteView {
+	samples = withModelIDs(samples)
 	return rewriteView{
 		Tiles:   renderTiles(dispatcher.Tiles(samples)),
 		Series:  renderSeries(dispatcher.RollingSeries(samples, dispatcher.TrailingPRs, dispatcher.SeriesPoints)),
@@ -227,6 +229,28 @@ func renderGroup(g dispatcher.Group) groupFigures {
 	if g.Spread {
 		out.Median, out.MedianValue = ratePtr(g.Median), rateNumber(g.Median)
 		out.P90, out.P90Value = ratePtr(g.P90), rateNumber(g.P90)
+	}
+	return out
+}
+
+// modelID is a model without its provider and vendor path and without the
+// "-contributor" suffix a plan adds, so the same model run through two providers
+// is one: "a/muse-spark-1.3-contributor" and "b/meta/muse-spark-1.3-contributor"
+// are both "muse-spark-1.3".
+func modelID(model string) string {
+	if i := strings.LastIndex(model, "/"); i >= 0 {
+		model = model[i+1:]
+	}
+	return strings.TrimSuffix(model, "-contributor")
+}
+
+// withModelIDs returns samples with each phase's model as modelID names it,
+// leaving the caller's slice as it was.
+func withModelIDs(samples []dispatcher.Sample) []dispatcher.Sample {
+	out := make([]dispatcher.Sample, len(samples))
+	for i, s := range samples {
+		s.PlanModel, s.BuildModel, s.ReviewModel = modelID(s.PlanModel), modelID(s.BuildModel), modelID(s.ReviewModel)
+		out[i] = s
 	}
 	return out
 }
