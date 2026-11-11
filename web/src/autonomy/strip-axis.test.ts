@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import autonomy from "../../fixtures/autonomy.json";
-import { CAP, TREND_TICKS, buildAxis, keySamples, mergeSlots } from "./axis";
+import { CAP, TREND_TICKS, buildAxis, mergeSlots } from "./axis";
 import { isAutonomy } from "./guard";
 import { STRIP_PRS } from "./pr-strip";
 
@@ -28,15 +28,5 @@ describe("the strip's own axis", () => {
   it("draws the trend and the strip on a 0 to 60% axis whose last tick is the cap", () => {
     expect(CAP).toBe(0.6);
     expect(TREND_TICKS).toEqual([0, 0.2, 0.4, 0.6]);
-  });
-
-  it("keys the dot sizes in round numbers up to the biggest dot", () => {
-    expect(keySamples(2673)).toEqual([100, 1000, 2000]);
-    expect(keySamples(1411)).toEqual([50, 500, 1000]);
-    expect(keySamples(53)).toEqual([2, 20, 50]);
-  });
-
-  it("keeps a tiny strip's own figures where no three round sizes differ", () => {
-    expect(keySamples(2)).toEqual([1, 1, 2]);
   });
 });

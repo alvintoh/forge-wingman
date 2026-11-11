@@ -269,7 +269,7 @@ export function TrendCard({ series, prs, bar, aside, lead }: TrendCardProps) {
         const stripAxis = buildAxis(mergeSlots([], prs.slice(0, STRIP_PRS)), {
           width,
           padx,
-          gutter,
+          gutter: 0,
           blank: 0.5,
           labels: compact ? undefined : STRIP_LABELS_W,
         });

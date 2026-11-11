@@ -107,26 +107,6 @@ export function yOf(value: number, top: number, height: number, cap: number): nu
   return top + height * (1 - value / cap);
 }
 
-// Radii is the dot radius range at a slot step: the drawing's 13 where the steps
-// allow it, shrinking toward a floor so neighbours never touch.
-export type Radii = { max: number; min: number };
-
-const R_CEIL = 13;
-const R_FLOOR = 2.5;
-
-export function radiiFor(step: number): Radii {
-  const max = Math.min(R_CEIL, Math.max(R_FLOOR, (step - 1) / 2));
-  return { max, min: max < R_CEIL ? R_FLOOR : 3 };
-}
-
-// dotRadius makes a dot's AREA proportional to its agent lines on one scale.
-export function dotRadius(lines: number, mostLines: number, radii: Radii): number {
-  if (mostLines <= 0) {
-    return radii.min;
-  }
-  return Math.max(radii.min, radii.max * Math.sqrt(lines / mostLines));
-}
-
 type Vertex = { x: number; y: number };
 
 // clippedPaths draws the series as lines, cut where it crosses the cap and broken
@@ -277,24 +257,3 @@ export const WIDE_STAGE =
 
 // The ticks of the trend and the strip, on the 0 to 60% axis.
 export const TREND_TICKS = [0, 0.2, 0.4, 0.6];
-
-// niceDown is the largest of 1, 2 and 5 times a power of ten at most the value: 1411 is 1000.
-function niceDown(value: number): number {
-  const power = 10 ** Math.floor(Math.log10(value));
-  return [5, 2, 1].map((m) => m * power).find((n) => n <= value) ?? 1;
-}
-
-// keySamples are the three dot sizes the strip's key shows, up to its biggest: round sizes, the top
-// the biggest dot's size rounded down, the middle half of it and the first a twentieth. A strip too
-// small to give three different round sizes keeps the figures it has.
-export function keySamples(most: number): number[] {
-  if (most < 1) {
-    return [1, 1, 1];
-  }
-  const top = niceDown(most);
-  const round = [niceDown(Math.max(top / 20, 1)), niceDown(Math.max(top / 2, 1)), top];
-  const [low = 1, mid = 1] = round;
-  return low < mid && mid < top
-    ? round
-    : [Math.max(1, Math.round(most * 0.02)), Math.round(most * 0.5), most];
-}
