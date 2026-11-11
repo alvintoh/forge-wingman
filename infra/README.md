@@ -27,7 +27,7 @@ this repository — the model's included — cannot become the runner.
 | `runner` | `run.yml`, `infra-smoke.yml` | Firestore read/write, completions create, projections read |
 | `wingman-model` | `model.yml`, `model-smoke.yml` | completions create, projections read |
 | `wingman-publisher` | any job of the rule stack on `main` | projections create; get and overwrite of `projections/current` only |
-| `wingman-pr-review` | `pr-review.yml` | read of `linear-review-client-id` and `linear-review-client-secret` only |
+| `wingman-pr-review` | `pr-review.yml` | read of `linear-review-client-id` and `linear-review-client-secret`; read of the Firestore documents outside the owner database |
 | `wingman-surface-deploy` | `deploy-surface.yml` | push to the `forge-wingman` registry; deploy of the surface service, acting as `surface`; the state objects under `infra/`; the reads a plan of the surface needs ([Deploy](#deploy)) |
 
 The publisher is the one identity for another repository: the rule stack, which is

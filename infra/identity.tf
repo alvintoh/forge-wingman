@@ -110,6 +110,23 @@ resource "google_service_account_iam_member" "pr_review_wif" {
   member             = format(local.workflow_principal, "pr-review.yml")
 }
 
+# pr-review.yml's post job reads the owner's auto-merge settings once more before it
+# requests a merge, so this identity can read documents, never write one. Like the runner's
+# grant it leaves the owner's database out: the settings live in the default database.
+resource "google_project_iam_member" "pr_review_datastore" {
+  project = var.project_id
+  role    = "roles/datastore.viewer"
+  member  = google_service_account.pr_review.member
+
+  condition {
+    title       = "not-the-owner-database"
+    description = "Every Firestore database except the owner's controls (adr/0019)"
+    expression  = "resource.name != \"projects/${var.project_id}/databases/${google_firestore_database.owner.name}\""
+  }
+
+  depends_on = [google_project_service.this]
+}
+
 resource "google_project_iam_member" "runner_datastore" {
   project = var.project_id
   role    = "roles/datastore.user"

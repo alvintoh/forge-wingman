@@ -138,6 +138,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      id-token: write
       pull-requests: write
       statuses: write
     steps:
@@ -151,6 +152,16 @@ jobs:
           go-version-file: go.mod
           cache: false
 
+      # Read-only Firestore access, for the last look at the owner's auto-merge settings. A
+      # failed sign-in must not stop the review being posted: the post step then cannot read
+      # the settings and declines the merge request.
+      - id: auth
+        continue-on-error: true
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_PR_REVIEW_SERVICE_ACCOUNT }}
+
       - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
 
       # Absent when the review did not finish, which posts as no verdict.
@@ -163,6 +174,7 @@ jobs:
       - id: post
         name: Post the review and its status
         env:
+          GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           REVIEWED_SHA: ${{ needs.context.outputs.head_sha || github.event.pull_request.head.sha }}

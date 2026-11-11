@@ -521,10 +521,19 @@ func TestPRReviewWorkflow(t *testing.T) {
 	for job, want := range map[string]string{
 		"context": "    permissions:\n      id-token: write\n      pull-requests: read\n    outputs:",
 		"review":  "    permissions: {}\n",
-		"post":    "    permissions:\n      pull-requests: write\n      statuses: write\n    steps:",
+		"post":    "    permissions:\n      id-token: write\n      pull-requests: write\n      statuses: write\n    steps:",
 	} {
 		if !strings.Contains(jobs[job], want) {
 			t.Errorf("the %s job's permissions are not %q", job, want)
+		}
+	}
+	// The sign-in step must not stop the review being posted: it is the only step before the
+	// build, so a failure there would otherwise skip the post and its status.
+	_, afterAuth, _ := strings.Cut(jobs["post"], "      - id: auth\n")
+	authStep, _, _ := strings.Cut(afterAuth, "\n      - ")
+	for _, want := range []string{"continue-on-error: true", "workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}"} {
+		if !strings.Contains(authStep, want) {
+			t.Errorf("the post job's sign-in step lacks %q", want)
 		}
 	}
 	if strings.Contains(jobs["review"], "GH_TOKEN") || strings.Contains(jobs["review"], "google-github-actions/auth") {
@@ -546,6 +555,11 @@ func TestPRReviewWorkflow(t *testing.T) {
 		`any(. == "go") and any(. == "web")`,
 		`gh pr merge "$PR" --auto --squash --match-head-commit "$REVIEWED_SHA"`,
 		"GH_TOKEN: ${{ steps.app-token.outputs.token }}",
+		// The settings re-read signs in as the pr-review identity, and a failed sign-in must not
+		// stop the review being posted.
+		"google-github-actions/auth@",
+		"service_account: ${{ vars.GCP_PR_REVIEW_SERVICE_ACCOUNT }}",
+		"GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}",
 	} {
 		if !strings.Contains(jobs["post"], want) {
 			t.Errorf("the post job lacks %q", want)
