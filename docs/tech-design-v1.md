@@ -288,6 +288,11 @@ Scope alone cannot: creating a PR and marking it ready are the same
 **job boundary** — the model's job holds a read-only token, and a separate job
 running fixed steps opens the PR. Each job is a fresh VM, so the split is real.
 
+*Added (2026-11-05), `adr/0023`:* the same boundary keeps a running build off its own run
+row, so progress travels the other way: the runner in the model job creates
+progress objects (*Updated (2026-11-05):* named by run row, attempt and stage, `adr/0023`) in the completions bucket (create-only, the grant
+it already holds), and the surface reads only that prefix, as untrusted display data.
+
 **Every target repository must allow Actions to create pull requests.** GitHub's
 *Allow GitHub Actions to create and approve pull requests* setting decides whether
 `GITHUB_TOKEN` *"can create and approve pull requests"*, and it starts off, so a
