@@ -31,10 +31,11 @@ export function prKey(repo: string, pr: number): string {
 // A slot is one merged PR on the merge axis.
 type Slot = { repo: string; pr: number; at: number };
 
-// mergeSlots is the one merge axis of the trend and the strip: every PR either
-// draws, oldest to newest, the newest 25 kept. The trend draws a point only where
-// the series has one and the strip a dot only where a PR is listed, so a dot is
-// never off its PR's slot, at any history length.
+// mergeSlots is the merge axis of a series and its PRs: every PR either draws,
+// oldest to newest, the newest 25 kept. The trend draws a point only where the
+// series has one and the strip a dot only where a PR is listed, so a dot is
+// never off its PR's slot, at any history length. The strip builds its own from
+// its PRs alone, so they fill its width.
 export function mergeSlots(series: Point[], prs: PR[]): Slot[] {
   const slots = new Map<string, Slot>();
   for (const point of series) {
@@ -61,10 +62,12 @@ type AxisOptions = {
   gutter: number;
   // Empty slots at each end, so a dot stays off the axis labels.
   blank?: number;
+  // The width of the column the labels sit in, left of the plot: the y labels, and beside a strip's
+  // first pill its lane labels.
+  labels?: number;
 };
 
-// Axis maps a slot to its x: one object for the trend and the strip, so the two
-// cannot disagree.
+// Axis maps a slot to its x.
 export type Axis = {
   slots: Slot[];
   // The left edge of the labels, the plot's left and right edges, the slot step.
@@ -80,7 +83,7 @@ export type Axis = {
 export function buildAxis(slots: Slot[], options: AxisOptions): Axis {
   const blank = options.blank ?? 0;
   const ix = options.padx;
-  const x0 = ix + Y_LABEL_W;
+  const x0 = ix + (options.labels ?? Y_LABEL_W);
   const x1 = options.width - options.padx - options.gutter;
   const steps = Math.max(slots.length + 2 * blank - 1, 1);
   const step = (x1 - x0) / steps;

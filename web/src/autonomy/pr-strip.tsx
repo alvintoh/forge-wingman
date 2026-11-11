@@ -21,7 +21,7 @@ const PLOT_H = 100;
 const LANE_H = 28;
 const LANE_LINE = 13;
 // How many of the newest PRs the strip draws, however many the list behind it holds.
-const STRIP_PRS = 10;
+export const STRIP_PRS = 10;
 
 function modelOf(pr: PR, phase: Phase): string {
   return { plan: pr.plan_model, build: pr.build_model, review: pr.review_model }[phase];
@@ -44,6 +44,8 @@ type Lane = { label: string; labelX: number; pills: Pill[]; height: number; rowH
 
 // The rows of wrapped names a lane may stack when neighbours' names would touch.
 const MAX_LEVELS = 3;
+
+const SHORT_BAND_LABEL = `above ${whole(CAP)}`;
 
 // layoutLane puts one phase's models under the strip: one pill per run of
 // neighbouring PRs that share a model, the model's full name inside when it fits
@@ -77,7 +79,7 @@ function layoutLane(
     return null;
   }
   const labelX = axis.xOfIndex(firstSlot) - axis.step / 2 - 10;
-  if (labelX - textWidth(phase, 12) <= axis.x0 + 6) {
+  if (labelX - textWidth(phase, 12) < axis.ix) {
     return null;
   }
   const rows: { c: number; w: number }[][] = Array.from({ length: MAX_LEVELS }, () => []);
@@ -132,12 +134,11 @@ type PrStripProps = {
   width: number;
   padx: number;
   compact: boolean;
-  // Whether no trend is drawn above, so the strip stands alone: its size key sits in
-  // the gutter at its right and it draws no model lanes.
+  // Whether no trend is drawn above, so the strip stands alone and draws no model lanes.
   alone: boolean;
 };
 
-// PrStrip draws each PR's own rate as a dot on the trend's merge axis: its area is
+// PrStrip draws each PR's own rate as a dot on its own merge axis, so its PRs fill its width: its area is
 // the PR's agent lines on one scale across the strip, its size letter and number
 // sit under it, and a rate above 30% is a triangle in a labelled band. Under it,
 // where the room allows, the models each PR ran as one pill per run of equal ones.
@@ -165,15 +166,15 @@ export function PrStrip({ axis, prs, width, padx, compact, alone }: PrStripProps
   const samples = keySamples(mostLines);
   // A figure is mono, so its width is exact: three of them, each with room beside it.
   const keyFit = 3 * (count(mostLines).length * 11 * 0.6 + 8);
-  const keyRight = alone && width - padx - (axis.x1 + 12) >= keyFit;
+  const keyRight = width - padx - (axis.x1 + 12) >= keyFit;
   const keyWidth = keyRight ? width - padx - (axis.x1 + 12) : firstX - rMax - 8 - axis.x0 - 4;
   const keyLeft = keyRight || (!alone && keyWidth >= keyFit);
   const keyX = keyRight ? axis.x1 + 12 : axis.x0 + 4;
-  const labelSide = bandLabelSide(
-    clipped.map(({ x }) => x),
-    axis.x0,
-    axis.x1,
-  );
+  const clippedXs = clipped.map(({ x }) => x);
+  const fullSide = bandLabelSide(clippedXs, axis.x0, axis.x1);
+  // A short strip: the full words would run into the first triangle, so the band says only the rate.
+  const bandWord = fullSide !== null ? BAND_LABEL : SHORT_BAND_LABEL;
+  const labelSide = fullSide ?? bandLabelSide(clippedXs, axis.x0, axis.x1, SHORT_BAND_LABEL);
   // The key's three samples in a row, each as wide as its dot and its figure.
   const keyPitch = 2 * rMax + 6 + textWidth(count(mostLines), 11, true) + 18;
   let cy = base + rMax + (numbers ? 36 : 22) + 6;
@@ -224,7 +225,7 @@ export function PrStrip({ axis, prs, width, padx, compact, alone }: PrStripProps
                   textAnchor={labelSide}
                   className="fill-ink2 text-cap"
                 >
-                  {BAND_LABEL}
+                  {bandWord}
                 </text>
               )}
             </>
