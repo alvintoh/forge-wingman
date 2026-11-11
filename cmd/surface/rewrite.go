@@ -235,8 +235,8 @@ func renderGroup(g dispatcher.Group) groupFigures {
 
 // modelID is a model without its provider and vendor path and without the
 // "-contributor" suffix a plan adds, so the same model run through two providers
-// is one: "opencode-go/muse-spark-1.3-contributor" and
-// "command-code/meta/muse-spark-1.3-contributor" are both "muse-spark-1.3".
+// is one: "a/muse-spark-1.3-contributor" and "b/meta/muse-spark-1.3-contributor"
+// are both "muse-spark-1.3".
 func modelID(model string) string {
 	if i := strings.LastIndex(model, "/"); i >= 0 {
 		model = model[i+1:]
