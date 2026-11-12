@@ -136,8 +136,14 @@ type Formatter func(ctx context.Context, dir, gate string) error
 // they failed. It is ContainerChecks.RunPackageTest in production and
 // RunPackageTest where no checks image is configured, so a package's tests run
 // under the same boundary as the gates; the pre-PR loop's guard probe is its
-// only caller, and a build with none set skips that probe.
+// only caller, and a build with none set probes no Go guard.
 type PackageTestRunner func(ctx context.Context, dir, pkg string) (failed bool, output string, err error)
+
+// WebBunRunner runs bun with args in dir's web directory and reports whether it
+// exited non-zero. It is ContainerChecks.RunWeb in production and nil where no
+// checks image is configured, so a build with none never reads or tests a web
+// source on the host: the guard probe skips web guards.
+type WebBunRunner func(ctx context.Context, dir string, args ...string) (stdout, stderr string, failed bool, err error)
 
 // RunChecks runs the repository's own quality gates against dir, in the same
 // order and with the same commands as Makefile's check target and, when changed

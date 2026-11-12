@@ -305,6 +305,7 @@ jobs:
       auto_merge: ${{ steps.meta.outputs.auto_merge }}
       superseded_pr: ${{ steps.meta.outputs.superseded_pr }}
       superseded_by_retry: ${{ steps.meta.outputs.superseded_by_retry }}
+      findings_open: ${{ steps.meta.outputs.findings_open }}
       # draft is the PR's own draft decision (FR-5), which the pr job opens it
       # with: the pre-PR loop's, an edit outside the run's plan, or a
       # concurrent run's plan these files touch.
@@ -605,6 +606,15 @@ jobs:
         run: |
           gh pr edit "$URL" --add-label wingman:auto-merge-eligible
           echo "labelled=true" >> "$GITHUB_OUTPUT"
+
+      # A label only: it does not decide auto-merge, whose eligibility is the step above's.
+      - name: Label the PR with findings still open
+        if: needs.pr-meta.outputs.findings_open != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          URL: ${{ steps.open.outputs.url }}
+        run: gh pr edit "$URL" --add-label findings-open
 
       # workflow_dispatch is the one GITHUB_TOKEN event that starts a run without approval.
       # The PR is the deliverable, so a failed dispatch leaves CI to be started by hand.

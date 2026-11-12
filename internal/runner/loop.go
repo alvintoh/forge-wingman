@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -37,11 +38,13 @@ const (
 	// that follow them. It is the share nfr1RunCap keeps for the review once
 	// the build stage has spent its own and the commit reserve is set aside, so
 	// a run that spent the whole build budget still gets this much.
-	nfr1ReviewFloor = 25 * time.Minute
+	nfr1ReviewFloor = 22 * time.Minute
 	// nfr1CommitReserve is what nfr1RunCap leaves once both stages have spent
 	// their own — nfr1RunCap - nfr1BuildBudget - nfr1ReviewFloor — for the
-	// commit, bundle and report steps that still run after the review.
-	nfr1CommitReserve = 5 * time.Minute
+	// commit, bundle and report steps that still run after the review. A
+	// re-check the review stage had no room for spends part of it, down to
+	// reserveRecheckFloor.
+	nfr1CommitReserve = 8 * time.Minute
 )
 
 // reviewStartRoom is the least the review stage must have left for another
@@ -49,6 +52,10 @@ const (
 // on the stage's spent budget rather than on its own work, so the run would
 // record an agent timeout for what is really the budget running out.
 const reviewStartRoom = 3 * time.Minute
+
+// reserveRecheckFloor is what a re-check run from the commit reserve leaves of
+// the run cap for the commit, bundle and report steps that follow the review.
+const reserveRecheckFloor = 2 * time.Minute
 
 // The stage words a run in flight is shown with.
 const (
@@ -429,9 +436,24 @@ func stillOpenAfter(fixRound int) string {
 	return fmt.Sprintf("still open after round %d", fixRound)
 }
 
+// fixedResolutionPrefix begins the one resolution that closes a finding.
+const fixedResolutionPrefix = "fixed in round "
+
 // fixedIn is how a row reads when fixRound resolved its finding.
 func fixedIn(fixRound int) string {
-	return fmt.Sprintf("fixed in round %d", fixRound)
+	return fixedResolutionPrefix + strconv.Itoa(fixRound)
+}
+
+// openFindings is how many of rows the run left unfixed: every resolution but
+// fixedIn's, whether the finding is still reported or was never re-checked.
+func openFindings(rows []ReviewFinding) int {
+	open := 0
+	for _, r := range rows {
+		if !strings.HasPrefix(r.Resolution, fixedResolutionPrefix) {
+			open++
+		}
+	}
+	return open
 }
 
 // fixRoundResult is one fix round of the pre-open loop and the re-check that
@@ -505,6 +527,41 @@ func reviewRows(rounds []fixRoundResult) []ReviewFinding {
 	return rows
 }
 
+// openUnprobed is the guards among issued that a re-scan reached no verdict for:
+// a guard no probe has shown covered stays open, never fixed.
+func openUnprobed(issued, unprobed []pendingFinding) []pendingFinding {
+	var open []pendingFinding
+	for _, u := range unprobed {
+		if slices.ContainsFunc(issued, func(f pendingFinding) bool { return f.key == u.key }) {
+			open = append(open, u)
+		}
+	}
+	return open
+}
+
+// recheckFromReserve is the review-only pass the last fix round gets when the
+// review stage's budget left no room to re-check it: one pass, started only
+// while the run cap, less reserveRecheckFloor, leaves room for it, so the
+// commit reserve pays for it and the steps after the review keep what they
+// need. open is the findings it leaves: surviving, the guards the round's own
+// scan found still uncovered, and what the pass reports. ok is false when the
+// pass could not run or failed, which leaves the round as not re-checked — the
+// run goes on either way, so its error is logged and not returned.
+func recheckFromReserve(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum *Summary, round int, rules string, surviving []pendingFinding) (open []pendingFinding, ok bool) {
+	budget := nfr1RunCap - reserveRecheckFloor
+	timeout, inBudget := roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now(), budget, reviewStartRoom)
+	if !inBudget {
+		return nil, false
+	}
+	remaining, err := reviewPass(ctx, d, c, wt, sum, round, rules, timeout, sum.StartedAt, budget)
+	if err != nil {
+		d.Logger.Warn("reserveRecheckFailed", "round", round, "err", err.Error())
+		return nil, false
+	}
+	d.Logger.Info("reserveRecheckRan", "round", round)
+	return append(surviving, reviewPending(remaining)...), true
+}
+
 // runReview runs the pre-PR loop (FR-28) once the checks have passed: the
 // guards the diff adds are broken in turn, mechanically, to find the ones no
 // test covers (AC1), and a model other than the builder's checks the diff and
@@ -529,7 +586,8 @@ func reviewRows(rounds []fixRoundResult) []ReviewFinding {
 // or re-check starts with under reviewStartRoom of that budget left: the run
 // gives up — running no fix round — once the budget would not leave enough time
 // for one, and skips a re-check alone once it would not leave enough time for
-// that, labelling the findings as addressed by a fix round rather than
+// that, which first gets recheckFromReserve's one pass from the commit reserve
+// and otherwise labels the findings as addressed by a fix round rather than
 // re-checked. A valid commit-message block from a fix round replaces msg. Each
 // review pass starts a fresh session, so it carries no history of its own;
 // rules is the build projection's rules, which the review needs to check the
@@ -541,14 +599,14 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 	// review reads, so it stops once the build's budget is spent and its time
 	// stays outside the review's own budget, which begins below.
 	settled := make(map[string]bool)
-	guards, untested, err := scanGuards(ctx, d, wt, sum.StartedAt, nfr1BuildBudget, settled)
+	guards, unprobed, err := scanGuards(ctx, d, wt, sum.StartedAt, nfr1BuildBudget, settled)
 	if err != nil {
 		return false, "", err
 	}
-	if untested > 0 {
-		d.Logger.Info("guardsUntested", "count", untested, "reason", "budget")
-		sum.GuardsUntested = untested
+	if len(unprobed) > 0 {
+		d.Logger.Info("guardsUntested", "count", len(unprobed))
 	}
+	sum.GuardsUntested = len(unprobed)
 	reviewStarted := d.Now()
 	budget := reviewBudget(sum.StartedAt, reviewStarted)
 	// The budget is whole at the instant the stage starts and never below
@@ -620,13 +678,23 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 		// to what the fix round changed. Both re-checks then run under the one
 		// gate below: a finding is open, or fixed, only once its own re-check
 		// has said so.
-		surviving, _, err := scanGuards(ctx, d, wt, reviewStarted, budget, settled)
+		surviving, unprobed, err := scanGuards(ctx, d, wt, reviewStarted, budget, settled)
 		if err != nil {
 			return false, "", err
 		}
+		sum.GuardsUntested = len(unprobed)
+		surviving = append(surviving, openUnprobed(findings, unprobed)...)
 		recheckTimeout, inBudget := roundTimeout(c.AgentTimeout, reviewStarted, d.Now(), budget, reviewStartRoom)
 		if !inBudget {
 			rounds = append(rounds, fixRoundResult{round: round, issued: findings})
+			if open, ok := recheckFromReserve(ctx, d, c, wt, sum, round, rules, surviving); ok {
+				rounds[len(rounds)-1].open, rounds[len(rounds)-1].rechecked = open, true
+				sum.setReviewFindings(reviewRows(rounds))
+				if len(open) == 0 {
+					return checksDetail == "", checksDetail, nil
+				}
+				return false, detailParts("findings open: "+findingsText(open), checksDetail), nil
+			}
 			sum.setReviewFindings(reviewRows(rounds))
 			return false, detailParts("findings addressed by a fix round, not re-reviewed: "+
 				text+" ("+stageBudgetSpent("review", budget)+")", checksDetail), nil

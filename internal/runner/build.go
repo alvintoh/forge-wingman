@@ -72,8 +72,11 @@ type BuildDeps struct {
 	// failure to the build agent.
 	Format Formatter
 	// PackageTests runs one package's tests, which the pre-PR loop's guard
-	// probe breaks a changed guard against; nil skips the probe.
+	// probe breaks a changed Go guard against; nil skips Go guards.
 	PackageTests PackageTestRunner
+	// WebBun runs bun in the web directory, which the guard probe reads web
+	// guards and runs the web tests with; nil skips web guards.
+	WebBun WebBunRunner
 	// AgentProbe, when set, proves the agent container starts over dir before
 	// any agent runs; nil runs agents on the host.
 	AgentProbe func(ctx context.Context, dir string) error

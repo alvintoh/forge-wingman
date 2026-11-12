@@ -22,6 +22,28 @@ const defaultGateTimeout = 15 * time.Minute
 // containerKillTimeout bounds the docker kill that stops a timed-out gate.
 const containerKillTimeout = 30 * time.Second
 
+// maxContainerOutput bounds what one gate container's stdout, and its stderr,
+// keep: a run that prints more loses the tail, so one that never stops printing
+// cannot grow the runner's memory.
+const maxContainerOutput = 8 << 20
+
+// cappedBuffer collects the first limit bytes written to it and discards the
+// rest. It holds its buffer in a field, not by embedding, so io.Copy cannot
+// reach the buffer's own ReadFrom and skip the cap.
+type cappedBuffer struct {
+	buf   bytes.Buffer
+	limit int
+}
+
+func (b *cappedBuffer) String() string { return b.buf.String() }
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	if room := b.limit - b.buf.Len(); room > 0 {
+		b.buf.Write(p[:min(len(p), room)])
+	}
+	return len(p), nil
+}
+
 // Paths inside the checks container.
 const (
 	containerWorkDir  = "/work"
@@ -171,6 +193,20 @@ func (c ContainerChecks) RunPackageTest(ctx context.Context, dir, pkg string) (b
 	return failed, stdout + stderr, nil
 }
 
+// RunWeb is a WebBunRunner: bun with args in a fresh container of the checks
+// image, over the worktree and with no network, so the branch's web tests and
+// the TypeScript compiler in its node_modules run where the gates run them.
+// Its caller bounds it, as RunPackageTest's does.
+func (c ContainerChecks) RunWeb(ctx context.Context, dir string, args ...string) (stdout, stderr string, failed bool, err error) {
+	dir, err = filepath.Abs(dir)
+	if err != nil {
+		return "", "", false, err
+	}
+	return c.runContainer(ctx, "web-bun", func(name string) hardenedRun {
+		return c.webBunRun(name, dir, append([]string{containerBun}, args...))
+	})
+}
+
 // Format is a Formatter that runs the gate's fixing command in a fresh
 // container of the checks image with no network: gofmt -w for checkGofmt, the
 // host's bun running web's fmt script for checkWebFmtCheck. As RunFormat does,
@@ -191,7 +227,7 @@ func (c ContainerChecks) Format(ctx context.Context, dir, gate string) error {
 		_, _, _, err = c.runGate(ctx, dir, cache, gate, gofmtFixArgs...)
 	case checkWebFmtCheck:
 		_, _, _, err = c.runContainer(ctx, gate, func(name string) hardenedRun {
-			return c.webFormatRun(name, dir, append([]string{containerBun}, webFmtFixArgs...))
+			return c.webBunRun(name, dir, append([]string{containerBun}, webFmtFixArgs...))
 		})
 	default:
 		return fmt.Errorf("formatting %s: no formatter for this gate", gate)
@@ -314,7 +350,7 @@ func (c ContainerChecks) runContainer(ctx context.Context, gate string, build fu
 	if err != nil {
 		return "", "", false, err
 	}
-	var outBuf, errBuf bytes.Buffer
+	outBuf, errBuf := cappedBuffer{limit: maxContainerOutput}, cappedBuffer{limit: maxContainerOutput}
 	cmd := hardenedRunCommand(gctx, build(name))
 	cmd.Stdout, cmd.Stderr = &outBuf, &errBuf
 	runErr := cmd.Run()
@@ -387,9 +423,9 @@ func (c ContainerChecks) webGateRun(name, dir string, argv []string) hardenedRun
 	}
 }
 
-// webFormatRun is webGateRun without the bun cache, which the fmt script never
-// reads: the worktree and the host's bun alone.
-func (c ContainerChecks) webFormatRun(name, dir string, argv []string) hardenedRun {
+// webBunRun is webGateRun without the bun cache, which the fmt script, the web
+// tests and the guard reader never read: the worktree and the host's bun alone.
+func (c ContainerChecks) webBunRun(name, dir string, argv []string) hardenedRun {
 	return hardenedRun{
 		Name:    name,
 		Network: "none",

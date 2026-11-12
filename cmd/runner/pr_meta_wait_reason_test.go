@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,5 +49,62 @@ func TestPRMetaRecordsWhyThePRWaitsForTheOwner(t *testing.T) {
 	}
 	if got.WaitReason != runner.WaitDraft {
 		t.Fatalf("WaitReason = %q, want %q: a run with no build summary opens as a draft", got.WaitReason, runner.WaitDraft)
+	}
+}
+
+func TestPRMetaOutputsHowManyFindingsTheRunLeftOpen(t *testing.T) {
+	if os.Getenv("FIRESTORE_EMULATOR_HOST") == "" {
+		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
+	}
+	tests := []struct {
+		name string
+		open int
+		want string
+	}{
+		{"findings left open", 2, "findings_open=2\n"},
+		{"none left open", 0, "findings_open=\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			client, err := firestore.NewClient(ctx, "p")
+			if err != nil {
+				t.Fatal(err)
+			}
+			runID := "pr-meta-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+			t.Cleanup(func() {
+				_, _ = client.Collection("runs").Doc(runID).Delete(context.Background())
+				_ = client.Close()
+			})
+			if err := store.NewRecords(client).PutRecord(ctx, runID, runner.NewRecord(runID, prRecord.Ticket(), time.Now())); err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			env := map[string]string{"GOOGLE_CLOUD_PROJECT": "p", "RUNNER_TEMP": dir, "GITHUB_RUN_ID": "42", "GITHUB_RUN_ATTEMPT": "1",
+				"WINGMAN_ACCOUNT": "octo", "GITHUB_REPOSITORY_OWNER": "octo", "GITHUB_OUTPUT": filepath.Join(dir, "output")}
+			summary := encodedSummary(t, "42-1", time.Now(), func(s *runner.Summary) {
+				s.ReviewFindings = make([]runner.ReviewFinding, tt.open)
+				for i := range s.ReviewFindings {
+					s.ReviewFindings[i] = runner.ReviewFinding{Finding: "a finding", Resolution: "still open"}
+				}
+				s.ReviewFindingsOpen = tt.open
+			})
+			args := []string{"pr-meta", "-run-id", runID, "-repository", "octo/scratch", "-summary", summary,
+				"-template", filepath.Join("..", "..", runner.DefaultPRTemplate)}
+			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+			if err := run(ctx, logger, args, func(k string) string { return env[k] }); err != nil {
+				t.Fatal(err)
+			}
+			out, err := os.ReadFile(env["GITHUB_OUTPUT"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(out), "\n"+tt.want) && !strings.HasPrefix(string(out), tt.want) {
+				t.Fatalf("GITHUB_OUTPUT = %q, want a %q line", out, tt.want)
+			}
+			if tt.open > 0 && !strings.Contains(string(out), "review findings still open: 2 | ⏳ 2 |") {
+				t.Fatalf("GITHUB_OUTPUT = %q, want the PR body's Verification row to carry the count", out)
+			}
+		})
 	}
 }

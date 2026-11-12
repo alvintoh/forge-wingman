@@ -41,6 +41,10 @@ var errTemplate = errors.New("pull request template lacks the ticket line, summa
 // section to replace, which a body written before the section existed has.
 var ErrNoScreenshotsSection = errors.New("pull request body has no screenshots section")
 
+// OpenFindings is how many of a run's review findings it left unfixed, a type of
+// its own so PRBody's two counts cannot be passed in each other's place.
+type OpenFindings int
+
 // PRBody renders the pull request template for a run of ticket t: `ref` to the
 // ticket, prSummary as the summary (or `ID`: title when it is empty), the
 // check job's report in place of the example rows, and runURL and the ticket's
@@ -57,8 +61,10 @@ var ErrNoScreenshotsSection = errors.New("pull request body has no screenshots s
 // listed in the notes and empty for a run whose review found nothing, and
 // reviewOmitted is how many more findings the summary's cap left out of it.
 // secondRound is what the review's one extra fix round cost, nil for a run that
-// never took one. guardsUntested is how many guards the guard scan left unprobed
-// when its budget ran out, zero for a run that probed them all. provisional are
+// never took one. guardsUntested is how many guards the guard scan reached no
+// verdict for, zero for a run that gave every guard one. findingsOpen is
+// how many of the review's findings the run left unfixed, the ones reviewOmitted
+// counts included, which the Verification row reports. provisional are
 // the decisions auto-pilot took the recommended option on, empty for a run that
 // took none. supersedes is the number of the PR an owner's choice replaced, zero
 // when none, and retried says that choice was a retry with a note. autoMergeHold
@@ -66,7 +72,7 @@ var ErrNoScreenshotsSection = errors.New("pull request body has no screenshots s
 // — and is empty while auto-merge is on. drift is the
 // ticket change the run found after it read its ticket, nil when the ticket did
 // not change.
-func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail, overlap string, outOfPlan []string, writeSetUnread bool, frontEnd []string, noPlan bool, review []ReviewFinding, reviewOmitted int, secondRound *FixRoundCost, guardsUntested int, provisional []Provisional, supersedes int, retried bool, autoMergeHold string, drift *TicketDrift) (string, error) {
+func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail, overlap string, outOfPlan []string, writeSetUnread bool, frontEnd []string, noPlan bool, review []ReviewFinding, reviewOmitted int, secondRound *FixRoundCost, guardsUntested int, findingsOpen OpenFindings, provisional []Provisional, supersedes int, retried bool, autoMergeHold string, drift *TicketDrift) (string, error) {
 	summary := plainText(prSummary)
 	if summary == "" {
 		summary = "`" + t.ID + "`: " + t.Title
@@ -90,7 +96,7 @@ func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail
 			out = append(out, line, summary)
 			filled[templateSummary] = true
 		case line == templateTableRule:
-			out = append(out, line, gateRow(failedGate))
+			out = append(out, line, gateRow(failedGate, findingsOpen))
 			filled[templateTableRule] = true
 		case strings.HasPrefix(line, "| ") && filled[templateTableRule] && section == templateVerification:
 		case line == templateNotes:
@@ -317,10 +323,10 @@ func supersedeReason(retried bool) string {
 	return "the owner chose a different option."
 }
 
-// guardsNote is the PR notes' report of the guards the scan's budget left
-// unprobed, so the owner knows which part of the diff no probe proved.
+// guardsNote is the PR notes' report of the guards the scan reached no verdict
+// for, so the owner knows which part of the diff no probe proved.
 func guardsNote(n int) string {
-	return fmt.Sprintf("**Guards unprobed:** %d of the guards this diff adds went untested — the scan's budget ran out before they were broken", n)
+	return fmt.Sprintf("**Guards unprobed:** %d of the guards this diff adds went untested — the scan's budget ran out before they were broken, or a probe could not run", n)
 }
 
 // secondRoundNote is the PR notes' report of the pre-open review's one extra
@@ -397,10 +403,17 @@ func fence(s string) string {
 	return strings.Repeat("`", max(3, longest+1))
 }
 
-func gateRow(failedGate string) string {
-	if failedGate == "" {
-		return "| `make check` | the check job reports every gate passing, by the branch's own config: not proof | ✅ |"
+func gateRow(failedGate string, findingsOpen OpenFindings) string {
+	open := ""
+	if findingsOpen > 0 {
+		open = fmt.Sprintf("; review findings still open: %d", findingsOpen)
 	}
-	return "| `make check` · " + failedGate + " | the check job reports the " + failedGate +
-		" gate failing, by the branch's own config: not proof | ❌ |"
+	switch {
+	case failedGate != "":
+		return "| `make check` · " + failedGate + " | the check job reports the " + failedGate +
+			" gate failing, by the branch's own config: not proof" + open + " | ❌ |"
+	case findingsOpen > 0:
+		return fmt.Sprintf("| `make check` | the check job reports every gate passing, by the branch's own config: not proof%s | ⏳ %d |", open, findingsOpen)
+	}
+	return "| `make check` | the check job reports every gate passing, by the branch's own config: not proof | ✅ |"
 }

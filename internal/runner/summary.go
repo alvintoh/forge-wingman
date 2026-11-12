@@ -81,10 +81,15 @@ type Summary struct {
 	// nil for a run that never took one: the PR notes publish it so the owner
 	// prices the round on the first run that spends it.
 	ReviewSecondRound *FixRoundCost `json:"review_second_round,omitempty"`
-	// GuardsUntested is how many guards the diff adds the guard scan left
-	// unprobed when its budget ran out: the PR notes report the count, so the
-	// owner sees what the run did not prove. Zero when it probed them all.
+	// GuardsUntested is how many guards the diff adds the guard scan reached no
+	// verdict for, because its budget ran out or a probe could not run: the PR
+	// notes report the count, so the owner sees what the run did not prove.
+	// Zero when every guard got one.
 	GuardsUntested int `json:"guards_untested,omitempty"`
+	// ReviewFindingsOpen is how many of the review's findings the run left
+	// unfixed, counted before ReviewFindings is capped: the PR's Verification
+	// row reports it, so a finding the cap left out is still counted.
+	ReviewFindingsOpen int `json:"review_findings_open,omitempty"`
 }
 
 // FixRoundCost is one fix round's own spend: the round its step ran as, its
@@ -360,8 +365,10 @@ func capFindings(findings []ReviewFinding) []ReviewFinding {
 	return out
 }
 
-// setReviewFindings records rows, capped, and how many the cap left out.
+// setReviewFindings records rows, capped, how many the cap left out and how many
+// of them all the run left open.
 func (s *Summary) setReviewFindings(rows []ReviewFinding) {
+	s.ReviewFindingsOpen = openFindings(rows)
 	s.ReviewFindings = capFindings(rows)
 	s.ReviewFindingsOmitted = len(rows) - len(s.ReviewFindings)
 }
@@ -500,6 +507,9 @@ func (s Summary) validate(attemptID string, t Ticket, now time.Time) error {
 	}
 	if s.GuardsUntested < 0 || int64(s.GuardsUntested) > maxCount {
 		return fmt.Errorf("untested guard count %d is out of range", s.GuardsUntested)
+	}
+	if s.ReviewFindingsOpen < 0 || s.ReviewFindingsOpen > len(s.ReviewFindings)+s.ReviewFindingsOmitted {
+		return fmt.Errorf("open review finding count %d is out of range", s.ReviewFindingsOpen)
 	}
 	for _, n := range []int64{s.DiffLines.Added, s.DiffLines.Removed} {
 		if n < 0 || n > maxCount {

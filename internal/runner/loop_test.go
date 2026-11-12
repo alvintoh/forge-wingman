@@ -107,10 +107,10 @@ func TestReviewBudgetIsTheCapLessWhatTheRunSpentAndTheReserve(t *testing.T) {
 		elapsed time.Duration
 		want    time.Duration
 	}{
-		{"a review beginning at once", 0, 85 * time.Minute},
-		{"a build that finished 30 minutes in", 30 * time.Minute, 55 * time.Minute},
-		{"a build that spent its whole budget", 60 * time.Minute, 25 * time.Minute},
-		{"a run already past what the cap leaves", 85 * time.Minute, 25 * time.Minute},
+		{"a review beginning at once", 0, 82 * time.Minute},
+		{"a build that finished 30 minutes in", 30 * time.Minute, 52 * time.Minute},
+		{"a build that spent its whole budget", 60 * time.Minute, 22 * time.Minute},
+		{"a run already past what the cap leaves", 85 * time.Minute, 22 * time.Minute},
 	} {
 		if got := reviewBudget(started, started.Add(tt.elapsed)); got != tt.want {
 			t.Errorf("%s: review budget = %s, want %s", tt.name, got, tt.want)
@@ -167,7 +167,7 @@ func TestReviewCallErrorNamesTheBudgetForACallTheStageClamped(t *testing.T) {
 	if !errors.As(got, &s) || s.Outcome != OutcomeStopped || s.Reason != StopRunBudget {
 		t.Fatalf("call at the stage's end = %v, want the review stage's spent-budget stop", got)
 	}
-	if want := "the review stage's 25-minute budget was spent"; s.Err.Error() != want {
+	if want := "the review stage's 22-minute budget was spent"; s.Err.Error() != want {
 		t.Fatalf("detail = %q, want %q", s.Err.Error(), want)
 	}
 	if got := reviewCallError(timedOut, started.Add(budget-time.Second), started, budget); got != timedOut {
@@ -202,5 +202,32 @@ func TestRunLimitMinutesAreWholeMinutes(t *testing.T) {
 		if limit%time.Minute != 0 {
 			t.Errorf("%s = %s, want a whole number of minutes", name, limit)
 		}
+	}
+}
+
+// TestOpenFindingsCountsEveryWayAFindingCanEndUnfixed reads the count off the
+// rows the loop itself writes, so a resolution reworded there is a failure
+// here rather than a finding the Verification row stops counting.
+func TestOpenFindingsCountsEveryWayAFindingCanEndUnfixed(t *testing.T) {
+	reworded := reviewRows([]fixRoundResult{{
+		round:     2,
+		issued:    []pendingFinding{{key: "a", text: "a"}},
+		open:      []pendingFinding{{key: "b", text: "b"}},
+		rechecked: true,
+	}})
+	rows := slices.Concat(reworded, []ReviewFinding{
+		{Finding: "c", Resolution: findingResolution("c", map[string]bool{"c": true}, 2, true)},
+		{Finding: "d", Resolution: findingResolution("d", nil, noFixRound, false)},
+		{Finding: "e", Resolution: findingResolution("e", nil, 2, false)},
+		{Finding: "f", Resolution: stillOpenAfter(2)},
+		{Finding: "g", Resolution: findingResolution("g", nil, 2, true)},
+		{Finding: "h", Resolution: fixedIn(1)},
+	})
+
+	if got := openFindings(rows); got != len(rows)-2 {
+		t.Fatalf("openFindings = %d of %d rows (%+v), want every row but the two fixed ones", got, len(rows), rows)
+	}
+	if got := openFindings(nil); got != 0 {
+		t.Fatalf("openFindings(nil) = %d, want 0", got)
 	}
 }

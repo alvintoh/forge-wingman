@@ -156,12 +156,22 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 		"auto_merge":     strconv.FormatBool(verdict.Merge),
 		"draft":          strconv.FormatBool(draft),
 		"superseded_pr":  supersededOutput(check.Supersedes),
+		"findings_open":  openFindingsOutput(sum.ReviewFindingsOpen),
 		// superseded_by_retry words the close comment, so it is set only when a PR is superseded.
 		"superseded_by_retry": retriedOutput(check.Supersedes, check.Retried),
 	}); err != nil {
 		return err
 	}
 	return writeMultilineOutput(e.output, "body", body)
+}
+
+// openFindingsOutput is the step output counting the review's unfixed findings,
+// empty when none, which labels the PR.
+func openFindingsOutput(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strconv.Itoa(n)
 }
 
 // supersededOutput is the step output naming the superseded PR, empty when none.
@@ -559,7 +569,7 @@ func buildSummary(logger *slog.Logger, raw, attemptID string, t runner.Ticket, n
 // report is part of the body whether or not they kept it a draft.
 func renderPR(tmpl string, rec runner.Record, sum runner.Summary, failedGate, runURL, loopDetail string, check prCheck) (title, body string, err error) {
 	t := rec.Ticket()
-	body, err = runner.PRBody(tmpl, t, sum.PRSummary, failedGate, runURL, loopDetail, check.Overlap, check.OutOfPlan, check.Unread, check.FrontEnd, !check.Planned && t.Size != "S", sum.ReviewFindings, sum.ReviewFindingsOmitted, sum.ReviewSecondRound, sum.GuardsUntested, check.Provisional, check.Supersedes, check.Retried, check.Hold.Detail, check.ticketDrift(t.Body))
+	body, err = runner.PRBody(tmpl, t, sum.PRSummary, failedGate, runURL, loopDetail, check.Overlap, check.OutOfPlan, check.Unread, check.FrontEnd, !check.Planned && t.Size != "S", sum.ReviewFindings, sum.ReviewFindingsOmitted, sum.ReviewSecondRound, sum.GuardsUntested, runner.OpenFindings(sum.ReviewFindingsOpen), check.Provisional, check.Supersedes, check.Retried, check.Hold.Detail, check.ticketDrift(t.Body))
 	if err != nil {
 		return "", "", err
 	}
