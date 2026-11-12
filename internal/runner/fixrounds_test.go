@@ -133,7 +133,7 @@ func TestFixRoundsCommitsOneRoundPerReviewOnThePullRequestBranch(t *testing.T) {
 		t.Fatalf("steps = %+v, want each round's own step for the caller's summary", res.Steps)
 	}
 	for i, round := range res.Rounds {
-		if round.Step.Round != i+1 || round.Commit == "" || round.Step.Tokens.Input != 3 || round.Step.DurationMS <= 0 {
+		if !round.Reviewed || round.Step.Round != i+1 || round.Commit == "" || round.Step.Tokens.Input != 3 || round.Step.DurationMS <= 0 {
 			t.Fatalf("round %d = %+v, want a numbered round with its commit, tokens and duration", i+1, round)
 		}
 	}
@@ -465,6 +465,95 @@ func TestFixRoundsStopsWhenTheWorktreeIsTamperedWith(t *testing.T) {
 				t.Fatalf("pushed %q, want nothing published from a tampered worktree", seams.pushed)
 			}
 		})
+	}
+}
+
+// TestFixRoundsStopsWhenTheAgentMovesTheBranchToAnotherCommit: a round whose
+// agent reset the branch would commit its edits onto the wrong base, so it stops
+// before committing or publishing, whether the branch is the pull request's head
+// or the last round's commit.
+func TestFixRoundsStopsWhenTheAgentMovesTheBranchToAnotherCommit(t *testing.T) {
+	for _, movedAt := range []int{1, 2} {
+		t.Run(fmt.Sprintf("round %d", movedAt), func(t *testing.T) {
+			repo := initRepo(t)
+			agent := fixAgent()
+			edit := agent.edit
+			wt := fixWorktree(t, repo)
+			mustGit(t, wt.Dir, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "--allow-empty", "-qm", "pr commit")
+			agent.edit = func(dir string) error {
+				if agent.calls == movedAt {
+					mustGit(t, dir, "reset", "-q", "--hard", "HEAD~1")
+				}
+				return edit(dir)
+			}
+			deps, _, _ := testDeps(validObjects(), agent)
+			seams := &fixSeams{t: t, blocks: []string{findingSwallow}}
+
+			res, err := RunFixRounds(context.Background(), deps, testConfig(t, repo), wt,
+				fixLoop(t, wt, seams, findingRetry+"\n"+findingSwallow, 0))
+			var stop *StopError
+			if !errors.As(err, &stop) || stop.Reason != StopHeadMoved {
+				t.Fatalf("err = %v, want a head-moved stop", err)
+			}
+			if len(seams.pushed) != movedAt-1 || len(res.Rounds) != movedAt-1 {
+				t.Fatalf("pushed %q and %d rounds, want only the rounds before the branch moved", seams.pushed, len(res.Rounds))
+			}
+		})
+	}
+}
+
+// TestFixRoundsMarksARoundWhoseReReviewDidNotComplete: counts of zero from a round
+// whose re-review failed would read as a round that resolved nothing.
+func TestFixRoundsMarksARoundWhoseReReviewDidNotComplete(t *testing.T) {
+	repo := initRepo(t)
+	deps, _, _ := testDeps(validObjects(), fixAgent())
+	seams := &fixSeams{t: t, blocks: []string{findingSwallow}}
+	wt := fixWorktree(t, repo)
+	loop := fixLoop(t, wt, seams, findingRetry+"\n"+findingSwallow, 0)
+	loop.Review = func(ctx context.Context, branch, commit string) (string, error) {
+		if len(seams.reviewed) == 1 {
+			return "", errors.New("review down")
+		}
+		return seams.review(ctx, branch, commit)
+	}
+
+	res, err := RunFixRounds(context.Background(), deps, testConfig(t, repo), wt, loop)
+	if err == nil || len(res.Rounds) != 2 {
+		t.Fatalf("err = %v with %d rounds, want the re-review's error and both rounds", err, len(res.Rounds))
+	}
+	if first := res.Rounds[0]; !first.Reviewed || first.Resolved != 1 {
+		t.Fatalf("round 1 = %+v, want a reviewed round with one finding resolved", first)
+	}
+	if second := res.Rounds[1]; second.Commit == "" || second.Reviewed || second.Resolved != 0 || second.New != 0 {
+		t.Fatalf("round 2 = %+v, want its commit, not reviewed and no counts", second)
+	}
+}
+
+// TestFixRoundsNamesOnlyTheDeclinesTheLastReviewStillReports: a finding an earlier
+// round declined that the review no longer reports is not left for the owner.
+func TestFixRoundsNamesOnlyTheDeclinesTheLastReviewStillReports(t *testing.T) {
+	repo := initRepo(t)
+	agent := fixAgent()
+	agent.eventsFn = func(call int) string {
+		if call == 1 {
+			return fixEvents("```declined-findings\n" + findingRetry + " — the caller owns the retry\n```")
+		}
+		return fixEvents("```declined-findings\n" + findingSwallow + " — reported upstream\n```")
+	}
+	deps, _, _ := testDeps(validObjects(), agent)
+	seams := &fixSeams{t: t, blocks: []string{findingSwallow, findingSwallow}}
+
+	wt := fixWorktree(t, repo)
+	res, err := RunFixRounds(context.Background(), deps, testConfig(t, repo), wt,
+		fixLoop(t, wt, seams, findingRetry+"\n"+findingTimeout+"\n"+findingSwallow, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Stop != FixStopDeclined || len(res.Rounds) != 2 {
+		t.Fatalf("result = %+v, want two rounds and the pull request handed over on a decline", res)
+	}
+	if !strings.Contains(res.Detail, "declined: "+findingSwallow+" — reported upstream") || strings.Contains(res.Detail, "the caller owns the retry") {
+		t.Fatalf("detail = %q, want the decline still reported and not the one that went away", res.Detail)
 	}
 }
 

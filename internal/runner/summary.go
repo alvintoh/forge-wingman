@@ -508,6 +508,9 @@ func (s Summary) validate(attemptID string, t Ticket, now time.Time) error {
 		if err := r.Step.validate(attemptID); err != nil {
 			return err
 		}
+		if !r.Reviewed && (r.Resolved != 0 || r.New != 0) {
+			return fmt.Errorf("fix round %d has counts but no completed re-review", r.Step.Round)
+		}
 		if r.Resolved < 0 || r.New < 0 || int64(r.Resolved) > maxCount || int64(r.New) > maxCount {
 			return fmt.Errorf("fix round %d counts %d resolved and %d new, out of range", r.Step.Round, r.Resolved, r.New)
 		}

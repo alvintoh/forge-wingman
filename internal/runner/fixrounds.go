@@ -67,10 +67,14 @@ type ReviewFixRound struct {
 	// Declined are the findings the round left for the owner, with its reason.
 	Declined []DeclinedFinding `firestore:"declined" json:"declined,omitempty"`
 	// Resolved is how many of Findings the re-review no longer reported, and New
-	// how many it reported that the round was not given. Both stay zero for a
-	// round that changed no file, whose findings are the ones it was given.
+	// how many it reported that the round was not given. Both are meaningful only
+	// when Reviewed: they stay zero for a round that changed no file, or whose push
+	// or re-review did not complete.
 	Resolved int `firestore:"resolved" json:"resolved"`
 	New      int `firestore:"new" json:"new"`
+	// Reviewed is whether the re-review of the round's commit completed, so
+	// Resolved and New are its counts.
+	Reviewed bool `firestore:"reviewed" json:"reviewed"`
 	// Commit is the round's own commit on the branch, empty when it made none.
 	Commit string `firestore:"commit" json:"commit,omitempty"`
 }
@@ -232,6 +236,14 @@ func withoutDeclined(findings []pendingFinding, declined []DeclinedFinding) []pe
 	return kept
 }
 
+// stillReported is the declines whose finding the latest re-review reports, so a
+// finding that has since gone is not named to the owner as one left open.
+func stillReported(declined []DeclinedFinding, after []pendingFinding) []DeclinedFinding {
+	return slices.DeleteFunc(slices.Clone(declined), func(d DeclinedFinding) bool {
+		return !slices.ContainsFunc(after, func(f pendingFinding) bool { return namesFinding(d.Finding, f.text) })
+	})
+}
+
 // isDeclined reports whether a declined-findings entry names f.
 func isDeclined(f pendingFinding, declined []DeclinedFinding) bool {
 	return slices.ContainsFunc(declined, func(d DeclinedFinding) bool { return namesFinding(d.Finding, f.text) })
@@ -254,7 +266,10 @@ func namesFinding(entry, text string) bool {
 // worktree first, so a changed git configuration or a moved HEAD stops the loop
 // instead of committing somewhere else, and it runs the secret and workflow
 // checks the build's own commit runs, since the commit goes to a live branch.
-func fixRoundCommit(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, text string) (string, bool, error) {
+// expected is the commit the branch must be at when the round's edits are
+// committed: a branch the agent moved elsewhere would carry them onto the wrong
+// base.
+func fixRoundCommit(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, expected, text string) (string, bool, error) {
 	if err := wt.Verify(ctx); err != nil {
 		switch {
 		case errors.Is(err, ErrGitTampered):
@@ -267,6 +282,9 @@ func fixRoundCommit(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree
 	before, err := wt.HeadCommit(ctx)
 	if err != nil {
 		return "", false, stopWith(OutcomeInfraFailure, StopCommit, err)
+	}
+	if before != expected {
+		return "", false, stopWith(OutcomeStopped, StopHeadMoved, fmt.Errorf("%w: the branch is at %s, not %s", ErrHeadMoved, before, expected))
 	}
 	var msg CommitMessage
 	msg.adopt(text, c.Ticket.ID)
@@ -349,6 +367,7 @@ func RunFixRounds(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, 
 	session, num, stop := r.Session, 0, ""
 	var stopReason FixStop
 	var declined []DeclinedFinding
+	expected := r.Head
 	// fail returns the rounds already made with err: their commits are on the branch.
 	fail := func(err error) (ReviewFixResult, error) {
 		res.Session, res.Steps = session, sum.Steps
@@ -377,7 +396,7 @@ func RunFixRounds(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, 
 		round := ReviewFixRound{Step: sum.Steps[len(sum.Steps)-1], Findings: fixFindingLines(issued),
 			Declined: parseFixDeclines(fixText)}
 
-		sha, committed, err := fixRoundCommit(ctx, d, c, wt, fixText)
+		sha, committed, err := fixRoundCommit(ctx, d, c, wt, expected, fixText)
 		if err != nil {
 			return fail(err)
 		}
@@ -387,7 +406,7 @@ func RunFixRounds(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, 
 			stopReason, stop = FixStopNoChange, fmt.Sprintf("round %d changed no file", num)
 			break
 		}
-		cur.Commit = sha
+		cur.Commit, expected = sha, sha
 		if err := r.Push(ctx, r.Branch, sha); err != nil {
 			return fail(fmt.Errorf("pushing round %d's commit to %s: %w", num, r.Branch, err))
 		}
@@ -398,13 +417,14 @@ func RunFixRounds(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, 
 		after := reviewPending(found)
 		declined = append(declined, cur.Declined...)
 		cur.Resolved, cur.New = findingDelta(issued, after, declined)
+		cur.Reviewed = true
 		open = after
 		ended := false
 		switch {
 		case len(after) == 0:
 			res.Ready, ended = true, true
 		case len(withoutDeclined(after, declined)) == 0:
-			stopReason, stop, ended = FixStopDeclined, "declined: "+declinedText(declined), true
+			stopReason, stop, ended = FixStopDeclined, "declined: "+declinedText(stillReported(declined, after)), true
 		case cur.New > 0:
 			stopReason, stop, ended = FixStopNew, fmt.Sprintf("round %d added findings", num), true
 		case cur.Resolved == 0:

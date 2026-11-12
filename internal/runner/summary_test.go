@@ -46,7 +46,7 @@ func validFixRound() ReviewFixRound {
 	return ReviewFixRound{
 		Step: Step{Phase: PhaseFix, Round: 1, Model: "opencode-go/x", CompletionsObject: completionsObject("1-1", PhaseFix, 1),
 			At: finalizeNow.Add(-10 * time.Minute)},
-		Findings: []string{"a finding"}, Declined: []DeclinedFinding{{Finding: "b", Reason: "why"}}, Resolved: 1, Commit: testSHA,
+		Findings: []string{"a finding"}, Declined: []DeclinedFinding{{Finding: "b", Reason: "why"}}, Resolved: 1, Reviewed: true, Commit: testSHA,
 	}
 }
 
@@ -266,6 +266,11 @@ func TestParseSummaryRejects(t *testing.T) {
 		{"a fix round with a negative new count", func(s *Summary) {
 			r := validFixRound()
 			r.New = -1
+			s.FixRounds = []ReviewFixRound{r}
+		}},
+		{"a fix round with counts and no completed re-review", func(s *Summary) {
+			r := validFixRound()
+			r.Reviewed = false
 			s.FixRounds = []ReviewFixRound{r}
 		}},
 		{"a start time over a week old", func(s *Summary) { s.StartedAt = finalizeNow.Add(-8 * 24 * time.Hour) }},
