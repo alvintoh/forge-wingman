@@ -129,6 +129,9 @@ func TestFixRoundsCommitsOneRoundPerReviewOnThePullRequestBranch(t *testing.T) {
 	if !slices.Equal(res.Rounds[1].Findings, []string{findingTimeout}) || res.Rounds[1].Resolved != 1 || res.Rounds[1].New != 0 {
 		t.Fatalf("round 2 = %+v, want only the finding still open, now resolved", res.Rounds[1])
 	}
+	if len(res.Steps) != 2 || res.Steps[0] != res.Rounds[0].Step || res.Steps[1] != res.Rounds[1].Step {
+		t.Fatalf("steps = %+v, want each round's own step for the caller's summary", res.Steps)
+	}
 	for i, round := range res.Rounds {
 		if round.Step.Round != i+1 || round.Commit == "" || round.Step.Tokens.Input != 3 || round.Step.DurationMS <= 0 {
 			t.Fatalf("round %d = %+v, want a numbered round with its commit, tokens and duration", i+1, round)
@@ -289,6 +292,204 @@ func TestFixRoundsRecordsADeclinedFindingWithItsReason(t *testing.T) {
 	}
 	if !strings.Contains(res.Detail, findingTimeout) || !strings.Contains(res.Detail, reason) {
 		t.Fatalf("detail = %q, want the declined finding and its reason", res.Detail)
+	}
+}
+
+// TestFixRoundsDoesNotGiveALaterRoundAFindingAnEarlierOneDeclined is AC3 across
+// rounds: round 1 declines one finding and fixes another, the re-review reports
+// the declined one again, and round 2 is given only what it can act on, with the
+// declined one counted as neither resolved nor new.
+func TestFixRoundsDoesNotGiveALaterRoundAFindingAnEarlierOneDeclined(t *testing.T) {
+	const reason = "the caller owns the retry"
+	repo := initRepo(t)
+	agent := fixAgent()
+	agent.eventsFn = func(call int) string {
+		if call == 1 {
+			return fixEvents("```declined-findings\n" + findingRetry + " — " + reason + "\n```")
+		}
+		return fixEvents("")
+	}
+	deps, _, _ := testDeps(validObjects(), agent)
+	seams := &fixSeams{t: t, blocks: []string{findingRetry + "\n" + findingSwallow, findingRetry}}
+
+	wt := fixWorktree(t, repo)
+	res, err := RunFixRounds(context.Background(), deps, testConfig(t, repo), wt,
+		fixLoop(t, wt, seams, findingRetry+"\n"+findingTimeout+"\n"+findingSwallow, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(agent.prompts[1], findingRetry) || !strings.Contains(agent.prompts[1], findingSwallow) {
+		t.Fatalf("round 2 prompt = %q, want only the finding the round can act on", agent.prompts[1])
+	}
+	if res.Ready || res.Stop != FixStopDeclined || len(res.Rounds) != 2 {
+		t.Fatalf("result = %+v, want two rounds and the pull request handed over on the decline", res)
+	}
+	if !slices.Equal(res.Rounds[1].Findings, []string{findingSwallow}) || res.Rounds[1].Resolved != 1 || res.Rounds[1].New != 0 {
+		t.Fatalf("round 2 = %+v, want the one finding it was given, resolved, and nothing new", res.Rounds[1])
+	}
+	if !strings.Contains(res.Detail, findingRetry) || !strings.Contains(res.Detail, reason) {
+		t.Fatalf("detail = %q, want the declined finding and its reason", res.Detail)
+	}
+}
+
+// TestFixRoundsReturnsTheRoundsAlreadyMadeWhenALaterStepStops: round 1's commit is
+// on the branch, so an error in round 2 still returns its record, its decline,
+// the steps both rounds ran and the session.
+func TestFixRoundsReturnsTheRoundsAlreadyMadeWhenALaterStepStops(t *testing.T) {
+	const reason = "the caller owns the retry"
+	tests := []struct {
+		name       string
+		stop       func(agent *fakeAgent, seams *fixSeams, loop *FixRounds, cancel context.CancelFunc)
+		wantRounds int
+		wantSteps  int
+		wantErr    func(error) bool
+	}{
+		{"the agent fails", func(agent *fakeAgent, _ *fixSeams, _ *FixRounds, _ context.CancelFunc) {
+			agent.errFn = func(call int) error {
+				if call == 2 {
+					return errors.New("exit status 1")
+				}
+				return nil
+			}
+		}, 1, 2, func(err error) bool {
+			var stop *StopError
+			return errors.As(err, &stop) && stop.Reason == StopAgentExit
+		}},
+		{"the commit is refused", func(agent *fakeAgent, _ *fixSeams, _ *FixRounds, _ context.CancelFunc) {
+			edit := agent.edit
+			agent.edit = func(dir string) error {
+				if agent.calls == 2 {
+					if err := os.MkdirAll(filepath.Join(dir, workflowDir), 0o700); err != nil {
+						return err
+					}
+					return os.WriteFile(filepath.Join(dir, workflowDir, "ci.yml"), []byte("name: ci\n"), 0o600)
+				}
+				return edit(dir)
+			}
+		}, 1, 2, func(err error) bool {
+			var stop *StopError
+			return errors.As(err, &stop) && stop.Reason == StopWorkflowChange
+		}},
+		{"the push fails", func(_ *fakeAgent, seams *fixSeams, loop *FixRounds, _ context.CancelFunc) {
+			loop.Push = func(ctx context.Context, branch, commit string) error {
+				if len(seams.pushed) == 1 {
+					return errors.New("push refused")
+				}
+				return seams.push(ctx, branch, commit)
+			}
+		}, 2, 2, func(err error) bool { return err != nil && strings.Contains(err.Error(), "push refused") }},
+		{"the re-review fails", func(_ *fakeAgent, seams *fixSeams, loop *FixRounds, _ context.CancelFunc) {
+			loop.Review = func(ctx context.Context, branch, commit string) (string, error) {
+				if len(seams.reviewed) == 1 {
+					return "", errors.New("review down")
+				}
+				return seams.review(ctx, branch, commit)
+			}
+		}, 2, 2, func(err error) bool { return err != nil && strings.Contains(err.Error(), "review down") }},
+		{"the context is cancelled", func(_ *fakeAgent, seams *fixSeams, loop *FixRounds, cancel context.CancelFunc) {
+			loop.Review = func(ctx context.Context, branch, commit string) (string, error) {
+				found, err := seams.review(ctx, branch, commit)
+				cancel()
+				return found, err
+			}
+		}, 1, 1, func(err error) bool { return errors.Is(err, context.Canceled) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := initRepo(t)
+			agent := fixAgent()
+			agent.eventsFn = func(call int) string {
+				if call == 1 {
+					return fixEvents("```declined-findings\n" + findingRetry + " — " + reason + "\n```")
+				}
+				return fixEvents("")
+			}
+			deps, _, _ := testDeps(validObjects(), agent)
+			seams := &fixSeams{t: t, blocks: []string{findingRetry + "\n" + findingSwallow, findingRetry}}
+			wt := fixWorktree(t, repo)
+			loop := fixLoop(t, wt, seams, findingRetry+"\n"+findingTimeout+"\n"+findingSwallow, 0)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			tt.stop(agent, seams, &loop, cancel)
+
+			res, err := RunFixRounds(ctx, deps, testConfig(t, repo), wt, loop)
+			if !tt.wantErr(err) {
+				t.Fatalf("err = %v, want the stopped step's own error", err)
+			}
+			if len(res.Rounds) != tt.wantRounds || len(res.Steps) != tt.wantSteps || res.Session != "ses_1" {
+				t.Fatalf("result = %+v, want %d rounds, %d steps and round 1's session", res, tt.wantRounds, tt.wantSteps)
+			}
+			want := []DeclinedFinding{{Finding: findingRetry, Reason: reason}}
+			if first := res.Rounds[0]; first.Commit == "" || !slices.Equal(first.Declined, want) || first.Resolved != 1 {
+				t.Fatalf("round 1 = %+v, want its commit, its decline and one finding resolved", first)
+			}
+		})
+	}
+}
+
+// TestFixRoundsStopsWhenTheWorktreeIsTamperedWith: a round that changed the git
+// configuration or moved HEAD off the pull request's branch is stopped before it
+// commits, and nothing is published.
+func TestFixRoundsStopsWhenTheWorktreeIsTamperedWith(t *testing.T) {
+	tests := []struct {
+		name   string
+		tamper func(t *testing.T, repo, dir string)
+		want   StopReason
+	}{
+		{"the git configuration changes", func(t *testing.T, repo, _ string) {
+			appendFile(t, filepath.Join(repo, ".git", "config"), "[core]\n\tfsmonitor = /bin/true\n")
+		}, StopGitTampered},
+		{"HEAD moves to another branch", func(t *testing.T, _, dir string) {
+			mustGit(t, dir, "checkout", "-q", "-b", "other")
+		}, StopHeadMoved},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := initRepo(t)
+			agent := fixAgent()
+			edit := agent.edit
+			agent.edit = func(dir string) error {
+				tt.tamper(t, repo, dir)
+				return edit(dir)
+			}
+			deps, _, _ := testDeps(validObjects(), agent)
+			seams := &fixSeams{t: t}
+			wt := fixWorktree(t, repo)
+
+			_, err := RunFixRounds(context.Background(), deps, testConfig(t, repo), wt, fixLoop(t, wt, seams, findingRetry, 0))
+			var stop *StopError
+			if !errors.As(err, &stop) || stop.Reason != tt.want {
+				t.Fatalf("err = %v, want a %s stop", err, tt.want)
+			}
+			if len(seams.pushed) != 0 {
+				t.Fatalf("pushed %q, want nothing published from a tampered worktree", seams.pushed)
+			}
+		})
+	}
+}
+
+// TestFixRoundsStopsOnASecretInTheBranch: a round whose commit carries one of the
+// run's secrets never reaches the pull request's branch.
+func TestFixRoundsStopsOnASecretInTheBranch(t *testing.T) {
+	const secret = "sk-test-0123456789"
+	repo := initRepo(t)
+	agent := fixAgent()
+	agent.edit = func(dir string) error {
+		return os.WriteFile(filepath.Join(dir, "leak.go"), []byte("package x\nconst k = \""+secret+"\"\n"), 0o600)
+	}
+	deps, _, _ := testDeps(validObjects(), agent)
+	seams := &fixSeams{t: t}
+	wt := fixWorktree(t, repo)
+	cfg := testConfig(t, repo)
+	cfg.Secrets = []string{secret}
+
+	_, err := RunFixRounds(context.Background(), deps, cfg, wt, fixLoop(t, wt, seams, findingRetry, 0))
+	var stop *StopError
+	if !errors.As(err, &stop) || stop.Reason != StopSecretInBranch {
+		t.Fatalf("err = %v, want a secret-in-branch stop", err)
+	}
+	if len(seams.pushed) != 0 {
+		t.Fatalf("pushed %q, want a commit holding a secret left unpublished", seams.pushed)
 	}
 }
 

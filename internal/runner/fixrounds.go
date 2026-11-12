@@ -89,8 +89,11 @@ type ReviewFixResult struct {
 	// Detail names the findings left open and why the loop stopped, empty when
 	// Ready.
 	Detail string
-	// Session is the session the last round ran in, which a later loop resumes.
+	// Session is the session the last round ran in.
 	Session string
+	// Steps is every agent call the rounds made, one per round, for the caller to
+	// append to its summary so the rounds' tokens and time settle with the run.
+	Steps []Step
 }
 
 // FixRounds is one pull request's fix-round loop: the review's findings, the
@@ -115,9 +118,7 @@ type FixRounds struct {
 	// Findings is the review's findings on the pull request, one finding per
 	// line; empty means there is nothing to fix.
 	Findings string
-	// Rounds caps the loop in one call; zero uses DefaultReviewFixRounds. A
-	// caller that resumes the loop after a review counts the rounds already
-	// recorded and passes what is left.
+	// Rounds caps the loop; zero uses DefaultReviewFixRounds.
 	Rounds int
 	// Push publishes a round's commit to branch. Required.
 	Push func(ctx context.Context, branch, commit string) error
@@ -202,9 +203,9 @@ func fixFindingLines(findings []pendingFinding) []string {
 }
 
 // findingDelta is how many of issued a re-review no longer reports, and how many
-// it reports that issued did not hold: the per-round numbers the record keeps so
-// the cap can be lowered from evidence.
-func findingDelta(issued, after []pendingFinding) (resolved, added int) {
+// it reports that issued did not hold and no round declined: the per-round
+// numbers the record keeps so the cap can be lowered from evidence.
+func findingDelta(issued, after []pendingFinding, declined []DeclinedFinding) (resolved, added int) {
 	before, now := findingKeys(issued), findingKeys(after)
 	for _, f := range issued {
 		if !now[f.key] {
@@ -212,7 +213,7 @@ func findingDelta(issued, after []pendingFinding) (resolved, added int) {
 		}
 	}
 	for _, f := range after {
-		if !before[f.key] {
+		if !before[f.key] && !isDeclined(f, declined) {
 			added++
 		}
 	}
@@ -224,11 +225,16 @@ func findingDelta(issued, after []pendingFinding) (resolved, added int) {
 func withoutDeclined(findings []pendingFinding, declined []DeclinedFinding) []pendingFinding {
 	var kept []pendingFinding
 	for _, f := range findings {
-		if !slices.ContainsFunc(declined, func(d DeclinedFinding) bool { return namesFinding(d.Finding, f.text) }) {
+		if !isDeclined(f, declined) {
 			kept = append(kept, f)
 		}
 	}
 	return kept
+}
+
+// isDeclined reports whether a declined-findings entry names f.
+func isDeclined(f pendingFinding, declined []DeclinedFinding) bool {
+	return slices.ContainsFunc(declined, func(d DeclinedFinding) bool { return namesFinding(d.Finding, f.text) })
 }
 
 // namesFinding reports whether a declined-findings entry names a finding: the
@@ -313,7 +319,8 @@ func fixRoundCommit(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree
 // A seam's own failure is returned as an error: it belongs to the step that
 // publishes or reviews, whose own run records the failure, and the round's
 // commit is on the branch either way. An agent, commit or guard failure is a
-// *StopError, as in a build.
+// *StopError, as in a build. Every error after the loop starts comes with the
+// result so far: the rounds already made, their steps and the session.
 func RunFixRounds(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, r FixRounds) (ReviewFixResult, error) {
 	if r.Branch == "" || wt.Branch != r.Branch {
 		return ReviewFixResult{}, fmt.Errorf("the worktree is on branch %q, not the pull request's %q", wt.Branch, r.Branch)
@@ -341,16 +348,22 @@ func RunFixRounds(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, 
 	started := sum.StartedAt
 	session, num, stop := r.Session, 0, ""
 	var stopReason FixStop
+	var declined []DeclinedFinding
+	// fail returns the rounds already made with err: their commits are on the branch.
+	fail := func(err error) (ReviewFixResult, error) {
+		res.Session, res.Steps = session, sum.Steps
+		return res, err
+	}
 	for n := 1; n <= capped; n++ {
 		if err := ctx.Err(); err != nil {
-			return ReviewFixResult{}, err
+			return fail(err)
 		}
 		timeout, inBudget := roundTimeout(c.AgentTimeout, started, d.Now(), fixRoundsBudget, reviewStartRoom)
 		if !inBudget {
 			stopReason, stop = FixStopBudget, stageBudgetSpent("fix-round", fixRoundsBudget)
 			break
 		}
-		issued := open
+		issued := withoutDeclined(open, declined)
 		text := findingsText(issued)
 		order := buildOrder(c)
 		call := agentCall{Phase: PhaseFix, Round: num + 1, Model: order[0], Session: session, Rules: r.Rules,
@@ -358,7 +371,7 @@ func RunFixRounds(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, 
 		fixText, resumed, ran, err := runAgentInOrder(ctx, d, c, call, order, d.Agent, wt.Dir,
 			withCommitInstruction(fixRoundPrompt(text)), &sum, started, fixRoundsBudget, reviewStartRoom)
 		if err != nil {
-			return ReviewFixResult{}, err
+			return fail(err)
 		}
 		num, session = ran, resumed
 		round := ReviewFixRound{Step: sum.Steps[len(sum.Steps)-1], Findings: fixFindingLines(issued),
@@ -366,36 +379,37 @@ func RunFixRounds(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, 
 
 		sha, committed, err := fixRoundCommit(ctx, d, c, wt, fixText)
 		if err != nil {
-			return ReviewFixResult{}, err
+			return fail(err)
 		}
+		res.Rounds = append(res.Rounds, round)
+		cur := &res.Rounds[len(res.Rounds)-1]
 		if !committed {
 			stopReason, stop = FixStopNoChange, fmt.Sprintf("round %d changed no file", num)
-			res.Rounds = append(res.Rounds, round)
 			break
 		}
-		round.Commit = sha
+		cur.Commit = sha
 		if err := r.Push(ctx, r.Branch, sha); err != nil {
-			return ReviewFixResult{}, fmt.Errorf("pushing round %d's commit to %s: %w", num, r.Branch, err)
+			return fail(fmt.Errorf("pushing round %d's commit to %s: %w", num, r.Branch, err))
 		}
 		found, err := r.Review(ctx, r.Branch, sha)
 		if err != nil {
-			return ReviewFixResult{}, fmt.Errorf("re-reviewing %s after round %d: %w", r.Branch, num, err)
+			return fail(fmt.Errorf("re-reviewing %s after round %d: %w", r.Branch, num, err))
 		}
 		after := reviewPending(found)
-		round.Resolved, round.New = findingDelta(issued, after)
+		declined = append(declined, cur.Declined...)
+		cur.Resolved, cur.New = findingDelta(issued, after, declined)
 		open = after
 		ended := false
 		switch {
 		case len(after) == 0:
 			res.Ready, ended = true, true
-		case len(withoutDeclined(after, round.Declined)) == 0:
-			stopReason, stop, ended = FixStopDeclined, "declined: "+declinedText(round.Declined), true
-		case round.New > 0:
+		case len(withoutDeclined(after, declined)) == 0:
+			stopReason, stop, ended = FixStopDeclined, "declined: "+declinedText(declined), true
+		case cur.New > 0:
 			stopReason, stop, ended = FixStopNew, fmt.Sprintf("round %d added findings", num), true
-		case round.Resolved == 0:
+		case cur.Resolved == 0:
 			stopReason, stop, ended = FixStopUnchanged, fmt.Sprintf("round %d left the findings unchanged", num), true
 		}
-		res.Rounds = append(res.Rounds, round)
 		if ended {
 			break
 		}
@@ -406,6 +420,6 @@ func RunFixRounds(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, 
 		}
 		res.Stop, res.Detail = stopReason, detailParts("findings open: "+findingsText(open), stop)
 	}
-	res.Session = session
+	res.Session, res.Steps = session, sum.Steps
 	return res, nil
 }
