@@ -166,9 +166,10 @@ func (t *progressTap) didStop() bool {
 	return t.stopped
 }
 
-// stalled reports whether a build phase is at the limit; plan and review passes never edit, so they are exempt.
+// stalled reports whether an editing phase is at the limit; plan and review
+// passes never edit, so they are exempt.
 func (p agentProgress) stalled(phase Phase) bool {
-	return phase == PhaseBuild && p.noProgress >= DEFAULT_NO_PROGRESS_STEPS
+	return (phase == PhaseBuild || phase == PhaseFix) && p.noProgress >= DEFAULT_NO_PROGRESS_STEPS
 }
 
 // stalledDetail is the stop's detail: the idle steps and the largest context read.

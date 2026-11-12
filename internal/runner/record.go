@@ -26,6 +26,10 @@ const (
 	// a model other than the builder's checks the diff against the ticket's
 	// acceptance criteria.
 	PhaseReview Phase = "review"
+	// PhaseFix is a fix round the runner makes from a pull request review's
+	// findings after the pull request opened: the build's own session, given the
+	// findings, committed to the pull request's branch.
+	PhaseFix    Phase = "fix"
 	PhaseCommit Phase = "commit"
 	PhasePR     Phase = "pr"
 )
@@ -33,7 +37,7 @@ const (
 // KnownPhase reports whether p is one of the phases above.
 func KnownPhase(p Phase) bool {
 	switch p {
-	case PhaseProjection, PhaseWorktree, PhaseAgentStart, PhasePlan, PhaseBuild, PhaseReview, PhaseCommit, PhasePR:
+	case PhaseProjection, PhaseWorktree, PhaseAgentStart, PhasePlan, PhaseBuild, PhaseReview, PhaseFix, PhaseCommit, PhasePR:
 		return true
 	}
 	return false

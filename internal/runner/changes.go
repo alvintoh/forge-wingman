@@ -199,6 +199,16 @@ func (w Worktree) Commit(ctx context.Context, message string) ([]string, error) 
 	return splitNUL(diff), nil
 }
 
+// HeadCommit is the worktree's current HEAD commit, which a caller compares
+// around a commit to learn whether it made one.
+func (w Worktree) HeadCommit(ctx context.Context) (string, error) {
+	out, err := w.git(ctx, "rev-parse", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // TouchedPaths returns every path the branch adds, changes or removes since the
 // base, counting a rename as both its source and its destination.
 func (w Worktree) TouchedPaths(ctx context.Context) ([]string, error) {

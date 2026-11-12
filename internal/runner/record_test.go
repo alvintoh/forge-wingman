@@ -1106,7 +1106,7 @@ func TestTheFrontEndLabelSurvivesTheRecordAndItsFinalization(t *testing.T) {
 }
 
 func TestKnownPhase(t *testing.T) {
-	for _, p := range []Phase{PhaseProjection, PhaseWorktree, PhaseAgentStart, PhasePlan, PhaseBuild, PhaseReview, PhaseCommit, PhasePR} {
+	for _, p := range []Phase{PhaseProjection, PhaseWorktree, PhaseAgentStart, PhasePlan, PhaseBuild, PhaseReview, PhaseFix, PhaseCommit, PhasePR} {
 		if !KnownPhase(p) {
 			t.Errorf("KnownPhase(%q) = false, want true", p)
 		}
