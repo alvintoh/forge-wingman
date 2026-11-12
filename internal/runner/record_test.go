@@ -305,6 +305,24 @@ func TestFinalizeWritesTheWholeRecordFromTheSummary(t *testing.T) {
 	}
 }
 
+func TestFinalizeRecordsTheFixRoundsWithTheirSteps(t *testing.T) {
+	round := validFixRound()
+	round.Step.Tokens = Usage{Input: 7, Output: 1, Steps: 1}
+	sum := validSummary()
+	sum.Steps = append(sum.Steps, round.Step)
+	sum.FixRounds = []ReviewFixRound{round}
+	store := seeded(t)
+	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: "1-1", Summary: encoded(t, sum), RunResult: "success",
+		PRResult: "success", PRURL: "https://github.com/o/r/pull/1"}
+	if _, err := Finalize(context.Background(), store, &fakeLedger{}, nil, in, finalizeNow); err != nil {
+		t.Fatal(err)
+	}
+	got := store[testRunID]
+	if !reflect.DeepEqual(got.FixRounds, sum.FixRounds) || got.Tokens.Input != 7 {
+		t.Fatalf("record fix rounds = %+v, tokens = %+v; want the round with its decline and counts, and its step's tokens", got.FixRounds, got.Tokens)
+	}
+}
+
 func TestFinalizeSumsTokensAcrossSteps(t *testing.T) {
 	sum := Summary{
 		Outcome: OutcomeBuilt,

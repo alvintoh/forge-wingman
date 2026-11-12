@@ -298,6 +298,9 @@ type Record struct {
 	// totals alone cannot tell from slow work.
 	ReadFiles         []string `firestore:"read_files"`
 	PeakContextTokens int64    `firestore:"peak_context_tokens"`
+	// FixRounds is each fix round the runner made on the pull request after it
+	// opened: the findings that drove it, the ones it declined and its counts.
+	FixRounds []ReviewFixRound `firestore:"fix_rounds"`
 }
 
 // DiffLines is the size of the branch's diff against its base.
@@ -773,6 +776,7 @@ func (s Summary) apply(rec *Record) {
 	rec.EditedFiles = s.EditedFiles
 	rec.ReadFiles = s.ReadFiles
 	rec.PeakContextTokens = s.PeakContextTokens
+	rec.FixRounds = s.FixRounds
 	rec.DiffLines = s.DiffLines
 	for p, ms := range s.DurationsMS {
 		rec.DurationsMS[p] = ms

@@ -90,6 +90,9 @@ type Summary struct {
 	// unfixed, counted before ReviewFindings is capped: the PR's Verification
 	// row reports it, so a finding the cap left out is still counted.
 	ReviewFindingsOpen int `json:"review_findings_open,omitempty"`
+	// FixRounds is each fix round the runner made on the pull request after it
+	// opened (AC2, AC3, AC5), whose steps are in Steps.
+	FixRounds []ReviewFixRound `json:"fix_rounds,omitempty"`
 }
 
 // FixRoundCost is one fix round's own spend: the round its step ran as, its
@@ -329,6 +332,8 @@ func (s Summary) Encode() (string, error) {
 			s.ReadFiles = s.ReadFiles[:len(s.ReadFiles)/2]
 		case len(s.EditedFiles) > 0:
 			s.EditedFiles = s.EditedFiles[:len(s.EditedFiles)/2]
+		case len(s.FixRounds) > 0:
+			s.FixRounds = s.FixRounds[1:]
 		case len(s.Steps) > 0:
 			s.Steps = s.Steps[1:]
 		case len(s.ReviewFindings) > 0:
@@ -497,6 +502,14 @@ func (s Summary) validate(attemptID string, t Ticket, now time.Time) error {
 		}
 		if r.DurationMS < 0 || r.DurationMS > maxPhaseDuration.Milliseconds() {
 			return fmt.Errorf("second fix round duration %d ms is out of range", r.DurationMS)
+		}
+	}
+	for _, r := range s.FixRounds {
+		if err := r.Step.validate(attemptID); err != nil {
+			return err
+		}
+		if r.Resolved < 0 || r.New < 0 || int64(r.Resolved) > maxCount || int64(r.New) > maxCount {
+			return fmt.Errorf("fix round %d counts %d resolved and %d new, out of range", r.Step.Round, r.Resolved, r.New)
 		}
 	}
 	if s.PeakContextTokens < 0 || s.PeakContextTokens > maxCount {

@@ -40,6 +40,55 @@ func TestParseSummaryAcceptsWhatABuildReports(t *testing.T) {
 	}
 }
 
+// validFixRound is a fix round whose step is this run's own, so a summary
+// carrying it is one the record job accepts.
+func validFixRound() ReviewFixRound {
+	return ReviewFixRound{
+		Step: Step{Phase: PhaseFix, Round: 1, Model: "opencode-go/x", CompletionsObject: completionsObject("1-1", PhaseFix, 1),
+			At: finalizeNow.Add(-10 * time.Minute)},
+		Findings: []string{"a finding"}, Declined: []DeclinedFinding{{Finding: "b", Reason: "why"}}, Resolved: 1, Commit: testSHA,
+	}
+}
+
+func TestParseSummaryKeepsTheFixRounds(t *testing.T) {
+	s := validSummary()
+	s.FixRounds = []ReviewFixRound{validFixRound()}
+	raw, err := s.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParseSummary(raw, "1-1", testTicket, finalizeNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.FixRounds) != 1 || got.FixRounds[0].Declined[0].Reason != "why" || got.FixRounds[0].Resolved != 1 {
+		t.Fatalf("fix rounds = %+v, want the round with its decline and counts", got.FixRounds)
+	}
+}
+
+// TestEncodeShedsFixRoundsBeforeSteps: a summary over the size limit drops the
+// oldest fix rounds first, since each round's step is also in Steps and settles
+// the run's cost.
+func TestEncodeShedsFixRoundsBeforeSteps(t *testing.T) {
+	s := validSummary()
+	round := validFixRound()
+	round.Findings = []string{strings.Repeat("x", maxFindingBytes)}
+	for range 200 {
+		s.FixRounds = append(s.FixRounds, round)
+	}
+	raw, err := s.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Summary
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Steps) != 1 || len(got.FixRounds) == 0 || len(got.FixRounds) >= 200 || len(raw) > maxSummaryBytes {
+		t.Fatalf("%d steps and %d fix rounds in %d bytes, want the steps kept and some rounds shed to fit", len(got.Steps), len(got.FixRounds), len(raw))
+	}
+}
+
 func TestParseSummaryAcceptsTheChecksDuration(t *testing.T) {
 	s := validSummary()
 	s.DurationsMS["checks"] = 4000
@@ -208,6 +257,16 @@ func TestParseSummaryRejects(t *testing.T) {
 		}},
 		{"a second fix round over the duration ceiling", func(s *Summary) {
 			s.ReviewSecondRound = &FixRoundCost{Round: 3, DurationMS: maxPhaseDuration.Milliseconds() + 1}
+		}},
+		{"a fix round wearing another run's completions", func(s *Summary) {
+			r := validFixRound()
+			r.Step.CompletionsObject = "completions/1-2-fix-1.jsonl"
+			s.FixRounds = []ReviewFixRound{r}
+		}},
+		{"a fix round with a negative new count", func(s *Summary) {
+			r := validFixRound()
+			r.New = -1
+			s.FixRounds = []ReviewFixRound{r}
 		}},
 		{"a start time over a week old", func(s *Summary) { s.StartedAt = finalizeNow.Add(-8 * 24 * time.Hour) }},
 		{"another run's completions", func(s *Summary) { s.Steps[0].CompletionsObject = "completions/1-2-build-1.jsonl" }},
