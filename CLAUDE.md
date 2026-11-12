@@ -110,7 +110,7 @@ this file as project memory, so the rules below reach the run.
 
 - **A ticket that grounds at L is split into M tickets before it is built, in either lane.** START
   can delegate any ticket, and a run's whole PR has 90 minutes: build 60, review with its fix round
-  25, a 5-minute reserve (`internal/runner/loop.go:28-40`). The only L sample, a p90 of 52.6 minutes
+  22, an 8-minute reserve (`internal/runner/loop.go:28-48`). The only L sample, a p90 of 52.6 minutes
   over 3 runs, leaves no margin, and an L diff is harder to review. Split along a contract both
   halves can test against (a fixture, an API shape), keep the original ticket as one half, and
   block the other on it. *(Judgment call, owner's instruction 2026-11-06, after FRG-297 grounded at
