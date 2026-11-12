@@ -272,7 +272,7 @@ describe.skipIf(executable === null)("shots end to end", () => {
           out: join(dist, "absent.png"),
         }),
       );
-      expect(size).toEqual({ width: 768, height: 1024 });
+      expect(size).toEqual({ width: 768, height: 1024, text: "absent", overflows: [] });
       expect([...own.fixtures.missing]).toEqual([["/api/absent", 1]]);
     } finally {
       own.stop();

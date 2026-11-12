@@ -2,9 +2,10 @@
 // caller supplies, so the refusal handling is driven without a browser.
 
 import { join } from "node:path";
-import { Refused, VIEWPORTS, type Viewport } from "./capture";
+import { CHECK_VIEWPORT, type CaptureResult, Refused, VIEWPORTS, type Viewport } from "./capture";
+import type { PageText } from "./checks";
 import type { Page } from "./chromium";
-import type { PageError, Refusal } from "./report";
+import type { Overflow, PageError, Refusal } from "./report";
 import type { Route } from "./router";
 
 /** A capture of one route at one width, as shootRoutes drives it. */
@@ -12,7 +13,7 @@ export type Capture = (shot: {
   url: string;
   viewport: Viewport;
   out: string;
-}) => Promise<{ width: number; height: number }>;
+}) => Promise<CaptureResult>;
 
 /** What shootRoutes needs: the routes, where they are served, and where the PNGs go. */
 export type ShootOptions = {
@@ -22,7 +23,7 @@ export type ShootOptions = {
   // The directory the PNGs are written into.
   out: string;
   capture: Capture;
-  // The widths to shoot; the four review widths when omitted.
+  // The widths to visit; the four review widths and the check-only one when omitted.
   viewports?: readonly Viewport[];
   // The page the capture drives, whose console errors fail the route they came from.
   page?: Page;
@@ -30,11 +31,16 @@ export type ShootOptions = {
   log?: (line: string) => void;
 };
 
-/** What shootRoutes did: the shots written, the shots it refused and the pages that logged. */
+/**
+ * What shootRoutes did: the shots written, the shots it refused, the pages that
+ * logged, the text each state held and the elements wider than their boxes.
+ */
 export type ShootResult = {
   written: number;
   refusals: Refusal[];
   pageErrors: PageError[];
+  pages: PageText[];
+  overflows: Overflow[];
 };
 
 /**
@@ -53,25 +59,36 @@ export function shotFile(route: Route, viewport: Viewport): string {
  * other error through.
  */
 export async function shootRoutes(options: ShootOptions): Promise<ShootResult> {
-  const viewports = options.viewports ?? VIEWPORTS;
+  const viewports = options.viewports ?? [...VIEWPORTS, CHECK_VIEWPORT];
   const log = options.log ?? (() => {});
   const refusals: Refusal[] = [];
   const pageErrors: PageError[] = [];
+  const pages: PageText[] = [];
+  const overflows: Overflow[] = [];
   let written = 0;
   for (const route of options.routes) {
     for (const viewport of viewports) {
       const name = shotFile(route, viewport);
       try {
-        const size = await options.capture({
+        const seen = await options.capture({
           url: options.baseUrl + route.url,
           viewport,
           out: join(options.out, name),
         });
-        written++;
-        log(`shotWrote file=${name} width=${size.width} height=${size.height}`);
+        pages.push({ route: route.pattern, width: viewport.key, text: seen.text });
+        for (const element of seen.overflows) {
+          overflows.push({ route: route.pattern, width: viewport.key, ...element });
+        }
+        if (!viewport.checkOnly) {
+          written++;
+          log(`shotWrote file=${name} width=${seen.width} height=${seen.height}`);
+        }
       } catch (err) {
         if (err instanceof Refused) {
           refusals.push({ route: route.name, width: viewport.key, detail: err.message });
+          for (const element of err.overflows) {
+            overflows.push({ route: route.pattern, width: viewport.key, ...element });
+          }
           continue;
         }
         throw err;
@@ -82,5 +99,5 @@ export async function shootRoutes(options: ShootOptions): Promise<ShootResult> {
       options.page.errors.length = 0;
     }
   }
-  return { written, refusals, pageErrors };
+  return { written, refusals, pageErrors, pages, overflows };
 }

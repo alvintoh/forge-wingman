@@ -16,6 +16,8 @@ export type Args = {
   base: string;
   // A Chromium binary; null means $CHROME_PATH or the usual install paths.
   chromium: string | null;
+  // The run's ticket file, whose quoted criteria strings are checked; null checks none.
+  ticket: string | null;
   help: boolean;
 };
 
@@ -33,12 +35,22 @@ Shoots the built surface at four widths with fixture data.
   --fixtures <dir>   the fixture JSON files (default: web/fixtures)
   --chromium <path>  the Chromium binary (default: $CHROME_PATH, then the
                      usual install paths)
+  --ticket <file>    the ticket file to check the quoted strings of its
+                     acceptance criteria against the shots (default: none)
   --help             this text`;
 
 /** A command line the tool cannot run. */
 export class UsageError extends Error {}
 
-const FLAGS = new Set(["--dist", "--fixtures", "--out", "--routes", "--base", "--chromium"]);
+const FLAGS = new Set([
+  "--dist",
+  "--fixtures",
+  "--out",
+  "--routes",
+  "--base",
+  "--chromium",
+  "--ticket",
+]);
 
 /**
  * parseArgs reads the flags in any order, each as `--flag value` or
@@ -52,6 +64,7 @@ export function parseArgs(argv: readonly string[]): Args {
     routes: null,
     base: "main",
     chromium: null,
+    ticket: null,
     help: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -92,6 +105,9 @@ export function parseArgs(argv: readonly string[]): Args {
         break;
       case "--chromium":
         args.chromium = value;
+        break;
+      case "--ticket":
+        args.ticket = value;
         break;
     }
   }

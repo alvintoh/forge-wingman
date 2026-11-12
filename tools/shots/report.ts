@@ -1,6 +1,7 @@
 // What makes a run fail: a route the app read with no fixture, a request the
-// fixture API does not serve, a shot the checks refused, and a route whose page
-// logged an error. One countable line each, and the exit code they demand.
+// fixture API does not serve, a shot the checks refused, a route whose page
+// logged an error, a quoted string the page never showed, and an element wider
+// than its box. One countable line each, and the exit code they demand.
 
 /** One shot the checks refused: its file-name stem, width key and reason. */
 export type Refusal = {
@@ -13,6 +14,28 @@ export type Refusal = {
 export type PageError = {
   route: string;
   detail: string;
+};
+
+/** One quoted string a criterion names that no page in its scope showed. */
+export type MissingString = {
+  // The route and width the string was looked for at, e.g. "/stats@s".
+  state: string;
+  string: string;
+};
+
+/** One element wider than its box at a width, on a route. */
+export type Overflow = {
+  route: string;
+  width: string;
+  element: string;
+  scrollWidth: number;
+  clientWidth: number;
+};
+
+/** The failures the page checks found, beside the shots' own. */
+type Checks = {
+  missingStrings: readonly MissingString[];
+  overflows: readonly Overflow[];
 };
 
 /** A run's failure lines and the exit code they demand. */
@@ -30,6 +53,7 @@ export function outcome(
   writes: ReadonlyMap<string, number>,
   refusals: readonly Refusal[],
   pageErrors: readonly PageError[],
+  checks: Checks = { missingStrings: [], overflows: [] },
 ): Outcome {
   const failures: string[] = [];
   for (const [path, count] of missing) {
@@ -50,6 +74,19 @@ export function outcome(
     failures.push(
       `shotsFailed reason=page-error route=${pageError.route} ` +
         `detail=${JSON.stringify(pageError.detail)}`,
+    );
+  }
+  for (const missing of checks.missingStrings) {
+    failures.push(
+      `shotsFailed reason=missing-string state=${missing.state} ` +
+        `string=${JSON.stringify(missing.string)}`,
+    );
+  }
+  for (const overflow of checks.overflows) {
+    failures.push(
+      `shotsFailed reason=overflow state=${overflow.route}@${overflow.width} ` +
+        `element=${JSON.stringify(overflow.element)} ` +
+        `scrollWidth=${overflow.scrollWidth} clientWidth=${overflow.clientWidth}`,
     );
   }
   return { failures, exitCode: failures.length > 0 ? 1 : 0 };

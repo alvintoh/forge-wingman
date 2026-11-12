@@ -7,11 +7,13 @@ import type { Page } from "./chromium";
 
 /** One review width: its CSS size, device scale factor and mobile emulation. */
 export type Viewport = {
-  key: "s" | "m" | "l" | "xl";
+  key: "xs" | "s" | "m" | "l" | "xl";
   width: number;
   height: number;
   deviceScaleFactor: number;
   mobile: boolean;
+  // A width that is measured and read but never shot.
+  checkOnly?: true;
 };
 
 /**
@@ -26,13 +28,34 @@ export const VIEWPORTS: readonly Viewport[] = [
 ];
 
 /**
+ * The narrowest width the surface supports. It is measured but never shot: the
+ * evidence step refuses a shot set holding a PNG outside the four review widths.
+ */
+export const CHECK_VIEWPORT: Viewport = {
+  key: "xs",
+  width: 320,
+  height: 568,
+  deviceScaleFactor: 1,
+  mobile: true,
+  checkOnly: true,
+};
+
+// The widths at which an element wider than its box fails the run.
+const OVERFLOW_WIDTHS: ReadonlySet<Viewport["key"]> = new Set(["xs", "s"]);
+
+/**
  * The instant every page's clock reads, so "ago" words are the same in both
  * runs. The fixtures' timestamps sit before it.
  */
 export const FIXED_TIME = Date.UTC(2026, 2, 1, 12, 0, 0);
 
-/** A shot the tool will not take, for a reason the caller reports rather than a bug. */
-export class Refused extends Error {}
+/**
+ * A shot the tool will not take, for a reason the caller reports rather than a bug,
+ * with the elements wider than their boxes when the page was measured first.
+ */
+export class Refused extends Error {
+  overflows: OverflowingElement[] = [];
+}
 
 const READY_TIMEOUT_MS = 20_000;
 
@@ -88,6 +111,26 @@ const SIDEWAYS_SCROLL = `(() => {
   return width > doc.clientWidth ? width - doc.clientWidth : null;
 })()`;
 
+const PAGE_TEXT = "document.body.innerText";
+
+// An element is wider than its box when its content outgrows it, or when it is
+// itself wider than the nearest ancestor that clips, else the page, which an
+// auto-layout table or a fixed-width card does without growing its own scroll width.
+const OVERFLOWING_ELEMENTS = `(() => {
+  const container = (el) => {
+    for (let at = el.parentElement; at !== null; at = at.parentElement) {
+      if (getComputedStyle(at).overflowX !== "visible") return at;
+    }
+    return document.documentElement;
+  };
+  return [...document.querySelectorAll(".card-frame, table")].flatMap((el) => {
+    const outer = el.scrollWidth > el.clientWidth ? el.clientWidth : container(el).clientWidth;
+    if (el.scrollWidth <= outer) return [];
+    const name = el.tagName.toLowerCase() + (el.classList.contains("card-frame") ? ".card-frame" : "");
+    return [{ element: name, scrollWidth: el.scrollWidth, clientWidth: outer }];
+  });
+})()`;
+
 /** The CDP commands one shot makes; the real client and a test double both satisfy it. */
 export type CommandChannel = {
   send<T = Record<string, unknown>>(
@@ -109,6 +152,21 @@ export type Shot = {
   url: string;
   viewport: Viewport;
   out: string;
+};
+
+/** One element wider than its own box. */
+export type OverflowingElement = {
+  element: string;
+  scrollWidth: number;
+  clientWidth: number;
+};
+
+/** What one shot saw: its pixel size, the page's text and the elements wider than their boxes. */
+export type CaptureResult = {
+  width: number;
+  height: number;
+  text: string;
+  overflows: OverflowingElement[];
 };
 
 /** What the page looked like before capture, and why a shot must not be taken. */
@@ -154,8 +212,12 @@ export function sizeError(
   return `the browser shot ${size.width}x${size.height} for ${viewport.key}; wanted ${wantWidth}x${wantHeight}`;
 }
 
-/** captureShot writes one shot and returns its pixel size. */
-export async function captureShot(shot: Shot): Promise<{ width: number; height: number }> {
+/**
+ * captureShot writes one shot and returns its pixel size with what the page
+ * held at that moment. A check-only viewport writes nothing and answers its
+ * CSS size.
+ */
+export async function captureShot(shot: Shot): Promise<CaptureResult> {
   const { cdp, page, url, viewport, out } = shot;
   const { sessionId } = page;
 
@@ -215,7 +277,7 @@ export async function captureShot(shot: Shot): Promise<{ width: number; height: 
     [Math.floor(viewport.width / 2), viewport.height - 2],
   ];
   let hovered: string[] = [];
-  for (const [x, y] of points) {
+  for (const [x, y] of viewport.checkOnly ? [] : points) {
     await cdp.send(
       "Input.dispatchMouseEvent",
       { type: "mouseMoved", x, y, button: "none" },
@@ -231,11 +293,20 @@ export async function captureShot(shot: Shot): Promise<{ width: number; height: 
   const overflow = await evaluate<number | null>(cdp, sessionId, SIDEWAYS_SCROLL);
   // Re-check at the moment of capture: nothing became busy or moved the page.
   const late = await evaluate<string | null>(cdp, sessionId, READY);
+  const overflows = OVERFLOW_WIDTHS.has(viewport.key)
+    ? await evaluate<OverflowingElement[]>(cdp, sessionId, OVERFLOWING_ELEMENTS)
+    : [];
   const refusal = preCaptureRefusal({ hovered, overflow, late });
   if (refusal !== null) {
+    refusal.overflows = overflows;
     throw refusal;
   }
   await settle(cdp, sessionId);
+
+  const text = await evaluate<string>(cdp, sessionId, PAGE_TEXT);
+  if (viewport.checkOnly) {
+    return { width: viewport.width, height: viewport.height, text, overflows };
+  }
 
   const { data } = await cdp.send<{ data: string }>(
     "Page.captureScreenshot",
@@ -250,7 +321,7 @@ export async function captureShot(shot: Shot): Promise<{ width: number; height: 
   }
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, png);
-  return size;
+  return { ...size, text, overflows };
 }
 
 /** pngSize reads the width and height from a PNG's IHDR chunk. */

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Refused, type Viewport } from "./capture";
+import { CHECK_VIEWPORT, type CaptureResult, Refused, type Viewport } from "./capture";
 import type { Page } from "./chromium";
 import { outcome } from "./report";
 import type { Route } from "./router";
@@ -10,6 +10,10 @@ const ROUTES: Route[] = [
   { pattern: "/", page: null, url: "/", name: "root" },
   { pattern: "/stats", page: null, url: "/stats", name: "stats" },
 ];
+
+function seen(overrides: Partial<CaptureResult> = {}): CaptureResult {
+  return { width: 1024, height: 768, text: "", overflows: [], ...overrides };
+}
 
 function page(): Page {
   return { sessionId: "s", pending: new Set(), errors: [] };
@@ -37,10 +41,19 @@ describe("shootRoutes", () => {
       capture: async (shot) => {
         written.push(shot.out);
         urls.push(shot.url);
-        return { width: 1024, height: 768 };
+        return seen();
       },
     });
-    expect(result).toEqual({ written: 2, refusals: [], pageErrors: [] });
+    expect(result).toEqual({
+      written: 2,
+      refusals: [],
+      pageErrors: [],
+      pages: [
+        { route: "/", width: "l", text: "" },
+        { route: "/stats", width: "l", text: "" },
+      ],
+      overflows: [],
+    });
     expect(urls).toEqual(["http://127.0.0.1:9/", "http://127.0.0.1:9/stats"]);
     expect(written).toEqual(["/tmp/shots-test/l/index.png", "/tmp/shots-test/l/stats.png"]);
   });
@@ -57,7 +70,7 @@ describe("shootRoutes", () => {
         if (shot.url.endsWith("/stats")) {
           throw new Refused("the page scrolls sideways: 12px wider than the viewport");
         }
-        return { width: 1024, height: 768 };
+        return seen();
       },
     });
     expect(result.written).toBe(1);
@@ -86,7 +99,7 @@ describe("shootRoutes", () => {
             "the endpoint answered a document of another shape",
           );
         }
-        return { width: 1024, height: 768 };
+        return seen();
       },
     });
     expect(result.pageErrors).toEqual([
@@ -126,8 +139,94 @@ describe("shootRoutes", () => {
       out: "/tmp/shots-test",
       viewports: [WIDE],
       log: (line) => lines.push(line),
-      capture: async () => ({ width: 1024, height: 768 }),
+      capture: async () => seen(),
     });
     expect(lines).toEqual(["shotWrote file=l/index.png width=1024 height=768"]);
+  });
+
+  test("collects each state's text and the elements wider than their boxes", async () => {
+    const result = await shootRoutes({
+      routes: [ROUTES[1]!],
+      baseUrl: "http://127.0.0.1:9",
+      out: "/tmp/shots-test",
+      viewports: [WIDE],
+      capture: async () =>
+        seen({
+          text: "Runs from all projects",
+          overflows: [{ element: "div.card-frame", scrollWidth: 512, clientWidth: 470 }],
+        }),
+    });
+    expect(result.pages).toEqual([{ route: "/stats", width: "l", text: "Runs from all projects" }]);
+    expect(result.overflows).toEqual([
+      {
+        route: "/stats",
+        width: "l",
+        element: "div.card-frame",
+        scrollWidth: 512,
+        clientWidth: 470,
+      },
+    ]);
+  });
+
+  test("visits the check-only width after the four review widths and shoots nothing there", async () => {
+    const lines: string[] = [];
+    const visited: string[] = [];
+    const result = await shootRoutes({
+      routes: [ROUTES[1]!],
+      baseUrl: "http://127.0.0.1:9",
+      out: "/tmp/shots-test",
+      log: (line) => lines.push(line),
+      capture: async (shot) => {
+        visited.push(shot.viewport.key);
+        return seen({ width: shot.viewport.width });
+      },
+    });
+    expect(visited).toEqual(["s", "m", "l", "xl", "xs"]);
+    expect(result.written).toBe(4);
+    expect(result.pages.map((state) => state.width)).toEqual(["s", "m", "l", "xl", "xs"]);
+    expect(lines.some((line) => line.includes("xs/"))).toBe(false);
+  });
+
+  test("collects the elements a refusal named, with the route and width they were seen at", async () => {
+    const result = await shootRoutes({
+      routes: [ROUTES[1]!],
+      baseUrl: "http://127.0.0.1:9",
+      out: "/tmp/shots-test",
+      viewports: [WIDE],
+      capture: async () => {
+        const refusal = new Refused("the page scrolls sideways: 12px wider than the viewport");
+        refusal.overflows = [{ element: "div.card-frame", scrollWidth: 2000, clientWidth: 1024 }];
+        throw refusal;
+      },
+    });
+    expect(result.overflows).toEqual([
+      {
+        route: "/stats",
+        width: "l",
+        element: "div.card-frame",
+        scrollWidth: 2000,
+        clientWidth: 1024,
+      },
+    ]);
+  });
+
+  test("collects a refusal at the check-only width like any other", async () => {
+    const result = await shootRoutes({
+      routes: [ROUTES[1]!],
+      baseUrl: "http://127.0.0.1:9",
+      out: "/tmp/shots-test",
+      viewports: [CHECK_VIEWPORT],
+      capture: async () => {
+        throw new Refused("the page scrolls sideways: 12px wider than the viewport");
+      },
+    });
+    expect(result.refusals).toEqual([
+      {
+        route: "stats",
+        width: "xs",
+        detail: "the page scrolls sideways: 12px wider than the viewport",
+      },
+    ]);
+    expect(result.pages).toEqual([]);
   });
 });

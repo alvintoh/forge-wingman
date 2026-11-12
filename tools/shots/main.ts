@@ -2,13 +2,15 @@
 // at the four review widths. The route set defaults to the screens whose page
 // file changed since the base, so a run shows what it touched.
 
-import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { captureShot, FIXED_TIME } from "./capture";
 import { changedPages } from "./changed";
+import { checkStrings, type StringChecks } from "./checks";
 import { parseArgs, type Args, USAGE, UsageError } from "./cli";
 import { findChromium, launchChromium, openPage } from "./chromium";
-import { outcome, type PageError, type Refusal } from "./report";
+import { readCriteria } from "./criteria";
+import { type Overflow, outcome, type PageError, type Refusal } from "./report";
 import { routesForChange, routesForNames, routesFromRouter, type Route } from "./router";
 import { startServer } from "./server";
 import { shootRoutes } from "./shoot";
@@ -19,7 +21,8 @@ const ROUTER = join(REPO_ROOT, "web/src/main.tsx");
 /**
  * run does the work and answers the exit code: 0 when every shot was written,
  * 1 when a fixture was missing, a write went unanswered, a shot was refused, a
- * route's page logged an error, or the tool could not start.
+ * route's page logged an error, a quoted string was missing, an element was
+ * wider than its box, or the tool could not start.
  */
 export async function run(argv: readonly string[]): Promise<number> {
   let args: Args;
@@ -64,6 +67,7 @@ async function execute(args: Args): Promise<number> {
     throw new Error(`${dist} has no index.html; run \`bun run build\` in web/ first`);
   }
   mkdirSync(out, { recursive: true });
+  const criteria = args.ticket === null ? null : readCriteria(resolve(args.ticket));
 
   const routes = routesFromRouter(readFileSync(ROUTER, "utf8"));
   if (routes.length === 0) {
@@ -90,6 +94,8 @@ async function execute(args: Args): Promise<number> {
   let written = 0;
   let refusals: Refusal[] = [];
   let pageErrors: PageError[] = [];
+  let overflows: Overflow[] = [];
+  let strings: StringChecks | null = null;
   try {
     if (args.chromium !== null && !existsSync(args.chromium)) {
       throw new Error(`--chromium ${args.chromium} does not exist`);
@@ -112,6 +118,8 @@ async function execute(args: Args): Promise<number> {
       written = shots.written;
       refusals = shots.refusals;
       pageErrors = shots.pageErrors;
+      overflows = shots.overflows;
+      strings = criteria === null ? null : checkStrings(criteria, shots.pages, routes);
     } finally {
       await browser.stop();
     }
@@ -119,7 +127,22 @@ async function execute(args: Args): Promise<number> {
     server.stop();
   }
 
-  const result = outcome(server.fixtures.missing, server.writes, refusals, pageErrors);
+  if (criteria !== null && !criteria.some((criterion) => criterion.strings.length > 0)) {
+    console.log("shotsUnchecked reason=no-criteria");
+  }
+  if (strings !== null) {
+    writeFileSync(join(out, "checks.json"), `${JSON.stringify(strings, null, 2)}\n`);
+    for (const skipped of strings.unchecked) {
+      console.log(
+        `shotsUnchecked reason=${skipped.reason} item=${skipped.item} ` +
+          `string=${JSON.stringify(skipped.string)}`,
+      );
+    }
+  }
+  const result = outcome(server.fixtures.missing, server.writes, refusals, pageErrors, {
+    missingStrings: strings?.missing ?? [],
+    overflows,
+  });
   if (result.failures.length > 0) {
     for (const line of result.failures) {
       console.error(line);
