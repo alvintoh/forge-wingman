@@ -75,6 +75,19 @@ this file as project memory, so the rules below reach the run.
   guard and an admission hold added after a mutation review were flagged until AC2 and a new AC6
   named them.)*
 
+- **Name every state the feature can be in when it acts, and write an AC for each.** A build
+  tests what the ticket names. Every owner fix after a PR opened, over the 10 most recent
+  measured PRs, was `review-found`, and several were states the ticket never stated: a reply
+  arriving after a run was withdrawn, an escape latch that must stay cleared, a switch re-read
+  after a write (PRs 341, 346, 348). One AC per such state puts it in the build and in the
+  reviewer's rubric. *(Judgment call; classified from commit headlines, 2026-11-13.)*
+
+- **Write each AC as a guard the build can break: a condition and its observable result.** 6 of
+  22 `review-found` commits on those PRs were test-only, added after an independent review broke
+  a guard and the suite stayed green (PRs 340, 341, 343, 348, 349). An AC in that form gives the
+  build a test per guard, and the pre-open guard probe (Go: FRG-316; TypeScript: FRG-310)
+  something to prove. *(Judgment call; same classification.)*
+
 - **A plan for an agent-lane ticket goes into the description, never a comment.** The run's
   `ticket.json` comes from Linear's description (`internal/dispatcher/linear.go`) and comments are
   never fetched, so a plan posted as a comment shapes nothing — write it into the description, and
