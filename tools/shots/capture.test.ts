@@ -1,11 +1,13 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   captureShot,
+  CHECK_VIEWPORT,
   type CommandChannel,
   FIXED_TIME,
+  type OverflowingElement,
   preCaptureRefusal,
   pngSize,
   Refused,
@@ -36,8 +38,25 @@ describe("VIEWPORTS", () => {
     expect(VIEWPORTS.slice(1).every((viewport) => !viewport.mobile)).toBe(true);
   });
 
+  test("leave out the check-only width, which the evidence step would refuse as a shot", () => {
+    expect(VIEWPORTS.map((viewport) => viewport.key)).not.toContain("xs");
+    expect(VIEWPORTS.some((viewport) => viewport.checkOnly)).toBe(false);
+  });
+
   test("pin one clock for the run", () => {
     expect(new Date(FIXED_TIME).toISOString()).toBe("2026-03-01T12:00:00.000Z");
+  });
+});
+
+describe("CHECK_VIEWPORT", () => {
+  test("is the narrowest supported phone, measured but never shot", () => {
+    expect([CHECK_VIEWPORT.key, CHECK_VIEWPORT.width, CHECK_VIEWPORT.height]).toEqual([
+      "xs",
+      320,
+      568,
+    ]);
+    expect(CHECK_VIEWPORT.mobile).toBe(true);
+    expect(CHECK_VIEWPORT.checkOnly).toBe(true);
   });
 });
 
@@ -113,6 +132,10 @@ describe("captureShot", () => {
     hovered?: string[];
     overflow?: number | null;
     shot?: Uint8Array;
+    // What document.body.innerText answers.
+    text?: string;
+    // The elements wider than their boxes.
+    overflows?: OverflowingElement[];
   };
 
   // expressionOf reads a Runtime.evaluate command's expression, or empty when
@@ -147,6 +170,12 @@ describe("captureShot", () => {
           }
           if (expression.includes(":hover")) {
             return { result: { value: options.hovered ?? [] } } as T;
+          }
+          if (expression.includes("innerText")) {
+            return { result: { value: options.text ?? "" } } as T;
+          }
+          if (expression.includes("card-frame")) {
+            return { result: { value: options.overflows ?? [] } } as T;
           }
           if (expression.includes("document.documentElement")) {
             return { result: { value: options.overflow ?? null } } as T;
@@ -200,9 +229,66 @@ describe("captureShot", () => {
       viewport: phone,
       out,
     });
-    expect(size).toEqual({ width: 1320, height: 2289 });
+    expect(size).toEqual({ width: 1320, height: 2289, text: "", overflows: [] });
     expect(readFileSync(out).equals(bytes)).toBe(true);
     expect(channel.calls).toContain("Page.captureScreenshot");
+  });
+
+  test("answers the page's text and the elements wider than their boxes at the phone width", async () => {
+    const wide = { element: "div.card-frame", scrollWidth: 512, clientWidth: 470 };
+    const seen = await captureShot({
+      cdp: fakeChannel({ text: "Runs from all projects", overflows: [wide] }),
+      page: drivenPage(),
+      url: "http://127.0.0.1:9/",
+      viewport: phone,
+      out: join(outDir(), "s", "index.png"),
+    });
+    expect(seen.text).toBe("Runs from all projects");
+    expect(seen.overflows).toEqual([wide]);
+  });
+
+  test("measures no element at a width that is not checked for overflow", async () => {
+    const seen = await captureShot({
+      cdp: fakeChannel({
+        shot: png(768, 1024),
+        overflows: [{ element: "table", scrollWidth: 900, clientWidth: 700 }],
+      }),
+      page: drivenPage(),
+      url: "http://127.0.0.1:9/",
+      viewport: VIEWPORTS[1]!,
+      out: join(outDir(), "m", "index.png"),
+    });
+    expect(seen.overflows).toEqual([]);
+  });
+
+  test("reads a check-only width without writing or taking a shot", async () => {
+    const channel = fakeChannel({
+      text: "narrow",
+      overflows: [{ element: "table", scrollWidth: 400, clientWidth: 320 }],
+    });
+    const out = join(outDir(), "xs", "index.png");
+    const seen = await captureShot({
+      cdp: channel,
+      page: drivenPage(),
+      url: "http://127.0.0.1:9/",
+      viewport: CHECK_VIEWPORT,
+      out,
+    });
+    expect(seen).toEqual({
+      width: 320,
+      height: 568,
+      text: "narrow",
+      overflows: [{ element: "table", scrollWidth: 400, clientWidth: 320 }],
+    });
+    expect(channel.calls).not.toContain("Page.captureScreenshot");
+    expect(channel.calls).not.toContain("Input.dispatchMouseEvent");
+    expect(existsSync(out)).toBe(false);
+  });
+
+  test("refuses a check-only width whose page scrolls sideways", async () => {
+    const refusal = await refusalOf(fakeChannel({ overflow: 12 }), CHECK_VIEWPORT);
+    expect(refusal).toBeInstanceOf(Refused);
+    expect(refusal.message).toBe("the page scrolls sideways: 12px wider than the viewport");
   });
 
   test("refuses a page with a hovered control and does not capture it", async () => {
@@ -219,6 +305,13 @@ describe("captureShot", () => {
     expect(refusal).toBeInstanceOf(Refused);
     expect(refusal.message).toBe("the page scrolls sideways: 12px wider than the viewport");
     expect(channel.calls).not.toContain("Page.captureScreenshot");
+  });
+
+  test("names the elements wider than their boxes on a refusal at the phone width", async () => {
+    const wide = { element: "div.card-frame", scrollWidth: 2000, clientWidth: 440 };
+    const refusal = await refusalOf(fakeChannel({ overflow: 1560, overflows: [wide] }), phone);
+    expect(refusal).toBeInstanceOf(Refused);
+    expect((refusal as Refused).overflows).toEqual([wide]);
   });
 
   test("refuses a page that stops being settled after the gate and does not capture it", async () => {

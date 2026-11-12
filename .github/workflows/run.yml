@@ -3,7 +3,9 @@
 # reach a run record; `check` runs the gates on the bundled branch with no token and no
 # secret; `pr-meta` renders the PR from the record under the runner identity, derives the
 # branch's write set from its bundle and decides draft and auto-merge eligibility; `shots`
-# screenshots the branch's web/ build with no token and no secret, only when it changes web/;
+# screenshots the branch's web/ build with no token and no secret, only when it changes web/, and
+# fails its own job, after publishing the shots, when the ticket's quoted criteria strings are
+# missing from them or a card or table is wider than its box;
 # `pr` opens the PR with fixed steps, holding GitHub write and no GCP identity, then pushes
 # those screenshots under `pr-<n>/` of the `evidence` branch (evidence-cleanup.yml removes the
 # folder when the PR closes); `record` validates the model's summary and merges the outcome
@@ -373,11 +375,12 @@ jobs:
 
   # The branch's code is built and served here, so the job holds no token and no secret, and
   # Bun's cache stays off: this run is dispatched from main, so a cache it saved would be
-  # restored by main's own runs. A failed capture uploads nothing, and the pr job then
-  # leaves the PR body as it is.
+  # restored by main's own runs. A capture that fails a check still uploads its shots and then
+  # fails the job; one that crashed before the end uploads nothing, and the pr job then leaves the
+  # PR body as it is. The ticket artifact is read for the strings its criteria quote.
   shots:
     name: shots ${{ inputs.run_id }}
-    needs: [model, pr-meta]
+    needs: [ticket, model, pr-meta]
     if: ${{ !cancelled() && needs.pr-meta.result == 'success' && needs.pr-meta.outputs.front_end == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -401,6 +404,11 @@ jobs:
           name: bundle
           path: ${{ runner.temp }}
 
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ticket
+          path: ${{ runner.temp }}
+
       # The pattern is branchPattern in internal/runner/build_test.go.
       - name: Check out the branch
         env:
@@ -419,10 +427,20 @@ jobs:
       # Shoots the routes whose page files changed, else every route, as
       # `<width>/<route>.png`: the layout the pr job's evidence step reads.
       - name: Capture the screenshots
+        id: capture
+        continue-on-error: true
         working-directory: web
-        run: bun run shots --base origin/main --out "$RUNNER_TEMP/shots"
+        run: bun run shots --base origin/main --ticket "$RUNNER_TEMP/ticket.json" --out "$RUNNER_TEMP/shots" 2> >(tee "$RUNNER_TEMP/shots.err" >&2)
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      # The capture writes checks.json only when it ran to its end, so a crash that left a
+      # partial set of shots publishes none of them.
+      - id: complete
+        if: ${{ !cancelled() && steps.capture.outcome != 'skipped' }}
+        run: '[[ ! -f "$RUNNER_TEMP/shots/checks.json" ]] || echo "complete=true" >> "$GITHUB_OUTPUT"'
+
+      - id: upload
+        if: ${{ !cancelled() && steps.complete.outputs.complete == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: shots
           path: ${{ runner.temp }}/shots
@@ -430,7 +448,19 @@ jobs:
           retention-days: 1
 
       - id: captured
+        if: ${{ !cancelled() && steps.upload.outcome == 'success' }}
         run: echo "captured=true" >> "$GITHUB_OUTPUT"
+
+      - name: Fail the job when the capture failed
+        if: ${{ !cancelled() && steps.capture.outcome == 'failure' }}
+        run: |
+          echo "::error::the screenshot capture failed; see the shotsFailed lines"
+          {
+            echo "### Screenshot checks failed"
+            echo
+            { grep '^shotsFailed ' "$RUNNER_TEMP/shots.err" || echo "no shotsFailed line; see the capture step"; } | sed 's/^/    /'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
 
   pr:
     name: pr ${{ inputs.run_id }}

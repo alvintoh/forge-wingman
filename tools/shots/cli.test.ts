@@ -12,8 +12,18 @@ describe("parseArgs", () => {
       routes: ["/stats", "/config"],
       base: "origin/main",
       chromium: null,
+      ticket: null,
       help: false,
     });
+  });
+
+  test("reads the ticket file to check", () => {
+    expect(parseArgs(["--out", "x", "--ticket", "run/ticket.json"]).ticket).toBe("run/ticket.json");
+    expect(parseArgs(["--out", "x", "--ticket=run/ticket.json"]).ticket).toBe("run/ticket.json");
+  });
+
+  test("rejects --ticket with no value", () => {
+    expect(() => parseArgs(["--out", "x", "--ticket"])).toThrow("--ticket needs a value");
   });
 
   test("requires --out", () => {

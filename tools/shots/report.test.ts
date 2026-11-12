@@ -61,4 +61,46 @@ describe("outcome", () => {
   test("passes when every shot was written and every read answered", () => {
     expect(outcome(new Map(), new Map(), [], [])).toEqual({ failures: [], exitCode: 0 });
   });
+
+  test("fails the run for a quoted string no page showed, naming its state", () => {
+    expect(
+      outcome(new Map(), new Map(), [], [], {
+        missingStrings: [{ state: "/stats@s", string: 'Runs "all" projects' }],
+        overflows: [],
+      }),
+    ).toEqual({
+      failures: [
+        'shotsFailed reason=missing-string state=/stats@s string="Runs \\"all\\" projects"',
+      ],
+      exitCode: 1,
+    });
+  });
+
+  test("fails the run for an element wider than its box, naming both widths", () => {
+    expect(
+      outcome(new Map(), new Map(), [], [], {
+        missingStrings: [],
+        overflows: [
+          {
+            route: "/stats",
+            width: "xs",
+            element: "div.card-frame",
+            scrollWidth: 512,
+            clientWidth: 470,
+          },
+        ],
+      }),
+    ).toEqual({
+      failures: [
+        'shotsFailed reason=overflow state=/stats@xs element="div.card-frame" scrollWidth=512 clientWidth=470',
+      ],
+      exitCode: 1,
+    });
+  });
+
+  test("passes a run whose checks found nothing", () => {
+    expect(
+      outcome(new Map(), new Map(), [], [], { missingStrings: [], overflows: [] }).exitCode,
+    ).toBe(0);
+  });
 });

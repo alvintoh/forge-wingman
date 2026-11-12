@@ -58,6 +58,16 @@ describe("run", () => {
     expect(lines.join("\n")).toContain("has no index.html");
   });
 
+  test("fails cleanly when the ticket file cannot be read", async () => {
+    const out = tempDir();
+    const ticket = join(out, "no-ticket.json");
+    const { code, lines } = await quietly(() =>
+      run(["--out", out, "--dist", dist(true), "--routes", "/", "--ticket", ticket]),
+    );
+    expect(code).toBe(1);
+    expect(lines.join("\n")).toContain(`--ticket ${ticket} is not a readable ticket`);
+  });
+
   test("fails when the named Chromium does not exist", async () => {
     const out = tempDir();
     const { code, lines } = await quietly(() =>
