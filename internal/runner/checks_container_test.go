@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -30,7 +31,9 @@ func pinnedChecksImage(t *testing.T) string {
 // arguments, one invocation per line, to the returned file. DOCKER_FAKE_FAIL
 // names an argument whose run prints "boom" and exits DOCKER_FAKE_CODE (1 by
 // default); DOCKER_FAKE_LIST makes gofmt list a file; DOCKER_FAKE_HANG makes
-// every run hang. Each invocation's environment is appended to logFile+".env".
+// every run hang; DOCKER_FAKE_FLOOD prints that many bytes to stdout and to
+// stderr. Each
+// invocation's environment is appended to logFile+".env".
 func fakeDocker(t *testing.T) (logFile string) {
 	t.Helper()
 	bin := t.TempDir()
@@ -44,6 +47,7 @@ for a in "$@"; do
 	if [ -n "$DOCKER_FAKE_LIST" ] && [ "$a" = gofmt ]; then echo x.go; exit 0; fi
 done
 [ -n "$DOCKER_FAKE_HANG" ] && exec sleep 30
+[ -n "$DOCKER_FAKE_FLOOD" ] && { head -c "$DOCKER_FAKE_FLOOD" /dev/zero | tr '\0' x; head -c "$DOCKER_FAKE_FLOOD" /dev/zero | tr '\0' y >&2; exit 0; }
 exit 0
 `
 	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(script), 0o700); err != nil {
@@ -724,4 +728,67 @@ func TestContainerChecksReportABunThatCannotStartAndLeaveAFailingInstallToItsGat
 			t.Fatalf("downloadWebModules = %v, want a failed install left to the web-install gate", err)
 		}
 	})
+}
+
+func TestContainerChecksRunWebRunsBunInOneContainerOverTheWorktreeWithNoNetwork(t *testing.T) {
+	logFile := fakeDocker(t)
+	c := testContainerChecks(t)
+	dir := initWebModule(t)
+	const script = "import ts from \"typescript\"; console.log(1)"
+
+	if _, _, failed, err := c.RunWeb(context.Background(), dir, "-e", script, "web/src/a.ts"); err != nil || failed {
+		t.Fatalf("RunWeb = failed %v, %v, want a clean run", failed, err)
+	}
+	calls := dockerCalls(t, logFile)
+	if len(calls) != 1 {
+		t.Fatalf("docker ran %d containers, want one: %v", len(calls), calls)
+	}
+	args := calls[0]
+	if tail := args[slices.Index(args, c.Image)+1:]; !slices.Equal(tail, []string{containerBun, "-e", script, "web/src/a.ts"}) {
+		t.Fatalf("container ran %q, want bun given the script and the file as separate arguments", tail)
+	}
+	if got := flagValues(args, "--network"); !slices.Equal(got, []string{"none"}) {
+		t.Errorf("--network %v, want none", got)
+	}
+	if got := flagValues(args, "--workdir"); !slices.Equal(got, []string{containerWebDir}) {
+		t.Errorf("--workdir %v, want %s", got, containerWebDir)
+	}
+	wantMounts := []string{
+		"type=bind,src=" + dir + ",dst=/work",
+		"type=bind,src=" + c.Bun + ",dst=" + containerBun + ",readonly",
+	}
+	if got := flagValues(args, "--mount"); !slices.Equal(got, wantMounts) {
+		t.Errorf("mounts = %v, want the worktree and the host's bun alone %v", got, wantMounts)
+	}
+}
+
+func TestContainerChecksRunWebReportsANonZeroExitAsFailedAndADockerFailureAsAnError(t *testing.T) {
+	fakeDocker(t)
+	t.Setenv("DOCKER_FAKE_FAIL", "test")
+	c := testContainerChecks(t)
+	dir := initWebModule(t)
+
+	stdout, _, failed, err := c.RunWeb(context.Background(), dir, "test")
+	if err != nil || !failed || !strings.Contains(stdout, "boom") {
+		t.Fatalf("RunWeb = %q, failed %v, %v, want the failing run's output", stdout, failed, err)
+	}
+
+	t.Setenv("DOCKER_FAKE_CODE", "125")
+	if _, _, _, err := c.RunWeb(context.Background(), dir, "test"); err == nil {
+		t.Fatal("RunWeb reported a container docker could not start as a failing run, want an error")
+	}
+}
+
+func TestContainerChecksKeepOnlyTheFirstBytesOfAContainersOutput(t *testing.T) {
+	fakeDocker(t)
+	t.Setenv("DOCKER_FAKE_FLOOD", strconv.Itoa(maxContainerOutput+1000))
+	c := testContainerChecks(t)
+
+	stdout, stderr, failed, err := c.RunWeb(context.Background(), initWebModule(t), "test")
+	if err != nil || failed {
+		t.Fatalf("RunWeb = failed %v, %v, want a clean run", failed, err)
+	}
+	if len(stdout) != maxContainerOutput || len(stderr) != maxContainerOutput {
+		t.Fatalf("kept %d bytes of stdout and %d of stderr, want the first %d of each", len(stdout), len(stderr), maxContainerOutput)
+	}
 }

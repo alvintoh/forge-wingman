@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"log/slog"
 	"os"
@@ -135,11 +138,25 @@ func TestCheckRunnersRefuseAnImageNotPinnedByDigest(t *testing.T) {
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	ctx := context.Background()
-	if _, _, err := checkRunners(ctx, "golang:1.27.1", t.TempDir(), "."); err == nil {
+	if _, _, _, err := checkRunners(ctx, "golang:1.27.1", t.TempDir(), "."); err == nil {
 		t.Fatal("checkRunners accepted an image pinned by tag alone")
 	}
-	if _, _, err := checkRunners(ctx, "golang:1.27.1@sha256:"+strings.Repeat("a", 64), t.TempDir(), "."); err != nil {
+	if _, _, _, err := checkRunners(ctx, "golang:1.27.1@sha256:"+strings.Repeat("a", 64), t.TempDir(), "."); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCheckRunnersGiveTheWebRunnerOnlyInAContainer(t *testing.T) {
+	bin := t.TempDir()
+	for _, name := range []string{"golangci-lint", "bun"} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	_, _, webBun, err := checkRunners(context.Background(), "golang:1.27.1@sha256:"+strings.Repeat("a", 64), t.TempDir(), ".")
+	if err != nil || webBun == nil {
+		t.Fatalf("checkRunners with an image = web runner %v, %v; want one, so web guards are probed", webBun != nil, err)
 	}
 }
 
@@ -155,22 +172,25 @@ func TestCheckRunnersRequireTheBunItsWebGatesMount(t *testing.T) {
 	// the directories after it are ones a runner's bun is not installed in.
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+"/usr/bin:/bin")
 	image := "golang:1.27.1@sha256:" + strings.Repeat("a", 64)
-	if _, _, err := checkRunners(context.Background(), image, t.TempDir(), "."); err == nil || !strings.Contains(err.Error(), "checks bun") {
+	if _, _, _, err := checkRunners(context.Background(), image, t.TempDir(), "."); err == nil || !strings.Contains(err.Error(), "checks bun") {
 		t.Fatalf("checkRunners = %v, want an error naming the bun its web gates mount", err)
 	}
 	if err := os.WriteFile(filepath.Join(bin, "bun"), []byte("#!/bin/sh\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := checkRunners(context.Background(), image, t.TempDir(), "."); err != nil {
+	if _, _, _, err := checkRunners(context.Background(), image, t.TempDir(), "."); err != nil {
 		t.Fatalf("checkRunners = %v, want it usable with a bun on PATH", err)
 	}
 }
 
 func TestCheckRunnersRunOnTheHostWithNoImage(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	checks, _, err := checkRunners(context.Background(), "", t.TempDir(), t.TempDir())
+	checks, _, webBun, err := checkRunners(context.Background(), "", t.TempDir(), t.TempDir())
 	if err != nil || checks == nil {
 		t.Fatalf("checkRunners with no image = %v, %v; want the host runner and no lookups", checks != nil, err)
+	}
+	if webBun != nil {
+		t.Fatal("checkRunners with no image gave a web runner, so the branch's web code would run on the host")
 	}
 }
 
@@ -197,6 +217,42 @@ func TestProgressReporterReportsOnlyANamedRunAndAttempt(t *testing.T) {
 		}
 		if out := logs.String(); !strings.Contains(out, "msg=progressOff") || !strings.Contains(out, tc.why) {
 			t.Errorf("%s: logs = %s, want progressOff naming %q", tc.name, out, tc.why)
+		}
+	}
+}
+
+// TestBuildHandsTheBuildEveryCheckRunnerCheckRunnersReturns reads the BuildDeps
+// literal the build command assembles, which no test reaches by running it: a
+// runner checkRunners returns and the literal leaves out would be a probe the
+// build silently never makes.
+func TestBuildHandsTheBuildEveryCheckRunnerCheckRunnersReturns(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "build.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	given := map[string]string{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		lit, ok := n.(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+		if sel, ok := lit.Type.(*ast.SelectorExpr); !ok || sel.Sel.Name != "BuildDeps" {
+			return true
+		}
+		for _, el := range lit.Elts {
+			kv, ok := el.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			if val, ok := kv.Value.(*ast.Ident); ok {
+				given[kv.Key.(*ast.Ident).Name] = val.Name
+			}
+		}
+		return false
+	})
+	for field, local := range map[string]string{"Checks": "checks", "PackageTests": "packageTests", "WebBun": "webBun"} {
+		if given[field] != local {
+			t.Errorf("the BuildDeps literal sets %s to %q, want %q", field, given[field], local)
 		}
 	}
 }

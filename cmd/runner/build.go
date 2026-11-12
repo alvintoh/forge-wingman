@@ -37,7 +37,7 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 		return setupFailed(logger, e.output, err)
 	}
 	const repo = "."
-	checks, packageTests, err := checkRunners(ctx, *checksImage, e.tempDir, repo)
+	checks, packageTests, webBun, err := checkRunners(ctx, *checksImage, e.tempDir, repo)
 	if err != nil {
 		return setupFailed(logger, e.output, err)
 	}
@@ -81,6 +81,7 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 				Checks:       checks,
 				Format:       format,
 				PackageTests: packageTests,
+				WebBun:       webBun,
 				AgentProbe:   probe,
 				Progress:     progressReporter(logger, e, *runID, *claimAttempt, string(runner.PhaseBuild), completions),
 				Report:       func(s runner.Summary) error { return writeSummary(e.output, s) },
@@ -141,20 +142,22 @@ func progressReporter(logger *slog.Logger, e env, runID, claimAttempt, stage str
 	return r
 }
 
-// checkRunners are the pre-PR loop's checks: the repository's own gates, and one
-// package's tests, which the guard probe breaks a changed guard against. Both
-// run in a container of image when one is given, with the module cache under
-// tempDir and repo's git common directory resolved now, before any agent runs;
-// else on the host.
-func checkRunners(ctx context.Context, image, tempDir, repo string) (runner.CheckRunner, runner.PackageTestRunner, error) {
+// checkRunners are the pre-PR loop's checks: the repository's own gates, one
+// package's tests, which the guard probe breaks a changed guard against, and
+// bun for the web tests and the web guards. All run in a container of image
+// when one is given, with the module cache under tempDir and repo's git common
+// directory resolved now, before any agent runs; else on the host, where bun is
+// left nil so the probe skips web guards rather than run the branch's web code
+// there.
+func checkRunners(ctx context.Context, image, tempDir, repo string) (runner.CheckRunner, runner.PackageTestRunner, runner.WebBunRunner, error) {
 	if image == "" {
-		return runner.RunChecks, runner.RunPackageTest, nil
+		return runner.RunChecks, runner.RunPackageTest, nil, nil
 	}
 	c, err := containerChecks(ctx, image, tempDir, repo)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return c.Run, c.RunPackageTest, nil
+	return c.Run, c.RunPackageTest, c.RunWeb, nil
 }
 
 // checkFormatter is the pre-PR loop's formatter, running where checkRunners's

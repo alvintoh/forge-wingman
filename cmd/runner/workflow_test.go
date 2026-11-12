@@ -83,6 +83,39 @@ func TestRunWorkflowMarksAutoMergeEligibilityOnlyOnPRMetasDecision(t *testing.T)
 	}
 }
 
+func TestRunWorkflowLabelsAPRThatKeepsFindingsOpenWithoutDecidingAutoMerge(t *testing.T) {
+	yml, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "run.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(yml)
+	if !strings.Contains(s, "findings_open: ${{ steps.meta.outputs.findings_open }}") {
+		t.Error("run.yml's pr-meta job does not declare the findings_open output")
+	}
+	_, step, ok := strings.Cut(s, "      - name: Label the PR with findings still open\n")
+	if !ok {
+		t.Fatal("run.yml has no step labelling a PR with findings still open")
+	}
+	step, _, _ = strings.Cut(step, "\n      # ")
+	for _, want := range []string{
+		"if: needs.pr-meta.outputs.findings_open != ''\n",
+		"continue-on-error: true\n",
+		"GH_TOKEN: ${{ steps.app-token.outputs.token }}",
+		"URL: ${{ steps.open.outputs.url }}",
+		`gh pr edit "$URL" --add-label findings-open`,
+	} {
+		if !strings.Contains(step, want) {
+			t.Errorf("run.yml's findings-open step lacks %q", want)
+		}
+	}
+	if strings.Contains(step, "labelled") || strings.Contains(step, "GITHUB_OUTPUT") {
+		t.Error("run.yml's findings-open step writes an output, so it could feed AUTO_MERGE")
+	}
+	if strings.Contains(s, "needs.pr-meta.outputs.findings_open == 'true'") || strings.Contains(s, "AUTO_MERGE: ${{ needs.pr.outputs.findings") {
+		t.Error("run.yml reads findings_open into the auto-merge decision")
+	}
+}
+
 func TestWithdrawWorkflowDisablesAutoMergeOnAPushToARunsBranch(t *testing.T) {
 	yml, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "automerge-withdraw.yml"))
 	if err != nil {

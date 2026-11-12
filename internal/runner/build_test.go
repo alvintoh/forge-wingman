@@ -2199,7 +2199,7 @@ func TestPrePRLoopLabelsFindingsNotReReviewedWhenTheBudgetIsSpent(t *testing.T) 
 	deps.Checks = func(context.Context, string, []string) (string, string, error) {
 		checkCalls++
 		if checkCalls == 2 {
-			clock = runCapSpentAt(started)
+			clock = runCapReachedAt(started)
 		}
 		return "", "", nil
 	}
@@ -2227,6 +2227,9 @@ func TestPrePRLoopLabelsFindingsNotReReviewedWhenTheBudgetIsSpent(t *testing.T) 
 	if !strings.Contains(rec.LoopDetail, "the review stage's") ||
 		!strings.Contains(rec.LoopDetail, "budget was spent") {
 		t.Fatalf("loop detail = %q, want it to name the budget that ran out", rec.LoopDetail)
+	}
+	if rec.ReviewFindingsOpen != 1 {
+		t.Fatalf("open findings = %d, want the finding that was never re-checked counted", rec.ReviewFindingsOpen)
 	}
 }
 
@@ -2404,10 +2407,11 @@ func TestPrePRLoopReScanSkipsAGuardTheBuildScanProvedCovered(t *testing.T) {
 	}
 }
 
-// TestPrePRLoopLogsAndKeepsTheBuildScansUntestedCountAcrossReScans is AC3 over
-// a run that re-scans: the count the build stage's budget left is logged once
-// and survives the fix rounds' scans, which neither log nor overwrite it.
-func TestPrePRLoopLogsAndKeepsTheBuildScansUntestedCountAcrossReScans(t *testing.T) {
+// TestPrePRLoopProbesTheGuardsTheBuildBudgetLeftOnceTheReviewScansReachThem is
+// AC3 over a run that re-scans: the count the build stage's budget left is
+// logged once, a guard it left gets its verdict from the first fix round's scan,
+// and the summary then counts what no scan has reached a verdict for.
+func TestPrePRLoopProbesTheGuardsTheBuildBudgetLeftOnceTheReviewScansReachThem(t *testing.T) {
 	agent := &fakeAgent{
 		edit:   edit("a.go", guardsSource(3)),
 		events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{}}}` + "\n",
@@ -2432,17 +2436,71 @@ func TestPrePRLoopLogsAndKeepsTheBuildScansUntestedCountAcrossReScans(t *testing
 	if _, err := Build(context.Background(), deps, c); err != nil {
 		t.Fatal(err)
 	}
-	if probes != 4 {
-		t.Fatalf("probed %d times, want 4: e0 and e1, then e0 alone after each fix round", probes)
+	if probes != 5 {
+		t.Fatalf("probed %d times, want 5: e0 and e1, then e0 and e2 after the first fix round, then e0 alone", probes)
 	}
-	if rec := reported.last(t); rec.GuardsUntested != 1 {
-		t.Fatalf("guards untested = %d, want the build scan's 1 kept through the re-scans", rec.GuardsUntested)
+	if rec := reported.last(t); rec.GuardsUntested != 0 {
+		t.Fatalf("guards untested = %d, want 0: the last scan reached a verdict for every guard", rec.GuardsUntested)
 	}
 	if got := strings.Count(logs.String(), "msg=guardsUntested"); got != 1 {
 		t.Fatalf("logged guardsUntested %d times, want once", got)
 	}
-	if !strings.Contains(logs.String(), "msg=guardsUntested count=1 reason=budget") {
-		t.Fatalf("logs = %q, want the count and the budget as the reason", logs.String())
+	if !strings.Contains(logs.String(), "msg=guardsUntested count=1") {
+		t.Fatalf("logs = %q, want the build scan's count", logs.String())
+	}
+}
+
+// TestPrePRLoopCountsAGuardWhoseProbeCouldNotRunAsUntested covers the other way
+// a guard is left without a verdict: the probe fails to run, so the summary
+// counts it and no finding is made.
+func TestPrePRLoopCountsAGuardWhoseProbeCouldNotRunAsUntested(t *testing.T) {
+	agent := &fakeAgent{edit: edit("a.go", guardedFile)}
+	deps, _, reported := testDeps(validObjects(), agent)
+	deps.PackageTests = func(context.Context, string, string) (bool, string, error) {
+		return false, "", errors.New("no docker")
+	}
+
+	if _, err := Build(context.Background(), deps, testConfig(t, initRepo(t))); err != nil {
+		t.Fatal(err)
+	}
+	rec := reported.last(t)
+	if rec.GuardsUntested != 1 || len(rec.ReviewFindings) != 0 {
+		t.Fatalf("guards untested = %d, findings = %+v, want the guard counted and no finding", rec.GuardsUntested, rec.ReviewFindings)
+	}
+}
+
+// TestPrePRLoopKeepsAGuardFindingOpenWhenNoScanReprobedIt jumps the clock to
+// the reserve before the post-fix scan, so the guard is never re-broken: a clean
+// review pass does not make it fixed.
+func TestPrePRLoopKeepsAGuardFindingOpenWhenNoScanReprobedIt(t *testing.T) {
+	agent := &fakeAgent{edit: edit("a.go", guardedFile)}
+	deps, _, reported := testDeps(validObjects(), agent)
+	started := time.Now()
+	clock := started
+	deps.Now = func() time.Time { return clock }
+	checks := 0
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		checks++
+		if checks == 2 {
+			clock = runCapSpentAt(started)
+		}
+		return "", "", nil
+	}
+	deps.PackageTests = func(context.Context, string, string) (bool, string, error) {
+		return false, "", nil // every test passes: nothing covers the guard
+	}
+	review := &fakeAgent{events: reviewEvent("")}
+	deps.ReviewAgent = review
+
+	if _, err := Build(context.Background(), deps, testConfig(t, initRepo(t))); err != nil {
+		t.Fatal(err)
+	}
+	rec := reported.last(t)
+	if rec.Ready {
+		t.Fatalf("ready = true (detail %q), want false: no probe showed the guard covered", rec.LoopDetail)
+	}
+	if len(rec.ReviewFindings) != 1 || rec.ReviewFindings[0].Resolution != stillOpenText || rec.ReviewFindingsOpen != 1 {
+		t.Fatalf("findings = %+v, open = %d, want the guard still open", rec.ReviewFindings, rec.ReviewFindingsOpen)
 	}
 }
 
@@ -2560,6 +2618,259 @@ func TestPrePRLoopTakesNoSecondFixRoundWithoutBudget(t *testing.T) {
 	}
 }
 
+// reserveRecheckRun drives a one-finding run whose review stage ends as the fix
+// round's checks finish, with the clock at runCapSpentAt: the point the commit
+// reserve begins. reviews is the review agent, whose first call makes the
+// finding.
+func reserveRecheckRun(t *testing.T, reviews *fakeAgent) (rec Summary, agent *fakeAgent, logs string) {
+	t.Helper()
+	return reserveRecheckRunAt(t, reviews, nfr1RunCap-nfr1CommitReserve, "")
+}
+
+// reserveRecheckRunAt is reserveRecheckRun with the clock jumping to elapsed
+// after the run's start instead, and the fix round's checks reporting gate
+// failing when it is not empty.
+func reserveRecheckRunAt(t *testing.T, reviews *fakeAgent, elapsed time.Duration, gate string) (rec Summary, agent *fakeAgent, logs string) {
+	t.Helper()
+	agent = &fakeAgent{
+		edit:   edit("version.go", "package x\n"),
+		events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{}}}` + "\n",
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	var out strings.Builder
+	deps.Logger = slog.New(slog.NewTextHandler(&out, nil))
+	started := time.Now()
+	clock := started
+	deps.Now = func() time.Time { return clock }
+	checkCalls := 0
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		checkCalls++
+		if checkCalls == 2 {
+			clock = started.Add(elapsed)
+			return gate, "output", nil
+		}
+		return "", "", nil
+	}
+	deps.ReviewAgent = reviews
+	if _, err := Build(context.Background(), deps, testConfig(t, initRepo(t))); err != nil {
+		t.Fatal(err)
+	}
+	return reported.last(t), agent, out.String()
+}
+
+// TestPrePRLoopReChecksOnceFromTheCommitReserveAndReadsItReadyWhenItIsClean
+// covers a fix round whose stage budget ended before its re-check: the one
+// review-only pass the reserve pays for settles the finding as fixed, and a
+// clean one leaves the run ready.
+func TestPrePRLoopReChecksOnceFromTheCommitReserveAndReadsItReadyWhenItIsClean(t *testing.T) {
+	const finding = "the retry never bounds its attempts"
+	review := &fakeAgent{eventsFn: func(call int) string {
+		if call == 1 {
+			return reviewEvent(finding)
+		}
+		return reviewEvent("")
+	}}
+
+	rec, agent, logs := reserveRecheckRun(t, review)
+
+	if review.calls != 2 || agent.calls != 2 {
+		t.Fatalf("review ran %d times and the build %d, want the pass and one re-check, the build and one fix round", review.calls, agent.calls)
+	}
+	if !rec.Ready {
+		t.Fatalf("ready = false (detail %q), want a clean re-check to leave the run ready", rec.LoopDetail)
+	}
+	if want := []ReviewFinding{{Finding: finding, Resolution: "fixed in round 2"}}; !slices.Equal(rec.ReviewFindings, want) {
+		t.Fatalf("findings = %+v, want %+v", rec.ReviewFindings, want)
+	}
+	if rec.ReviewFindingsOpen != 0 {
+		t.Fatalf("open findings = %d, want 0", rec.ReviewFindingsOpen)
+	}
+	if !strings.Contains(logs, "msg=reserveRecheckRan round=2") {
+		t.Fatalf("logs = %q, want the re-check logged with its round", logs)
+	}
+}
+
+// TestPrePRLoopStartsNoReserveRecheckWithUnderThreeMinutesOfItLeft keeps the
+// start room the reserve pass shares with every other call: two minutes left
+// under the run cap less the commit floor cannot start one.
+func TestPrePRLoopStartsNoReserveRecheckWithUnderThreeMinutesOfItLeft(t *testing.T) {
+	const finding = "the retry never bounds its attempts"
+	review := &fakeAgent{events: reviewEvent(finding)}
+
+	rec, _, _ := reserveRecheckRunAt(t, review, nfr1RunCap-reserveRecheckFloor-2*time.Minute, "")
+
+	if review.calls != 1 {
+		t.Fatalf("review ran %d times, want the pass alone: two minutes cannot start a re-check", review.calls)
+	}
+	if want := []ReviewFinding{{Finding: finding, Resolution: "addressed in round 2, not re-checked"}}; !slices.Equal(rec.ReviewFindings, want) {
+		t.Fatalf("findings = %+v, want %+v", rec.ReviewFindings, want)
+	}
+}
+
+// TestPrePRLoopKeepsAGuardStillUncoveredWhenTheReserveRecheckIsClean covers the
+// findings the round's own guard scan left open: a clean review pass does not
+// close a guard no test covers.
+func TestPrePRLoopKeepsAGuardStillUncoveredWhenTheReserveRecheckIsClean(t *testing.T) {
+	agent := &fakeAgent{edit: edit("a.go", guardedFile)}
+	deps, _, reported := testDeps(validObjects(), agent)
+	started := time.Now()
+	clock := started
+	deps.Now = func() time.Time { return clock }
+	probes := 0
+	deps.PackageTests = func(context.Context, string, string) (bool, string, error) {
+		probes++
+		if probes == 2 {
+			// The post-fix scan's probe is the last thing the review stage has
+			// time for.
+			clock = runCapSpentAt(started)
+		}
+		return false, "", nil // every test passes: nothing covers the guard
+	}
+	review := &fakeAgent{events: reviewEvent("")}
+	deps.ReviewAgent = review
+
+	if _, err := Build(context.Background(), deps, testConfig(t, initRepo(t))); err != nil {
+		t.Fatal(err)
+	}
+	rec := reported.last(t)
+	if review.calls != 2 {
+		t.Fatalf("review ran %d times, want the pass and the reserve re-check", review.calls)
+	}
+	if rec.Ready {
+		t.Fatalf("ready = true (detail %q), want false: the guard is still uncovered", rec.LoopDetail)
+	}
+	if len(rec.ReviewFindings) != 1 || !strings.Contains(rec.ReviewFindings[0].Finding, "a.go:4") || rec.ReviewFindings[0].Resolution != stillOpenText {
+		t.Fatalf("findings = %+v, want the guard at a.go:4 still open", rec.ReviewFindings)
+	}
+}
+
+// TestPrePRLoopReportsWhatTheReserveRecheckFinds covers the pass's own
+// findings reaching the rows.
+func TestPrePRLoopReportsWhatTheReserveRecheckFinds(t *testing.T) {
+	review := &fakeAgent{eventsFn: func(call int) string {
+		if call == 1 {
+			return reviewEvent("the retry never bounds its attempts")
+		}
+		return reviewEvent("a new finding only the re-check makes")
+	}}
+
+	rec, _, _ := reserveRecheckRun(t, review)
+
+	if rec.Ready || rec.ReviewFindingsOpen != 2 {
+		t.Fatalf("ready = %v, open = %d, want a draft with the original and the new finding open", rec.Ready, rec.ReviewFindingsOpen)
+	}
+	if !strings.Contains(rec.LoopDetail, "a new finding only the re-check makes") {
+		t.Fatalf("loop detail = %q, want the re-check's own finding", rec.LoopDetail)
+	}
+}
+
+// TestPrePRLoopKeepsAFindingNotReCheckedWhenTheReserveRecheckFails covers the
+// pass that cannot finish: the run is not failed by it, its rows read as they
+// did before there was a reserve re-check, and the failure is logged.
+func TestPrePRLoopKeepsAFindingNotReCheckedWhenTheReserveRecheckFails(t *testing.T) {
+	const finding = "the retry never bounds its attempts"
+	review := &fakeAgent{
+		eventsFn: func(call int) string {
+			if call == 1 {
+				return reviewEvent(finding)
+			}
+			return "not a review block\n"
+		},
+	}
+
+	rec, _, logs := reserveRecheckRun(t, review)
+
+	if review.calls != 2 {
+		t.Fatalf("review ran %d times, want the pass and the one failed re-check", review.calls)
+	}
+	if !strings.Contains(logs, "msg=reserveRecheckFailed round=2") {
+		t.Fatalf("logs = %q, want the failed re-check logged with its round", logs)
+	}
+	if rec.Outcome == OutcomeInfraFailure || rec.StopReason != "" {
+		t.Fatalf("outcome = %q, stop = %q, want a failed re-check not to stop the run", rec.Outcome, rec.StopReason)
+	}
+	if rec.Ready {
+		t.Fatal("ready = true, want false: the finding was never re-checked")
+	}
+	if want := []ReviewFinding{{Finding: finding, Resolution: "addressed in round 2, not re-checked"}}; !slices.Equal(rec.ReviewFindings, want) {
+		t.Fatalf("findings = %+v, want %+v", rec.ReviewFindings, want)
+	}
+	if rec.ReviewFindingsOpen != 1 {
+		t.Fatalf("open findings = %d, want the finding that was not re-checked counted", rec.ReviewFindingsOpen)
+	}
+}
+
+// TestPrePRLoopKeepsFailingChecksOpenWhateverTheReserveRecheckReads covers a
+// fix round that left a gate failing: a clean re-check does not make the run
+// ready, and a re-check that finds something still reports the gate.
+func TestPrePRLoopKeepsFailingChecksOpenWhateverTheReserveRecheckReads(t *testing.T) {
+	const finding = "the retry never bounds its attempts"
+	tests := []struct {
+		name    string
+		recheck string
+	}{
+		{"a clean re-check", ""},
+		{"a re-check that finds one", "a new finding only the re-check makes"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			review := &fakeAgent{eventsFn: func(call int) string {
+				if call == 1 {
+					return reviewEvent(finding)
+				}
+				return reviewEvent(tt.recheck)
+			}}
+
+			rec, _, _ := reserveRecheckRunAt(t, review, nfr1RunCap-nfr1CommitReserve, "vet")
+
+			if rec.Ready {
+				t.Fatalf("ready = true, want false: the fix round left vet failing (detail %q)", rec.LoopDetail)
+			}
+			if !strings.Contains(rec.LoopDetail, "checks: vet failing after the fix round") {
+				t.Fatalf("loop detail = %q, want the failing gate named", rec.LoopDetail)
+			}
+		})
+	}
+}
+
+// TestPrePRLoopOpensNoFindingForAnUnprobedGuardNoRoundIssued covers a guard the
+// build scan's budget left and every re-scan then fails to probe: it is counted
+// as unprobed, and only the guard that was a finding stays open.
+func TestPrePRLoopOpensNoFindingForAnUnprobedGuardNoRoundIssued(t *testing.T) {
+	agent := &fakeAgent{
+		edit:   edit("a.go", guardsSource(2)),
+		events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{}}}` + "\n",
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	now := time.Now()
+	probes := 0
+	// The first probe spends the build stage's budget, so e1 is left; every
+	// probe of e1 after that fails to run while e0 stays uncovered.
+	deps.PackageTests = func(_ context.Context, dir, _ string) (bool, string, error) {
+		probes++
+		if probes == 1 {
+			now = now.Add(nfr1BuildBudget)
+		}
+		if probedGuard(t, dir) == "e1 != nil" {
+			return false, "", errors.New("no docker")
+		}
+		return false, "", nil
+	}
+	deps.Now = func() time.Time { return now }
+	deps.ReviewAgent = &fakeAgent{events: reviewEvent("")}
+
+	if _, err := Build(context.Background(), deps, testConfig(t, initRepo(t))); err != nil {
+		t.Fatal(err)
+	}
+	rec := reported.last(t)
+	if len(rec.ReviewFindings) != 1 || !strings.Contains(rec.ReviewFindings[0].Finding, "a.go:4") || rec.ReviewFindingsOpen != 1 {
+		t.Fatalf("findings = %+v, open = %d, want the one guard that was a finding", rec.ReviewFindings, rec.ReviewFindingsOpen)
+	}
+	if rec.GuardsUntested != 1 {
+		t.Fatalf("guards untested = %d, want e1 counted", rec.GuardsUntested)
+	}
+}
+
 // TestPrePRLoopRecordsTheSecondRoundWhenItsBudgetIsSpent is the extra round's
 // other budget path: the round runs, the stage's budget is gone by its checks,
 // so no re-check follows — the rows say the finding was addressed without being
@@ -2578,9 +2889,9 @@ func TestPrePRLoopRecordsTheSecondRoundWhenItsBudgetIsSpent(t *testing.T) {
 	deps.Checks = func(context.Context, string, []string) (string, string, error) {
 		checks++
 		if checks == 3 {
-			// The second fix round's checks find the review budget spent, so the
+			// The second fix round's checks find the run cap spent, so the
 			// re-check that would settle its findings never runs.
-			clock = runCapSpentAt(started)
+			clock = runCapReachedAt(started)
 		}
 		return "", "", nil
 	}
@@ -2726,7 +3037,7 @@ func TestReviewAdvancesTheReviewOrderOnAllowanceExhaustion(t *testing.T) {
 // steps to its backup on the review's own budget. The build stage has already
 // spent its 60 minutes where the review begins, so a substitution clamped by
 // the build stage would be refused outright, and one clamped by the build
-// stage's remaining time would run the backup past the review's 25 minutes.
+// stage's remaining time would run the backup past the review's 22 minutes.
 func TestReviewSubstitutionIsClampedByTheReviewBudget(t *testing.T) {
 	buildAgent := &fakeAgent{edit: edit("version.go", "package x\n")}
 	deps, _, _ := testDeps(validObjects(), buildAgent)
@@ -2735,7 +3046,7 @@ func TestReviewSubstitutionIsClampedByTheReviewBudget(t *testing.T) {
 	deps.Now = func() time.Time { return clock }
 	deps.Checks = func(context.Context, string, []string) (string, string, error) {
 		// The build stage's budget is spent by the time the review begins; the
-		// review's own 25 minutes are untouched.
+		// review's own 22 minutes are untouched.
 		clock = started.Add(nfr1BuildBudget + time.Minute)
 		return "", "", nil
 	}
@@ -2764,15 +3075,15 @@ func TestReviewSubstitutionIsClampedByTheReviewBudget(t *testing.T) {
 	if review.calls != 2 {
 		t.Fatalf("review agent ran %d times, want 2: an exhausted allowance steps to the backup on the review's own budget", review.calls)
 	}
-	if got := time.Until(review.deadlines[1]); got < 25*time.Minute-2*time.Second || got > 25*time.Minute+2*time.Second {
-		t.Fatalf("the backup is bounded by %s, want the review's 25 minutes, not what the build stage had left", got)
+	if got := time.Until(review.deadlines[1]); got < 22*time.Minute-2*time.Second || got > 22*time.Minute+2*time.Second {
+		t.Fatalf("the backup is bounded by %s, want the review's 22 minutes, not what the build stage had left", got)
 	}
 }
 
 // TestFixRoundSubstitutionIsClampedByTheReviewBudget is the fix round's half of
 // the substitution gate: the round resumes the build agent's session under the
 // review's budget, so a build model that fails there as allowance-exhausted
-// steps to its backup within the review's own 25 minutes even though the build
+// steps to its backup within the review's own 22 minutes even though the build
 // stage's 60 have gone.
 func TestFixRoundSubstitutionIsClampedByTheReviewBudget(t *testing.T) {
 	withFallbacks(t, testFallbackModel)
@@ -2798,7 +3109,7 @@ func TestFixRoundSubstitutionIsClampedByTheReviewBudget(t *testing.T) {
 	deps.Now = func() time.Time { return clock }
 	deps.Checks = func(context.Context, string, []string) (string, string, error) {
 		// The build stage's budget is spent by the time the review begins; the
-		// fix round runs on the review's own 25 minutes.
+		// fix round runs on the review's own 22 minutes.
 		clock = started.Add(nfr1BuildBudget + time.Minute)
 		return "", "", nil
 	}
@@ -2818,8 +3129,8 @@ func TestFixRoundSubstitutionIsClampedByTheReviewBudget(t *testing.T) {
 	if buildAgent.calls != 3 {
 		t.Fatalf("build agent ran %d times, want 3: the fix round's exhausted allowance steps to its backup on the review's own budget", buildAgent.calls)
 	}
-	if got := time.Until(buildAgent.deadlines[2]); got < 25*time.Minute-2*time.Second || got > 25*time.Minute+2*time.Second {
-		t.Fatalf("the fix round's backup is bounded by %s, want the review's 25 minutes, not what the build stage had left", got)
+	if got := time.Until(buildAgent.deadlines[2]); got < 22*time.Minute-2*time.Second || got > 22*time.Minute+2*time.Second {
+		t.Fatalf("the fix round's backup is bounded by %s, want the review's 22 minutes, not what the build stage had left", got)
 	}
 }
 
@@ -3230,8 +3541,8 @@ func TestReviewKeepsItsOwnBudgetOnceTheBuildStageSpentItsOwn(t *testing.T) {
 	if len(review.deadlines) == 0 {
 		t.Fatal("the review ran no pass")
 	}
-	if got := time.Until(review.deadlines[0]); got < 25*time.Minute-2*time.Second || got > 25*time.Minute+2*time.Second {
-		t.Fatalf("the review pass is bounded by %s, want the review's 25 minutes, not the %s default", got, defaultAgentTimeout)
+	if got := time.Until(review.deadlines[0]); got < 22*time.Minute-2*time.Second || got > 22*time.Minute+2*time.Second {
+		t.Fatalf("the review pass is bounded by %s, want the review's 22 minutes, not the %s default", got, defaultAgentTimeout)
 	}
 	if buildAgent.calls != 2 {
 		t.Fatalf("build agent ran %d times, want the build round and the fix round", buildAgent.calls)
@@ -3289,6 +3600,12 @@ func runCapSpentAt(started time.Time) time.Time {
 	return started.Add(nfr1RunCap - nfr1CommitReserve)
 }
 
+// runCapReachedAt is the instant the run cap itself is spent, after which not
+// even the commit reserve has room for a re-check.
+func runCapReachedAt(started time.Time) time.Time {
+	return started.Add(nfr1RunCap)
+}
+
 // reviewFloorStart is the clock at which a review begins on its floor: the run's
 // start plus the build stage's whole budget.
 func reviewFloorStart(started time.Time) time.Time {
@@ -3325,9 +3642,9 @@ func TestReviewPassIsBoundedByWhatTheRunCapLeavesAfterTheBuild(t *testing.T) {
 	if len(review.deadlines) != 1 {
 		t.Fatalf("the review ran %d passes, want 1", len(review.deadlines))
 	}
-	// The 90-minute cap less the 55 spent and the 5-minute commit reserve.
-	if got := time.Until(review.deadlines[0]); got < 30*time.Minute-2*time.Second || got > 30*time.Minute+2*time.Second {
-		t.Fatalf("the review pass is bounded by %s, want the 30 minutes the cap leaves after the build's 55", got)
+	// The 90-minute cap less the 55 spent and the 8-minute commit reserve.
+	if got := time.Until(review.deadlines[0]); got < 27*time.Minute-2*time.Second || got > 27*time.Minute+2*time.Second {
+		t.Fatalf("the review pass is bounded by %s, want the 27 minutes the cap leaves after the build's 55", got)
 	}
 }
 
@@ -3374,14 +3691,14 @@ func TestPrePRLoopStartsNoFixRoundWithUnderThreeMinutesLeft(t *testing.T) {
 		t.Fatal("ready = true, want false: nothing was done about the finding")
 	}
 	if !strings.Contains(rec.LoopDetail, "fix round skipped") ||
-		!strings.Contains(rec.LoopDetail, "the review stage's 25-minute budget was spent") {
+		!strings.Contains(rec.LoopDetail, "the review stage's 22-minute budget was spent") {
 		t.Fatalf("loop detail = %q, want the skipped fix round to name the spent budget", rec.LoopDetail)
 	}
 }
 
 // TestPrePRLoopNamesTheExtendedReviewBudgetWhenItIsSpent is AC2's label with a
 // review stage a run that finished its build early left more than its floor: the
-// refusal names those 55 minutes, not the 25 the stage gets at its floor.
+// refusal names those 52 minutes, not the 22 the stage gets at its floor.
 func TestPrePRLoopNamesTheExtendedReviewBudgetWhenItIsSpent(t *testing.T) {
 	const finding = "version.go:1 the change is wrong"
 	const builtIn = 30 * time.Minute
@@ -3420,8 +3737,8 @@ func TestPrePRLoopNamesTheExtendedReviewBudgetWhenItIsSpent(t *testing.T) {
 	if rec.Ready {
 		t.Fatal("ready = true, want false: nothing was done about the finding")
 	}
-	if !strings.Contains(rec.LoopDetail, "the review stage's 55-minute budget was spent") {
-		t.Fatalf("loop detail = %q, want the refusal to name the 55 minutes the cap left this review", rec.LoopDetail)
+	if !strings.Contains(rec.LoopDetail, "the review stage's 52-minute budget was spent") {
+		t.Fatalf("loop detail = %q, want the refusal to name the 52 minutes the cap left this review", rec.LoopDetail)
 	}
 }
 
@@ -3470,10 +3787,12 @@ func TestPrePRLoopStartsAFixRoundOnTheThreeMinuteFloor(t *testing.T) {
 	}
 }
 
-// TestPrePRLoopSkipsAReCheckWithUnderThreeMinutesLeft is AC2's re-check half: a
-// fix round that leaves the review stage two minutes gets no re-check, and the
-// run labels the finding addressed by the round rather than re-reviewed.
-func TestPrePRLoopSkipsAReCheckWithUnderThreeMinutesLeft(t *testing.T) {
+// TestPrePRLoopReChecksFromTheCommitReserveWhenTheStageHasUnderThreeMinutes is
+// the re-check half of the review stage's start room: a fix round that leaves
+// the stage two minutes gets its one review pass from the commit reserve, bound
+// by what the run cap leaves less the commit's own floor, and a finding that
+// pass still reports stays open.
+func TestPrePRLoopReChecksFromTheCommitReserveWhenTheStageHasUnderThreeMinutes(t *testing.T) {
 	const finding = "the retry never bounds its attempts"
 	started := time.Now()
 	clock := started
@@ -3502,22 +3821,24 @@ func TestPrePRLoopSkipsAReCheckWithUnderThreeMinutesLeft(t *testing.T) {
 	if _, err := Build(context.Background(), deps, c); err != nil {
 		t.Fatal(err)
 	}
-	if review.calls != 1 {
-		t.Fatalf("review agent ran %d times, want 1: two minutes cannot start a re-check", review.calls)
+	if review.calls != 2 {
+		t.Fatalf("review agent ran %d times, want the pass and the one re-check the reserve pays for", review.calls)
 	}
 	if agent.calls != 2 {
 		t.Fatalf("build agent ran %d times, want the build round and the fix round", agent.calls)
 	}
+	if got, want := time.Until(review.deadlines[1]), nfr1RunCap-2*time.Minute-reviewFloorSpent(started, reviewStartRoom-time.Minute).Sub(started); got < want-2*time.Second || got > want+2*time.Second {
+		t.Fatalf("the re-check is bounded by %s, want the %s the run cap leaves less the commit floor", got, want)
+	}
 	rec := reported.last(t)
 	if rec.Ready {
-		t.Fatal("ready = true, want false: the finding was never re-checked")
+		t.Fatal("ready = true, want false: the re-check still reported the finding")
 	}
-	if !strings.Contains(rec.LoopDetail, "addressed by a fix round, not re-reviewed") ||
-		!strings.Contains(rec.LoopDetail, "the review stage's 25-minute budget was spent") {
-		t.Fatalf("loop detail = %q, want the addressed-not-re-reviewed label naming the spent budget", rec.LoopDetail)
-	}
-	if want := []ReviewFinding{{Finding: finding, Resolution: "addressed in round 2, not re-checked"}}; !slices.Equal(rec.ReviewFindings, want) {
+	if want := []ReviewFinding{{Finding: finding, Resolution: stillOpenText}}; !slices.Equal(rec.ReviewFindings, want) {
 		t.Fatalf("findings = %+v, want %+v", rec.ReviewFindings, want)
+	}
+	if rec.ReviewFindingsOpen != 1 {
+		t.Fatalf("open findings = %d, want 1", rec.ReviewFindingsOpen)
 	}
 }
 
@@ -3548,7 +3869,7 @@ func assertReviewBudgetRecorded(t *testing.T, rec Summary, logs string) {
 	if rec.Ready {
 		t.Fatal("ready = true, want false: the review stage ran out")
 	}
-	if !strings.Contains(rec.LoopDetail, "the review stage's 25-minute budget was spent") ||
+	if !strings.Contains(rec.LoopDetail, "the review stage's 22-minute budget was spent") ||
 		strings.Contains(rec.LoopDetail, "agent exceeded") {
 		t.Fatalf("loop detail = %q, want the review stage's spent budget, not an agent timeout", rec.LoopDetail)
 	}

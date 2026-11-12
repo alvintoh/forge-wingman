@@ -34,6 +34,13 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13.2
+      # The runner's guard-probe tests run web's own TypeScript compiler under bun.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+          no-cache: true
+      - run: bun install --frozen-lockfile
+        working-directory: web
       - name: Wait for the Firestore emulator
         run: |
           for _ in $(seq 60); do curl -fs http://localhost:8080 >/dev/null && exit 0; sleep 2; done

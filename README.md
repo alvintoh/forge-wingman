@@ -226,12 +226,15 @@ containers, and the frozen-lockfile install resolves from the bun cache the runn
 fills beforehand, those containers having no network.
 
 Once those gates pass, the pre-PR loop probes the guards the diff adds before it
-reviews anything: it replaces each added guard's condition with `false` and runs that
-package's tests in the same image, so a guard no test covers becomes a finding the fix
-round has to answer. Every guard the diff adds is probed, one at a time with each file
-restored before the next, while the build stage's budget lasts; a scan the budget stops
-reports the guards it left in the PR's notes. After a fix round, only the guards still
-open as findings and any the round added are probed again.
+reviews anything: it replaces each added guard's condition with `false` and runs the
+tests that cover it in the same image, that package's for a Go guard and `bun test` in
+`web/` for a TypeScript one (the TypeScript compiler in the branch's `node_modules`
+finds those guards, inside the container), so a guard no test covers becomes a finding
+the fix round has to answer. Every guard the diff adds is probed, one at a time with
+each file restored before the next, while the build stage's budget lasts. A guard the
+budget stopped the scan before, or whose probe could not run, is left unprobed and
+reported in the PR's notes, never read as covered. After a fix round, only the guards
+still open as findings, those left unprobed and any the round added are probed again.
 
 Go's `go.mod` sets **`go 1.27`** (anything from 1.22 has the stdlib `ServeMux` routing the
 services use) and the **toolchain** that builds it; raise the toolchain deliberately.

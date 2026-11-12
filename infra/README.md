@@ -169,6 +169,9 @@ review sample, edits nothing outside its recorded plan (an S run needs none), fa
 check gate and is not a front-end change gets the `wingman:auto-merge-eligible` label,
 which must exist in the repository. A size-M or L run with no recorded plan is never
 labelled, and its PR body says so; a size-S run is labelled without one.
+A run whose pre-open review left a finding unfixed (still open, or never re-checked) also
+gets the `findings-open` label on its PR, which must exist in the repository; it is a mark
+for the owner and takes no part in the auto-merge decision.
 `pr-review.yml` reviews every ready PR against its Linear ticket and, only when the review is clean, the PR carries that
 label and its head is still the commit it reviewed, requests a squash auto-merge
 pinned to that commit, and only on a run's `wingman/` branch. `pr-review-post` first reads

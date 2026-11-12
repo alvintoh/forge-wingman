@@ -186,6 +186,12 @@ func TestParseSummaryRejects(t *testing.T) {
 		{"a step peak context over the ceiling", func(s *Summary) { s.Steps[0].PeakContextTokens = maxCount + 1 }},
 		{"a peak context over the ceiling", func(s *Summary) { s.PeakContextTokens = maxCount + 1 }},
 		{"a negative omitted review finding count", func(s *Summary) { s.ReviewFindingsOmitted = -1 }},
+		{"a negative open review finding count", func(s *Summary) { s.ReviewFindingsOpen = -1 }},
+		{"more open review findings than findings", func(s *Summary) {
+			s.ReviewFindings = []ReviewFinding{{Finding: "a", Resolution: "still open"}}
+			s.ReviewFindingsOmitted = 1
+			s.ReviewFindingsOpen = 3
+		}},
 		{"a negative untested guard count", func(s *Summary) { s.GuardsUntested = -1 }},
 		{"an untested guard count over the ceiling", func(s *Summary) { s.GuardsUntested = int(maxCount) + 1 }},
 		{"a second fix round numbered zero", func(s *Summary) {
@@ -567,6 +573,40 @@ func TestSetReviewFindingsCountsWhatTheCapLeavesOut(t *testing.T) {
 	}
 	if len(got.ReviewFindings) != maxReviewFindings || got.ReviewFindingsOmitted != 3 {
 		t.Fatalf("findings = %d, omitted = %d, want %d and 3", len(got.ReviewFindings), got.ReviewFindingsOmitted, maxReviewFindings)
+	}
+}
+
+// TestSetReviewFindingsCountsTheOpenFindingsBeforeTheCapAndEncodeKeepsThem
+// covers the count the PR's Verification row reads: it counts every row the
+// run left unfixed, including the ones the cap and Encode's halving drop from
+// the list.
+func TestSetReviewFindingsCountsTheOpenFindingsBeforeTheCapAndEncodeKeepsThem(t *testing.T) {
+	s := validSummary()
+	rows := make([]ReviewFinding, maxReviewFindings+3)
+	for i := range rows {
+		rows[i] = ReviewFinding{Finding: strings.Repeat("<", maxFindingBytes), Resolution: "fixed in round 2"}
+	}
+	rows[0].Resolution = "still open"
+	rows[1].Resolution = "addressed in round 2, not re-checked"
+	rows[len(rows)-1].Resolution = stillOpenAfter(2)
+	s.setReviewFindings(rows)
+	if s.ReviewFindingsOpen != 3 {
+		t.Fatalf("open = %d, want the 3 unfixed rows, the one past the cap included", s.ReviewFindingsOpen)
+	}
+	raw, err := s.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Summary
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.ReviewFindings) >= maxReviewFindings {
+		t.Fatalf("Encode kept %d findings, want it to have halved them to fit", len(got.ReviewFindings))
+	}
+	if got.ReviewFindingsOpen != 3 || len(got.ReviewFindings)+got.ReviewFindingsOmitted != len(rows) {
+		t.Fatalf("open = %d, listed %d, omitted %d, want 3 open of %d rows however many Encode dropped",
+			got.ReviewFindingsOpen, len(got.ReviewFindings), got.ReviewFindingsOmitted, len(rows))
 	}
 }
 

@@ -863,3 +863,12 @@ func TestPRMetaWordsASupersedeByWhyTheOwnerMadeIt(t *testing.T) {
 		})
 	}
 }
+
+func TestOpenFindingsOutputIsEmptyWhenNoneAreOpen(t *testing.T) {
+	if got := openFindingsOutput(3); got != "3" {
+		t.Fatalf("openFindingsOutput(3) = %q, want 3", got)
+	}
+	if got := openFindingsOutput(0); got != "" {
+		t.Fatalf("openFindingsOutput(0) = %q, want empty", got)
+	}
+}
