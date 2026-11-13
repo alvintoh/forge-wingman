@@ -377,8 +377,14 @@ func findingsText(findings []pendingFinding) string {
 // the way the block lists them. Each line keys itself, so a finding a re-review
 // repeats is recognizable as the same one.
 func reviewPending(findings string) []pendingFinding {
+	return lineFindings(strings.Split(findings, "\n"))
+}
+
+// lineFindings is findings given as lines — a review's block, or a state record's
+// open list — each keying itself, with blank lines dropped.
+func lineFindings(lines []string) []pendingFinding {
 	var out []pendingFinding
-	for _, line := range strings.Split(findings, "\n") {
+	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line != "" {
 			out = append(out, pendingFinding{key: line, text: line})

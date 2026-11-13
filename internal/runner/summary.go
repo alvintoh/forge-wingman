@@ -25,9 +25,10 @@ const (
 	maxClockSkew     = 5 * time.Minute
 )
 
-// maxReviewFindings and maxFindingBytes bound what a summary carries of the
-// pre-open review — a review pass's findings plus a guard scan's — and never let
-// one long finding crowd out the rest.
+// maxReviewFindings and maxFindingBytes bound the findings a run carries of the
+// pre-open review — a review pass's findings plus a guard scan's, in a summary
+// and in the fix-round state record a later job reads — and never let one long
+// finding crowd out the rest.
 const (
 	maxReviewFindings = 24
 	maxFindingBytes   = 512

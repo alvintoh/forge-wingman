@@ -256,3 +256,119 @@ func writeFile(t *testing.T, path, s string) {
 		t.Fatal(err)
 	}
 }
+
+// TestCheckoutWorktreeCutsTheBranchAtItsHead is AC4: a worktree is cut on a
+// branch the repo holds at the head its caller names, and the branch itself is
+// left where it was.
+func TestCheckoutWorktreeCutsTheBranchAtItsHead(t *testing.T) {
+	repo := initRepo(t)
+	mustGit(t, repo, "branch", fixBranch)
+	head := strings.TrimSpace(mustGit(t, repo, "rev-parse", "HEAD"))
+	dir := filepath.Join(t.TempDir(), "wt")
+
+	w, err := CheckoutWorktree(context.Background(), repo, dir, fixBranch, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.Branch != fixBranch || w.Base != head {
+		t.Fatalf("worktree = %+v, want branch %q cut at %q", w, fixBranch, head)
+	}
+	if got, err := w.HeadCommit(context.Background()); err != nil || got != head {
+		t.Fatalf("worktree head = %q (%v), want %q", got, err, head)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "README.md")); err != nil {
+		t.Fatalf("the worktree holds no checkout: %v", err)
+	}
+	if got := strings.TrimSpace(mustGit(t, repo, "rev-parse", fixBranch)); got != head {
+		t.Fatalf("%s is at %q, want the head it was cut at, %q", fixBranch, got, head)
+	}
+}
+
+// TestCheckoutWorktreeRefusesWhatItCannotCut is AC4's refusal: a branch the repo
+// does not hold, or one at another commit, and a directory git will not add a
+// worktree at, are all refused with nothing left registered for the caller.
+func TestCheckoutWorktreeRefusesWhatItCannotCut(t *testing.T) {
+	headOf := func(t *testing.T, repo string) string {
+		t.Helper()
+		return strings.TrimSpace(mustGit(t, repo, "rev-parse", "HEAD"))
+	}
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, repo, dir string) (branch, at string)
+		// noGit hides git from the call itself, and made is a directory the
+		// setup created, which the refusal must leave as it found it.
+		noGit bool
+		made  bool
+		want  error
+		text  string
+	}{
+		{
+			"a branch at another commit",
+			func(t *testing.T, repo, _ string) (string, string) {
+				at := headOf(t, repo)
+				mustGit(t, repo, "-c", "user.name=t", "-c", "user.email=t@example.com",
+					"commit", "--allow-empty", "-qm", "the pull request's own commit")
+				return "main", at
+			},
+			false, false, ErrBranchHeadMismatch, "is at",
+		},
+		{
+			"a branch the repo does not hold",
+			func(t *testing.T, repo, _ string) (string, string) { return fixBranch, headOf(t, repo) },
+			false, false, ErrBranchHeadMismatch, "holds no branch",
+		},
+		{
+			"no branch named",
+			func(t *testing.T, repo, _ string) (string, string) { return "", headOf(t, repo) },
+			false, false, nil, "needs the branch and the head",
+		},
+		{
+			"no head named",
+			func(t *testing.T, repo, _ string) (string, string) { return fixBranch, "" },
+			false, false, nil, "needs the branch and the head",
+		},
+		{
+			"a directory git refuses",
+			func(t *testing.T, repo, dir string) (string, string) {
+				if err := os.MkdirAll(dir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "taken"), []byte("x\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				mustGit(t, repo, "branch", fixBranch)
+				return fixBranch, headOf(t, repo)
+			},
+			false, true, nil, "git worktree: ",
+		},
+		{
+			"no git to run",
+			func(t *testing.T, repo, _ string) (string, string) {
+				mustGit(t, repo, "branch", fixBranch)
+				return fixBranch, headOf(t, repo)
+			},
+			true, false, nil, "finding git",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := initRepo(t)
+			dir := filepath.Join(t.TempDir(), "wt")
+			branch, at := tt.setup(t, repo, dir)
+			if tt.noGit {
+				t.Setenv("PATH", t.TempDir())
+			}
+
+			_, err := CheckoutWorktree(context.Background(), repo, dir, branch, at)
+			if err == nil || (tt.want != nil && !errors.Is(err, tt.want)) {
+				t.Fatalf("err = %v, want %v", err, tt.want)
+			}
+			if !strings.Contains(err.Error(), tt.text) {
+				t.Fatalf("err = %v, want it to name %q", err, tt.text)
+			}
+			if _, err := os.Stat(dir); !tt.made && !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("the refused worktree exists (%v), want nothing created", err)
+			}
+		})
+	}
+}
