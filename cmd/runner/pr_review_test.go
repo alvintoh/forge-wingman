@@ -30,9 +30,10 @@ const (
 
 // fakePulls serves one repository's pull request 7 and records every write.
 type fakePulls struct {
-	pull     map[string]any
-	diff     string
-	comments []map[string]any
+	pull       map[string]any
+	diff       string
+	comments   []map[string]any
+	statusList []commitStatusEntry
 
 	mu       sync.Mutex
 	created  []string
@@ -58,6 +59,8 @@ func (f *fakePulls) start(t *testing.T) func(string) string {
 			_, _ = io.WriteString(w, f.diff)
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/o/r/issues/7/comments":
 			_ = json.NewEncoder(w).Encode(f.comments)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/o/r/commits/"):
+			_ = json.NewEncoder(w).Encode(f.statusList)
 		case r.Method == http.MethodPost && r.URL.Path == "/repos/o/r/issues/7/comments":
 			f.created = append(f.created, body["body"])
 			w.WriteHeader(http.StatusCreated)
@@ -266,6 +269,47 @@ func TestRenderReviewCommentNeutralisesTheFindings(t *testing.T) {
 	}
 	if !strings.Contains(got, "Model `"+museModel+"` · 1200 in / 80 out tokens · $0 across 1 attempt(s)") {
 		t.Errorf("the footer lacks the model and its cost: %q", got)
+	}
+}
+
+func TestShortSHAKeepsAShortHeadWhole(t *testing.T) {
+	if got := shortSHA(headSHA); got != headSHA[:12] {
+		t.Fatalf("shortSHA = %q, want the first 12 characters", got)
+	}
+	if got := shortSHA("abc"); got != "abc" {
+		t.Fatalf("shortSHA of a short head = %q, want it whole", got)
+	}
+}
+
+func TestParseReviewCommentRoundTripsEveryComment(t *testing.T) {
+	for _, v := range []runner.PRVerdict{
+		verdict("clean", "", museModel),
+		verdict("no-verdict", "", ""),
+		verdict("findings", "the retry never bounds `attempts`\nping @octocat\n```go\nif x {\n```\n# not a heading", museModel),
+	} {
+		t.Run(v.Outcome, func(t *testing.T) {
+			got, ok := parseReviewComment(renderReviewComment(v, headSHA, ""))
+			if !ok {
+				t.Fatal("the comment renderReviewComment wrote does not parse")
+			}
+			if v.Outcome != runner.PRReviewFindings {
+				if got.SHA != "" || got.Findings != "" {
+					t.Fatalf("parse = %+v, want no head and no findings", got)
+				}
+				return
+			}
+			if got.SHA != headSHA[:12] || got.Findings != v.Findings {
+				t.Fatalf("parse = %+v, want %s and %q", got, headSHA[:12], v.Findings)
+			}
+		})
+	}
+}
+
+func TestParseReviewCommentNamesTheHeadOfAnUnreadableBlock(t *testing.T) {
+	body := prReviewMarker + "\n### Wingman review: findings\n\nAt `" + headSHA[:12] + "`:\n\n```text\nthe fence never closes\n"
+	got, ok := parseReviewComment(body)
+	if ok || got.SHA != headSHA[:12] {
+		t.Fatalf("parse = %+v, ok = %v, want the head with an unreadable block", got, ok)
 	}
 }
 

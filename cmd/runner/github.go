@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 )
@@ -20,6 +21,7 @@ const (
 	maxCommentsBytes = 4 << 20
 	maxGitHubError   = 512
 	commentsPerPage  = 100
+	statusesPerPage  = 100
 	maxCommentPages  = 5
 )
 
@@ -115,6 +117,23 @@ func (g pullRequests) editComment(ctx context.Context, id int64, body string) er
 
 func (g pullRequests) setStatus(ctx context.Context, sha string, s commitStatus) error {
 	return g.call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/statuses/%s", g.Repo, sha), "", s, maxPullBytes, nil)
+}
+
+// commitStatusEntry is one commit status as the statuses API returns it: what a
+// review posted, and when, which orders it against the others.
+type commitStatusEntry struct {
+	State       string    `json:"state"`
+	Description string    `json:"description"`
+	Context     string    `json:"context"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// statuses are sha's commit statuses, latest first, the order the API answers
+// them in.
+func (g pullRequests) statuses(ctx context.Context, sha string) ([]commitStatusEntry, error) {
+	var out []commitStatusEntry
+	err := g.call(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/commits/%s/statuses?per_page=%d", g.Repo, sha, statusesPerPage), "", nil, maxPullBytes, &out)
+	return out, err
 }
 
 // apiError is GitHub's answer to a request that did not succeed: the request,

@@ -28,6 +28,7 @@
 //	runner pr-review-context -pr <n> -out <path>     write a pull request's diff and the ticket it names, read from Linear
 //	runner pr-review       -context <path> ...       review the context on each model in turn and write the verdict
 //	runner pr-review-post  -pr <n> -verdict <path>   post the review comment and status, and decide the auto-merge request
+//	runner fix-await        -pr <n> -sha <sha> -started <RFC3339>  wait, bounded, for the review of a head and print whether the loop continues
 //	runner agent-probe     -agent-image <ref> [-egress] -- <command...>  run a command in the agent container, to prove what it cannot reach
 //	runner egress-proxy    -allow <host,...>         serve the proxy that lets the agent container reach only those hosts
 //
@@ -79,7 +80,7 @@ func exitCode(err error) int {
 
 func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(string) string) error {
 	if len(args) == 0 {
-		return errors.New("usage: runner ticket|build|plan-stage|record-plan-stage|pr-meta|pr|record|enable-provider|reset-breaker|peak-mode|auto-merge|requeue|backfill-queued-at|project-add|project-remove|project-stop|project-resume|plan-define|plan-verdict|plan-reply|plan-list|plans-refresh|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post|agent-probe|egress-proxy [flags]")
+		return errors.New("usage: runner ticket|build|plan-stage|record-plan-stage|pr-meta|pr|record|enable-provider|reset-breaker|peak-mode|auto-merge|requeue|backfill-queued-at|project-add|project-remove|project-stop|project-resume|plan-define|plan-verdict|plan-reply|plan-list|plans-refresh|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post|fix-await|agent-probe|egress-proxy [flags]")
 	}
 	if args[0] == "plan-smoke" {
 		return planSmoke(ctx, logger, getenv, args[1:])
@@ -95,6 +96,8 @@ func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(st
 		return prReview(ctx, logger, getenv, args[1:])
 	case "pr-review-post":
 		return prReviewPost(ctx, logger, getenv, args[1:])
+	case "fix-await":
+		return fixAwait(ctx, logger, getenv, args[1:])
 	case "agent-probe":
 		return agentProbe(ctx, os.Stdout, os.Stderr, args[1:])
 	case "egress-proxy":
