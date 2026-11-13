@@ -24,8 +24,8 @@ const (
 )
 
 // Rewrite is one merged agent PR's measured lines: what the agent wrote, and
-// what the owner changed after the agent's PR — the rate's numerator and its
-// denominator.
+// what the owner changed after the agent's PR, with RunnerFixLines kept inside
+// AgentLines.
 type Rewrite struct {
 	// AgentLines is every line a commit authored as the runner added or removed.
 	AgentLines int64
@@ -96,7 +96,8 @@ type Commit struct {
 	// Login is the account GitHub resolved the author to, empty when it resolved
 	// none; it is the only identity a commit is attributed by.
 	Login string
-	// Message is the full commit message, whose trailers mark what a rewrite is.
+	// Message is the full commit message, whose trailers label an owner's rework
+	// and mark a fix round's commit.
 	Message string
 	// Unmeasured is set when GitHub gave no line counts for the commit.
 	Unmeasured bool

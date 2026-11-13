@@ -41,6 +41,22 @@ func TestRewriteOfCountsTheRunnersCommitsForTheAgent(t *testing.T) {
 			},
 			Rewrite{AgentLines: 18, RunnerFixLines: 6},
 		},
+		"a fix round's trailer on a CRLF message": {
+			[]Commit{{Login: runner.CommitAuthorLogin, Additions: 4, Message: "fix: x\r\n\r\n" + runner.FixRoundTrailer + "2\r\n"}},
+			Rewrite{AgentLines: 4, RunnerFixLines: 4},
+		},
+		"the trailer quoted mid-line": {
+			[]Commit{{Login: runner.CommitAuthorLogin, Additions: 4, Message: "fix: x\n\nthe footer reads " + runner.FixRoundTrailer + "1"}},
+			Rewrite{AgentLines: 4},
+		},
+		"text after the round number": {
+			[]Commit{{Login: runner.CommitAuthorLogin, Additions: 4, Message: "fix: x\n\n" + runner.FixRoundTrailer + "1 and more"}},
+			Rewrite{AgentLines: 4},
+		},
+		"the trailer with no round number": {
+			[]Commit{{Login: runner.CommitAuthorLogin, Additions: 4, Message: "fix: x\n\n" + runner.FixRoundTrailer}},
+			Rewrite{AgentLines: 4},
+		},
 		"a fix round's trailer on the owner's commit": {
 			[]Commit{{Login: "the-owner", Additions: 6, Message: "fix: bound the retry\n\n" + runner.FixRoundTrailer + "2"}},
 			Rewrite{OwnerLines: 6, UnlabelledLines: 6},

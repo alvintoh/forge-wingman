@@ -19,8 +19,9 @@ import (
 const DefaultReviewFixRounds = 3
 
 // FixRoundTrailer prefixes the trailer a fix round's commit carries, holding the
-// round's own number: the rewrite measurement reads it to count the lines the
-// runner fixed after review, which stay the agent's lines in the rate.
+// round's agent-call number (Step.Round, which skips one when a backup model
+// answers): the rewrite measurement reads it to count the lines the runner fixed
+// after review, which stay the agent's lines in the rate.
 const FixRoundTrailer = "Fix-Round: "
 
 // fixRoundsBudget is how long the whole fix-round loop may take: NFR-1's
@@ -283,8 +284,8 @@ func namesFinding(entry, text string) bool {
 
 // fixRoundCommit commits a round's edits to the pull request's branch as the
 // runner, returning the commit it made and whether it made one. The commit
-// carries FixRoundTrailer and the round's number, which is how the rewrite
-// measurement tells what the runner fixed after review. It verifies the
+// carries FixRoundTrailer and the round's agent-call number, which is how the
+// rewrite measurement tells what the runner fixed after review. It verifies the
 // worktree first, so a changed git configuration or a moved HEAD stops the loop
 // instead of committing somewhere else, and it runs the secret and workflow
 // checks the build's own commit runs, since the commit goes to a live branch.

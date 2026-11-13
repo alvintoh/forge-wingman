@@ -163,8 +163,8 @@ func TestFixRoundsCommitsOneRoundPerReviewOnThePullRequestBranch(t *testing.T) {
 		// Each round's commit names its number, which is how the rewrite
 		// measurement tells what the runner fixed after review from its build.
 		body := strings.TrimSpace(mustGit(t, wt.Dir, "log", "-1", "--format=%B", round.Commit))
-		if want := FixRoundTrailer + strconv.Itoa(i+1); !strings.HasSuffix(body, want) {
-			t.Fatalf("round %d commit = %q, want it to end with %q", i+1, body, want)
+		if want := "\n\n" + FixRoundTrailer + strconv.Itoa(i+1); !strings.HasSuffix(body, want) {
+			t.Fatalf("round %d commit = %q, want it to end with the trailer as its own paragraph %q", i+1, body, want)
 		}
 	}
 	if got := mustGit(t, wt.Dir, "log", "-1", "--format=%B", "HEAD~2"); strings.Contains(got, FixRoundTrailer) {
