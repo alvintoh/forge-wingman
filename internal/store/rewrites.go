@@ -25,6 +25,7 @@ import (
 // read with them, so one query builds a whole sample.
 const (
 	rewriteAgentLinesField  = "rewrite_agent_lines"
+	rewriteRunnerFixField   = "rewrite_runner_fix_lines"
 	rewriteOwnerLinesField  = "rewrite_owner_lines"
 	rewriteReviewFoundField = "rewrite_review_found_lines"
 	rewriteOwnerChangeField = "rewrite_owner_change_lines"
@@ -152,6 +153,7 @@ func unfoundDocID(repo string, number int) string {
 func (r *Rewrites) Record(ctx context.Context, id string, m dispatcher.Measured) error {
 	_, err := r.client.Collection(runsCollection).Doc(id).Set(ctx, map[string]any{
 		rewriteAgentLinesField:  m.AgentLines,
+		rewriteRunnerFixField:   m.RunnerFixLines,
 		rewriteOwnerLinesField:  m.OwnerLines,
 		rewriteReviewFoundField: m.ReviewFoundLines,
 		rewriteOwnerChangeField: m.OwnerChangeLines,
@@ -194,7 +196,7 @@ func mergedSamples(ctx context.Context, client *firestore.Client, limit int, kee
 		Where(rewriteMergedAtField, ">", time.Time{}).
 		OrderBy(rewriteMergedAtField, firestore.Desc).
 		Select(sizeField, repoField, prURLField, prTitleField, prNumberField,
-			rewriteMergedAtField, mergedByField, rewriteAgentLinesField, rewriteOwnerLinesField,
+			rewriteMergedAtField, mergedByField, rewriteAgentLinesField, rewriteRunnerFixField, rewriteOwnerLinesField,
 			rewriteReviewFoundField, rewriteOwnerChangeField, rewriteUnlabelledField, rewriteUnmeasuredField,
 			planModelField, stepsField).
 		Documents(ctx)
@@ -259,6 +261,7 @@ func stepModels(row map[string]any) []runner.Step {
 func rewriteOf(row map[string]any) (dispatcher.Rewrite, bool) {
 	var r dispatcher.Rewrite
 	r.AgentLines, _ = row[rewriteAgentLinesField].(int64)
+	r.RunnerFixLines, _ = row[rewriteRunnerFixField].(int64)
 	r.OwnerLines, _ = row[rewriteOwnerLinesField].(int64)
 	r.ReviewFoundLines, _ = row[rewriteReviewFoundField].(int64)
 	r.OwnerChangeLines, _ = row[rewriteOwnerChangeField].(int64)

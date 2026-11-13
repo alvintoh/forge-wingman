@@ -159,6 +159,17 @@ func TestFixRoundsCommitsOneRoundPerReviewOnThePullRequestBranch(t *testing.T) {
 	if got := strings.TrimSpace(mustGit(t, wt.Dir, "log", "-1", "--format=%an <%ae>")); got != CommitAuthorName+" <"+CommitAuthorEmail+">" {
 		t.Fatalf("last commit's author = %q, want the runner", got)
 	}
+	for i, round := range res.Rounds {
+		// Each round's commit names its number, which is how the rewrite
+		// measurement tells what the runner fixed after review from its build.
+		body := strings.TrimSpace(mustGit(t, wt.Dir, "log", "-1", "--format=%B", round.Commit))
+		if want := FixRoundTrailer + strconv.Itoa(i+1); !strings.HasSuffix(body, want) {
+			t.Fatalf("round %d commit = %q, want it to end with %q", i+1, body, want)
+		}
+	}
+	if got := mustGit(t, wt.Dir, "log", "-1", "--format=%B", "HEAD~2"); strings.Contains(got, FixRoundTrailer) {
+		t.Fatalf("the branch's own commit = %q, want only a fix round's commit to carry the trailer", got)
+	}
 	if agent.calls != 2 {
 		t.Fatalf("the agent ran %d rounds, want 2", agent.calls)
 	}
@@ -465,6 +476,35 @@ func TestFixRoundsStopsWhenTheWorktreeIsTamperedWith(t *testing.T) {
 				t.Fatalf("pushed %q, want nothing published from a tampered worktree", seams.pushed)
 			}
 		})
+	}
+}
+
+// TestFixRoundsStopsWhenTheCommitIsRefused: a git refusal to write the round's
+// commit is an infrastructure failure, so the loop stops instead of reading the
+// unchanged branch as a round that changed no file.
+func TestFixRoundsStopsWhenTheCommitIsRefused(t *testing.T) {
+	repo := initRepo(t)
+	wt := fixWorktree(t, repo)
+	agent := fixAgent()
+	edit := agent.edit
+	agent.edit = func(dir string) error {
+		if err := edit(dir); err != nil {
+			return err
+		}
+		// A lock git cannot take refuses the round's commit.
+		return os.WriteFile(filepath.Join(wt.GitDir, "index.lock"), nil, 0o600)
+	}
+	deps, _, _ := testDeps(validObjects(), agent)
+	seams := &fixSeams{t: t}
+
+	_, err := RunFixRounds(context.Background(), deps, testConfig(t, repo), wt,
+		fixLoop(t, wt, seams, findingRetry, 0))
+	var stop *StopError
+	if !errors.As(err, &stop) || stop.Outcome != OutcomeInfraFailure || stop.Reason != StopCommit {
+		t.Fatalf("err = %v, want an infrastructure failure at the commit", err)
+	}
+	if len(seams.pushed) != 0 || len(seams.reviewed) != 0 {
+		t.Fatalf("pushed %q and re-reviewed %q, want neither when the commit is refused", seams.pushed, seams.reviewed)
 	}
 }
 

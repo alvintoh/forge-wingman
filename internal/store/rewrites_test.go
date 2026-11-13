@@ -25,13 +25,18 @@ func TestRewritesRecordsTheMeasurementOnTheRunRow(t *testing.T) {
 	forget(t, client, run)
 	r := NewRewrites(client)
 	if err := r.Record(ctx, run, dispatcher.Measured{
-		Rewrite: dispatcher.Rewrite{AgentLines: 12, OwnerLines: 4}, MergedAt: mergeAt, MergedBy: "wingman[bot]",
+		Rewrite: dispatcher.Rewrite{AgentLines: 12, RunnerFixLines: 5, OwnerLines: 4}, MergedAt: mergeAt, MergedBy: "wingman[bot]",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	row := readRow(t, client, run)
 	if row[rewriteAgentLinesField] != int64(12) || row[rewriteOwnerLinesField] != int64(4) {
 		t.Fatalf("row = %v, want 12 agent lines and 4 owner lines", row)
+	}
+	// The runner's own fix lines are recorded beside the agent's, so the share of
+	// the rate they carry stays readable after the merge.
+	if row[rewriteRunnerFixField] != int64(5) {
+		t.Fatalf("runner fix lines = %v, want the 5 the runner fixed after review", row[rewriteRunnerFixField])
 	}
 	if at, ok := row[rewriteMergedAtField].(time.Time); !ok || !at.Equal(mergeAt) {
 		t.Fatalf("merged at %v, want %v", row[rewriteMergedAtField], mergeAt)
@@ -259,7 +264,7 @@ func TestRecentReadsTheModelsAndTheWholeProjection(t *testing.T) {
 		sizeField: "M", repoField: "octo/scratch", prURLField: "https://github.com/octo/scratch/pull/7",
 		prTitleField: "feat: add the widget", mergedByField: "wingman[bot]", prNumberField: int64(7),
 		rewriteMergedAtField:   at,
-		rewriteAgentLinesField: int64(100), rewriteOwnerLinesField: int64(20),
+		rewriteAgentLinesField: int64(100), rewriteRunnerFixField: int64(8), rewriteOwnerLinesField: int64(20),
 		rewriteReviewFoundField: int64(15), rewriteOwnerChangeField: int64(3), rewriteUnlabelledField: int64(2),
 		rewriteUnmeasuredField: int64(1), planModelField: "p/plan",
 		stepsField: []runner.Step{
@@ -293,7 +298,8 @@ func TestRecentReadsTheModelsAndTheWholeProjection(t *testing.T) {
 		MergedAt: got[0].MergedAt, PR: 7, Title: "feat: add the widget",
 		PlanModel: "p/plan", BuildModel: "p/build", ReviewModel: "p/review",
 		Rewrite: dispatcher.Rewrite{
-			AgentLines: 100, OwnerLines: 20, ReviewFoundLines: 15, OwnerChangeLines: 3, UnlabelledLines: 2,
+			AgentLines: 100, RunnerFixLines: 8, OwnerLines: 20,
+			ReviewFoundLines: 15, OwnerChangeLines: 3, UnlabelledLines: 2,
 			UnmeasuredCommits: 1,
 		},
 		MergedBy: "wingman[bot]",
