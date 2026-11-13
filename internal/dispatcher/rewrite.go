@@ -24,11 +24,16 @@ const (
 )
 
 // Rewrite is one merged agent PR's measured lines: what the agent wrote, and
-// what the owner changed after the agent's PR — the rate's numerator and its
-// denominator.
+// what the owner changed after the agent's PR, with RunnerFixLines kept inside
+// AgentLines.
 type Rewrite struct {
 	// AgentLines is every line a commit authored as the runner added or removed.
 	AgentLines int64
+	// RunnerFixLines is the part of AgentLines a commit a fix round made added
+	// or removed: what the runner fixed after review, kept beside the rate so
+	// its effect on it stays visible. Zero for a merge measured before a fix
+	// round's commit carried its trailer.
+	RunnerFixLines int64
 	// OwnerLines is every line a commit by anyone else added or removed.
 	OwnerLines int64
 	// ReviewFoundLines is the part of OwnerLines a Rework: review-found trailer
@@ -54,6 +59,11 @@ const (
 
 // reworkTrailer matches a Rework trailer line in a commit message.
 var reworkTrailer = regexp.MustCompile(`(?mi)^Rework:[ \t]*(review-found|owner-change)[ \t]*\r?$`)
+
+// fixRoundTrailer matches the trailer a commit a fix round made carries: the
+// round's own number after runner.FixRoundTrailer, which the round writes from
+// the same constant.
+var fixRoundTrailer = regexp.MustCompile(`(?mi)^` + regexp.QuoteMeta(runner.FixRoundTrailer) + `\d+[ \t]*\r?$`)
 
 // reworkOf is the Rework trailer value in message, or "" when it carries none.
 func reworkOf(message string) string {
@@ -86,7 +96,8 @@ type Commit struct {
 	// Login is the account GitHub resolved the author to, empty when it resolved
 	// none; it is the only identity a commit is attributed by.
 	Login string
-	// Message is the full commit message, whose trailers mark what a rewrite is.
+	// Message is the full commit message, whose trailers label an owner's rework
+	// and mark a fix round's commit.
 	Message string
 	// Unmeasured is set when GitHub gave no line counts for the commit.
 	Unmeasured bool
@@ -99,7 +110,9 @@ func (c Commit) Lines() int64 { return c.Additions + c.Deletions }
 
 // RewriteOf sums commits into the lines the agent wrote and the lines the owner
 // changed: a commit is the agent's only when GitHub resolved its author to the
-// runner's own login, since a name and an email are free text anyone can set.
+// runner's own login, since a name and an email are free text anyone can set. A
+// fix round's commit is the agent's too, and is counted again into
+// RunnerFixLines, so the rate reads a run's own fixes the way it reads a build.
 func RewriteOf(commits []Commit) Rewrite {
 	var r Rewrite
 	for _, c := range commits {
@@ -108,6 +121,9 @@ func RewriteOf(commits []Commit) Rewrite {
 		}
 		if c.Login != "" && strings.EqualFold(c.Login, runner.CommitAuthorLogin) {
 			r.AgentLines += c.Lines()
+			if fixRoundTrailer.MatchString(c.Message) {
+				r.RunnerFixLines += c.Lines()
+			}
 			continue
 		}
 		r.OwnerLines += c.Lines()
@@ -227,6 +243,7 @@ func Lines(samples []Sample) Rewrite {
 	var lines Rewrite
 	for _, s := range samples {
 		lines.AgentLines += s.AgentLines
+		lines.RunnerFixLines += s.RunnerFixLines
 		lines.OwnerLines += s.OwnerLines
 		lines.ReviewFoundLines += s.ReviewFoundLines
 		lines.OwnerChangeLines += s.OwnerChangeLines

@@ -277,7 +277,8 @@ func measureMerged(ctx context.Context, d Deps, repo string, pr ClosedPR) (bool,
 		return false, err
 	}
 	d.Logger.Info("rewriteMeasured", "run", row.RunID, "repo", repo, "pr", pr.Number,
-		"agentLines", measured.AgentLines, "ownerLines", measured.OwnerLines, "rate", measured.Rate(),
+		"agentLines", measured.AgentLines, "runnerFixLines", measured.RunnerFixLines,
+		"ownerLines", measured.OwnerLines, "rate", measured.Rate(),
 		"mergedBy", mergedBy)
 	return true, nil
 }

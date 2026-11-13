@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -16,6 +17,12 @@ import (
 // show when rounds two and three stop resolving findings, and the cap comes down
 // from that evidence.
 const DefaultReviewFixRounds = 3
+
+// FixRoundTrailer prefixes the trailer a fix round's commit carries, holding the
+// round's agent-call number (Step.Round, which skips one when a backup model
+// answers): the rewrite measurement reads it to count the lines the runner fixed
+// after review, which stay the agent's lines in the rate.
+const FixRoundTrailer = "Fix-Round: "
 
 // fixRoundsBudget is how long the whole fix-round loop may take: NFR-1's
 // whole-run duration ceiling, measured from the loop's own start, so a round, its
@@ -276,14 +283,16 @@ func namesFinding(entry, text string) bool {
 }
 
 // fixRoundCommit commits a round's edits to the pull request's branch as the
-// runner, returning the commit it made and whether it made one. It verifies the
+// runner, returning the commit it made and whether it made one. The commit
+// carries FixRoundTrailer and the round's agent-call number, which is how the
+// rewrite measurement tells what the runner fixed after review. It verifies the
 // worktree first, so a changed git configuration or a moved HEAD stops the loop
 // instead of committing somewhere else, and it runs the secret and workflow
 // checks the build's own commit runs, since the commit goes to a live branch.
 // expected is the commit the branch must be at when the round's edits are
 // committed: a branch the agent moved elsewhere would carry them onto the wrong
 // base.
-func fixRoundCommit(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, expected, text string) (string, bool, error) {
+func fixRoundCommit(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, round int, expected, text string) (string, bool, error) {
 	if err := wt.Verify(ctx); err != nil {
 		switch {
 		case errors.Is(err, ErrGitTampered):
@@ -310,7 +319,7 @@ func fixRoundCommit(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree
 		msg = FallbackCommitMessage(c.Ticket, pending)
 		d.Logger.Info("commitMessageFallback", "phase", string(PhaseFix))
 	}
-	if _, err := wt.Commit(ctx, msg.Text()); err != nil {
+	if _, err := wt.Commit(ctx, msg.Text()+"\n\n"+FixRoundTrailer+strconv.Itoa(round)); err != nil {
 		return "", false, stopWith(OutcomeInfraFailure, StopCommit, err)
 	}
 	after, err := wt.HeadCommit(ctx)
@@ -410,7 +419,7 @@ func RunFixRounds(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, 
 		round := ReviewFixRound{Step: sum.Steps[len(sum.Steps)-1], Findings: fixFindingLines(issued),
 			Declined: parseFixDeclines(fixText)}
 
-		sha, committed, err := fixRoundCommit(ctx, d, c, wt, expected, fixText)
+		sha, committed, err := fixRoundCommit(ctx, d, c, wt, num, expected, fixText)
 		if err != nil {
 			return fail(err)
 		}
