@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode/utf8"
 )
 
 // DefaultReviewFixRounds is how many fix rounds the runner makes from a pull
@@ -122,7 +123,8 @@ type FixRounds struct {
 	// Findings is the review's findings on the pull request, one finding per
 	// line; empty means there is nothing to fix.
 	Findings string
-	// Rounds caps the loop; zero uses DefaultReviewFixRounds.
+	// Rounds lowers the cap below DefaultReviewFixRounds; zero, a negative number
+	// or one above it uses DefaultReviewFixRounds.
 	Rounds int
 	// Push publishes a round's commit to branch. Required.
 	Push func(ctx context.Context, branch, commit string) error
@@ -249,16 +251,28 @@ func isDeclined(f pendingFinding, declined []DeclinedFinding) bool {
 	return slices.ContainsFunc(declined, func(d DeclinedFinding) bool { return namesFinding(d.Finding, f.text) })
 }
 
+// minQuotedFindingChars is how long the shorter of an entry and a finding must be
+// for one containing the other to name it: a shorter entry names a finding only
+// by equalling it, so a word cannot suppress an unrelated finding.
+const minQuotedFindingChars = 24
+
 // namesFinding reports whether a declined-findings entry names a finding: the
-// entry quotes it, or the finding quotes the entry. A model rewords one side, and
-// a mismatch only ever costs a round — a finding no round resolves stays open and
-// stops the loop anyway, so nothing is lost.
+// entry equals it, or one quotes the other at length. A model rewords one side,
+// and a mismatch only ever costs a round — a finding no round resolves stays open
+// and stops the loop anyway, so nothing is lost; a false match would skip one.
 func namesFinding(entry, text string) bool {
 	e, t := strings.ToLower(strings.TrimSpace(entry)), strings.ToLower(strings.TrimSpace(text))
 	if e == "" || t == "" {
 		return false
 	}
-	return strings.Contains(e, t) || strings.Contains(t, e)
+	if e == t {
+		return true
+	}
+	short, long := e, t
+	if len(short) > len(long) {
+		short, long = long, short
+	}
+	return utf8.RuneCountInString(short) >= minQuotedFindingChars && strings.Contains(long, short)
 }
 
 // fixRoundCommit commits a round's edits to the pull request's branch as the
@@ -347,7 +361,7 @@ func RunFixRounds(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, 
 		return ReviewFixResult{}, errors.New("a fix-round loop needs both a push and a review step")
 	}
 	capped := r.Rounds
-	if capped <= 0 {
+	if capped <= 0 || capped > DefaultReviewFixRounds {
 		capped = DefaultReviewFixRounds
 	}
 	open := reviewPending(r.Findings)

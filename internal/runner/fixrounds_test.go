@@ -617,6 +617,65 @@ func TestFixRoundsCapsAtTheDefault(t *testing.T) {
 	}
 }
 
+// TestFixRoundsNeverRunsMoreThanTheDefaultRounds: a caller's Rounds only lowers the
+// cap, so progress on every round still stops at the default, or below it.
+func TestFixRoundsNeverRunsMoreThanTheDefaultRounds(t *testing.T) {
+	tests := []struct {
+		name   string
+		rounds int
+		want   int
+	}{{"above the default", 5, DefaultReviewFixRounds}, {"below the default", 2, 2}}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := initRepo(t)
+			agent := fixAgent()
+			deps, _, _ := testDeps(validObjects(), agent)
+			seams := &fixSeams{t: t, blocks: []string{
+				findingTimeout + "\n" + findingSwallow + "\n" + findingLogLine,
+				findingSwallow + "\n" + findingLogLine,
+				findingLogLine,
+			}}
+			findings := strings.Join([]string{findingRetry, findingTimeout, findingSwallow, findingLogLine}, "\n")
+
+			wt := fixWorktree(t, repo)
+			res, err := RunFixRounds(context.Background(), deps, testConfig(t, repo), wt,
+				fixLoop(t, wt, seams, findings, tt.rounds))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Stop != FixStopCap || len(res.Rounds) != tt.want || agent.calls != tt.want {
+				t.Fatalf("%d rounds and %d agent calls with stop %q, want %d rounds and the cap stop", len(res.Rounds), agent.calls, res.Stop, tt.want)
+			}
+		})
+	}
+}
+
+// TestNamesFindingNeedsAnExactMatchOrALongQuote: a short entry names only the
+// finding it equals, and one containing the other names it at 24 characters.
+func TestNamesFindingNeedsAnExactMatchOrALongQuote(t *testing.T) {
+	const long = "the retry never bounds its attempts"
+	tests := []struct {
+		name        string
+		entry, text string
+		want        bool
+	}{
+		{"a short entry inside an unrelated finding", "the retry ", "the retry never bounds its attempts", false},
+		{"a short entry equal to a short finding", " Retry ", "retry", true},
+		{"a long entry quoting a shorter finding", long + " — see the loop", long, true},
+		{"a long entry quoted by a longer finding", long, "review: " + long + " in the client", true},
+		{"a one-character entry", "x", long, false},
+		{"an empty entry", "", long, false},
+		{"an empty finding", long, "  ", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := namesFinding(tt.entry, tt.text); got != tt.want {
+				t.Fatalf("namesFinding(%q, %q) = %v, want %v", tt.entry, tt.text, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestFixRoundsStopsWithItsFindingsWhenTheBudgetIsSpent is AC2's budget half: no
 // round starts once the loop's own share of the run cap is spent.
 func TestFixRoundsStopsWithItsFindingsWhenTheBudgetIsSpent(t *testing.T) {
