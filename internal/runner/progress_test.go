@@ -39,6 +39,9 @@ func TestReadProgressRecordsWhatTheAgentDid(t *testing.T) {
 	if !(agentProgress{noProgress: DEFAULT_NO_PROGRESS_STEPS}).stalled(PhaseBuild) {
 		t.Fatal("a build phase at the limit did not stall")
 	}
+	if !(agentProgress{noProgress: DEFAULT_NO_PROGRESS_STEPS}).stalled(PhaseFix) {
+		t.Fatal("a fix round at the limit did not stall, though it must change a file to commit")
+	}
 	if (agentProgress{noProgress: DEFAULT_NO_PROGRESS_STEPS - 1}).stalled(PhaseBuild) {
 		t.Fatal("a build phase under the limit stalled")
 	}

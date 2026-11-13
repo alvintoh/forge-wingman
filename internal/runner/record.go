@@ -26,6 +26,10 @@ const (
 	// a model other than the builder's checks the diff against the ticket's
 	// acceptance criteria.
 	PhaseReview Phase = "review"
+	// PhaseFix is a fix round the runner makes from a pull request review's
+	// findings after the pull request opened: the build's own session, given the
+	// findings, committed to the pull request's branch.
+	PhaseFix    Phase = "fix"
 	PhaseCommit Phase = "commit"
 	PhasePR     Phase = "pr"
 )
@@ -33,7 +37,7 @@ const (
 // KnownPhase reports whether p is one of the phases above.
 func KnownPhase(p Phase) bool {
 	switch p {
-	case PhaseProjection, PhaseWorktree, PhaseAgentStart, PhasePlan, PhaseBuild, PhaseReview, PhaseCommit, PhasePR:
+	case PhaseProjection, PhaseWorktree, PhaseAgentStart, PhasePlan, PhaseBuild, PhaseReview, PhaseFix, PhaseCommit, PhasePR:
 		return true
 	}
 	return false
@@ -294,6 +298,9 @@ type Record struct {
 	// totals alone cannot tell from slow work.
 	ReadFiles         []string `firestore:"read_files"`
 	PeakContextTokens int64    `firestore:"peak_context_tokens"`
+	// FixRounds is each fix round the runner made on the pull request after it
+	// opened: the findings that drove it, the ones it declined and its counts.
+	FixRounds []ReviewFixRound `firestore:"fix_rounds"`
 }
 
 // DiffLines is the size of the branch's diff against its base.
@@ -769,6 +776,7 @@ func (s Summary) apply(rec *Record) {
 	rec.EditedFiles = s.EditedFiles
 	rec.ReadFiles = s.ReadFiles
 	rec.PeakContextTokens = s.PeakContextTokens
+	rec.FixRounds = s.FixRounds
 	rec.DiffLines = s.DiffLines
 	for p, ms := range s.DurationsMS {
 		rec.DurationsMS[p] = ms
