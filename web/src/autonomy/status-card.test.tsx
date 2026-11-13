@@ -11,9 +11,8 @@ import type { MergeState } from "./types";
 
 const merge: MergeState = {
   switch_on: true,
-  rate_allows: true,
   rate_value: "7.4%",
-  limit: "20.0%",
+  guideline: "20.0%",
   window: 10,
   effective: true,
   reason: "on",
@@ -37,7 +36,7 @@ describe("MergeStatusCard", () => {
   it("states the pooled rate with no all-projects label", async () => {
     const markup = await card();
     expect(markup).toContain(
-      "the trailing rewrite rate is 7.4% over the last 10 PRs a human merged, at or under the 20% bar",
+      "the trailing rewrite rate is 7.4% over the last 10 PRs a human merged, at or under the 20% guideline",
     );
     expect(markup).not.toContain("all projects");
   });

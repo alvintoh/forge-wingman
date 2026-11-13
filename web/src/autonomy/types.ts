@@ -1,19 +1,24 @@
 // MergeState is the auto-merge state the endpoint serves: the owner's switch, the
-// trailing rewrite rate over the PRs a human merged, the bar it is gated on, the
-// escaped PR that holds it off and the reason the endpoint gives for both.
+// trailing rewrite rate over the PRs a human merged, the guideline it is shown
+// against, the escaped PR that holds auto-merge off and the reason the endpoint
+// gives for both. The rate is a guideline and holds nothing: the switch alone
+// decides.
 export type MergeState = {
   switch_on: boolean;
-  rate_allows: boolean;
   rate_value: string;
-  limit: string;
+  // Guideline is the fixed figure the rate is shown against, 20%, which blocks
+  // nothing.
+  guideline: string;
   // Window is how many trailing PRs a human merged the rate covers.
   window: number;
   effective: boolean;
   // Reason is the endpoint's own stable token for what turns auto-merge off,
-  // which reasonText words.
+  // which reasonText words: an unreadable switch, the switch off, an escaped PR,
+  // or "on".
   reason: string;
   // RateReason is the rate's own token, which reason replaces while the switch is off or
-  // a latch holds: it says whether a rate exists to show.
+  // a latch holds: it says whether a rate exists to show and where it sits against the
+  // guideline.
   rate_reason: string;
   // EscapedPR, EscapedRepo, EscapedBy and EscapedReason name the auto-merged PR
   // that escaped the owner's reading, zero and empty while none holds.
@@ -118,7 +123,9 @@ export type RewriteView = {
   by_size: SizeRow[];
   by_model: Record<Phase, ModelRow[]>;
   by_repo: RepoRow[];
-  bars: { rollback: number };
+  // guideline is the fixed figure a chart draws the rate against: 20%, which
+  // blocks nothing.
+  bars: { guideline: number };
 };
 
 // RewriteScope is the repository the rewrite section is narrowed to, with how many of the

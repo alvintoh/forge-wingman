@@ -140,6 +140,7 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	verdict := decideAutoMerge(ctx, logger, *runID, store.NewAutoMergeSwitches(fsc), store.NewRewrites(fsc),
 		rec.Ticket(), sum, runner.FailedGate(*checkReport), check)
 	check.Hold = verdict.Hold
+	check.Rate = verdict.RateWords
 	title, body, err := renderPR(string(tmpl), rec, sum, runner.FailedGate(*checkReport), *runURL, *loopDetail, check)
 	if err != nil {
 		return err
@@ -218,9 +219,12 @@ type prCheck struct {
 	Supersedes int
 	// Retried is set when the owner replaced it by retrying the run with a note.
 	Retried bool
-	// Hold is what keeps auto-merge off — the rate against the bar, or the
-	// escaped PR — with the words the PR body carries.
+	// Hold is what keeps auto-merge off — the switch, its settings unread, or
+	// the escaped PR — with the words the PR body carries.
 	Hold autoMergeHold
+	// Rate is the trailing rewrite rate's standing against the guideline, in the
+	// words the PR body carries. The rate is a guideline: it holds nothing.
+	Rate string
 	// TicketChanged is the change recorded on the run's ticket after it was
 	// claimed, nil when the ticket did not change.
 	TicketChanged *dispatcher.TicketChange
@@ -358,9 +362,10 @@ func draftPR(sum runner.Summary, check prCheck) bool {
 // changed after the run read it — sized L, in the review sample, touching a
 // workflow, failing a check gate, changing front-end code, holding a
 // provisional decision the owner has not confirmed, a size-M or L run with no
-// recorded plan, or an auto-merge hold — the switch, the bar, the escape latch
-// or the rewrite rate. A size-S run needs no plan: its write set is never
-// trusted, so the absence of one holds nothing.
+// recorded plan, or an auto-merge hold — the switch, its settings or the escape
+// latch. A size-S run needs no plan: its write set is never trusted, so the
+// absence of one holds nothing. The rewrite rate is a guideline and holds
+// nothing.
 func ownerAttention(runID string, t runner.Ticket, sum runner.Summary, failedGate string, check prCheck, hold autoMergeHold) bool {
 	return waitReason(runID, t, sum, check, hold.Reason) != "" ||
 		sum.StopReason == runner.StopWorkflowChange || failedGate != "" || (!check.Planned && t.Size != "S")
@@ -387,8 +392,8 @@ func waitReason(runID string, t runner.Ticket, sum runner.Summary, check prCheck
 }
 
 // autoMergeHold is what holds every runner PR from merging itself, with the
-// words naming the rate, the bar or the escaped PR, which the run's wait reason
-// and its PR body carry.
+// words naming the switch, its settings or the escaped PR, which the run's wait
+// reason and its PR body carry.
 type autoMergeHold struct {
 	Reason runner.WaitReason
 	Detail string
@@ -397,33 +402,27 @@ type autoMergeHold struct {
 // present reports whether a hold is set.
 func (h autoMergeHold) present() bool { return h.Reason != "" }
 
-// holdingRate maps the rate's verdict onto the hold a PR waits under: a rate at
-// or under the bar holds nothing, exactly at the bar included, and each reason
-// the rate cannot be used names itself.
-func holdingRate(d dispatcher.AutoMergeDecision, barPercent int) autoMergeHold {
-	switch d.Reason {
-	case dispatcher.AutoMergeReasonRateAboveBar:
-		return autoMergeHold{runner.WaitRateAboveBar, fmt.Sprintf(
-			"the trailing rewrite rate is %s over the last %d PRs a human merged, above the %d%% bar",
-			d.RateText(), dispatcher.TrailingPRs, barPercent)}
-	case dispatcher.AutoMergeReasonTooFewMeasured:
-		return autoMergeHold{runner.WaitRateTooFewMeasured, fmt.Sprintf(
+// rateWords words the rate's standing against the guideline for the PR body:
+// whether it is at or under it, above it, or why it could not be computed. The
+// rate is a guideline, so the words never say it holds the merge.
+func rateWords(d dispatcher.AutoMergeDecision) string {
+	switch {
+	case d.WithinGuideline:
+		return fmt.Sprintf(
+			"the trailing rewrite rate is %s over the last %d PRs a human merged, at or under the %d%% guideline",
+			d.RateText(), dispatcher.TrailingPRs, dispatcher.RateGuidelinePercent)
+	case d.Reason == dispatcher.AutoMergeReasonAboveGuideline:
+		return fmt.Sprintf(
+			"the trailing rewrite rate is %s over the last %d PRs a human merged, above the %d%% guideline",
+			d.RateText(), dispatcher.TrailingPRs, dispatcher.RateGuidelinePercent)
+	case d.Reason == dispatcher.AutoMergeReasonTooFewMeasured:
+		return fmt.Sprintf(
 			"the trailing rewrite rate cannot be computed: %d of %d PRs a human merged are measured, or one carries an unmeasured commit",
-			d.PRs, dispatcher.TrailingPRs)}
-	case dispatcher.AutoMergeReasonNoAgentLines:
-		return autoMergeHold{runner.WaitRateNoAgentLines,
-			"the trailing rewrite rate cannot be computed: the measured PRs carry no agent lines"}
-	case dispatcher.AutoMergeReasonEvidenceUnread:
-		return autoMergeHold{runner.WaitRateUnread,
-			"the trailing rewrite rate cannot be computed: the measured merges could not be read"}
+			d.PRs, dispatcher.TrailingPRs)
+	case d.Reason == dispatcher.AutoMergeReasonNoAgentLines:
+		return "the trailing rewrite rate cannot be computed: the measured PRs carry no agent lines"
 	}
-	// A reason this does not know holds, unless the decision says the rate is within
-	// the bar: a new reason must not release auto-merge by being unhandled.
-	if !d.WithinBar {
-		return autoMergeHold{runner.WaitRateUnread,
-			"the trailing rewrite rate cannot be computed: its verdict was not one this build reads"}
-	}
-	return autoMergeHold{}
+	return "the trailing rewrite rate cannot be computed: the measured merges could not be read"
 }
 
 // recentRewrites is the store of measured PRs the rewrite rate is read from.
@@ -432,15 +431,15 @@ type recentRewrites interface {
 }
 
 // autoMergeRate reads the trailing rewrite rate over the PRs a human merged and
-// compares it to barPercent. Evidence that cannot be read reports its own
-// reason, which holds auto-merge off.
-func autoMergeRate(ctx context.Context, logger *slog.Logger, runID string, r recentRewrites, barPercent int) dispatcher.AutoMergeDecision {
+// places it against the guideline. Evidence that cannot be read reports its own
+// reason, which the PR body names and which holds nothing.
+func autoMergeRate(ctx context.Context, logger *slog.Logger, runID string, r recentRewrites) dispatcher.AutoMergeDecision {
 	trailing, err := r.RecentHumanMerged(ctx, dispatcher.TrailingPRs)
 	if err != nil {
 		logger.Warn("autoMergeEvidenceUnread", "run", runID, "err", err.Error())
 		return dispatcher.AutoMergeDecision{Reason: dispatcher.AutoMergeReasonEvidenceUnread}
 	}
-	return dispatcher.AutoMergeOn(dispatcher.Evidence{Trailing: trailing}, float64(barPercent)/100)
+	return dispatcher.AutoMergeOn(dispatcher.Evidence{Trailing: trailing})
 }
 
 // rateAttrs are the rate's log attributes: the reason always, and the numbers
@@ -466,67 +465,48 @@ type autoMergeVerdict struct {
 	Merge bool
 	// SwitchOn is the owner's switch, off where it could not be read.
 	SwitchOn bool
-	// Bar is the bar as a percentage, the default where none could be read.
-	Bar int
-	// Rate is the trailing rewrite rate's verdict over the PRs a human merged.
+	// Rate is the trailing rewrite rate's standing over the PRs a human merged.
 	Rate dispatcher.AutoMergeDecision
+	// RateWords is that standing in the words the PR body carries.
+	RateWords string
 	// Hold is what keeps auto-merge off, empty when it is on.
 	Hold autoMergeHold
 	// WaitReason is the run's wait reason, the first that holds.
 	WaitReason runner.WaitReason
 }
 
-// decideAutoMerge reads the owner's settings — the switch, the bar and the
-// escape latch — and, while the switch is on, the rewrite rate, and decides
-// whether the run's PR is marked eligible for auto-merge. A switch that cannot
-// be read, a stored bar that is not a number from 1 to 100, an escaped PR and a
-// rate that cannot be computed each hold auto-merge off with their own words.
+// decideAutoMerge reads the owner's settings — the switch and the escape latch
+// — and the rewrite rate, and decides whether the run's PR is marked eligible
+// for auto-merge. The switch alone decides it: a switch that cannot be read and
+// an escaped PR each hold auto-merge off with their own words, and the rate is
+// read for the PR body's own line and holds nothing.
 func decideAutoMerge(ctx context.Context, logger *slog.Logger, runID string, switches autoMergeSwitchStore, rewrites recentRewrites,
 	t runner.Ticket, sum runner.Summary, failedGate string, check prCheck) autoMergeVerdict {
 	setting, err := switches.Read(ctx)
-	bar := store.DefaultBarPercent
 	hold := autoMergeHold{}
 	switch {
-	case err != nil && errors.Is(err, store.ErrBarNotInRange):
-		logger.Warn("autoMergeBarInvalid", "run", runID, "err", err.Error())
-		hold = autoMergeHold{runner.WaitBarInvalid, "the stored auto-merge bar is not a whole number from 1 to 100, so auto-merge is off"}
 	case err != nil:
 		logger.Warn("autoMergeSettingsUnread", "run", runID, "err", err.Error())
 		hold = autoMergeHold{runner.WaitAutoMergeUnread, "the auto-merge settings could not be read, so auto-merge is off"}
-	default:
-		bar = setting.BarPercent
-		if setting.Escaped.PR > 0 {
-			hold = autoMergeHold{runner.WaitEscapedPR, setting.Escaped.Words()}
-		}
+	case setting.Escaped.PR > 0:
+		hold = autoMergeHold{runner.WaitEscapedPR, setting.Escaped.Words()}
 	}
 	switchOn := err == nil && setting.Enabled
-	rate := dispatcher.AutoMergeDecision{Reason: dispatcher.AutoMergeReasonSwitchOff}
-	if switchOn {
-		rate = autoMergeRate(ctx, logger, runID, rewrites, bar)
-		// The latch is the master hold, and the rate names itself beside it when
-		// both apply, so the words carry both facts.
-		rateHold := holdingRate(rate, bar)
-		switch {
-		case !hold.present():
-			hold = rateHold
-		case rateHold.present():
-			hold.Detail += "; " + rateHold.Detail
-		}
-	}
+	rate := autoMergeRate(ctx, logger, runID, rewrites)
 	return autoMergeVerdict{
 		Merge:      autoMerge(switchOn, runID, t, sum, failedGate, check, hold),
 		SwitchOn:   switchOn,
-		Bar:        bar,
 		Rate:       rate,
+		RateWords:  rateWords(rate),
 		Hold:       hold,
 		WaitReason: waitReason(runID, t, sum, check, hold.Reason),
 	}
 }
 
-// attrs are the verdict's log attributes: the rate's and the bar, then the merge,
-// the switch it followed and the hold that kept it off.
+// attrs are the verdict's log attributes: the rate's and the guideline, then
+// the merge, the switch it followed and the hold that kept it off.
 func (v autoMergeVerdict) attrs() []any {
-	attrs := append(rateAttrs(v.Rate), "rateBar", strconv.Itoa(v.Bar)+"%", "autoMerge", v.Merge, "switchOn", v.SwitchOn)
+	attrs := append(rateAttrs(v.Rate), "rateGuideline", strconv.Itoa(dispatcher.RateGuidelinePercent)+"%", "autoMerge", v.Merge, "switchOn", v.SwitchOn)
 	if v.Hold.present() {
 		attrs = append(attrs, "hold", string(v.Hold.Reason))
 	}
@@ -569,7 +549,7 @@ func buildSummary(logger *slog.Logger, raw, attemptID string, t runner.Ticket, n
 // report is part of the body whether or not they kept it a draft.
 func renderPR(tmpl string, rec runner.Record, sum runner.Summary, failedGate, runURL, loopDetail string, check prCheck) (title, body string, err error) {
 	t := rec.Ticket()
-	body, err = runner.PRBody(tmpl, t, sum.PRSummary, failedGate, runURL, loopDetail, check.Overlap, check.OutOfPlan, check.Unread, check.FrontEnd, !check.Planned && t.Size != "S", sum.ReviewFindings, sum.ReviewFindingsOmitted, sum.ReviewSecondRound, sum.GuardsUntested, runner.OpenFindings(sum.ReviewFindingsOpen), check.Provisional, check.Supersedes, check.Retried, check.Hold.Detail, check.ticketDrift(t.Body))
+	body, err = runner.PRBody(tmpl, t, sum.PRSummary, failedGate, runURL, loopDetail, check.Overlap, check.OutOfPlan, check.Unread, check.FrontEnd, !check.Planned && t.Size != "S", sum.ReviewFindings, sum.ReviewFindingsOmitted, sum.ReviewSecondRound, sum.GuardsUntested, runner.OpenFindings(sum.ReviewFindingsOpen), check.Provisional, check.Supersedes, check.Retried, check.Rate, check.Hold.Detail, check.ticketDrift(t.Body))
 	if err != nil {
 		return "", "", err
 	}

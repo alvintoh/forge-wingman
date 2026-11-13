@@ -16,7 +16,7 @@ describe("RewriteRateView", () => {
       }),
     );
     expect(markup).toContain(
-      "Rewrite rate over the trailing 10 PRs a human merged is 7.4%; bar 20%",
+      "Rewrite rate over the trailing 10 PRs a human merged is 7.4%; guideline 20%",
     );
     expect(markup).not.toContain("all projects");
   });

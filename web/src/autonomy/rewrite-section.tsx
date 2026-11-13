@@ -60,7 +60,7 @@ type RewriteSectionProps = { rewrite: RewriteView; scope: RewriteScope | null; b
 // ten PRs the trend is one line and the rest is drawn from what there is.
 export function RewriteSection({ rewrite, scope, busy }: RewriteSectionProps) {
   const first = rewrite.tiles[0];
-  const bar = rewrite.bars.rollback;
+  const bar = rewrite.bars.guideline;
   const trended = rewrite.by_repo.filter((repo) => repo.series.length > 0);
   const partial = first !== undefined && first.prs.length < first.asked;
   // Nothing to divide only where no PR in the read has agent lines, since the charts and

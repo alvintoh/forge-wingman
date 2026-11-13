@@ -9,8 +9,8 @@ export type InboxRun = {
   repo: string;
   pr_url: string;
   wait_reason: string;
-  // wait_detail names what holds auto-merge — the rate against the bar, or the
-  // escaped PR — in the run record's own words.
+  // wait_detail names what holds auto-merge — the owner's switch, its settings
+  // unread, or the escaped PR — in the run record's own words.
   wait_detail?: string;
   updated_at: string;
   title?: string;

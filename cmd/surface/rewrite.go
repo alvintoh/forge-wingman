@@ -25,9 +25,9 @@ type rewriteView struct {
 
 // bars are the lines a chart of the rate draws.
 type bars struct {
-	// Rollback is the bar the trailing rate is drawn against: the auto-merge
-	// bar, the owner's stored one or the default.
-	Rollback float64 `json:"rollback"`
+	// Guideline is the fixed figure the trailing rate is drawn against: 20%,
+	// which is a guideline and holds nothing.
+	Guideline float64 `json:"guideline"`
 }
 
 // rewriteTile is one trailing window: the PRs it covers, the count it asked for
@@ -128,7 +128,7 @@ type repoRewrite struct {
 // renderRewrite renders the rewrite figures of the measured merges, newest
 // first. Every list is rendered whether or not it holds anything, so a view
 // narrowing to one of them reads an empty list rather than a null.
-func renderRewrite(samples []dispatcher.Sample, bar float64) rewriteView {
+func renderRewrite(samples []dispatcher.Sample) rewriteView {
 	samples = withModelIDs(samples)
 	return rewriteView{
 		Tiles:   renderTiles(dispatcher.Tiles(samples)),
@@ -137,7 +137,7 @@ func renderRewrite(samples []dispatcher.Sample, bar float64) rewriteView {
 		BySize:  renderSizes(dispatcher.BySize(samples)),
 		ByModel: renderModels(dispatcher.ByModel(samples)),
 		ByRepo:  renderRepos(dispatcher.ByRepo(samples)),
-		Bars:    bars{Rollback: bar},
+		Bars:    bars{Guideline: dispatcher.RateGuideline},
 	}
 }
 

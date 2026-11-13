@@ -11,16 +11,17 @@ import (
 	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
-// The window the rewrite rate is measured over, and the bar it is measured
-// against when the owner has set none.
+// The window the rewrite rate is measured over, and the guideline it is shown
+// against. The guideline blocks nothing: the owner's switch alone decides
+// auto-merge.
 const (
 	// TrailingPRs is the window the trailing rate covers.
 	TrailingPRs = 10
-	// DefaultAutoMergeBarPercent is the bar while the owner has set none, as the
-	// percentage the stored setting holds; the store reads it for its own default.
-	DefaultAutoMergeBarPercent = 20
-	// DefaultAutoMergeBar is the same bar as a fraction, which the rate compares.
-	DefaultAutoMergeBar = float64(DefaultAutoMergeBarPercent) / 100
+	// RateGuidelinePercent is the rate shown as a guideline, as the percentage a
+	// view words.
+	RateGuidelinePercent = 20
+	// RateGuideline is the same guideline as a fraction, which the rate compares.
+	RateGuideline = float64(RateGuidelinePercent) / 100
 )
 
 // Rewrite is one merged agent PR's measured lines: what the agent wrote, and

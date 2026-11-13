@@ -192,8 +192,8 @@ func TestInboxShowsAutoMergeOffOnlyWhereNoNamedReasonHoldsThePR(t *testing.T) {
 
 func TestInboxNamesWhatHoldsAutoMerge(t *testing.T) {
 	inbox := &stubInbox{runs: []store.InboxRun{{
-		Run: "held", Ticket: "ABC-1", WaitReason: runner.WaitRateAboveBar,
-		WaitDetail: "the trailing rewrite rate is 23.4% over the last 10 PRs a human merged, above the 20% bar",
+		Run: "held", Ticket: "ABC-1", WaitReason: runner.WaitEscapedPR,
+		WaitDetail: "octo/scratch#341 was reverted within 7 days of merging",
 		UpdatedAt:  measuredAt(),
 	}}}
 	rec := getInbox(newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Inbox: inbox, AutoMerge: &stubAutoMerge{enabled: true}}))
@@ -203,9 +203,9 @@ func TestInboxNamesWhatHoldsAutoMerge(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil || len(raw.Runs) != 1 {
 		t.Fatalf("body = %s, %v", rec.Body.String(), err)
 	}
-	if raw.Runs[0]["wait_reason"] != "rate-above-bar" ||
-		raw.Runs[0]["wait_detail"] != "the trailing rewrite rate is 23.4% over the last 10 PRs a human merged, above the 20% bar" {
-		t.Fatalf("row = %v, want the rate and the bar named beside the reason", raw.Runs[0])
+	if raw.Runs[0]["wait_reason"] != "escaped-pr" ||
+		raw.Runs[0]["wait_detail"] != "octo/scratch#341 was reverted within 7 days of merging" {
+		t.Fatalf("row = %v, want the escaped PR named beside the reason", raw.Runs[0])
 	}
 }
 

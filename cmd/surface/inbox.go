@@ -72,8 +72,9 @@ type inboxRun struct {
 	// WaitReason is why the PR waits for the owner, empty for a PR nothing but a
 	// switch or a failed gate holds.
 	WaitReason string `json:"wait_reason"`
-	// WaitDetail names what holds auto-merge — the rate against the bar, or the
-	// escaped PR — in the run record's own words, absent when the reason needs none.
+	// WaitDetail names what holds auto-merge — the owner's switch, its settings
+	// unread, or the escaped PR — in the run record's own words, absent when the
+	// reason needs none.
 	WaitDetail string    `json:"wait_detail,omitempty"`
 	UpdatedAt  time.Time `json:"updated_at"`
 	// Attempt is the attempt the row is on, from 0, which a retry sends back to say

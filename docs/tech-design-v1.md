@@ -341,6 +341,17 @@ settings read that fails all hold auto-merge off, each named in the run's wait r
 the PR body. An auto-merged PR a later merge reverted or named as fixed (`fixes #<n>`)
 within 7 days latches auto-merge off until the owner switches it on again. A size-S run is
 eligible without a recorded plan; a size-M or L run without one still waits.
+**Updated (2026-11-13):** the rate is a guideline again and gates nothing. pr-meta marks a PR
+eligible while the switch is on and readable and no escaped PR holds it, whatever the rate —
+above the guideline, unread, or unmeasurable. The trailing-10 rate over the merged PRs a
+**human** merged (a PR that merged itself is left out, and so is a row measured before
+GitHub's `merged_by` login was kept) is shown against a fixed 20% guideline on the Autonomy
+page, in the inbox's wait reasons and in the PR body; it is read for those words and holds
+nothing. The stored bar and `runner auto-merge -bar` are gone, and a bar value still in the
+document is left unread. An auto-merged PR a later merge reverted or named as fixed
+(`fixes #<n>`) within 7 days still latches auto-merge off until the owner switches it on
+again. A size-S run is eligible without a recorded plan; a size-M or L run without one still
+waits.
 
 **Front-end hold — *Updated (2026-10-13)*, forge-wingman #115.** Eligibility for auto-merge
 (`FR-5`) excludes an S or M PR that touches the front end, which stays ready, not a draft.

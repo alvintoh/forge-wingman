@@ -7,8 +7,8 @@ import type { MergeState } from "./types";
 const ON_WORD = "Auto-merge is on";
 const OFF_WORD = "Auto-merge is off";
 
-// Status is auto-merge's effectiveness as a shape and a word: the switch, the
-// bar and the rate all enter it.
+// Status is auto-merge's effectiveness as a shape and a word: the owner's switch
+// and the escape latch enter it, and the rate, a guideline, does not.
 function Status({ merge }: { merge: MergeState }) {
   const on = merge.effective;
   return (
@@ -24,12 +24,11 @@ function Status({ merge }: { merge: MergeState }) {
   );
 }
 
-// Rules says who merges what, and what stops auto-merge.
+// Rules says who merges what: the switch is the only thing that stops auto-merge.
 function Rules() {
   return (
     <ul className="mt-3 list-disc space-y-1.5 pl-3.5 text-label leading-4.5 text-ink2 marker:text-ink">
       <li>Merges itself: size S and M PRs while the switch is on.</li>
-      <li>Stops merging itself when the rewrite rate is above the bar.</li>
       <li>You merge: front-end changes, size L and sampled PRs.</li>
     </ul>
   );
@@ -60,8 +59,9 @@ type MergeStatusCardProps = {
 
 /**
  * MergeStatusCard is the Autonomy page's auto-merge card: the caption and the settings pill, the
- * state as a shape and a word, the rate against the bar that gates it, and who merges what. The
- * page draws it once the state has been read; the wait and the failure are page text, not this card.
+ * state as a shape and a word, the rate against the 20% guideline it is measured by, and who merges
+ * what. The page draws it once the state has been read; the wait and the failure are page text, not
+ * this card.
  */
 export function MergeStatusCard({ merge }: MergeStatusCardProps) {
   return (
