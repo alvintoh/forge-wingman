@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newWorktree(t *testing.T) (repo string, w Worktree) {
@@ -370,5 +372,23 @@ func TestCheckoutWorktreeRefusesWhatItCannotCut(t *testing.T) {
 				t.Fatalf("the refused worktree exists (%v), want nothing created", err)
 			}
 		})
+	}
+}
+
+func TestRunGitReturnsSoonAfterItsContextEnds(t *testing.T) {
+	bin, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const deadline = time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	defer cancel()
+	start := time.Now()
+	_, err = runGit(ctx, bin, t.TempDir(), nil, "-c", "alias.x=!sleep 30", "x")
+	if err == nil {
+		t.Fatal("a cancelled git reported success")
+	}
+	if took := time.Since(start); took > deadline+gitWaitDelay+3*time.Second {
+		t.Fatalf("runGit returned after %s", took)
 	}
 }
