@@ -101,6 +101,46 @@ func (r *Records) SetWaitReason(ctx context.Context, id string, reason runner.Wa
 	return nil
 }
 
+// mergedFixRoundFields are the fields a merge of fix rounds rewrites on the row:
+// the rounds, their steps among the run's, and what the steps' totals feed.
+var mergedFixRoundFields = []string{"fix_rounds", stepsField, "tokens", settledProviderCostField, "time_of_use"}
+
+// MergeFixRounds merges the pull request's fix rounds into run id's row, keyed
+// on each round's phase and round number, so a second merge of the same rounds
+// changes nothing. The row is read and rewritten in one transaction, so a merge
+// does not lose rounds a concurrent one wrote. An absent run is
+// runner.ErrRecordNotFound.
+func (r *Records) MergeFixRounds(ctx context.Context, id string, rounds []runner.ReviewFixRound) error {
+	ref := r.client.Collection(runsCollection).Doc(id)
+	err := r.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		snap, err := tx.Get(ref)
+		if status.Code(err) == codes.NotFound {
+			return fmt.Errorf("%s: %w", id, runner.ErrRecordNotFound)
+		}
+		if err != nil {
+			return err
+		}
+		var rec runner.Record
+		if err := snap.DataTo(&rec); err != nil {
+			return fmt.Errorf("decoding record %s: %w", id, err)
+		}
+		merged, err := runner.WithFixRounds(rec, rounds)
+		if err != nil {
+			return err
+		}
+		all := fields(merged)
+		updates := make([]firestore.Update, 0, len(mergedFixRoundFields))
+		for _, name := range mergedFixRoundFields {
+			updates = append(updates, firestore.Update{Path: name, Value: all[name]})
+		}
+		return tx.Update(ref, updates)
+	})
+	if err != nil {
+		return fmt.Errorf("merging run %s's fix rounds: %w", id, err)
+	}
+	return nil
+}
+
 // RecordMerge sets when, and as what sha, the owner merged run id's PR, keeping
 // every other field.
 func (r *Records) RecordMerge(ctx context.Context, id, sha string, at time.Time) error {
