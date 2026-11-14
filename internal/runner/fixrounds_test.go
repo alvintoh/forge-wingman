@@ -825,8 +825,9 @@ func TestFixRoundsRefusesAWorktreeOnAnotherBranch(t *testing.T) {
 	loop.Branch = "wingman/some-other-ticket"
 
 	res, err := RunFixRounds(context.Background(), deps, testConfig(t, repo), wt, loop)
-	if !errors.Is(err, ErrBranchMismatch) {
-		t.Fatalf("err = %v, want a worktree on another branch refused", err)
+	var stop *StopError
+	if !errors.Is(err, ErrBranchMismatch) || !errors.As(err, &stop) || stop.Reason != StopBranchMismatch {
+		t.Fatalf("err = %v, want a worktree on another branch refused as a branch-mismatch stop", err)
 	}
 	if len(res.Rounds) != 0 || len(res.Steps) != 0 || res.Session != "" {
 		t.Fatalf("result = %+v, want no envelope for a loop that never started", res)
@@ -850,8 +851,10 @@ func TestFixRoundsRefusesAWorktreeAtAnotherCommit(t *testing.T) {
 	loop.Head = testSHA
 
 	res, err := RunFixRounds(context.Background(), deps, testConfig(t, repo), wt, loop)
-	if err == nil || !strings.Contains(err.Error(), "not the pull request's head") {
-		t.Fatalf("err = %v, want a worktree on another commit refused", err)
+	var stop *StopError
+	if !errors.Is(err, ErrHeadMoved) || !errors.As(err, &stop) || stop.Reason != StopHeadMoved ||
+		!strings.Contains(err.Error(), "not the pull request's head") {
+		t.Fatalf("err = %v, want a worktree on another commit refused as a head-moved stop", err)
 	}
 	if len(res.Rounds) != 0 || len(res.Steps) != 0 || res.Session != "" || res.Ready {
 		t.Fatalf("result = %+v, want no envelope for a loop that never started", res)
@@ -1076,32 +1079,48 @@ func TestRunFixRoundReportsARoundThatChangedNoFile(t *testing.T) {
 
 // TestRunFixRoundRefusesWhatItCannotCommitOn keeps AC1's one commit on the pull
 // request's branch and head: each refusal happens before the agent spends a call.
+// A branch, head or configuration refusal is a stop of its own reason.
 func TestRunFixRoundRefusesWhatItCannotCommitOn(t *testing.T) {
 	tests := []struct {
 		name   string
-		adjust func(t *testing.T, wt Worktree, r *FixRound)
+		adjust func(t *testing.T, repo string, wt Worktree, r *FixRound)
 		want   error
+		reason StopReason
 		text   string
 	}{
 		{
 			"another branch",
-			func(_ *testing.T, _ Worktree, r *FixRound) { r.Branch = "wingman/some-other-ticket" },
-			ErrBranchMismatch, `it is on "` + fixBranch + `"`,
+			func(_ *testing.T, _ string, _ Worktree, r *FixRound) { r.Branch = "wingman/some-other-ticket" },
+			ErrBranchMismatch, StopBranchMismatch, `it is on "` + fixBranch + `"`,
 		},
 		{
 			"another head",
-			func(_ *testing.T, _ Worktree, r *FixRound) { r.Head = testSHA },
-			ErrHeadMoved, "not the head",
+			func(_ *testing.T, _ string, _ Worktree, r *FixRound) { r.Head = testSHA },
+			ErrHeadMoved, StopHeadMoved, "not the head",
+		},
+		{
+			"a detached HEAD at the right commit",
+			func(t *testing.T, _ string, wt Worktree, _ *FixRound) {
+				mustGit(t, wt.Dir, "checkout", "-q", "--detach")
+			},
+			ErrHeadMoved, StopHeadMoved, "HEAD is not the branch",
+		},
+		{
+			"a changed git configuration",
+			func(t *testing.T, repo string, _ Worktree, _ *FixRound) {
+				appendFile(t, filepath.Join(repo, ".git", "config"), "[core]\n\tfsmonitor = /bin/true\n")
+			},
+			ErrGitTampered, StopGitTampered, "",
 		},
 		{
 			"no findings",
-			func(_ *testing.T, _ Worktree, r *FixRound) { r.Findings = nil },
-			nil, "needs the findings",
+			func(_ *testing.T, _ string, _ Worktree, r *FixRound) { r.Findings = nil },
+			nil, "", "needs the findings",
 		},
 		{
 			"a head it cannot read",
-			func(t *testing.T, wt Worktree, _ *FixRound) { unreadableHead(t, wt) },
-			nil, "reading the worktree's head",
+			func(t *testing.T, _ string, wt Worktree, _ *FixRound) { unreadableHead(t, wt) },
+			nil, "", "reading the worktree's head",
 		},
 	}
 	for _, tt := range tests {
@@ -1115,12 +1134,16 @@ func TestRunFixRoundRefusesWhatItCannotCommitOn(t *testing.T) {
 				t.Fatal(err)
 			}
 			round := FixRound{Branch: fixBranch, Head: head, Findings: []string{findingRetry}, StartedAt: time.Now()}
-			tt.adjust(t, wt, &round)
+			tt.adjust(t, repo, wt, &round)
 
 			sum := Summary{DurationsMS: map[string]int64{}}
 			_, _, err = RunFixRound(context.Background(), deps, testConfig(t, repo), wt, &sum, round)
 			if err == nil || (tt.want != nil && !errors.Is(err, tt.want)) {
 				t.Fatalf("err = %v, want %v", err, tt.want)
+			}
+			var stop *StopError
+			if errors.As(err, &stop) != (tt.reason != "") || (tt.reason != "" && (stop.Outcome != OutcomeStopped || stop.Reason != tt.reason)) {
+				t.Fatalf("err = %v, want a stopped/%s classification", err, tt.reason)
 			}
 			if !strings.Contains(err.Error(), tt.text) {
 				t.Fatalf("err = %v, want it to name %q", err, tt.text)
@@ -1129,6 +1152,22 @@ func TestRunFixRoundRefusesWhatItCannotCommitOn(t *testing.T) {
 				t.Fatalf("%d agent calls and %d steps, want none", agent.calls, len(sum.Steps))
 			}
 		})
+	}
+}
+
+// TestFixRoundsRefusalsOnTheEmptyBranchAreMismatches: the empty branch a zero
+// worktree and a zero round both name is not a branch to commit to.
+func TestFixRoundsRefusalsOnTheEmptyBranchAreMismatches(t *testing.T) {
+	deps, _, _ := testDeps(validObjects(), fixAgent())
+	cfg := testConfig(t, t.TempDir())
+
+	_, _, err := RunFixRound(context.Background(), deps, cfg, Worktree{}, &Summary{}, FixRound{Findings: []string{findingRetry}})
+	if !errors.Is(err, ErrBranchMismatch) {
+		t.Fatalf("RunFixRound err = %v, want the empty branch refused", err)
+	}
+	_, err = RunFixRounds(context.Background(), deps, cfg, Worktree{}, FixRounds{Findings: findingRetry})
+	if !errors.Is(err, ErrBranchMismatch) {
+		t.Fatalf("RunFixRounds err = %v, want the empty branch refused", err)
 	}
 }
 

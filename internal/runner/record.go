@@ -77,6 +77,7 @@ const (
 	StopAgentTimeout      StopReason = "agent-timeout"
 	StopGitTampered       StopReason = "git-tampered"
 	StopHeadMoved         StopReason = "head-moved"
+	StopBranchMismatch    StopReason = "branch-mismatch"
 	StopSecretInBranch    StopReason = "secret-in-branch"
 	StopPanic             StopReason = "panic"
 	StopPRJob             StopReason = "pr-job"

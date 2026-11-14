@@ -416,6 +416,12 @@ func fixRoundCommit(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree
 	return after, true, nil
 }
 
+// branchMismatch is the stop for a worktree on a branch other than the pull
+// request's.
+func branchMismatch(on, want string) error {
+	return stopWith(OutcomeStopped, StopBranchMismatch, fmt.Errorf("%w: it is on %q, not %q", ErrBranchMismatch, on, want))
+}
+
 // RunFixRound makes one fix round on wt: the agent's edits, then the local
 // commit. It publishes nothing and reads no review — the caller publishes the
 // commit and decides the next step from the findings it reads itself — and
@@ -423,15 +429,18 @@ func fixRoundCommit(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree
 // changed no file. sum collects the round's agent calls, so a loop's rounds
 // settle together.
 //
-// An agent, commit or guard failure is returned as a *StopError, as in a build,
-// with no round record: the caller is left nothing it may publish. A round the
+// An agent or commit failure, a worktree off the pull request's branch or head,
+// and a tampered git configuration are returned as a *StopError, as in a build,
+// with no round record: the caller is left nothing it may publish. A branch or
+// head mismatch also satisfies errors.Is for ErrBranchMismatch or ErrHeadMoved.
+// A round with no findings or an unreadable head is a plain error, and one the
 // loop's budget no longer leaves room for is ErrFixRoundsBudget.
 func RunFixRound(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum *Summary, r FixRound) (ReviewFixRound, string, error) {
 	if err := ctx.Err(); err != nil {
 		return ReviewFixRound{}, "", err
 	}
 	if r.Branch == "" || wt.Branch != r.Branch {
-		return ReviewFixRound{}, "", fmt.Errorf("%w: it is on %q, not %q", ErrBranchMismatch, wt.Branch, r.Branch)
+		return ReviewFixRound{}, "", branchMismatch(wt.Branch, r.Branch)
 	}
 	issued := lineFindings(r.Findings)
 	if len(issued) == 0 {
@@ -441,8 +450,16 @@ func RunFixRound(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, s
 	if err != nil {
 		return ReviewFixRound{}, "", fmt.Errorf("reading the worktree's head: %w", err)
 	}
-	if r.Head == "" || head != r.Head {
-		return ReviewFixRound{}, "", fmt.Errorf("%w: the worktree is at %s, not the head %q the round is given", ErrHeadMoved, head, r.Head)
+	if head != r.Head {
+		return ReviewFixRound{}, "", stopWith(OutcomeStopped, StopHeadMoved,
+			fmt.Errorf("%w: the worktree is at %s, not the head %q the round is given", ErrHeadMoved, head, r.Head))
+	}
+	if err := wt.Verify(ctx); err != nil {
+		if errors.Is(err, ErrGitTampered) {
+			return ReviewFixRound{}, "", stopWith(OutcomeStopped, StopGitTampered, err)
+		}
+		return ReviewFixRound{}, "", stopWith(OutcomeStopped, StopHeadMoved,
+			fmt.Errorf("%w: HEAD is not the branch %s: %v", ErrHeadMoved, wt.Branch, err))
 	}
 	started := r.StartedAt
 	if started.IsZero() {
@@ -524,7 +541,7 @@ func DecideFixRound(issued, after []string, declined []DeclinedFinding, round, c
 // result so far: the rounds already made, their steps and the session.
 func RunFixRounds(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, r FixRounds) (ReviewFixResult, error) {
 	if r.Branch == "" || wt.Branch != r.Branch {
-		return ReviewFixResult{}, fmt.Errorf("%w: it is on %q, not %q", ErrBranchMismatch, wt.Branch, r.Branch)
+		return ReviewFixResult{}, branchMismatch(wt.Branch, r.Branch)
 	}
 	if r.Push == nil || r.Review == nil {
 		return ReviewFixResult{}, errors.New("a fix-round loop needs both a push and a review step")
@@ -544,8 +561,9 @@ func RunFixRounds(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, 
 	if err != nil {
 		return ReviewFixResult{}, fmt.Errorf("reading the worktree's head: %w", err)
 	}
-	if r.Head == "" || head != r.Head {
-		return ReviewFixResult{}, fmt.Errorf("the worktree is at %s, not the pull request's head %q", head, r.Head)
+	if head != r.Head {
+		return ReviewFixResult{}, stopWith(OutcomeStopped, StopHeadMoved,
+			fmt.Errorf("%w: the worktree is at %s, not the pull request's head %q", ErrHeadMoved, head, r.Head))
 	}
 	sum := Summary{DurationsMS: map[string]int64{}, StartedAt: d.Now()}
 	session, calls := r.Session, 0
@@ -559,9 +577,6 @@ func RunFixRounds(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, 
 		return res, err
 	}
 	for n := 1; n <= capped; n++ {
-		if err := ctx.Err(); err != nil {
-			return fail(err)
-		}
 		issued := withoutDeclined(open, declined)
 		round, sha, err := RunFixRound(ctx, d, c, wt, &sum, FixRound{
 			Branch: r.Branch, Head: expected, Session: session, Rules: r.Rules,
