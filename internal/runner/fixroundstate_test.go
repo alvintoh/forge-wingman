@@ -82,11 +82,11 @@ func TestParseFixRoundsStateRoundTripsWhatARoundWrote(t *testing.T) {
 func TestParseFixRoundsStateAcceptsTheCapsRoundAndRejectsTheNext(t *testing.T) {
 	started := time.Date(2026, 11, 13, 4, 0, 0, 0, time.UTC)
 	for round := 0; round <= DefaultReviewFixRounds; round++ {
-		if _, err := ParseFixRoundsState(fixStateJSON(t, FixRoundsState{Round: round, StartedAt: started})); err != nil {
+		if _, err := ParseFixRoundsState(fixStateJSON(t, FixRoundsState{Round: round, Calls: round, StartedAt: started})); err != nil {
 			t.Fatalf("round %d was rejected: %v", round, err)
 		}
 	}
-	over := FixRoundsState{Round: DefaultReviewFixRounds + 1, StartedAt: started}
+	over := FixRoundsState{Round: DefaultReviewFixRounds + 1, Calls: DefaultReviewFixRounds + 1, StartedAt: started}
 	if _, err := ParseFixRoundsState(fixStateJSON(t, over)); !errors.Is(err, ErrFixRoundsState) {
 		t.Fatalf("err = %v, want round %d rejected", err, over.Round)
 	}
@@ -103,33 +103,41 @@ func TestParseFixRoundsStateRejectsRecordsTheLoopCouldNotWrite(t *testing.T) {
 		want string
 	}{
 		{"no record at all", "", "no record"},
-		{"a field this runner does not know", `{"round":1,"open":["a finding"],"resolved":2,` + started + `}`, "decoding"},
+		{"a field this runner does not know", `{"round":1,"calls":1,"open":["a finding"],"resolved":2,` + started + `}`, "decoding"},
 		{"a round past the cap", fmt.Sprintf(`{"round":%d,%s}`, DefaultReviewFixRounds+1, started), "round 4"},
 		{"a negative round", `{"round":-1,` + started + `}`, "round -1"},
 		{"a negative agent-call count", `{"round":1,"calls":-1,` + started + `}`, "agent calls"},
-		{"no start time", `{"round":1,"open":["a finding"]}`, "start time"},
-		{"a blank open finding", `{"round":1,"open":["  "],` + started + `}`, "blank"},
+		{"fewer agent calls than rounds", `{"round":2,"calls":1,` + started + `}`, "1 agent calls for round 2"},
+		{"more agent calls than any rounds could number", fmt.Sprintf(`{"round":3,"calls":%d,%s}`, DefaultReviewFixRounds*maxCallsPerFixRound+1, started), "agent calls for round 3"},
+		{"a key spelled in another case", `{"Round":1,"calls":1,` + started + `}`, `key "Round"`},
+		{"a key in capitals", `{"round":1,"calls":1,"OPEN":["a finding"],` + started + `}`, `key "OPEN"`},
+		{"a newline in an open finding", `{"round":1,"calls":1,"open":["a\nb"],` + started + `}`, "control character"},
+		{"a tab in a declined reason", `{"round":1,"calls":1,"declined":[{"finding":"f","reason":"a\tb"}],` + started + `}`, "control character"},
+		{"a blank declined finding", `{"round":1,"calls":1,"declined":[{"finding":" ","reason":"r"}],` + started + `}`, "declined finding or its reason is blank"},
+		{"a blank declined reason", `{"round":1,"calls":1,"declined":[{"finding":"f","reason":""}],` + started + `}`, "declined finding or its reason is blank"},
+		{"no start time", `{"round":1,"calls":1,"open":["a finding"]}`, "start time"},
+		{"a blank open finding", `{"round":1,"calls":1,"open":["  "],` + started + `}`, "blank"},
 		{
 			"an open finding past its line cap",
-			fmt.Sprintf(`{"round":1,"open":[%q],%s}`, strings.Repeat("x", maxStateFindingBytes+1), started),
+			fmt.Sprintf(`{"round":1,"calls":1,"open":[%q],%s}`, strings.Repeat("x", maxStateFindingBytes+1), started),
 			"open finding is",
 		},
 		{
 			"more open findings than a review may make",
-			fmt.Sprintf(`{"round":1,"open":%s,%s}`, findingArray(t, maxReviewFindings+1), started),
+			fmt.Sprintf(`{"round":1,"calls":1,"open":%s,%s}`, findingArray(t, maxReviewFindings+1), started),
 			"open findings",
 		},
 		{
 			"more declines than a review may make",
-			fmt.Sprintf(`{"round":1,"declined":%s,%s}`, declineArray(t, maxReviewFindings+1), started),
+			fmt.Sprintf(`{"round":1,"calls":1,"declined":%s,%s}`, declineArray(t, maxReviewFindings+1), started),
 			"declined findings",
 		},
 		{
 			"a declined finding past its line cap",
-			fmt.Sprintf(`{"round":1,"declined":[{"finding":%q,"reason":"r"}],%s}`, strings.Repeat("x", maxStateFindingBytes+1), started),
+			fmt.Sprintf(`{"round":1,"calls":1,"declined":[{"finding":%q,"reason":"r"}],%s}`, strings.Repeat("x", maxStateFindingBytes+1), started),
 			"declined finding",
 		},
-		{"a record with data after it", `{"round":1,` + started + `}{"round":2}`, "trailing data"},
+		{"a record with data after it", `{"round":1,"calls":1,` + started + `}{"round":2}`, "trailing data"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -141,5 +149,38 @@ func TestParseFixRoundsStateRejectsRecordsTheLoopCouldNotWrite(t *testing.T) {
 				t.Fatalf("err = %v, want it to name %q", err, tt.want)
 			}
 		})
+	}
+}
+
+// TestNewFixRoundsStateWritesWhatParseAccepts: a round that gave 30 declines, 30
+// open findings, a line over the cap and a line with a newline writes a record the
+// next job reads, holding each list to the cap and each line to one short line.
+func TestNewFixRoundsStateWritesWhatParseAccepts(t *testing.T) {
+	var open []string
+	var declined []DeclinedFinding
+	for i := range 30 {
+		open = append(open, fmt.Sprintf("finding %d leaves the retry unbounded", i))
+		declined = append(declined, DeclinedFinding{Finding: fmt.Sprintf("declined %d", i), Reason: "the caller owns it"})
+	}
+	open[0] = strings.Repeat("x", 2*maxFindingBytes)
+	open[1] = "first\nsecond"
+	declined[0].Reason = ""
+	started := time.Date(2026, 11, 13, 4, 0, 0, 0, time.UTC)
+
+	got, err := ParseFixRoundsState(fixStateJSON(t, NewFixRoundsState(2, 3, started, "ses_1", open, declined)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Open) != maxReviewFindings || len(got.Declined) != maxReviewFindings {
+		t.Fatalf("%d open and %d declined, want %d of each", len(got.Open), len(got.Declined), maxReviewFindings)
+	}
+	if len(got.Open[0]) != maxStateFindingBytes || got.Open[1] != "first second" {
+		t.Fatalf("open lines = %q and %q, want the long one cut and the newline a space", got.Open[0], got.Open[1])
+	}
+	if got.Declined[0].Reason != noDeclineReason {
+		t.Fatalf("declined reason = %q, want %q", got.Declined[0].Reason, noDeclineReason)
+	}
+	if got.Round != 2 || got.Calls != 3 || got.Session != "ses_1" || !got.StartedAt.Equal(started) {
+		t.Fatalf("state = %+v, want round, calls, session and start carried", got)
 	}
 }

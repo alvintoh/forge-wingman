@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // ErrFixRoundsState reports a state record this runner's loop could not have
@@ -18,6 +20,10 @@ var ErrFixRoundsState = errors.New("the fix-round state is not one this runner w
 // bound the round's own record writes, which truncate leaves up to one ellipsis
 // past maxFindingBytes.
 const maxStateFindingBytes = maxFindingBytes + len("…")
+
+// maxCallsPerFixRound is the most agent calls one round numbers: its own, and one
+// more for each backup model that answers in its place.
+const maxCallsPerFixRound = 4
 
 // FixRoundsState is what one fix round hands the next job: where the loop is, the
 // findings still open, the ones a round declined, when the loop started, the
@@ -43,6 +49,57 @@ type FixRoundsState struct {
 	Calls int `json:"calls,omitempty"`
 }
 
+// NewFixRoundsState builds the record a round hands the next job, held to the
+// limits ParseFixRoundsState reads: lines cut to maxFindingBytes with control
+// characters made spaces, blank lines and unnamed declines dropped, a decline
+// with no reason given noDeclineReason, and each list kept to its first
+// maxReviewFindings entries.
+func NewFixRoundsState(round, calls int, startedAt time.Time, session string, open []string, declined []DeclinedFinding) FixRoundsState {
+	s := FixRoundsState{Round: round, Calls: calls, StartedAt: startedAt, Session: session, Open: []string{}}
+	for _, line := range open {
+		if line = stateLine(line); line != "" && len(s.Open) < maxReviewFindings {
+			s.Open = append(s.Open, line)
+		}
+	}
+	for _, d := range declined {
+		finding, reason := stateLine(d.Finding), stateLine(d.Reason)
+		if reason == "" {
+			reason = noDeclineReason
+		}
+		if finding != "" && len(s.Declined) < maxReviewFindings {
+			s.Declined = append(s.Declined, DeclinedFinding{Finding: finding, Reason: reason})
+		}
+	}
+	return s
+}
+
+// stateLine is a finding or reason as a record carries it: one line, control
+// characters made spaces, trimmed and cut to maxFindingBytes.
+func stateLine(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, s)
+	return truncate(strings.TrimSpace(s), maxFindingBytes)
+}
+
+// hasControl reports whether s holds a control character, a newline included.
+func hasControl(s string) bool {
+	return strings.IndexFunc(s, unicode.IsControl) >= 0
+}
+
+// stateKeys is the keys a record may carry, spelled exactly as the encoder writes
+// them: encoding/json would also match "Round" or "OPEN" to a field.
+var stateKeys = func() map[string]bool {
+	keys := map[string]bool{}
+	for f := range reflect.TypeFor[FixRoundsState]().Fields() {
+		keys[strings.Split(f.Tag.Get("json"), ",")[0]] = true
+	}
+	return keys
+}()
+
 // ParseFixRoundsState decodes and validates a state record the previous job
 // wrote. A record holding a field this runner does not know, a round number past
 // DefaultReviewFixRounds, or a finding past its line or count cap is rejected
@@ -61,6 +118,15 @@ func ParseFixRoundsState(raw string) (FixRoundsState, error) {
 	if dec.More() {
 		return FixRoundsState{}, fmt.Errorf("%w: trailing data", ErrFixRoundsState)
 	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &keys); err != nil {
+		return FixRoundsState{}, fmt.Errorf("%w: decoding: %v", ErrFixRoundsState, err)
+	}
+	for k := range keys {
+		if !stateKeys[k] {
+			return FixRoundsState{}, fmt.Errorf("%w: key %q is not spelled as the runner writes it", ErrFixRoundsState, k)
+		}
+	}
 	if err := s.validate(); err != nil {
 		return FixRoundsState{}, err
 	}
@@ -77,8 +143,8 @@ func (s FixRoundsState) validate() error {
 	if s.Round < 0 || s.Round > DefaultReviewFixRounds {
 		return fmt.Errorf("%w: round %d is outside 0 to %d", ErrFixRoundsState, s.Round, DefaultReviewFixRounds)
 	}
-	if s.Calls < 0 {
-		return fmt.Errorf("%w: %d agent calls", ErrFixRoundsState, s.Calls)
+	if maxCalls := DefaultReviewFixRounds * maxCallsPerFixRound; s.Calls < s.Round || s.Calls > maxCalls {
+		return fmt.Errorf("%w: %d agent calls for round %d, outside %d to %d", ErrFixRoundsState, s.Calls, s.Round, s.Round, maxCalls)
 	}
 	if s.StartedAt.IsZero() {
 		return fmt.Errorf("%w: no start time", ErrFixRoundsState)
@@ -92,14 +158,21 @@ func (s FixRoundsState) validate() error {
 			return fmt.Errorf("%w: an open finding is blank", ErrFixRoundsState)
 		case len(line) > maxStateFindingBytes:
 			return fmt.Errorf("%w: an open finding is %d bytes, over %d", ErrFixRoundsState, len(line), maxStateFindingBytes)
+		case hasControl(line):
+			return fmt.Errorf("%w: an open finding holds a control character", ErrFixRoundsState)
 		}
 	}
 	if len(s.Declined) > maxReviewFindings {
 		return fmt.Errorf("%w: %d declined findings, over %d", ErrFixRoundsState, len(s.Declined), maxReviewFindings)
 	}
 	for _, d := range s.Declined {
-		if len(d.Finding) > maxStateFindingBytes || len(d.Reason) > maxStateFindingBytes {
+		switch {
+		case strings.TrimSpace(d.Finding) == "" || strings.TrimSpace(d.Reason) == "":
+			return fmt.Errorf("%w: a declined finding or its reason is blank", ErrFixRoundsState)
+		case len(d.Finding) > maxStateFindingBytes || len(d.Reason) > maxStateFindingBytes:
 			return fmt.Errorf("%w: a declined finding or its reason is over %d bytes", ErrFixRoundsState, maxStateFindingBytes)
+		case hasControl(d.Finding) || hasControl(d.Reason):
+			return fmt.Errorf("%w: a declined finding or its reason holds a control character", ErrFixRoundsState)
 		}
 	}
 	return nil
