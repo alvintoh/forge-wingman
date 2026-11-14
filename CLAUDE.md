@@ -86,7 +86,26 @@ this file as project memory, so the rules below reach the run.
   22 `review-found` commits on those PRs were test-only, added after an independent review broke
   a guard and the suite stayed green (PRs 340, 341, 343, 348, 349). An AC in that form gives the
   build a test per guard, and the pre-open guard probe (Go: FRG-316; TypeScript: FRG-310)
-  something to prove. *(Judgment call; same classification.)*
+  something to prove. Every call site, dispatcher case, request header and clamp a PR adds is a
+  guard too: a test of the callee stays green when the call is deleted, so the test goes through
+  the entry point and goes red when that line is removed (PR 361's review found nine that stayed
+  green). *(Judgment call; same classification, extended 2026-11-14.)*
+
+- **A record the runner writes is written within the limits its reader enforces.** The state
+  record's reader capped its lists at 24 while its writer capped nothing, so a long agent reply
+  produced a record the runner's own parser rejected (PR 360). Derive both limits from one
+  constant and test that the writer's worst case parses. *(Judgment call; round-trip testing is
+  the established idea. Verified 2026-11-14 on PR 360.)*
+
+- **A time read from a stored record is checked against the clock before it is trusted.** A
+  far-future `started_at` made a 90-minute budget never fire, which fails open (PR 360). *(Judgment
+  call. Verified 2026-11-14 on PR 360.)*
+
+- **An exported function checks the limits of what it is handed; its caller's clamp does not
+  count.** `DecideFixRound` took a cap the loop clamped but a one-round caller did not, and a guard
+  failure its doc called a `*StopError` came back as a plain error, so callers could not classify
+  it (PR 360). Test it by calling the function directly with the worst value. *(Judgment call.
+  Verified 2026-11-14 on PR 360.)*
 
 - **A plan for an agent-lane ticket goes into the description, never a comment.** The run's
   `ticket.json` comes from Linear's description (`internal/dispatcher/linear.go`) and comments are
