@@ -100,7 +100,7 @@ func TestFixRoundsWaitCutsALongNote(t *testing.T) {
 
 func TestValidateFixRoundHoldsARoundToASummarysLimits(t *testing.T) {
 	good := validFixRound()
-	if err := ValidateFixRound("1-1", good, finalizeNow); err != nil {
+	if err := ValidateFixRound("1-1", good); err != nil {
 		t.Fatalf("a valid round: %v", err)
 	}
 	tests := []struct {
@@ -111,9 +111,6 @@ func TestValidateFixRoundHoldsARoundToASummarysLimits(t *testing.T) {
 		{"a harness this run cannot route to", func(r *ReviewFixRound) { r.Step.Harness = "nope" }},
 		{"another run's completions object", func(r *ReviewFixRound) { r.Step.CompletionsObject = "completions/1-2-fix-1.jsonl" }},
 		{"counts with no completed re-review", func(r *ReviewFixRound) { r.Reviewed = false }},
-		{"no start time", func(r *ReviewFixRound) { r.Step.At = time.Time{} }},
-		{"a start time ahead of the clock", func(r *ReviewFixRound) { r.Step.At = finalizeNow.Add(time.Hour) }},
-		{"a start time long before the clock", func(r *ReviewFixRound) { r.Step.At = finalizeNow.Add(-maxSummaryAge - time.Hour) }},
 		{"a negative new count", func(r *ReviewFixRound) { r.New = -1 }},
 		{"a negative resolved count", func(r *ReviewFixRound) { r.Resolved = -1 }},
 		{"a resolved count over the ceiling", func(r *ReviewFixRound) { r.Resolved = int(maxCount) + 1 }},
@@ -123,15 +120,59 @@ func TestValidateFixRoundHoldsARoundToASummarysLimits(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			r := validFixRound()
 			tt.edit(&r)
-			if err := ValidateFixRound("1-1", r, finalizeNow); err == nil {
+			if err := ValidateFixRound("1-1", r); err == nil {
 				t.Fatal("ValidateFixRound accepted it")
 			}
 		})
 	}
 	unreviewed := validFixRound()
 	unreviewed.Reviewed, unreviewed.Resolved = false, 0
-	if err := ValidateFixRound("1-1", unreviewed, finalizeNow); err != nil {
+	if err := ValidateFixRound("1-1", unreviewed); err != nil {
 		t.Fatalf("a round that was not reviewed, with no counts: %v", err)
+	}
+}
+
+func TestValidateMergedFixRoundRefusesAStartOutsideTheClocksWindow(t *testing.T) {
+	if err := ValidateMergedFixRound("1-1", validFixRound(), finalizeNow); err != nil {
+		t.Fatalf("a round started inside the window: %v", err)
+	}
+	tests := []struct {
+		name string
+		at   time.Time
+	}{
+		{"no start time", time.Time{}},
+		{"a start time ahead of the clock", finalizeNow.Add(time.Hour)},
+		{"a start time long before the clock", finalizeNow.Add(-maxSummaryAge - time.Hour)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := validFixRound()
+			r.Step.At = tt.at
+			if err := ValidateMergedFixRound("1-1", r, finalizeNow); err == nil {
+				t.Fatal("ValidateMergedFixRound accepted it")
+			}
+		})
+	}
+	bad := validFixRound()
+	bad.Step.Model = "x"
+	if err := ValidateMergedFixRound("1-1", bad, finalizeNow); err == nil {
+		t.Fatal("ValidateMergedFixRound accepted a round ValidateFixRound refuses")
+	}
+}
+
+func TestParseSummaryAcceptsAFixRoundStartedOutsideTheClocksWindow(t *testing.T) {
+	for _, at := range []time.Time{{}, finalizeNow.Add(time.Hour), finalizeNow.Add(-maxSummaryAge - time.Hour)} {
+		s := validSummary()
+		r := validFixRound()
+		r.Step.At = at
+		s.FixRounds = []ReviewFixRound{r}
+		raw, err := s.Encode()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ParseSummary(raw, "1-1", testTicket, finalizeNow); err != nil {
+			t.Fatalf("a summary's fix round started at %v: %v, want it accepted as before", at, err)
+		}
 	}
 }
 

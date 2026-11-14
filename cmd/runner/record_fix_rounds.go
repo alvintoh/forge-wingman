@@ -121,7 +121,7 @@ func writeFixLoop(ctx context.Context, logger *slog.Logger, rec fixRoundsRecorde
 		return nil
 	}
 	for _, r := range in.State.Rounds {
-		if err := runner.ValidateFixRound(in.AttemptID, r, now); err != nil {
+		if err := runner.ValidateMergedFixRound(in.AttemptID, r, now); err != nil {
 			return fmt.Errorf("fix round %d is not one this run made: %w", r.Step.Round, err)
 		}
 	}

@@ -67,20 +67,29 @@ func oneLine(s string) string {
 
 // ValidateFixRound holds one fix round to the limits a summary's holds it to: its
 // step names a model, a known harness and the completions object attemptID's
-// run wrote, started within the clock's window at now, and a round whose
-// re-review did not complete carries no counts.
-func ValidateFixRound(attemptID string, r ReviewFixRound, now time.Time) error {
+// run wrote, and a round whose re-review did not complete carries no counts.
+func ValidateFixRound(attemptID string, r ReviewFixRound) error {
 	if err := r.Step.validate(attemptID); err != nil {
 		return err
-	}
-	if at := r.Step.At; at.After(now.Add(maxClockSkew)) || at.Before(now.Add(-maxSummaryAge)) {
-		return fmt.Errorf("fix round %d started outside the clock's window", r.Step.Round)
 	}
 	if !r.Reviewed && (r.Resolved != 0 || r.New != 0) {
 		return fmt.Errorf("fix round %d has counts but no completed re-review", r.Step.Round)
 	}
 	if r.Resolved < 0 || r.New < 0 || int64(r.Resolved) > maxCount || int64(r.New) > maxCount {
 		return fmt.Errorf("fix round %d counts %d resolved and %d new, out of range", r.Step.Round, r.Resolved, r.New)
+	}
+	return nil
+}
+
+// ValidateMergedFixRound holds a round the record step merges after the pull
+// request opened to ValidateFixRound's limits, and to a start inside the clock's
+// window at now.
+func ValidateMergedFixRound(attemptID string, r ReviewFixRound, now time.Time) error {
+	if err := ValidateFixRound(attemptID, r); err != nil {
+		return err
+	}
+	if at := r.Step.At; at.After(now.Add(maxClockSkew)) || at.Before(now.Add(-maxSummaryAge)) {
+		return fmt.Errorf("fix round %d started outside the clock's window", r.Step.Round)
 	}
 	return nil
 }
