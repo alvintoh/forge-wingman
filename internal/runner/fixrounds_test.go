@@ -50,6 +50,15 @@ func fixWorktree(t *testing.T, repo string) Worktree {
 	return wt
 }
 
+// unreadableHead breaks the worktree's HEAD, so reading the commit it is at
+// fails the way a damaged git directory does.
+func unreadableHead(t *testing.T, wt Worktree) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(wt.GitDir, "HEAD"), []byte("garbage\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // fixSeams records the commits the loop published and re-reviewed, and answers
 // the re-review from blocks, one per round.
 type fixSeams struct {
@@ -686,7 +695,61 @@ func TestFixRoundsNeverRunsMoreThanTheDefaultRounds(t *testing.T) {
 			if res.Stop != FixStopCap || len(res.Rounds) != tt.want || agent.calls != tt.want {
 				t.Fatalf("%d rounds and %d agent calls with stop %q, want %d rounds and the cap stop", len(res.Rounds), agent.calls, res.Stop, tt.want)
 			}
+			// The loop's own cap is what the stop names, so a caller that
+			// lowered it is not told about the default it never reached.
+			if want := fmt.Sprintf("the cap of %d fix round(s) was reached", tt.want); !strings.Contains(res.Detail, want) {
+				t.Fatalf("detail = %q, want it to name %q", res.Detail, want)
+			}
 		})
+	}
+}
+
+// TestFixRoundsCountsItsRoundsNotItsAgentCalls: a backup model answering
+// advances the agent-call number past its round's. The loop's cap must count
+// rounds, or the substitution would end the loop a round early, and the next
+// round must continue the call number, or it would reuse a transcript object.
+func TestFixRoundsCountsItsRoundsNotItsAgentCalls(t *testing.T) {
+	withFallbacks(t, testFallbackModel)
+	repo := initRepo(t)
+	wt := fixWorktree(t, repo)
+	unavailable := exitWith(t, 7)
+	base := fixAgent()
+	base.errFn = func(call int) error {
+		if call == 1 {
+			return unavailable
+		}
+		return nil
+	}
+	deps, completions, _ := testDeps(validObjects(), base)
+	deps.Agent = exitClassifiedAgent{base}
+	seams := &fixSeams{t: t, blocks: []string{
+		findingTimeout + "\n" + findingSwallow + "\n" + findingLogLine,
+		findingSwallow + "\n" + findingLogLine,
+		findingLogLine,
+	}}
+	findings := strings.Join([]string{findingRetry, findingTimeout, findingSwallow, findingLogLine}, "\n")
+	cfg := testConfig(t, repo)
+	cfg.Model = DefaultModel()
+
+	res, err := RunFixRounds(context.Background(), deps, cfg, wt, fixLoop(t, wt, seams, findings, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Stop != FixStopCap || len(res.Rounds) != DefaultReviewFixRounds {
+		t.Fatalf("%d rounds with stop %q, want the cap reached after %d rounds: the backup's call is not a round",
+			len(res.Rounds), res.Stop, DefaultReviewFixRounds)
+	}
+	// The first round's own call was refused, so its backup made call 2, and
+	// the rounds after it continue the count rather than restart it.
+	calls := []int{res.Rounds[0].Step.Round, res.Rounds[1].Step.Round, res.Rounds[2].Step.Round}
+	if !slices.Equal(calls, []int{2, 3, 4}) || base.calls != 4 {
+		t.Fatalf("rounds' calls = %v with %d agent calls, want [2 3 4] and 4", calls, base.calls)
+	}
+	for _, round := range calls {
+		object := fmt.Sprintf("completions/42-1-fix-%d.jsonl", round)
+		if _, ok := completions[object]; !ok {
+			t.Fatalf("completions hold no %s, want every attempt's own transcript", object)
+		}
 	}
 }
 
@@ -751,7 +814,8 @@ func TestFixRoundsStopsWithItsFindingsWhenTheBudgetIsSpent(t *testing.T) {
 }
 
 // TestFixRoundsRefusesAWorktreeOnAnotherBranch keeps AC1's one commit on the pull
-// request's branch: a worktree on any other branch is refused before a round runs.
+// request's branch: a worktree on any other branch is refused, with no envelope
+// of work behind it, before a round runs.
 func TestFixRoundsRefusesAWorktreeOnAnotherBranch(t *testing.T) {
 	repo := initRepo(t)
 	agent := fixAgent()
@@ -760,8 +824,13 @@ func TestFixRoundsRefusesAWorktreeOnAnotherBranch(t *testing.T) {
 	loop := fixLoop(t, wt, &fixSeams{t: t}, findingRetry, 0)
 	loop.Branch = "wingman/some-other-ticket"
 
-	if _, err := RunFixRounds(context.Background(), deps, testConfig(t, repo), wt, loop); err == nil {
-		t.Fatal("err = nil, want a worktree on another branch refused")
+	res, err := RunFixRounds(context.Background(), deps, testConfig(t, repo), wt, loop)
+	var stop *StopError
+	if !errors.Is(err, ErrBranchMismatch) || !errors.As(err, &stop) || stop.Reason != StopBranchMismatch {
+		t.Fatalf("err = %v, want a worktree on another branch refused as a branch-mismatch stop", err)
+	}
+	if len(res.Rounds) != 0 || len(res.Steps) != 0 || res.Session != "" {
+		t.Fatalf("result = %+v, want no envelope for a loop that never started", res)
 	}
 	if agent.calls != 0 {
 		t.Fatalf("the agent ran %d rounds, want 0", agent.calls)
@@ -770,7 +839,9 @@ func TestFixRoundsRefusesAWorktreeOnAnotherBranch(t *testing.T) {
 
 // TestFixRoundsRefusesAWorktreeAtAnotherCommit: a worktree reset to some other
 // commit is not the pull request's branch, and committing there would lose the
-// commits the pull request holds when the round is published.
+// commits the pull request holds when the round is published. The refusal comes
+// before the loop starts, so it returns no envelope for the caller to read as a
+// loop that ran.
 func TestFixRoundsRefusesAWorktreeAtAnotherCommit(t *testing.T) {
 	repo := initRepo(t)
 	agent := fixAgent()
@@ -779,8 +850,37 @@ func TestFixRoundsRefusesAWorktreeAtAnotherCommit(t *testing.T) {
 	loop := fixLoop(t, wt, &fixSeams{t: t}, findingRetry, 0)
 	loop.Head = testSHA
 
-	if _, err := RunFixRounds(context.Background(), deps, testConfig(t, repo), wt, loop); err == nil {
-		t.Fatal("err = nil, want a worktree on another commit refused")
+	res, err := RunFixRounds(context.Background(), deps, testConfig(t, repo), wt, loop)
+	var stop *StopError
+	if !errors.Is(err, ErrHeadMoved) || !errors.As(err, &stop) || stop.Reason != StopHeadMoved ||
+		!strings.Contains(err.Error(), "not the pull request's head") {
+		t.Fatalf("err = %v, want a worktree on another commit refused as a head-moved stop", err)
+	}
+	if len(res.Rounds) != 0 || len(res.Steps) != 0 || res.Session != "" || res.Ready {
+		t.Fatalf("result = %+v, want no envelope for a loop that never started", res)
+	}
+	if agent.calls != 0 {
+		t.Fatalf("the agent ran %d rounds, want 0", agent.calls)
+	}
+}
+
+// TestFixRoundsStopsWhenTheWorktreeHeadCannotBeRead: a loop that cannot read the
+// commit its branch is at refuses before a round, rather than reading the empty
+// read as a worktree at another commit.
+func TestFixRoundsStopsWhenTheWorktreeHeadCannotBeRead(t *testing.T) {
+	repo := initRepo(t)
+	agent := fixAgent()
+	deps, _, _ := testDeps(validObjects(), agent)
+	wt := fixWorktree(t, repo)
+	loop := fixLoop(t, wt, &fixSeams{t: t}, findingRetry, 0)
+	unreadableHead(t, wt)
+
+	res, err := RunFixRounds(context.Background(), deps, testConfig(t, repo), wt, loop)
+	if err == nil || !strings.Contains(err.Error(), "reading the worktree's head") {
+		t.Fatalf("err = %v, want the unreadable head named", err)
+	}
+	if len(res.Rounds) != 0 || res.Session != "" {
+		t.Fatalf("result = %+v, want no envelope for a loop that never started", res)
 	}
 	if agent.calls != 0 {
 		t.Fatalf("the agent ran %d rounds, want 0", agent.calls)
@@ -893,5 +993,448 @@ func TestParseFixDeclinesRecordsEveryDecline(t *testing.T) {
 		if got := parseFixDeclines(texts[i]); !slices.Equal(got, want[i]) {
 			t.Errorf("declines of %q = %+v, want %+v", texts[i], got, want[i])
 		}
+	}
+}
+
+// TestRunFixRoundCommitsOneRoundAndReadsNoReview is AC1: one round runs the
+// agent and then the local commit, returning the round's record and its commit
+// with no push and no review step of its own.
+func TestRunFixRoundCommitsOneRoundAndReadsNoReview(t *testing.T) {
+	repo := initRepo(t)
+	wt := fixWorktree(t, repo)
+	agent := fixAgent()
+	deps, completions, _ := testDeps(validObjects(), agent)
+	head, err := wt.HeadCommit(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := Summary{DurationsMS: map[string]int64{}}
+
+	round, sha, err := RunFixRound(context.Background(), deps, testConfig(t, repo), wt, &sum, FixRound{
+		Branch: fixBranch, Head: head, Session: "ses_0", Rules: "# Rules\n",
+		Findings: []string{findingRetry, findingTimeout}, StartedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sha == "" || round.Commit != sha {
+		t.Fatalf("commit %q and record commit %q, want the round's own commit on both", sha, round.Commit)
+	}
+	if got, err := wt.HeadCommit(context.Background()); err != nil || got != sha {
+		t.Fatalf("worktree head = %q (%v), want the round's commit %q", got, err, sha)
+	}
+	if round.Step.Round != 1 || round.Session != "ses_1" || round.Step.Phase != PhaseFix {
+		t.Fatalf("round = %+v, want agent call 1 in the session it reported", round)
+	}
+	if round.Reviewed || !slices.Equal(round.Findings, []string{findingRetry, findingTimeout}) {
+		t.Fatalf("round = %+v, want the findings it was given and no review read", round)
+	}
+	if len(sum.Steps) != 1 || sum.Steps[0] != round.Step {
+		t.Fatalf("steps = %+v, want the round's own call in the caller's summary", sum.Steps)
+	}
+	if _, ok := completions["completions/42-1-fix-1.jsonl"]; !ok {
+		t.Fatalf("completions = %v, want the round's own transcript", completions)
+	}
+	if body := mustGit(t, wt.Dir, "log", "-1", "--format=%B", sha); !strings.Contains(body, FixRoundTrailer+"1") {
+		t.Fatalf("commit body = %q, want the round's trailer", body)
+	}
+	if agent.calls != 1 || !slices.Equal(agent.sessions, []string{"ses_0"}) {
+		t.Fatalf("%d agent calls with sessions %q, want one round resuming the caller's session", agent.calls, agent.sessions)
+	}
+	if !strings.Contains(agent.prompts[0], findingRetry) || !strings.Contains(agent.prompts[0], commitMessageInstruction) {
+		t.Fatalf("prompt = %q, want the findings and the commit-message block", agent.prompts[0])
+	}
+}
+
+// TestRunFixRoundReportsARoundThatChangedNoFile: a round whose agent edited
+// nothing returns its record with no commit, and the loop publishes nothing for
+// it.
+func TestRunFixRoundReportsARoundThatChangedNoFile(t *testing.T) {
+	repo := initRepo(t)
+	wt := fixWorktree(t, repo)
+	agent := &fakeAgent{events: fixEvents("")}
+	deps, _, _ := testDeps(validObjects(), agent)
+	head, err := wt.HeadCommit(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := Summary{DurationsMS: map[string]int64{}}
+
+	round, sha, err := RunFixRound(context.Background(), deps, testConfig(t, repo), wt, &sum, FixRound{
+		Branch: fixBranch, Head: head, Findings: []string{findingRetry}, StartedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sha != "" || round.Commit != "" {
+		t.Fatalf("commit %q and record commit %q, want none for a round that changed no file", sha, round.Commit)
+	}
+	if !slices.Equal(round.Findings, []string{findingRetry}) || round.Step.Round != 1 {
+		t.Fatalf("round = %+v, want the findings it was given and its own call", round)
+	}
+	if got, err := wt.HeadCommit(context.Background()); err != nil || got != head {
+		t.Fatalf("worktree head = %q (%v), want the base %q left alone", got, err, head)
+	}
+}
+
+// TestRunFixRoundRefusesWhatItCannotCommitOn keeps AC1's one commit on the pull
+// request's branch and head: each refusal happens before the agent spends a call.
+// A branch, head or configuration refusal is a stop of its own reason.
+func TestRunFixRoundRefusesWhatItCannotCommitOn(t *testing.T) {
+	tests := []struct {
+		name   string
+		adjust func(t *testing.T, repo string, wt Worktree, r *FixRound)
+		want   error
+		reason StopReason
+		text   string
+	}{
+		{
+			"another branch",
+			func(_ *testing.T, _ string, _ Worktree, r *FixRound) { r.Branch = "wingman/some-other-ticket" },
+			ErrBranchMismatch, StopBranchMismatch, `it is on "` + fixBranch + `"`,
+		},
+		{
+			"another head",
+			func(_ *testing.T, _ string, _ Worktree, r *FixRound) { r.Head = testSHA },
+			ErrHeadMoved, StopHeadMoved, "not the head",
+		},
+		{
+			"a detached HEAD at the right commit",
+			func(t *testing.T, _ string, wt Worktree, _ *FixRound) {
+				mustGit(t, wt.Dir, "checkout", "-q", "--detach")
+			},
+			ErrHeadMoved, StopHeadMoved, "HEAD is not the branch",
+		},
+		{
+			"a changed git configuration",
+			func(t *testing.T, repo string, _ Worktree, _ *FixRound) {
+				appendFile(t, filepath.Join(repo, ".git", "config"), "[core]\n\tfsmonitor = /bin/true\n")
+			},
+			ErrGitTampered, StopGitTampered, "",
+		},
+		{
+			"no findings",
+			func(_ *testing.T, _ string, _ Worktree, r *FixRound) { r.Findings = nil },
+			nil, "", "needs the findings",
+		},
+		{
+			"a head it cannot read",
+			func(t *testing.T, _ string, wt Worktree, _ *FixRound) { unreadableHead(t, wt) },
+			nil, "", "reading the worktree's head",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := initRepo(t)
+			wt := fixWorktree(t, repo)
+			agent := fixAgent()
+			deps, _, _ := testDeps(validObjects(), agent)
+			head, err := wt.HeadCommit(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			round := FixRound{Branch: fixBranch, Head: head, Findings: []string{findingRetry}, StartedAt: time.Now()}
+			tt.adjust(t, repo, wt, &round)
+
+			sum := Summary{DurationsMS: map[string]int64{}}
+			_, _, err = RunFixRound(context.Background(), deps, testConfig(t, repo), wt, &sum, round)
+			if err == nil || (tt.want != nil && !errors.Is(err, tt.want)) {
+				t.Fatalf("err = %v, want %v", err, tt.want)
+			}
+			var stop *StopError
+			if errors.As(err, &stop) != (tt.reason != "") || (tt.reason != "" && (stop.Outcome != OutcomeStopped || stop.Reason != tt.reason)) {
+				t.Fatalf("err = %v, want a stopped/%s classification", err, tt.reason)
+			}
+			if !strings.Contains(err.Error(), tt.text) {
+				t.Fatalf("err = %v, want it to name %q", err, tt.text)
+			}
+			if agent.calls != 0 || len(sum.Steps) != 0 {
+				t.Fatalf("%d agent calls and %d steps, want none", agent.calls, len(sum.Steps))
+			}
+		})
+	}
+}
+
+// TestFixRoundsRefusalsOnTheEmptyBranchAreMismatches: the empty branch a zero
+// worktree and a zero round both name is not a branch to commit to.
+func TestFixRoundsRefusalsOnTheEmptyBranchAreMismatches(t *testing.T) {
+	deps, _, _ := testDeps(validObjects(), fixAgent())
+	cfg := testConfig(t, t.TempDir())
+
+	_, _, err := RunFixRound(context.Background(), deps, cfg, Worktree{}, &Summary{}, FixRound{Findings: []string{findingRetry}})
+	if !errors.Is(err, ErrBranchMismatch) {
+		t.Fatalf("RunFixRound err = %v, want the empty branch refused", err)
+	}
+	_, err = RunFixRounds(context.Background(), deps, cfg, Worktree{}, FixRounds{Findings: findingRetry})
+	if !errors.Is(err, ErrBranchMismatch) {
+		t.Fatalf("RunFixRounds err = %v, want the empty branch refused", err)
+	}
+}
+
+// TestRunFixRoundStopsBeforeASpentContext: a cancelled run spends no agent call,
+// and the round reports the cancellation rather than a fake agent failure.
+func TestRunFixRoundStopsBeforeASpentContext(t *testing.T) {
+	repo := initRepo(t)
+	wt := fixWorktree(t, repo)
+	agent := fixAgent()
+	deps, _, _ := testDeps(validObjects(), agent)
+	head, err := wt.HeadCommit(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	sum := Summary{DurationsMS: map[string]int64{}}
+	_, sha, err := RunFixRound(ctx, deps, testConfig(t, repo), wt, &sum, FixRound{
+		Branch: fixBranch, Head: head, Findings: []string{findingRetry}, StartedAt: time.Now(),
+	})
+	if !errors.Is(err, context.Canceled) || sha != "" {
+		t.Fatalf("err = %v with commit %q, want the cancellation and no commit", err, sha)
+	}
+	if agent.calls != 0 || len(sum.Steps) != 0 {
+		t.Fatalf("%d agent calls and %d steps, want none", agent.calls, len(sum.Steps))
+	}
+}
+
+// TestRunFixRoundReportsItsStopWithNoRound is AC1's failure half: an agent or
+// commit failure carries the build's own stop and returns no round record, so a
+// caller cannot publish what the round did not finish.
+func TestRunFixRoundReportsItsStopWithNoRound(t *testing.T) {
+	tests := []struct {
+		name    string
+		fail    func(t *testing.T, wt Worktree, agent *fakeAgent)
+		outcome Outcome
+		reason  StopReason
+	}{
+		{
+			"the agent fails",
+			func(_ *testing.T, _ Worktree, agent *fakeAgent) { agent.err = errors.New("exit status 1") },
+			OutcomeAgentFailed, StopAgentExit,
+		},
+		{
+			"the commit is refused",
+			func(t *testing.T, wt Worktree, agent *fakeAgent) {
+				edit := agent.edit
+				agent.edit = func(dir string) error {
+					if err := edit(dir); err != nil {
+						return err
+					}
+					return os.WriteFile(filepath.Join(wt.GitDir, "index.lock"), nil, 0o600)
+				}
+			},
+			OutcomeInfraFailure, StopCommit,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := initRepo(t)
+			wt := fixWorktree(t, repo)
+			agent := fixAgent()
+			deps, _, _ := testDeps(validObjects(), agent)
+			head, err := wt.HeadCommit(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			tt.fail(t, wt, agent)
+
+			sum := Summary{DurationsMS: map[string]int64{}}
+			round, sha, err := RunFixRound(context.Background(), deps, testConfig(t, repo), wt, &sum, FixRound{
+				Branch: fixBranch, Head: head, Findings: []string{findingRetry}, StartedAt: time.Now(),
+			})
+			var stop *StopError
+			if !errors.As(err, &stop) || stop.Outcome != tt.outcome || stop.Reason != tt.reason {
+				t.Fatalf("err = %v, want a %s/%s stop", err, tt.outcome, tt.reason)
+			}
+			if round.Step != (Step{}) || round.Findings != nil || round.Commit != "" || sha != "" {
+				t.Fatalf("round = %+v with commit %q, want no round record", round, sha)
+			}
+			if got, err := wt.HeadCommit(context.Background()); err != nil || got != head {
+				t.Fatalf("worktree head = %q (%v), want the base %q left alone", got, err, head)
+			}
+		})
+	}
+}
+
+// TestRunFixRoundStopsWithoutABudget: no round starts with under the review's
+// room left of the loop's budget, and the caller learns no round ran.
+func TestRunFixRoundStopsWithoutABudget(t *testing.T) {
+	repo := initRepo(t)
+	wt := fixWorktree(t, repo)
+	agent := fixAgent()
+	deps, _, _ := testDeps(validObjects(), agent)
+	head, err := wt.HeadCommit(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := Summary{DurationsMS: map[string]int64{}}
+
+	_, _, err = RunFixRound(context.Background(), deps, testConfig(t, repo), wt, &sum, FixRound{
+		Branch: fixBranch, Head: head, Findings: []string{findingRetry},
+		StartedAt: time.Now().Add(-fixRoundsBudget - time.Minute),
+	})
+	if !errors.Is(err, ErrFixRoundsBudget) {
+		t.Fatalf("err = %v, want the budget spent", err)
+	}
+	if agent.calls != 0 || len(sum.Steps) != 0 {
+		t.Fatalf("%d agent calls and %d steps, want none", agent.calls, len(sum.Steps))
+	}
+}
+
+// runOneFixRound runs one round of a fix-round test with started as the loop's
+// start and now as the clock, returning the agent's call count and the error.
+func runOneFixRound(t *testing.T, started time.Time, now func() time.Time) (int, error) {
+	t.Helper()
+	repo := initRepo(t)
+	wt := fixWorktree(t, repo)
+	agent := fixAgent()
+	deps, _, _ := testDeps(validObjects(), agent)
+	deps.Now = now
+	head, err := wt.HeadCommit(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = RunFixRound(context.Background(), deps, testConfig(t, repo), wt, &Summary{DurationsMS: map[string]int64{}}, FixRound{
+		Branch: fixBranch, Head: head, Findings: []string{findingRetry}, StartedAt: started,
+	})
+	return agent.calls, err
+}
+
+// TestRunFixRoundFailsClosedOnAStartAheadOfTheClock: a start further ahead than
+// the clock skew allows would read as a budget that never runs out, so the round
+// is refused as a spent budget and the agent does not run.
+func TestRunFixRoundFailsClosedOnAStartAheadOfTheClock(t *testing.T) {
+	now := time.Now()
+	calls, err := runOneFixRound(t, now.Add(365*24*time.Hour), func() time.Time { return now })
+	if !errors.Is(err, ErrFixRoundsBudget) {
+		t.Fatalf("err = %v, want the budget refused", err)
+	}
+	if calls != 0 {
+		t.Fatalf("%d agent calls, want none", calls)
+	}
+}
+
+// TestRunFixRoundAllowsAStartWithinTheClockSkew: a record another machine wrote
+// may run a little ahead of this clock, and its round still runs.
+func TestRunFixRoundAllowsAStartWithinTheClockSkew(t *testing.T) {
+	now := time.Now()
+	calls, err := runOneFixRound(t, now.Add(30*time.Second), func() time.Time { return now })
+	if err != nil || calls != 1 {
+		t.Fatalf("err = %v with %d agent calls, want the round run once", err, calls)
+	}
+}
+
+// TestRunFixRoundWithNoStartBeginsAFreshBudget pins the documented zero
+// StartedAt: each such round starts its own clock at the time it runs, however
+// late that is.
+func TestRunFixRoundWithNoStartBeginsAFreshBudget(t *testing.T) {
+	late := time.Now().Add(100 * fixRoundsBudget)
+	calls, err := runOneFixRound(t, time.Time{}, func() time.Time { return late })
+	if err != nil || calls != 1 {
+		t.Fatalf("err = %v with %d agent calls, want the round run once", err, calls)
+	}
+}
+
+// TestDecideFixRoundHoldsTheLoopsRules is AC2: the decision alone says continue,
+// ready, or why the loop stops, and each case is one rule the loop applies.
+func TestDecideFixRoundHoldsTheLoopsRules(t *testing.T) {
+	const reason = "the caller owns the retry"
+	decline := DeclinedFinding{Finding: findingRetry, Reason: reason}
+	tests := []struct {
+		name     string
+		issued   []string
+		after    []string
+		declined []DeclinedFinding
+		round    int
+		capped   int
+		want     FixRoundDecision
+	}{
+		{
+			name:   "the re-review reports nothing",
+			issued: []string{findingRetry},
+			round:  1,
+			capped: DefaultReviewFixRounds,
+			want:   FixRoundDecision{Ready: true},
+		},
+		{
+			name:     "only a declined finding is left",
+			issued:   []string{findingRetry},
+			after:    []string{findingRetry},
+			declined: []DeclinedFinding{decline},
+			round:    1,
+			capped:   DefaultReviewFixRounds,
+			want:     FixRoundDecision{Stop: FixStopDeclined, Detail: "declined: " + findingRetry + " — " + reason},
+		},
+		{
+			name:   "the re-review adds a finding",
+			issued: []string{findingRetry, findingTimeout},
+			after:  []string{findingTimeout, findingSwallow},
+			round:  2,
+			capped: DefaultReviewFixRounds,
+			want:   FixRoundDecision{Stop: FixStopNew, Detail: "round 2 added findings"},
+		},
+		{
+			name:   "the re-review reports them unchanged",
+			issued: []string{findingRetry},
+			after:  []string{findingRetry},
+			round:  1,
+			capped: DefaultReviewFixRounds,
+			want:   FixRoundDecision{Stop: FixStopUnchanged, Detail: "round 1 left the findings unchanged"},
+		},
+		{
+			name:   "a round that resolves one with room left",
+			issued: []string{findingRetry, findingTimeout},
+			after:  []string{findingTimeout},
+			round:  1,
+			capped: DefaultReviewFixRounds,
+			want:   FixRoundDecision{Continue: true},
+		},
+		{
+			name:   "the last round of the cap with findings left",
+			issued: []string{findingRetry, findingTimeout},
+			after:  []string{findingTimeout},
+			round:  DefaultReviewFixRounds,
+			capped: DefaultReviewFixRounds,
+			want:   FixRoundDecision{Stop: FixStopCap, Detail: "the cap of 3 fix round(s) was reached"},
+		},
+		{
+			name:   "a cap above the default is the default",
+			issued: []string{findingRetry, findingTimeout},
+			after:  []string{findingTimeout},
+			round:  DefaultReviewFixRounds,
+			capped: 10,
+			want:   FixRoundDecision{Stop: FixStopCap, Detail: "the cap of 3 fix round(s) was reached"},
+		},
+		{
+			name:   "a zero cap is the default, which leaves room in round one",
+			issued: []string{findingRetry, findingTimeout},
+			after:  []string{findingTimeout},
+			round:  1,
+			capped: 0,
+			want:   FixRoundDecision{Continue: true},
+		},
+		{
+			name:   "a zero cap is the default, which ends at round three",
+			issued: []string{findingRetry, findingTimeout},
+			after:  []string{findingTimeout},
+			round:  DefaultReviewFixRounds,
+			capped: 0,
+			want:   FixRoundDecision{Stop: FixStopCap, Detail: "the cap of 3 fix round(s) was reached"},
+		},
+		{
+			name:   "the last round of a cap the caller lowered",
+			issued: []string{findingRetry, findingTimeout},
+			after:  []string{findingTimeout},
+			round:  2,
+			capped: 2,
+			want:   FixRoundDecision{Stop: FixStopCap, Detail: "the cap of 2 fix round(s) was reached"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := DecideFixRound(tt.issued, tt.after, tt.declined, tt.round, tt.capped); got != tt.want {
+				t.Fatalf("DecideFixRound = %+v, want %+v", got, tt.want)
+			}
+		})
 	}
 }

@@ -42,12 +42,55 @@ func AddWorktree(ctx context.Context, repo, dir, branch string) (Worktree, error
 	if err != nil {
 		return Worktree{}, fmt.Errorf("finding git: %w", err)
 	}
-	if _, err := runGit(ctx, bin, repo, nil, "worktree", "prune"); err != nil {
+	return addWorktree(ctx, bin, repo, dir, branch, "-B", branch, dir)
+}
+
+// ErrBranchHeadMismatch reports a branch that is not at the head its caller
+// named, so a worktree cut there would commit on something other than that head.
+var ErrBranchHeadMismatch = errors.New("the branch is not at the head the caller named")
+
+// CheckoutWorktree creates a worktree at dir on branch, which repo must hold at
+// head: the pull request's own head, so a round commits on the commits it was
+// given rather than on a stale local branch. A branch repo does not hold, and one
+// at any other commit, are refused before a worktree exists. The worktree is
+// added without resetting the branch, and a round's own commit refuses any base
+// other than the head it was given, so a branch that moves afterwards stops the
+// round instead of carrying it onto another base.
+func CheckoutWorktree(ctx context.Context, repo, dir, branch, head string) (Worktree, error) {
+	if branch == "" || head == "" {
+		return Worktree{}, errors.New("a worktree needs the branch and the head it is cut at")
+	}
+	bin, err := exec.LookPath("git")
+	if err != nil {
+		return Worktree{}, fmt.Errorf("finding git: %w", err)
+	}
+	at, err := runGit(ctx, bin, repo, nil, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+	if err != nil {
+		return Worktree{}, fmt.Errorf("%w: %s holds no branch %s: %v", ErrBranchHeadMismatch, repo, branch, err)
+	}
+	if got := strings.TrimSpace(string(at)); got != head {
+		return Worktree{}, fmt.Errorf("%w: %s is at %s, not %s", ErrBranchHeadMismatch, branch, got, head)
+	}
+	return addWorktree(ctx, bin, repo, dir, branch, dir, branch)
+}
+
+// addWorktree registers a worktree at dir on branch, whose add arguments are git
+// worktree add's own, and resolves it.
+func addWorktree(ctx context.Context, bin, repo, dir, branch string, add ...string) (Worktree, error) {
+	// A registration a crashed attempt left behind would make the add below
+	// refuse the branch, so the prune is best effort: one that cannot run leaves
+	// that refusal to name the real problem.
+	_, _ = runGit(ctx, bin, repo, nil, "worktree", "prune")
+	if _, err := runGit(ctx, bin, repo, nil, append([]string{"worktree", "add"}, add...)...); err != nil {
 		return Worktree{}, err
 	}
-	if _, err := runGit(ctx, bin, repo, nil, "worktree", "add", "-B", branch, dir); err != nil {
-		return Worktree{}, err
-	}
+	return openWorktree(ctx, bin, dir, branch)
+}
+
+// openWorktree resolves the worktree just created at dir on branch: its git
+// directories, the commit its HEAD holds, and a snapshot of the configuration it
+// executes.
+func openWorktree(ctx context.Context, bin, dir, branch string) (Worktree, error) {
 	out, err := runGit(ctx, bin, dir, nil, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir", "HEAD")
 	if err != nil {
 		return Worktree{}, err

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -30,6 +31,19 @@ const FixRoundTrailer = "Fix-Round: "
 // build does. The job that runs the loop must set its timeout-minutes to agree
 // with it, as model.yml's does with nfr1RunCap.
 const fixRoundsBudget = nfr1RunCap
+
+// ErrFixRoundsBudget reports that no fix round fits what the loop's budget has
+// left: no round ran, and the findings are the owner's.
+var ErrFixRoundsBudget = errors.New("no fix round fits the loop's own budget")
+
+// fixRoundsClockSkew is how far ahead of this job's clock a loop's recorded start
+// may be, for a record another machine wrote: further ahead, the start is not
+// believable and the budget cannot be enforced from it.
+const fixRoundsClockSkew = time.Minute
+
+// ErrBranchMismatch reports a worktree that is not on the branch a round was
+// given: a round commits to the pull request's branch, never to another.
+var ErrBranchMismatch = errors.New("the worktree is not on the pull request's branch")
 
 // FixStop is why a fix-round loop ended with findings left for the owner.
 type FixStop string
@@ -66,7 +80,8 @@ type DeclinedFinding struct {
 
 // ReviewFixRound is one fix round the runner made on a pull request's branch,
 // recorded under FR-6: the step that ran it, the findings that drove it, the ones
-// it declined, what the re-review after it showed, and the commit it made.
+// it declined, what the re-review after it showed, the session it ran in and the
+// commit it made.
 type ReviewFixRound struct {
 	// Step is the round's own agent call, as every other phase's is recorded.
 	Step Step `firestore:"step" json:"step"`
@@ -83,6 +98,8 @@ type ReviewFixRound struct {
 	// Reviewed is whether the re-review of the round's commit completed, so
 	// Resolved and New are its counts.
 	Reviewed bool `firestore:"reviewed" json:"reviewed"`
+	// Session is the session the round ran in, which the round after it resumes.
+	Session string `firestore:"session" json:"session,omitempty"`
 	// Commit is the round's own commit on the branch, empty when it made none.
 	Commit string `firestore:"commit" json:"commit,omitempty"`
 }
@@ -138,6 +155,48 @@ type FixRounds struct {
 	// Review reports the findings a review of branch's new head made, in the
 	// same one-per-line form as Findings, empty when it found none. Required.
 	Review func(ctx context.Context, branch, commit string) (string, error)
+}
+
+// FixRound is one fix round on its own: the pull request it commits to, the
+// session it resumes, the findings it is given and where in the loop it sits, so
+// a job that runs a single round per process carries all of it forward.
+type FixRound struct {
+	// Branch is the pull request's own branch, which the worktree must be on.
+	Branch string
+	// Head is the commit the branch is at: the round's own commit is made on it,
+	// so a worktree at any other commit is refused before the agent runs.
+	Head string
+	// Session is the session to resume, empty when the caller has none to resume
+	// and the round starts one.
+	Session string
+	// Rules is the projection's rules head, carried so the resumed session's
+	// system prompt stays the same across rounds.
+	Rules string
+	// Findings is what the round is given, one finding per line, already minus
+	// the ones an earlier round declined.
+	Findings []string
+	// Calls is how many agent calls the loop has already numbered, which this
+	// round's call, its transcript and its commit trailer continue from. A backup
+	// model answering advances that number past the round's own.
+	Calls int
+	// StartedAt is when the loop started, which this round's share of
+	// fixRoundsBudget is measured from; the zero time starts the clock now.
+	StartedAt time.Time
+}
+
+// FixRoundDecision is what one finished fix round leaves the loop: another
+// round, a clean pull request, or findings for the owner with the reason.
+type FixRoundDecision struct {
+	// Continue is set when the loop makes another round.
+	Continue bool
+	// Ready is set when the re-review reported no finding, so the pull request
+	// is clean and the owner's to merge.
+	Ready bool
+	// Stop is why the loop ended with findings open, one of the FixStop reasons;
+	// empty when Continue or Ready.
+	Stop FixStop
+	// Detail names the decline or the round's own failure, empty when Ready.
+	Detail string
 }
 
 // fixDeclinesBlock is the block fixDeclinesInstruction asks a round for.
@@ -213,6 +272,21 @@ func fixFindingLines(findings []pendingFinding) []string {
 		out[i] = truncate(f.text, maxFindingBytes)
 	}
 	return out
+}
+
+// findingTexts is findings as their lines alone, untruncated: what the next round
+// is given, and what a re-review's own lines are matched against.
+func findingTexts(findings []pendingFinding) []string {
+	out := make([]string, len(findings))
+	for i, f := range findings {
+		out[i] = f.text
+	}
+	return out
+}
+
+// fixCapDetail is why a loop ended at its cap, naming how many rounds it allowed.
+func fixCapDetail(capped int) string {
+	return fmt.Sprintf("the cap of %d fix round(s) was reached", capped)
 }
 
 // findingDelta is how many of issued a re-review no longer reports, and how many
@@ -347,15 +421,138 @@ func fixRoundCommit(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree
 	return after, true, nil
 }
 
+// branchMismatch is the stop for a worktree on a branch other than the pull
+// request's.
+func branchMismatch(on, want string) error {
+	return stopWith(OutcomeStopped, StopBranchMismatch, fmt.Errorf("%w: it is on %q, not %q", ErrBranchMismatch, on, want))
+}
+
+// RunFixRound makes one fix round on wt: the agent's edits, then the local
+// commit. It publishes nothing and reads no review — the caller publishes the
+// commit and decides the next step from the findings it reads itself — and
+// returns the round's record and the commit it made, empty when the round
+// changed no file. sum collects the round's agent calls, so a loop's rounds
+// settle together.
+//
+// An agent or commit failure, a worktree off the pull request's branch or head,
+// and a tampered git configuration are returned as a *StopError, as in a build,
+// with no round record: the caller is left nothing it may publish. A branch or
+// head mismatch also satisfies errors.Is for ErrBranchMismatch or ErrHeadMoved.
+// A round with no findings or an unreadable head is a plain error, and one the
+// loop's budget no longer leaves room for is ErrFixRoundsBudget.
+func RunFixRound(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum *Summary, r FixRound) (ReviewFixRound, string, error) {
+	if err := ctx.Err(); err != nil {
+		return ReviewFixRound{}, "", err
+	}
+	if r.Branch == "" || wt.Branch != r.Branch {
+		return ReviewFixRound{}, "", branchMismatch(wt.Branch, r.Branch)
+	}
+	issued := lineFindings(r.Findings)
+	if len(issued) == 0 {
+		return ReviewFixRound{}, "", errors.New("a fix round needs the findings it is given")
+	}
+	head, err := wt.HeadCommit(ctx)
+	if err != nil {
+		return ReviewFixRound{}, "", fmt.Errorf("reading the worktree's head: %w", err)
+	}
+	if head != r.Head {
+		return ReviewFixRound{}, "", stopWith(OutcomeStopped, StopHeadMoved,
+			fmt.Errorf("%w: the worktree is at %s, not the head %q the round is given", ErrHeadMoved, head, r.Head))
+	}
+	if err := wt.Verify(ctx); err != nil {
+		if errors.Is(err, ErrGitTampered) {
+			return ReviewFixRound{}, "", stopWith(OutcomeStopped, StopGitTampered, err)
+		}
+		return ReviewFixRound{}, "", stopWith(OutcomeStopped, StopHeadMoved,
+			fmt.Errorf("%w: HEAD is not the branch %s: %v", ErrHeadMoved, wt.Branch, err))
+	}
+	now := d.Now()
+	started := r.StartedAt
+	if started.IsZero() {
+		started = now
+	}
+	if started.After(now.Add(fixRoundsClockSkew)) {
+		return ReviewFixRound{}, "", fmt.Errorf("%w: the loop's start %s is ahead of the clock", ErrFixRoundsBudget, started.Format(time.RFC3339))
+	}
+	timeout, inBudget := roundTimeout(c.AgentTimeout, started, now, fixRoundsBudget, reviewStartRoom)
+	if !inBudget {
+		return ReviewFixRound{}, "", fmt.Errorf("%w: %s", ErrFixRoundsBudget, stageBudgetSpent("fix-round", fixRoundsBudget))
+	}
+	text := findingsText(issued)
+	order := buildOrder(c)
+	call := agentCall{Phase: PhaseFix, Round: r.Calls + 1, Model: order[0], Session: r.Session, Rules: r.Rules,
+		Detail: truncate(text, stopDetailLimit), Timeout: timeout}
+	fixText, resumed, num, err := runAgentInOrder(ctx, d, c, call, order, d.Agent, wt.Dir,
+		withCommitInstruction(fixRoundPrompt(text)), sum, started, fixRoundsBudget, reviewStartRoom)
+	if err != nil {
+		return ReviewFixRound{}, "", err
+	}
+	round := ReviewFixRound{Step: sum.Steps[len(sum.Steps)-1], Session: resumed, Findings: fixFindingLines(issued),
+		Declined: parseFixDeclines(fixText)}
+	// fixRoundCommit reports an empty commit for a round that changed no file,
+	// so the sha alone says whether the round made one.
+	sha, _, err := fixRoundCommit(ctx, d, c, wt, num, r.Head, fixText)
+	if err != nil {
+		return ReviewFixRound{}, "", err
+	}
+	round.Commit = sha
+	return round, sha, nil
+}
+
+// fixRoundCap is a caller's cap held to 1 through DefaultReviewFixRounds: zero, a
+// negative number or one above the default is the default.
+func fixRoundCap(n int) int {
+	if n <= 0 || n > DefaultReviewFixRounds {
+		return DefaultReviewFixRounds
+	}
+	return n
+}
+
+// DecideFixRound decides what one finished fix round leaves, from the findings it
+// was given, the findings the re-review of its commit reported, the declines so
+// far, its own round number and the loop's cap. The loop continues only while a
+// round strictly reduces the findings with no new one; a round that leaves them
+// unchanged, adds one, or declines the only ones left ends it, as does the cap.
+// A finding the re-review words differently counts as a new one, so the loop
+// stops rather than spend a round on it.
+//
+// round is the loop's round number, not the agent-call number: a backup model
+// answering advances the call number past its round's, and counting those would
+// end the loop early. capped is the loop's own cap, so a caller that lowered it
+// is judged by the cap it set; one outside 1 through DefaultReviewFixRounds is
+// the default, as in FixRounds.Rounds.
+//
+// It reads nothing and writes nothing, so a caller running one round per process
+// decides the next step from findings it read itself, with no loop in between.
+func DecideFixRound(issued, after []string, declined []DeclinedFinding, round, capped int) FixRoundDecision {
+	capped = fixRoundCap(capped)
+	open := lineFindings(after)
+	switch {
+	case len(open) == 0:
+		return FixRoundDecision{Ready: true}
+	case len(withoutDeclined(open, declined)) == 0:
+		return FixRoundDecision{Stop: FixStopDeclined, Detail: "declined: " + declinedText(stillReported(declined, open))}
+	}
+	resolved, added := findingDelta(lineFindings(issued), open, declined)
+	switch {
+	case added > 0:
+		return FixRoundDecision{Stop: FixStopNew, Detail: fmt.Sprintf("round %d added findings", round)}
+	case resolved == 0:
+		return FixRoundDecision{Stop: FixStopUnchanged, Detail: fmt.Sprintf("round %d left the findings unchanged", round)}
+	case round >= capped:
+		return FixRoundDecision{Stop: FixStopCap, Detail: fixCapDetail(capped)}
+	}
+	return FixRoundDecision{Continue: true}
+}
+
 // RunFixRounds makes up to the loop's cap fix rounds from a pull request review's
-// findings: each round resumes the session, commits once to the pull request's
-// own branch, is published by the push seam, and is followed by the review
-// seam's findings at the head it published. The loop continues only while a
-// round strictly reduces the findings with no new one; a round that changes no
-// file, leaves them unchanged, adds one, or declines the only ones left ends it
-// and hands the pull request to the owner. A finding the re-review words
-// differently counts as a new one, so the loop stops rather than spend a round
-// on it. No round starts with under reviewStartRoom of fixRoundsBudget left.
+// findings: each round is RunFixRound's, commits once to the pull request's own
+// branch, is published by the push seam, and is followed by the review seam's
+// findings at the head it published, which DecideFixRound judges. The loop
+// continues only while a round strictly reduces the findings with no new one; a
+// round that changes no file, leaves them unchanged, adds one, or declines the
+// only ones left ends it and hands the pull request to the owner. No round starts
+// with under reviewStartRoom of fixRoundsBudget left.
 //
 // A seam's own failure is returned as an error: it belongs to the step that
 // publishes or reviews, whose own run records the failure, and the round's
@@ -364,31 +561,31 @@ func fixRoundCommit(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree
 // result so far: the rounds already made, their steps and the session.
 func RunFixRounds(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, r FixRounds) (ReviewFixResult, error) {
 	if r.Branch == "" || wt.Branch != r.Branch {
-		return ReviewFixResult{}, fmt.Errorf("the worktree is on branch %q, not the pull request's %q", wt.Branch, r.Branch)
+		return ReviewFixResult{}, branchMismatch(wt.Branch, r.Branch)
 	}
 	if r.Push == nil || r.Review == nil {
 		return ReviewFixResult{}, errors.New("a fix-round loop needs both a push and a review step")
 	}
-	capped := r.Rounds
-	if capped <= 0 || capped > DefaultReviewFixRounds {
-		capped = DefaultReviewFixRounds
-	}
+	capped := fixRoundCap(r.Rounds)
 	open := reviewPending(r.Findings)
 	res := ReviewFixResult{Ready: len(open) == 0, Session: r.Session}
 	if len(open) == 0 {
 		return res, nil
 	}
+	// Refused before the loop starts, so a worktree at another commit leaves no
+	// envelope behind for the caller to mistake for work already done.
 	head, err := wt.HeadCommit(ctx)
 	if err != nil {
 		return ReviewFixResult{}, fmt.Errorf("reading the worktree's head: %w", err)
 	}
-	if r.Head == "" || head != r.Head {
-		return ReviewFixResult{}, fmt.Errorf("the worktree is at %s, not the pull request's head %q", head, r.Head)
+	if head != r.Head {
+		return ReviewFixResult{}, stopWith(OutcomeStopped, StopHeadMoved,
+			fmt.Errorf("%w: the worktree is at %s, not the pull request's head %q", ErrHeadMoved, head, r.Head))
 	}
 	sum := Summary{DurationsMS: map[string]int64{}, StartedAt: d.Now()}
-	started := sum.StartedAt
-	session, num, stop := r.Session, 0, ""
-	var stopReason FixStop
+	session, calls := r.Session, 0
+	var stop FixStop
+	var detail string
 	var declined []DeclinedFinding
 	expected := r.Head
 	// fail returns the rounds already made with err: their commits are on the branch.
@@ -397,71 +594,51 @@ func RunFixRounds(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, 
 		return res, err
 	}
 	for n := 1; n <= capped; n++ {
-		if err := ctx.Err(); err != nil {
-			return fail(err)
-		}
-		timeout, inBudget := roundTimeout(c.AgentTimeout, started, d.Now(), fixRoundsBudget, reviewStartRoom)
-		if !inBudget {
-			stopReason, stop = FixStopBudget, stageBudgetSpent("fix-round", fixRoundsBudget)
+		issued := withoutDeclined(open, declined)
+		round, sha, err := RunFixRound(ctx, d, c, wt, &sum, FixRound{
+			Branch: r.Branch, Head: expected, Session: session, Rules: r.Rules,
+			Findings: findingTexts(issued), Calls: calls, StartedAt: sum.StartedAt,
+		})
+		if errors.Is(err, ErrFixRoundsBudget) {
+			stop, detail = FixStopBudget, stageBudgetSpent("fix-round", fixRoundsBudget)
 			break
 		}
-		issued := withoutDeclined(open, declined)
-		text := findingsText(issued)
-		order := buildOrder(c)
-		call := agentCall{Phase: PhaseFix, Round: num + 1, Model: order[0], Session: session, Rules: r.Rules,
-			Detail: truncate(text, stopDetailLimit), Timeout: timeout}
-		fixText, resumed, ran, err := runAgentInOrder(ctx, d, c, call, order, d.Agent, wt.Dir,
-			withCommitInstruction(fixRoundPrompt(text)), &sum, started, fixRoundsBudget, reviewStartRoom)
 		if err != nil {
 			return fail(err)
 		}
-		num, session = ran, resumed
-		round := ReviewFixRound{Step: sum.Steps[len(sum.Steps)-1], Findings: fixFindingLines(issued),
-			Declined: parseFixDeclines(fixText)}
-
-		sha, committed, err := fixRoundCommit(ctx, d, c, wt, num, expected, fixText)
-		if err != nil {
-			return fail(err)
-		}
+		calls, session = round.Step.Round, round.Session
 		res.Rounds = append(res.Rounds, round)
 		cur := &res.Rounds[len(res.Rounds)-1]
-		if !committed {
-			stopReason, stop = FixStopNoChange, fmt.Sprintf("round %d changed no file", num)
+		if sha == "" {
+			stop, detail = FixStopNoChange, fmt.Sprintf("round %d changed no file", n)
 			break
 		}
-		cur.Commit, expected = sha, sha
+		expected = sha
 		if err := r.Push(ctx, r.Branch, sha); err != nil {
-			return fail(fmt.Errorf("pushing round %d's commit to %s: %w", num, r.Branch, err))
+			return fail(fmt.Errorf("pushing round %d's commit to %s: %w", n, r.Branch, err))
 		}
 		found, err := r.Review(ctx, r.Branch, sha)
 		if err != nil {
-			return fail(fmt.Errorf("re-reviewing %s after round %d: %w", r.Branch, num, err))
+			return fail(fmt.Errorf("re-reviewing %s after round %d: %w", r.Branch, n, err))
 		}
 		after := reviewPending(found)
 		declined = append(declined, cur.Declined...)
 		cur.Resolved, cur.New = findingDelta(issued, after, declined)
 		cur.Reviewed = true
 		open = after
-		ended := false
+		dec := DecideFixRound(findingTexts(issued), findingTexts(after), declined, n, capped)
 		switch {
-		case len(after) == 0:
-			res.Ready, ended = true, true
-		case len(withoutDeclined(after, declined)) == 0:
-			stopReason, stop, ended = FixStopDeclined, "declined: "+declinedText(stillReported(declined, after)), true
-		case cur.New > 0:
-			stopReason, stop, ended = FixStopNew, fmt.Sprintf("round %d added findings", num), true
-		case cur.Resolved == 0:
-			stopReason, stop, ended = FixStopUnchanged, fmt.Sprintf("round %d left the findings unchanged", num), true
+		case dec.Ready:
+			res.Ready = true
+		case dec.Continue:
+			continue
+		default:
+			stop, detail = dec.Stop, dec.Detail
 		}
-		if ended {
-			break
-		}
+		break
 	}
 	if !res.Ready {
-		if stopReason == "" {
-			stopReason, stop = FixStopCap, fmt.Sprintf("the cap of %d fix round(s) was reached", capped)
-		}
-		res.Stop, res.Detail = stopReason, detailParts("findings open: "+findingsText(open), stop)
+		res.Stop, res.Detail = stop, detailParts("findings open: "+findingsText(open), detail)
 	}
 	res.Session, res.Steps = session, sum.Steps
 	return res, nil
