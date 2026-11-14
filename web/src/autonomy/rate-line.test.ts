@@ -38,7 +38,9 @@ describe("rateLine", () => {
   });
 
   it("shows a rate above the guideline and holds nothing", () => {
-    const line = rateLine(state({ reason: "on", rate_reason: "above-guideline", rate_value: "25.0%" }));
+    const line = rateLine(
+      state({ reason: "on", rate_reason: "above-guideline", rate_value: "25.0%" }),
+    );
     expect(line).toBe(
       "on: the trailing rewrite rate is 25.0% over the last 10 PRs a human merged, above the 20% guideline",
     );
@@ -52,20 +54,18 @@ describe("rateLine", () => {
   });
 
   it("keeps the rate beside an unreadable switch", () => {
-    expect(
-      rateLine(state({ switch_on: false, effective: false, reason: "switch-unread" })),
-    ).toBe(
+    expect(rateLine(state({ switch_on: false, effective: false, reason: "switch-unread" }))).toBe(
       "off: the auto-merge settings could not be read; the trailing rewrite rate is 9.8% over the last 10 PRs a human merged, at or under the 20% guideline",
     );
   });
 
   it("says which rate could not be computed", () => {
-    expect(
-      rateLine(state({ rate_reason: "too-few-measured" })),
-    ).toContain("the rate cannot be computed: fewer than 10 PRs a human merged are measured");
-    expect(
-      rateLine(state({ rate_reason: "too-few-measured", window: 12 })),
-    ).toContain("fewer than 12 PRs a human merged are measured");
+    expect(rateLine(state({ rate_reason: "too-few-measured" }))).toContain(
+      "the rate cannot be computed: fewer than 10 PRs a human merged are measured",
+    );
+    expect(rateLine(state({ rate_reason: "too-few-measured", window: 12 }))).toContain(
+      "fewer than 12 PRs a human merged are measured",
+    );
     expect(rateLine(state({ rate_reason: "no-agent-lines" }))).toContain(
       "the measured PRs carry no agent lines",
     );

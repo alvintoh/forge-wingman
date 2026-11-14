@@ -52,7 +52,9 @@ export function RewriteRateView({ read }: { read: Read<AutonomyView> }) {
         <p className="mt-3.5 border-t border-hair pt-2 text-cap text-ink2">{KEY}</p>
       )}
       {read.status === "loading" && <PhaseSlots />}
-      {view !== null && <PhaseModels figures={view.rewrite} bar={guidelineOf(view.auto_merge.guideline)} />}
+      {view !== null && (
+        <PhaseModels figures={view.rewrite} bar={guidelineOf(view.auto_merge.guideline)} />
+      )}
     </section>
   );
 }

@@ -219,7 +219,9 @@ export function tileWords(tile: Tile, index: number, guideline: number): string 
   if (index !== 0 || tile.rate_value === null) {
     return null;
   }
-  return isRed(tile.rate_value, guideline) ? `above ${whole(guideline)}` : `at or below ${whole(guideline)}`;
+  return isRed(tile.rate_value, guideline)
+    ? `above ${whole(guideline)}`
+    : `at or below ${whole(guideline)}`;
 }
 
 // trendWords is a tile's arrow in words, or null where the endpoint served no

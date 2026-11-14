@@ -228,15 +228,15 @@ func TestAutoMergeIsDecidedByTheSwitchAndTheLatch(t *testing.T) {
 		hold     runner.WaitReason
 		warn     bool
 	}{
-		"the switch on under the guideline":          {on, fakeRecentRewrites{samples: rated(100)}, true, true, "on", ""},
-		"the switch on exactly at the guideline":     {on, fakeRecentRewrites{samples: rated(200)}, true, true, "on", ""},
-		"the switch on above the guideline":          {on, fakeRecentRewrites{samples: rated(201)}, true, true, "above-guideline", ""},
-		"the switch on with fewer than ten measured": {on, fakeRecentRewrites{samples: rated(0)[:9]}, true, true, "too-few-measured", ""},
-		"the switch on with no agent lines":          {on, fakeRecentRewrites{samples: noAgentLines}, true, true, "no-agent-lines", ""},
-		"the switch on with unreadable evidence":     {on, fakeRecentRewrites{err: unreadable}, true, true, "evidence-unread", ""},
-		"the switch on with an escaped PR":           {escaped, fakeRecentRewrites{samples: rated(0)}, false, true, "on", runner.WaitEscapedPR},
-		"an escaped PR above the guideline":          {escaped, fakeRecentRewrites{samples: rated(250)}, false, true, "above-guideline", runner.WaitEscapedPR},
-		"the switch off above the guideline":         {off, fakeRecentRewrites{samples: rated(250)}, false, false, "above-guideline", ""},
+		"the switch on under the guideline":          {on, fakeRecentRewrites{samples: rated(100)}, true, true, "on", "", false},
+		"the switch on exactly at the guideline":     {on, fakeRecentRewrites{samples: rated(200)}, true, true, "on", "", false},
+		"the switch on above the guideline":          {on, fakeRecentRewrites{samples: rated(201)}, true, true, "above-guideline", "", false},
+		"the switch on with fewer than ten measured": {on, fakeRecentRewrites{samples: rated(0)[:9]}, true, true, "too-few-measured", "", false},
+		"the switch on with no agent lines":          {on, fakeRecentRewrites{samples: noAgentLines}, true, true, "no-agent-lines", "", false},
+		"the switch on with unreadable evidence":     {on, fakeRecentRewrites{err: unreadable}, true, true, "evidence-unread", "", false},
+		"the switch on with an escaped PR":           {escaped, fakeRecentRewrites{samples: rated(0)}, false, true, "on", runner.WaitEscapedPR, false},
+		"an escaped PR above the guideline":          {escaped, fakeRecentRewrites{samples: rated(250)}, false, true, "above-guideline", runner.WaitEscapedPR, false},
+		"the switch off above the guideline":         {off, fakeRecentRewrites{samples: rated(250)}, false, false, "above-guideline", "", false},
 		"a settings read that fails":                 {&fakeAutoMergeSwitchStore{readErr: unreadable}, fakeRecentRewrites{samples: rated(0)}, false, false, "on", runner.WaitAutoMergeUnread, true},
 	} {
 		t.Run(name, func(t *testing.T) {
