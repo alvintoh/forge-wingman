@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // ErrGitTampered reports git configuration that changed while the agent ran.
@@ -201,11 +202,16 @@ type GitError struct {
 func (e *GitError) Error() string { return "git " + e.Subcommand + ": " + e.Err.Error() }
 func (e *GitError) Unwrap() error { return e.Err }
 
+// gitWaitDelay is how long a cancelled git's output pipes are held open for a
+// child process (a remote helper, an alias's shell) before they are closed.
+const gitWaitDelay = 5 * time.Second
+
 func runGit(ctx context.Context, bin, dir string, stdin io.Reader, args ...string) ([]byte, error) {
 	full := append([]string{"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "commit.gpgsign=false"}, args...)
 	cmd := exec.CommandContext(ctx, bin, full...)
 	cmd.Dir = dir
 	cmd.Stdin = stdin
+	cmd.WaitDelay = gitWaitDelay
 	cmd.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
 		"GIT_CONFIG_NOSYSTEM=1",
