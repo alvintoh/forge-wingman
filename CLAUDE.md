@@ -165,6 +165,14 @@ runner's, so a squash turns the agent's lines into owner lines. *(Judgment call 
 Verified 2026-10-15: squashing the runner's commits on PR 141 made the first live poll read 0 agent
 lines and 4,715 owner lines for it, and the trailing-10 rate 110.4%.)*
 
+**The rewrite rate counts only owner lines added after a runner PR opens, so it does not compare with
+interactive builds.** An interactive build is reviewed and fixed before its PR opens and has no run
+row, so none of its rework is measured. A runner PR is reviewed after it opens, so all of its rework is.
+On PRs 360-364 the comparable share (fix lines after an independent review, over build lines) was
+about 16% for three runner PRs and 22% for one interactive build. To lower the rate, move the review
+before the PR opens, not the build to interactive. *(Judgment call from a measured sample of four PRs,
+2026-11-14.)*
+
 ## Walk agent-built changes in auto mode
 
 When reviewing a change an agent built in this repo, run `/changes-walkthrough` in
