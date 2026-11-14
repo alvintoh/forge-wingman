@@ -32,7 +32,7 @@ func requiredEnv(command string) ([]string, bool) {
 		"plan-define", "plan-optin", "plan-verdict", "plan-reply", "plan-list", "plans-refresh", "project-add", "project-remove",
 		"project-stop", "project-resume":
 		return []string{"GOOGLE_CLOUD_PROJECT"}, true
-	case "record", "record-plan-stage":
+	case "record", "record-plan-stage", "record-fix-rounds":
 		return []string{"GOOGLE_CLOUD_PROJECT", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"}, true
 	case "build", "plan-stage", "fix-round":
 		return []string{"GOOGLE_CLOUD_PROJECT", "RUNNER_TEMP", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"}, true

@@ -152,7 +152,8 @@ type WaitReason string
 //
 // The auto-merge holds are what the switch and the escape latch add to a PR that
 // would otherwise merge itself; the wait detail set beside them names the switch,
-// its settings or the escaped PR. The rewrite rate is a guideline: it is shown
+// its settings or the escaped PR; WaitFixRoundsStopped's detail names the stop
+// that ended the fix-round loop. The rewrite rate is a guideline: it is shown
 // against a fixed figure and holds nothing, so it names no wait reason.
 const (
 	WaitAutoMergeOff        WaitReason = "auto-merge-off"
@@ -160,6 +161,7 @@ const (
 	WaitChecksNotGreen      WaitReason = "checks-not-green"
 	WaitDraft               WaitReason = "draft"
 	WaitEscapedPR           WaitReason = "escaped-pr"
+	WaitFixRoundsStopped    WaitReason = "fix-rounds-stopped"
 	WaitFrontEnd            WaitReason = "front-end"
 	WaitSampled             WaitReason = "sampled"
 	WaitSizeL               WaitReason = "size-l"
@@ -578,6 +580,11 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, reader Prov
 				rec.Outcome, rec.StopReason = OutcomeInfraFailure, reason
 			}
 		}
+	}
+	// The rounds the record step merged in after this attempt's PR opened are not
+	// in its own summary, which rebuilds Steps and FixRounds whole.
+	if carried := carriedFixRounds(existing, in.AttemptID); len(carried) > 0 {
+		rec = mergeFixRounds(rec, carried)
 	}
 	// Every attempt's branch is kept, this attempt's among them: the row's own
 	// branch names only the latest attempt, and a merged PR is matched to its run
