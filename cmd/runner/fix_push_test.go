@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -144,5 +145,42 @@ func TestFixPushRefusesTheSecretsTheJobHolds(t *testing.T) {
 	}
 	if out := readOutput(t, getenv); !strings.Contains(out, "reason=secret\n") {
 		t.Fatalf("outputs %q lack the secret reason", out)
+	}
+}
+
+func TestFixPushRefusesTheJobsOwnGitHubToken(t *testing.T) {
+	s := newPushSetup(t, "token = gh-token\n")
+	getenv := pullAt(t, fixPushBranchName, s.expected)
+	if err := runFixPush(t, getenv, s.args()); err == nil {
+		t.Fatal("a commit holding the job's GitHub token was pushed")
+	}
+	if out := readOutput(t, getenv); !strings.Contains(out, "reason=secret\n") {
+		t.Fatalf("outputs %q lack the secret reason", out)
+	}
+}
+
+func TestFixPushLogsWhenNoSecretValueIsSet(t *testing.T) {
+	s := newPushSetup(t, "x\n")
+	getenv := pullAt(t, fixPushBranchName, s.expected)
+	for _, tt := range []struct {
+		name, token string
+		wantLog     bool
+	}{
+		{"no token", "", true},
+		{"a token", "gh-token", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			env := func(k string) string {
+				if k == "GH_TOKEN" {
+					return tt.token
+				}
+				return getenv(k)
+			}
+			_ = run(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), s.args(), env)
+			if got := strings.Contains(logs.String(), "msg=fixPushSecretsUnset"); got != tt.wantLog {
+				t.Fatalf("logged fixPushSecretsUnset = %v, want %v: %s", got, tt.wantLog, logs.String())
+			}
+		})
 	}
 }

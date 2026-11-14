@@ -48,13 +48,27 @@ func fixPush(ctx context.Context, logger *slog.Logger, getenv func(string) strin
 		Branch:   *branch,
 		Expected: *expected,
 		Remote:   *remote,
-		Secrets:  runner.HarnessSecrets(getenv),
+		Secrets:  fixPushSecrets(logger, getenv),
 		Head: func(ctx context.Context) (runner.FixPushHead, error) {
 			p, err := gh.pull(ctx, *number)
 			return runner.FixPushHead{Ref: p.Head.Ref, SHA: p.Head.SHA}, err
 		},
 	})
 	return finishFixPush(logger, output, sha, err)
+}
+
+// fixPushSecrets are the credential values the push job holds: each plan's key
+// and its own GitHub token. When none is set only the token shapes are checked,
+// which is logged so the gap is visible.
+func fixPushSecrets(logger *slog.Logger, getenv func(string) string) []string {
+	secrets := append(runner.HarnessSecrets(getenv), getenv("GH_TOKEN"))
+	for _, s := range secrets {
+		if s != "" {
+			return secrets
+		}
+	}
+	logger.Warn("fixPushSecretsUnset", "reason", "no-secret-values")
+	return secrets
 }
 
 // finishFixPush reports a push to the step that reads it: pushed, the sha when
