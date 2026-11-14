@@ -7,6 +7,7 @@
 //	runner pr-meta         -run-id <id> ...          render the PR's title and body from the run record
 //	runner pr              -pr <n> [-shots <dir>]    push a run's screenshots to the evidence branch and show them in the PR body
 //	runner record          -run-id <id> -summary ... validate the build's summary and merge it into the run record
+//	runner record-fix-rounds -run-id <id> [-state <path>] ...  record why a stopped fix-round loop leaves the PR to the owner and merge its rounds into the run record
 //	runner enable-provider -provider <name>          admit a halted provider back to dispatch (AC5)
 //	runner reset-breaker                             clear the breaker a systemic stop tripped, admitting dispatch again
 //	runner peak-mode       [-mode off-peak-only|always] print the peak mode, or set whether a run waits out its model's peak-price hours
@@ -84,7 +85,7 @@ func exitCode(err error) int {
 
 func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(string) string) error {
 	if len(args) == 0 {
-		return errors.New("usage: runner ticket|build|plan-stage|record-plan-stage|pr-meta|pr|record|enable-provider|reset-breaker|peak-mode|auto-merge|requeue|backfill-queued-at|project-add|project-remove|project-stop|project-resume|plan-define|plan-verdict|plan-reply|plan-list|plans-refresh|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post|fix-await|fix-push|fix-round|agent-probe|egress-proxy [flags]")
+		return errors.New("usage: runner ticket|build|plan-stage|record-plan-stage|pr-meta|pr|record|enable-provider|reset-breaker|peak-mode|auto-merge|requeue|backfill-queued-at|project-add|project-remove|project-stop|project-resume|plan-define|plan-verdict|plan-reply|plan-list|plans-refresh|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post|fix-await|fix-push|fix-round|record-fix-rounds|agent-probe|egress-proxy [flags]")
 	}
 	if args[0] == "plan-smoke" {
 		return planSmoke(ctx, logger, getenv, args[1:])
@@ -135,6 +136,8 @@ func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(st
 		return prMeta(ctx, logger, e, args[1:])
 	case "record":
 		return record(ctx, logger, getenv, e, args[1:])
+	case "record-fix-rounds":
+		return recordFixRounds(ctx, logger, e, args[1:])
 	case "enable-provider":
 		return enableProvider(ctx, logger, e, args[1:])
 	case "reset-breaker":
