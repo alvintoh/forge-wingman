@@ -127,6 +127,12 @@ func TestWithdrawWorkflowDisablesAutoMergeOnAPushToARunsBranch(t *testing.T) {
 		`requested="$(gh pr view "$PR" --json autoMergeRequest`,
 		`gh pr merge "$PR" --disable-auto`,
 		`gh pr edit "$PR" --remove-label wingman:auto-merge-eligible`,
+		// A fix round's push is the App's, and keeps the label for the re-review.
+		"PUSHER: ${{ github.event.sender.login }}",
+		"APP_BOT: ${{ steps.app.outputs.app-slug }}[bot]",
+		// A failed mint must not skip the withdrawal.
+		"      - id: app\n        continue-on-error: true\n",
+		`if [[ "$labelled" == true && "$PUSHER" != "$APP_BOT" ]]; then`,
 	} {
 		if !strings.Contains(string(yml), want) {
 			t.Errorf("automerge-withdraw.yml lacks %q", want)
@@ -299,5 +305,158 @@ func TestNoWorkflowReachesCommandCode(t *testing.T) {
 	}
 	if !strings.Contains(string(probe), "for host in api.commandcode.ai example.com 169.254.169.254; do") {
 		t.Error("agent-probe.yml does not expect the proxy to refuse api.commandcode.ai")
+	}
+}
+
+// workflowJob returns one job of a workflow file: from its key to the next job's key.
+func workflowJob(t *testing.T, file, job string) string {
+	t.Helper()
+	yml, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rest, ok := strings.Cut(string(yml), "\n  "+job+":\n")
+	if !ok {
+		t.Fatalf("%s has no %s job", file, job)
+	}
+	lines := strings.Split(rest, "\n")
+	for i, l := range lines {
+		if len(l) > 2 && l[:2] == "  " && l[2] != ' ' && l[2] != '#' {
+			return strings.Join(lines[:i], "\n")
+		}
+	}
+	return rest
+}
+
+func TestRunWorkflowChainsTheFixRoundsOnEachReview(t *testing.T) {
+	for job, want := range map[string][]string{
+		"pr-meta": {"fix_rounds: ${{ steps.meta.outputs.fix_rounds }}"},
+		"pr": {
+			"number: ${{ steps.open.outputs.number }}",
+			"head_sha: ${{ steps.push.outputs.head_sha }}",
+			`echo "head_sha=$(git rev-parse "refs/heads/${BRANCH}")" >> "$GITHUB_OUTPUT"`,
+		},
+		"await-0": {
+			"needs.pr-meta.outputs.fix_rounds == 'true'",
+			"uses: ./.github/workflows/fix-await.yml",
+			"sha: ${{ needs.pr.outputs.head_sha }}",
+		},
+		"round-1": {
+			"if: ${{ !cancelled() && needs.await-0.outputs.decision == 'continue' }}",
+			"head: ${{ needs.pr.outputs.head_sha }}",
+			"findings: ${{ needs.await-0.outputs.findings }}",
+		},
+		"round-2": {
+			"if: ${{ !cancelled() && needs.round-1.outputs.decision == 'continue' }}",
+			"state_artifact: fix-1",
+			"head: ${{ needs.round-1.outputs.sha }}",
+			"findings: ${{ needs.round-1.outputs.findings }}",
+		},
+		"round-3": {
+			"if: ${{ !cancelled() && needs.round-2.outputs.decision == 'continue' }}",
+			"state_artifact: fix-2",
+			"head: ${{ needs.round-2.outputs.sha }}",
+			"findings: ${{ needs.round-2.outputs.findings }}",
+		},
+		"record-fix-rounds": {
+			"if: always() && github.ref == 'refs/heads/main' && needs.await-0.result != 'skipped'",
+			"needs: [ticket, model, record, await-0, round-1, round-2, round-3]",
+			`[[ -n "$ROUND_REASON" || -n "$PUSH_REASON" || "$AWAIT_REASON" == error ]] || exit 0`,
+			"ROUND_STOP: ${{ needs.round-3.outputs.decision == 'continue' && 'round-cap' ||",
+			"|| needs.await-0.outputs.reason }}",
+			`"$RUNNER_TEMP/runner" record-fix-rounds`,
+		},
+	} {
+		got := workflowJob(t, "run.yml", job)
+		for _, w := range want {
+			if !strings.Contains(got, w) {
+				t.Errorf("run.yml's %s job lacks %q", job, w)
+			}
+		}
+	}
+}
+
+func TestFixRoundWorkflowGivesEachJobOneCredential(t *testing.T) {
+	round := workflowJob(t, "fix-round.yml", "round")
+	if strings.Contains(round, "GH_TOKEN") || strings.Contains(round, "app-token") ||
+		!strings.Contains(round, "persist-credentials: false") {
+		t.Error("the round job can reach a GitHub token")
+	}
+	for _, w := range []string{
+		"id-token: write",
+		"service_account: ${{ vars.GCP_MODEL_SERVICE_ACCOUNT }}",
+		`git branch "$BRANCH" "refs/remotes/origin/${BRANCH}"`,
+		`[[ -z "$STATE_ARTIFACT" ]] || state=(-state "$RUNNER_TEMP/previous/fix-state.json")`,
+		"name: fix-${{ inputs.round }}",
+		// hashFiles cannot see RUNNER_TEMP, so the state is tested in the shell.
+		`[[ -f "$state" ]] || exit 0`,
+		"if: ${{ !cancelled() && steps.state.outputs.written == 'true' }}",
+	} {
+		if !strings.Contains(round, w) {
+			t.Errorf("the round job lacks %q", w)
+		}
+	}
+	push := workflowJob(t, "fix-round.yml", "push")
+	if strings.Contains(push, "google-github-actions/auth") || !strings.Contains(push, "permissions: {}") {
+		t.Error("the push job holds a cloud identity")
+	}
+	for _, w := range []string{
+		"if: ${{ !cancelled() && needs.round.outputs.commit != '' }}",
+		"permission-contents: write",
+		"permission-pull-requests: read",
+		"OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}",
+		`-expected "$EXPECTED"`,
+	} {
+		if !strings.Contains(push, w) {
+			t.Errorf("the push job lacks %q", w)
+		}
+	}
+	await := workflowJob(t, "fix-round.yml", "await")
+	for _, w := range []string{
+		"if: ${{ !cancelled() && needs.push.outputs.pushed == 'true' }}",
+		"sha: ${{ needs.push.outputs.sha }}",
+		"started: ${{ needs.round.outputs.started_at }}",
+		// The called job checks out; a nested job may not ask for more than this grants.
+		"    permissions:\n      contents: read\n      pull-requests: read\n      statuses: read\n",
+	} {
+		if !strings.Contains(await, w) {
+			t.Errorf("the await job lacks %q", w)
+		}
+	}
+}
+
+func TestFixAwaitWorkflowReportsAnErrorItsCommandDidNot(t *testing.T) {
+	job := workflowJob(t, "fix-await.yml", "await")
+	for _, w := range []string{
+		"GH_TOKEN: ${{ github.token }}",
+		"-timeout 45m",
+		"if: steps.await.outcome == 'failure' && steps.await.outputs.decision == ''",
+		"reason: ${{ steps.await.outputs.reason || steps.failed.outputs.reason }}",
+	} {
+		if !strings.Contains(job, w) {
+			t.Errorf("fix-await.yml's await job lacks %q", w)
+		}
+	}
+	if strings.Contains(job, "id-token") || strings.Contains(job, "secrets.") {
+		t.Error("fix-await.yml's await job holds more than the run's read token")
+	}
+}
+
+func TestFixLoopWorkflowCommandStepsReportBeforeTheyFail(t *testing.T) {
+	for file, step := range map[string]string{
+		"fix-round.yml": "        name: Run the fix round\n        continue-on-error: true\n",
+		"fix-await.yml": "        name: Await the review\n        continue-on-error: true\n",
+	} {
+		yml, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(yml), step) {
+			t.Errorf("%s lets a failed command step drop its outputs: %q", file, step)
+		}
+	}
+	if !strings.Contains(workflowJob(t, "fix-round.yml", "push"),
+		"        name: Push the round's commit\n        continue-on-error: true\n") {
+		t.Error("fix-round.yml's push step drops its refusal when fix-push fails")
 	}
 }
