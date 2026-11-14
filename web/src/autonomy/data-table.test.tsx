@@ -31,7 +31,7 @@ const rewrite: RewriteView = {
   by_size: [],
   by_model: { plan: [], build: [], review: [] },
   by_repo: [],
-  bars: { rollback: 0.1 },
+  bars: { guideline: 0.1 },
 };
 
 const markup = renderToStaticMarkup(<DataSection rewrite={rewrite} />).replaceAll("&#x27;", "'");

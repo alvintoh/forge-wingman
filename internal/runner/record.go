@@ -150,22 +150,17 @@ type WaitReason string
 // the live switch and WaitChecksNotGreen from GitHub's check state; the merge
 // refuses on WaitChecksNotGreen, WaitDraft and WaitUnconfirmedDecision.
 //
-// The auto-merge holds are what the switch, the bar and the escape latch add to
-// a PR that would otherwise merge itself; the wait detail set beside them names
-// the rate, the bar or the escaped PR. A rate that cannot be computed holds the
-// same way, each condition with its own token.
+// The auto-merge holds are what the switch and the escape latch add to a PR that
+// would otherwise merge itself; the wait detail set beside them names the switch,
+// its settings or the escaped PR. The rewrite rate is a guideline: it is shown
+// against a fixed figure and holds nothing, so it names no wait reason.
 const (
 	WaitAutoMergeOff        WaitReason = "auto-merge-off"
 	WaitAutoMergeUnread     WaitReason = "auto-merge-unread"
-	WaitBarInvalid          WaitReason = "bar-invalid"
 	WaitChecksNotGreen      WaitReason = "checks-not-green"
 	WaitDraft               WaitReason = "draft"
 	WaitEscapedPR           WaitReason = "escaped-pr"
 	WaitFrontEnd            WaitReason = "front-end"
-	WaitRateAboveBar        WaitReason = "rate-above-bar"
-	WaitRateNoAgentLines    WaitReason = "rate-no-agent-lines"
-	WaitRateTooFewMeasured  WaitReason = "rate-too-few-measured"
-	WaitRateUnread          WaitReason = "rate-unread"
 	WaitSampled             WaitReason = "sampled"
 	WaitSizeL               WaitReason = "size-l"
 	WaitUnconfirmedDecision WaitReason = "unconfirmed-decision"

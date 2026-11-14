@@ -534,10 +534,10 @@ func TestAutonomyEveryRateTextHasItsNumber(t *testing.T) {
 	}
 }
 
-func TestAutonomyServesTheBarFromTheGoConstant(t *testing.T) {
+func TestAutonomyServesTheGuidelineFromTheGoConstant(t *testing.T) {
 	bars, _ := rewriteFigures(t, nil)["bars"].(map[string]any)
-	if !slices.Equal(sortedKeys(bars), []string{"rollback"}) || bars["rollback"] != 0.2 {
-		t.Errorf("bars = %v, want the one bar, the trailing rate is drawn against", bars)
+	if !slices.Equal(sortedKeys(bars), []string{"guideline"}) || bars["guideline"] != 0.2 {
+		t.Errorf("bars = %v, want the one guideline, the trailing rate is drawn against", bars)
 	}
 }
 

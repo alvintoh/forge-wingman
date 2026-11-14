@@ -2,9 +2,7 @@ package store
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"math"
 	"slices"
 	"time"
 
@@ -18,7 +16,6 @@ import (
 const (
 	autoMergeSwitchDocID = "auto-merge"
 	enabledField         = "enabled"
-	barField             = "bar"
 	escapedPRField       = "escaped_pr"
 	escapedRepoField     = "escaped_repo"
 	escapedByField       = "escaped_by"
@@ -27,26 +24,12 @@ const (
 	clearedEscapesField  = "cleared_escapes"
 )
 
-// The bar's own bounds and the value it takes while the owner has set none.
-const (
-	DefaultBarPercent = dispatcher.DefaultAutoMergeBarPercent
-	MinBarPercent     = 1
-	MaxBarPercent     = 100
-)
-
-// ErrBarNotInRange reports a stored bar that is not a whole number from 1 to
-// 100. It holds auto-merge off, and a caller says so rather than guessing a bar.
-var ErrBarNotInRange = errors.New("the bar is not a whole number from 1 to 100")
-
-// AutoMergeSetting is the owner's auto-merge document: the switch, the bar the
-// trailing rewrite rate is measured against, and the auto-merged PR a later
-// merge reverted or fixed, which holds auto-merge off until the owner switches
-// it on again.
+// AutoMergeSetting is the owner's auto-merge document: the switch, and the
+// auto-merged PR a later merge reverted or fixed, which holds auto-merge off
+// until the owner switches it on again.
 type AutoMergeSetting struct {
 	// Enabled is the owner's switch, on while no document is stored.
 	Enabled bool
-	// BarPercent is the bar as a percentage, 1 to 100.
-	BarPercent int
 	// Escaped is the escape latch, its PR zero when none holds.
 	Escaped dispatcher.MergeEscape
 }
@@ -65,13 +48,14 @@ func (a *AutoMergeSwitches) doc() *firestore.DocumentRef {
 	return a.client.Collection(dispatchCollection).Doc(autoMergeSwitchDocID)
 }
 
-// Read returns the owner's switch, the bar and the escape latch in one read, on,
-// at DefaultBarPercent and holding nothing while no document is stored. A stored
-// value that is not what it says is an error rather than a guess: a bar of the
-// wrong shape wraps ErrBarNotInRange, and an unreadable document is returned as
-// it is.
+// Read returns the owner's switch and the escape latch in one read, on and
+// holding nothing while no document is stored. Any other field a stored document
+// carries is left unread, a bar among them: the rewrite rate is a guideline and
+// the switch alone gates auto-merge. A stored value that is not what it says is
+// an error rather than a guess — a switch of the wrong shape, or one missing from
+// a document — and an unreadable document is returned as it is.
 func (a *AutoMergeSwitches) Read(ctx context.Context) (AutoMergeSetting, error) {
-	out := AutoMergeSetting{Enabled: true, BarPercent: DefaultBarPercent}
+	out := AutoMergeSetting{Enabled: true}
 	snap, err := a.doc().Get(ctx)
 	if status.Code(err) == codes.NotFound {
 		return out, nil
@@ -92,32 +76,8 @@ func (a *AutoMergeSwitches) Read(ctx context.Context) (AutoMergeSetting, error) 
 	} else if len(row) > 0 {
 		return AutoMergeSetting{}, fmt.Errorf("reading the auto-merge settings: %q is missing from a stored document", enabledField)
 	}
-	if raw, stored := row[barField]; stored && raw != nil {
-		n, whole := wholeNumber(raw)
-		if !whole || n < MinBarPercent || n > MaxBarPercent {
-			return AutoMergeSetting{}, fmt.Errorf("reading the auto-merge settings: %w (%v)", ErrBarNotInRange, raw)
-		}
-		out.BarPercent = n
-	}
 	out.Escaped = escapedOf(row)
 	return out, nil
-}
-
-// wholeNumber reads a stored number as a whole one: Firestore returns whole
-// numbers as int64, and a float is accepted only when it is one.
-func wholeNumber(value any) (int, bool) {
-	switch n := value.(type) {
-	case int64:
-		return int(n), true
-	case int:
-		return n, true
-	case float64:
-		if math.IsInf(n, 0) || math.IsNaN(n) || n != math.Trunc(n) {
-			return 0, false
-		}
-		return int(n), true
-	}
-	return 0, false
 }
 
 // escapedOf reads the escape latch a stored document carries, its PR zero when
@@ -197,30 +157,6 @@ func (a *AutoMergeSwitches) SetEnabled(ctx context.Context, enabled bool, at tim
 	})
 	if err != nil {
 		return fmt.Errorf("setting the auto-merge switch: %w", err)
-	}
-	return nil
-}
-
-// SetBar stores the bar the trailing rewrite rate is measured against, as a
-// percentage from 1 to 100, effective from the next pr-meta. A document it
-// creates carries the switch at its default, on, so the settings stay readable.
-func (a *AutoMergeSwitches) SetBar(ctx context.Context, percent int, at time.Time) error {
-	if percent < MinBarPercent || percent > MaxBarPercent {
-		return fmt.Errorf("setting the auto-merge bar: %d is %w", percent, ErrBarNotInRange)
-	}
-	err := a.client.RunTransaction(ctx, func(_ context.Context, tx *firestore.Transaction) error {
-		_, exists, err := a.escapeSnapshot(tx)
-		if err != nil {
-			return err
-		}
-		write := map[string]any{barField: percent, setAtField: at}
-		if !exists {
-			write[enabledField] = true
-		}
-		return tx.Set(a.doc(), write, firestore.MergeAll)
-	})
-	if err != nil {
-		return fmt.Errorf("setting the auto-merge bar: %w", err)
 	}
 	return nil
 }

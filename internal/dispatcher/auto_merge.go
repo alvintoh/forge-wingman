@@ -6,10 +6,11 @@ import (
 )
 
 // The reasons the switch and the rate report, stable so a log line and a view
-// can be counted by them.
+// can be counted by them. The rate's own reasons are information: the rate is a
+// guideline and holds nothing.
 const (
-	// AutoMergeReasonOn is a rate within the bar over a full measured window of
-	// PRs a human merged.
+	// AutoMergeReasonOn is a rate at or under the guideline over a full measured
+	// window of PRs a human merged.
 	AutoMergeReasonOn = "on"
 	// AutoMergeReasonSwitchOff is the owner's switch being off.
 	AutoMergeReasonSwitchOff = "switch-off"
@@ -18,8 +19,6 @@ const (
 	// it reads the rate; the surface, which reads the switch itself, reports it
 	// as the reason auto-merge is off.
 	AutoMergeReasonSwitchUnread = "switch-unread"
-	// AutoMergeReasonBarInvalid is a stored bar that is not a number from 1 to 100.
-	AutoMergeReasonBarInvalid = "bar-invalid"
 	// AutoMergeReasonEscaped is an auto-merged PR the owner's review never read: one
 	// a later merge reverted or named as fixed, which holds auto-merge off until the
 	// owner switches it on again.
@@ -28,19 +27,20 @@ const (
 	AutoMergeReasonTooFewMeasured = "too-few-measured"
 	// AutoMergeReasonNoAgentLines is a window whose PRs carry no agent lines, so no rate exists.
 	AutoMergeReasonNoAgentLines = "no-agent-lines"
-	// AutoMergeReasonRateAboveBar is a rewrite rate over the bar.
-	AutoMergeReasonRateAboveBar = "rate-above-bar"
+	// AutoMergeReasonAboveGuideline is a rewrite rate over the guideline, which is
+	// shown and holds nothing.
+	AutoMergeReasonAboveGuideline = "above-guideline"
 	// AutoMergeReasonEvidenceUnread is evidence that could not be read.
 	AutoMergeReasonEvidenceUnread = "evidence-unread"
 )
 
-// AutoMergeDecision is the rewrite rate's verdict over the trailing window:
-// whether the rate is within its bar and what it was read from.
+// AutoMergeDecision is the rewrite rate's standing over the trailing window:
+// where it sits against the guideline and what it was read from.
 type AutoMergeDecision struct {
-	// WithinBar is whether the rate is at or under the bar: exactly at the bar
-	// allows it.
-	WithinBar bool
-	// Reason is one of the AutoMerge reason tokens.
+	// WithinGuideline is whether the rate is at or under the guideline: exactly at
+	// it counts as within.
+	WithinGuideline bool
+	// Reason is one of the AutoMerge reason tokens, the rate's own where it was read.
 	Reason string
 	// PRs is how many PRs a human merged the window held.
 	PRs  int
@@ -48,11 +48,11 @@ type AutoMergeDecision struct {
 }
 
 // Evaluated reports whether the rate was read from evidence: a switch that was
-// off, a switch that could not be read, a bar that could not be read and
-// evidence that could not be read leave it unread.
+// off, a switch that could not be read and evidence that could not be read leave
+// it unread.
 func (d AutoMergeDecision) Evaluated() bool {
 	switch d.Reason {
-	case AutoMergeReasonSwitchOff, AutoMergeReasonSwitchUnread, AutoMergeReasonBarInvalid, AutoMergeReasonEvidenceUnread:
+	case AutoMergeReasonSwitchOff, AutoMergeReasonSwitchUnread, AutoMergeReasonEvidenceUnread:
 		return false
 	}
 	return true
@@ -67,13 +67,13 @@ func (d AutoMergeDecision) RateText() string {
 	return fmt.Sprintf("%.1f%%", d.Rate*100)
 }
 
-// AutoMergeOn reads the rate's verdict over the newest TrailingPRs PRs a human
+// AutoMergeOn reads the rate's standing over the newest TrailingPRs PRs a human
 // merged, newest first: whether they are all measured and carry agent lines, and
-// whether they rewrite at most bar. A PR that merged itself is left out of the
-// window, as is one whose row names no merge account, so the rate is what the
-// owner's own reading caught; a whole window of them leaves the rate unmeasured
-// rather than clean.
-func AutoMergeOn(ev Evidence, bar float64) AutoMergeDecision {
+// whether they rewrite at most the guideline. A PR that merged itself is left
+// out of the window, as is one whose row names no merge account, so the rate is
+// what the owner's own reading caught; a whole window of them leaves the rate
+// unmeasured rather than clean.
+func AutoMergeOn(ev Evidence) AutoMergeDecision {
 	window := ev.HumanWindow(TrailingPRs)
 	lines := Lines(window)
 	d := AutoMergeDecision{PRs: len(window), Rate: lines.Rate()}
@@ -82,10 +82,10 @@ func AutoMergeOn(ev Evidence, bar float64) AutoMergeDecision {
 		d.Reason = AutoMergeReasonTooFewMeasured
 	case lines.AgentLines <= 0:
 		d.Reason = AutoMergeReasonNoAgentLines
-	case d.Rate > bar:
-		d.Reason = AutoMergeReasonRateAboveBar
+	case d.Rate > RateGuideline:
+		d.Reason = AutoMergeReasonAboveGuideline
 	default:
-		d.Reason, d.WithinBar = AutoMergeReasonOn, true
+		d.Reason, d.WithinGuideline = AutoMergeReasonOn, true
 	}
 	return d
 }

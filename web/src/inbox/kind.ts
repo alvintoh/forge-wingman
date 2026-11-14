@@ -7,7 +7,9 @@ export type Wait = { words: string; blocks: boolean; kind: Kind };
 
 export const DRAFT_WORDS = "still a draft";
 
-// Why a PR waits on the owner. The first three also block the merge.
+// Why a PR waits on the owner. The first three also block the merge. The rate reasons are kept for
+// rows written before it became a guideline: the rate holds nothing, so they name where the rate
+// stood and never say it blocked the merge.
 export const waits: Record<string, Wait> = {
   "unconfirmed-decision": { words: "unconfirmed decision", blocks: true, kind: "FORK" },
   draft: { words: DRAFT_WORDS, blocks: true, kind: "TODO" },
@@ -17,9 +19,9 @@ export const waits: Record<string, Wait> = {
   sampled: { words: "sampled", blocks: false, kind: "REVIEW" },
   "auto-merge-off": { words: "auto-merge is off", blocks: false, kind: "REVIEW" },
   "auto-merge-unread": { words: "auto-merge unread", blocks: false, kind: "REVIEW" },
-  "bar-invalid": { words: "bar invalid", blocks: false, kind: "REVIEW" },
+  "bar-invalid": { words: "auto-merge settings invalid", blocks: false, kind: "REVIEW" },
   "escaped-pr": { words: "auto-merge held by an escaped PR", blocks: false, kind: "REVIEW" },
-  "rate-above-bar": { words: "rate above the bar", blocks: false, kind: "REVIEW" },
+  "rate-above-bar": { words: "rate above the guideline", blocks: false, kind: "REVIEW" },
   "rate-no-agent-lines": { words: "rate unmeasurable", blocks: false, kind: "REVIEW" },
   "rate-too-few-measured": { words: "rate unmeasured", blocks: false, kind: "REVIEW" },
   "rate-unread": { words: "rate unread", blocks: false, kind: "REVIEW" },

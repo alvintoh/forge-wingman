@@ -125,8 +125,8 @@ function Figure({ on, children }: { on: boolean | undefined; children: ReactNode
 }
 
 // Rate prints a rate as the endpoint printed it, red beside a triangle when it is
-// above the bar; the triangle is a picture, so its words follow it for a reader of
-// the text.
+// above the guideline; the triangle is a picture, so its words follow it for a reader
+// of the text.
 function Rate({
   value,
   text,
@@ -490,10 +490,10 @@ type DataSectionProps = {
 
 // DataSection holds the exact numbers behind every chart, which are the charts' text
 // alternative: the three windows in words and the splits by size, model and repository in one
-// card, then the per-PR table, paged, in another. A rate above the bar is red with a triangle, and
-// the legend says what red means. With no measured PR it says so in one card.
+// card, then the per-PR table, paged, in another. A rate above the guideline is red with a triangle,
+// and the legend says what red means. With no measured PR it says so in one card.
 export function DataSection({ rewrite, className }: DataSectionProps) {
-  const bar = rewrite.bars.rollback;
+  const bar = rewrite.bars.guideline;
   const sizes = rewrite.by_size.filter((size) => size.prs > 0);
   const models: ModelTableRow[] = PHASES.flatMap((phase) =>
     rewrite.by_model[phase].map((row) => ({ phase, row })),
@@ -519,7 +519,7 @@ export function DataSection({ rewrite, className }: DataSectionProps) {
             <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
               <polygon points="5,0.5 0,9.5 10,9.5" className="fill-stop" />
             </svg>
-            red = above the {whole(bar)} bar
+            red = above the {whole(bar)} guideline
           </p>
         </>
       )}

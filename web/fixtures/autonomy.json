@@ -1,9 +1,8 @@
 {
   "auto_merge": {
     "switch_on": true,
-    "rate_allows": true,
     "rate_value": "7.4%",
-    "limit": "20.0%",
+    "guideline": "20.0%",
     "window": 10,
     "effective": true,
     "reason": "on",
@@ -627,6 +626,6 @@
         }
       }
     ],
-    "bars": { "rollback": 0.2 }
+    "bars": { "guideline": 0.2 }
   }
 }

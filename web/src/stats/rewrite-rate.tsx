@@ -1,4 +1,4 @@
-import { barOf, reasonText, whole } from "../autonomy/format";
+import { guidelineOf, reasonText, whole } from "../autonomy/format";
 import { isAutonomy, isRewrite } from "../autonomy/guard";
 import type { AutonomyView, MergeState } from "../autonomy/types";
 import { captionClass } from "../caption";
@@ -12,16 +12,17 @@ const KEY =
 
 // The sentence names the window and the figure only where the endpoint measured both.
 function rateSentence(merge: MergeState): string {
-  if (!merge.rate_value.endsWith("%") || merge.reason === "too-few-measured") {
-    return reasonText(merge.reason);
+  const measured = merge.rate_reason === "on" || merge.rate_reason === "above-guideline";
+  if (!merge.rate_value.endsWith("%") || !measured) {
+    return reasonText(merge.rate_reason);
   }
-  return `Rewrite rate over the trailing ${merge.window} PRs a human merged is ${merge.rate_value}; bar ${whole(barOf(merge.limit))}`;
+  return `Rewrite rate over the trailing ${merge.window} PRs a human merged is ${merge.rate_value}; guideline ${whole(guidelineOf(merge.guideline))}`;
 }
 
 /**
  * RewriteRate is the Statistics card for the rewrite rate: what it measures, the figure over the
- * trailing window against the bar that gates auto-merge, the key to the figures under each model,
- * and the models of the three phases. The endpoint is pooled, so a project chosen on the page
+ * trailing window against the 20% guideline, the key to the figures under each model, and the
+ * models of the three phases. The endpoint is pooled, so a project chosen on the page
  * leaves every figure here as All draws it.
  */
 export function RewriteRate() {
@@ -51,7 +52,9 @@ export function RewriteRateView({ read }: { read: Read<AutonomyView> }) {
         <p className="mt-3.5 border-t border-hair pt-2 text-cap text-ink2">{KEY}</p>
       )}
       {read.status === "loading" && <PhaseSlots />}
-      {view !== null && <PhaseModels figures={view.rewrite} bar={barOf(view.auto_merge.limit)} />}
+      {view !== null && (
+        <PhaseModels figures={view.rewrite} bar={guidelineOf(view.auto_merge.guideline)} />
+      )}
     </section>
   );
 }

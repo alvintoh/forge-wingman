@@ -13,7 +13,8 @@ type AutoMergeSectionProps = {
 
 /**
  * AutoMergeSection is the auto-merge switch, a sentence on the value it shows, and the rate line
- * from the saved state, which a staged change does not move.
+ * from the saved state — the rate against the 20% guideline, which holds nothing — which a staged
+ * change does not move.
  */
 export function AutoMergeSection({ read, on, disabled, onToggle }: AutoMergeSectionProps) {
   const merge = read.status === "ready" ? read.body.auto_merge : null;
@@ -34,7 +35,7 @@ export function AutoMergeSection({ read, on, disabled, onToggle }: AutoMergeSect
         {merge !== null && on !== null && (
           <p>
             {on
-              ? "Size S and M PRs merge themselves while the rate is at or under the bar."
+              ? "Size S and M PRs merge themselves while this is on."
               : "Every PR waits for you to merge it."}
           </p>
         )}

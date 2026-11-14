@@ -55,15 +55,15 @@ export function wholePercent(fraction: number): string {
   return `${evenTie(points, 0) ?? Math.round(points)}%`;
 }
 
-// whole prints a bar's fraction without a decimal it does not have: "10%".
+// whole prints a fraction as a percentage without a decimal it does not have: "10%".
 export function whole(fraction: number): string {
   return `${Math.round(fraction * 1000) / 10}%`;
 }
 
-// barOf is the bar a rate is compared to, as a fraction, from the endpoint's own text for it:
-// "20.0%" — the default bar — is 0.2.
-export function barOf(limit: string): number {
-  return Number.parseFloat(limit) / 100;
+// guidelineOf is the figure a rate is shown against, as a fraction, from the endpoint's own text
+// for it: "20.0%" is 0.2.
+export function guidelineOf(text: string): number {
+  return Number.parseFloat(text) / 100;
 }
 
 // servedRate is a rate as the endpoint prints it, or the page's words where the
@@ -120,26 +120,25 @@ export function phaseWord(phase: Phase, model: string): string {
   return model === UNKNOWN_MODEL ? NO_MODEL_WORD[phase] : modelName(model);
 }
 
-// reasonText is what the endpoint's reason token says about the rate, or about
-// the switch where the token is the switch's own. The rate gates auto-merge.
+// reasonText is what the endpoint's reason token says about the switch, or about
+// the rate where the token is the rate's own. The rate is a guideline: it turns
+// nothing off.
 export function reasonText(reason: string): string {
   switch (reason) {
     case "on":
-      return "The rewrite rate is at or under the bar.";
+      return "The rewrite rate is at or under the guideline.";
     case "switch-off":
       return "The owner's switch is off.";
     case "switch-unread":
       return "The auto-merge settings could not be read.";
-    case "bar-invalid":
-      return "The stored bar is not a whole number from 1 to 100.";
     case "escaped":
       return "An auto-merged PR escaped the owner's read.";
     case "too-few-measured":
       return "Too few PRs a human merged are measured, or one carries an unmeasured commit.";
     case "no-agent-lines":
       return "The measured PRs carry no agent lines, so there is no rate.";
-    case "rate-above-bar":
-      return "The trailing rate is above the bar.";
+    case "above-guideline":
+      return "The trailing rate is above the guideline.";
     case "evidence-unread":
       return "The measured merges could not be read.";
     default:
@@ -162,61 +161,67 @@ function rateMissing(merge: MergeState, reason: string): string {
 }
 
 /**
- * rateLine words what holds auto-merge: the trailing rate over the PRs a human merged and its place
- * against the bar, or the reason the rate cannot be used. The rate gates, so a rate above the bar,
- * exactly as much as a rate that cannot be computed, turns auto-merge off.
+ * rateAgainstGuideline words the trailing rate over the PRs a human merged beside where it sits against
+ * the 20% guideline, or why it cannot be computed. The guideline blocks nothing, so the words never
+ * say the rate holds a merge.
+ */
+function rateAgainstGuideline(merge: MergeState): string {
+  const missing = rateMissing(merge, merge.rate_reason);
+  if (missing !== "") {
+    return missing;
+  }
+  const guideline = whole(guidelineOf(merge.guideline));
+  const place = isRed(guidelineOf(merge.rate_value), guidelineOf(merge.guideline))
+    ? "above"
+    : "at or under";
+  return `the trailing rewrite rate is ${merge.rate_value} over the last ${merge.window} PRs a human merged, ${place} the ${guideline} guideline`;
+}
+
+/**
+ * rateLine words the auto-merge state the card draws: what holds auto-merge, and the trailing rate
+ * beside where it sits against the guideline. Only the switch and an escaped PR turn auto-merge off;
+ * the rate is a guideline and holds nothing.
  */
 export function rateLine(merge: MergeState): string {
-  const trailing = `the trailing rewrite rate is ${merge.rate_value} over the last ${merge.window} PRs a human merged`;
-  const bar = whole(barOf(merge.limit));
+  const rate = rateAgainstGuideline(merge);
   switch (merge.reason) {
     case "switch-unread":
-      return "off: the auto-merge settings could not be read";
-    case "bar-invalid":
-      return "off: the stored bar is not a whole number from 1 to 100";
-    case "switch-off": {
-      const missing = rateMissing(merge, merge.rate_reason);
-      return missing
-        ? `off: switched off by you; ${missing}`
-        : `off: switched off by you; ${trailing}, ${isRed(barOf(merge.rate_value), barOf(merge.limit)) ? "above" : "at or under"} the ${bar} bar`;
-    }
+      return `off: the auto-merge settings could not be read; ${rate}`;
+    case "switch-off":
+      return `off: switched off by you; ${rate}`;
     case "escaped": {
       const how =
         merge.escaped_reason === "fixed"
           ? `was named as fixed by #${merge.escaped_by}`
           : "was reverted";
-      return `off: ${merge.escaped_repo}#${merge.escaped_pr} ${how} within ${merge.escape_days} days of merging; auto-merge is off until you switch it on again`;
+      return `off: ${merge.escaped_repo}#${merge.escaped_pr} ${how} within ${merge.escape_days} days of merging; auto-merge is off until you switch it on again; ${rate}`;
     }
-    case "rate-above-bar":
-      return `off: ${trailing}, above the ${bar} bar`;
-    case "too-few-measured":
-    case "no-agent-lines":
-    case "evidence-unread":
-      return `off: ${rateMissing(merge, merge.reason)}`;
     case "on":
-      return `on: ${trailing}, at or under the ${bar} bar`;
+      return `on: ${rate}`;
     default:
       return reasonText(merge.reason);
   }
 }
 
-// isRed is whether a rate is strictly above the bar, which the page draws in red
+// isRed is whether a rate is strictly above the guideline, which the page draws in red
 // beside a triangle and the words.
-export function isRed(value: number | null, bar: number): boolean {
-  return value !== null && value > bar;
+export function isRed(value: number | null, guideline: number): boolean {
+  return value !== null && value > guideline;
 }
 
 // tileWords is the words under a tile's number: how far a short window got, and
-// for the trailing-ten tile its place against the bar. A tile never says more
+// for the trailing-ten tile its place against the guideline. A tile never says more
 // than the endpoint served.
-export function tileWords(tile: Tile, index: number, bar: number): string | null {
+export function tileWords(tile: Tile, index: number, guideline: number): string | null {
   if (tile.prs.length < tile.asked) {
     return `${tile.prs.length} of ${tile.asked} PRs`;
   }
   if (index !== 0 || tile.rate_value === null) {
     return null;
   }
-  return isRed(tile.rate_value, bar) ? `above ${whole(bar)}` : `at or below ${whole(bar)}`;
+  return isRed(tile.rate_value, guideline)
+    ? `above ${whole(guideline)}`
+    : `at or below ${whole(guideline)}`;
 }
 
 // trendWords is a tile's arrow in words, or null where the endpoint served no
@@ -316,9 +321,9 @@ export function wrap(text: string, size: number, width: number): string[] {
   return lines;
 }
 
-// referenceLabel names the reference line at the bar.
-export function referenceLabel(bar: number): string {
-  return `${whole(bar)}: the bar`;
+// referenceLabel names the reference line at the guideline.
+export function referenceLabel(guideline: number): string {
+  return `${whole(guideline)}: the guideline`;
 }
 
 // seriesLabel is the one sentence a screen reader gets for the trend; the Data

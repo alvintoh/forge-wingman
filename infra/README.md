@@ -139,19 +139,15 @@ Auto-merge is off until both are set:
 | Repository "Allow auto-merge" (`allow_auto_merge`) | on |
 | The owner's switch (`runner auto-merge -mode on`) | on, stored at `dispatch/auto-merge`; no document counts as on, one that cannot be read as off |
 
-The switch is the master control, and the trailing rewrite rate gates under it: auto-merge
-is on only while the switch is on and the rate over the ten newest merged runner PRs a
-**human** merged is at or under the bar. A PR that merged itself is left out of the window,
-as is a row measured before the merge account was kept: an unknown account is neither the
-owner's reading nor proof of a self-merge. Neither lowers the rate or counts as one of the
-ten, so after this change auto-merge holds off until ten known human merges are measured.
-The bar is stored beside the switch, defaults to 20%, and is set with `runner auto-merge
--bar <percent>`; a stored value that is not a whole number from 1 to 100, or a settings read
-that fails, holds auto-merge off. A rate that cannot be computed — fewer than ten PRs a
-human merged are measured, no agent lines, or a read that fails — holds it off too, and the
-run's wait reason and PR body name the rate and the bar, or which condition stopped it being
-computed. An auto-merged PR a later merge reverted, or named as fixed (`fixes #<n>`), within
-7 days of its merge holds auto-merge off until the owner switches it on again (`adr/0018`).
+The switch alone decides auto-merge: it is on exactly while the switch is on, and a settings
+read that fails holds it off. The trailing rewrite rate is a guideline beside it, shown
+against a fixed 20% and holding nothing. It is taken over the ten newest merged runner PRs a
+**human** merged; a PR that merged itself is left out of the window, as is a row measured
+before the merge account was kept: an unknown account is neither the owner's reading nor
+proof of a self-merge. The Autonomy page, the inbox's wait reasons and the PR body name the
+rate against the guideline, or which condition stopped it being computed. An auto-merged PR a
+later merge reverted, or named as fixed (`fixes #<n>`), within 7 days of its merge holds
+auto-merge off until the owner switches it on again (`adr/0018`).
 
 The rate is measured rather than trusted. Each poll reads the run PRs whose merges landed
 since the last one and writes onto each run row the lines the agent wrote, the lines the
@@ -159,15 +155,15 @@ owner changed after it, and the account GitHub resolved the merge to (`merged_by
 authored as the runner (`github-actions[bot]`) counts as the agent's, every other commit as
 the owner's, and a merge whose account is a bot's merged itself.
 
-The `dispatch/autonomy` document and its history, and the `runner autonomy` and
-`runner cd` commands, were removed (`adr/0018`); eligibility now follows the switch and the
-rate above. Nothing reads those documents or that field — they are left where they are,
-so a run row that carries an old `autonomy` field is read exactly as one that does not.
+The `dispatch/autonomy` document and its history, and the `runner autonomy` and `runner cd`
+commands, were removed (`adr/0018`); eligibility now follows the switch above. Nothing reads
+those documents or that field — they are left where they are, so a run row that carries an
+old `autonomy` field is read exactly as one that does not.
 
-With the switch on and the rate at or under the bar, a run's S or M PR that is not in the
-review sample, edits nothing outside its recorded plan (an S run needs none), fails no
-check gate and is not a front-end change gets the `wingman:auto-merge-eligible` label,
-which must exist in the repository. A size-M or L run with no recorded plan is never
+With the switch on, a run's S or M PR that is not in the review sample, edits nothing
+outside its recorded plan (an S run needs none), fails no check gate and is not a
+front-end change gets the `wingman:auto-merge-eligible` label, which must exist in the
+repository. A size-M or L run with no recorded plan is never
 labelled, and its PR body says so; a size-S run is labelled without one.
 A run whose pre-open review left a finding unfixed (still open, or never re-checked) also
 gets the `findings-open` label on its PR, which must exist in the repository; it is a mark

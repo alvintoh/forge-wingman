@@ -124,11 +124,10 @@ type autonomyResponse struct {
 }
 
 // renderAutonomy renders the auto-merge state and the rewrite figures of the
-// measured merges as JSON. The verdict reads only known human merges: a PR that
-// merged itself and one whose row names no merge account are left out of the
-// rate auto-merge follows. The figures drawn beside it cover every measured
-// merge. A repo scopes the figures to its merges and never the verdict, which
-// reads every merge given.
+// measured merges as JSON. The rate reads only known human merges: a PR that
+// merged itself and one whose row names no merge account are left out of it. The
+// figures drawn beside it cover every measured merge. A repo scopes the figures
+// to its merges and never the rate, which reads every merge given.
 func renderAutonomy(samples []dispatcher.Sample, repo string, setting store.AutoMergeSetting, readErr error) autonomyResponse {
 	human := dispatcher.Evidence{Trailing: samples}.HumanWindow(len(samples))
 	shown := samples
@@ -137,42 +136,32 @@ func renderAutonomy(samples []dispatcher.Sample, repo string, setting store.Auto
 	}
 	return autonomyResponse{
 		AutoMerge: renderAutoMerge(human, setting, readErr),
-		Rewrite:   renderRewrite(shown, barFraction(setting, readErr)),
+		Rewrite:   renderRewrite(shown),
 	}
 }
 
-// barFraction is the bar as a fraction: the stored one, or the default where the
-// settings could not be read.
-func barFraction(setting store.AutoMergeSetting, readErr error) float64 {
-	if readErr != nil {
-		return dispatcher.DefaultAutoMergeBar
-	}
-	return float64(setting.BarPercent) / 100
-}
-
-// autoMergeState is the owner's auto-merge settings beside the rate's verdict,
-// computed here so the page decides nothing: auto-merge is on while the switch
-// is on, the bar is readable, no escaped PR holds it and the rate is at or under
-// the bar.
+// autoMergeState is the owner's auto-merge settings beside the rewrite rate's
+// standing, computed here so the page decides nothing: auto-merge is on while the
+// switch is on and readable and no escaped PR holds it. The rate is shown against
+// the 20% guideline and holds nothing.
 type autoMergeState struct {
 	// SwitchOn is the owner's setting, on while no document is stored.
 	SwitchOn bool `json:"switch_on"`
-	// RateAllows is whether the rate is at or under the bar.
-	RateAllows bool `json:"rate_allows"`
 	// RateValue is the trailing rate as the view prints it.
 	RateValue string `json:"rate_value"`
-	// Limit is the bar the rate is compared to.
-	Limit string `json:"limit"`
+	// Guideline is the fixed figure the rate is shown against, as the view prints
+	// it: 20%. It blocks nothing.
+	Guideline string `json:"guideline"`
 	// Window is how many trailing PRs a human merged the rate covers.
 	Window int `json:"window"`
-	// Effective is the switch on and readable, no escaped PR holding it and the
-	// rate at or under the bar.
+	// Effective is the switch on and readable, no escaped PR holding it. The rate
+	// does not enter it.
 	Effective bool `json:"effective"`
-	// Reason is the first thing that turns auto-merge off: an unreadable switch
-	// or bar, the switch off, an escaped PR, or the rate's own reason.
+	// Reason is the first thing that turns auto-merge off: an unreadable switch,
+	// the switch off, or an escaped PR.
 	Reason string `json:"reason"`
-	// RateReason is the rate's own reason, which Reason replaces while the switch is
-	// off or a latch holds, so the page can still say whether a rate exists to show.
+	// RateReason is the rate's own reason: whether it was read, where it sits
+	// against the guideline, or which condition stopped it being computed.
 	RateReason string `json:"rate_reason"`
 	// EscapedPR, EscapedRepo, EscapedBy and EscapedReason name the auto-merged PR
 	// that escaped the owner's reading, zero and empty while none holds.
@@ -185,21 +174,20 @@ type autoMergeState struct {
 	EscapeDays int `json:"escape_days"`
 }
 
-// renderAutoMerge renders the auto-merge settings beside the rate's verdict over
-// the PRs a human merged, each computed here so the page decides nothing.
+// renderAutoMerge renders the auto-merge settings beside the rewrite rate's
+// standing over the PRs a human merged, each computed here so the page decides
+// nothing.
 func renderAutoMerge(samples []dispatcher.Sample, setting store.AutoMergeSetting, readErr error) autoMergeState {
-	bar := barFraction(setting, readErr)
-	rate := dispatcher.AutoMergeOn(dispatcher.Evidence{Trailing: samples}, bar)
+	rate := dispatcher.AutoMergeOn(dispatcher.Evidence{Trailing: samples})
 	read := readErr == nil
 	on := setting.Enabled && read
 	out := autoMergeState{
 		SwitchOn:      on,
-		RateAllows:    rate.WithinBar,
 		RateValue:     rate.RateText(),
-		Limit:         rateText(bar),
+		Guideline:     rateText(dispatcher.RateGuideline),
 		Window:        dispatcher.TrailingPRs,
-		Effective:     on && rate.WithinBar && setting.Escaped.PR == 0,
-		Reason:        rate.Reason,
+		Effective:     on && setting.Escaped.PR == 0,
+		Reason:        dispatcher.AutoMergeReasonOn,
 		RateReason:    rate.Reason,
 		EscapedPR:     setting.Escaped.PR,
 		EscapedRepo:   setting.Escaped.Repo,
@@ -211,8 +199,6 @@ func renderAutoMerge(samples []dispatcher.Sample, setting store.AutoMergeSetting
 	// name it: the latch is the fact that holds auto-merge off until the owner
 	// switches it on again, whether or not the switch is already off.
 	switch {
-	case readErr != nil && errors.Is(readErr, store.ErrBarNotInRange):
-		out.Reason = dispatcher.AutoMergeReasonBarInvalid
 	case readErr != nil:
 		out.Reason = dispatcher.AutoMergeReasonSwitchUnread
 	case setting.Escaped.PR > 0:

@@ -401,7 +401,7 @@ func TestPRReviewPost(t *testing.T) {
 
 // switchedOn reads the owner's settings as on with nothing escaped.
 func switchedOn(context.Context) (store.AutoMergeSetting, error) {
-	return store.AutoMergeSetting{Enabled: true, BarPercent: store.DefaultBarPercent}, nil
+	return store.AutoMergeSetting{Enabled: true}, nil
 }
 
 // A clean review of an eligible PR still requests nothing once the switch has
@@ -413,10 +413,10 @@ func TestPRReviewPostDeclinesTheMergeWhileTheSettingsHold(t *testing.T) {
 		reason   string
 	}{
 		"the switch is off": {func(context.Context) (store.AutoMergeSetting, error) {
-			return store.AutoMergeSetting{Enabled: false, BarPercent: 20}, nil
+			return store.AutoMergeSetting{Enabled: false}, nil
 		}, dispatcher.AutoMergeReasonSwitchOff},
 		"an escaped PR holds it": {func(context.Context) (store.AutoMergeSetting, error) {
-			return store.AutoMergeSetting{Enabled: true, BarPercent: 20,
+			return store.AutoMergeSetting{Enabled: true,
 				Escaped: dispatcher.MergeEscape{Repo: "o/r", PR: 5, By: 9, Reason: dispatcher.EscapeReverted}}, nil
 		}, dispatcher.AutoMergeReasonEscaped},
 		"the settings cannot be read": {func(context.Context) (store.AutoMergeSetting, error) {

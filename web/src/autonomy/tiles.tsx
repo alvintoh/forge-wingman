@@ -27,8 +27,8 @@ const TILE_PAD_PX = 12;
 
 // Tiles are the three windows the rate is read over: the number, the words that
 // place it, and which way it is heading. Only the trailing-ten number is coloured,
-// and only once its window is full and above the bar, and it then carries the
-// words "above <bar>" beside it (the bar the page was served, 20% by default);
+// and only once its window is full and above the guideline, and it then carries the
+// words "above <guideline>" beside it (the guideline the page was served, 20%);
 // the arrow has its own words, so colour is never alone.
 // The tiles are one height, whatever each holds.
 export function Tiles({ tiles, prs, bar, bleed = true, stacked = false }: TilesProps) {

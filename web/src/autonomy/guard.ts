@@ -41,9 +41,8 @@ export function shape<T>(checks: { [K in keyof T]-?: Check }): (value: unknown) 
 
 const isMergeState = shape<MergeState>({
   switch_on: isBoolean,
-  rate_allows: isBoolean,
   rate_value: isString,
-  limit: isString,
+  guideline: isString,
   window: isNumber,
   effective: isBoolean,
   reason: isString,
@@ -123,7 +122,7 @@ const isRepoRow = shape<RepoRow>({
   average: isGroup,
 });
 
-const isBars = shape<RewriteView["bars"]>({ rollback: isNumber });
+const isBars = shape<RewriteView["bars"]>({ guideline: isNumber });
 
 const isByModel = shape<RewriteView["by_model"]>({
   plan: listOf(isModelRow),

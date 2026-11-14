@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -22,11 +21,11 @@ func autoMergeSwitchesOver(t *testing.T) (*AutoMergeSwitches, *firestore.Client)
 	return NewAutoMergeSwitches(client), client
 }
 
-func TestAutoMergeSettingIsOnAtTheDefaultBarWhileNoneIsSet(t *testing.T) {
+func TestAutoMergeSettingIsOnWhileNoneIsSet(t *testing.T) {
 	a, _ := autoMergeSwitchesOver(t)
 	setting, err := a.Read(context.Background())
-	if err != nil || !setting.Enabled || setting.BarPercent != DefaultBarPercent || setting.Escaped.PR != 0 {
-		t.Fatalf("Read = %+v, %v, want on at %d%% holding nothing with no document", setting, err, DefaultBarPercent)
+	if err != nil || !setting.Enabled || setting.Escaped.PR != 0 {
+		t.Fatalf("Read = %+v, %v, want on holding nothing with no document", setting, err)
 	}
 }
 
@@ -67,73 +66,39 @@ func TestAutoMergeSettingReadsOnFromAnEmptyDocument(t *testing.T) {
 	}
 }
 
-// A bar set before any switch creates the document, and the settings it leaves
-// must still read.
-func TestAutoMergeBarSetFirstLeavesTheSwitchOn(t *testing.T) {
-	a, _ := autoMergeSwitchesOver(t)
+// A bar stored before this setting lost it is left unread: the switch is the
+// only thing that gates auto-merge, and a stale bar must not make the settings
+// unreadable.
+func TestAutoMergeSettingIgnoresAStoredBar(t *testing.T) {
+	a, client := autoMergeSwitchesOver(t)
 	ctx := context.Background()
-	if err := a.SetBar(ctx, 35, noticeAt); err != nil {
+	if _, err := client.Collection(dispatchCollection).Doc(autoMergeSwitchDocID).Set(ctx, map[string]any{
+		enabledField: false, "bar": int64(1), setAtField: noticeAt,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	setting, err := a.Read(ctx)
-	if err != nil || !setting.Enabled || setting.BarPercent != 35 {
-		t.Fatalf("Read = %+v, %v, want on at the stored bar", setting, err)
-	}
-	if err := a.SetEnabled(ctx, false, noticeAt); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.SetBar(ctx, 40, noticeAt); err != nil {
-		t.Fatal(err)
-	}
-	if setting, err := a.Read(ctx); err != nil || setting.Enabled {
-		t.Fatalf("Read = %+v, %v, want a later bar to leave the switch off", setting, err)
-	}
-}
-
-func TestAutoMergeBarIsSetAndReadBack(t *testing.T) {
-	a, _ := autoMergeSwitchesOver(t)
-	ctx := context.Background()
-	if err := a.SetBar(ctx, 35, noticeAt); err != nil {
-		t.Fatal(err)
-	}
-	if setting, err := a.Read(ctx); err != nil || setting.BarPercent != 35 {
-		t.Fatalf("Read = %+v, %v, want the stored bar", setting, err)
-	}
-	if err := a.SetBar(ctx, 0, noticeAt); !errors.Is(err, ErrBarNotInRange) {
-		t.Fatalf("SetBar(0) = %v, want it refused", err)
-	}
-	if err := a.SetBar(ctx, 101, noticeAt); !errors.Is(err, ErrBarNotInRange) {
-		t.Fatalf("SetBar(101) = %v, want it refused", err)
+	if err != nil || setting.Enabled {
+		t.Fatalf("Read = %+v, %v, want off with the stored bar ignored", setting, err)
 	}
 }
 
 func TestAutoMergeSettingRefusesValuesItCannotRead(t *testing.T) {
 	a, client := autoMergeSwitchesOver(t)
 	ctx := context.Background()
-	for name, tt := range map[string]struct {
-		doc map[string]any
-		bar bool
-	}{
-		"a switch that is a string":        {map[string]any{enabledField: "off"}, false},
-		"no switch beside set_at":          {map[string]any{setAtField: noticeAt}, false},
-		"no switch beside a bar":           {map[string]any{barField: int64(20)}, false},
-		"no switch beside a latch":         {map[string]any{escapedPRField: int64(7)}, false},
-		"a renamed switch":                 {map[string]any{"enable": true, setAtField: noticeAt}, false},
-		"a bar that is a string":           {map[string]any{enabledField: true, barField: "20"}, true},
-		"a bar of zero":                    {map[string]any{enabledField: true, barField: int64(0)}, true},
-		"a bar above 100":                  {map[string]any{enabledField: true, barField: int64(101)}, true},
-		"a bar that is not a whole number": {map[string]any{enabledField: true, barField: 1.5}, true},
+	for name, doc := range map[string]map[string]any{
+		"a switch that is a string": {enabledField: "off"},
+		"no switch beside set_at":   {setAtField: noticeAt},
+		"no switch beside a bar":    {"bar": int64(20)},
+		"no switch beside a latch":  {escapedPRField: int64(7)},
+		"a renamed switch":          {"enable": true, setAtField: noticeAt},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := client.Collection(dispatchCollection).Doc(autoMergeSwitchDocID).Set(ctx, tt.doc); err != nil {
+			if _, err := client.Collection(dispatchCollection).Doc(autoMergeSwitchDocID).Set(ctx, doc); err != nil {
 				t.Fatal(err)
 			}
-			setting, err := a.Read(ctx)
-			if err == nil {
+			if setting, err := a.Read(ctx); err == nil {
 				t.Fatalf("Read = %+v, want an error so pr-meta holds", setting)
-			}
-			if errors.Is(err, ErrBarNotInRange) != tt.bar {
-				t.Fatalf("err = %v, want ErrBarNotInRange = %v", err, tt.bar)
 			}
 		})
 	}
@@ -149,8 +114,8 @@ func TestAutoMergeSettingReadsOnFromTheEscapeAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	setting, err := a.Read(ctx)
-	if err != nil || !setting.Enabled || setting.BarPercent != DefaultBarPercent || setting.Escaped != escape {
-		t.Fatalf("Read = %+v, %v, want on at the default bar with the escape", setting, err)
+	if err != nil || !setting.Enabled || setting.Escaped != escape {
+		t.Fatalf("Read = %+v, %v, want on with the escape", setting, err)
 	}
 	if _, err := client.Collection(dispatchCollection).Doc(autoMergeSwitchDocID).Get(ctx); err != nil {
 		t.Fatal(err)

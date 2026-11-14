@@ -63,8 +63,6 @@ func getAutonomy(t *testing.T, reader *stubMeasured) *httptest.ResponseRecorder 
 // recording what a write set them to.
 type stubAutoMerge struct {
 	enabled bool
-	// bar is the bar it answers with, the default while zero.
-	bar     int
 	escaped dispatcher.MergeEscape
 	readErr error
 	setErr  error
@@ -76,11 +74,7 @@ func (s *stubAutoMerge) Read(context.Context) (store.AutoMergeSetting, error) {
 	if s.readErr != nil {
 		return store.AutoMergeSetting{}, s.readErr
 	}
-	bar := s.bar
-	if bar == 0 {
-		bar = store.DefaultBarPercent
-	}
-	return store.AutoMergeSetting{Enabled: s.enabled, BarPercent: bar, Escaped: s.escaped}, nil
+	return store.AutoMergeSetting{Enabled: s.enabled, Escaped: s.escaped}, nil
 }
 
 func (s *stubAutoMerge) SetEnabled(_ context.Context, enabled bool, at time.Time) error {
