@@ -72,7 +72,8 @@ type FixPushInput struct {
 	Expected string
 	// Remote is the remote the branch is pushed to.
 	Remote string
-	// Secrets are the credential values the push job holds, which no commit may carry.
+	// Secrets are the credential values the push job holds (its plan keys and its
+	// GitHub token), which no commit may carry; empty values are skipped.
 	Secrets []string
 	Head    func(ctx context.Context) (FixPushHead, error)
 }
@@ -169,6 +170,13 @@ func fetchIncoming(ctx context.Context, bin string, in FixPushInput) (string, er
 	if _, err := runGit(ctx, bin, in.Repo, nil, fetch...); err != nil {
 		return "", refuse(FixPushBundleRefs, "fetching the bundle: %s", detail(err))
 	}
+	kind, err := runGit(ctx, bin, in.Repo, nil, "cat-file", "-t", incomingRef)
+	if err != nil {
+		return "", fmt.Errorf("reading the fetched ref's type: %s", detail(err))
+	}
+	if t := strings.TrimSpace(string(kind)); t != "commit" {
+		return "", refuse(FixPushBundleRefs, "the bundle's ref names a %s, not a commit", t)
+	}
 	return fields[0], nil
 }
 
@@ -179,9 +187,15 @@ func checkIncoming(ctx context.Context, bin string, in FixPushInput, tip string)
 	if err != nil {
 		return fmt.Errorf("listing the commits since %s: %s", in.Expected, detail(err))
 	}
-	commits := strings.Split(strings.TrimSpace(string(revs)), "\n")
-	if len(commits) != 1 || commits[0] == "" || len(strings.Fields(commits[0])) > 2 {
-		return refuse(FixPushNotOneCommit, "the range from %s holds %d commits or a merge", in.Expected, len(commits))
+	var commits []string
+	if listed := strings.TrimSpace(string(revs)); listed != "" {
+		commits = strings.Split(listed, "\n")
+	}
+	if len(commits) != 1 {
+		return refuse(FixPushNotOneCommit, "the range from %s holds %d commits, want 1", in.Expected, len(commits))
+	}
+	if len(strings.Fields(commits[0])) > 2 {
+		return refuse(FixPushNotOneCommit, "the commit after %s is a merge", in.Expected)
 	}
 	if parents := strings.Fields(commits[0])[1:]; len(parents) != 1 || parents[0] != in.Expected {
 		return refuse(FixPushWrongParent, "the commit's parent is not %s", in.Expected)
@@ -190,15 +204,9 @@ func checkIncoming(ctx context.Context, bin string, in FixPushInput, tip string)
 	if err != nil {
 		return fmt.Errorf("reading the commit's author: %s", detail(err))
 	}
-	want := []string{CommitAuthorName, CommitAuthorEmail, CommitAuthorName, CommitAuthorEmail}
-	got := strings.Split(strings.TrimSuffix(string(who), "\n"), "\n")
-	if len(got) != len(want) {
-		return refuse(FixPushNotRunner, "the commit's author and committer could not be read")
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			return refuse(FixPushNotRunner, "the commit's author or committer is not the runner's")
-		}
+	want := strings.Join([]string{CommitAuthorName, CommitAuthorEmail, CommitAuthorName, CommitAuthorEmail}, "\n") + "\n"
+	if string(who) != want {
+		return refuse(FixPushNotRunner, "the commit's author or committer is not the runner's")
 	}
 	files, err := runGit(ctx, bin, in.Repo, nil, "diff", "--no-renames", "--name-only", "-z", in.Expected, incomingRef)
 	if err != nil {

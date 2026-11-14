@@ -15,16 +15,32 @@ var ErrTokenShaped = errors.New("branch contains a string shaped like a token")
 // errRangeInput reports a scan asked of no repository or no range.
 var errRangeInput = errors.New("scanning a range needs a repository and a range")
 
-// tokenShapes is the closed list of credential shapes RangeSecrets looks for.
+// tokenShapes is the closed list of credential shapes RangeSecrets looks for. A
+// match equal to a shape's except is a documented example, not a credential.
 var tokenShapes = []struct {
-	name string
-	re   *regexp.Regexp
+	name   string
+	re     *regexp.Regexp
+	except string
 }{
-	{"github-token", regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{20,}`)},
-	{"github-pat", regexp.MustCompile(`github_pat_[A-Za-z0-9_]{20,}`)},
-	{"api-key", regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{20,}`)},
-	{"aws-access-key", regexp.MustCompile(`AKIA[0-9A-Z]{16}`)},
-	{"private-key", regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----`)},
+	{name: "github-token", re: regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{20,}`)},
+	{name: "github-pat", re: regexp.MustCompile(`github_pat_[A-Za-z0-9_]{20,}`)},
+	{name: "api-key", re: regexp.MustCompile(`(?:^|[^\w.-])sk-[A-Za-z0-9_-]{20,}`)},
+	{name: "aws-access-key", re: regexp.MustCompile(`AKIA[0-9A-Z]{16}`), except: "AKIAIOSFODNN7EXAMPLE"},
+	{name: "aws-session-key", re: regexp.MustCompile(`ASIA[0-9A-Z]{16}`)},
+	{name: "google-api-key", re: regexp.MustCompile(`AIza[0-9A-Za-z_-]{35}`)},
+	{name: "private-key", re: regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----`)},
+}
+
+// tokenShaped is the name of the first shape found in b, or "" for none.
+func tokenShaped(b []byte) string {
+	for _, shape := range tokenShapes {
+		for _, m := range shape.re.FindAll(b, -1) {
+			if string(m) != shape.except {
+				return shape.name
+			}
+		}
+	}
+	return ""
 }
 
 // RangeSecrets fails when an object that rng adds in the repository at repo
@@ -61,10 +77,8 @@ func RangeSecrets(ctx context.Context, repo, rng string, secrets []string) error
 			return ErrSecretInBranch
 		}
 	}
-	for _, shape := range tokenShapes {
-		if shape.re.Match(objects) {
-			return fmt.Errorf("%w: %s", ErrTokenShaped, shape.name)
-		}
+	if name := tokenShaped(objects); name != "" {
+		return fmt.Errorf("%w: %s", ErrTokenShaped, name)
 	}
 	return nil
 }

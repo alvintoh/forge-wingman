@@ -170,6 +170,19 @@ func TestFixPushRefusesWhatItShouldNotPush(t *testing.T) {
 			mustGit(t, f.work, "checkout", "-q", pushBranch)
 			return bundle
 		}, nil},
+		{"an annotated tag as the branch", FixPushBundleRefs, func(t *testing.T, f pushFixture) string {
+			return f.bundleFromClone(t, f.expected, func(clone string) string {
+				mustGit(t, clone, "checkout", "-q", "-B", "round", f.expected)
+				writeRepoFile(t, clone, "b.go", "package b\n")
+				runnerCommit(t, clone, "fix")
+				mustGit(t, clone, "-c", "user.name="+CommitAuthorName, "-c", "user.email="+CommitAuthorEmail,
+					"tag", "-a", "-m", "wrapped", "wrapped", "round")
+				return rev(t, clone, "refs/tags/wrapped")
+			})
+		}, nil},
+		{"the expected head itself", FixPushNotOneCommit, func(t *testing.T, f pushFixture) string {
+			return f.bundleFromClone(t, f.first, func(string) string { return f.expected })
+		}, nil},
 		{"another branch", FixPushWrongBranch, func(t *testing.T, f pushFixture) string {
 			return f.round(t, f.expected, "wingman/other-1-1", func() {
 				writeRepoFile(t, f.work, "b.go", "package b\n")
@@ -304,6 +317,20 @@ func (f pushFixture) bundleOfCrafted(t *testing.T, body string) string {
 	mustGit(t, clone, "branch", "-f", pushBranch, strings.TrimSpace(string(out)))
 	bundle := filepath.Join(t.TempDir(), "fix.bundle")
 	mustGit(t, clone, "bundle", "create", bundle, "^"+f.expected, pushBranch)
+	return bundle
+}
+
+// bundleFromClone bundles, from a clone of the checkout, the PR's branch set to
+// the object target returns, with base as the bundle's prerequisite.
+func (f pushFixture) bundleFromClone(t *testing.T, base string, target func(clone string) string) string {
+	t.Helper()
+	clone := filepath.Join(t.TempDir(), "clone")
+	mustGit(t, filepath.Dir(clone), "clone", "-q", f.work, filepath.Base(clone))
+	mustGit(t, clone, "checkout", "-q", "--detach")
+	// Written as a loose ref, since update-ref refuses a non-commit on a branch.
+	writeRepoFile(t, clone, filepath.Join(".git", "refs", "heads", pushBranch), target(clone)+"\n")
+	bundle := filepath.Join(t.TempDir(), "fix.bundle")
+	mustGit(t, clone, "bundle", "create", bundle, "^"+base, pushBranch)
 	return bundle
 }
 

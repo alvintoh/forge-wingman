@@ -30,35 +30,35 @@ func TestRangeSecretsFindsAGivenSecretValue(t *testing.T) {
 	}
 }
 
-func TestRangeSecretsCatchesEachTokenShape(t *testing.T) {
-	tests := []struct{ name, body string }{
-		{"github-token", "t = ghp_" + strings.Repeat("a1", 12)},
-		{"github-pat", "t = github_pat_" + strings.Repeat("B2", 15)},
-		{"api-key", "k = sk-" + strings.Repeat("c3", 12)},
-		{"aws-access-key", "k = AKIA" + strings.Repeat("Q7", 8)},
-		{"private-key", "-----BEGIN RSA PRIVATE KEY-----\nMIIB\n"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			repo, rng := rangeRepo(t, tt.body+"\n")
-			err := RangeSecrets(context.Background(), repo, rng, nil)
-			if !errors.Is(err, ErrTokenShaped) || !strings.Contains(err.Error(), tt.name) {
-				t.Fatalf("err = %v, want ErrTokenShaped naming %s", err, tt.name)
-			}
-		})
+func TestRangeSecretsCatchesATokenShape(t *testing.T) {
+	repo, rng := rangeRepo(t, "k = AKIA"+strings.Repeat("Q7", 8)+"\n")
+	err := RangeSecrets(context.Background(), repo, rng, nil)
+	if !errors.Is(err, ErrTokenShaped) || !strings.Contains(err.Error(), "aws-access-key") {
+		t.Fatalf("err = %v, want ErrTokenShaped naming aws-access-key", err)
 	}
 }
 
-func TestRangeSecretsPassesLookalikes(t *testing.T) {
-	body := strings.Join([]string{
-		"id = task-management-service-handler-name",
-		"short = ghp_abc",
-		"cut = AKIA1234",
-		"-----BEGIN CERTIFICATE-----",
-	}, "\n")
-	repo, rng := rangeRepo(t, body+"\n")
-	if err := RangeSecrets(context.Background(), repo, rng, nil); err != nil {
-		t.Fatalf("err = %v, want nil", err)
+func TestTokenShapedNamesEachShape(t *testing.T) {
+	tests := []struct{ text, want string }{
+		{"t = ghp_" + strings.Repeat("a1", 12), "github-token"},
+		{"t = github_pat_" + strings.Repeat("B2", 15), "github-pat"},
+		{"k = sk-" + strings.Repeat("c3", 12), "api-key"},
+		{"sk-" + strings.Repeat("c3", 12), "api-key"},
+		{"k = AKIA" + strings.Repeat("Q7", 8), "aws-access-key"},
+		{"AKIAIOSFODNN7EXAMPLE then AKIA" + strings.Repeat("Q7", 8), "aws-access-key"},
+		{"k = ASIA" + strings.Repeat("Q7", 8), "aws-session-key"},
+		{"k = AIza" + strings.Repeat("d4", 17) + "e", "google-api-key"},
+		{"-----BEGIN RSA PRIVATE KEY-----", "private-key"},
+		{".sk-loading-spinner-container {", ""},
+		{"key = AKIAIOSFODNN7EXAMPLE", ""},
+		{"id = task-management-service-handler-name", ""},
+		{"short = ghp_abc, cut = AKIA1234, AIzaShort", ""},
+		{"-----BEGIN CERTIFICATE-----", ""},
+	}
+	for _, tt := range tests {
+		if got := tokenShaped([]byte(tt.text)); got != tt.want {
+			t.Errorf("tokenShaped(%q) = %q, want %q", tt.text, got, tt.want)
+		}
 	}
 }
 
