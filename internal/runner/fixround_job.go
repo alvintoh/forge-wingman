@@ -140,7 +140,7 @@ func FixRoundJob(ctx context.Context, d BuildDeps, c BuildConfig, in FixRoundInp
 // starting now at round 0 when there is none.
 func seedOrContinue(d BuildDeps, in FixRoundInput) FixRoundsState {
 	if in.State == nil {
-		return NewFixRoundsState(0, 0, d.Now(), "", findingTexts(reviewPending(in.Findings)), nil)
+		return NewFixRoundsState(0, 0, d.Now(), "", nil, nil)
 	}
 	return in.State.WithReview(in.Findings)
 }
