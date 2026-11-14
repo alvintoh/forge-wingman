@@ -151,19 +151,28 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	}
 	logger.Info("autoMergeDecided", append(verdict.attrs(), "run", *runID, "sampled", runner.Sampled(*runID),
 		"draft", draft, "frontEnd", len(check.FrontEnd), "changed", len(check.Changed), "outOfPlan", len(check.OutOfPlan), "overlap", check.Overlap, "planned", check.Planned)...)
-	if err := writeOutputs(e.output, map[string]string{
-		"title":          title,
-		"branch_segment": rec.Ticket().BranchSegment(),
-		"auto_merge":     strconv.FormatBool(verdict.Merge),
-		"draft":          strconv.FormatBool(draft),
-		"superseded_pr":  supersededOutput(check.Supersedes),
-		"findings_open":  openFindingsOutput(sum.ReviewFindingsOpen),
-		// superseded_by_retry words the close comment, so it is set only when a PR is superseded.
-		"superseded_by_retry": retriedOutput(check.Supersedes, check.Retried),
-	}); err != nil {
+	fixRounds := fixRoundsEligible(*runID, rec.Ticket(), sum, runner.FailedGate(*checkReport), check)
+	if err := writeOutputs(e.output, prOutputs(title, rec.Ticket().BranchSegment(), verdict.Merge, draft, fixRounds, check, sum.ReviewFindingsOpen)); err != nil {
 		return err
 	}
 	return writeMultilineOutput(e.output, "body", body)
+}
+
+// prOutputs is the single-line step outputs pr-meta reports: the title and
+// branch segment, whether the PR requests auto-merge, opens as a draft and gets
+// fix rounds, the PR it supersedes and the review's open findings.
+func prOutputs(title, branchSegment string, merge, draft, fixRounds bool, check prCheck, openFindings int) map[string]string {
+	return map[string]string{
+		"title":          title,
+		"branch_segment": branchSegment,
+		"auto_merge":     strconv.FormatBool(merge),
+		"draft":          strconv.FormatBool(draft),
+		"fix_rounds":     strconv.FormatBool(fixRounds),
+		"superseded_pr":  supersededOutput(check.Supersedes),
+		"findings_open":  openFindingsOutput(openFindings),
+		// superseded_by_retry words the close comment, so it is set only when a PR is superseded.
+		"superseded_by_retry": retriedOutput(check.Supersedes, check.Retried),
+	}
 }
 
 // openFindingsOutput is the step output counting the review's unfixed findings,
@@ -450,6 +459,21 @@ func rateAttrs(d dispatcher.AutoMergeDecision) []any {
 		attrs = append(attrs, "rate", d.RateText(), "measured", d.PRs)
 	}
 	return attrs
+}
+
+// fixRoundsEligible reports whether the run's PR gets fix rounds after its
+// review: size S or M, not front-end, not in the review sample, not a draft, no
+// failed check gate, and a recorded plan unless it is size S. It reads none of
+// the auto-merge decision — the switch, a hold, the rewrite rate or an
+// unconfirmed decision — so whether a PR is fixed and whether it merges itself
+// stay separate answers.
+func fixRoundsEligible(runID string, t runner.Ticket, sum runner.Summary, failedGate string, check prCheck) bool {
+	return (t.Size == "S" || t.Size == "M") &&
+		len(check.FrontEnd) == 0 &&
+		!runner.Sampled(runID) &&
+		!draftPR(sum, check) &&
+		failedGate == "" &&
+		(check.Planned || t.Size == "S")
 }
 
 // autoMerge reports whether the run's PR is marked eligible for auto-merge,

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -890,5 +891,71 @@ func TestOpenFindingsOutputIsEmptyWhenNoneAreOpen(t *testing.T) {
 	}
 	if got := openFindingsOutput(0); got != "" {
 		t.Fatalf("openFindingsOutput(0) = %q, want empty", got)
+	}
+}
+
+func TestFixRoundsEligible(t *testing.T) {
+	const unsampled, sampled = "run-abc-12", "run-0"
+	for name, tt := range map[string]struct {
+		runID, size, failedGate string
+		edit                    func(*runner.Summary)
+		check                   prCheck
+		want                    bool
+	}{
+		"size L is not":                       {unsampled, "L", "", nil, prCheck{Planned: true}, false},
+		"a sampled run is not":                {sampled, "M", "", nil, prCheck{Planned: true}, false},
+		"a draft is not":                      {unsampled, "M", "", func(s *runner.Summary) { s.Ready = false }, prCheck{Planned: true}, false},
+		"a failed gate is not":                {unsampled, "M", "test", nil, prCheck{Planned: true}, false},
+		"a front-end change is not":           {unsampled, "M", "", nil, prCheck{Planned: true, FrontEnd: []string{"web/"}}, false},
+		"size M with no plan is not":          {unsampled, "M", "", nil, prCheck{}, false},
+		"size M with a plan is":               {unsampled, "M", "", nil, prCheck{Planned: true}, true},
+		"size S with no plan is":              {unsampled, "S", "", nil, prCheck{}, true},
+		"an unconfirmed decision alone is":    {unsampled, "M", "", nil, prCheck{Planned: true, Provisional: []runner.Provisional{{Question: "Q?", Choice: "A"}}}, true},
+		"unread decisions alone are":          {unsampled, "M", "", nil, prCheck{Planned: true, ProvisionalUnread: true}, true},
+		"a workflow stop is judged elsewhere": {unsampled, "M", "", func(s *runner.Summary) { s.StopReason = runner.StopWorkflowChange }, prCheck{Planned: true}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sum := runner.Summary{Outcome: runner.OutcomeBuilt, Ready: true}
+			if tt.edit != nil {
+				tt.edit(&sum)
+			}
+			tk := prRecord.Ticket()
+			tk.Size = tt.size
+			if got := fixRoundsEligible(tt.runID, tk, sum, tt.failedGate, tt.check); got != tt.want {
+				t.Fatalf("fixRoundsEligible = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestFixRoundsEligibleIgnoresTheAutoMergeDecision: a PR that auto-merge refuses
+// for its switch, a hold or an unconfirmed decision is still given fix rounds.
+func TestFixRoundsEligibleIgnoresTheAutoMergeDecision(t *testing.T) {
+	sum := runner.Summary{Outcome: runner.OutcomeBuilt, Ready: true}
+	tk := prRecord.Ticket()
+	tk.Size = "M"
+	check := prCheck{Planned: true}
+	hold := autoMergeHold{Reason: runner.WaitEscapedPR, Detail: "octo/scratch#341 was reverted"}
+	unconfirmed := prCheck{Planned: true, Provisional: []runner.Provisional{{Question: "Q?", Choice: "A"}}}
+	for name, merges := range map[string]bool{
+		"the switch off":          autoMerge(false, "run-abc-12", tk, sum, "", check, autoMergeHold{}),
+		"a hold":                  autoMerge(true, "run-abc-12", tk, sum, "", check, hold),
+		"an unconfirmed decision": autoMerge(true, "run-abc-12", tk, sum, "", unconfirmed, autoMergeHold{}),
+	} {
+		if merges {
+			t.Fatalf("%s: autoMerge = true, want the case where auto-merge refuses", name)
+		}
+	}
+	if !fixRoundsEligible("run-abc-12", tk, sum, "", check) || !fixRoundsEligible("run-abc-12", tk, sum, "", unconfirmed) {
+		t.Fatal("fixRoundsEligible = false for a PR only auto-merge refuses, want true")
+	}
+}
+
+func TestPROutputsReportsFixRoundsAsItsOwnOutput(t *testing.T) {
+	for _, want := range []bool{true, false} {
+		got := prOutputs("feat: x", "abc-12", !want, !want, want, prCheck{}, 0)
+		if got["fix_rounds"] != strconv.FormatBool(want) || got["auto_merge"] != strconv.FormatBool(!want) {
+			t.Fatalf("outputs = %v, want fix_rounds %v apart from auto_merge", got, want)
+		}
 	}
 }
