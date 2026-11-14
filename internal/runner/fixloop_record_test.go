@@ -3,6 +3,9 @@ package runner
 import (
 	"context"
 	"errors"
+	"os"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -370,5 +373,150 @@ func TestFinalizeCarriesOnlyTheFixPhaseRoundsOfTheExistingRecord(t *testing.T) {
 	got := finalizeRun(t, store, nil, encoded(t, validSummary()), finalizeNow)
 	if len(got.FixRounds) != 2 {
 		t.Fatalf("rounds = %+v, want the two fix-phase rounds and not the build's own, which its summary rebuilds", got.FixRounds)
+	}
+}
+
+// builtAttempt is a built run of attempt whose one build step cost cost.
+func builtAttempt(attempt string, cost float64) Summary {
+	return Summary{
+		Outcome: OutcomeBuilt, Phase: PhaseCommit, Branch: BranchName(testTicket.BranchSegment(), attempt),
+		Steps: []Step{{Phase: PhaseBuild, Round: 1, Model: "opencode-go/x", Tokens: Usage{Cost: cost, Steps: 1},
+			CompletionsObject: completionsObject(attempt, PhaseBuild, 1), At: finalizeNow.Add(-30 * time.Minute)}},
+	}
+}
+
+func finalizeAttempt(t *testing.T, store fakeRecords, attempt string, sum Summary) Record {
+	t.Helper()
+	in := FinalizeInput{Identity: testIdentity, RunID: testRunID, AttemptID: attempt, Summary: encoded(t, sum),
+		RunResult: "success", PRResult: "success", PRURL: "https://github.com/o/r/pull/1"}
+	rec, err := Finalize(context.Background(), store, &fakeLedger{}, nil, in, finalizeNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rec
+}
+
+func TestARetryDoesNotCountTheEarlierAttemptsFixRoundsTwice(t *testing.T) {
+	store := seeded(t)
+	first := finalizeAttempt(t, store, "1-1", builtAttempt("1-1", 0))
+	merged, err := WithFixRounds(first, []ReviewFixRound{fixRoundN(1, 0.25), fixRoundN(2, 0.5)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged.SettledProviderCostMicros != 750_000 {
+		t.Fatalf("first attempt settled %d, want 750000", merged.SettledProviderCostMicros)
+	}
+	// A retry moves what the row settled into the prior total, as the requeue does.
+	merged.PriorSettledProviderCostMicros = merged.SettledProviderCostMicros
+	store[testRunID] = merged
+
+	got := finalizeAttempt(t, store, "1-2", builtAttempt("1-2", 0.1))
+	if got.SettledProviderCostMicros != 850_000 {
+		t.Fatalf("settled %d, want 850000: the first attempt's 750000 once and the retry's own 100000", got.SettledProviderCostMicros)
+	}
+	if len(got.FixRounds) != 0 {
+		t.Fatalf("rounds = %+v, want none of the earlier attempt's on the retry", got.FixRounds)
+	}
+	for _, st := range got.Steps {
+		if st.Phase == PhaseFix {
+			t.Fatalf("steps hold the earlier attempt's fix step %+v", st)
+		}
+	}
+}
+
+func TestWithFixRoundsKeysOnTheAttempt(t *testing.T) {
+	retry := fixRoundN(1, 0.5)
+	retry.Step.CompletionsObject = completionsObject("1-2", PhaseFix, 1)
+	rec, err := WithFixRounds(Record{}, []ReviewFixRound{fixRoundN(1, 0.25)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := WithFixRounds(rec, []ReviewFixRound{retry})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.FixRounds) != 2 || got.Tokens.Cost != 0.75 {
+		t.Fatalf("%d rounds, cost %v; want both attempts' round 1 and 0.75", len(got.FixRounds), got.Tokens.Cost)
+	}
+}
+
+func TestWithFixRoundsRefusesAMergePastTheAttemptsRoundCap(t *testing.T) {
+	rec, err := WithFixRounds(Record{}, []ReviewFixRound{fixRoundN(1, 0), fixRoundN(2, 0), fixRoundN(3, 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WithFixRounds(rec, []ReviewFixRound{fixRoundN(5, 0)}); !errors.Is(err, ErrFixRoundsOverCap) {
+		t.Fatalf("err = %v, want ErrFixRoundsOverCap", err)
+	}
+	if _, err := WithFixRounds(rec, []ReviewFixRound{fixRoundN(3, 0)}); err != nil {
+		t.Fatalf("merging a held round again: %v", err)
+	}
+}
+
+func TestFinalizeCarriesEveryRoundOfItsAttemptWhateverTheirCount(t *testing.T) {
+	for _, n := range []int{3, 4} {
+		store := seeded(t)
+		var rounds []ReviewFixRound
+		for i := 1; i <= n; i++ {
+			rounds = append(rounds, fixRoundN(i, 0))
+		}
+		store[testRunID] = mergeFixRounds(store[testRunID], rounds)
+		got := finalizeAttempt(t, store, "1-1", builtAttempt("1-1", 0))
+		if len(got.FixRounds) != n {
+			t.Fatalf("%d rounds held: Finalize kept %d, want %d", n, len(got.FixRounds), n)
+		}
+	}
+}
+
+func TestWithFixRoundsRederivesTheTimeOfUseOfASettledRecord(t *testing.T) {
+	round := fixRoundN(1, 0.5)
+	round.Step.Model = "opencode-go/deepseek-v4.1-flash"
+	// A Monday, inside that model's own 01:00-04:00 UTC peak window.
+	round.Step.At = time.Date(2026, 9, 28, 2, 0, 0, 0, time.UTC)
+	got, err := WithFixRounds(Record{SettledAt: finalizeNow, TimeOfUse: "off-peak"}, []ReviewFixRound{round})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TimeOfUse != "peak" {
+		t.Fatalf("time of use = %q, want peak: the merged step ran at peak", got.TimeOfUse)
+	}
+}
+
+func TestFixRoundsWaitKeepsEachInputToOneKnownLine(t *testing.T) {
+	tests := []struct {
+		name string
+		end  FixLoopEnd
+		want string
+	}{
+		{"a round reason that is not a stop reason", FixLoopEnd{RoundReason: "agent-failed\nINJECTED"}, "fix round stopped: error"},
+		{"a stop that is not a fix stop", FixLoopEnd{Stop: "nope\nINJECTED"}, "fix loop ended: unknown"},
+		{"a push reason across lines", FixLoopEnd{PushReason: "lease-lost\nINJECTED"}, "fix push refused: lease-lost INJECTED"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, detail, _ := FixRoundsWait(tt.end); detail != tt.want {
+				t.Fatalf("detail = %q, want %q", detail, tt.want)
+			}
+		})
+	}
+	_, detail, _ := FixRoundsWait(FixLoopEnd{PushReason: strings.Repeat("x", 3*stopDetailLimit)})
+	if len(detail) > stopDetailLimit+len("…") {
+		t.Fatalf("detail is %d bytes, want it cut to %d", len(detail), stopDetailLimit)
+	}
+}
+
+func TestStopReasonsListsEveryStopReasonRecordDeclares(t *testing.T) {
+	src, err := os.ReadFile("record.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	declared := regexp.MustCompile(`Stop\w+\s+StopReason = "([a-z-]+)"`).FindAllSubmatch(src, -1)
+	if len(declared) != len(stopReasons) {
+		t.Fatalf("record.go declares %d stop reasons, the list holds %d", len(declared), len(stopReasons))
+	}
+	for _, m := range declared {
+		if !slices.Contains(stopReasons, string(m[1])) {
+			t.Errorf("%s is not listed", m[1])
+		}
 	}
 }

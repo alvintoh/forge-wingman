@@ -581,12 +581,10 @@ func Finalize(ctx context.Context, store RecordStore, ledger Ledger, reader Prov
 			}
 		}
 	}
-	// The rounds the record step merged in after the PR opened are not in this
-	// run's own summary, which rebuilds Steps and FixRounds whole.
-	if carried := fixPhaseRounds(existing); len(carried) > 0 {
-		if rec, err = WithFixRounds(rec, carried); err != nil {
-			return Record{}, fmt.Errorf("carrying run %s's fix rounds: %w", in.RunID, err)
-		}
+	// The rounds the record step merged in after this attempt's PR opened are not
+	// in its own summary, which rebuilds Steps and FixRounds whole.
+	if carried := carriedFixRounds(existing, in.AttemptID); len(carried) > 0 {
+		rec = mergeFixRounds(rec, carried)
 	}
 	// Every attempt's branch is kept, this attempt's among them: the row's own
 	// branch names only the latest attempt, and a merged PR is matched to its run
