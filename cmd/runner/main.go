@@ -29,12 +29,14 @@
 //	runner pr-review       -context <path> ...       review the context on each model in turn and write the verdict
 //	runner pr-review-post  -pr <n> -verdict <path>   post the review comment and status, and decide the auto-merge request
 //	runner fix-await        -pr <n> -sha <sha> -started <RFC3339>  wait, bounded, for the review of a head and print whether the loop continues
+//	runner fix-round       -branch <b> -head <sha> [-state <path>] -findings <text> -out <dir> -ticket-file <path> -agent-image <ref> -model <m>  run one fix round at a head and write its commit as fix.bundle and its state as fix-state.json
 //	runner agent-probe     -agent-image <ref> [-egress] -- <command...>  run a command in the agent container, to prove what it cannot reach
 //	runner egress-proxy    -allow <host,...>         serve the proxy that lets the agent container reach only those hosts
 //
 // build exits 0 when it stops short of a branch but reported why; ticket, pr-meta
 // and record exit 1 for any run that cannot or did not succeed, so the workflow
-// stays red.
+// stays red. fix-round exits 0 only for a loop that ends (budget, round-cap or a
+// round that changed no file) and 1 for any failure, writing its outputs either way.
 package main
 
 import (
@@ -62,8 +64,8 @@ func main() {
 	os.Exit(code)
 }
 
-// errRunFailed is the result of ticket, plan-stage, record-plan-stage, pr-meta or
-// record for a run that cannot or did not succeed.
+// errRunFailed is the result of ticket, plan-stage, record-plan-stage, pr-meta,
+// record or fix-round for a run that cannot or did not succeed.
 var errRunFailed = errors.New("run did not succeed")
 
 // exitCode is 0 for a build stop whose summary was reported, which the record
@@ -80,7 +82,7 @@ func exitCode(err error) int {
 
 func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(string) string) error {
 	if len(args) == 0 {
-		return errors.New("usage: runner ticket|build|plan-stage|record-plan-stage|pr-meta|pr|record|enable-provider|reset-breaker|peak-mode|auto-merge|requeue|backfill-queued-at|project-add|project-remove|project-stop|project-resume|plan-define|plan-verdict|plan-reply|plan-list|plans-refresh|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post|fix-await|agent-probe|egress-proxy [flags]")
+		return errors.New("usage: runner ticket|build|plan-stage|record-plan-stage|pr-meta|pr|record|enable-provider|reset-breaker|peak-mode|auto-merge|requeue|backfill-queued-at|project-add|project-remove|project-stop|project-resume|plan-define|plan-verdict|plan-reply|plan-list|plans-refresh|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post|fix-await|fix-round|agent-probe|egress-proxy [flags]")
 	}
 	if args[0] == "plan-smoke" {
 		return planSmoke(ctx, logger, getenv, args[1:])
@@ -121,6 +123,8 @@ func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(st
 		return build(ctx, logger, e, args[1:])
 	case "plan-stage":
 		return planStage(ctx, logger, e, args[1:])
+	case "fix-round":
+		return fixRound(ctx, logger, e, args[1:])
 	case "record-plan-stage":
 		return recordPlanStage(ctx, logger, e, args[1:])
 	case "pr-meta":

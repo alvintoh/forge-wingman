@@ -142,6 +142,29 @@ func stopWith(o Outcome, r StopReason, err error) *StopError {
 	return &StopError{Outcome: o, Reason: r, Err: err}
 }
 
+// fetchRules reads the rule-stack projection c's pointer names and renders it for
+// c's ticket: the projection's sha, its rules head and the ticket's prompt. A
+// projection that is missing or not valid is a stop, and one that cannot be read
+// an infrastructure failure.
+func fetchRules(ctx context.Context, d BuildDeps, c BuildConfig) (sha, rules, prompt string, err error) {
+	p, err := FetchBuildProjection(ctx, d.Projections, c.Pointer)
+	var missing *MissingError
+	switch {
+	case errors.As(err, &missing):
+		return "", "", "", stopWith(OutcomeStopped, StopProjectionMissing, err)
+	case errors.Is(err, ErrPointerInvalid):
+		return "", "", "", stopWith(OutcomeStopped, StopProjectionInvalid, err)
+	case err != nil:
+		return "", "", "", stopWith(OutcomeInfraFailure, StopProjectionRead, err)
+	}
+	d.Logger.Info("projectionFetched", "sha", p.SHA)
+	rules, prompt, err = RenderPromptParts(p.Text, c.Ticket)
+	if err != nil {
+		return "", "", "", stopWith(OutcomeStopped, StopProjectionInvalid, err)
+	}
+	return p.SHA, rules, prompt, nil
+}
+
 // BranchPrefix starts the name of every branch a run builds on.
 const BranchPrefix = "wingman/"
 
@@ -258,22 +281,12 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 				}
 			}
 		}
-		p, err := FetchBuildProjection(ctx, d.Projections, c.Pointer)
-		var missing *MissingError
-		switch {
-		case errors.As(err, &missing):
-			return stopWith(OutcomeStopped, StopProjectionMissing, err)
-		case errors.Is(err, ErrPointerInvalid):
-			return stopWith(OutcomeStopped, StopProjectionInvalid, err)
-		case err != nil:
-			return stopWith(OutcomeInfraFailure, StopProjectionRead, err)
-		}
-		sum.RuleStackSHA = p.SHA
-		d.Logger.Info("projectionFetched", "sha", p.SHA)
-		rules, prompt, err = RenderPromptParts(p.Text, c.Ticket)
+		sha, r, t, err := fetchRules(ctx, d, c)
 		if err != nil {
-			return stopWith(OutcomeStopped, StopProjectionInvalid, err)
+			return err
 		}
+		sum.RuleStackSHA = sha
+		rules, prompt = r, t
 		return nil
 	}); err != nil {
 		return BuildResult{}, err

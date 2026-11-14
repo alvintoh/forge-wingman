@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -20,6 +21,10 @@ var ErrFixRoundsState = errors.New("the fix-round state is not one this runner w
 // bound the round's own record writes, which truncate leaves up to one ellipsis
 // past maxFindingBytes.
 const maxStateFindingBytes = maxFindingBytes + len("…")
+
+// maxStateStepDetailBytes is the longest step detail a round record may carry:
+// stopDetailLimit, which truncate leaves up to one ellipsis past.
+const maxStateStepDetailBytes = stopDetailLimit + len("…")
 
 // maxCallsPerFixRound is the most agent calls one round numbers: its own, and one
 // more for each backup model that answers in its place.
@@ -47,6 +52,9 @@ type FixRoundsState struct {
 	// backup model answering advances that number past its round's own, so it is
 	// not the round count.
 	Calls int `json:"calls,omitempty"`
+	// Rounds is each round's own record, oldest first, so the loop's evidence
+	// travels with it from one job to the next.
+	Rounds []ReviewFixRound `json:"rounds,omitempty"`
 }
 
 // NewFixRoundsState builds the record a round hands the next job, held to the
@@ -70,6 +78,34 @@ func NewFixRoundsState(round, calls int, startedAt time.Time, session string, op
 			s.Declined = append(s.Declined, DeclinedFinding{Finding: finding, Reason: reason})
 		}
 	}
+	return s
+}
+
+// WithRound returns s with round appended to its record, cut to the limits
+// ParseFixRoundsState reads: lines cut and cleaned as NewFixRoundsState cleans
+// them, and the round's step detail cut to stopDetailLimit.
+func (s FixRoundsState) WithRound(round ReviewFixRound) FixRoundsState {
+	clean := NewFixRoundsState(0, 0, time.Time{}, "", round.Findings, round.Declined)
+	round.Findings, round.Declined = clean.Open, clean.Declined
+	round.Step.Detail = truncate(round.Step.Detail, stopDetailLimit)
+	s.Rounds = append(slices.Clone(s.Rounds), round)
+	return s
+}
+
+// WithReview fills the last round's Resolved, New and Reviewed from the findings
+// of the review that followed its commit, as the loop's own record does, and
+// returns s unchanged when it holds no round or that round was already reviewed.
+// The findings are cut to the caps a review's findings take first.
+func (s FixRoundsState) WithReview(findings string) FixRoundsState {
+	if len(s.Rounds) == 0 || s.Rounds[len(s.Rounds)-1].Reviewed {
+		return s
+	}
+	rounds := slices.Clone(s.Rounds)
+	last := &rounds[len(rounds)-1]
+	capped, _, _ := CapReviewFindings(findings)
+	last.Resolved, last.New = findingDelta(lineFindings(last.Findings), reviewPending(capped), s.Declined)
+	last.Reviewed = true
+	s.Rounds = rounds
 	return s
 }
 
@@ -173,6 +209,40 @@ func (s FixRoundsState) validate() error {
 			return fmt.Errorf("%w: a declined finding or its reason is over %d bytes", ErrFixRoundsState, maxStateFindingBytes)
 		case hasControl(d.Finding) || hasControl(d.Reason):
 			return fmt.Errorf("%w: a declined finding or its reason holds a control character", ErrFixRoundsState)
+		}
+	}
+	return s.validateRounds()
+}
+
+// validateRounds holds each round's record to the limits a round written by this
+// runner meets: at most one per round made, each on the fix phase, with its lines
+// as bounded as the open list's.
+func (s FixRoundsState) validateRounds() error {
+	if len(s.Rounds) > s.Round {
+		return fmt.Errorf("%w: %d round records for %d rounds", ErrFixRoundsState, len(s.Rounds), s.Round)
+	}
+	for _, r := range s.Rounds {
+		switch {
+		case r.Step.Phase != PhaseFix:
+			return fmt.Errorf("%w: a round record is on phase %q, not %q", ErrFixRoundsState, r.Step.Phase, PhaseFix)
+		case len(r.Step.Detail) > maxStateStepDetailBytes:
+			return fmt.Errorf("%w: a round's step detail is over %d bytes", ErrFixRoundsState, maxStateStepDetailBytes)
+		case len(r.Findings) > maxReviewFindings || len(r.Declined) > maxReviewFindings:
+			return fmt.Errorf("%w: a round record lists over %d findings", ErrFixRoundsState, maxReviewFindings)
+		case r.Resolved < 0 || r.Resolved > maxReviewFindings || r.New < 0 || r.New > maxReviewFindings:
+			return fmt.Errorf("%w: a round's resolved or new count is outside 0 to %d", ErrFixRoundsState, maxReviewFindings)
+		}
+		for _, line := range r.Findings {
+			if strings.TrimSpace(line) == "" || len(line) > maxStateFindingBytes || hasControl(line) {
+				return fmt.Errorf("%w: a round record holds a blank, over-long or control-character finding", ErrFixRoundsState)
+			}
+		}
+		for _, d := range r.Declined {
+			if strings.TrimSpace(d.Finding) == "" || strings.TrimSpace(d.Reason) == "" ||
+				len(d.Finding) > maxStateFindingBytes || len(d.Reason) > maxStateFindingBytes ||
+				hasControl(d.Finding) || hasControl(d.Reason) {
+				return fmt.Errorf("%w: a round record holds a blank, over-long or control-character decline", ErrFixRoundsState)
+			}
 		}
 	}
 	return nil
