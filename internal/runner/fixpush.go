@@ -140,7 +140,10 @@ func FixPush(ctx context.Context, in FixPushInput) (string, error) {
 	if head.SHA != in.Expected {
 		return "", refuse(FixPushHeadMoved, "the pull request is at %s, the round was made on %s", head.SHA, in.Expected)
 	}
-	return tip, push(ctx, bin, in)
+	if err := push(ctx, bin, in); err != nil {
+		return "", err
+	}
+	return tip, nil
 }
 
 // fetchIncoming reads the bundle's refs, refuses unless it lists exactly the

@@ -321,8 +321,11 @@ func TestFixPushLeaseLostLeavesTheOwnersPushAndIsNotRetried(t *testing.T) {
 	ownerTip := rev(t, other, "HEAD")
 
 	pushes := gitPushes(t)
-	_, err := FixPush(context.Background(), f.input(bundle))
+	sha, err := FixPush(context.Background(), f.input(bundle))
 	wantRefusal(t, err, FixPushLeaseLost)
+	if sha != "" {
+		t.Fatalf("sha = %s, want none for a push that did not happen", sha)
+	}
 	if got := f.originHead(t); got != ownerTip {
 		t.Fatalf("origin at %s, want the owner's %s", got, ownerTip)
 	}
