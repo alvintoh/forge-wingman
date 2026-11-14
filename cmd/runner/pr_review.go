@@ -34,6 +34,8 @@ const (
 	autoMergeEligibleLabel   = "wingman:auto-merge-eligible"
 	maxStatusDescription     = 140
 	maxPRReviewArtifactBytes = 1 << 20
+	// reviewSHALen is how much of a head sha a review comment names.
+	reviewSHALen = 12
 )
 
 // The reasons a pull request is not reviewed.
@@ -49,6 +51,15 @@ var skipDescriptions = map[string]string{
 	skipDiffTooLarge:   "Not reviewed: the diff is too large to review",
 }
 
+// The descriptions a review posts with its status. fix-await classifies a status
+// by their prefixes, so the poster and the reader share the words rather than
+// each holding its own copy.
+const (
+	cleanStatusDescription     = "Clean: no findings from "
+	findingsStatusDescription  = "Findings from "
+	noVerdictStatusDescription = "No verdict: every review model failed; waits for the owner"
+)
+
 // errReviewAppNoTeam fails a review whose ticket reads as missing because the
 // review app's Linear user has lost its team, so it is not skipped as absent.
 var errReviewAppNoTeam = errors.New("reading the ticket: the review app cannot see the team; is its Linear user suspended? Recover it as infra/README.md's \"Pull request review\" section says")
@@ -56,6 +67,10 @@ var errReviewAppNoTeam = errors.New("reading the ticket: the review app cannot s
 var (
 	shaPattern    = regexp.MustCompile(`^[0-9a-f]{40}$`)
 	runURLPattern = regexp.MustCompile(`^https://[A-Za-z0-9./_-]+$`)
+	// reviewAtLine is the line a findings comment names its head on, and
+	// reviewFenceLine the fence renderReviewComment opens the findings with.
+	reviewAtLine    = regexp.MustCompile("^At `([0-9a-f]{" + strconv.Itoa(reviewSHALen) + "})`:$")
+	reviewFenceLine = regexp.MustCompile("^(`{3,})text$")
 )
 
 // prReviewContext writes the context a pull request's review reads: the
@@ -393,11 +408,11 @@ func planPost(skipReason, contextResult string, v runner.PRVerdict, verdictErr e
 	comment := renderReviewComment(v, sha, runURL)
 	switch v.Outcome {
 	case runner.PRReviewClean:
-		return postPlan{comment: comment, status: status("success", "Clean: no findings from "+v.Model), clean: true}
+		return postPlan{comment: comment, status: status("success", cleanStatusDescription+v.Model), clean: true}
 	case runner.PRReviewFindings:
-		return postPlan{comment: comment, status: status("failure", "Findings from "+v.Model+"; see the review comment")}
+		return postPlan{comment: comment, status: status("failure", findingsStatusDescription+v.Model+"; see the review comment")}
 	default:
-		return postPlan{comment: comment, status: status("failure", "No verdict: every review model failed; waits for the owner")}
+		return postPlan{comment: comment, status: status("failure", noVerdictStatusDescription)}
 	}
 }
 
@@ -407,16 +422,26 @@ func mergeReady(p pull, reviewedSHA string) bool {
 		p.hasLabel(autoMergeEligibleLabel) && p.Head.SHA == reviewedSHA
 }
 
+// markedComment is the review comment this workflow posted: the first comment by
+// its own author carrying the marker, which is the one upsertComment edits and
+// fix-await reads, so both sides look at the same comment.
+func markedComment(comments []comment) (comment, bool) {
+	for _, c := range comments {
+		if c.User.Login == prReviewCommentAuthor && strings.HasPrefix(c.Body, prReviewMarker) {
+			return c, true
+		}
+	}
+	return comment{}, false
+}
+
 // upsertComment edits the marked comment this workflow posted before, or creates one.
 func upsertComment(ctx context.Context, gh pullRequests, number int, body string) error {
 	comments, err := gh.comments(ctx, number)
 	if err != nil {
 		return err
 	}
-	for _, c := range comments {
-		if c.User.Login == prReviewCommentAuthor && strings.HasPrefix(c.Body, prReviewMarker) {
-			return gh.editComment(ctx, c.ID, body)
-		}
+	if c, ok := markedComment(comments); ok {
+		return gh.editComment(ctx, c.ID, body)
 	}
 	return gh.createComment(ctx, number, body)
 }
@@ -429,11 +454,11 @@ func renderReviewComment(v runner.PRVerdict, sha, runURL string) string {
 	b.WriteString(prReviewMarker + "\n")
 	switch v.Outcome {
 	case runner.PRReviewClean:
-		fmt.Fprintf(&b, "### Wingman review: clean\n\nNo findings against the ticket's acceptance criteria at `%s`.\n", sha[:12])
+		fmt.Fprintf(&b, "### Wingman review: clean\n\nNo findings against the ticket's acceptance criteria at `%s`.\n", shortSHA(sha))
 	case runner.PRReviewFindings:
-		fmt.Fprintf(&b, "### Wingman review: findings\n\nAt `%s`:\n\n%s\n", sha[:12], fenced(neutralise(v.Findings)))
+		fmt.Fprintf(&b, "### Wingman review: findings\n\nAt `%s`:\n\n%s\n", shortSHA(sha), fenced(neutralise(v.Findings)))
 	default:
-		fmt.Fprintf(&b, "### Wingman review: no verdict\n\nNo review model returned a verdict at `%s`, so this pull request waits for the owner.\n", sha[:12])
+		fmt.Fprintf(&b, "### Wingman review: no verdict\n\nNo review model returned a verdict at `%s`, so this pull request waits for the owner.\n", shortSHA(sha))
 		for _, a := range v.Attempts {
 			fmt.Fprintf(&b, "\n- `%s`: %s", a.Model, a.Outcome)
 		}
@@ -445,6 +470,60 @@ func renderReviewComment(v runner.PRVerdict, sha, runURL string) string {
 	}
 	b.WriteString("</sub>\n")
 	return b.String()
+}
+
+// reviewComment is what a posted review comment says: the head its At line names
+// — empty when it names none, as a clean or no-verdict comment does — and the
+// findings its fenced block holds, with the mention neutralisation reversed.
+type reviewComment struct {
+	SHA      string
+	Findings string
+}
+
+// shortSHA is the head a review comment names, as renderReviewComment writes it.
+func shortSHA(sha string) string {
+	if len(sha) <= reviewSHALen {
+		return sha
+	}
+	return sha[:reviewSHALen]
+}
+
+// parseReviewComment reads a comment renderReviewComment wrote: the head its At
+// line names and the findings block under it, un-neutralised so a finding reads
+// as the review wrote it. A comment naming no head reports no findings, which is
+// what a clean or no-verdict comment says. It reports false when the findings
+// block is unreadable — opened with no closing fence — and still names the head
+// it read, so a caller can tell another head's comment from this one's.
+func parseReviewComment(body string) (reviewComment, bool) {
+	lines := strings.Split(body, "\n")
+	at := -1
+	var c reviewComment
+	for i, line := range lines {
+		if m := reviewAtLine.FindStringSubmatch(line); m != nil {
+			at, c.SHA = i, m[1]
+			break
+		}
+	}
+	if at < 0 {
+		return reviewComment{}, true
+	}
+	open, fence := -1, ""
+	for i := at + 1; i < len(lines); i++ {
+		if m := reviewFenceLine.FindStringSubmatch(lines[i]); m != nil {
+			open, fence = i, m[1]
+			break
+		}
+	}
+	if open < 0 {
+		return c, false
+	}
+	for i := open + 1; i < len(lines); i++ {
+		if lines[i] == fence {
+			c.Findings = unneutralise(strings.Join(lines[open+1:i], "\n"))
+			return c, true
+		}
+	}
+	return c, false
 }
 
 // verdictFooter names the model that reviewed, its tokens and the cost of every attempt.
@@ -464,6 +543,12 @@ func verdictFooter(v runner.PRVerdict) string {
 // neutralise breaks every @mention, so a finding cannot notify anyone.
 func neutralise(s string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(s, "\r", ""), "@", "@\u200b")
+}
+
+// unneutralise restores the mentions neutralise broke, so a finding read back
+// from a comment is the one the review wrote.
+func unneutralise(s string) string {
+	return strings.ReplaceAll(s, "@\u200b", "@")
 }
 
 // fenced puts s in a code fence longer than any run of backticks it holds.

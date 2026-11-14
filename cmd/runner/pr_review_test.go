@@ -30,15 +30,20 @@ const (
 
 // fakePulls serves one repository's pull request 7 and records every write.
 type fakePulls struct {
-	pull     map[string]any
-	diff     string
-	comments []map[string]any
+	pull       map[string]any
+	diff       string
+	comments   []map[string]any
+	statusList []commitStatusEntry
 
 	mu       sync.Mutex
 	created  []string
 	edited   map[string]string
 	statuses map[string]commitStatus
 	diffPath string
+	// auth is the Authorization header of every request, and statusQueries the
+	// query string of every statuses read.
+	auth          []string
+	statusQueries []string
 }
 
 func (f *fakePulls) start(t *testing.T) func(string) string {
@@ -47,6 +52,7 @@ func (f *fakePulls) start(t *testing.T) func(string) string {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		f.auth = append(f.auth, r.Header.Get("Authorization"))
 		raw, _ := io.ReadAll(r.Body)
 		var body map[string]string
 		_ = json.Unmarshal(raw, &body)
@@ -58,6 +64,9 @@ func (f *fakePulls) start(t *testing.T) func(string) string {
 			_, _ = io.WriteString(w, f.diff)
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/o/r/issues/7/comments":
 			_ = json.NewEncoder(w).Encode(f.comments)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/o/r/commits/"):
+			f.statusQueries = append(f.statusQueries, r.URL.RawQuery)
+			_ = json.NewEncoder(w).Encode(f.statusList)
 		case r.Method == http.MethodPost && r.URL.Path == "/repos/o/r/issues/7/comments":
 			f.created = append(f.created, body["body"])
 			w.WriteHeader(http.StatusCreated)
@@ -266,6 +275,47 @@ func TestRenderReviewCommentNeutralisesTheFindings(t *testing.T) {
 	}
 	if !strings.Contains(got, "Model `"+museModel+"` · 1200 in / 80 out tokens · $0 across 1 attempt(s)") {
 		t.Errorf("the footer lacks the model and its cost: %q", got)
+	}
+}
+
+func TestShortSHAKeepsAShortHeadWhole(t *testing.T) {
+	if got := shortSHA(headSHA); got != headSHA[:12] {
+		t.Fatalf("shortSHA = %q, want the first 12 characters", got)
+	}
+	if got := shortSHA("abc"); got != "abc" {
+		t.Fatalf("shortSHA of a short head = %q, want it whole", got)
+	}
+}
+
+func TestParseReviewCommentRoundTripsEveryComment(t *testing.T) {
+	for _, v := range []runner.PRVerdict{
+		verdict("clean", "", museModel),
+		verdict("no-verdict", "", ""),
+		verdict("findings", "the retry never bounds `attempts`\nping @octocat\n```go\nif x {\n```\n# not a heading", museModel),
+	} {
+		t.Run(v.Outcome, func(t *testing.T) {
+			got, ok := parseReviewComment(renderReviewComment(v, headSHA, ""))
+			if !ok {
+				t.Fatal("the comment renderReviewComment wrote does not parse")
+			}
+			if v.Outcome != runner.PRReviewFindings {
+				if got.SHA != "" || got.Findings != "" {
+					t.Fatalf("parse = %+v, want no head and no findings", got)
+				}
+				return
+			}
+			if got.SHA != headSHA[:12] || got.Findings != v.Findings {
+				t.Fatalf("parse = %+v, want %s and %q", got, headSHA[:12], v.Findings)
+			}
+		})
+	}
+}
+
+func TestParseReviewCommentNamesTheHeadOfAnUnreadableBlock(t *testing.T) {
+	body := prReviewMarker + "\n### Wingman review: findings\n\nAt `" + headSHA[:12] + "`:\n\n```text\nthe fence never closes\n"
+	got, ok := parseReviewComment(body)
+	if ok || got.SHA != headSHA[:12] {
+		t.Fatalf("parse = %+v, ok = %v, want the head with an unreadable block", got, ok)
 	}
 }
 
@@ -576,5 +626,17 @@ func TestFencedIsOneLongerThanTheLongestBacktickRun(t *testing.T) {
 		if got, _, _ := strings.Cut(fenced(in), "text"); got != want {
 			t.Errorf("fenced(%q) opens with %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestUpsertCommentEditsTheMarkedCommentBehindAnUnmarkedOne(t *testing.T) {
+	summary := map[string]any{"id": 40, "body": "CI summary", "user": map[string]string{"login": prReviewCommentAuthor}}
+	f := &fakePulls{comments: []map[string]any{summary, reviewCommentOf(prReviewMarker + "\nold")}}
+	gh := f.client(f.start(t))
+	if err := upsertComment(context.Background(), gh, 7, "new"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.created) != 0 || len(f.edited) != 1 || f.edited["41"] != "new" {
+		t.Fatalf("created = %q, edited = %q, want only comment 41 edited", f.created, f.edited)
 	}
 }

@@ -72,6 +72,13 @@ func RunLimitMinutes(stage string) int {
 	return int(nfr1RunCap / time.Minute)
 }
 
+// RunBudgetLeft is what NFR-1's whole-run cap leaves from started at now, never
+// below zero: the shared budget a wait of the run's own comes out of, so no wait
+// outlasts the run it belongs to.
+func RunBudgetLeft(started, now time.Time) time.Duration {
+	return max(0, nfr1RunCap-now.Sub(started))
+}
+
 // effectiveAgentTimeout is configured, or defaultAgentTimeout when it is unset.
 func effectiveAgentTimeout(configured time.Duration) time.Duration {
 	if configured <= 0 {

@@ -289,6 +289,27 @@ func fixCapDetail(capped int) string {
 	return fmt.Sprintf("the cap of %d fix round(s) was reached", capped)
 }
 
+// CapReviewFindings bounds the findings a fix round is handed — at most
+// maxReviewFindings of them, each cut to maxFindingBytes — and reports what the
+// caps did: how many findings the count left out and how many lines the length
+// cut. A long finding keeps its start rather than vanishing, and a finding over
+// the count is counted rather than dropped silently.
+func CapReviewFindings(findings string) (capped string, omitted, cut int) {
+	pending := reviewPending(findings)
+	if len(pending) > maxReviewFindings {
+		omitted = len(pending) - maxReviewFindings
+		pending = pending[:maxReviewFindings]
+	}
+	lines := make([]string, len(pending))
+	for i, f := range pending {
+		lines[i] = truncate(f.text, maxFindingBytes)
+		if len(f.text) > maxFindingBytes {
+			cut++
+		}
+	}
+	return strings.Join(lines, "\n"), omitted, cut
+}
+
 // findingDelta is how many of issued a re-review no longer reports, and how many
 // it reports that issued did not hold and no round declined: the per-round
 // numbers the record keeps so the cap can be lowered from evidence.

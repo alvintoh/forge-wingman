@@ -1438,3 +1438,32 @@ func TestDecideFixRoundHoldsTheLoopsRules(t *testing.T) {
 		})
 	}
 }
+
+func TestCapReviewFindingsCutsAndCounts(t *testing.T) {
+	lines := make([]string, maxReviewFindings+2)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("finding %d", i+1)
+	}
+	lines[0] = strings.Repeat("a", maxFindingBytes+100)
+	capped, omitted, cut := CapReviewFindings(strings.Join(lines, "\n"))
+	if omitted != 2 || cut != 1 {
+		t.Fatalf("omitted = %d, cut = %d, want the 2 over the count and the 1 over the length", omitted, cut)
+	}
+	got := strings.Split(capped, "\n")
+	if len(got) != maxReviewFindings {
+		t.Fatalf("capped %d findings, want %d", len(got), maxReviewFindings)
+	}
+	if !strings.HasPrefix(got[0], "aaaa") || !strings.HasSuffix(got[0], "…") || len(got[0]) != maxFindingBytes+len("…") {
+		t.Fatalf("the long finding is not kept and cut: %d bytes, %q", len(got[0]), got[0])
+	}
+	if got[1] != "finding 2" {
+		t.Fatalf("the order is not kept: %q", got[1])
+	}
+}
+
+func TestCapReviewFindingsLeavesAFittingListAlone(t *testing.T) {
+	capped, omitted, cut := CapReviewFindings("a is missing\n\n  b is wrong  \n")
+	if capped != "a is missing\nb is wrong" || omitted != 0 || cut != 0 {
+		t.Fatalf("capped = %q, omitted = %d, cut = %d, want both findings untouched", capped, omitted, cut)
+	}
+}
