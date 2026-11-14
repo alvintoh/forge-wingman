@@ -155,14 +155,15 @@ owner changed after it, and the account GitHub resolved the merge to (`merged_by
 authored as the runner (`github-actions[bot]`) counts as the agent's, every other commit as
 the owner's, and a merge whose account is a bot's merged itself.
 
-The `dispatch/autonomy` document and its history, and the `runner autonomy` and
-`runner cd` commands, were removed (`adr/0018`); eligibility now follows the switch and the
-rate above. Nothing reads those documents or that field — they are left where they are,
-so a run row that carries an old `autonomy` field is read exactly as one that does not.
+The `dispatch/autonomy` document and its history, and the `runner autonomy` and `runner cd`
+commands, were removed (`adr/0018`); eligibility now follows the switch above. Nothing reads
+those documents or that field — they are left where they are, so a run row that carries an
+old `autonomy` field is read exactly as one that does not.
 
-With the switch on, a run's S or M PR that is not in the review sample, edits nothing outside its recorded plan (an S run needs none), fails no
-check gate and is not a front-end change gets the `wingman:auto-merge-eligible` label,
-which must exist in the repository. A size-M or L run with no recorded plan is never
+With the switch on, a run's S or M PR that is not in the review sample, edits nothing
+outside its recorded plan (an S run needs none), fails no check gate and is not a
+front-end change gets the `wingman:auto-merge-eligible` label, which must exist in the
+repository. A size-M or L run with no recorded plan is never
 labelled, and its PR body says so; a size-S run is labelled without one.
 A run whose pre-open review left a finding unfixed (still open, or never re-checked) also
 gets the `findings-open` label on its PR, which must exist in the repository; it is a mark
