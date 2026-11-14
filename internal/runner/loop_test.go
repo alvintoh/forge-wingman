@@ -231,3 +231,20 @@ func TestOpenFindingsCountsEveryWayAFindingCanEndUnfixed(t *testing.T) {
 		t.Fatalf("openFindings(nil) = %d, want 0", got)
 	}
 }
+
+func TestRunBudgetLeft(t *testing.T) {
+	now := time.Date(2026, 11, 13, 10, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name    string
+		elapsed time.Duration
+		want    time.Duration
+	}{
+		{"a run just started", 0, 90 * time.Minute},
+		{"a run part way through", 88 * time.Minute, 2 * time.Minute},
+		{"a run past the cap", 100 * time.Minute, 0},
+	} {
+		if got := RunBudgetLeft(now.Add(-tt.elapsed), now); got != tt.want {
+			t.Errorf("%s: RunBudgetLeft = %s, want %s", tt.name, got, tt.want)
+		}
+	}
+}
