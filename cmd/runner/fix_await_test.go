@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -246,6 +247,27 @@ func TestReviewAtKeepsPollingWithoutAVerdictStatus(t *testing.T) {
 	}
 }
 
+func TestReviewAtKeepsPollingOnAFailureItDoesNotRecognise(t *testing.T) {
+	gh := reviewClient(t, []commitStatusEntry{statusOf("failure", "Something else failed", awaitStart)}, nil)
+	if got, ok, err := reviewAt(context.Background(), gh, 7, headSHA); err != nil || ok {
+		t.Fatalf("outcome = %+v, ok = %v, err = %v, want the poll to continue", got, ok, err)
+	}
+}
+
+func TestReviewAtReadsTheMarkedCommentBehindAnUnmarkedOne(t *testing.T) {
+	summary := map[string]any{"id": 40, "body": "CI summary", "user": map[string]string{"login": prReviewCommentAuthor}}
+	body := renderReviewComment(verdict("findings", "x is missing", museModel), headSHA, "")
+	statuses := []commitStatusEntry{statusOf("failure", findingsStatusDescription+museModel, awaitStart)}
+	gh := reviewClient(t, statuses, []map[string]any{summary, reviewCommentOf(body)})
+	got, ok, err := reviewAt(context.Background(), gh, 7, headSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || got.Findings != "x is missing" {
+		t.Fatalf("outcome = %+v, ok = %v, want the findings of the marked comment", got, ok)
+	}
+}
+
 func TestReviewAtReadsTheNewestStatus(t *testing.T) {
 	body := renderReviewComment(verdict("findings", "x is missing", museModel), headSHA, "")
 	newer := statusOf("failure", findingsStatusDescription+museModel, awaitStart.Add(time.Minute))
@@ -346,6 +368,17 @@ func TestAwaitReviewEndsAtTheTimeoutWithAStopReason(t *testing.T) {
 	}
 }
 
+func TestAwaitReviewSleepsOnlyTheTimeThatRemains(t *testing.T) {
+	clock := &awaitClock{now: awaitStart}
+	w := fixAwaitWait{Timeout: 50 * time.Second, Interval: 20 * time.Second, Started: awaitStart}
+	if _, err := awaitReview(context.Background(), noReview, w, clock.Now, clock.Sleep); err != nil {
+		t.Fatal(err)
+	}
+	if clock.slept != 50*time.Second {
+		t.Fatalf("the wait lasted %s, want 50s", clock.slept)
+	}
+}
+
 func TestAwaitReviewIsBoundedByTheRunsBudget(t *testing.T) {
 	clock := &awaitClock{now: awaitStart}
 	w := fixAwaitWait{Timeout: 15 * time.Minute, Interval: 20 * time.Second, Started: awaitStart.Add(-88 * time.Minute)}
@@ -413,6 +446,51 @@ func TestFixAwaitWritesTheFindingsItParsed(t *testing.T) {
 	if got := outputValue(t, output, "findings_omitted"); got != "0" {
 		t.Fatalf("findings_omitted = %q, want 0", got)
 	}
+	for _, got := range f.auth {
+		if got != "Bearer gh-token" {
+			t.Fatalf("Authorization = %q, want the token the step was given", got)
+		}
+	}
+	if len(f.statusQueries) == 0 || f.statusQueries[0] != "per_page=100" {
+		t.Fatalf("statuses queries = %q, want per_page=100", f.statusQueries)
+	}
+}
+
+func TestFixAwaitCapsTheFindingsTheLoopIsHanded(t *testing.T) {
+	lines := []string{strings.Repeat("a", 600)}
+	for i := 2; i <= 30; i++ {
+		lines = append(lines, "finding "+strconv.Itoa(i))
+	}
+	body := renderReviewComment(verdict("findings", strings.Join(lines, "\n"), museModel), headSHA, "")
+	statuses := []commitStatusEntry{statusOf("failure", findingsStatusDescription+museModel, awaitStart)}
+	f := &fakePulls{statusList: statuses, comments: []map[string]any{reviewCommentOf(body)}}
+	env := f.start(t)
+	args := []string{"-pr", "7", "-sha", headSHA, "-started", time.Now().UTC().Format(time.RFC3339)}
+	if err := fixAwait(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)), env, args); err != nil {
+		t.Fatal(err)
+	}
+	output := env("GITHUB_OUTPUT")
+	got := strings.Split(outputValue(t, output, "findings"), "\n")
+	if len(got) != 24 {
+		t.Fatalf("findings = %d lines, want 24", len(got))
+	}
+	if want := strings.Repeat("a", 512) + "…"; got[0] != want {
+		t.Fatalf("first finding = %d bytes, want it cut to 512 and an ellipsis", len(got[0]))
+	}
+	if v := outputValue(t, output, "findings_omitted"); v != "6" {
+		t.Fatalf("findings_omitted = %q, want 6", v)
+	}
+	if v := outputValue(t, output, "findings_cut"); v != "1" {
+		t.Fatalf("findings_cut = %q, want 1", v)
+	}
+}
+
+func TestRunRoutesFixAwait(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	err := run(context.Background(), logger, []string{"fix-await"}, func(string) string { return "" })
+	if err == nil || !strings.Contains(err.Error(), "fix-await needs -pr and a -sha") {
+		t.Fatalf("err = %v, want fix-await's own refusal", err)
+	}
 }
 
 func TestFixAwaitReportsACleanReviewWithNoFindings(t *testing.T) {
@@ -444,6 +522,18 @@ func TestFixAwaitEndsAtTheTimeoutWithoutAnError(t *testing.T) {
 	}
 	if got := outputValue(t, env("GITHUB_OUTPUT"), "reason"); got != fixAwaitReasonTimeout {
 		t.Fatalf("reason = %q, want the timeout", got)
+	}
+}
+
+func TestFixAwaitKeepsPollingToTheTimeoutOnAnUnrecognisedFailure(t *testing.T) {
+	f := &fakePulls{statusList: []commitStatusEntry{statusOf("failure", "Something else failed", awaitStart)}}
+	env := f.start(t)
+	args := []string{"-pr", "7", "-sha", headSHA, "-timeout", "5ms", "-interval", "1ms", "-started", time.Now().UTC().Format(time.RFC3339)}
+	if err := fixAwait(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)), env, args); err != nil {
+		t.Fatal(err)
+	}
+	if got := outputValue(t, env("GITHUB_OUTPUT"), "reason"); got != fixAwaitReasonTimeout {
+		t.Fatalf("reason = %q, want the poll to run to the timeout", got)
 	}
 }
 

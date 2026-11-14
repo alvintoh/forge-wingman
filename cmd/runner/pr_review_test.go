@@ -40,6 +40,10 @@ type fakePulls struct {
 	edited   map[string]string
 	statuses map[string]commitStatus
 	diffPath string
+	// auth is the Authorization header of every request, and statusQueries the
+	// query string of every statuses read.
+	auth          []string
+	statusQueries []string
 }
 
 func (f *fakePulls) start(t *testing.T) func(string) string {
@@ -48,6 +52,7 @@ func (f *fakePulls) start(t *testing.T) func(string) string {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		f.auth = append(f.auth, r.Header.Get("Authorization"))
 		raw, _ := io.ReadAll(r.Body)
 		var body map[string]string
 		_ = json.Unmarshal(raw, &body)
@@ -60,6 +65,7 @@ func (f *fakePulls) start(t *testing.T) func(string) string {
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/o/r/issues/7/comments":
 			_ = json.NewEncoder(w).Encode(f.comments)
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/o/r/commits/"):
+			f.statusQueries = append(f.statusQueries, r.URL.RawQuery)
 			_ = json.NewEncoder(w).Encode(f.statusList)
 		case r.Method == http.MethodPost && r.URL.Path == "/repos/o/r/issues/7/comments":
 			f.created = append(f.created, body["body"])
@@ -620,5 +626,17 @@ func TestFencedIsOneLongerThanTheLongestBacktickRun(t *testing.T) {
 		if got, _, _ := strings.Cut(fenced(in), "text"); got != want {
 			t.Errorf("fenced(%q) opens with %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestUpsertCommentEditsTheMarkedCommentBehindAnUnmarkedOne(t *testing.T) {
+	summary := map[string]any{"id": 40, "body": "CI summary", "user": map[string]string{"login": prReviewCommentAuthor}}
+	f := &fakePulls{comments: []map[string]any{summary, reviewCommentOf(prReviewMarker + "\nold")}}
+	gh := f.client(f.start(t))
+	if err := upsertComment(context.Background(), gh, 7, "new"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.created) != 0 || len(f.edited) != 1 || f.edited["41"] != "new" {
+		t.Fatalf("created = %q, edited = %q, want only comment 41 edited", f.created, f.edited)
 	}
 }
