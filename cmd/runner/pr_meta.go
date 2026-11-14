@@ -151,8 +151,7 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 	}
 	logger.Info("autoMergeDecided", append(verdict.attrs(), "run", *runID, "sampled", runner.Sampled(*runID),
 		"draft", draft, "frontEnd", len(check.FrontEnd), "changed", len(check.Changed), "outOfPlan", len(check.OutOfPlan), "overlap", check.Overlap, "planned", check.Planned)...)
-	fixRounds := fixRoundsEligible(*runID, rec.Ticket(), sum, runner.FailedGate(*checkReport), check)
-	if err := writeOutputs(e.output, prOutputs(title, rec.Ticket().BranchSegment(), verdict.Merge, draft, fixRounds, check, sum.ReviewFindingsOpen)); err != nil {
+	if err := writeOutputs(e.output, prOutputs(*runID, title, rec.Ticket(), sum, runner.FailedGate(*checkReport), verdict.Merge, draft, check)); err != nil {
 		return err
 	}
 	return writeMultilineOutput(e.output, "body", body)
@@ -161,15 +160,15 @@ func prMeta(ctx context.Context, logger *slog.Logger, e env, args []string) erro
 // prOutputs is the single-line step outputs pr-meta reports: the title and
 // branch segment, whether the PR requests auto-merge, opens as a draft and gets
 // fix rounds, the PR it supersedes and the review's open findings.
-func prOutputs(title, branchSegment string, merge, draft, fixRounds bool, check prCheck, openFindings int) map[string]string {
+func prOutputs(runID, title string, t runner.Ticket, sum runner.Summary, failedGate string, merge, draft bool, check prCheck) map[string]string {
 	return map[string]string{
 		"title":          title,
-		"branch_segment": branchSegment,
+		"branch_segment": t.BranchSegment(),
 		"auto_merge":     strconv.FormatBool(merge),
 		"draft":          strconv.FormatBool(draft),
-		"fix_rounds":     strconv.FormatBool(fixRounds),
+		"fix_rounds":     strconv.FormatBool(fixRoundsEligible(runID, t, sum, failedGate, check)),
 		"superseded_pr":  supersededOutput(check.Supersedes),
-		"findings_open":  openFindingsOutput(openFindings),
+		"findings_open":  openFindingsOutput(sum.ReviewFindingsOpen),
 		// superseded_by_retry words the close comment, so it is set only when a PR is superseded.
 		"superseded_by_retry": retriedOutput(check.Supersedes, check.Retried),
 	}

@@ -36,34 +36,32 @@ func fixRound(ctx context.Context, logger *slog.Logger, e env, args []string) er
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	round := 0
+	fail := func(err error) error { return finishFixRound(logger, e.output, round, runner.FixRoundResult{}, err) }
 	if err := runner.FixRoundIdentity(e.identity); err != nil {
-		return finishFixRound(logger, e.output, 0, runner.FixRoundResult{}, err)
+		return fail(err)
 	}
 	if *out == "" {
-		return errors.New("fix-round needs an -out directory")
+		return fail(errors.New("fix-round needs an -out directory"))
 	}
 	if err := requireImages(map[string]string{"agent-image": *agentImage}); err != nil {
-		return err
+		return fail(err)
 	}
 	var state *runner.FixRoundsState
 	if *statePath != "" {
 		raw, err := os.ReadFile(*statePath)
 		if err != nil {
-			return fmt.Errorf("reading the fix-round state: %w", err)
+			return fail(fmt.Errorf("reading the fix-round state: %w", err))
 		}
 		s, err := runner.ParseFixRoundsState(string(raw))
 		if err != nil {
-			return err
+			return fail(err)
 		}
-		state = &s
+		state, round = &s, s.Round
 	}
 	t, err := readTicket(*ticketFile)
 	if err != nil {
-		return err
-	}
-	round := 0
-	if state != nil {
-		round = state.Round
+		return fail(err)
 	}
 	started, err := withAgents(ctx, logger, agentSettings{Image: *agentImage, Egress: *agentEgress, Model: *model}, ".", e.harnesses,
 		func(contained []runner.Harness, probe func(context.Context, string) error) error {
@@ -94,7 +92,7 @@ func fixRound(ctx context.Context, logger *slog.Logger, e env, args []string) er
 			return finishFixRound(logger, e.output, round, res, err)
 		})
 	if !started {
-		return finishFixRound(logger, e.output, round, runner.FixRoundResult{}, err)
+		return fail(err)
 	}
 	return err
 }

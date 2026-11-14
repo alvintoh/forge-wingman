@@ -951,11 +951,22 @@ func TestFixRoundsEligibleIgnoresTheAutoMergeDecision(t *testing.T) {
 	}
 }
 
-func TestPROutputsReportsFixRoundsAsItsOwnOutput(t *testing.T) {
-	for _, want := range []bool{true, false} {
-		got := prOutputs("feat: x", "abc-12", !want, !want, want, prCheck{}, 0)
-		if got["fix_rounds"] != strconv.FormatBool(want) || got["auto_merge"] != strconv.FormatBool(!want) {
-			t.Fatalf("outputs = %v, want fix_rounds %v apart from auto_merge", got, want)
+// TestPROutputsFixRoundsFollowEligibilityNotTheMergeDecision: whatever pr-meta
+// decided about auto-merge — switch off, a hold or a rate above the guideline all
+// leave merge false — the PR's fix_rounds output is its eligibility alone.
+func TestPROutputsFixRoundsFollowEligibilityNotTheMergeDecision(t *testing.T) {
+	sum := runner.Summary{Outcome: runner.OutcomeBuilt, Ready: true}
+	for _, tt := range []struct {
+		size string
+		want string
+	}{{"M", "true"}, {"L", "false"}} {
+		for _, merge := range []bool{true, false} {
+			tk := prRecord.Ticket()
+			tk.Size = tt.size
+			got := prOutputs("run-abc-12", "feat: x", tk, sum, "", merge, !merge, prCheck{Planned: true})
+			if got["fix_rounds"] != tt.want || got["auto_merge"] != strconv.FormatBool(merge) {
+				t.Fatalf("size %s, merge %v: outputs = %v, want fix_rounds %s", tt.size, merge, got, tt.want)
+			}
 		}
 	}
 }

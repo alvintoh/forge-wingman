@@ -86,3 +86,16 @@ func TestFinishFixRoundEndsALoopWithoutFailingTheProcess(t *testing.T) {
 		})
 	}
 }
+
+func TestFixRoundPreflightFailureWritesTheOutputsAndFailsTheStep(t *testing.T) {
+	output := filepath.Join(t.TempDir(), "output")
+	err := run(context.Background(), quietLogger(), []string{"fix-round", "-branch", "wingman/x-1", "-head", "abc", "-findings", "f"},
+		fixRoundEnv(output, nil))
+	if !errors.Is(err, errRunFailed) || exitCode(err) != 1 {
+		t.Fatalf("err = %v, want a failed run", err)
+	}
+	raw, _ := os.ReadFile(output)
+	if got := string(raw); !strings.Contains(got, "reason=error\n") || !strings.Contains(got, "round=0\n") || !strings.Contains(got, "-out") {
+		t.Fatalf("outputs = %q, want reason=error, round=0 and a detail naming -out", got)
+	}
+}
