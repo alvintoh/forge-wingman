@@ -224,3 +224,112 @@ func TestFixRoundJobStopsWhenTheBranchIsNotAtTheHead(t *testing.T) {
 		t.Fatalf("err = %v with %d agent calls, want the head-moved stop and no agent run", err, j.agent.calls)
 	}
 }
+
+// gatedAgent is the build agent with a model gate that answers err.
+type gatedAgent struct {
+	*fakeAgent
+	err error
+}
+
+func (g gatedAgent) Gate(string) error { return g.err }
+
+func TestFixRoundJobStopsBeforeAnyWorkOnABadTicketModelOrGate(t *testing.T) {
+	tests := []struct {
+		name   string
+		edit   func(*fixJob)
+		reason StopReason
+	}{
+		{"an invalid ticket", func(j *fixJob) { j.cfg.Ticket = Ticket{} }, StopTicketMissing},
+		{"a model that is not provider/model", func(j *fixJob) { j.cfg.Model = "model" }, StopModelInvalid},
+		{"a harness with no key", func(j *fixJob) {
+			j.deps.Agent = gatedAgent{j.agent, &harnessNotReadyError{Err: errors.New("no key")}}
+		}, StopCredentialAbsent},
+		{"a model no harness serves", func(j *fixJob) { j.deps.Agent = gatedAgent{j.agent, errors.New("no harness")} }, StopModelInvalid},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			j := newFixJob(t, fixAgent())
+			tt.edit(&j)
+			_, err := j.run()
+			var stop *StopError
+			if !errors.As(err, &stop) || stop.Reason != tt.reason || j.agent.calls != 0 {
+				t.Fatalf("err = %v with %d agent calls, want the %s stop and no agent run", err, j.agent.calls, tt.reason)
+			}
+		})
+	}
+}
+
+func TestFixRoundJobRunsTheAgentProbeOverTheWorktreeAndStopsOnItsFailure(t *testing.T) {
+	j := newFixJob(t, fixAgent())
+	var probed []string
+	j.deps.AgentProbe = func(_ context.Context, dir string) error {
+		probed = append(probed, dir)
+		return nil
+	}
+	if _, err := j.run(); err != nil {
+		t.Fatal(err)
+	}
+	if len(probed) != 1 || probed[0] != filepath.Join(j.cfg.TempDir, "wt") {
+		t.Fatalf("probed %v, want the round's worktree once", probed)
+	}
+
+	j = newFixJob(t, fixAgent())
+	j.deps.AgentProbe = func(context.Context, string) error { return errors.New("container did not start") }
+	_, err := j.run()
+	var stop *StopError
+	if !errors.As(err, &stop) || stop.Reason != StopAgentContainer || j.agent.calls != 0 {
+		t.Fatalf("err = %v with %d agent calls, want the agent-container stop and no agent run", err, j.agent.calls)
+	}
+}
+
+func TestFixRoundJobNeedsAnOutDirBeforeAnyWork(t *testing.T) {
+	j := newFixJob(t, fixAgent())
+	j.in.OutDir = ""
+	if _, err := j.run(); err == nil || !strings.Contains(err.Error(), "directory") || j.agent.calls != 0 {
+		t.Fatalf("err = %v with %d agent calls, want the directory refused before the agent", err, j.agent.calls)
+	}
+}
+
+func TestFixRoundJobFailsFastWithNoFindingToFix(t *testing.T) {
+	for name, findings := range map[string]string{"none": "\n", "all declined": findingSwallow} {
+		t.Run(name, func(t *testing.T) {
+			j := newFixJob(t, fixAgent())
+			probed := false
+			j.deps.AgentProbe = func(context.Context, string) error { probed = true; return nil }
+			state := NewFixRoundsState(1, 1, j.now, "ses_0", nil, []DeclinedFinding{{Finding: findingSwallow, Reason: "intended"}})
+			j.in.State, j.in.Findings = &state, findings
+			_, err := j.run()
+			if err == nil || j.agent.calls != 0 || probed {
+				t.Fatalf("err = %v, %d agent calls, probed %v, want a refusal before the probe and agent", err, j.agent.calls, probed)
+			}
+			if _, statErr := os.Stat(filepath.Join(j.cfg.TempDir, "wt")); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("a worktree was cut: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestFixRoundJobRemovesAStaleBundleFromANoChangeRound(t *testing.T) {
+	j := newFixJob(t, &fakeAgent{events: fixEvents("")})
+	stale := filepath.Join(j.in.OutDir, FixBundleName)
+	if err := os.WriteFile(stale, []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := j.run(); err != nil || res.Commit != "" {
+		t.Fatalf("res = %+v, err = %v, want a round with no commit", res, err)
+	}
+	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stat = %v, want the stale bundle removed", err)
+	}
+}
+
+func TestWriteFixStateLeavesNothingWhenTheNextJobWouldRejectIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FixStateName)
+	err := writeFixState(path, FixRoundsState{Round: DefaultReviewFixRounds + 1, Calls: DefaultReviewFixRounds + 1, StartedAt: time.Now()})
+	if !errors.Is(err, ErrFixRoundsState) {
+		t.Fatalf("err = %v, want the record rejected", err)
+	}
+	if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("stat = %v, want no file written", statErr)
+	}
+}

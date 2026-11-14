@@ -61,9 +61,17 @@ func FixRoundIdentity(id Identity) error {
 // no room for, or one past DefaultReviewFixRounds, ends the loop with a result
 // naming FixStopBudget or FixStopCap and writes no artifact. An agent, commit or
 // worktree failure is a *StopError, and a round with no findings a plain error.
+//
+// The caller guarantees what the job does not check: the state belongs to this
+// branch and head, an absent state is round 1 of a fresh loop (it seeds one
+// starting now), and the branch exists as a local ref in c.Repo that is not
+// checked out there.
 func FixRoundJob(ctx context.Context, d BuildDeps, c BuildConfig, in FixRoundInput) (FixRoundResult, error) {
 	if err := FixRoundIdentity(c.Identity); err != nil {
 		return FixRoundResult{}, err
+	}
+	if in.OutDir == "" {
+		return FixRoundResult{}, errors.New("a fix round needs a directory to write its artifact to")
 	}
 	if err := c.Ticket.Validate(); err != nil {
 		return FixRoundResult{}, stopWith(OutcomeStopped, StopTicketMissing, err)
@@ -76,14 +84,14 @@ func FixRoundJob(ctx context.Context, d BuildDeps, c BuildConfig, in FixRoundInp
 			return FixRoundResult{}, err
 		}
 	}
-	if in.Branch == "" || in.Head == "" || in.OutDir == "" {
-		return FixRoundResult{}, errors.New("a fix round needs a branch, a head and a directory to write to")
-	}
 	state := seedOrContinue(d, in)
 	if state.Round >= DefaultReviewFixRounds {
 		return FixRoundResult{Round: state.Round, Stop: FixStopCap, Detail: fixCapDetail(DefaultReviewFixRounds)}, nil
 	}
 	issued := withoutDeclined(reviewPending(in.Findings), state.Declined)
+	if len(issued) == 0 {
+		return FixRoundResult{}, errors.New("a fix round needs findings it was not told to leave to the owner")
+	}
 
 	_, rules, _, err := fetchRules(ctx, d, c)
 	if err != nil {
@@ -120,10 +128,14 @@ func FixRoundJob(ctx context.Context, d BuildDeps, c BuildConfig, in FixRoundInp
 	if err := os.MkdirAll(in.OutDir, 0o700); err != nil {
 		return FixRoundResult{}, fmt.Errorf("creating %s: %w", in.OutDir, err)
 	}
+	bundle := filepath.Join(in.OutDir, FixBundleName)
 	if sha != "" {
-		if err := wt.Bundle(ctx, filepath.Join(in.OutDir, FixBundleName), in.Branch); err != nil {
+		if err := wt.Bundle(ctx, bundle, in.Branch); err != nil {
 			return FixRoundResult{}, stopWith(OutcomeInfraFailure, StopCommit, fmt.Errorf("bundling the round's commit: %w", err))
 		}
+	} else if err := os.Remove(bundle); err != nil && !errors.Is(err, os.ErrNotExist) {
+		// A bundle an earlier run left would be pushed as this round's commit.
+		return FixRoundResult{}, fmt.Errorf("removing a stale bundle: %w", err)
 	}
 	if err := writeFixState(filepath.Join(in.OutDir, FixStateName), next); err != nil {
 		return FixRoundResult{}, err
