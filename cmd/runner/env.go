@@ -34,7 +34,7 @@ func requiredEnv(command string) ([]string, bool) {
 		return []string{"GOOGLE_CLOUD_PROJECT"}, true
 	case "record", "record-plan-stage":
 		return []string{"GOOGLE_CLOUD_PROJECT", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"}, true
-	case "build", "plan-stage":
+	case "build", "plan-stage", "fix-round":
 		return []string{"GOOGLE_CLOUD_PROJECT", "RUNNER_TEMP", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"}, true
 	}
 	return nil, false
