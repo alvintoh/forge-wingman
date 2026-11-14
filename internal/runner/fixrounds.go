@@ -36,6 +36,11 @@ const fixRoundsBudget = nfr1RunCap
 // left: no round ran, and the findings are the owner's.
 var ErrFixRoundsBudget = errors.New("no fix round fits the loop's own budget")
 
+// fixRoundsClockSkew is how far ahead of this job's clock a loop's recorded start
+// may be, for a record another machine wrote: further ahead, the start is not
+// believable and the budget cannot be enforced from it.
+const fixRoundsClockSkew = time.Minute
+
 // ErrBranchMismatch reports a worktree that is not on the branch a round was
 // given: a round commits to the pull request's branch, never to another.
 var ErrBranchMismatch = errors.New("the worktree is not on the pull request's branch")
@@ -461,11 +466,15 @@ func RunFixRound(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, s
 		return ReviewFixRound{}, "", stopWith(OutcomeStopped, StopHeadMoved,
 			fmt.Errorf("%w: HEAD is not the branch %s: %v", ErrHeadMoved, wt.Branch, err))
 	}
+	now := d.Now()
 	started := r.StartedAt
 	if started.IsZero() {
-		started = d.Now()
+		started = now
 	}
-	timeout, inBudget := roundTimeout(c.AgentTimeout, started, d.Now(), fixRoundsBudget, reviewStartRoom)
+	if started.After(now.Add(fixRoundsClockSkew)) {
+		return ReviewFixRound{}, "", fmt.Errorf("%w: the loop's start %s is ahead of the clock", ErrFixRoundsBudget, started.Format(time.RFC3339))
+	}
+	timeout, inBudget := roundTimeout(c.AgentTimeout, started, now, fixRoundsBudget, reviewStartRoom)
 	if !inBudget {
 		return ReviewFixRound{}, "", fmt.Errorf("%w: %s", ErrFixRoundsBudget, stageBudgetSpent("fix-round", fixRoundsBudget))
 	}
@@ -490,6 +499,15 @@ func RunFixRound(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, s
 	return round, sha, nil
 }
 
+// fixRoundCap is a caller's cap held to 1 through DefaultReviewFixRounds: zero, a
+// negative number or one above the default is the default.
+func fixRoundCap(n int) int {
+	if n <= 0 || n > DefaultReviewFixRounds {
+		return DefaultReviewFixRounds
+	}
+	return n
+}
+
 // DecideFixRound decides what one finished fix round leaves, from the findings it
 // was given, the findings the re-review of its commit reported, the declines so
 // far, its own round number and the loop's cap. The loop continues only while a
@@ -501,11 +519,13 @@ func RunFixRound(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, s
 // round is the loop's round number, not the agent-call number: a backup model
 // answering advances the call number past its round's, and counting those would
 // end the loop early. capped is the loop's own cap, so a caller that lowered it
-// is judged by the cap it set.
+// is judged by the cap it set; one outside 1 through DefaultReviewFixRounds is
+// the default, as in FixRounds.Rounds.
 //
 // It reads nothing and writes nothing, so a caller running one round per process
 // decides the next step from findings it read itself, with no loop in between.
 func DecideFixRound(issued, after []string, declined []DeclinedFinding, round, capped int) FixRoundDecision {
+	capped = fixRoundCap(capped)
 	open := lineFindings(after)
 	switch {
 	case len(open) == 0:
@@ -546,10 +566,7 @@ func RunFixRounds(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, 
 	if r.Push == nil || r.Review == nil {
 		return ReviewFixResult{}, errors.New("a fix-round loop needs both a push and a review step")
 	}
-	capped := r.Rounds
-	if capped <= 0 || capped > DefaultReviewFixRounds {
-		capped = DefaultReviewFixRounds
-	}
+	capped := fixRoundCap(r.Rounds)
 	open := reviewPending(r.Findings)
 	res := ReviewFixResult{Ready: len(open) == 0, Session: r.Session}
 	if len(open) == 0 {

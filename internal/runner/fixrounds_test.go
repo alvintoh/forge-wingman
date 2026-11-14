@@ -1281,6 +1281,60 @@ func TestRunFixRoundStopsWithoutABudget(t *testing.T) {
 	}
 }
 
+// runOneFixRound runs one round of a fix-round test with started as the loop's
+// start and now as the clock, returning the agent's call count and the error.
+func runOneFixRound(t *testing.T, started time.Time, now func() time.Time) (int, error) {
+	t.Helper()
+	repo := initRepo(t)
+	wt := fixWorktree(t, repo)
+	agent := fixAgent()
+	deps, _, _ := testDeps(validObjects(), agent)
+	deps.Now = now
+	head, err := wt.HeadCommit(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = RunFixRound(context.Background(), deps, testConfig(t, repo), wt, &Summary{DurationsMS: map[string]int64{}}, FixRound{
+		Branch: fixBranch, Head: head, Findings: []string{findingRetry}, StartedAt: started,
+	})
+	return agent.calls, err
+}
+
+// TestRunFixRoundFailsClosedOnAStartAheadOfTheClock: a start further ahead than
+// the clock skew allows would read as a budget that never runs out, so the round
+// is refused as a spent budget and the agent does not run.
+func TestRunFixRoundFailsClosedOnAStartAheadOfTheClock(t *testing.T) {
+	now := time.Now()
+	calls, err := runOneFixRound(t, now.Add(365*24*time.Hour), func() time.Time { return now })
+	if !errors.Is(err, ErrFixRoundsBudget) {
+		t.Fatalf("err = %v, want the budget refused", err)
+	}
+	if calls != 0 {
+		t.Fatalf("%d agent calls, want none", calls)
+	}
+}
+
+// TestRunFixRoundAllowsAStartWithinTheClockSkew: a record another machine wrote
+// may run a little ahead of this clock, and its round still runs.
+func TestRunFixRoundAllowsAStartWithinTheClockSkew(t *testing.T) {
+	now := time.Now()
+	calls, err := runOneFixRound(t, now.Add(30*time.Second), func() time.Time { return now })
+	if err != nil || calls != 1 {
+		t.Fatalf("err = %v with %d agent calls, want the round run once", err, calls)
+	}
+}
+
+// TestRunFixRoundWithNoStartBeginsAFreshBudget pins the documented zero
+// StartedAt: each such round starts its own clock at the time it runs, however
+// late that is.
+func TestRunFixRoundWithNoStartBeginsAFreshBudget(t *testing.T) {
+	late := time.Now().Add(100 * fixRoundsBudget)
+	calls, err := runOneFixRound(t, time.Time{}, func() time.Time { return late })
+	if err != nil || calls != 1 {
+		t.Fatalf("err = %v with %d agent calls, want the round run once", err, calls)
+	}
+}
+
 // TestDecideFixRoundHoldsTheLoopsRules is AC2: the decision alone says continue,
 // ready, or why the loop stops, and each case is one rule the loop applies.
 func TestDecideFixRoundHoldsTheLoopsRules(t *testing.T) {
@@ -1341,6 +1395,30 @@ func TestDecideFixRoundHoldsTheLoopsRules(t *testing.T) {
 			after:  []string{findingTimeout},
 			round:  DefaultReviewFixRounds,
 			capped: DefaultReviewFixRounds,
+			want:   FixRoundDecision{Stop: FixStopCap, Detail: "the cap of 3 fix round(s) was reached"},
+		},
+		{
+			name:   "a cap above the default is the default",
+			issued: []string{findingRetry, findingTimeout},
+			after:  []string{findingTimeout},
+			round:  DefaultReviewFixRounds,
+			capped: 10,
+			want:   FixRoundDecision{Stop: FixStopCap, Detail: "the cap of 3 fix round(s) was reached"},
+		},
+		{
+			name:   "a zero cap is the default, which leaves room in round one",
+			issued: []string{findingRetry, findingTimeout},
+			after:  []string{findingTimeout},
+			round:  1,
+			capped: 0,
+			want:   FixRoundDecision{Continue: true},
+		},
+		{
+			name:   "a zero cap is the default, which ends at round three",
+			issued: []string{findingRetry, findingTimeout},
+			after:  []string{findingTimeout},
+			round:  DefaultReviewFixRounds,
+			capped: 0,
 			want:   FixRoundDecision{Stop: FixStopCap, Detail: "the cap of 3 fix round(s) was reached"},
 		},
 		{
