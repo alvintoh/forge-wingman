@@ -184,3 +184,90 @@ func TestNewFixRoundsStateWritesWhatParseAccepts(t *testing.T) {
 		t.Fatalf("state = %+v, want round, calls, session and start carried", got)
 	}
 }
+
+// worstRound is a round record at the limits a round can write: the most
+// findings and declines at the longest lines, and a step detail past its cap.
+func worstRound() ReviewFixRound {
+	r := ReviewFixRound{Step: Step{Phase: PhaseFix, Round: 4, Detail: strings.Repeat("d", 2*stopDetailLimit)}, Session: "ses_1", Commit: "c"}
+	for i := range 30 {
+		r.Findings = append(r.Findings, fmt.Sprintf("%d\n%s", i, strings.Repeat("x", 2*maxFindingBytes)))
+		r.Declined = append(r.Declined, DeclinedFinding{Finding: strings.Repeat("y", 2*maxFindingBytes), Reason: ""})
+	}
+	return r
+}
+
+// TestWithRoundWritesWhatParseAccepts: every round's record at its worst case,
+// three of them, is held to the limits the parser reads.
+func TestWithRoundWritesWhatParseAccepts(t *testing.T) {
+	s := NewFixRoundsState(3, 3, time.Date(2026, 11, 14, 4, 0, 0, 0, time.UTC), "ses_1", []string{"a"}, nil)
+	for range 3 {
+		s = s.WithRound(worstRound())
+	}
+	got, err := ParseFixRoundsState(fixStateJSON(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Rounds) != 3 || len(got.Rounds[0].Findings) != maxReviewFindings || len(got.Rounds[0].Step.Detail) > maxStateStepDetailBytes {
+		t.Fatalf("rounds = %d, first with %d findings and a %d-byte detail, want 3 held to the caps", len(got.Rounds), len(got.Rounds[0].Findings), len(got.Rounds[0].Step.Detail))
+	}
+}
+
+func TestParseFixRoundsStateRejectsARoundRecordPastItsLimits(t *testing.T) {
+	round := func(edit func(*ReviewFixRound)) FixRoundsState {
+		r := ReviewFixRound{Step: Step{Phase: PhaseFix, Round: 1}, Findings: []string{"a"}}
+		edit(&r)
+		return FixRoundsState{Round: 1, Calls: 1, StartedAt: time.Now(), Rounds: []ReviewFixRound{r}}
+	}
+	tests := []struct {
+		name string
+		s    FixRoundsState
+	}{
+		{"more records than rounds", FixRoundsState{Round: 0, StartedAt: time.Now(), Rounds: []ReviewFixRound{{Step: Step{Phase: PhaseFix}}}}},
+		{"a phase other than fix", round(func(r *ReviewFixRound) { r.Step.Phase = PhaseBuild })},
+		{"a step detail over the cap", round(func(r *ReviewFixRound) { r.Step.Detail = strings.Repeat("d", maxStateStepDetailBytes+1) })},
+		{"too many findings", round(func(r *ReviewFixRound) { r.Findings = make([]string, maxReviewFindings+1) })},
+		{"a resolved count over the cap", round(func(r *ReviewFixRound) { r.Resolved = maxReviewFindings + 1 })},
+		{"a new count below zero", round(func(r *ReviewFixRound) { r.New = -1 })},
+		{"a blank finding", round(func(r *ReviewFixRound) { r.Findings = []string{" "} })},
+		{"a decline with a control character", round(func(r *ReviewFixRound) {
+			r.Declined = []DeclinedFinding{{Finding: "a\nb", Reason: "why"}}
+		})},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := ParseFixRoundsState(fixStateJSON(t, tt.s)); !errors.Is(err, ErrFixRoundsState) {
+				t.Fatalf("err = %v, want the record rejected", err)
+			}
+		})
+	}
+}
+
+func TestParseFixRoundsStateRejectsAnUnknownKeyInARoundRecord(t *testing.T) {
+	raw := `{"round":1,"open":[],"started_at":"2026-11-14T04:00:00Z","calls":1,"rounds":[{"step":{"phase":"fix","round":1,"model":"","detail":"","tokens":{},"duration_ms":0,"completions_object":"","at":"2026-11-14T04:00:00Z"},"findings":[],"resolved":0,"new":0,"reviewed":false,"extra":1}]}`
+	if _, err := ParseFixRoundsState(raw); !errors.Is(err, ErrFixRoundsState) {
+		t.Fatalf("err = %v, want the unknown key rejected", err)
+	}
+}
+
+// TestWithReviewFillsTheLastRoundFromTheNextReview: of the two findings the round
+// was given, the review reports one again and adds one the round was not given
+// and no round declined.
+func TestWithReviewFillsTheLastRoundFromTheNextReview(t *testing.T) {
+	declined := []DeclinedFinding{{Finding: findingSwallow, Reason: "intended"}}
+	s := NewFixRoundsState(1, 1, time.Now(), "", []string{findingRetry}, declined).
+		WithRound(ReviewFixRound{Step: Step{Phase: PhaseFix}, Findings: []string{findingRetry, findingTimeout}})
+
+	got := s.WithReview(findingTimeout + "\n" + findingLogLine + "\n" + findingSwallow)
+	if r := got.Rounds[0]; !r.Reviewed || r.Resolved != 1 || r.New != 1 {
+		t.Fatalf("round = %+v, want reviewed with 1 resolved and 1 new", r)
+	}
+	if s.Rounds[0].Reviewed {
+		t.Fatal("WithReview changed the receiver's round")
+	}
+	if again := got.WithReview(""); again.Rounds[0].Resolved != 1 {
+		t.Fatalf("a second review rewrote a reviewed round: %+v", again.Rounds[0])
+	}
+	if none := (FixRoundsState{}).WithReview(findingLogLine); len(none.Rounds) != 0 {
+		t.Fatalf("rounds = %+v, want none for a state with no round", none.Rounds)
+	}
+}
