@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/money"
 )
@@ -23,8 +24,9 @@ type FixLoopEnd struct {
 	// Stop is the FixStop fix-round reported for a loop that ended without a
 	// failure.
 	Stop FixStop
-	// Note is the stopping job's own words, appended to the detail.
-	Note string
+	// RoundNote, PushNote and AwaitNote are the jobs' own words, of which the
+	// stopping one's is appended to the detail.
+	RoundNote, PushNote, AwaitNote string
 }
 
 // The fix-await reasons that end the loop, as fix-await writes them.
@@ -39,20 +41,20 @@ const (
 // that stopped in the order the loop runs them. ok is false when none did, as
 // for a loop that ended with the review clean.
 func FixRoundsWait(end FixLoopEnd) (reason WaitReason, detail string, ok bool) {
-	var what string
+	var what, note string
 	switch {
 	case end.RoundReason != "":
-		what = "fix round stopped: " + end.RoundReason
+		what, note = "fix round stopped: "+end.RoundReason, end.RoundNote
 	case end.PushReason != "":
-		what = "fix push refused: " + end.PushReason
+		what, note = "fix push refused: "+end.PushReason, end.PushNote
 	case slices.Contains([]string{awaitStopTimeout, awaitStopNoVerdict, awaitStopError}, end.AwaitReason):
-		what = "review not posted: " + end.AwaitReason
+		what, note = "review not posted: "+end.AwaitReason, end.AwaitNote
 	case end.Stop != "":
-		what = "fix loop ended: " + string(end.Stop)
+		what, note = "fix loop ended: "+string(end.Stop), end.RoundNote
 	default:
 		return "", "", false
 	}
-	if note := oneLine(end.Note); note != "" {
+	if note := oneLine(note); note != "" {
 		what += ": " + note
 	}
 	return WaitFixRoundsStopped, truncate(what, stopDetailLimit), true
@@ -65,10 +67,14 @@ func oneLine(s string) string {
 
 // ValidateFixRound holds one fix round to the limits a summary's holds it to: its
 // step names a model, a known harness and the completions object attemptID's
-// run wrote, and a round whose re-review did not complete carries no counts.
-func ValidateFixRound(attemptID string, r ReviewFixRound) error {
+// run wrote, started within the clock's window at now, and a round whose
+// re-review did not complete carries no counts.
+func ValidateFixRound(attemptID string, r ReviewFixRound, now time.Time) error {
 	if err := r.Step.validate(attemptID); err != nil {
 		return err
+	}
+	if at := r.Step.At; at.After(now.Add(maxClockSkew)) || at.Before(now.Add(-maxSummaryAge)) {
+		return fmt.Errorf("fix round %d started outside the clock's window", r.Step.Round)
 	}
 	if !r.Reviewed && (r.Resolved != 0 || r.New != 0) {
 		return fmt.Errorf("fix round %d has counts but no completed re-review", r.Step.Round)
@@ -97,8 +103,14 @@ func keyOf(r ReviewFixRound) fixRoundKey { return fixRoundKey{r.Step.Phase, r.St
 // token totals are summed again over every step, and a record already settled
 // has its settled cost and time of use derived again from them.
 func WithFixRounds(rec Record, incoming []ReviewFixRound) (Record, error) {
+	if len(incoming) > DefaultReviewFixRounds {
+		return Record{}, fmt.Errorf("%d rounds to merge, over %d", len(incoming), DefaultReviewFixRounds)
+	}
 	seen := map[fixRoundKey]bool{}
 	for _, r := range incoming {
+		if maxRound := DefaultReviewFixRounds * maxCallsPerFixRound; r.Step.Round < 1 || r.Step.Round > maxRound {
+			return Record{}, fmt.Errorf("round %d is outside 1 to %d", r.Step.Round, maxRound)
+		}
 		if r.Step.Phase != PhaseFix {
 			return Record{}, fmt.Errorf("%w: round %d is on phase %q", ErrFixRoundNotOnFixPhase, r.Step.Round, r.Step.Phase)
 		}

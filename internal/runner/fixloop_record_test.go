@@ -49,7 +49,7 @@ func TestFixRoundsWaitNamesEverySpecificStop(t *testing.T) {
 		{"round failure wins over a push refusal", FixLoopEnd{RoundReason: "commit", PushReason: "lease-lost", AwaitReason: "timeout", Stop: FixStopCap}, "fix round stopped: commit"},
 		{"push refusal wins over a review that did not post", FixLoopEnd{PushReason: "lease-lost", AwaitReason: "timeout", Stop: FixStopCap}, "fix push refused: lease-lost"},
 		{"unposted review wins over a loop stop", FixLoopEnd{AwaitReason: "timeout", Stop: FixStopCap}, "review not posted: timeout"},
-		{"the job's own words on one line", FixLoopEnd{Stop: FixStopCap, Note: "2 findings\nstill open"}, "fix loop ended: round-cap: 2 findings still open"},
+		{"the job's own words on one line", FixLoopEnd{Stop: FixStopCap, RoundNote: "2 findings\nstill open"}, "fix loop ended: round-cap: 2 findings still open"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -69,8 +69,30 @@ func TestFixRoundsWaitNamesNothingForALoopThatDidNotStop(t *testing.T) {
 	}
 }
 
+func TestFixRoundsWaitAppendsTheStoppingJobsOwnNote(t *testing.T) {
+	end := FixLoopEnd{RoundNote: "round words", PushNote: "push words", AwaitNote: "await words"}
+	for _, tt := range []struct {
+		name  string
+		stop  func(*FixLoopEnd)
+		wants string
+	}{
+		{"round", func(e *FixLoopEnd) { e.RoundReason = "commit" }, "fix round stopped: commit: round words"},
+		{"push", func(e *FixLoopEnd) { e.PushReason = "lease-lost" }, "fix push refused: lease-lost: push words"},
+		{"await", func(e *FixLoopEnd) { e.AwaitReason = "timeout" }, "review not posted: timeout: await words"},
+		{"loop", func(e *FixLoopEnd) { e.Stop = FixStopCap }, "fix loop ended: round-cap: round words"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := end
+			tt.stop(&e)
+			if _, detail, _ := FixRoundsWait(e); detail != tt.wants {
+				t.Fatalf("detail = %q, want %q", detail, tt.wants)
+			}
+		})
+	}
+}
+
 func TestFixRoundsWaitCutsALongNote(t *testing.T) {
-	_, detail, _ := FixRoundsWait(FixLoopEnd{Stop: FixStopCap, Note: strings.Repeat("x", 3*stopDetailLimit)})
+	_, detail, _ := FixRoundsWait(FixLoopEnd{Stop: FixStopCap, RoundNote: strings.Repeat("x", 3*stopDetailLimit)})
 	if len(detail) > stopDetailLimit+len("…") || !strings.HasPrefix(detail, "fix loop ended: round-cap: xxx") {
 		t.Fatalf("detail is %d bytes, want it cut to %d and still opening with the stop", len(detail), stopDetailLimit)
 	}
@@ -78,7 +100,7 @@ func TestFixRoundsWaitCutsALongNote(t *testing.T) {
 
 func TestValidateFixRoundHoldsARoundToASummarysLimits(t *testing.T) {
 	good := validFixRound()
-	if err := ValidateFixRound("1-1", good); err != nil {
+	if err := ValidateFixRound("1-1", good, finalizeNow); err != nil {
 		t.Fatalf("a valid round: %v", err)
 	}
 	tests := []struct {
@@ -89,6 +111,9 @@ func TestValidateFixRoundHoldsARoundToASummarysLimits(t *testing.T) {
 		{"a harness this run cannot route to", func(r *ReviewFixRound) { r.Step.Harness = "nope" }},
 		{"another run's completions object", func(r *ReviewFixRound) { r.Step.CompletionsObject = "completions/1-2-fix-1.jsonl" }},
 		{"counts with no completed re-review", func(r *ReviewFixRound) { r.Reviewed = false }},
+		{"no start time", func(r *ReviewFixRound) { r.Step.At = time.Time{} }},
+		{"a start time ahead of the clock", func(r *ReviewFixRound) { r.Step.At = finalizeNow.Add(time.Hour) }},
+		{"a start time long before the clock", func(r *ReviewFixRound) { r.Step.At = finalizeNow.Add(-maxSummaryAge - time.Hour) }},
 		{"a negative new count", func(r *ReviewFixRound) { r.New = -1 }},
 		{"a negative resolved count", func(r *ReviewFixRound) { r.Resolved = -1 }},
 		{"a resolved count over the ceiling", func(r *ReviewFixRound) { r.Resolved = int(maxCount) + 1 }},
@@ -98,14 +123,14 @@ func TestValidateFixRoundHoldsARoundToASummarysLimits(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			r := validFixRound()
 			tt.edit(&r)
-			if err := ValidateFixRound("1-1", r); err == nil {
+			if err := ValidateFixRound("1-1", r, finalizeNow); err == nil {
 				t.Fatal("ValidateFixRound accepted it")
 			}
 		})
 	}
 	unreviewed := validFixRound()
 	unreviewed.Reviewed, unreviewed.Resolved = false, 0
-	if err := ValidateFixRound("1-1", unreviewed); err != nil {
+	if err := ValidateFixRound("1-1", unreviewed, finalizeNow); err != nil {
 		t.Fatalf("a round that was not reviewed, with no counts: %v", err)
 	}
 }
@@ -219,6 +244,9 @@ func TestWithFixRoundsRefusesWhatItCannotKeyOrPlace(t *testing.T) {
 	}{
 		{"a round on another phase", []ReviewFixRound{notFix}, ErrFixRoundNotOnFixPhase},
 		{"the same round twice", []ReviewFixRound{fixRoundN(1, 0), fixRoundN(1, 0)}, nil},
+		{"round zero", []ReviewFixRound{fixRoundN(0, 0)}, nil},
+		{"a round past the calls a loop numbers", []ReviewFixRound{fixRoundN(DefaultReviewFixRounds*maxCallsPerFixRound+1, 0)}, nil},
+		{"more rounds than a loop makes", []ReviewFixRound{fixRoundN(1, 0), fixRoundN(2, 0), fixRoundN(3, 0), fixRoundN(4, 0)}, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

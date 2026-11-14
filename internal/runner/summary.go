@@ -506,7 +506,7 @@ func (s Summary) validate(attemptID string, t Ticket, now time.Time) error {
 		}
 	}
 	for _, r := range s.FixRounds {
-		if err := ValidateFixRound(attemptID, r); err != nil {
+		if err := ValidateFixRound(attemptID, r, now); err != nil {
 			return err
 		}
 	}
