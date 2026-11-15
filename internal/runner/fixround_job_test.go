@@ -129,6 +129,46 @@ func TestFixRoundJobSeedsTheStateOnTheFirstRound(t *testing.T) {
 	}
 }
 
+func TestFixRoundJobKeepsTheStartAFreshLoopStateCarries(t *testing.T) {
+	j := newFixJob(t, fixAgent())
+	started := j.now.Add(-45 * time.Minute)
+	state := NewFixRoundsState(0, 0, started, "", nil, nil)
+	j.in.State = &state
+	if _, err := j.run(); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFixState(t, j.in.OutDir); !got.StartedAt.Equal(started) {
+		t.Fatalf("started_at = %s, want the start the fresh loop was seeded with, %s",
+			got.StartedAt.Format(time.RFC3339), started.Format(time.RFC3339))
+	}
+}
+
+func TestFixRoundJobRefusesAStateStartedAheadOfItsClock(t *testing.T) {
+	j := newFixJob(t, fixAgent())
+	state := NewFixRoundsState(0, 0, j.now.Add(time.Hour), "", nil, nil)
+	j.in.State = &state
+	_, err := j.run()
+	var stop *StopError
+	if !errors.Is(err, errFixRoundStart) || errors.As(err, &stop) {
+		t.Fatalf("err = %v, want an error rather than a stop that leaves the PR to the owner", err)
+	}
+	if j.agent.calls != 0 {
+		t.Fatalf("%d agent calls, want none", j.agent.calls)
+	}
+	if files := artifactFiles(t, j.in.OutDir); len(files) != 0 {
+		t.Fatalf("wrote %v, want no artifact", files)
+	}
+}
+
+func TestFixRoundJobAcceptsAStateStartInsideTheClockSkew(t *testing.T) {
+	j := newFixJob(t, fixAgent())
+	state := NewFixRoundsState(0, 0, j.now.Add(FixRoundsClockSkew), "", nil, nil)
+	j.in.State = &state
+	if _, err := j.run(); err != nil || j.agent.calls != 1 {
+		t.Fatalf("err = %v after %d agent calls, want the round to run", err, j.agent.calls)
+	}
+}
+
 func TestFixRoundJobContinuesFromTheStateAgainstItsOwnStart(t *testing.T) {
 	j := newFixJob(t, fixAgent())
 	started := j.now.Add(-20 * time.Minute)
