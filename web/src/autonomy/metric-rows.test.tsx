@@ -111,7 +111,7 @@ for (const layout of Object.keys(LAYOUTS) as Layout[]) {
 
     it("draws a p90 inside the axis where it falls, with no marker and no words", () => {
       const markup = render(layout, groupOf(0.402, 0.79));
-      expect(capX(markup)).toBe(String((0.79 / 0.8) * 418));
+      expect(capX(markup)).toBe("412.77500000000003");
       expect(markers(markup)).toBe(0);
       expect(markup).not.toContain(OFF_WORDS);
     });
@@ -175,4 +175,11 @@ describe("the desktop words beside an off-scale p90", () => {
       expect(spreadClass(render(layout, groupOf(0.402, 0.79)))).not.toContain("pl-2");
     });
   }
+});
+
+describe("the desktop repository row with no served spread text", () => {
+  it("says nothing about the p90 when it cannot say the spread", () => {
+    const group = { ...groupOf(0.402, 1.0), median: null, p90: null };
+    expect(render("the desktop repository row", group)).not.toContain(OFF_WORDS);
+  });
 });

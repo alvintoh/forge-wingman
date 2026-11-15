@@ -202,6 +202,11 @@ function MedianBar({ group }: { group: Group }) {
   );
 }
 
+// P90OffWords says an off-scale p90 is past the axis, indented on desktop to clear its triangle.
+function P90OffWords({ indent = false }: { indent?: boolean }) {
+  return <p className={`text-cap text-ink2 ${indent ? "pl-2" : ""}`}>{P90_OFF_WORDS}</p>;
+}
+
 function OffScale({ mark = "off-scale" }: { mark?: string }) {
   return (
     <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" className="shrink-0">
@@ -269,11 +274,13 @@ function WideRow({ row, split }: Omit<RowProps, "wide">) {
               <span className="text-label text-ink2">{off ? "pooled, off scale" : "pooled"}</span>
             </p>
             {group.median !== null && group.p90 !== null && (
-              <p className={`mt-2 text-cap text-ink2 ${p90Off ? "pl-2" : ""}`}>
-                median {group.median}, p90 {group.p90}
-              </p>
+              <>
+                <p className={`mt-2 text-cap text-ink2 ${p90Off ? "pl-2" : ""}`}>
+                  median {group.median}, p90 {group.p90}
+                </p>
+                {p90Off && <P90OffWords indent />}
+              </>
             )}
-            {p90Off && <p className="pl-2 text-cap text-ink2">{P90_OFF_WORDS}</p>}
           </>
         )}
       </div>
@@ -509,7 +516,7 @@ function WideStageRow({ row }: { row: StageRow }) {
                   {spreadWords(group)}
                 </p>
               )}
-              {p90Off && <p className="pl-2 text-cap text-ink2">{P90_OFF_WORDS}</p>}
+              {p90Off && <P90OffWords indent />}
             </>
           )}
         </div>
@@ -562,7 +569,7 @@ function StageRowItem({ row }: { row: StageRow }) {
             </div>
           )}
           {row.main && <p className="mt-1 text-cap text-ink2">{spreadWords(group)}</p>}
-          {p90Off && <p className="text-cap text-ink2">{P90_OFF_WORDS}</p>}
+          {p90Off && <P90OffWords />}
         </>
       )}
       {row.main && group.owner_lines > 0 && <SplitWords group={group} column />}

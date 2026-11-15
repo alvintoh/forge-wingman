@@ -8,8 +8,8 @@ export const SIZE_CAP = 0.4;
 export const ROW_CAP = 0.8;
 // How far inside a row's track end, in px, its whisker's cap and diamond are
 // held, and how far right of that end an off-scale p90's triangle is centred.
-export const WHISKER_CAP_INSET = 3;
-export const DIAMOND_INSET = 6;
+const WHISKER_CAP_INSET = 3;
+const DIAMOND_INSET = 6;
 export const P90_MARKER_X = 10;
 
 // How many merges one axis holds, newest kept.
