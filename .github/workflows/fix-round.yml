@@ -1,0 +1,265 @@
+# One post-PR fix round on a run's PR, called by run.yml once per round. Three jobs, one
+# credential each:
+# `round` runs the agent on the review's findings with the model identity and no GitHub
+# token (fix-round refuses to start with one) and uploads the commit as `fix-<round>`;
+# `push` pushes that commit onto the PR's branch with an App token scoped to contents and
+# no cloud identity, under a lease on the head the round was made on (fix-push);
+# `await` waits for pr-review's verdict on the new head with this run's read-only token.
+# Each command step continues on error after writing its outputs, since a failed called
+# workflow's outputs are not documented; run.yml's record job reads them, says why the
+# loop stopped and fails the run on a real failure.
+name: fix-round
+
+on:
+  workflow_call:
+    inputs:
+      # The round number, 1-3, which names this round's artifact `fix-<round>`.
+      round:
+        type: number
+        required: true
+      # The artifact the previous round uploaded, `fix-<round-1>`; empty on round 1, which
+      # seeds a fresh loop. Passed in because expressions cannot subtract.
+      state_artifact:
+        type: string
+        default: ''
+      pr:
+        type: string
+        required: true
+      branch:
+        type: string
+        required: true
+      # The head the review found the findings at, which this round commits on.
+      head:
+        type: string
+        required: true
+      findings:
+        type: string
+        required: true
+      model:
+        type: string
+        required: true
+      runner_sha256:
+        type: string
+        required: true
+    secrets:
+      GEMINI_API_KEY:
+        required: false
+      OPENCODE_API_KEY:
+        required: true
+      WINGMAN_APP_PRIVATE_KEY:
+        required: true
+    outputs:
+      commit:
+        value: ${{ jobs.round.outputs.commit }}
+      round_stop:
+        value: ${{ jobs.round.outputs.stop }}
+      round_reason:
+        value: ${{ jobs.round.outputs.reason }}
+      round_detail:
+        value: ${{ jobs.round.outputs.detail }}
+      started_at:
+        value: ${{ jobs.round.outputs.started_at }}
+      pushed:
+        value: ${{ jobs.push.outputs.pushed }}
+      sha:
+        value: ${{ jobs.push.outputs.sha }}
+      push_reason:
+        value: ${{ jobs.push.outputs.reason }}
+      push_detail:
+        value: ${{ jobs.push.outputs.detail }}
+      decision:
+        value: ${{ jobs.await.outputs.decision }}
+      await_reason:
+        value: ${{ jobs.await.outputs.reason }}
+      await_detail:
+        value: ${{ jobs.await.outputs.detail }}
+      findings:
+        value: ${{ jobs.await.outputs.findings }}
+
+permissions: {}
+
+jobs:
+  round:
+    runs-on: ubuntu-latest
+    # The loop's 90-minute budget is enforced in Go from the state's started_at; this is
+    # the backstop for one round.
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      commit: ${{ steps.round.outputs.commit }}
+      stop: ${{ steps.round.outputs.stop }}
+      reason: ${{ steps.round.outputs.reason }}
+      detail: ${{ steps.round.outputs.detail }}
+      started_at: ${{ steps.state.outputs.started_at }}
+    steps:
+      # Whole history, so the branch's remote ref is here to make a local branch of.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - uses: ./.github/actions/runner-binary
+        with:
+          sha256: ${{ inputs.runner_sha256 }}
+
+      - name: Pull the agent image
+        run: docker pull "$AGENT_IMAGE"
+        env:
+          AGENT_IMAGE: ${{ vars.WINGMAN_AGENT_IMAGE }}
+
+      # As model.yml installs it: tools/omp's lockfile pins omp and bun's version.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+
+      - name: Install omp
+        run: |
+          bun install --frozen-lockfile --cwd tools/omp
+          echo "$GITHUB_WORKSPACE/tools/omp/node_modules/.bin" >> "$GITHUB_PATH"
+          test "$(tools/omp/node_modules/.bin/omp --version)" = "omp/$(jq -r '.dependencies["@oh-my-pi/pi-coding-agent"]' tools/omp/package.json)"
+
+      - id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_MODEL_SERVICE_ACCOUNT }}
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ticket
+          path: ${{ runner.temp }}
+
+      - if: inputs.state_artifact != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.state_artifact }}
+          path: ${{ runner.temp }}/previous
+
+      # fix-round commits on a local branch that is not checked out; HEAD stays on main.
+      # The pattern is branchPattern in internal/runner/build_test.go.
+      - name: Make the PR's branch a local ref
+        env:
+          BRANCH: ${{ inputs.branch }}
+        run: |
+          [[ "$BRANCH" =~ ^wingman/[a-z0-9]+(-[a-z0-9]+)*-${GITHUB_RUN_ID}-[0-9]+$ ]] || { echo "unexpected branch name"; exit 1; }
+          git branch "$BRANCH" "refs/remotes/origin/${BRANCH}"
+
+      - id: round
+        name: Run the fix round
+        continue-on-error: true
+        env:
+          GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}
+          BRANCH: ${{ inputs.branch }}
+          HEAD_SHA: ${{ inputs.head }}
+          FINDINGS: ${{ inputs.findings }}
+          MODEL: ${{ inputs.model }}
+          STATE_ARTIFACT: ${{ inputs.state_artifact }}
+          AGENT_IMAGE: ${{ vars.WINGMAN_AGENT_IMAGE }}
+          AGENT_EGRESS: ${{ vars.WINGMAN_AGENT_EGRESS }}
+          WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+        run: |
+          state=()
+          [[ -z "$STATE_ARTIFACT" ]] || state=(-state "$RUNNER_TEMP/previous/fix-state.json")
+          "$RUNNER_TEMP/runner" fix-round -branch "$BRANCH" -head "$HEAD_SHA" "${state[@]}" \
+            -findings "$FINDINGS" -model "$MODEL" -ticket-file "$RUNNER_TEMP/ticket.json" \
+            -out "$RUNNER_TEMP/fix" -agent-image "$AGENT_IMAGE" -agent-egress "$AGENT_EGRESS"
+
+      # The await job bounds its wait by the loop's budget, which runs from the state's start.
+      # hashFiles cannot see RUNNER_TEMP, which is outside the workspace.
+      - id: state
+        if: ${{ !cancelled() }}
+        run: |
+          state="$RUNNER_TEMP/fix/fix-state.json"
+          [[ -f "$state" ]] || exit 0
+          echo "started_at=$(jq -r .started_at "$state")" >> "$GITHUB_OUTPUT"
+          echo "written=true" >> "$GITHUB_OUTPUT"
+
+      - if: ${{ !cancelled() && steps.state.outputs.written == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fix-${{ inputs.round }}
+          path: ${{ runner.temp }}/fix
+          if-no-files-found: error
+          retention-days: 1
+
+      # Removes any egress network or proxy a killed job left behind.
+      - if: always()
+        run: |
+          docker ps --all --quiet --filter name=wingman-egress-proxy- | xargs -r docker rm --force
+          docker network ls --quiet --filter name=wingman-egress-net- | xargs -r docker network rm
+
+  push:
+    needs: round
+    if: ${{ !cancelled() && needs.round.outputs.commit != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # No id-token grant: this job holds the App token and no cloud identity.
+    permissions: {}
+    outputs:
+      pushed: ${{ steps.push.outputs.pushed }}
+      sha: ${{ steps.push.outputs.sha }}
+      reason: ${{ steps.push.outputs.reason }}
+      detail: ${{ steps.push.outputs.detail }}
+    steps:
+      # An App push, unlike one with GITHUB_TOKEN, starts the PR's workflows, so pr-review
+      # re-reviews the new head. Pull requests: read is for fix-push's head check.
+      - id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.WINGMAN_APP_CLIENT_ID }}
+          private-key: ${{ secrets.WINGMAN_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: read
+
+      # Whole history: the bundle carries only the round's commit, so its parent must be here.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0
+
+      - uses: ./.github/actions/runner-binary
+        with:
+          sha256: ${{ inputs.runner_sha256 }}
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: fix-${{ inputs.round }}
+          path: ${{ runner.temp }}/fix
+
+      # The plan keys are here only so fix-push can refuse a commit that carries one.
+      - id: push
+        name: Push the round's commit
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR: ${{ inputs.pr }}
+          BRANCH: ${{ inputs.branch }}
+          EXPECTED: ${{ inputs.head }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+        run: >-
+          "$RUNNER_TEMP/runner" fix-push -pr "$PR" -branch "$BRANCH" -expected "$EXPECTED"
+          -bundle "$RUNNER_TEMP/fix/fix.bundle"
+
+  await:
+    needs: [round, push]
+    if: ${{ !cancelled() && needs.push.outputs.pushed == 'true' }}
+    uses: ./.github/workflows/fix-await.yml
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: read
+    with:
+      pr: ${{ inputs.pr }}
+      sha: ${{ needs.push.outputs.sha }}
+      started: ${{ needs.round.outputs.started_at }}
+      runner_sha256: ${{ inputs.runner_sha256 }}

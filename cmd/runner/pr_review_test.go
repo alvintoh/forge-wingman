@@ -557,7 +557,9 @@ func TestPRReviewWorkflow(t *testing.T) {
 		jobs[name] = rest
 	}
 	for _, want := range []string{
-		"on:\n  pull_request_target:\n    types: [opened, ready_for_review, reopened]\n",
+		"on:\n  pull_request_target:\n",
+		"    types: [opened, ready_for_review, reopened, synchronize]\n",
+		"(github.event.action != 'synchronize' || startsWith(github.event.pull_request.head.ref, 'wingman/'))",
 		"\npermissions: {}\n",
 		"github.event.pull_request.draft == false",
 		"github.event.pull_request.head.repo.full_name == github.repository",
@@ -595,7 +597,10 @@ func TestPRReviewWorkflow(t *testing.T) {
 	if !strings.Contains(jobs["review"], "OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}") || strings.Count(yml, "secrets.OPENCODE_API_KEY") != 1 {
 		t.Error("the model key is not the review job's alone")
 	}
-	if strings.Contains(yml, "github.event.pull_request.head.ref") || strings.Contains(yml, "\n          ref:") ||
+	// The head's ref is read once, in the context job's condition, and never checked out.
+	if strings.Count(yml, "github.event.pull_request.head.ref") != 1 ||
+		strings.Count(jobs["context"], "startsWith(github.event.pull_request.head.ref, 'wingman/')") != 1 ||
+		strings.Contains(yml, "\n          ref:") ||
 		strings.Count(yml, "persist-credentials: false") != strings.Count(yml, "actions/checkout@") {
 		t.Error("pr-review.yml checks out something other than the base branch, or keeps a checkout's token")
 	}

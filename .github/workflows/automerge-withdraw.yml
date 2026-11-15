@@ -1,6 +1,8 @@
-# Takes a run's PR out of auto-merge when anyone pushes to its branch: removes the
-# eligibility label, so no later review can request a merge, and withdraws a request
-# already made, so a push nobody reviewed never merges.
+# Takes a run's PR out of auto-merge when anyone pushes to its branch: withdraws a
+# request already made, so a push nobody reviewed never merges, and removes the
+# eligibility label, so no later review can request a merge. A push by the App is a
+# fix round's (fix-round.yml), so it keeps the label: pr-review re-reviews that head
+# and requests the merge only when the review is clean.
 # pull_request_target runs this file as it is on main, so a branch cannot rewrite
 # it; it never checks the branch out.
 name: automerge-withdraw
@@ -28,17 +30,28 @@ jobs:
       contents: write
       pull-requests: write
     steps:
+      # Minted only for its app-slug, which names the App's bot login; it is never used.
+      # A failed mint leaves the slug empty, so no pusher matches and the label goes.
+      - id: app
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.WINGMAN_APP_CLIENT_ID }}
+          private-key: ${{ secrets.WINGMAN_APP_PRIVATE_KEY }}
+          permission-metadata: read
+
       - name: Withdraw auto-merge
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PUSHER: ${{ github.actor }}
+          PUSHER: ${{ github.event.sender.login }}
+          APP_BOT: ${{ steps.app.outputs.app-slug }}[bot]
         run: |
           # An assignment fails the step when gh does, so an API error is never read as "not labelled".
           labelled="$(gh pr view "$PR" --json labels --jq 'any(.labels[]; .name == "wingman:auto-merge-eligible")')"
-          if [[ "$labelled" == true ]]; then
+          if [[ "$labelled" == true && "$PUSHER" != "$APP_BOT" ]]; then
             gh pr edit "$PR" --remove-label wingman:auto-merge-eligible
           fi
           requested="$(gh pr view "$PR" --json autoMergeRequest --jq '.autoMergeRequest != null')"

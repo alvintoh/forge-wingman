@@ -1,0 +1,76 @@
+# Waits for pr-review's verdict on one head of a run's PR and reports whether another fix
+# round should run. Called by run.yml for the review of the opened PR and by fix-round.yml
+# after each push. It holds this run's read-only token and nothing else.
+name: fix-await
+
+on:
+  workflow_call:
+    inputs:
+      pr:
+        type: string
+        required: true
+      sha:
+        type: string
+        required: true
+      # When the loop's budget started, RFC3339; the wait never outlasts it.
+      started:
+        type: string
+        required: true
+      runner_sha256:
+        type: string
+        required: true
+    outputs:
+      decision:
+        value: ${{ jobs.await.outputs.decision }}
+      reason:
+        value: ${{ jobs.await.outputs.reason }}
+      detail:
+        value: ${{ jobs.await.outputs.detail }}
+      findings:
+        value: ${{ jobs.await.outputs.findings }}
+
+permissions: {}
+
+jobs:
+  await:
+    runs-on: ubuntu-latest
+    # Above the 45-minute wait, which is pr-review's review-job timeout.
+    timeout-minutes: 50
+    # Commit statuses carry the verdict and the review comment its findings.
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: read
+    outputs:
+      decision: ${{ steps.await.outputs.decision || steps.failed.outputs.decision }}
+      reason: ${{ steps.await.outputs.reason || steps.failed.outputs.reason }}
+      detail: ${{ steps.await.outputs.detail || steps.failed.outputs.detail }}
+      findings: ${{ steps.await.outputs.findings }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/runner-binary
+        with:
+          sha256: ${{ inputs.runner_sha256 }}
+
+      - id: await
+        name: Await the review
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr }}
+          SHA: ${{ inputs.sha }}
+          STARTED: ${{ inputs.started }}
+        run: '"$RUNNER_TEMP/runner" fix-await -pr "$PR" -sha "$SHA" -started "$STARTED" -timeout 45m'
+
+      # fix-await returns before writing any output on a flag or API error.
+      - id: failed
+        if: steps.await.outcome == 'failure' && steps.await.outputs.decision == ''
+        run: |
+          {
+            echo "decision=stop"
+            echo "reason=error"
+            echo "detail=fix-await failed before it reported; see the await job's log"
+          } >> "$GITHUB_OUTPUT"

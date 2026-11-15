@@ -12,7 +12,9 @@ name: pr-review
 
 on:
   pull_request_target:
-    types: [opened, ready_for_review, reopened]
+    # synchronize re-reviews a run's PR at each new head, which a fix round waits on;
+    # the context job limits it to wingman/ branches.
+    types: [opened, ready_for_review, reopened, synchronize]
 
 permissions: {}
 
@@ -25,7 +27,8 @@ jobs:
     if: >-
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.pull_request.base.ref == 'main'
+      github.event.pull_request.base.ref == 'main' &&
+      (github.event.action != 'synchronize' || startsWith(github.event.pull_request.head.ref, 'wingman/'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
