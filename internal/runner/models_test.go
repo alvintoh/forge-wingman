@@ -73,6 +73,14 @@ func TestParseModelSetRejectsAnInvalidSet(t *testing.T) {
 		"malformed review": {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":["p/r",""]}`, "not provider/model"},
 		"foreign review":   {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":["p/r","q/r"]}`, "not a p model"},
 		"repeated review":  {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":["p/r","p/r"]}`, "listed twice"},
+		"fix-review is the default": {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":["p/r"],"fix_review":["p/a"]}`,
+			"is the default or one of its fallbacks"},
+		"fix-review is a fallback": {`{"default":"p/a","fallbacks":["p/b"],"plan":"p/a","review":["p/r"],"fix_review":["p/b"]}`,
+			"is the default or one of its fallbacks"},
+		"repeated fix-review": {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":["p/r"],"fix_review":["p/h","p/h"]}`,
+			"listed twice"},
+		"foreign fix-review": {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":["p/r"],"fix_review":["q/h"]}`,
+			"not a p model"},
 		"a free model with no smoke run": {`{"default":"opencode-go/deepseek-v4.1-flash",` +
 			`"fallbacks":["opencode-go/ling-3.0-flash-sante:free"],` +
 			`"plan":"opencode-go/deepseek-v4.1-flash","review":["opencode-go/muse-spark-1.3-contributor"]}`,
@@ -84,6 +92,13 @@ func TestParseModelSetRejectsAnInvalidSet(t *testing.T) {
 				t.Fatalf("err = %v, want one containing %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestParseModelSetAcceptsASetWithoutFixReview(t *testing.T) {
+	s, err := parseModelSet([]byte(`{"default":"p/a","fallbacks":[],"plan":"p/a","review":["p/r"]}`))
+	if err != nil || len(s.FixReview) != 0 {
+		t.Fatalf("set = %+v, err = %v; want it parsed with no fix-review model", s, err)
 	}
 }
 

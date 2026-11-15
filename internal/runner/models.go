@@ -14,13 +14,16 @@ import (
 var modelsJSON []byte
 
 // ModelSet is a provider's models, each read from models.json: the default and
-// its ordered same-provider fallbacks, plus the plan phase's default and the
-// review phase's ordered default list.
+// its ordered same-provider fallbacks, the plan phase's default, the review
+// phase's ordered default list and the findings-only reviewers.
 type ModelSet struct {
 	Default   string   `json:"default"`
 	Fallbacks []string `json:"fallbacks"`
 	Plan      string   `json:"plan"`
 	Review    []string `json:"review"`
+	// FixReview are the models whose findings join the review pass's in the fix
+	// rounds without deciding the verdict; empty runs none.
+	FixReview []string `json:"fix_review"`
 }
 
 var embeddedModels = mustParseModelSet(modelsJSON)
@@ -35,6 +38,10 @@ func DefaultPlanModel() string { return embeddedModels.Plan }
 // DefaultReviewModels is the ordered review list run.yml's review_models input
 // defaults to, used when a ticket names none, read from models.json.
 func DefaultReviewModels() []string { return slices.Clone(embeddedModels.Review) }
+
+// DefaultFixReviewModels is the findings-only reviewers a build runs after the
+// review pass, read from models.json.
+func DefaultFixReviewModels() []string { return slices.Clone(embeddedModels.FixReview) }
 
 // parseModelSet decodes and validates a models.json document.
 //
@@ -62,8 +69,10 @@ func mustParseModelSet(b []byte) ModelSet {
 
 // Validate reports whether the set names well-formed models of one provider:
 // the default and its fallbacks, which must also be distinct, the plan default,
-// which may repeat one of them, and a non-empty review list with no entry
-// repeated. A free id among them must be one a plan-smoke run has proved.
+// which may repeat one of them, a non-empty review list with no entry repeated,
+// and a fix-review list, which may be empty, with no entry repeated and none the
+// default or a fallback. A free id among them must be one a plan-smoke run has
+// proved.
 func (s ModelSet) Validate() error {
 	provider := Provider(s.Default)
 	seen := map[string]bool{}
@@ -81,7 +90,12 @@ func (s ModelSet) Validate() error {
 	if err := validateModelList("review", s.Review); err != nil {
 		return err
 	}
-	for _, m := range append([]string{s.Plan}, s.Review...) {
+	if len(s.FixReview) > 0 {
+		if err := validateModelList("fix-review", s.FixReview); err != nil {
+			return err
+		}
+	}
+	for _, m := range slices.Concat([]string{s.Plan}, s.Review, s.FixReview) {
 		switch {
 		case !ValidModel(m):
 			return fmt.Errorf("model %q is not provider/model", m)
@@ -89,7 +103,12 @@ func (s ModelSet) Validate() error {
 			return fmt.Errorf("model %q is not a %s model", m, provider)
 		}
 	}
-	if err := providers.CheckFreeIDs(slices.Concat([]string{s.Default, s.Plan}, s.Fallbacks, s.Review)); err != nil {
+	for _, m := range s.FixReview {
+		if seen[m] {
+			return fmt.Errorf("fix-review model %q is the default or one of its fallbacks", m)
+		}
+	}
+	if err := providers.CheckFreeIDs(slices.Concat([]string{s.Default, s.Plan}, s.Fallbacks, s.Review, s.FixReview)); err != nil {
 		return err
 	}
 	return nil

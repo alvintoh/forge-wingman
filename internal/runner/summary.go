@@ -135,6 +135,8 @@ type Step struct {
 type ReviewFinding struct {
 	Finding    string `json:"finding"`
 	Resolution string `json:"resolution"`
+	// Source is the model that first reported the finding, empty for a guard.
+	Source string `json:"source,omitempty"`
 }
 
 // PhaseCache is one phase's prompt-cache figures: what its first request read
@@ -290,7 +292,8 @@ var buildEndings = func() map[ending]bool {
 const checksDuration = "checks"
 
 var buildPhases = map[Phase]bool{
-	PhaseProjection: true, PhaseWorktree: true, PhaseAgentStart: true, PhasePlan: true, PhaseBuild: true, PhaseReview: true, PhaseCommit: true,
+	PhaseProjection: true, PhaseWorktree: true, PhaseAgentStart: true, PhasePlan: true, PhaseBuild: true, PhaseReview: true,
+	PhaseFixReview: true, PhaseCommit: true,
 }
 
 // SetupSummary is the summary of a build that failed before it could start.
@@ -366,7 +369,8 @@ func capFindings(findings []ReviewFinding) []ReviewFinding {
 	}
 	out := make([]ReviewFinding, len(findings))
 	for i, f := range findings {
-		out[i] = ReviewFinding{Finding: truncate(f.Finding, maxFindingBytes), Resolution: truncate(f.Resolution, maxFindingBytes)}
+		out[i] = ReviewFinding{Finding: truncate(f.Finding, maxFindingBytes), Resolution: truncate(f.Resolution, maxFindingBytes),
+			Source: f.Source}
 	}
 	return out
 }
@@ -492,6 +496,9 @@ func (s Summary) validate(attemptID string, t Ticket, now time.Time) error {
 	for _, f := range s.ReviewFindings {
 		if !printable(f.Finding) || !printable(f.Resolution) {
 			return errors.New("a review finding or its resolution is not one printable line")
+		}
+		if f.Source != "" && !ValidModel(f.Source) {
+			return errors.New("a review finding's source is not provider/model")
 		}
 	}
 	if r := s.ReviewSecondRound; r != nil {

@@ -198,6 +198,23 @@ func TestPRBodyListsThePreOpenReviewFindings(t *testing.T) {
 	}
 }
 
+func TestPRBodyNamesEachFindingsSource(t *testing.T) {
+	review := []ReviewFinding{
+		{Finding: "the timeout is hard-coded", Resolution: "addressed in round 2, not re-checked", Source: "p/h"},
+		{Finding: "guard at a.go:4 can be removed", Resolution: "fixed in round 2"},
+	}
+	body, err := PRBody(repoTemplate(t), testTicket, "", "", testRunURL, "", "", nil, false, nil, false, review, 0, nil, 0, 0, nil, 0, false, "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `- the timeout is hard\-coded — addressed in round 2\, not re\-checked (` + "`p/h`)"; !strings.Contains(body, want) {
+		t.Fatalf("body lacks %q:\n%s", want, body)
+	}
+	if want := "- guard at a\\.go\\:4 can be removed — fixed in round 2\n"; !strings.Contains(body, want) {
+		t.Fatalf("body lacks %q, a guard's row with no source:\n%s", want, body)
+	}
+}
+
 // TestPRBodyCountsTheFindingsTheCapLeftOut is what the notes say of findings
 // past the summary's cap: a count, rather than nothing.
 func TestPRBodyCountsTheFindingsTheCapLeftOut(t *testing.T) {

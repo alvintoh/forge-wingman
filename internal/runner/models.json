@@ -4,5 +4,8 @@
   "plan": "opencode-go/deepseek-v4.1-flash",
   "review": [
     "opencode-go/muse-spark-1.3-contributor"
+  ],
+  "fix_review": [
+    "opencode-go/claude-haiku-5-5"
   ]
 }

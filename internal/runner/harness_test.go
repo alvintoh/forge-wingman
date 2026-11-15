@@ -409,6 +409,76 @@ func TestMeterUsagePricesEachStepAtItsOwnTime(t *testing.T) {
 	}
 }
 
+// requestEvent is one step_finish event carrying every token class, at timeMS
+// epoch milliseconds, or untimed when zero.
+func requestEvent(input, output, cacheRead, cacheWrite, timeMS int64) string {
+	var e event
+	e.Type = "step_finish"
+	e.Part.Tokens.Input, e.Part.Tokens.Output = input, output
+	e.Part.Tokens.Cache.Read, e.Part.Tokens.Cache.Write = cacheRead, cacheWrite
+	e.Part.Time = timeMS
+	b, _ := json.Marshal(e)
+	return string(b) + "\n"
+}
+
+func TestMeterUsagePricesEachRequestByItsOwnContext(t *testing.T) {
+	flat := providers.Rates{Input: 1, Output: 2, CacheRead: 0.5, CacheWrite: 4}
+	tiered := flat
+	tiered.Above = &providers.ContextTier{ContextTokens: 100, Input: 10, Output: 20, CacheRead: 5, CacheWrite: 40}
+	peaked := tiered
+	peaked.Peak = &providers.Peak{Multiplier: 2, Hours: []providers.HourRange{{From: 6, To: 10}}}
+	offPeak := time.Date(2026, 10, 7, 23, 0, 0, 0, time.UTC).UnixMilli()
+	for name, tt := range map[string]struct {
+		card   providers.Rates
+		stream string
+		want   float64
+	}{
+		"exactly at the threshold":     {tiered, requestEvent(60, 5, 30, 10, offPeak), (60 + 10 + 15 + 40) / 1e6},
+		"a cache write over it":        {tiered, requestEvent(60, 5, 30, 11, offPeak), (600 + 100 + 150 + 440) / 1e6},
+		"a cache read over it":         {tiered, requestEvent(60, 5, 41, 0, offPeak), (600 + 100 + 205) / 1e6},
+		"no tier":                      {flat, requestEvent(60, 5, 30, 11, offPeak), (60 + 10 + 15 + 44) / 1e6},
+		"over it, untimed, with peak":  {peaked, requestEvent(60, 5, 30, 11, 0), 2 * (600 + 100 + 150 + 440) / 1e6},
+		"each request on its own size": {tiered, requestEvent(60, 0, 0, 0, offPeak) + requestEvent(101, 0, 0, 0, offPeak), (60 + 1010) / 1e6},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := meterUsage(strings.NewReader(tt.stream), "plan/model", func(string) (providers.Rates, bool) { return tt.card, true })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !approxEqual(got.Cost, tt.want) {
+				t.Fatalf("cost = %v, want %v", got.Cost, tt.want)
+			}
+		})
+	}
+}
+
+// TestMeterUsageKeepsEveryTierlessCardsPricing asserts each embedded card with
+// no tier prices any context, however large, exactly as its time-of-use rates
+// did before cards had tiers.
+func TestMeterUsageKeepsEveryTierlessCardsPricing(t *testing.T) {
+	compared := 0
+	// A Wednesday, inside and outside the Go plan's peak hours.
+	for _, at := range []time.Time{time.Date(2026, 10, 7, 7, 0, 0, 0, time.UTC), time.Date(2026, 10, 7, 23, 0, 0, 0, time.UTC)} {
+		for _, model := range providers.RunModels() {
+			card, ok := providers.RatesFor(model)
+			if !ok || card.Above != nil {
+				continue
+			}
+			got, err := meterUsage(strings.NewReader(requestEvent(900_000, 50_000, 900_000, 1_000, at.UnixMilli())), model, providers.RatesFor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := card.At(at).CostUSD(900_000, 50_000, 900_000, 1_000); got.Cost != want {
+				t.Errorf("%s at %v: cost = %v, want %v", model, at, got.Cost, want)
+			}
+			compared++
+		}
+	}
+	if compared == 0 {
+		t.Fatal("no embedded card without a tier was compared")
+	}
+}
+
 func approxEqual(a, b float64) bool { return math.Abs(a-b) < 1e-12 }
 
 // stepFinish is one step_finish event in the runner's own shape, at timeMS

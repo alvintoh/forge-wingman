@@ -2019,7 +2019,7 @@ func TestPrePRLoopReviewFindingsForceADraftAndTwoFixRounds(t *testing.T) {
 	if !strings.Contains(rec.LoopDetail, finding) {
 		t.Fatalf("loop detail = %q, want it to name the finding", rec.LoopDetail)
 	}
-	if want := []ReviewFinding{{Finding: finding, Resolution: "still open after round 3"}}; !slices.Equal(rec.ReviewFindings, want) {
+	if want := []ReviewFinding{{Finding: finding, Resolution: "still open after round 3", Source: "p/r"}}; !slices.Equal(rec.ReviewFindings, want) {
 		t.Fatalf("findings = %+v, want %+v", rec.ReviewFindings, want)
 	}
 	if len(rec.Steps) != 6 || rec.Steps[2].Phase != PhaseBuild || rec.Steps[2].Round != 2 || rec.Steps[2].Detail != finding ||
@@ -2087,8 +2087,8 @@ func TestPrePRLoopReReviewListsOnlyTheFindingsStillOpen(t *testing.T) {
 	// The rows carry the round the run left each finding in, so the reader can
 	// tell one the second round never closed from one the first never finished.
 	if want := []ReviewFinding{
-		{Finding: first, Resolution: "addressed in round 2; the re-review still reported findings"},
-		{Finding: remaining, Resolution: "still open after round 3"},
+		{Finding: first, Resolution: "addressed in round 2; the re-review still reported findings", Source: "p/r"},
+		{Finding: remaining, Resolution: "still open after round 3", Source: "p/r"},
 	}; !slices.Equal(rec.ReviewFindings, want) {
 		t.Fatalf("findings = %+v, want %+v", rec.ReviewFindings, want)
 	}
@@ -2546,7 +2546,7 @@ func TestPrePRLoopSecondFixRoundResolvesAFindingTheFirstLeftOpen(t *testing.T) {
 	if !rec.Ready || rec.LoopDetail != "" {
 		t.Fatalf("record ready = %v, detail = %q, want ready with no detail", rec.Ready, rec.LoopDetail)
 	}
-	if want := []ReviewFinding{{Finding: finding, Resolution: "fixed in round 3"}}; !slices.Equal(rec.ReviewFindings, want) {
+	if want := []ReviewFinding{{Finding: finding, Resolution: "fixed in round 3", Source: "p/r"}}; !slices.Equal(rec.ReviewFindings, want) {
 		t.Fatalf("findings = %+v, want %+v", rec.ReviewFindings, want)
 	}
 	if len(rec.Steps) != 6 || rec.Steps[4].Phase != PhaseBuild || rec.Steps[4].Round != 3 || rec.Steps[4].Detail != finding ||
@@ -2610,7 +2610,7 @@ func TestPrePRLoopTakesNoSecondFixRoundWithoutBudget(t *testing.T) {
 		t.Fatalf("loop detail = %q, want the refused round to name the spent budget", rec.LoopDetail)
 	}
 	// One round ran, so the rows read as they did before there was a second one.
-	if want := []ReviewFinding{{Finding: finding, Resolution: "still open"}}; !slices.Equal(rec.ReviewFindings, want) {
+	if want := []ReviewFinding{{Finding: finding, Resolution: "still open", Source: "p/r"}}; !slices.Equal(rec.ReviewFindings, want) {
 		t.Fatalf("findings = %+v, want %+v", rec.ReviewFindings, want)
 	}
 	if rec.ReviewSecondRound != nil {
@@ -2679,7 +2679,7 @@ func TestPrePRLoopReChecksOnceFromTheCommitReserveAndReadsItReadyWhenItIsClean(t
 	if !rec.Ready {
 		t.Fatalf("ready = false (detail %q), want a clean re-check to leave the run ready", rec.LoopDetail)
 	}
-	if want := []ReviewFinding{{Finding: finding, Resolution: "fixed in round 2"}}; !slices.Equal(rec.ReviewFindings, want) {
+	if want := []ReviewFinding{{Finding: finding, Resolution: "fixed in round 2", Source: "p/r"}}; !slices.Equal(rec.ReviewFindings, want) {
 		t.Fatalf("findings = %+v, want %+v", rec.ReviewFindings, want)
 	}
 	if rec.ReviewFindingsOpen != 0 {
@@ -2702,7 +2702,7 @@ func TestPrePRLoopStartsNoReserveRecheckWithUnderThreeMinutesOfItLeft(t *testing
 	if review.calls != 1 {
 		t.Fatalf("review ran %d times, want the pass alone: two minutes cannot start a re-check", review.calls)
 	}
-	if want := []ReviewFinding{{Finding: finding, Resolution: "addressed in round 2, not re-checked"}}; !slices.Equal(rec.ReviewFindings, want) {
+	if want := []ReviewFinding{{Finding: finding, Resolution: "addressed in round 2, not re-checked", Source: "p/r"}}; !slices.Equal(rec.ReviewFindings, want) {
 		t.Fatalf("findings = %+v, want %+v", rec.ReviewFindings, want)
 	}
 }
@@ -2792,7 +2792,7 @@ func TestPrePRLoopKeepsAFindingNotReCheckedWhenTheReserveRecheckFails(t *testing
 	if rec.Ready {
 		t.Fatal("ready = true, want false: the finding was never re-checked")
 	}
-	if want := []ReviewFinding{{Finding: finding, Resolution: "addressed in round 2, not re-checked"}}; !slices.Equal(rec.ReviewFindings, want) {
+	if want := []ReviewFinding{{Finding: finding, Resolution: "addressed in round 2, not re-checked", Source: "p/r"}}; !slices.Equal(rec.ReviewFindings, want) {
 		t.Fatalf("findings = %+v, want %+v", rec.ReviewFindings, want)
 	}
 	if rec.ReviewFindingsOpen != 1 {
@@ -2913,7 +2913,7 @@ func TestPrePRLoopRecordsTheSecondRoundWhenItsBudgetIsSpent(t *testing.T) {
 		!strings.Contains(rec.LoopDetail, "budget was spent") {
 		t.Fatalf("loop detail = %q, want the addressed-not-re-reviewed label naming the spent budget", rec.LoopDetail)
 	}
-	if want := []ReviewFinding{{Finding: finding, Resolution: "addressed in round 3, not re-checked"}}; !slices.Equal(rec.ReviewFindings, want) {
+	if want := []ReviewFinding{{Finding: finding, Resolution: "addressed in round 3, not re-checked", Source: "p/r"}}; !slices.Equal(rec.ReviewFindings, want) {
 		t.Fatalf("findings = %+v, want %+v", rec.ReviewFindings, want)
 	}
 	if rec.ReviewSecondRound == nil || rec.ReviewSecondRound.Round != 3 || rec.ReviewSecondRound.Tokens.Input != 7 {
@@ -3283,7 +3283,7 @@ func TestPrePRLoopContinuesFromTheRoundASubstitutedFixModelAnswered(t *testing.T
 	if !slices.Equal(build, []int{1, 2, 3, 4}) || !slices.Equal(reviews, []int{1, 3, 4}) {
 		t.Fatalf("build rounds = %v, review rounds = %v, want [1 2 3 4] and [1 3 4]: no round number reused", build, reviews)
 	}
-	if want := []ReviewFinding{{Finding: finding, Resolution: "fixed in round 4"}}; !slices.Equal(rec.ReviewFindings, want) {
+	if want := []ReviewFinding{{Finding: finding, Resolution: "fixed in round 4", Source: "p/r"}}; !slices.Equal(rec.ReviewFindings, want) {
 		t.Fatalf("findings = %+v, want %+v", rec.ReviewFindings, want)
 	}
 	if rec.ReviewSecondRound == nil || rec.ReviewSecondRound.Round != 4 {
@@ -3834,7 +3834,7 @@ func TestPrePRLoopReChecksFromTheCommitReserveWhenTheStageHasUnderThreeMinutes(t
 	if rec.Ready {
 		t.Fatal("ready = true, want false: the re-check still reported the finding")
 	}
-	if want := []ReviewFinding{{Finding: finding, Resolution: stillOpenText}}; !slices.Equal(rec.ReviewFindings, want) {
+	if want := []ReviewFinding{{Finding: finding, Resolution: stillOpenText, Source: "p/r"}}; !slices.Equal(rec.ReviewFindings, want) {
 		t.Fatalf("findings = %+v, want %+v", rec.ReviewFindings, want)
 	}
 	if rec.ReviewFindingsOpen != 1 {

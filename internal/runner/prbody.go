@@ -165,7 +165,11 @@ func PRBody(template string, t Ticket, prSummary, failedGate, runURL, loopDetail
 			if len(review) > 0 || reviewOmitted > 0 {
 				notes = append(notes, "", "**Pre-open review:** every finding it made, and how the run left it")
 				for _, f := range review {
-					notes = append(notes, "- "+plainText(f.Finding)+" — "+plainText(f.Resolution))
+					line := "- " + plainText(f.Finding) + " — " + plainText(f.Resolution)
+					if f.Source != "" {
+						line += " (" + codeSpan(f.Source) + ")"
+					}
+					notes = append(notes, line)
 				}
 				if reviewOmitted > 0 {
 					notes = append(notes, fmt.Sprintf("- +%d more, not listed: the run's summary carries at most %d", reviewOmitted, maxReviewFindings))

@@ -47,6 +47,31 @@ type Rates struct {
 	CacheWrite float64
 	// Peak is the card's time-of-use surcharge; nil for a card priced the same at every hour.
 	Peak *Peak
+	// Above is the card's long-context price; nil for a card priced the same at every context size.
+	Above *ContextTier
+}
+
+// ContextTier is the price of a request whose context is over ContextTokens, in
+// US dollars per million tokens, by token class. A request's context is its
+// input, cache reads and cache writes together, so a vendor that counts fewer of
+// them toward its threshold is over-metered rather than under.
+type ContextTier struct {
+	ContextTokens int64
+	Input         float64
+	Output        float64
+	CacheRead     float64
+	CacheWrite    float64
+}
+
+// ForContext returns the rates for one request of context tokens: the tier's,
+// with the card's peak, when the card has one and context is over its
+// threshold, and the card's own otherwise.
+func (r Rates) ForContext(context int64) Rates {
+	if r.Above == nil || context <= r.Above.ContextTokens {
+		return r
+	}
+	a := r.Above
+	return Rates{Input: a.Input, Output: a.Output, CacheRead: a.CacheRead, CacheWrite: a.CacheWrite, Peak: r.Peak}
 }
 
 // Peak is a time-of-use surcharge: Monday to Friday, inside any of Hours (UTC),
@@ -277,6 +302,18 @@ type ratesDoc struct {
 	CacheRead  float64  `json:"cache_read_usd_per_mtok"`
 	CacheWrite float64  `json:"cache_write_usd_per_mtok"`
 	Peak       *peakDoc `json:"peak"`
+	Above      *tierDoc `json:"above"`
+}
+
+// tierDoc is a rate card's long-context price as providers.json writes it: the
+// context-token threshold and the four rates above it. The rates are pointers,
+// so one left out is rejected rather than read as free.
+type tierDoc struct {
+	ContextTokens int64    `json:"context_tokens"`
+	Input         *float64 `json:"input_usd_per_mtok"`
+	Output        *float64 `json:"output_usd_per_mtok"`
+	CacheRead     *float64 `json:"cache_read_usd_per_mtok"`
+	CacheWrite    *float64 `json:"cache_write_usd_per_mtok"`
 }
 
 // peakDoc is a rate card's surcharge as providers.json writes it: the
@@ -291,8 +328,9 @@ type hourRangeDoc struct {
 	To   int `json:"to"`
 }
 
-// rates converts a rate card from its document shape.
-func (d ratesDoc) rates() Rates {
+// rates converts a rate card from its document shape, refusing a tier that
+// leaves a rate out.
+func (d ratesDoc) rates() (Rates, error) {
 	r := Rates{Input: d.Input, Output: d.Output, CacheRead: d.CacheRead, CacheWrite: d.CacheWrite}
 	if d.Peak != nil {
 		r.Peak = &Peak{Multiplier: d.Peak.Multiplier}
@@ -300,7 +338,14 @@ func (d ratesDoc) rates() Rates {
 			r.Peak.Hours = append(r.Peak.Hours, HourRange(h))
 		}
 	}
-	return r
+	if a := d.Above; a != nil {
+		if a.Input == nil || a.Output == nil || a.CacheRead == nil || a.CacheWrite == nil {
+			return Rates{}, errors.New("above tier leaves a rate out")
+		}
+		r.Above = &ContextTier{ContextTokens: a.ContextTokens, Input: *a.Input, Output: *a.Output,
+			CacheRead: *a.CacheRead, CacheWrite: *a.CacheWrite}
+	}
+	return r, nil
 }
 
 type windowDoc struct {
@@ -361,7 +406,11 @@ func parseConfig(b []byte) (Config, error) {
 		if len(p.Rates) > 0 {
 			provider.Rates = make(map[string]Rates, len(p.Rates))
 			for model, r := range p.Rates {
-				provider.Rates[model] = r.rates()
+				rates, err := r.rates()
+				if err != nil {
+					return Config{}, fmt.Errorf("provider %s model %s: %w", name, model, err)
+				}
+				provider.Rates[model] = rates
 			}
 		}
 		if p.LastResort != nil {
@@ -453,13 +502,16 @@ func (c Config) validate() error {
 				return fmt.Errorf("provider %s has rates for %q, not a %s model", name, model, name)
 			case min(r.Input, r.Output, r.CacheRead, r.CacheWrite) < 0:
 				return fmt.Errorf("provider %s model %s has a negative rate", name, model)
-			case free && (r.Peak != nil || max(r.Input, r.Output, r.CacheRead, r.CacheWrite) > 0):
+			case free && (r.Peak != nil || r.Above != nil || max(r.Input, r.Output, r.CacheRead, r.CacheWrite) > 0):
 				return fmt.Errorf("provider %s last-resort model %s is not priced $0", name, model)
 			case !free && max(r.Input, r.Output, r.CacheRead, r.CacheWrite) == 0:
 				return fmt.Errorf("provider %s model %s has no rate", name, model)
 			}
 			if err := checkPeak(r.Peak); err != nil {
 				return fmt.Errorf("provider %s model %s peak: %w", name, model, err)
+			}
+			if err := checkTier(r.Above); err != nil {
+				return fmt.Errorf("provider %s model %s above tier: %w", name, model, err)
 			}
 		}
 	}
@@ -677,6 +729,20 @@ func checkPeak(p *Peak) error {
 		if h.From < 0 || h.To > 24 || h.From >= h.To {
 			return fmt.Errorf("hours %d-%d are not a range within a day", h.From, h.To)
 		}
+	}
+	return nil
+}
+
+// checkTier reports whether a long-context tier is usable: a positive threshold
+// and no negative rate.
+func checkTier(a *ContextTier) error {
+	switch {
+	case a == nil:
+		return nil
+	case a.ContextTokens <= 0:
+		return fmt.Errorf("threshold %d is not a positive token count", a.ContextTokens)
+	case min(a.Input, a.Output, a.CacheRead, a.CacheWrite) < 0:
+		return errors.New("a rate is negative")
 	}
 	return nil
 }

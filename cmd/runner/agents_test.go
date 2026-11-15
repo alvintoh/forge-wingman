@@ -15,6 +15,13 @@ import (
 	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
+func TestAgentSettingsModelsNameEveryPhasesModels(t *testing.T) {
+	s := agentSettings{Model: "p/m", Plan: []string{"p/p"}, Review: []string{"p/r"}, FixReview: []string{"p/h"}}
+	if got := s.models(); !slices.Equal(got, []string{"p/m", "p/p", "p/r", "p/h"}) {
+		t.Fatalf("models = %v, want the build, plan, review and fix-review models", got)
+	}
+}
+
 func TestSplitModels(t *testing.T) {
 	for in, want := range map[string][]string{
 		"a/b":           {"a/b"},
