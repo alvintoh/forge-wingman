@@ -5,6 +5,7 @@
 - **Updated (2026-10-19):** the product no longer delegates a ticket to itself, and the daily run cap is gone (see the struck bullet under Decision).
 - **Updated (2026-10-31):** the rate is a guide, not a gate: the owner's switch alone decides whether auto-merge is on (see the struck lines under Decision). The owner: "i thought its controlled entirely by the configuration ? the 10% rewrite is just a guide".
 - **Updated (2026-11-10):** the rate gates again, under the switch. Auto-merge is on only while the switch is on *and* the trailing-10 rate over the PRs a human merged is at or under the bar (20% unless the owner sets another). The rate is no longer diluted by auto-merged PRs: a PR that merged itself is left out of the window. An auto-merged PR that a later merge reverted or named as fixed within 7 days latches auto-merge off until the owner switches it on again.
+- **Updated (2026-11-13):** the owner: configuration is the master control, and the rewrite rate is only a recommended guideline (20%). Until the gate is removed in code, the bar is set to its maximum, 100%.
 
 ## Context
 
