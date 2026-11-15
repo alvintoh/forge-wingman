@@ -47,7 +47,9 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 	}
 	plan := splitModels(*planModels, []string{runner.DefaultPlanModel()})
 	review := splitModels(*reviewModels, runner.DefaultReviewModels())
-	started, err := withAgents(ctx, logger, agentSettings{Image: *agentImage, Egress: *agentEgress, Model: *model, Plan: plan, Review: review},
+	fixReview := runner.DefaultFixReviewModels()
+	started, err := withAgents(ctx, logger, agentSettings{Image: *agentImage, Egress: *agentEgress, Model: *model, Plan: plan,
+		Review: review, FixReview: fixReview},
 		repo, e.harnesses, func(contained []runner.Harness, probe func(context.Context, string) error) error {
 			e.harnesses = contained
 			if err := writeOutputs(e.output, map[string]string{"attempt_id": e.attemptID}); err != nil {
@@ -88,16 +90,17 @@ func build(ctx context.Context, logger *slog.Logger, e env, args []string) error
 				Logger:       logger,
 				Now:          time.Now,
 			}, runner.BuildConfig{
-				AttemptID:    e.attemptID,
-				Repo:         repo,
-				TempDir:      e.tempDir,
-				Pointer:      *pointer,
-				Model:        *model,
-				PlanModels:   plan,
-				ReviewModels: review,
-				Secrets:      e.secrets,
-				Identity:     e.identity,
-				Ticket:       t,
+				AttemptID:       e.attemptID,
+				Repo:            repo,
+				TempDir:         e.tempDir,
+				Pointer:         *pointer,
+				Model:           *model,
+				PlanModels:      plan,
+				ReviewModels:    review,
+				FixReviewModels: fixReview,
+				Secrets:         e.secrets,
+				Identity:        e.identity,
+				Ticket:          t,
 			})
 			if err != nil {
 				return err

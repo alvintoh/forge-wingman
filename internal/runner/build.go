@@ -105,7 +105,11 @@ type BuildConfig struct {
 	// unavailable or out of allowance. None may be Model, so the review is
 	// never the builder checking its own work.
 	ReviewModels []string
-	AgentTimeout time.Duration
+	// FixReviewModels are the findings-only reviewers: the first reviews the diff
+	// once after the review pass, and its findings join the fix rounds without
+	// deciding the verdict. Empty runs none; none may be Model or a fallback.
+	FixReviewModels []string
+	AgentTimeout    time.Duration
 	// Secrets are checked against the branch before it is bundled, so an
 	// agent's own API key never reaches the pushed branch.
 	Secrets  []string
@@ -262,6 +266,9 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		if err := ValidateReviewModels(c.ReviewModels, c.Model); err != nil {
 			return stopWith(OutcomeStopped, StopModelInvalid, err)
 		}
+		if err := ValidateFixReviewModels(c.FixReviewModels, c.Model); err != nil {
+			return stopWith(OutcomeStopped, StopModelInvalid, err)
+		}
 		// A harness the run is not configured for stops here, before any
 		// agent runs (AC7): a plan whose harnesses all lack their key as a
 		// missing credential, any other as an invalid model.
@@ -280,6 +287,15 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 					return stopWith(OutcomeStopped, StopModelInvalid, err)
 				}
 			}
+			// A findings-only reviewer never decides the run, so one the harness
+			// cannot run is dropped rather than stopping the build.
+			c.FixReviewModels = slices.DeleteFunc(slices.Clone(c.FixReviewModels), func(m string) bool {
+				err := g.Gate(m)
+				if err != nil {
+					d.Logger.Warn("fixReviewDropped", "model", m, "err", truncate(err.Error(), logErrorLimit))
+				}
+				return err != nil
+			})
 		}
 		sha, r, t, err := fetchRules(ctx, d, c)
 		if err != nil {
@@ -417,6 +433,9 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 			}
 			return nil
 		})
+		// The fix-review pass runs inside the review phase but records its own
+		// time, so the review phase's time leaves it out.
+		sum.DurationsMS[string(PhaseReview)] -= sum.DurationsMS[string(PhaseFixReview)]
 		if formatterStop != nil {
 			return BuildResult{}, formatterStop
 		}
@@ -810,6 +829,25 @@ func ValidateReviewModels(models []string, build string) error {
 	if err := validateModelList("review", models); err != nil {
 		return err
 	}
+	return notBuilder("review", models, build)
+}
+
+// ValidateFixReviewModels reports whether models is a usable fix-review list:
+// empty, or each well formed and none repeated, and none the build model or one
+// of its fallbacks.
+func ValidateFixReviewModels(models []string, build string) error {
+	if len(models) == 0 {
+		return nil
+	}
+	if err := validateModelList("fix-review", models); err != nil {
+		return err
+	}
+	return notBuilder("fix-review", models, build)
+}
+
+// notBuilder reports a model of models that the build may run on. label names
+// the list in the error.
+func notBuilder(label string, models []string, build string) error {
 	// The build phase falls back along fallbackModels when its model is
 	// unavailable, so a review on one of them would still be the builder
 	// checking its own work.
@@ -819,7 +857,7 @@ func ValidateReviewModels(models []string, build string) error {
 	}
 	for _, m := range models {
 		if builder[m] {
-			return fmt.Errorf("review model %q is the build model or one of its fallbacks", m)
+			return fmt.Errorf("%s model %q is the build model or one of its fallbacks", label, m)
 		}
 	}
 	return nil

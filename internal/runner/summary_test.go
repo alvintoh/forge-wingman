@@ -40,6 +40,38 @@ func TestParseSummaryAcceptsWhatABuildReports(t *testing.T) {
 	}
 }
 
+func TestParseSummaryAcceptsAFixReviewRun(t *testing.T) {
+	s := validSummary()
+	s.Steps = append(s.Steps, Step{Phase: PhaseFixReview, Round: 1, Model: "opencode-go/h",
+		CompletionsObject: completionsObject("1-1", PhaseFixReview, 1), At: finalizeNow.Add(-20 * time.Minute)})
+	s.Cache = map[string]PhaseCache{string(PhaseFixReview): {FirstFresh: 10, FirstCached: 90, CachedShare: 0.9}}
+	s.setReviewFindings([]ReviewFinding{{Finding: "f", Resolution: "still open", Source: "opencode-go/h"}})
+	raw, err := s.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParseSummary(raw, "1-1", testTicket, finalizeNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ReviewFindings[0].Source != "opencode-go/h" {
+		t.Fatalf("findings = %+v, want the source kept", got.ReviewFindings)
+	}
+}
+
+func TestParseSummaryRejectsAFindingSourceThatIsNotAModel(t *testing.T) {
+	s := validSummary()
+	s.ReviewFindings = []ReviewFinding{{Finding: "f", Resolution: "still open", Source: "not a model"}}
+	s.ReviewFindingsOpen = 1
+	raw, err := s.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseSummary(raw, "1-1", testTicket, finalizeNow); err == nil || !strings.Contains(err.Error(), "source") {
+		t.Fatalf("err = %v, want the source rejected", err)
+	}
+}
+
 // validFixRound is a fix round whose step is this run's own, so a summary
 // carrying it is one the record job accepts.
 func validFixRound() ReviewFixRound {

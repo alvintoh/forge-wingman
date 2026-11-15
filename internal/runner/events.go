@@ -108,8 +108,8 @@ func stepUsage(e event) Usage {
 func SumUsage(r io.Reader) (Usage, error) { return sumUsage(r, nil) }
 
 // sumUsage is SumUsage, priced from rates when rates is non-nil: each step at
-// the rates in force at its time, replacing the harness's figure, and an
-// untimed step at peak.
+// the rates in force at its time and for its own context size, replacing the
+// harness's figure, and an untimed step at peak.
 func sumUsage(r io.Reader, rates *providers.Rates) (Usage, error) {
 	var u Usage
 	err := scanEvents(r, func(e event) {
@@ -122,7 +122,7 @@ func sumUsage(r io.Reader, rates *providers.Rates) (Usage, error) {
 			if e.Part.Time != 0 {
 				at = time.UnixMilli(e.Part.Time)
 			}
-			s.Cost = rates.At(at).CostUSD(s.Input, s.Output, s.CacheRead, s.CacheWrite)
+			s.Cost = rates.ForContext(s.Input+s.CacheRead+s.CacheWrite).At(at).CostUSD(s.Input, s.Output, s.CacheRead, s.CacheWrite)
 		}
 		u.Input += s.Input
 		u.Output += s.Output

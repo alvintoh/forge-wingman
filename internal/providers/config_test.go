@@ -62,6 +62,18 @@ func TestParseConfigRejectsAnInvalidConfig(t *testing.T) {
 			`"peak":{"multiplier":2,"weekday_utc_hours":[{"from":4,"to":4}]}}}`), "not a range"},
 		"a peak before midnight": {configWith(providerFacts + `,"rates":{"p/model":{"input_usd_per_mtok":1,` +
 			`"peak":{"multiplier":2,"weekday_utc_hours":[{"from":-1,"to":4}]}}}`), "not a range"},
+		"a tier with no threshold": {configWith(providerFacts + `,"rates":{"p/model":{"input_usd_per_mtok":1,"above":` +
+			tierRates(`"context_tokens":0`) + `}}`), "not a positive token count"},
+		"a tier with a negative threshold": {configWith(providerFacts + `,"rates":{"p/model":{"input_usd_per_mtok":1,"above":` +
+			tierRates(`"context_tokens":-1`) + `}}`), "not a positive token count"},
+		"a tier leaving a rate out": {configWith(providerFacts + `,"rates":{"p/model":{"input_usd_per_mtok":1,"above":` +
+			`{"context_tokens":100,"input_usd_per_mtok":1,"output_usd_per_mtok":1,"cache_read_usd_per_mtok":1}}}`),
+			"leaves a rate out"},
+		"a tier with a negative rate": {configWith(providerFacts + `,"rates":{"p/model":{"input_usd_per_mtok":1,"above":` +
+			`{"context_tokens":100,"input_usd_per_mtok":-1,"output_usd_per_mtok":1,"cache_read_usd_per_mtok":1,"cache_write_usd_per_mtok":1}}}`),
+			"a rate is negative"},
+		"a last-resort model with a tier": {configWith(providerFacts + `,"rates":{"p/free":{"above":` + tierRates(`"context_tokens":100`) + `}}` +
+			`,"last_resort":{"models":["p/free"],"measured_on":"unmeasured"}`), "not priced $0"},
 		"an unknown field": {`{"cash_limit_usd":30,"runner_free_minutes":2000,"providers":{"p":{}},"extra":1}`,
 			"unknown field"},
 		"a last resort with no models": {configWith(providerFacts + `,"last_resort":{"models":[],"measured_on":"unmeasured"}`),
@@ -405,6 +417,38 @@ func TestPeakSpans(t *testing.T) {
 				t.Fatalf("Spans(%v, %v) = %v, want %v", tt.from, tt.d, got, tt.want)
 			}
 		})
+	}
+}
+
+// tierRates is an above tier's document with every rate set, after threshold.
+func tierRates(threshold string) string {
+	return `{` + threshold + `,"input_usd_per_mtok":0.5,"output_usd_per_mtok":2.5,"cache_read_usd_per_mtok":0.05,"cache_write_usd_per_mtok":0.625}`
+}
+
+func TestRatesReadTheTier(t *testing.T) {
+	cfg, err := parseConfig([]byte(configWith(providerFacts + `,"rates":{"p/model":{"input_usd_per_mtok":1,"above":` +
+		tierRates(`"context_tokens":100000`) + `}}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rates, _ := ratesFor(cfg, "p/model")
+	if want := (ContextTier{ContextTokens: 100000, Input: 0.5, Output: 2.5, CacheRead: 0.05, CacheWrite: 0.625}); rates.Above == nil || *rates.Above != want {
+		t.Fatalf("tier = %+v, want %+v", rates.Above, want)
+	}
+}
+
+func TestEmbeddedCardsCarryATierOnlyForHaiku(t *testing.T) {
+	for name, p := range embeddedConfig.Providers {
+		for model, r := range p.Rates {
+			if (r.Above != nil) != (model == "opencode-go/claude-haiku-5-5") {
+				t.Errorf("provider %s model %s tier = %+v", name, model, r.Above)
+			}
+		}
+	}
+	h, ok := RatesFor("opencode-go/claude-haiku-5-5")
+	want := ContextTier{ContextTokens: 100000, Input: 0.5, Output: 2.5, CacheRead: 0.05, CacheWrite: 0.625}
+	if !ok || h.Input != 0.1 || h.Output != 0.5 || h.CacheRead != 0.01 || h.CacheWrite != 0.125 || h.Peak != nil || *h.Above != want {
+		t.Fatalf("Haiku card = %+v (ok %v)", h, ok)
 	}
 }
 

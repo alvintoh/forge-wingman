@@ -46,11 +46,12 @@ const agentEgressUsage = "on confines the agent container to its models' API hos
 type agentSettings struct {
 	Image  string
 	Egress string
-	// Model is the build model, empty for a stage that has none; Plan and Review
-	// are the plan and review phases' model lists.
-	Model  string
-	Plan   []string
-	Review []string
+	// Model is the build model, empty for a stage that has none; Plan, Review and
+	// FixReview are the plan, review and fix-review model lists.
+	Model     string
+	Plan      []string
+	Review    []string
+	FixReview []string
 }
 
 // models is every model the stage's agents may call.
@@ -59,7 +60,7 @@ func (s agentSettings) models() []string {
 	if s.Model != "" {
 		m = append(m, s.Model)
 	}
-	return slices.Concat(m, s.Plan, s.Review)
+	return slices.Concat(m, s.Plan, s.Review, s.FixReview)
 }
 
 // agentRunner is the harnesses a stage runs agents through, in a container of

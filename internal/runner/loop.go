@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -322,28 +323,105 @@ func formatInPlace(ctx context.Context, d BuildDeps, sum *Summary, wt Worktree, 
 }
 
 // reviewPass runs one review pass over the worktree's pending diff on the
-// review models in order and returns its findings, empty when the diff
-// satisfies the ticket. It starts a fresh session, so rules is the whole of
-// what that session carries — the build projection's rules, which is what the
-// pass checks the diff against. timeout is what the review's own budget leaves
-// the pass, and started and budget are the review stage's, so a pass that steps
-// to its backup model is bounded by the review's budget rather than the build's,
-// and starts no backup attempt with under reviewStartRoom of it left.
-func reviewPass(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum *Summary, round int, rules string, timeout time.Duration, started time.Time, budget time.Duration) (string, error) {
+// review models in order and returns its findings, each sourced to the model
+// that answered, empty when the diff satisfies the ticket. It starts a fresh
+// session, so rules is the whole of what that session carries — the build
+// projection's rules, which is what the pass checks the diff against. timeout
+// is what the review's own budget leaves the pass, and started and budget are
+// the review stage's, so a pass that steps to its backup model is bounded by
+// the review's budget rather than the build's, and starts no backup attempt
+// with under reviewStartRoom of it left.
+func reviewPass(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum *Summary, round int, rules string, timeout time.Duration, started time.Time, budget time.Duration) ([]pendingFinding, error) {
 	diff, err := wt.DiffPending(ctx)
 	if err != nil {
-		return "", stopWith(OutcomeInfraFailure, StopChecksRun, err)
+		return nil, stopWith(OutcomeInfraFailure, StopChecksRun, err)
 	}
 	call := agentCall{Phase: PhaseReview, Round: round, Model: c.ReviewModels[0], Rules: rules, Timeout: timeout}
 	text, _, _, err := runAgentInOrder(ctx, d, c, call, c.ReviewModels, d.ReviewAgent, wt.Dir, PreOpenReviewPrompt(diff, c.Ticket), sum, started, budget, reviewStartRoom)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	findings, ferr := ParseReviewFindings(text)
 	if ferr != nil {
-		return "", stopWith(OutcomeStopped, StopReviewInvalid, ferr)
+		return nil, stopWith(OutcomeStopped, StopReviewInvalid, ferr)
 	}
-	return findings, nil
+	// runAgent records each attempt's step before it returns, so the newest step
+	// is the model that answered.
+	return sourced(reviewPending(findings), sum.Steps[len(sum.Steps)-1].Model), nil
+}
+
+// fixReviewHeadroom is what a fix-review pass leaves of the review stage's
+// budget: the start room of the fix round its findings may need and of the
+// review pass's re-check after it, so the findings-only pass never takes the
+// time the pass that decides the verdict needs.
+const fixReviewHeadroom = 2 * reviewStartRoom
+
+// fixReviewPass runs the first fix-review model once over the worktree's
+// pending diff and returns its findings that known does not already hold, at
+// most maxReviewFindings, each sourced to that model. It never decides the
+// verdict: a pass with under reviewStartRoom of the budget left once
+// fixReviewHeadroom is set aside, or one that fails, is logged with its reason
+// and returns nothing, so the loop goes on as the review pass decided. Its time
+// is recorded under its own phase.
+func fixReviewPass(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum *Summary, rules string, started time.Time, budget time.Duration, known map[string]bool) []pendingFinding {
+	if len(c.FixReviewModels) == 0 {
+		return nil
+	}
+	model := c.FixReviewModels[0]
+	timeout, inBudget := roundTimeout(c.AgentTimeout, started, d.Now(), budget-fixReviewHeadroom, reviewStartRoom)
+	if !inBudget {
+		d.Logger.Info("fixReviewSkipped", "model", model, "reason", "budget")
+		return nil
+	}
+	start := d.Now()
+	defer func() { sum.DurationsMS[string(PhaseFixReview)] += d.Now().Sub(start).Milliseconds() }()
+	diff, err := wt.DiffPending(ctx)
+	if err != nil {
+		d.Logger.Warn("fixReviewFailed", "model", model, "reason", "diff-unread", "err", truncate(err.Error(), logErrorLimit))
+		return nil
+	}
+	call := agentCall{Phase: PhaseFixReview, Round: 1, Model: model, Rules: rules, Timeout: timeout}
+	text, _, err := runAgent(ctx, d, c, call, bindModel(d.ReviewAgent, model), wt.Dir, PreOpenReviewPrompt(diff, c.Ticket), sum)
+	if err != nil {
+		reason := "agent-error"
+		var s *StopError
+		if errors.As(err, &s) {
+			reason = string(s.Reason)
+		}
+		d.Logger.Warn("fixReviewFailed", "model", model, "reason", reason, "err", truncate(detail(err), logErrorLimit))
+		return nil
+	}
+	found, err := ParseReviewFindings(text)
+	if err != nil {
+		d.Logger.Warn("fixReviewFailed", "model", model, "reason", string(StopReviewInvalid), "err", err.Error())
+		return nil
+	}
+	var kept []pendingFinding
+	duplicates := 0
+	seen := maps.Clone(known)
+	for _, f := range sourced(reviewPending(found), model) {
+		if seen[f.key] {
+			duplicates++
+			continue
+		}
+		seen[f.key] = true
+		f.unrechecked = true
+		kept = append(kept, f)
+	}
+	if len(kept) > maxReviewFindings {
+		d.Logger.Info("fixReviewFindingsCut", "model", model, "found", len(kept), "kept", maxReviewFindings)
+		kept = kept[:maxReviewFindings]
+	}
+	d.Logger.Info("fixReviewRan", "model", model, "findings", len(kept), "duplicates", duplicates)
+	return kept
+}
+
+// sourced is findings with each one's source set to model.
+func sourced(findings []pendingFinding, model string) []pendingFinding {
+	for i := range findings {
+		findings[i].source = model
+	}
+	return findings
 }
 
 // detailParts joins a loop detail's parts with the separator the pre-PR loop's
@@ -368,6 +446,11 @@ type pendingFinding struct {
 	// header — and unset for a model's finding, whose text a re-review may word
 	// differently.
 	stable bool
+	// source is the model that reported the finding, empty for a guard.
+	source string
+	// unrechecked is set for a fix-review model's finding: no later pass runs
+	// that model, so a clean re-review does not show it fixed.
+	unrechecked bool
 }
 
 // findingsText is findings as the fix round receives them: one per line, empty
@@ -417,7 +500,11 @@ func findingKeys(findings []pendingFinding) map[string]bool {
 func resolveFindings(pending []pendingFinding, stillOpen map[string]bool, fixRound int, rechecked bool) []ReviewFinding {
 	rows := make([]ReviewFinding, 0, len(pending))
 	for _, f := range pending {
-		rows = append(rows, ReviewFinding{Finding: f.text, Resolution: findingResolution(f.key, stillOpen, fixRound, rechecked)})
+		res := findingResolution(f.key, stillOpen, fixRound, rechecked)
+		if f.unrechecked && fixRound == noFixRound {
+			res = notActedOnText
+		}
+		rows = append(rows, ReviewFinding{Finding: f.text, Resolution: res, Source: f.source})
 	}
 	return rows
 }
@@ -435,9 +522,19 @@ func findingResolution(key string, stillOpen map[string]bool, fixRound int, rech
 	case rechecked:
 		return fixedIn(fixRound)
 	default:
-		return fmt.Sprintf("addressed in round %d, not re-checked", fixRound)
+		return notRecheckedIn(fixRound)
 	}
 }
+
+// notRecheckedIn is how a row reads when fixRound addressed its finding and no
+// pass that could report it again ran after.
+func notRecheckedIn(fixRound int) string {
+	return fmt.Sprintf("addressed in round %d, not re-checked", fixRound)
+}
+
+// notActedOnText is a fix-review finding's resolution when the review stage's
+// budget left no fix round: it stays open without holding the run.
+const notActedOnText = "not acted on: no fix round had room"
 
 // stillOpenText is a row's resolution when nothing closed its finding: no fix
 // round ran, or the last re-check still reports it.
@@ -501,7 +598,7 @@ func reviewRows(rounds []fixRoundResult) []ReviewFinding {
 	}
 	rows := make([]ReviewFinding, len(issued))
 	for i, f := range issued {
-		rows[i] = ReviewFinding{Finding: f.text}
+		rows[i] = ReviewFinding{Finding: f.text, Source: f.source}
 	}
 	for i, r := range rounds {
 		open := findingKeys(r.open)
@@ -514,6 +611,8 @@ func reviewRows(rounds []fixRoundResult) []ReviewFinding {
 		for _, f := range r.issued {
 			res := findingResolution(f.key, open, r.round, r.rechecked)
 			switch {
+			case f.unrechecked && res == fixedIn(r.round):
+				res = notRecheckedIn(r.round)
 			case !f.stable && reworded && res == fixedIn(r.round):
 				res = fmt.Sprintf("addressed in round %d; the re-review still reported findings", r.round)
 			case res == stillOpenText && r.rechecked && last && len(rounds) > 1:
@@ -534,7 +633,7 @@ func reviewRows(rounds []fixRoundResult) []ReviewFinding {
 			if len(rounds) > 1 {
 				res = stillOpenAfter(round.round)
 			}
-			rows = append(rows, ReviewFinding{Finding: f.text, Resolution: res})
+			rows = append(rows, ReviewFinding{Finding: f.text, Resolution: res, Source: f.source})
 		}
 	}
 	return rows
@@ -572,7 +671,7 @@ func recheckFromReserve(ctx context.Context, d BuildDeps, c BuildConfig, wt Work
 		return nil, false
 	}
 	d.Logger.Info("reserveRecheckRan", "round", round)
-	return append(surviving, reviewPending(remaining)...), true
+	return append(surviving, remaining...), true
 }
 
 // runReview runs the pre-PR loop (FR-28) once the checks have passed: the
@@ -631,7 +730,8 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 	if err != nil {
 		return false, "", reviewCallError(err, d.Now(), reviewStarted, budget)
 	}
-	pending := append(guards, reviewPending(found)...)
+	pending := append(guards, found...)
+	pending = append(pending, fixReviewPass(ctx, d, c, wt, sum, rules, reviewStarted, budget, findingKeys(pending))...)
 	if len(pending) == 0 {
 		return true, "", nil
 	}
@@ -716,7 +816,7 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 		if err != nil {
 			return false, "", reviewCallError(err, d.Now(), reviewStarted, budget)
 		}
-		open := append(surviving, reviewPending(remaining)...)
+		open := append(surviving, remaining...)
 		rounds = append(rounds, fixRoundResult{round: round, issued: findings, open: open, rechecked: true})
 		if len(open) == 0 {
 			sum.setReviewFindings(reviewRows(rounds))
@@ -727,6 +827,12 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 	if len(rounds) == 0 {
 		// The budget left no round at all: nothing was done about the findings.
 		sum.setReviewFindings(resolveFindings(pending, nil, noFixRound, false))
+		if !slices.ContainsFunc(pending, func(f pendingFinding) bool { return !f.unrechecked }) {
+			// The review pass was clean, and a fix-review model never decides the
+			// verdict, so its findings alone do not hold the run.
+			d.Logger.Info("fixReviewFindingsNotActedOn", "count", len(pending), "reason", "budget")
+			return true, "", nil
+		}
 		return false, "findings open: " + findingsText(pending) + " (" + skipped + ")", nil
 	}
 	sum.setReviewFindings(reviewRows(rounds))
