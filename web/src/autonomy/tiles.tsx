@@ -1,5 +1,5 @@
 import { parsePull } from "../inbox/run";
-import { count, isRed, lastPrRepo, tileWords, trendWords } from "./format";
+import { lastPrRepo, linesCaption, tileWords, trendWords, windowAboveGuideline } from "./format";
 import { TrendArrow } from "./marks";
 import { useWidth } from "./use-width";
 import type { PR, Tile } from "./types";
@@ -26,10 +26,11 @@ const TILE_GAP_PX = 12;
 const TILE_PAD_PX = 12;
 
 // Tiles are the three windows the rate is read over: the number, the words that
-// place it, and which way it is heading. Only the trailing-ten number is coloured,
-// and only once its window is full and above the guideline, and it then carries the
-// words "above <guideline>" beside it (the guideline the page was served, 20%);
-// the arrow has its own words, so colour is never alone.
+// place it, which way it is heading and the lines it is made of. Only the
+// trailing-ten number is coloured, and only once its window is full and above the
+// guideline, and it then carries the words "above <guideline>" beside it (the
+// guideline the page was served, 20%); the arrow has its own words, so colour is
+// never alone.
 // The tiles are one height, whatever each holds.
 export function Tiles({ tiles, prs, bar, bleed = true, stacked = false }: TilesProps) {
   const { ref, width } = useWidth<HTMLDivElement>();
@@ -72,9 +73,9 @@ type TileCardProps = {
 
 function TileCard({ label, tile, index, bar, prs, beside, roomy }: TileCardProps) {
   const words = tileWords(tile, index, bar);
-  const full = tile.prs.length >= tile.asked;
-  const hot = index === 0 && full && isRed(tile.rate_value, bar);
+  const hot = index === 0 && windowAboveGuideline(tile, bar);
   const trend = trendWords(tile);
+  const lines = linesCaption(tile);
   const lastPR = index === 2 ? tile.prs[0] : undefined;
   const number = (
     <span
@@ -86,9 +87,6 @@ function TileCard({ label, tile, index, bar, prs, beside, roomy }: TileCardProps
     </span>
   );
   const link = lastPR === undefined ? null : <PRLink pr={lastPR} prs={prs} />;
-  const agentLines = (
-    <span className="text-micro text-muted">{count(tile.agent_lines)} agent lines</span>
-  );
   return (
     <li
       className={`rounded-tile border border-hair bg-card pt-4 pb-3 ${beside ? "px-5" : "px-3"}`}
@@ -111,31 +109,41 @@ function TileCard({ label, tile, index, bar, prs, beside, roomy }: TileCardProps
           {words !== null && <p className="mt-1 text-label font-semibold text-ink">{words}</p>}
         </div>
       )}
-      {(trend !== null || index === 2) && (
-        <div className="mt-2 flex items-start gap-2 text-label">
-          {trend !== null && (
-            <span className="mt-[3px] shrink-0">
-              <TrendArrow direction={tile.trend} />
-            </span>
-          )}
-          {beside ? (
-            <p className="min-w-0">
+      {(trend !== null || lines !== null) &&
+        (beside ? (
+          <div className="mt-2 flex items-start gap-2 text-label">
+            {trend !== null && (
+              <span className="mt-[3px] shrink-0">
+                <TrendArrow direction={tile.trend} />
+              </span>
+            )}
+            <p className="flex min-w-0 flex-wrap items-baseline gap-x-3">
               {trend !== null && <span className="font-semibold text-ink">{trend}</span>}
-              {index === 2 && (
-                <>
-                  {trend !== null && " "}
-                  <span className={trend === null ? "" : "ml-2"}>{agentLines}</span>
-                </>
-              )}
+              {lines !== null && <span className="text-muted">{lines.text}</span>}
             </p>
-          ) : (
-            <div className="min-w-0">
-              {trend !== null && <TrendLines words={trend} />}
-              {index === 2 && <p>{agentLines}</p>}
-            </div>
-          )}
-        </div>
-      )}
+          </div>
+        ) : (
+          <div className="mt-2 text-label">
+            {trend !== null && (
+              <div className="flex items-start gap-2">
+                <span className="mt-[3px] shrink-0">
+                  <TrendArrow direction={tile.trend} />
+                </span>
+                <div className="min-w-0">
+                  <TrendLines words={trend} />
+                </div>
+              </div>
+            )}
+            {lines !== null && (
+              // 5.5px over two 14px rows is one 19.5px row of the trend's text plus the
+              // drawing's 14px step, so every tile in the row grows by 14px alike.
+              <p className="pt-[5.5px] text-micro leading-[14px] text-muted">
+                <span className="block">{lines.figures}</span>
+                <span className="block">{lines.noun}</span>
+              </p>
+            )}
+          </div>
+        ))}
       {/* The link is the tile's last row at every width, under the arrow row. */}
       {link !== null && <p className={beside ? "mt-2.5" : "mt-1.5"}>{link}</p>}
     </li>

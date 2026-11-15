@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { modelName, wholePercent } from "./format";
+import { linesCaption, modelName, wholePercent } from "./format";
+import type { Tile } from "./types";
 
 describe("wholePercent", () => {
   it("rounds a tie to the even percent, as the endpoint's strings do", () => {
@@ -34,5 +35,30 @@ describe("modelName", () => {
 
   it("reads an unknown id as it is", () => {
     expect(modelName("vendor/new-model")).toBe("vendor/new-model");
+  });
+});
+
+describe("linesCaption", () => {
+  const tile: Tile = {
+    prs: [175],
+    asked: 10,
+    agent_lines: 7982,
+    owner_lines: 3440,
+    rate: "43.1%",
+    rate_value: 0.431,
+    previous_rate_value: null,
+    trend: "flat",
+  };
+
+  it("states the owner lines of the agent lines, with thousands separators", () => {
+    expect(linesCaption(tile)).toEqual({
+      figures: "3,440 of 7,982",
+      noun: "agent lines",
+      text: "3,440 of 7,982 agent lines",
+    });
+  });
+
+  it("states nothing for a window with no agent lines", () => {
+    expect(linesCaption({ ...tile, agent_lines: 0, owner_lines: 4715 })).toBeNull();
   });
 });

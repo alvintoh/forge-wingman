@@ -66,7 +66,8 @@ describe("the last-PR tile", () => {
       it("ends with the PR link, after the trend and the agent lines", () => {
         const link = markup.indexOf('<a href="https://github.com/alvintoh/forge-wingman/pull/175"');
         expect(link).toBeGreaterThan(markup.indexOf("down"));
-        expect(link).toBeGreaterThan(markup.indexOf("1,234 agent lines"));
+        expect(markup).toContain("agent lines");
+        expect(link).toBeGreaterThan(markup.indexOf("agent lines"));
         expect(markup.indexOf("</a>")).toBe(markup.lastIndexOf("</p></li>") - "</a>".length);
       });
 
@@ -94,5 +95,57 @@ describe("the last-PR tile", () => {
       /<p[^>]*><span[^>]*>#175<span[^>]*>alvintoh\/<wbr\/>forge-wingman<\/span><\/span><\/p><\/li>$/,
     );
     expect(markup.indexOf("#175")).toBeGreaterThan(markup.indexOf("1,234 agent lines"));
+  });
+});
+
+// One tile per window, each with its own lines, so a caption read from the wrong
+// window shows; the trailing ten has three of its ten PRs.
+const windows: Tile[] = [
+  { ...tile([175, 12, 9]), asked: 10, agent_lines: 7982, owner_lines: 3440 },
+  { ...tile([175]), agent_lines: 6002, owner_lines: 2293 },
+  { ...tile([175]), agent_lines: 945, owner_lines: 577 },
+];
+const captions = ["3,440 of 7,982", "2,293 of 6,002", "577 of 945"];
+
+function tileMarkups(at: number, row: Tile[]) {
+  width = at;
+  const markup = renderToStaticMarkup(<Tiles tiles={row} prs={[pr, other]} bar={0.1} />);
+  return [...markup.matchAll(/<li[^>]*data-tile=.*?<\/li>/gs)].map((m) => m[0]);
+}
+
+describe("the lines caption", () => {
+  it("follows the trend words on their row on every tile at a desktop width", () => {
+    const markups = tileMarkups(900, windows);
+    expect(markups).toHaveLength(3);
+    markups.forEach((markup, i) => {
+      const row = /<p[^>]*>(?:(?!<\/p>).)*down from.*?<\/p>/s.exec(markup)?.[0] ?? "";
+      expect(row).toMatch(
+        new RegExp(`down from 5\\.8%</span><span class="text-muted">${captions[i]} agent lines<`),
+      );
+    });
+  });
+
+  for (const [layout, at] of [
+    ["three to a row on a phone", 420],
+    ["one to a row", 300],
+  ] as const) {
+    it(`sets the figures over "agent lines" on two rows ${layout}`, () => {
+      tileMarkups(at, windows).forEach((markup, i) => {
+        expect(markup).toContain(
+          `<span class="block">${captions[i]}</span><span class="block">agent lines</span>`,
+        );
+        expect(markup.indexOf(captions[i] ?? "")).toBeGreaterThan(markup.indexOf("from 5.8%"));
+      });
+    });
+  }
+
+  it("states nothing for a window with no agent lines", () => {
+    const none = { ...tile([175]), agent_lines: 0, owner_lines: 4715, rate: "no agent lines" };
+    for (const at of [900, 300]) {
+      const markups = tileMarkups(at, [...windows.slice(0, 2), none]);
+      expect(markups[2]).not.toContain("4,715");
+      expect(markups[2]).not.toContain(" of ");
+      expect(markups[1]).toContain("2,293 of 6,002");
+    }
   });
 });

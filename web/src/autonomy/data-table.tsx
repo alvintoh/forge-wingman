@@ -9,9 +9,11 @@ import {
   NO_RATE,
   UNKNOWN_MODEL,
   count,
+  countWord,
   isPrsWord,
   isRed,
   lastPrRepo,
+  linesCaption,
   modelName,
   noAgentNote,
   percent,
@@ -21,9 +23,10 @@ import {
   spreadText,
   trendWords,
   whole,
+  windowAboveGuideline,
 } from "./format";
 import { PHASES } from "./types";
-import type { Group, ModelRow, Phase, PR, RewriteView, SizeRow } from "./types";
+import type { Group, ModelRow, Phase, PR, RewriteView, SizeRow, Tile } from "./types";
 
 // The house card, drawn 10px wider each side than the page's text on a phone, with 16px inside.
 const CARD = "card-frame py-4 max-sm:-mx-2.5 max-sm:px-4";
@@ -132,14 +135,17 @@ function Rate({
   text,
   words,
   bar,
+  red = isRed(value, bar),
 }: {
   value: number | null;
   text: string | null;
   words: string;
   bar: number;
+  // Whether it is drawn red: above the guideline, unless the caller holds it to a rule of its own.
+  red?: boolean;
 }) {
   const printed = servedRate(text, value, words);
-  if (!isRed(value, bar)) {
+  if (!red) {
     return (
       <span className={value === null ? "font-semibold" : "font-mono font-semibold"}>
         {printed}
@@ -353,12 +359,14 @@ type PerPRTableProps = {
   showRepo: boolean;
   // The id of the caption above the table, which names it.
   captionId: string;
+  // The trailing-ten tile, whose totals the pinned row above the PRs states on every page.
+  pinned: Tile | undefined;
 };
 
-// PerPRTable is the one table of every measured PR, newest first: its first line is the
-// record's numbers and its second the title and the models that ran it, so twelve figures fit
-// the page's width. Below 768 each cell names itself and the record stacks into pairs.
-function PerPRTable({ prs, bar, showRepo, captionId }: PerPRTableProps) {
+// PerPRTable is the one table of every measured PR, newest first, under the pinned row: its first
+// line is the record's numbers and its second the title and the models that ran it, so twelve
+// figures fit the page's width. Below 768 each cell names itself and the record stacks into pairs.
+function PerPRTable({ prs, bar, showRepo, captionId, pinned }: PerPRTableProps) {
   const first = prFirstLine(bar);
   return (
     <table aria-labelledby={captionId} className="mt-2 w-full text-label max-md:block">
@@ -383,6 +391,7 @@ function PerPRTable({ prs, bar, showRepo, captionId }: PerPRTableProps) {
           </th>
         </tr>
       </thead>
+      {pinned !== undefined && <PinnedRow tile={pinned} bar={bar} />}
       {prs.map((pr) => (
         <tbody
           key={prKey(pr.repo, pr.pr)}
@@ -424,16 +433,60 @@ function PerPRTable({ prs, bar, showRepo, captionId }: PerPRTableProps) {
   );
 }
 
+// PinnedRow is the per-PR table's first row, "Last 10 PRs": the trailing-ten tile's agent lines,
+// owner lines and rate, red as the tile's is, the same on every page.
+function PinnedRow({ tile, bar }: { tile: Tile; bar: number }) {
+  return (
+    <tbody className="border-b-2 border-b-ink2 max-md:grid max-md:grid-cols-2 max-md:gap-x-4 max-md:border-t max-md:border-t-hair max-md:pb-2.5">
+      <tr className="max-md:contents">
+        <th
+          scope="row"
+          colSpan={4}
+          className="text-left font-semibold text-ink md:pr-4 md:align-baseline max-md:col-span-2 max-md:text-body"
+        >
+          <span className="inline-flex min-h-11 items-center">{pinnedLabel(tile.prs.length)}</span>
+        </th>
+        <td data-label="Agent lines" className={`${FIRST_CELL} md:text-right`}>
+          <span className="font-mono font-semibold">{count(tile.agent_lines)}</span>
+        </td>
+        <td data-label="Owner lines" className={`${FIRST_CELL} md:text-right`}>
+          <span className="font-mono font-semibold">{count(tile.owner_lines)}</span>
+        </td>
+        <td data-label="Rate" className={`${FIRST_CELL} md:text-right`}>
+          <Rate
+            value={tile.rate_value}
+            text={tile.rate}
+            words={tile.rate}
+            bar={bar}
+            red={windowAboveGuideline(tile, bar)}
+          />
+        </td>
+        <td className="max-md:hidden" />
+      </tr>
+    </tbody>
+  );
+}
+
 const PR_NOTES = [
   "Trailing 10 is the rewrite rate over the ten merged PRs ending at that one, the trend chart's numbers; it starts at the tenth measured PR, so the oldest nine PRs show none.",
   "Plan, build and review are the strip's lanes in words.",
 ];
+// pinnedLabel names the pinned row by the PRs its window holds: "Last 10 PRs".
+function pinnedLabel(prs: number): string {
+  return `Last ${prsWord(prs)}`;
+}
 
-type PagedPRsProps = { prs: PR[]; bar: number; showRepo: boolean };
+// pinnedNote says what the pinned row totals, counted as its label counts.
+function pinnedNote(prs: number): string {
+  const newest = prs === 1 ? "the newest PR" : `the ${countWord(prs)} newest PRs`;
+  return `${pinnedLabel(prs)} totals ${newest} on every page; its rate is the Trailing 10 on the tile.`;
+}
+
+type PagedPRsProps = { prs: PR[]; bar: number; showRepo: boolean; pinned: Tile | undefined };
 
 // PagedPRs is the per-PR table's card: its caption, the pager, the notes and the rows, with a
 // second pager 16px under the last row on a phone.
-function PagedPRs({ prs, bar, showRepo }: PagedPRsProps) {
+function PagedPRs({ prs, bar, showRepo, pinned }: PagedPRsProps) {
   const pageSize = usePageSize();
   const [page, setPage] = useState(0);
   const captionId = useId();
@@ -441,6 +494,7 @@ function PagedPRs({ prs, bar, showRepo }: PagedPRsProps) {
   // sit past the last one: the window clamps it.
   const range = pageWindow(prs.length, page, pageSize);
   const rows = prs.slice(range.page * pageSize, range.page * pageSize + pageSize);
+  const notes = pinned === undefined ? PR_NOTES : [...PR_NOTES, pinnedNote(pinned.prs.length)];
   return (
     <div className={CARD}>
       <p id={captionId} className="text-cap font-semibold text-ink2">
@@ -457,7 +511,7 @@ function PagedPRs({ prs, bar, showRepo }: PagedPRsProps) {
           />
         </div>
       )}
-      {PR_NOTES.map((note, i) => (
+      {notes.map((note, i) => (
         <p
           key={note}
           className={`text-label leading-[18px] text-ink2 ${i === 0 ? "mt-4" : "mt-1.5"}`}
@@ -465,7 +519,7 @@ function PagedPRs({ prs, bar, showRepo }: PagedPRsProps) {
           {note}
         </p>
       ))}
-      <PerPRTable prs={rows} bar={bar} showRepo={showRepo} captionId={captionId} />
+      <PerPRTable prs={rows} bar={bar} showRepo={showRepo} captionId={captionId} pinned={pinned} />
       {range.paged && (
         <div className="mt-4 md:hidden">
           <Pager
@@ -563,11 +617,9 @@ export function DataSection({ rewrite, className }: DataSectionProps) {
                     render: (entry) =>
                       [
                         trendWords(entry.tile) ?? "no earlier window",
-                        entry.label === "last PR"
-                          ? `${count(entry.tile.agent_lines)} agent lines`
-                          : null,
+                        linesCaption(entry.tile)?.text,
                       ]
-                        .filter((part) => part !== null)
+                        .filter((part) => part !== undefined)
                         .join(", "),
                   },
                 ]}
@@ -651,7 +703,7 @@ export function DataSection({ rewrite, className }: DataSectionProps) {
               </p>
             ))}
           </div>
-          <PagedPRs prs={rewrite.prs} bar={bar} showRepo={manyRepos} />
+          <PagedPRs prs={rewrite.prs} bar={bar} showRepo={manyRepos} pinned={rewrite.tiles[0]} />
         </div>
       )}
     </section>
