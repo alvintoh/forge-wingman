@@ -209,6 +209,12 @@ export function isRed(value: number | null, guideline: number): boolean {
   return value !== null && value > guideline;
 }
 
+// windowAboveGuideline is whether a tile's window is full and its rate above the
+// guideline: when the page draws that rate in red.
+export function windowAboveGuideline(tile: Tile, guideline: number): boolean {
+  return tile.prs.length >= tile.asked && isRed(tile.rate_value, guideline);
+}
+
 // tileWords is the words under a tile's number: how far a short window got, and
 // for the trailing-ten tile its place against the guideline. A tile never says more
 // than the endpoint served.
@@ -234,6 +240,39 @@ export function trendWords(tile: Tile): string | null {
     return "flat";
   }
   return `${tile.trend} from ${percent(tile.previous_rate_value)}`;
+}
+
+// countWord spells a count of at most ten as a word, "three", and a larger one in
+// figures.
+export function countWord(n: number): string {
+  return COUNT_WORDS[n] ?? String(n);
+}
+
+const COUNT_WORDS = [
+  "zero",
+  "one",
+  "two",
+  "three",
+  "four",
+  "five",
+  "six",
+  "seven",
+  "eight",
+  "nine",
+  "ten",
+];
+
+// LINES_NOUN follows a tile's line figures, under them where the tile is narrow.
+export const LINES_NOUN = "agent lines";
+
+// linesFigures is a tile's owner lines of its agent lines, "3,440 of 7,982", from
+// the rate's own window, or null for a window with no agent lines and so nothing
+// to divide.
+export function linesFigures(tile: Tile): string | null {
+  if (tile.agent_lines === 0) {
+    return null;
+  }
+  return `${count(tile.owner_lines)} of ${count(tile.agent_lines)}`;
 }
 
 // The share of a group's lines the owner changed after review, as the three the

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   BAND_H,
   BAND_LABEL,
@@ -30,12 +30,15 @@ const KEY_GUTTER = 140;
 const STRIP_LABELS_W = 64;
 const MEASURED_HEAD = "How this is measured";
 const MEASURED =
-  "The rewrite rate is the lines changed by anyone other than the runner after it opened a PR, over the lines the runner wrote, pooled over the last ten merged PRs. It measures human effort, not code quality.";
+  "The rewrite rate is the lines changed by anyone other than the runner after it opened a PR, over the lines the runner wrote. Both are totalled over the last ten merged PRs, so a larger PR weighs more. It measures human effort, not code quality.";
 const NO_TREND = "The trend starts once ten PRs are measured.";
 
-// The plot heights: the side layout's is tall enough for the measured note to
-// clear the reference label in the gutter.
-const PH_SIDE = 276;
+// The plot heights: the side layout's is tall enough for the measured note to sit
+// above the reference label at the served 20% guideline.
+const PH_SIDE = 300;
+// The measured note's top in the gutter, and its least distance from the reference label.
+const NOTE_TOP = 4;
+const NOTE_GAP = 12;
 const PH_UNDER = 200;
 const PH_COMPACT = 170;
 
@@ -298,54 +301,16 @@ export function TrendCard({ series, prs, bar, aside, lead }: TrendCardProps) {
               />
             </div>
             {hasTrend ? (
-              <>
-                <div className="relative mt-3">
-                  <TrendPlot
-                    axis={axis}
-                    width={width}
-                    series={series}
-                    bar={bar}
-                    height={height}
-                    dates
-                    sample={side}
-                    label={seriesLabel(series)}
-                  />
-                  {side && (
-                    <>
-                      <div
-                        className="absolute"
-                        style={{ left: axis.x1 + 12, top: 4, width: GUTTER - 18 }}
-                      >
-                        <MeasuredNote />
-                      </div>
-                      <p
-                        className="absolute text-label text-ink"
-                        style={{
-                          left: axis.x1 + 42,
-                          top: refY,
-                          width: GUTTER - 12 - 30,
-                          transform: "translateY(-50%)",
-                        }}
-                      >
-                        {referenceLabel(bar)}
-                      </p>
-                    </>
-                  )}
-                </div>
-                <div style={{ paddingInline: padx }}>
-                  <p className="mt-2 text-cap text-ink2">
-                    Axis capped at {whole(CAP)}. Triangles mark values above it.
-                  </p>
-                  {!side && (
-                    <>
-                      <ReferenceLegend bar={bar} />
-                      <div className="mt-3">
-                        <MeasuredNote />
-                      </div>
-                    </>
-                  )}
-                </div>
-              </>
+              <Trend
+                axis={axis}
+                width={width}
+                series={series}
+                bar={bar}
+                height={height}
+                side={side}
+                padx={padx}
+                refY={refY}
+              />
             ) : (
               <p className="mt-3 text-label text-muted" style={{ paddingInline: padx }}>
                 {NO_TREND}
@@ -367,11 +332,99 @@ export function TrendCard({ series, prs, bar, aside, lead }: TrendCardProps) {
   );
 }
 
+type TrendProps = {
+  axis: Axis;
+  width: number;
+  series: Point[];
+  bar: number;
+  height: number;
+  side: boolean;
+  padx: number;
+  // The reference line's height in the plot, which its gutter label is centred on.
+  refY: number;
+};
+
+// Trend is the plot with its notes. Beside the plot, the measured note sits in the
+// gutter where it ends NOTE_GAP above the reference label; where a higher guideline
+// lifts the label into it, the note moves under the plot and the gutter keeps a hidden
+// copy only to be measured.
+function Trend({ axis, width, series, bar, height, side, padx, refY }: TrendProps) {
+  const noteRef = useRef<HTMLDivElement>(null);
+  const labelRef = useRef<HTMLParagraphElement>(null);
+  const [inGutter, setInGutter] = useState(true);
+
+  useLayoutEffect(() => {
+    const note = noteRef.current;
+    const reference = labelRef.current;
+    if (note === null || reference === null) {
+      return;
+    }
+    const place = () =>
+      setInGutter(NOTE_TOP + note.offsetHeight + NOTE_GAP <= refY - reference.offsetHeight / 2);
+    place();
+    const observer = new ResizeObserver(place);
+    observer.observe(note);
+    observer.observe(reference);
+    return () => observer.disconnect();
+  }, [refY, side, bar, width]);
+
+  return (
+    <>
+      <div className="relative mt-3">
+        <TrendPlot
+          axis={axis}
+          width={width}
+          series={series}
+          bar={bar}
+          height={height}
+          dates
+          sample={side}
+          label={seriesLabel(series)}
+        />
+        {side && (
+          <>
+            <div
+              ref={noteRef}
+              className={`absolute ${inGutter ? "" : "invisible"}`}
+              style={{ left: axis.x1 + 12, top: NOTE_TOP, width: GUTTER - 18 }}
+            >
+              <MeasuredNote />
+            </div>
+            <p
+              ref={labelRef}
+              className="absolute text-label text-ink"
+              style={{
+                left: axis.x1 + 42,
+                top: refY,
+                width: GUTTER - 12 - 30,
+                transform: "translateY(-50%)",
+              }}
+            >
+              {referenceLabel(bar)}
+            </p>
+          </>
+        )}
+      </div>
+      <div style={{ paddingInline: padx }}>
+        <p className="mt-2 text-cap text-ink2">
+          Axis capped at {whole(CAP)}. Triangles mark values above it.
+        </p>
+        {!side && <ReferenceLegend bar={bar} />}
+        {!(side && inGutter) && (
+          <div className="mt-3">
+            <MeasuredNote />
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
 function MeasuredNote() {
   return (
     <>
       <p className="text-cap font-semibold text-ink">{MEASURED_HEAD}</p>
-      <p className="mt-1 text-cap text-ink2">{MEASURED}</p>
+      <p className="mt-1 text-cap leading-4 text-ink2">{MEASURED}</p>
     </>
   );
 }
