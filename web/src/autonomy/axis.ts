@@ -1,11 +1,16 @@
 import { textWidth, utcDay, whole } from "./format";
-import type { PR, Point } from "./types";
+import type { Group, PR, Point } from "./types";
 
 // The rate a trend and a strip stop at; a value above it is a triangle in a band.
 export const CAP = 0.6;
 // The axes of the by-size chart and of the model and repository bars.
 export const SIZE_CAP = 0.4;
 export const ROW_CAP = 0.8;
+// How far inside a row's track end, in px, its whisker's cap and diamond are
+// held, and how far right of that end an off-scale p90's triangle is centred.
+export const WHISKER_CAP_INSET = 3;
+export const DIAMOND_INSET = 6;
+export const P90_MARKER_X = 10;
 
 // How many merges one axis holds, newest kept.
 const MAX_SLOTS = 25;
@@ -257,3 +262,26 @@ export const WIDE_STAGE =
 
 // The ticks of the trend and the strip, on the 0 to 60% axis.
 export const TREND_TICKS = [0, 0.2, 0.4, 0.6];
+
+// A whisker's marks in px along its track, and whether its p90 is past the axis.
+export type WhiskerGeometry = { median: number; p90: number; off: boolean };
+
+// p90OffScale is whether a group's whisker runs past the 80% axis of its row.
+export function p90OffScale(group: Group): boolean {
+  return group.median_value !== null && group.p90_value !== null && group.p90_value > ROW_CAP;
+}
+
+// whiskerGeometry places a group's whisker on a track width px wide, its cap and
+// diamond held inside the track's end: a p90 of 100% on a 418px track caps at 415.
+// It is null with no median or p90, or while the track is unmeasured.
+export function whiskerGeometry(group: Group, width: number): WhiskerGeometry | null {
+  if (group.median_value === null || group.p90_value === null || width <= 0) {
+    return null;
+  }
+  const at = (value: number, inset: number) => Math.min((value / ROW_CAP) * width, width - inset);
+  return {
+    median: at(group.median_value, DIAMOND_INSET),
+    p90: at(group.p90_value, WHISKER_CAP_INSET),
+    off: p90OffScale(group),
+  };
+}

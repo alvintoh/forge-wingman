@@ -1,14 +1,18 @@
 import type { CSSProperties } from "react";
 import { captionClass } from "../caption";
 import {
+  P90_MARKER_X,
   ROW_CAP,
   SPARSE_W,
   STAGE_COUNT_X,
   STAGE_GAP,
   STAGE_NAME_COL,
   STAGE_RATE_COL,
+  TRIANGLE_R,
   WIDE_STAGE,
+  p90OffScale,
   padxFor,
+  whiskerGeometry,
 } from "./axis";
 import {
   NO_RATE,
@@ -25,6 +29,7 @@ import {
 import { Diamond, Segment, Swatch } from "./marks";
 import type { SplitSegment } from "./marks";
 import type { Group, ModelRow, Phase } from "./types";
+import { useWidth } from "./use-width";
 
 // A row of the by-repository chart: what the group is called, and its figures.
 export type RowSpec = {
@@ -45,6 +50,11 @@ export const FOLD_BAR_H = 6;
 // above the bars stops short of both so its labels sit over the bars.
 const VALUE_COL = "7.4rem";
 const VALUE_GAP = "0.75rem";
+const VALUE_GRID: CSSProperties = {
+  gridTemplateColumns: `minmax(0, 1fr) ${VALUE_COL}`,
+  columnGap: VALUE_GAP,
+};
+const P90_OFF_WORDS = `p90 off scale, above ${whole(ROW_CAP)}`;
 // The wide stage row's columns, and the name and count inside the first.
 const STAGE_GRID: CSSProperties = {
   gridTemplateColumns: `${STAGE_NAME_COL}px minmax(0, 1fr) ${STAGE_RATE_COL}px`,
@@ -129,31 +139,50 @@ function PooledBar({ group, height, split, tone = "accent" }: PooledBarProps) {
   );
 }
 
-// Whisker is the median PR's rate as a diamond with a line out to the p90 PR's.
-function Whisker({ group }: { group: Group }) {
-  if (group.median_value === null || group.p90_value === null) {
-    return null;
-  }
-  const median = Math.min(group.median_value / ROW_CAP, 1) * 100;
-  const p90 = Math.min(group.p90_value / ROW_CAP, 1) * 100;
+// Whisker is the median PR's rate as a diamond with a line out to the p90 PR's,
+// drawn once its track is measured. With marker, an off-scale p90 also draws its
+// triangle beside the track's end.
+function Whisker({ group, marker = false }: { group: Group; marker?: boolean }) {
+  const { ref, width } = useWidth<HTMLDivElement>();
+  const marks = whiskerGeometry(group, width);
+  const tip = width + P90_MARKER_X;
   return (
-    <svg
-      className="block w-full overflow-visible"
-      height={16}
-      aria-hidden="true"
-      data-mark="whisker"
-    >
-      <line
-        x1={`${median}%`}
-        x2={`${p90}%`}
-        y1={8}
-        y2={8}
-        strokeWidth={1.5}
-        className="stroke-ink"
-      />
-      <line x1={`${p90}%`} x2={`${p90}%`} y1={4} y2={12} strokeWidth={1.5} className="stroke-ink" />
-      <Diamond cx={`${median}%`} cy={8} r={5} />
-    </svg>
+    <div ref={ref}>
+      {marks !== null && (
+        <svg
+          className="block w-full overflow-visible"
+          height={16}
+          aria-hidden="true"
+          data-mark="whisker"
+        >
+          <line
+            x1={marks.median}
+            x2={marks.p90}
+            y1={8}
+            y2={8}
+            strokeWidth={1.5}
+            className="stroke-ink"
+          />
+          <line
+            x1={marks.p90}
+            x2={marks.p90}
+            y1={4}
+            y2={12}
+            strokeWidth={1.5}
+            className="stroke-ink"
+            data-mark="whisker-cap"
+          />
+          <Diamond cx={marks.median} cy={8} r={5} />
+          {marker && marks.off && (
+            <polygon
+              points={`${tip},2 ${tip - TRIANGLE_R},13 ${tip + TRIANGLE_R},13`}
+              className="fill-ink"
+              data-mark="off-scale-p90"
+            />
+          )}
+        </svg>
+      )}
+    </div>
   );
 }
 
@@ -173,10 +202,10 @@ function MedianBar({ group }: { group: Group }) {
   );
 }
 
-function OffScale() {
+function OffScale({ mark = "off-scale" }: { mark?: string }) {
   return (
     <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" className="shrink-0">
-      <polygon points="6,0.5 0,11.5 12,11.5" className="fill-ink" data-mark="off-scale" />
+      <polygon points="6,0.5 0,11.5 12,11.5" className="fill-ink" data-mark={mark} />
     </svg>
   );
 }
@@ -204,6 +233,7 @@ function WideRow({ row, split }: Omit<RowProps, "wide">) {
   const { group } = row;
   const rate = group.rate_value;
   const off = rate !== null && rate > ROW_CAP;
+  const p90Off = p90OffScale(group);
   return (
     <li
       className="grid grid-cols-[minmax(0,4.1fr)_minmax(0,3.9fr)_minmax(0,2fr)] items-start gap-x-4 py-3"
@@ -223,7 +253,7 @@ function WideRow({ row, split }: Omit<RowProps, "wide">) {
           <>
             <PooledBar group={group} height={BAR_H} split={split} />
             <div className="mt-3">
-              <Whisker group={group} />
+              <Whisker group={group} marker />
             </div>
           </>
         )}
@@ -239,10 +269,11 @@ function WideRow({ row, split }: Omit<RowProps, "wide">) {
               <span className="text-label text-ink2">{off ? "pooled, off scale" : "pooled"}</span>
             </p>
             {group.median !== null && group.p90 !== null && (
-              <p className="mt-2 text-cap text-ink2">
+              <p className={`mt-2 text-cap text-ink2 ${p90Off ? "pl-2" : ""}`}>
                 median {group.median}, p90 {group.p90}
               </p>
             )}
+            {p90Off && <p className="pl-2 text-cap text-ink2">{P90_OFF_WORDS}</p>}
           </>
         )}
       </div>
@@ -261,10 +292,7 @@ function CompactRow({ row, split }: Omit<RowProps, "wide">) {
         <span className="text-cap text-ink2">{prsWord(group.prs)}</span>
       </p>
       {rate !== null ? (
-        <div
-          className="mt-2 grid items-center gap-y-2"
-          style={{ gridTemplateColumns: `minmax(0, 1fr) ${VALUE_COL}`, columnGap: VALUE_GAP }}
-        >
+        <div className="mt-2 grid items-center gap-y-2" style={VALUE_GRID}>
           <PooledBar group={group} height={COMPACT_BAR_H} split={split} />
           <p className="flex items-baseline gap-x-1.5">
             {off && <OffScale />}
@@ -430,6 +458,7 @@ function WideStageRow({ row }: { row: StageRow }) {
   const { group, main } = row;
   const rate = group.rate_value;
   const off = rate !== null && rate > ROW_CAP;
+  const p90Off = main && p90OffScale(group);
   return (
     <li className={main ? "py-3" : "py-2"} data-row={row.name}>
       <div className={`grid ${main ? "items-start" : "items-center"}`} style={STAGE_GRID}>
@@ -457,7 +486,7 @@ function WideStageRow({ row }: { row: StageRow }) {
               />
               {main && group.median_value !== null && (
                 <div className="mt-2">
-                  <Whisker group={group} />
+                  <Whisker group={group} marker />
                 </div>
               )}
             </>
@@ -475,7 +504,12 @@ function WideStageRow({ row }: { row: StageRow }) {
                 </span>
                 <span className="text-label text-ink2">{off ? "pooled, off scale" : "pooled"}</span>
               </p>
-              {main && <p className="mt-2 text-cap text-ink2">{spreadWords(group)}</p>}
+              {main && (
+                <p className={`mt-2 text-cap text-ink2 ${p90Off ? "pl-2" : ""}`}>
+                  {spreadWords(group)}
+                </p>
+              )}
+              {p90Off && <p className="pl-2 text-cap text-ink2">{P90_OFF_WORDS}</p>}
             </>
           )}
         </div>
@@ -491,6 +525,7 @@ function StageRowItem({ row }: { row: StageRow }) {
   const { group } = row;
   const rate = group.rate_value;
   const off = rate !== null && rate > ROW_CAP;
+  const p90Off = row.main && p90OffScale(group);
   return (
     <li className="py-3" data-row={row.name}>
       <p className="flex flex-wrap items-baseline gap-x-3">
@@ -505,10 +540,7 @@ function StageRowItem({ row }: { row: StageRow }) {
         <p className="mt-1 text-label text-ink2">{servedRate(group.rate, rate, NO_RATE)}</p>
       ) : (
         <>
-          <div
-            className="mt-2 grid items-center"
-            style={{ gridTemplateColumns: `minmax(0, 1fr) ${VALUE_COL}`, columnGap: VALUE_GAP }}
-          >
+          <div className="mt-2 grid items-center" style={VALUE_GRID}>
             <PooledBar
               group={group}
               height={row.folded ? FOLD_BAR_H : COMPACT_BAR_H}
@@ -524,11 +556,13 @@ function StageRowItem({ row }: { row: StageRow }) {
             </p>
           </div>
           {row.main && group.median_value !== null && (
-            <div className="mt-1" style={{ marginRight: `calc(${VALUE_COL} + ${VALUE_GAP})` }}>
+            <div className="mt-1 grid items-center" style={VALUE_GRID}>
               <Whisker group={group} />
+              {p90Off && <OffScale mark="off-scale-p90" />}
             </div>
           )}
           {row.main && <p className="mt-1 text-cap text-ink2">{spreadWords(group)}</p>}
+          {p90Off && <p className="text-cap text-ink2">{P90_OFF_WORDS}</p>}
         </>
       )}
       {row.main && group.owner_lines > 0 && <SplitWords group={group} column />}
