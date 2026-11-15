@@ -20,8 +20,9 @@ const (
 )
 
 // FixRoundInput is one fix-round job's input: the pull request's branch and head,
-// the review's findings, the previous round's state (nil on the first round) and
-// the directory the round's artifact is written to.
+// the review's findings, the previous round's state (nil on a fresh loop, which
+// the job starts at its own clock; a round 0 state is one a caller started
+// earlier) and the directory the round's artifact is written to.
 type FixRoundInput struct {
 	Branch   string
 	Head     string

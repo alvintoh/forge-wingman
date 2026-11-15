@@ -127,7 +127,7 @@ func writeFixLoop(ctx context.Context, logger *slog.Logger, rec fixRoundsRecorde
 	if in.State == nil || len(in.State.Rounds) == 0 {
 		return nil
 	}
-	if awaitedReviewPosted(in.End.AwaitReason, in.AwaitFindings) {
+	if lastRoundAwaited(in.End) && awaitedReviewPosted(in.End.AwaitReason, in.AwaitFindings) {
 		s := in.State.WithReview(in.AwaitFindings)
 		in.State = &s
 	}
@@ -141,6 +141,13 @@ func writeFixLoop(ctx context.Context, logger *slog.Logger, rec fixRoundsRecorde
 	}
 	logger.Info("fixRoundsMerged", "run", in.RunID, "rounds", len(in.State.Rounds))
 	return nil
+}
+
+// lastRoundAwaited reports whether a review was awaited for the last round's own
+// commit. A round that changed no file or whose push was refused has no commit to
+// review, and the workflow's await output then holds an earlier round's.
+func lastRoundAwaited(end runner.FixLoopEnd) bool {
+	return end.Stop != runner.FixStopNoChange && end.PushReason == ""
 }
 
 // awaitedReviewPosted reports whether fix-await reported a review of the head it

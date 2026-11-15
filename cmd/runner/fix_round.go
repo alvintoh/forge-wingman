@@ -16,11 +16,16 @@ import (
 	"github.com/alvintoh/forge-wingman/internal/store"
 )
 
+// fixRoundJob is the job a fix-round step runs, a variable so a test can see the
+// input the step builds without an agent container.
+var fixRoundJob = runner.FixRoundJob
+
 // fixRound runs one fix round at a pull request's head from the state the
 // previous round wrote, and writes the round's artifact under -out. A fresh loop
 // is seeded at -started, so its budget begins where the loop did rather than at
-// this step's clock. It holds the model job's identity and never pushes: the job
-// that reads the artifact does. It refuses to start when its environment holds a
+// this step's clock; with no -started it is seeded at this step's clock. It holds
+// the model job's identity and never pushes: the job that reads the artifact
+// does. It refuses to start when its environment holds a
 // GitHub token, before it reads anything else or runs an agent.
 func fixRound(ctx context.Context, logger *slog.Logger, e env, args []string) error {
 	fs := flag.NewFlagSet("fix-round", flag.ContinueOnError)
@@ -28,7 +33,7 @@ func fixRound(ctx context.Context, logger *slog.Logger, e env, args []string) er
 	head := fs.String("head", "", "the commit the branch is at, which the round commits on")
 	statePath := fs.String("state", "", "the state the previous round wrote; absent on the first round")
 	findings := fs.String("findings", "", "the review's findings, one per line")
-	startedAt := fs.String("started", "", "when the loop started, RFC3339: required on a fresh loop, which measures its budget from it")
+	startedAt := fs.String("started", "", "when the loop started, RFC3339: a fresh loop measures its budget from it, and from this step's clock without one")
 	model := fs.String("model", "", "model, as provider/model")
 	pointer := fs.String("pointer", runner.DefaultPointer, "object naming the current rule-stack sha")
 	ticketFile := fs.String("ticket-file", "", "path to the run's ticket, as the ticket subcommand wrote it")
@@ -62,6 +67,9 @@ func fixRound(ctx context.Context, logger *slog.Logger, e env, args []string) er
 	if err != nil {
 		return fail(err)
 	}
+	if state == nil {
+		logger.Warn("fixRoundStartDefaulted", "attempt", e.attemptID)
+	}
 	if err := requireImages(map[string]string{"agent-image": *agentImage}); err != nil {
 		return fail(err)
 	}
@@ -78,7 +86,7 @@ func fixRound(ctx context.Context, logger *slog.Logger, e env, args []string) er
 			defer func() { _ = gcs.Close() }()
 
 			logger = logger.With("attempt", e.attemptID, "ticket", t.ID)
-			res, err := runner.FixRoundJob(ctx, runner.BuildDeps{
+			res, err := fixRoundJob(ctx, runner.BuildDeps{
 				Projections: store.NewBucket(gcs, e.project+"-projections"),
 				Completions: store.NewBucket(gcs, e.project+"-completions"),
 				Agent:       runner.NewRouter(runner.ProfileBuild, contained...),
@@ -106,19 +114,20 @@ func fixRound(ctx context.Context, logger *slog.Logger, e env, args []string) er
 // fixLoopState is the state the round runs from: prev, when a round already
 // wrote one, or a fresh loop's own, started at the -started time so the wait for
 // the review before round 1 counts against fixRoundsBudget. A fresh loop with no
-// start is refused rather than measured from this step's clock, and a start that
-// is not an RFC3339 time or is ahead of this step's clock is refused whether or
-// not a previous state was given; with one, the loop keeps the start it has.
+// start gets nil, which the job seeds at its own clock: a workflow that does not
+// pass -started yet still runs. A start that is not an RFC3339 time, is the zero
+// time or is ahead of this step's clock is refused whether or not a previous
+// state was given; with one, the loop keeps the start it has.
 func fixLoopState(prev *runner.FixRoundsState, started string, now time.Time) (*runner.FixRoundsState, error) {
 	if started == "" {
-		if prev == nil {
-			return nil, errors.New("fix-round needs -started on a fresh loop, so the loop's budget starts where the loop did")
-		}
 		return prev, nil
 	}
 	start, err := time.Parse(time.RFC3339, started)
 	if err != nil {
 		return nil, fmt.Errorf("fix-round needs -started as an RFC3339 time: %w", err)
+	}
+	if start.IsZero() {
+		return nil, errors.New("fix-round's -started is the zero time")
 	}
 	if start.After(now.Add(runner.FixRoundsClockSkew)) {
 		return nil, errors.New("fix-round's -started is ahead of this step's clock")

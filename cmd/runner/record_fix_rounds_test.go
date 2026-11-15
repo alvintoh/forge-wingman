@@ -190,6 +190,32 @@ func TestWriteFixLoopFillsTheLastRoundsReviewFromTheLastAwait(t *testing.T) {
 	}
 }
 
+// TestWriteFixLoopLeavesALastRoundWithNoCommitUnreviewed: the workflow's await
+// reason falls back through earlier rounds, so a last round that changed no file
+// or whose push was refused must not be filled from an await that reviewed another.
+func TestWriteFixLoopLeavesALastRoundWithNoCommitUnreviewed(t *testing.T) {
+	for name, end := range map[string]runner.FixLoopEnd{
+		"a round that changed no file": {Stop: runner.FixStopNoChange, AwaitReason: fixAwaitReasonFindings},
+		"a push that was refused":      {PushReason: "lease-lost", AwaitReason: fixAwaitReasonFindings},
+	} {
+		t.Run(name, func(t *testing.T) {
+			now := time.Now()
+			rec := &fakeFixRecorder{}
+			in := fixLoopRecord{RunID: "run-1", AttemptID: "42-1", State: unreviewedState(now, "a finding", "another finding"),
+				AwaitFindings: "b", End: end}
+			if err := writeFixLoop(context.Background(), quietLogger(), rec, in, now); err != nil {
+				t.Fatal(err)
+			}
+			if len(rec.merged) != 1 {
+				t.Fatalf("merged %+v, want the one round", rec.merged)
+			}
+			if got := rec.merged[0]; got.Reviewed || got.Resolved != 0 || got.New != 0 {
+				t.Fatalf("round = reviewed %v, %d resolved, %d new; want it left unreviewed", got.Reviewed, got.Resolved, got.New)
+			}
+		})
+	}
+}
+
 func writeState(t *testing.T, s *runner.FixRoundsState) string {
 	t.Helper()
 	raw, err := json.Marshal(s)
