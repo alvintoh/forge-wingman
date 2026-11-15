@@ -223,6 +223,16 @@ commands instead.
 
 *(Judgment call, owner-confirmed 2026-10-01: "why keep asking me to do it".)*
 
+## Reviews in this repo
+
+This repo has no `claude.yml`, so an `@claude` comment triggers nothing. Its reviewer is
+`pr-review.yml` (the `wingman-review` status), which skips drafts and runs on ready, reopen
+and, for `wingman/` branches, every push. To get a draft reviewed, mark it ready; this replaces
+the work profile's `@claude` request for this repo.
+
+*(Verified 2026-11-15 on PR 368: the `@claude` comment started no workflow, and marking the
+PR ready produced the review.)*
+
 ## Applying OpenTofu for the owner
 
 When a change needs `tofu apply`, I run it myself instead of handing the command back. Only when
