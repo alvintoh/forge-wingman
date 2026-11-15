@@ -47,7 +47,8 @@ const tile = (prs: number[]): Tile => ({
   trend: "down",
 });
 
-const tiles = [tile([175, 12]), tile([175]), tile([175])];
+// The last PR's own lines differ from the other windows', so reading another tile's shows.
+const tiles = [tile([175, 12]), tile([175]), { ...tile([175]), agent_lines: 520, owner_lines: 31 }];
 
 function lastTile(prs: PR[], at: number) {
   width = at;
@@ -66,8 +67,12 @@ describe("the last-PR tile", () => {
       it("ends with the PR link, after the trend and the agent lines", () => {
         const link = markup.indexOf('<a href="https://github.com/alvintoh/forge-wingman/pull/175"');
         expect(link).toBeGreaterThan(markup.indexOf("down"));
-        expect(markup).toContain("agent lines");
-        expect(link).toBeGreaterThan(markup.indexOf("agent lines"));
+        expect(markup).toMatch(
+          at === 900
+            ? />31 of 520 agent lines</
+            : />31 of 520<\/span><span class="block">agent lines</,
+        );
+        expect(link).toBeGreaterThan(markup.indexOf("31 of 520"));
         expect(markup.indexOf("</a>")).toBe(markup.lastIndexOf("</p></li>") - "</a>".length);
       });
 
@@ -94,7 +99,7 @@ describe("the last-PR tile", () => {
     expect(markup).toMatch(
       /<p[^>]*><span[^>]*>#175<span[^>]*>alvintoh\/<wbr\/>forge-wingman<\/span><\/span><\/p><\/li>$/,
     );
-    expect(markup.indexOf("#175")).toBeGreaterThan(markup.indexOf("1,234 agent lines"));
+    expect(markup.indexOf("#175")).toBeGreaterThan(markup.indexOf("31 of 520 agent lines"));
   });
 });
 
@@ -138,6 +143,20 @@ describe("the lines caption", () => {
       });
     });
   }
+
+  it("sets the first row on the trend's first baseline where a tile has no trend", () => {
+    const markups = tileMarkups(
+      420,
+      windows.map((w, k) => (k === 1 ? { ...w, previous_rate_value: null } : w)),
+    );
+    expect(markups[1]).not.toContain("from 5.8%");
+    expect(markups[1]).toMatch(
+      /<p class="pt-\[3px\] text-micro[^"]*"><span class="block">2,293 of 6,002</,
+    );
+    expect(markups[0]).toMatch(
+      /<p class="pt-\[5\.5px\] text-micro[^"]*"><span class="block">3,440 of 7,982</,
+    );
+  });
 
   it("states nothing for a window with no agent lines", () => {
     const none = { ...tile([175]), agent_lines: 0, owner_lines: 4715, rate: "no agent lines" };

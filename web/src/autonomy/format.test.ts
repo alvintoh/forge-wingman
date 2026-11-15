@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { linesCaption, modelName, wholePercent } from "./format";
+import { linesFigures, modelName, wholePercent } from "./format";
 import type { Tile } from "./types";
 
 describe("wholePercent", () => {
@@ -38,7 +38,7 @@ describe("modelName", () => {
   });
 });
 
-describe("linesCaption", () => {
+describe("linesFigures", () => {
   const tile: Tile = {
     prs: [175],
     asked: 10,
@@ -51,14 +51,10 @@ describe("linesCaption", () => {
   };
 
   it("states the owner lines of the agent lines, with thousands separators", () => {
-    expect(linesCaption(tile)).toEqual({
-      figures: "3,440 of 7,982",
-      noun: "agent lines",
-      text: "3,440 of 7,982 agent lines",
-    });
+    expect(linesFigures(tile)).toBe("3,440 of 7,982");
   });
 
   it("states nothing for a window with no agent lines", () => {
-    expect(linesCaption({ ...tile, agent_lines: 0, owner_lines: 4715 })).toBeNull();
+    expect(linesFigures({ ...tile, agent_lines: 0, owner_lines: 4715 })).toBeNull();
   });
 });

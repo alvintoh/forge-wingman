@@ -1,5 +1,12 @@
 import { parsePull } from "../inbox/run";
-import { lastPrRepo, linesCaption, tileWords, trendWords, windowAboveGuideline } from "./format";
+import {
+  LINES_NOUN,
+  lastPrRepo,
+  linesFigures,
+  tileWords,
+  trendWords,
+  windowAboveGuideline,
+} from "./format";
 import { TrendArrow } from "./marks";
 import { useWidth } from "./use-width";
 import type { PR, Tile } from "./types";
@@ -75,7 +82,7 @@ function TileCard({ label, tile, index, bar, prs, beside, roomy }: TileCardProps
   const words = tileWords(tile, index, bar);
   const hot = index === 0 && windowAboveGuideline(tile, bar);
   const trend = trendWords(tile);
-  const lines = linesCaption(tile);
+  const lines = linesFigures(tile);
   const lastPR = index === 2 ? tile.prs[0] : undefined;
   const number = (
     <span
@@ -119,7 +126,7 @@ function TileCard({ label, tile, index, bar, prs, beside, roomy }: TileCardProps
             )}
             <p className="flex min-w-0 flex-wrap items-baseline gap-x-3">
               {trend !== null && <span className="font-semibold text-ink">{trend}</span>}
-              {lines !== null && <span className="text-muted">{lines.text}</span>}
+              {lines !== null && <span className="text-muted">{`${lines} ${LINES_NOUN}`}</span>}
             </p>
           </div>
         ) : (
@@ -135,11 +142,14 @@ function TileCard({ label, tile, index, bar, prs, beside, roomy }: TileCardProps
               </div>
             )}
             {lines !== null && (
-              // 5.5px over two 14px rows is one 19.5px row of the trend's text plus the
-              // drawing's 14px step, so every tile in the row grows by 14px alike.
-              <p className="pt-[5.5px] text-micro leading-[14px] text-muted">
-                <span className="block">{lines.figures}</span>
-                <span className="block">{lines.noun}</span>
+              // Under the trend, 5.5px over two 14px rows is one 19.5px row of its text plus
+              // the drawing's 14px step, so every tile in the row grows by 14px alike. With
+              // no trend, 3px puts the first row on the trend's first baseline, as drawn.
+              <p
+                className={`${trend === null ? "pt-[3px]" : "pt-[5.5px]"} text-micro leading-[14px] text-muted`}
+              >
+                <span className="block">{lines}</span>
+                <span className="block">{LINES_NOUN}</span>
               </p>
             )}
           </div>

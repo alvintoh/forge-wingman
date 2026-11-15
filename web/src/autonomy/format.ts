@@ -262,20 +262,17 @@ const COUNT_WORDS = [
   "ten",
 ];
 
-// LinesCaption is the lines a tile's rate is made of: its two figures, the noun
-// set under them where the tile is narrow, and the whole as one line.
-export type LinesCaption = { figures: string; noun: string; text: string };
+// LINES_NOUN follows a tile's line figures, under them where the tile is narrow.
+export const LINES_NOUN = "agent lines";
 
-const LINES_NOUN = "agent lines";
-
-// linesCaption is a tile's owner lines of its agent lines, from the rate's own
-// window, or null for a window with no agent lines and so nothing to divide.
-export function linesCaption(tile: Tile): LinesCaption | null {
+// linesFigures is a tile's owner lines of its agent lines, "3,440 of 7,982", from
+// the rate's own window, or null for a window with no agent lines and so nothing
+// to divide.
+export function linesFigures(tile: Tile): string | null {
   if (tile.agent_lines === 0) {
     return null;
   }
-  const figures = `${count(tile.owner_lines)} of ${count(tile.agent_lines)}`;
-  return { figures, noun: LINES_NOUN, text: `${figures} ${LINES_NOUN}` };
+  return `${count(tile.owner_lines)} of ${count(tile.agent_lines)}`;
 }
 
 // The share of a group's lines the owner changed after review, as the three the

@@ -154,6 +154,13 @@ describe("the pinned Last 10 PRs row", () => {
     expect(short).not.toContain("ten newest");
   });
 
+  it("is left out, with its note, while the trailing-ten window has no PRs", () => {
+    const empty = render({ prs: twelve, tiles: [{ ...trailing, prs: [] }] });
+    expect(empty).not.toContain("Last 0");
+    expect(empty).not.toContain("totals the");
+    expect(empty).toContain("#200");
+  });
+
   it("is red above the guideline only once its window is full, as the tile is", () => {
     const full = pinnedBody(render({ prs: twelve, tiles: [trailing] }));
     expect(full).toContain("text-stop");

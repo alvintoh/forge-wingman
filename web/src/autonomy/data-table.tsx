@@ -6,6 +6,7 @@ import { Pager } from "../pager";
 import { sydneyDateTime } from "../sydney-date-time";
 import { prKey } from "./axis";
 import {
+  LINES_NOUN,
   NO_RATE,
   UNKNOWN_MODEL,
   count,
@@ -13,7 +14,7 @@ import {
   isPrsWord,
   isRed,
   lastPrRepo,
-  linesCaption,
+  linesFigures,
   modelName,
   noAgentNote,
   percent,
@@ -560,6 +561,9 @@ export function DataSection({ rewrite, className }: DataSectionProps) {
   // lists span more than one.
   const manyRepos = new Set(rewrite.prs.map((pr) => pr.repo)).size > 1;
   const measured = rewrite.prs.length > 0;
+  // A trailing-ten window with no PRs has nothing to pin.
+  const trailing = rewrite.tiles[0];
+  const pinned = trailing !== undefined && trailing.prs.length > 0 ? trailing : undefined;
   return (
     <section aria-labelledby="data-title" className={className}>
       <h2 id="data-title" className="text-head font-semibold text-ink">
@@ -614,13 +618,11 @@ export function DataSection({ rewrite, className }: DataSectionProps) {
                   {
                     head: "Trend arrow, in words",
                     long: true,
-                    render: (entry) =>
-                      [
-                        trendWords(entry.tile) ?? "no earlier window",
-                        linesCaption(entry.tile)?.text,
-                      ]
-                        .filter((part) => part !== undefined)
-                        .join(", "),
+                    render: (entry) => {
+                      const trend = trendWords(entry.tile) ?? "no earlier window";
+                      const lines = linesFigures(entry.tile);
+                      return lines === null ? trend : `${trend}, ${lines} ${LINES_NOUN}`;
+                    },
                   },
                 ]}
               />
@@ -703,7 +705,7 @@ export function DataSection({ rewrite, className }: DataSectionProps) {
               </p>
             ))}
           </div>
-          <PagedPRs prs={rewrite.prs} bar={bar} showRepo={manyRepos} pinned={rewrite.tiles[0]} />
+          <PagedPRs prs={rewrite.prs} bar={bar} showRepo={manyRepos} pinned={pinned} />
         </div>
       )}
     </section>

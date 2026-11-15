@@ -366,7 +366,7 @@ function Trend({ axis, width, series, bar, height, side, padx, refY }: TrendProp
     observer.observe(note);
     observer.observe(reference);
     return () => observer.disconnect();
-  }, [refY, side]);
+  }, [refY, side, bar, width]);
 
   return (
     <>
