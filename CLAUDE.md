@@ -129,14 +129,15 @@ this file as project memory, so the rules below reach the run.
   truth is established; applying it to ticket text is a judgment call. Verified 2026-10-27: FRG-226,
   231, 233 and 234 told the runner not to build them while START would have delegated all four.)*
 
-- **A ticket mixing code and workflow edits is split before it is delegated, and a blocked-by link
-  names a code dependency only.** The runner refuses any plan that edits `.github/workflows/`, so
-  one criterion naming a workflow file makes the whole ticket the owner's: put the code criteria
-  in the ticket the runner builds, with the exemption sentence, and the workflow criteria in a
-  follow-up blocked by it. A merged PR's ticket stays In Review until its live legs run, and the
-  dispatcher treats a blocker as open until Done, so linking to it holds the ticket that would run
-  those legs. *(Judgment call. Verified 2026-11-16: FRG-332's workflow criterion made it
-  undelegable, and FRG-321, merged but In Review for live legs, blocked it.)*
+- **A ticket mixing code and workflow edits is split before it is delegated.** The runner
+  refuses any plan that edits `.github/workflows/`, so one criterion naming a workflow file makes
+  the whole ticket the owner's: put the code criteria in the ticket the runner builds, with the
+  exemption sentence, and the workflow criteria in a separate ticket for the owner. **A
+  blocked-by link names a code dependency only, never a ticket waiting on live legs:** a merged
+  PR's ticket stays In Review until its live legs run, and the dispatcher treats a blocker as open
+  until Done, so such a link holds the dependent ticket indefinitely. *(Judgment call. Verified
+  2026-11-16: FRG-332's workflow criterion made it undelegable, and FRG-321, merged but In Review
+  for live legs, blocked it.)*
 
 - **Combine cohesive work into one ticket up to size M rather than filing several S tickets.**
   Each run pays a fixed cost per PR: CI, the review pass, a merge and deploy, and a rebase when
