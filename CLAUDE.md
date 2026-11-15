@@ -89,7 +89,10 @@ this file as project memory, so the rules below reach the run.
   something to prove. Every call site, dispatcher case, request header and clamp a PR adds is a
   guard too: a test of the callee stays green when the call is deleted, so the test goes through
   the entry point and goes red when that line is removed (PR 361's review found nine that stayed
-  green). *(Judgment call; same classification, extended 2026-11-14.)*
+  green). A fake server that routes by prefix lets a request for the wrong resource pass, so a
+  fake asserts the exact path and query it should receive (PR 361: reading a commit's statuses for
+  `HEAD` instead of the sha stayed green). *(Judgment call; same classification, extended
+  2026-11-14.)*
 
 - **A record the runner writes is written within the limits its reader enforces.** The state
   record's reader capped its lists at 24 while its writer capped nothing, so a long agent reply
@@ -125,6 +128,15 @@ this file as project memory, so the rules below reach the run.
   review". *(Owner's instruction 2026-10-27: START needs no further configuration. Single source of
   truth is established; applying it to ticket text is a judgment call. Verified 2026-10-27: FRG-226,
   231, 233 and 234 told the runner not to build them while START would have delegated all four.)*
+
+- **A ticket mixing code and workflow edits is split before it is delegated, and a blocked-by link
+  names a code dependency only.** The runner refuses any plan that edits `.github/workflows/`, so
+  one criterion naming a workflow file makes the whole ticket the owner's: put the code criteria
+  in the ticket the runner builds, with the exemption sentence, and the workflow criteria in a
+  follow-up blocked by it. A merged PR's ticket stays In Review until its live legs run, and the
+  dispatcher treats a blocker as open until Done, so linking to it holds the ticket that would run
+  those legs. *(Judgment call. Verified 2026-11-16: FRG-332's workflow criterion made it
+  undelegable, and FRG-321, merged but In Review for live legs, blocked it.)*
 
 - **Combine cohesive work into one ticket up to size M rather than filing several S tickets.**
   Each run pays a fixed cost per PR: CI, the review pass, a merge and deploy, and a rebase when
