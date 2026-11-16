@@ -69,12 +69,13 @@ var (
 	}
 )
 
-// signalSize is the size a ticket's title and description imply, and the
+// SignalSize is the size a ticket's title and description imply, and the
 // signals that set it. Doubt always picks the larger size, so a ticket is S
 // only when nothing argues for M, and M only when nothing argues for L: a
 // ticket with no criteria to count is L, and one with more than maxACs is
-// aboveCeiling.
-func signalSize(title, body string) (size, reason string) {
+// aboveCeiling. The dispatcher's admission path and the owner's `runner size`
+// both read a size from here, so a threshold changed here changes both.
+func SignalSize(title, body string) (size, reason string) {
 	criteria, ok := acceptanceCriteria(body)
 	n := len(acItem.FindAllStringIndex(criteria, -1))
 	if !ok || n == 0 {

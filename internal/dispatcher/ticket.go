@@ -10,18 +10,18 @@ import (
 )
 
 const (
-	// sizePrefix and repoPrefix label a ticket for the dispatcher: a hand-set
+	// SizePrefix and repoPrefix label a ticket for the dispatcher: a hand-set
 	// size, and the repository its run is built in.
-	sizePrefix = "size:"
+	SizePrefix = "size:"
 	repoPrefix = "repo:"
 	// modelPrefix, reviewModelPrefix and planModelPrefix name the model a ticket
 	// asks a phase to run on; the plan label takes an ordered, comma-separated list.
 	modelPrefix       = runner.ModelLabelPrefix
 	reviewModelPrefix = "review-model:"
 	planModelPrefix   = "plan-model:"
-	// sizedByLabel is what sized a ticket carrying a size label, the owner's
+	// SizedByLabel is what sized a ticket carrying a size label, the owner's
 	// own sizing, which always overrides the sizer.
-	sizedByLabel = "linear-label"
+	SizedByLabel = "linear-label"
 	// ceilingSize is the largest ticket the queue admits.
 	ceilingSize = "L"
 	// aboveCeiling is the size label naming the next ticket up, which one run
@@ -93,9 +93,9 @@ func repository(labels, allow []string) (string, Refusal, string) {
 // carries one, else the signals in its own title and description. The refusal
 // is a label outside the ladder, or a size above the ceiling from either.
 func ticketSize(issue Issue) (size, sizedBy string, reason Refusal, detail string) {
-	label, ok := labelValue(issue.Labels, sizePrefix)
+	label, ok := labelValue(issue.Labels, SizePrefix)
 	if !ok {
-		got, why := signalSize(issue.Title, issue.Body)
+		got, why := SignalSize(issue.Title, issue.Body)
 		if got == aboveCeiling {
 			return "", "", RefusalAboveCeiling, "sized " + got + " by its signals, above " + ceilingSize + ": " + why
 		}
@@ -103,7 +103,7 @@ func ticketSize(issue Issue) (size, sizedBy string, reason Refusal, detail strin
 	}
 	switch s := strings.ToUpper(label); {
 	case sizes[s]:
-		return s, sizedByLabel, "", ""
+		return s, SizedByLabel, "", ""
 	case s == aboveCeiling:
 		return "", "", RefusalAboveCeiling, "size " + s + " is above " + ceilingSize
 	}

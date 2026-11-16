@@ -1,6 +1,7 @@
 // Command runner executes one run inside a repository's GitHub Actions workflow.
 //
 //	runner ticket          -run-id <id> -out <path> write the run record's ticket to a file for the model job
+//	runner size            -ticket-file <path>     print the size the sizer gives a ticket and the signals that set it
 //	runner build           -model <provider/model>  fetch the projection, run the agent, bundle the branch, emit a summary
 //	runner plan-stage      -ticket-file <path> -out <path>  run the plan phase alone and write its file list for the record job
 //	runner record-plan-stage -run-id <id> -plan-file <path>  re-check the plan, record it, settle it and wake the dispatcher
@@ -85,12 +86,14 @@ func exitCode(err error) int {
 
 func run(ctx context.Context, logger *slog.Logger, args []string, getenv func(string) string) error {
 	if len(args) == 0 {
-		return errors.New("usage: runner ticket|build|plan-stage|record-plan-stage|pr-meta|pr|record|enable-provider|reset-breaker|peak-mode|auto-merge|requeue|backfill-queued-at|project-add|project-remove|project-stop|project-resume|plan-define|plan-verdict|plan-reply|plan-list|plans-refresh|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post|fix-await|fix-push|fix-round|record-fix-rounds|agent-probe|egress-proxy [flags]")
+		return errors.New("usage: runner ticket|size|build|plan-stage|record-plan-stage|pr-meta|pr|record|enable-provider|reset-breaker|peak-mode|auto-merge|requeue|backfill-queued-at|project-add|project-remove|project-stop|project-resume|plan-define|plan-verdict|plan-reply|plan-list|plans-refresh|plan-smoke|review-smoke|pr-review-context|pr-review|pr-review-post|fix-await|fix-push|fix-round|record-fix-rounds|agent-probe|egress-proxy [flags]")
 	}
 	if args[0] == "plan-smoke" {
 		return planSmoke(ctx, logger, getenv, args[1:])
 	}
 	switch args[0] {
+	case "size":
+		return sizeTicket(os.Stdout, args[1:])
 	case "review-smoke":
 		return reviewSmoke(ctx, logger, getenv, args[1:])
 	case "pr":
