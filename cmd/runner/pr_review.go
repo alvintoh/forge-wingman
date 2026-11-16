@@ -279,9 +279,9 @@ func withStore(ctx context.Context, getenv func(string) string, open func(contex
 	return fn(fsc)
 }
 
-// openStore is firestore.NewClient in the fixed-arity shape withStore's seam
+// openProjectStore is firestore.NewClient in the fixed-arity shape withStore's seam
 // takes, its options dropped: every read here opens a client without one.
-func openStore(ctx context.Context, project string) (*firestore.Client, error) {
+func openProjectStore(ctx context.Context, project string) (*firestore.Client, error) {
 	return firestore.NewClient(ctx, project)
 }
 
@@ -294,7 +294,7 @@ type autoMergeSettings func(ctx context.Context) (store.AutoMergeSetting, error)
 func storedAutoMergeSettings(getenv func(string) string) autoMergeSettings {
 	return func(ctx context.Context) (store.AutoMergeSetting, error) {
 		var setting store.AutoMergeSetting
-		err := withStore(ctx, getenv, openStore, func(fsc *firestore.Client) error {
+		err := withStore(ctx, getenv, openProjectStore, func(fsc *firestore.Client) error {
 			var err error
 			setting, err = store.NewAutoMergeSwitches(fsc).Read(ctx)
 			return err
@@ -312,7 +312,7 @@ type rewriteRate func(ctx context.Context) dispatcher.AutoMergeDecision
 func storedRewriteRate(getenv func(string) string) rewriteRate {
 	return func(ctx context.Context) dispatcher.AutoMergeDecision {
 		var d dispatcher.AutoMergeDecision
-		err := withStore(ctx, getenv, openStore, func(fsc *firestore.Client) error {
+		err := withStore(ctx, getenv, openProjectStore, func(fsc *firestore.Client) error {
 			var err error
 			d, err = autoMergeRateOf(ctx, store.NewRewrites(fsc))
 			return err
