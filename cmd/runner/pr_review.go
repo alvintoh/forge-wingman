@@ -53,11 +53,17 @@ var skipDescriptions = map[string]string{
 
 // The descriptions a review posts with its status. fix-await classifies a status
 // by their prefixes, so the poster and the reader share the words rather than
-// each holding its own copy.
+// each holding its own copy. A status opens a sentence, so the no-verdict cause
+// is capitalised there — "No verdict: allowance exhausted" — while the review
+// comment's heading carries the same words lower-case.
 const (
-	cleanStatusDescription     = "Clean: no findings from "
-	findingsStatusDescription  = "Findings from "
-	noVerdictStatusDescription = "No verdict: every review model failed; waits for the owner"
+	cleanStatusDescription    = "Clean: no findings from "
+	findingsStatusDescription = "Findings from "
+	// noVerdictStatusPrefix opens both no-verdict descriptions, which differ in
+	// the cause they name and not in what they ask of the owner.
+	noVerdictStatusPrefix               = "No verdict: "
+	noVerdictAllowanceStatusDescription = noVerdictStatusPrefix + "allowance exhausted; waits for the owner"
+	noVerdictFailedStatusDescription    = noVerdictStatusPrefix + "failed; waits for the owner"
 )
 
 // errReviewAppNoTeam fails a review whose ticket reads as missing because the
@@ -387,7 +393,9 @@ type postPlan struct {
 }
 
 // planPost decides what a review publishes. A skipped or failed context sets
-// an error status and no comment; an unreadable or absent verdict is no verdict.
+// an error status and no comment; an unreadable or absent verdict is no verdict
+// that failed, and a verdict whose every model reported an exhausted allowance
+// is no verdict that says so.
 func planPost(skipReason, contextResult string, v runner.PRVerdict, verdictErr error, sha, runURL string) postPlan {
 	status := func(state, description string) commitStatus {
 		return commitStatus{State: state, Description: truncateRunes(description, maxStatusDescription), Context: prReviewStatusContext, TargetURL: runURL}
@@ -412,7 +420,10 @@ func planPost(skipReason, contextResult string, v runner.PRVerdict, verdictErr e
 	case runner.PRReviewFindings:
 		return postPlan{comment: comment, status: status("failure", findingsStatusDescription+v.Model+"; see the review comment")}
 	default:
-		return postPlan{comment: comment, status: status("failure", noVerdictStatusDescription)}
+		if v.AllowanceExhausted() {
+			return postPlan{comment: comment, status: status("failure", noVerdictAllowanceStatusDescription)}
+		}
+		return postPlan{comment: comment, status: status("failure", noVerdictFailedStatusDescription)}
 	}
 }
 
@@ -458,7 +469,12 @@ func renderReviewComment(v runner.PRVerdict, sha, runURL string) string {
 	case runner.PRReviewFindings:
 		fmt.Fprintf(&b, "### Wingman review: findings\n\nAt `%s`:\n\n%s\n", shortSHA(sha), fenced(neutralise(v.Findings)))
 	default:
-		fmt.Fprintf(&b, "### Wingman review: no verdict\n\nNo review model returned a verdict at `%s`, so this pull request waits for the owner.\n", shortSHA(sha))
+		heading, opening := "no verdict: failed", "No review model returned a verdict at `"+shortSHA(sha)+"`, so this pull request waits for the owner."
+		if v.AllowanceExhausted() {
+			heading = "no verdict: allowance exhausted"
+			opening = "No review model returned a verdict at `" + shortSHA(sha) + "`: every one reported its plan's allowance spent, so this pull request waits for the owner."
+		}
+		fmt.Fprintf(&b, "### Wingman review: %s\n\n%s\n", heading, opening)
 		for _, a := range v.Attempts {
 			fmt.Fprintf(&b, "\n- `%s`: %s", a.Model, a.Outcome)
 		}

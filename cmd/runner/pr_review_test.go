@@ -225,6 +225,16 @@ func verdict(outcome, findings, model string) runner.PRVerdict {
 		Attempts: []runner.PRReviewAttempt{{Model: museModel, Outcome: runner.AttemptReviewed}}}
 }
 
+// noVerdict is a review no model reached a verdict on, with each attempt's own outcome.
+func noVerdict(attempts ...runner.PRReviewAttempt) runner.PRVerdict {
+	return runner.PRVerdict{Outcome: runner.PRReviewNoVerdict, Attempts: attempts}
+}
+
+// attempted is one model's try at a review, which ended outcome.
+func attempted(model, outcome string) runner.PRReviewAttempt {
+	return runner.PRReviewAttempt{Model: model, Outcome: outcome}
+}
+
 func TestPlanPost(t *testing.T) {
 	const runURL = "https://github.com/o/r/actions/runs/9"
 	for name, tt := range map[string]struct {
@@ -237,8 +247,8 @@ func TestPlanPost(t *testing.T) {
 	}{
 		"a clean review":         {"", "success", verdict("clean", "", museModel), nil, "success", "### Wingman review: clean", true},
 		"findings":               {"", "success", verdict("findings", "x is missing", museModel), nil, "failure", "### Wingman review: findings", false},
-		"no verdict":             {"", "success", verdict("no-verdict", "", ""), nil, "failure", "### Wingman review: no verdict", false},
-		"an unreadable verdict":  {"", "success", verdict("clean", "", museModel), errors.New("bad"), "failure", "### Wingman review: no verdict", false},
+		"no verdict: failed":     {"", "success", noVerdict(attempted(museModel, runner.AttemptFailed)), nil, "failure", "### Wingman review: no verdict: failed", false},
+		"an unreadable verdict":  {"", "success", verdict("clean", "", museModel), errors.New("bad"), "failure", "### Wingman review: no verdict: failed", false},
 		"no ticket id":           {"no-ticket-id", "success", runner.PRVerdict{}, nil, "error", "", false},
 		"an unknown skip reason": {"<b>", "success", runner.PRVerdict{}, nil, "error", "", false},
 		"a failed context":       {"", "failure", runner.PRVerdict{}, nil, "error", "", false},
@@ -253,6 +263,23 @@ func TestPlanPost(t *testing.T) {
 				t.Fatalf("comment = %q, want %q", got.comment, tt.wantComment)
 			}
 		})
+	}
+}
+
+// TestPlanPostNamesTheNoVerdictCause: an allowance the reviewer reported spent
+// reads differently from a failure, on the comment and the status alike.
+func TestPlanPostNamesTheNoVerdictCause(t *testing.T) {
+	spent := noVerdict(attempted(museModel, runner.AttemptExhausted), attempted(pricedModel, runner.AttemptExhausted))
+	got := planPost("", "success", spent, nil, headSHA, "")
+	if want := "### Wingman review: no verdict: allowance exhausted"; !strings.Contains(got.comment, want) ||
+		!strings.HasPrefix(got.status.Description, "No verdict: allowance exhausted") {
+		t.Fatalf("an exhausted allowance posted %+v, want %q on the comment and its status", got, want)
+	}
+	mixed := noVerdict(attempted(museModel, runner.AttemptExhausted), attempted(pricedModel, runner.AttemptTimedOut))
+	got = planPost("", "success", mixed, nil, headSHA, "")
+	if want := "### Wingman review: no verdict: failed"; !strings.Contains(got.comment, want) ||
+		!strings.HasPrefix(got.status.Description, "No verdict: failed") {
+		t.Fatalf("a partly exhausted review posted %+v, want %q on the comment and its status", got, want)
 	}
 }
 
@@ -278,6 +305,21 @@ func TestRenderReviewCommentNeutralisesTheFindings(t *testing.T) {
 	}
 }
 
+func TestRenderReviewCommentNamesTheNoVerdictCause(t *testing.T) {
+	spent := noVerdict(attempted(museModel, runner.AttemptExhausted), attempted(pricedModel, runner.AttemptExhausted))
+	got := renderReviewComment(spent, headSHA, "")
+	if !strings.Contains(got, "### Wingman review: no verdict: allowance exhausted\n") ||
+		!strings.Contains(got, "- `"+museModel+"`: allowance exhausted\n") ||
+		!strings.Contains(got, "- `"+pricedModel+"`: allowance exhausted\n") {
+		t.Fatalf("comment = %q, want the allowance and each model that reported it", got)
+	}
+	failed := noVerdict(attempted(museModel, runner.AttemptFailed))
+	got = renderReviewComment(failed, headSHA, "")
+	if !strings.Contains(got, "### Wingman review: no verdict: failed\n") || strings.Contains(got, "allowance exhausted") {
+		t.Fatalf("comment = %q, want a failure that names no allowance", got)
+	}
+}
+
 func TestShortSHAKeepsAShortHeadWhole(t *testing.T) {
 	if got := shortSHA(headSHA); got != headSHA[:12] {
 		t.Fatalf("shortSHA = %q, want the first 12 characters", got)
@@ -290,7 +332,7 @@ func TestShortSHAKeepsAShortHeadWhole(t *testing.T) {
 func TestParseReviewCommentRoundTripsEveryComment(t *testing.T) {
 	for _, v := range []runner.PRVerdict{
 		verdict("clean", "", museModel),
-		verdict("no-verdict", "", ""),
+		noVerdict(attempted(museModel, runner.AttemptFailed)),
 		verdict("findings", "the retry never bounds `attempts`\nping @octocat\n```go\nif x {\n```\n# not a heading", museModel),
 	} {
 		t.Run(v.Outcome, func(t *testing.T) {

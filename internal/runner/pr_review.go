@@ -24,6 +24,7 @@ const (
 	AttemptReviewed   = "reviewed"
 	AttemptTimedOut   = "timed out"
 	AttemptUnreadable = "findings unreadable"
+	AttemptExhausted  = "allowance exhausted"
 	AttemptFailed     = "agent failed"
 )
 
@@ -136,7 +137,7 @@ type PRVerdict struct {
 	Attempts []PRReviewAttempt `json:"attempts"`
 }
 
-var attemptOutcomes = map[string]bool{AttemptReviewed: true, AttemptTimedOut: true, AttemptUnreadable: true, AttemptFailed: true}
+var attemptOutcomes = map[string]bool{AttemptReviewed: true, AttemptTimedOut: true, AttemptUnreadable: true, AttemptExhausted: true, AttemptFailed: true}
 
 // ParsePRVerdict decodes a verdict and validates it as untrusted data.
 func ParsePRVerdict(raw []byte) (PRVerdict, error) {
@@ -173,6 +174,21 @@ func ParsePRVerdict(raw []byte) (PRVerdict, error) {
 	return v, nil
 }
 
+// AllowanceExhausted reports whether the review ended without a verdict because
+// every model reported its plan's allowance spent. Any other failed attempt is
+// a fault of the reviewer, which the marker cannot cover.
+func (v PRVerdict) AllowanceExhausted() bool {
+	if v.Outcome != PRReviewNoVerdict || len(v.Attempts) == 0 {
+		return false
+	}
+	for _, a := range v.Attempts {
+		if a.Outcome != AttemptExhausted {
+			return false
+		}
+	}
+	return true
+}
+
 // decodeArtifact decodes raw, at most limit bytes of one JSON value with no
 // unknown fields, into out.
 func decodeArtifact(raw []byte, limit int, out any) error {
@@ -192,8 +208,9 @@ func decodeArtifact(raw []byte, limit int, out any) error {
 
 // ReviewPR reviews c on each model in turn, each in a fresh directory under its
 // own timeout, until one returns readable findings. When none does the verdict
-// is PRReviewNoVerdict; only a cancelled ctx or a directory that cannot be made
-// is an error.
+// is PRReviewNoVerdict, each attempt carrying why its model failed — an
+// exhausted allowance among them, read from the plan's markers; only a cancelled
+// ctx or a directory that cannot be made is an error.
 func ReviewPR(ctx context.Context, agent Agent, models []string, timeout time.Duration, c PRReviewContext, secrets []string) (PRVerdict, error) {
 	prompt := PRReviewPrompt(c.Diff, c.Ticket)
 	v := PRVerdict{Outcome: PRReviewNoVerdict}
@@ -210,6 +227,8 @@ func ReviewPR(ctx context.Context, agent Agent, models []string, timeout time.Du
 			attempt.Outcome, attempt.Detail = AttemptTimedOut, "exceeded "+timeout.String()
 		case errors.Is(err, ErrReviewOutput):
 			attempt.Outcome, attempt.Detail = AttemptUnreadable, res.Text
+		case errors.Is(err, ErrReviewAllowance):
+			attempt.Outcome, attempt.Detail = AttemptExhausted, err.Error()
 		case err != nil && ctx.Err() != nil:
 			return PRVerdict{}, ctx.Err()
 		case err != nil:

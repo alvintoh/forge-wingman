@@ -157,7 +157,7 @@ func reviewAt(ctx context.Context, gh pullRequests, number int, sha string) (fix
 		return fixAwaitOutcome{Decision: fixAwaitStop, Reason: fixAwaitReasonClean, Detail: status.Description}, true, nil
 	case status.State == "failure" && strings.HasPrefix(status.Description, findingsStatusDescription):
 		return findingsAt(ctx, gh, number, sha, status.Description)
-	case status.State == "failure" && strings.HasPrefix(status.Description, noVerdictStatusDescription):
+	case status.State == "failure" && strings.HasPrefix(status.Description, noVerdictStatusPrefix):
 		return fixAwaitOutcome{Decision: fixAwaitStop, Reason: fixAwaitReasonNoVerdict, Detail: status.Description}, true, nil
 	case status.State == "error":
 		return fixAwaitOutcome{Decision: fixAwaitStop, Reason: fixAwaitReasonError, Detail: status.Description}, true, nil
