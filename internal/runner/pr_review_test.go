@@ -383,3 +383,22 @@ func TestPRReviewTicket(t *testing.T) {
 		t.Fatalf("size = %q, want none", unsized.Size)
 	}
 }
+
+// TestReviewPRReadsAProviderSettingBeforeAnAllowance: a failure that names both
+// the provider's own setting and a spent allowance is the setting's, so the
+// review reads it as a failure and not as an allowance spent.
+func TestReviewPRReadsAProviderSettingBeforeAnAllowance(t *testing.T) {
+	const model = "opencode-go/muse-spark-1.3-contributor"
+	var prompts []string
+	failing := func(context.Context, io.Writer) error { return errors.New("exit status 1") }
+	both := "This Go model is hosted outside Europe and the United States\n" + allowanceStderr
+	agent := modelAgent{replies: map[string]func(context.Context, io.Writer) error{model: failing},
+		prompts: &prompts, stderr: map[string]string{model: both}}
+	v, err := ReviewPR(context.Background(), agent, []string{model}, time.Minute, validPRContext(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v.Attempts) != 1 || v.Attempts[0].Outcome != AttemptFailed || v.AllowanceExhausted() {
+		t.Fatalf("verdict = %+v, want a failure: the provider's setting names the cause", v)
+	}
+}
