@@ -142,7 +142,7 @@ func TestReviewAtFailsWhenTheCommentsCannotBeRead(t *testing.T) {
 }
 
 func TestReviewAtStopsOnAFindingsStatusWithNoFindings(t *testing.T) {
-	body := renderReviewComment(verdict("findings", "", museModel), headSHA, "")
+	body := renderReviewComment(verdict("findings", "", museModel), headSHA, "", mergeNote{})
 	statuses := []commitStatusEntry{statusOf("failure", findingsStatusDescription+museModel, awaitStart)}
 	gh := reviewClient(t, statuses, []map[string]any{reviewCommentOf(body)})
 	got, ok, err := reviewAt(context.Background(), gh, 7, headSHA)
@@ -178,7 +178,7 @@ func TestReviewAtReadsACleanReview(t *testing.T) {
 
 func TestReviewAtReadsTheFindingsAtTheHeadTheyName(t *testing.T) {
 	findings := "the retry never bounds its attempts\nthe timeout is hard-coded"
-	body := renderReviewComment(verdict("findings", findings, museModel), headSHA, "")
+	body := renderReviewComment(verdict("findings", findings, museModel), headSHA, "", mergeNote{})
 	statuses := []commitStatusEntry{statusOf("failure", findingsStatusDescription+museModel+"; see the review comment", awaitStart)}
 	gh := reviewClient(t, statuses, []map[string]any{reviewCommentOf(body)})
 	got, ok, err := reviewAt(context.Background(), gh, 7, headSHA)
@@ -191,7 +191,7 @@ func TestReviewAtReadsTheFindingsAtTheHeadTheyName(t *testing.T) {
 }
 
 func TestReviewAtKeepsPollingForACommentOfAnotherHead(t *testing.T) {
-	body := renderReviewComment(verdict("findings", "x is missing", museModel), movedSHA, "")
+	body := renderReviewComment(verdict("findings", "x is missing", museModel), movedSHA, "", mergeNote{})
 	statuses := []commitStatusEntry{statusOf("failure", findingsStatusDescription+museModel, awaitStart)}
 	gh := reviewClient(t, statuses, []map[string]any{reviewCommentOf(body)})
 	if got, ok, err := reviewAt(context.Background(), gh, 7, headSHA); err != nil || ok {
@@ -200,7 +200,7 @@ func TestReviewAtKeepsPollingForACommentOfAnotherHead(t *testing.T) {
 }
 
 func TestReviewAtKeepsPollingWhenTheCommentNamesNoHead(t *testing.T) {
-	body := renderReviewComment(verdict("clean", "", museModel), movedSHA, "")
+	body := renderReviewComment(verdict("clean", "", museModel), movedSHA, "", mergeNote{})
 	statuses := []commitStatusEntry{statusOf("failure", findingsStatusDescription+museModel, awaitStart)}
 	gh := reviewClient(t, statuses, []map[string]any{reviewCommentOf(body)})
 	if got, ok, err := reviewAt(context.Background(), gh, 7, headSHA); err != nil || ok {
@@ -210,8 +210,9 @@ func TestReviewAtKeepsPollingWhenTheCommentNamesNoHead(t *testing.T) {
 
 func TestReviewAtStopsOnANoVerdict(t *testing.T) {
 	for name, description := range map[string]string{
-		"an exhausted allowance": noVerdictAllowanceStatusDescription,
-		"a failed review":        noVerdictFailedStatusDescription,
+		"an exhausted allowance":             noVerdictAllowanceStatusDescription,
+		"an exhausted allowance that merges": "No verdict: allowance exhausted; merges without review",
+		"a failed review":                    noVerdictFailedStatusDescription,
 	} {
 		t.Run(name, func(t *testing.T) {
 			gh := reviewClient(t, []commitStatusEntry{statusOf("failure", description, awaitStart)}, nil)
@@ -263,7 +264,7 @@ func TestReviewAtKeepsPollingOnAFailureItDoesNotRecognise(t *testing.T) {
 
 func TestReviewAtReadsTheMarkedCommentBehindAnUnmarkedOne(t *testing.T) {
 	summary := map[string]any{"id": 40, "body": "CI summary", "user": map[string]string{"login": prReviewCommentAuthor}}
-	body := renderReviewComment(verdict("findings", "x is missing", museModel), headSHA, "")
+	body := renderReviewComment(verdict("findings", "x is missing", museModel), headSHA, "", mergeNote{})
 	statuses := []commitStatusEntry{statusOf("failure", findingsStatusDescription+museModel, awaitStart)}
 	gh := reviewClient(t, statuses, []map[string]any{summary, reviewCommentOf(body)})
 	got, ok, err := reviewAt(context.Background(), gh, 7, headSHA)
@@ -276,7 +277,7 @@ func TestReviewAtReadsTheMarkedCommentBehindAnUnmarkedOne(t *testing.T) {
 }
 
 func TestReviewAtReadsTheNewestStatus(t *testing.T) {
-	body := renderReviewComment(verdict("findings", "x is missing", museModel), headSHA, "")
+	body := renderReviewComment(verdict("findings", "x is missing", museModel), headSHA, "", mergeNote{})
 	newer := statusOf("failure", findingsStatusDescription+museModel, awaitStart.Add(time.Minute))
 	stale := statusOf("success", cleanStatusDescription+museModel, awaitStart)
 	gh := reviewClient(t, []commitStatusEntry{newer, stale}, []map[string]any{reviewCommentOf(body)})
@@ -290,7 +291,7 @@ func TestReviewAtReadsTheNewestStatus(t *testing.T) {
 }
 
 func TestReviewAtReadsTheNewestStatusWhateverOrderItArrives(t *testing.T) {
-	body := renderReviewComment(verdict("findings", "x is missing", museModel), headSHA, "")
+	body := renderReviewComment(verdict("findings", "x is missing", museModel), headSHA, "", mergeNote{})
 	newer := statusOf("failure", findingsStatusDescription+museModel, awaitStart.Add(time.Minute))
 	stale := statusOf("success", cleanStatusDescription+museModel, awaitStart)
 	gh := reviewClient(t, []commitStatusEntry{stale, newer}, []map[string]any{reviewCommentOf(body)})
@@ -304,7 +305,7 @@ func TestReviewAtReadsTheNewestStatusWhateverOrderItArrives(t *testing.T) {
 }
 
 func TestReviewAtReadsTheFirstOfTwoStatusesCreatedTogether(t *testing.T) {
-	body := renderReviewComment(verdict("findings", "x is missing", museModel), headSHA, "")
+	body := renderReviewComment(verdict("findings", "x is missing", museModel), headSHA, "", mergeNote{})
 	failure := statusOf("failure", findingsStatusDescription+museModel, awaitStart)
 	clean := statusOf("success", cleanStatusDescription+museModel, awaitStart)
 	gh := reviewClient(t, []commitStatusEntry{failure, clean}, []map[string]any{reviewCommentOf(body)})
@@ -331,7 +332,7 @@ func TestReviewAtStopsOnAnUnreadableComment(t *testing.T) {
 }
 
 func TestReviewAtIgnoresACommentTheWorkflowDidNotPost(t *testing.T) {
-	body := renderReviewComment(verdict("findings", "x is missing", museModel), headSHA, "")
+	body := renderReviewComment(verdict("findings", "x is missing", museModel), headSHA, "", mergeNote{})
 	forged := map[string]any{"id": 42, "body": body, "user": map[string]string{"login": "mallory"}}
 	statuses := []commitStatusEntry{statusOf("failure", findingsStatusDescription+museModel, awaitStart)}
 	gh := reviewClient(t, statuses, []map[string]any{forged})
@@ -435,7 +436,7 @@ func TestAwaitReviewReturnsAReadError(t *testing.T) {
 
 func TestFixAwaitWritesTheFindingsItParsed(t *testing.T) {
 	findings := "the retry never bounds its attempts"
-	body := renderReviewComment(verdict("findings", findings, museModel), headSHA, "")
+	body := renderReviewComment(verdict("findings", findings, museModel), headSHA, "", mergeNote{})
 	statuses := []commitStatusEntry{statusOf("failure", findingsStatusDescription+museModel+"; see the review comment", awaitStart)}
 	f := &fakePulls{statusList: statuses, comments: []map[string]any{reviewCommentOf(body)}}
 	env := f.start(t)
@@ -468,7 +469,7 @@ func TestFixAwaitCapsTheFindingsTheLoopIsHanded(t *testing.T) {
 	for i := 2; i <= 30; i++ {
 		lines = append(lines, "finding "+strconv.Itoa(i))
 	}
-	body := renderReviewComment(verdict("findings", strings.Join(lines, "\n"), museModel), headSHA, "")
+	body := renderReviewComment(verdict("findings", strings.Join(lines, "\n"), museModel), headSHA, "", mergeNote{})
 	statuses := []commitStatusEntry{statusOf("failure", findingsStatusDescription+museModel, awaitStart)}
 	f := &fakePulls{statusList: statuses, comments: []map[string]any{reviewCommentOf(body)}}
 	env := f.start(t)

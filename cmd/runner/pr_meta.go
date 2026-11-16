@@ -442,12 +442,21 @@ type recentRewrites interface {
 // places it against the guideline. Evidence that cannot be read reports its own
 // reason, which the PR body names and which holds nothing.
 func autoMergeRate(ctx context.Context, logger *slog.Logger, runID string, r recentRewrites) dispatcher.AutoMergeDecision {
-	trailing, err := r.RecentHumanMerged(ctx, dispatcher.TrailingPRs)
+	d, err := autoMergeRateOf(ctx, r)
 	if err != nil {
 		logger.Warn("autoMergeEvidenceUnread", "run", runID, "err", err.Error())
-		return dispatcher.AutoMergeDecision{Reason: dispatcher.AutoMergeReasonEvidenceUnread}
 	}
-	return dispatcher.AutoMergeOn(dispatcher.Evidence{Trailing: trailing})
+	return d
+}
+
+// autoMergeRateOf places r's trailing rate against the guideline, returning the
+// read's error with the unread reason so a caller can log why.
+func autoMergeRateOf(ctx context.Context, r recentRewrites) (dispatcher.AutoMergeDecision, error) {
+	trailing, err := r.RecentHumanMerged(ctx, dispatcher.TrailingPRs)
+	if err != nil {
+		return dispatcher.AutoMergeDecision{Reason: dispatcher.AutoMergeReasonEvidenceUnread}, err
+	}
+	return dispatcher.AutoMergeOn(dispatcher.Evidence{Trailing: trailing}), nil
 }
 
 // rateAttrs are the rate's log attributes: the reason always, and the numbers
@@ -476,8 +485,9 @@ func fixRoundsEligible(runID string, t runner.Ticket, sum runner.Summary, failed
 }
 
 // autoMerge reports whether the run's PR is marked eligible for auto-merge,
-// which pr-review.yml requests once its review is clean: the owner's switch is
-// on and readable, and neither the run nor an auto-merge hold needs the owner.
+// which pr-review.yml acts on once its review is clean or ends on an exhausted
+// allowance: the owner's switch is on and readable, and neither the run nor an
+// auto-merge hold needs the owner.
 func autoMerge(switchOn bool, runID string, t runner.Ticket, sum runner.Summary, failedGate string, check prCheck, hold autoMergeHold) bool {
 	return switchOn && !ownerAttention(runID, t, sum, failedGate, check, hold)
 }

@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"cloud.google.com/go/firestore"
+
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 	"github.com/alvintoh/forge-wingman/internal/linear"
 	"github.com/alvintoh/forge-wingman/internal/runner"
@@ -30,10 +32,14 @@ const (
 
 // fakePulls serves one repository's pull request 7 and records every write.
 type fakePulls struct {
-	pull       map[string]any
-	diff       string
-	comments   []map[string]any
-	statusList []commitStatusEntry
+	pull         map[string]any
+	diff         string
+	comments     []map[string]any
+	statusList   []commitStatusEntry
+	checkRuns    []map[string]any
+	checksStatus int
+	pullStatus   int
+	pullDelay    time.Duration
 
 	mu       sync.Mutex
 	created  []string
@@ -58,12 +64,27 @@ func (f *fakePulls) start(t *testing.T) func(string) string {
 		_ = json.Unmarshal(raw, &body)
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/o/r/pulls/7":
+			if f.pullDelay > 0 {
+				time.Sleep(f.pullDelay)
+			}
+			if f.pullStatus != 0 {
+				w.WriteHeader(f.pullStatus)
+				return
+			}
 			_ = json.NewEncoder(w).Encode(f.pull)
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/o/r/compare/"):
 			f.diffPath = r.URL.Path
 			_, _ = io.WriteString(w, f.diff)
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/o/r/issues/7/comments":
 			_ = json.NewEncoder(w).Encode(f.comments)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/check-runs"):
+			if f.checksStatus != 0 {
+				w.WriteHeader(f.checksStatus)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"total_count": len(f.checkRuns), "check_runs": f.checkRuns})
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/status"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"state": "success", "total_count": 0, "statuses": []any{}})
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/o/r/commits/"):
 			f.statusQueries = append(f.statusQueries, r.URL.RawQuery)
 			_ = json.NewEncoder(w).Encode(f.statusList)
@@ -285,7 +306,7 @@ func TestPlanPostNamesTheNoVerdictCause(t *testing.T) {
 
 func TestRenderReviewCommentNeutralisesTheFindings(t *testing.T) {
 	findings := "ping @octocat\n<img src=x onerror=alert(1)>\n```\n# not a heading"
-	got := renderReviewComment(verdict("findings", findings, museModel), headSHA, "")
+	got := renderReviewComment(verdict("findings", findings, museModel), headSHA, "", mergeNote{})
 	if !strings.HasPrefix(got, "<!-- wingman-review -->\n") {
 		t.Fatalf("comment lacks the marker: %q", got)
 	}
@@ -307,14 +328,14 @@ func TestRenderReviewCommentNeutralisesTheFindings(t *testing.T) {
 
 func TestRenderReviewCommentNamesTheNoVerdictCause(t *testing.T) {
 	spent := noVerdict(attempted(museModel, runner.AttemptExhausted), attempted(pricedModel, runner.AttemptExhausted))
-	got := renderReviewComment(spent, headSHA, "")
+	got := renderReviewComment(spent, headSHA, "", mergeNote{})
 	if !strings.Contains(got, "### Wingman review: no verdict: allowance exhausted\n") ||
 		!strings.Contains(got, "- `"+museModel+"`: allowance exhausted\n") ||
 		!strings.Contains(got, "- `"+pricedModel+"`: allowance exhausted\n") {
 		t.Fatalf("comment = %q, want the allowance and each model that reported it", got)
 	}
 	failed := noVerdict(attempted(museModel, runner.AttemptFailed))
-	got = renderReviewComment(failed, headSHA, "")
+	got = renderReviewComment(failed, headSHA, "", mergeNote{})
 	if !strings.Contains(got, "### Wingman review: no verdict: failed\n") || strings.Contains(got, "allowance exhausted") {
 		t.Fatalf("comment = %q, want a failure that names no allowance", got)
 	}
@@ -336,7 +357,7 @@ func TestParseReviewCommentRoundTripsEveryComment(t *testing.T) {
 		verdict("findings", "the retry never bounds `attempts`\nping @octocat\n```go\nif x {\n```\n# not a heading", museModel),
 	} {
 		t.Run(v.Outcome, func(t *testing.T) {
-			got, ok := parseReviewComment(renderReviewComment(v, headSHA, ""))
+			got, ok := parseReviewComment(renderReviewComment(v, headSHA, "", mergeNote{}))
 			if !ok {
 				t.Fatal("the comment renderReviewComment wrote does not parse")
 			}
@@ -425,7 +446,7 @@ func TestPRReviewPost(t *testing.T) {
 			getenv := f.start(t)
 			args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-verdict", writeVerdict(t, tt.v), "-context-result", "success",
 				"-run-url", "https://github.com/o/r/actions/runs/9"}
-			if err := prReviewPostWith(context.Background(), quietLogger(), getenv, switchedOn, args); err != nil {
+			if err := prReviewPostWith(context.Background(), quietLogger(), getenv, switchedOn, rateUnder, args); err != nil {
 				t.Fatal(err)
 			}
 			if s, ok := f.statuses[headSHA]; !ok || s.State != tt.wantState || len(f.statuses) != 1 {
@@ -444,6 +465,330 @@ func TestPRReviewPost(t *testing.T) {
 // switchedOn reads the owner's settings as on with nothing escaped.
 func switchedOn(context.Context) (store.AutoMergeSetting, error) {
 	return store.AutoMergeSetting{Enabled: true}, nil
+}
+
+// rateUnder reads the trailing rewrite rate as at or under the guideline.
+func rateUnder(context.Context) dispatcher.AutoMergeDecision {
+	return dispatcher.AutoMergeDecision{WithinGuideline: true, Reason: dispatcher.AutoMergeReasonOn, PRs: dispatcher.TrailingPRs}
+}
+
+// rateAbove reads the trailing rewrite rate as over the guideline.
+func rateAbove(context.Context) dispatcher.AutoMergeDecision {
+	return dispatcher.AutoMergeDecision{Reason: dispatcher.AutoMergeReasonAboveGuideline, PRs: dispatcher.TrailingPRs, Rate: 0.34}
+}
+
+// rateUnread reads the trailing rewrite rate as evidence that could not be read.
+func rateUnread(context.Context) dispatcher.AutoMergeDecision {
+	return dispatcher.AutoMergeDecision{Reason: dispatcher.AutoMergeReasonEvidenceUnread}
+}
+
+// rateTooFew reads the trailing rewrite rate over a window too short to measure.
+func rateTooFew(context.Context) dispatcher.AutoMergeDecision {
+	return dispatcher.AutoMergeDecision{Reason: dispatcher.AutoMergeReasonTooFewMeasured, PRs: 3, Rate: 0.1}
+}
+
+// rateNoAgentLines reads the trailing rewrite rate over PRs carrying no agent lines.
+func rateNoAgentLines(context.Context) dispatcher.AutoMergeDecision {
+	return dispatcher.AutoMergeDecision{Reason: dispatcher.AutoMergeReasonNoAgentLines, PRs: dispatcher.TrailingPRs}
+}
+
+// spentAllowance is a review whose every model reported its plan's allowance
+// spent, so it ends on no verdict of that cause.
+func spentAllowance() runner.PRVerdict {
+	return noVerdict(attempted(museModel, runner.AttemptExhausted), attempted(pricedModel, runner.AttemptExhausted))
+}
+
+// greenChecks are the go and web check runs of a head that passed both.
+func greenChecks() []map[string]any {
+	return []map[string]any{
+		{"id": 1, "name": "go", "status": "completed", "conclusion": "success"},
+		{"id": 2, "name": "web", "status": "completed", "conclusion": "success"},
+	}
+}
+
+// An exhausted allowance on an eligible PR whose go and web checks pass at the
+// reviewed head requests the merge, and says in the comment that it merged
+// without a review.
+func TestPRReviewPostRequestsTheMergeOnAnExhaustedAllowance(t *testing.T) {
+	f := &fakePulls{pull: openPull("t", "", headSHA, autoMergeEligibleLabel), checkRuns: greenChecks()}
+	getenv := f.start(t)
+	args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-verdict", writeVerdict(t, spentAllowance()), "-context-result", "success"}
+	if err := prReviewPostWith(context.Background(), quietLogger(), getenv, switchedOn, rateUnder, args); err != nil {
+		t.Fatal(err)
+	}
+	if got := readOutput(t, getenv); !strings.Contains(got, "merge=true") {
+		t.Fatalf("output = %q, want the merge requested", got)
+	}
+	if len(f.created) != 1 || !strings.Contains(f.created[0], "merged without review") {
+		t.Fatalf("comment = %v, want it to say the PR merged without a review", f.created)
+	}
+	if !strings.Contains(f.created[0], "### Wingman review: no verdict: allowance exhausted") {
+		t.Fatalf("comment = %q, want the exhausted cause named", f.created[0])
+	}
+	if s := f.statuses[headSHA]; s.State != "failure" || s.Description != "No verdict: allowance exhausted; merges without review" {
+		t.Fatalf("status = %+v, want the allowance named as merging without a review", s)
+	}
+}
+
+// The request is made only where every gate allows it: an ineligible PR, a head
+// that moved, and checks that are failing, pending or absent each request
+// nothing, and the comment names the gate that held it.
+func TestPRReviewPostDoesNotRequestTheMergeOnAnExhaustedAllowance(t *testing.T) {
+	failing := []map[string]any{
+		{"id": 1, "name": "go", "status": "completed", "conclusion": "success"},
+		{"id": 2, "name": "web", "status": "completed", "conclusion": "failure"},
+	}
+	pending := []map[string]any{
+		{"id": 1, "name": "go", "status": "completed", "conclusion": "success"},
+		{"id": 2, "name": "web", "status": "in_progress", "conclusion": ""},
+	}
+	for name, tt := range map[string]struct {
+		pull      map[string]any
+		checkRuns []map[string]any
+		wantWords string
+	}{
+		"without the label":     {openPull("t", "", headSHA), greenChecks(), "not eligible for auto-merge"},
+		"after a push":          {openPull("t", "", movedSHA, autoMergeEligibleLabel), greenChecks(), "not eligible for auto-merge"},
+		"a failing check":       {openPull("t", "", headSHA, autoMergeEligibleLabel), failing, "not both green"},
+		"a check still running": {openPull("t", "", headSHA, autoMergeEligibleLabel), pending, "not both green"},
+		"no check reported":     {openPull("t", "", headSHA, autoMergeEligibleLabel), nil, "not both green"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &fakePulls{pull: tt.pull, checkRuns: tt.checkRuns}
+			getenv := f.start(t)
+			args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-verdict", writeVerdict(t, spentAllowance()), "-context-result", "success"}
+			if err := prReviewPostWith(context.Background(), quietLogger(), getenv, switchedOn, rateUnder, args); err != nil {
+				t.Fatal(err)
+			}
+			if got := readOutput(t, getenv); !strings.Contains(got, "merge=false") {
+				t.Fatalf("output = %q, want no merge requested", got)
+			}
+			if len(f.created) != 1 || !strings.Contains(f.created[0], tt.wantWords) {
+				t.Fatalf("comment = %v, want %q", f.created, tt.wantWords)
+			}
+			if s := f.statuses[headSHA]; s.Description != "No verdict: allowance exhausted; waits for the owner" {
+				t.Fatalf("status = %+v, want the allowance named as waiting for the owner", s)
+			}
+		})
+	}
+}
+
+// A failed or timed out review waits for the owner whatever its checks say: an
+// exhausted allowance is the only no verdict that merges.
+func TestPRReviewPostRequestsNothingOnANoVerdictThatFailed(t *testing.T) {
+	f := &fakePulls{pull: openPull("t", "", headSHA, autoMergeEligibleLabel), checkRuns: greenChecks()}
+	getenv := f.start(t)
+	failed := noVerdict(attempted(museModel, runner.AttemptExhausted), attempted(pricedModel, runner.AttemptTimedOut))
+	args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-verdict", writeVerdict(t, failed), "-context-result", "success"}
+	if err := prReviewPostWith(context.Background(), quietLogger(), getenv, switchedOn, rateUnder, args); err != nil {
+		t.Fatal(err)
+	}
+	if got := readOutput(t, getenv); !strings.Contains(got, "merge=false") {
+		t.Fatalf("output = %q, want the merge left to the owner", got)
+	}
+	if len(f.created) != 1 || strings.Contains(f.created[0], "merged without review") {
+		t.Fatalf("comment = %v, want no merge claimed", f.created)
+	}
+}
+
+// A check read that fails is not green: no merge is requested and the comment
+// says the results could not be read.
+func TestPRReviewPostReadsAFailedCheckReadAsNotGreen(t *testing.T) {
+	for name, status := range map[string]int{
+		"a refused read": http.StatusForbidden,
+		"a broken read":  http.StatusInternalServerError,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &fakePulls{pull: openPull("t", "", headSHA, autoMergeEligibleLabel), checksStatus: status}
+			getenv := f.start(t)
+			var logs bytes.Buffer
+			args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-verdict", writeVerdict(t, spentAllowance()), "-context-result", "success"}
+			if err := prReviewPostWith(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), getenv, switchedOn, rateUnder, args); err != nil {
+				t.Fatal(err)
+			}
+			if got := readOutput(t, getenv); !strings.Contains(got, "merge=false") {
+				t.Fatalf("output = %q, want no merge requested", got)
+			}
+			if len(f.created) != 1 || !strings.Contains(f.created[0], "check results could not be read") {
+				t.Fatalf("comment = %v, want the unread check results named", f.created)
+			}
+			if got := logs.String(); !strings.Contains(got, "reason=checks-unread") {
+				t.Fatalf("log = %q, want the checks-unread reason", got)
+			}
+		})
+	}
+}
+
+// An exhausted allowance requests nothing while the switch is off, an escaped PR
+// holds auto-merge, the settings cannot be read, or the rewrite rate is over the
+// guideline or cannot be measured at all, and the comment names the gate.
+func TestPRReviewPostDeclinesTheMergeOnAnExhaustedAllowance(t *testing.T) {
+	for name, tt := range map[string]struct {
+		settings  autoMergeSettings
+		rate      rewriteRate
+		reason    string
+		wantWords string
+	}{
+		"the switch is off": {func(context.Context) (store.AutoMergeSetting, error) {
+			return store.AutoMergeSetting{Enabled: false}, nil
+		}, rateUnder, dispatcher.AutoMergeReasonSwitchOff, "auto-merge switch is off"},
+		"an escaped PR holds it": {func(context.Context) (store.AutoMergeSetting, error) {
+			return store.AutoMergeSetting{Enabled: true,
+				Escaped: dispatcher.MergeEscape{Repo: "o/r", PR: 5, By: 9, Reason: dispatcher.EscapeReverted}}, nil
+		}, rateUnder, dispatcher.AutoMergeReasonEscaped, "auto-merge is off until you switch it on again"},
+		"the settings cannot be read": {func(context.Context) (store.AutoMergeSetting, error) {
+			return store.AutoMergeSetting{}, errors.New("permission denied")
+		}, rateUnder, "settings-unread", "settings could not be read"},
+		"the rate is over the guideline": {switchedOn, rateAbove, dispatcher.AutoMergeReasonAboveGuideline, "34.0% over the last 10 PRs a human merged, above the 20% guideline"},
+		"the rate could not be read":     {switchedOn, rateUnread, dispatcher.AutoMergeReasonEvidenceUnread, "the measured merges could not be read"},
+		"too few PRs are measured":       {switchedOn, rateTooFew, dispatcher.AutoMergeReasonTooFewMeasured, "3 of 10 PRs a human merged are measured"},
+		"no agent lines in the window":   {switchedOn, rateNoAgentLines, dispatcher.AutoMergeReasonNoAgentLines, "the measured PRs carry no agent lines"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &fakePulls{pull: openPull("t", "", headSHA, autoMergeEligibleLabel), checkRuns: greenChecks()}
+			getenv := f.start(t)
+			var logs bytes.Buffer
+			args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-verdict", writeVerdict(t, spentAllowance()), "-context-result", "success"}
+			if err := prReviewPostWith(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), getenv, tt.settings, tt.rate, args); err != nil {
+				t.Fatal(err)
+			}
+			if got := readOutput(t, getenv); !strings.Contains(got, "merge=false") {
+				t.Fatalf("output = %q, want no merge requested", got)
+			}
+			if len(f.created) != 1 || !strings.Contains(f.created[0], tt.wantWords) {
+				t.Fatalf("comment = %v, want %q", f.created, tt.wantWords)
+			}
+			if got := logs.String(); !strings.Contains(got, "prReviewMergeDeclined") || !strings.Contains(got, "reason="+tt.reason) {
+				t.Fatalf("log = %q, want the decline and reason %s", got, tt.reason)
+			}
+		})
+	}
+}
+
+// A pull request that cannot be read requests no merge, and the review still
+// posts: the comment is the deliverable, and the merge decision is secondary.
+func TestPRReviewPostPostsTheReviewWhenThePullCannotBeRead(t *testing.T) {
+	for name, tt := range map[string]struct {
+		v         runner.PRVerdict
+		wantWords string
+	}{
+		"a clean review": {verdict("clean", "", museModel), ""},
+		"an exhausted allowance": {spentAllowance(),
+			"Auto-merge is not requested, so this pull request waits for the owner: the pull request could not be read."},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &fakePulls{pull: openPull("t", "", headSHA, autoMergeEligibleLabel), checkRuns: greenChecks(),
+				pullStatus: http.StatusInternalServerError}
+			getenv := f.start(t)
+			var logs bytes.Buffer
+			args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-verdict", writeVerdict(t, tt.v), "-context-result", "success"}
+			if err := prReviewPostWith(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), getenv, switchedOn, rateUnder, args); err != nil {
+				t.Fatal(err)
+			}
+			if got := readOutput(t, getenv); !strings.Contains(got, "merge=false") {
+				t.Fatalf("output = %q, want no merge requested", got)
+			}
+			if len(f.created) != 1 || !strings.Contains(f.created[0], prReviewMarker) {
+				t.Fatalf("comments = %v, want the review posted", f.created)
+			}
+			if len(f.statuses) != 1 {
+				t.Fatalf("statuses = %+v, want the review's status posted", f.statuses)
+			}
+			if tt.wantWords != "" && !strings.Contains(f.created[0], tt.wantWords) {
+				t.Fatalf("comment = %q, want %q", f.created[0], tt.wantWords)
+			}
+			if got := logs.String(); !strings.Contains(got, "reason=pull-unread") {
+				t.Fatalf("log = %q, want the pull-unread decline", got)
+			}
+		})
+	}
+}
+
+// The decision holds one window: a read that cannot finish inside it is a
+// refusal, never a merge, and the reads after it are not attempted.
+func TestExhaustedMergeDeclinesWhenTheDecisionWindowExpires(t *testing.T) {
+	f := &fakePulls{pull: openPull("t", "", headSHA, autoMergeEligibleLabel), checkRuns: greenChecks(),
+		pullDelay: 100 * time.Millisecond}
+	getenv := f.start(t)
+	reads := 0
+	read := func(ctx context.Context) (store.AutoMergeSetting, error) {
+		reads++
+		return switchedOn(ctx)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	note := exhaustedMerge(ctx, f.client(getenv), 7, headSHA, read, rateUnder)
+	if note.Requested || note.Reason != "pull-unread" {
+		t.Fatalf("note = %+v, want a refusal on the pull request the window closed on", note)
+	}
+	if reads != 0 {
+		t.Fatalf("settings read %d times after the window expired, want none", reads)
+	}
+}
+
+// logDetail logs the evidence a decline carries, and its words where it carries
+// none.
+func TestMergeNoteLogDetail(t *testing.T) {
+	for name, tt := range map[string]struct {
+		note mergeNote
+		want string
+	}{
+		"evidence behind the refusal": {mergeNote{Reason: "settings-unread", Words: "the settings could not be read", Detail: "permission denied"}, "permission denied"},
+		"words alone":                 {mergeNote{Reason: "switch-off", Words: "the owner's auto-merge switch is off"}, "the owner's auto-merge switch is off"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := tt.note.logDetail(); got != tt.want {
+				t.Fatalf("logDetail = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// The store helper refuses a job without a project before it opens a client, so
+// a read cannot silently land in whatever project the credentials name.
+func TestWithStoreRefusesAMissingProject(t *testing.T) {
+	called := false
+	open := func(context.Context, string) (*firestore.Client, error) {
+		t.Fatal("a client was opened without a project")
+		return nil, nil
+	}
+	err := withStore(context.Background(), func(string) string { return "" }, open, func(*firestore.Client) error {
+		called = true
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "GOOGLE_CLOUD_PROJECT") {
+		t.Fatalf("err = %v, want the missing environment named", err)
+	}
+	if called {
+		t.Fatal("withStore ran its read without a project")
+	}
+}
+
+// A client the job cannot open fails the read with that error, and nothing runs
+// against a client it does not have.
+func TestWithStoreWrapsAClientItCannotOpen(t *testing.T) {
+	called := false
+	open := func(context.Context, string) (*firestore.Client, error) {
+		return nil, errors.New("could not find default credentials")
+	}
+	err := withStore(context.Background(), func(string) string { return "p" }, open, func(*firestore.Client) error {
+		called = true
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "firestore client: could not find default credentials") {
+		t.Fatalf("err = %v, want the client's error wrapped", err)
+	}
+	if called {
+		t.Fatal("withStore ran its read without a client")
+	}
+}
+
+// The rate the job should have read but could not is evidence that could not be
+// read, which holds the merge rather than letting it through.
+func TestStoredRewriteRateReadsAMissingProjectAsEvidenceUnread(t *testing.T) {
+	if got := storedRewriteRate(func(string) string { return "" })(context.Background()); got.Reason != dispatcher.AutoMergeReasonEvidenceUnread {
+		t.Fatalf("rate = %+v, want the evidence-unread reason", got)
+	}
 }
 
 // A clean review of an eligible PR still requests nothing once the switch has
@@ -470,7 +815,7 @@ func TestPRReviewPostDeclinesTheMergeWhileTheSettingsHold(t *testing.T) {
 			getenv := f.start(t)
 			var logs bytes.Buffer
 			args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-verdict", writeVerdict(t, verdict("clean", "", museModel)), "-context-result", "success"}
-			if err := prReviewPostWith(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), getenv, tt.settings, args); err != nil {
+			if err := prReviewPostWith(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), getenv, tt.settings, rateUnder, args); err != nil {
 				t.Fatal(err)
 			}
 			if got := readOutput(t, getenv); !strings.Contains(got, "merge=false") {
@@ -496,7 +841,7 @@ func TestPRReviewPostReadsTheSettingsOnlyForAMergeItWouldRequest(t *testing.T) {
 		return switchedOn(ctx)
 	}
 	args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-verdict", writeVerdict(t, verdict("clean", "", museModel)), "-context-result", "success"}
-	if err := prReviewPostWith(context.Background(), quietLogger(), getenv, counting, args); err != nil {
+	if err := prReviewPostWith(context.Background(), quietLogger(), getenv, counting, rateUnder, args); err != nil {
 		t.Fatal(err)
 	}
 	if reads != 0 {
@@ -508,7 +853,7 @@ func TestPRReviewPostSetsAnErrorStatusForASkippedReview(t *testing.T) {
 	f := &fakePulls{}
 	getenv := f.start(t)
 	args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-skip-reason", "no-ticket-id", "-context-result", "success"}
-	if err := prReviewPostWith(context.Background(), quietLogger(), getenv, switchedOn, args); err != nil {
+	if err := prReviewPostWith(context.Background(), quietLogger(), getenv, switchedOn, rateUnder, args); err != nil {
 		t.Fatal(err)
 	}
 	if s := f.statuses[headSHA]; s.State != "error" || !strings.Contains(s.Description, "no ticket id") || len(f.created) != 0 {
