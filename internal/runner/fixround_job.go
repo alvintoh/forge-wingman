@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"time"
 )
 
 const (
@@ -19,8 +20,9 @@ const (
 )
 
 // FixRoundInput is one fix-round job's input: the pull request's branch and head,
-// the review's findings, the previous round's state (nil on the first round) and
-// the directory the round's artifact is written to.
+// the review's findings, the previous round's state (nil on a fresh loop, which
+// the job starts at its own clock; a round 0 state is one a caller started
+// earlier) and the directory the round's artifact is written to.
 type FixRoundInput struct {
 	Branch   string
 	Head     string
@@ -56,16 +58,22 @@ func FixRoundIdentity(id Identity) error {
 // pushes nothing. The identity is checked before the worktree is cut or any
 // agent runs.
 //
-// With no state it seeds one at round 0 starting now. Every round counts against
-// the one fixRoundsBudget measured from that start, and a round the budget leaves
-// no room for, or one past DefaultReviewFixRounds, ends the loop with a result
-// naming FixStopBudget or FixStopCap and writes no artifact. An agent, commit or
-// worktree failure is a *StopError, and a round with no findings a plain error.
+// With no state it seeds one at round 0 starting at this job's clock; a round 0
+// state is that same fresh loop already started, so a caller that knows when the
+// loop began — the fix-round step, from the pull request — passes one and the
+// wait for the review before round 1 counts against the loop's budget. Every
+// round counts against the one fixRoundsBudget measured from that start, and a
+// round the budget leaves no room for, or one past DefaultReviewFixRounds, ends
+// the loop with a result naming FixStopBudget or FixStopCap and writes no
+// artifact. A start ahead of this job's clock by more than FixRoundsClockSkew is
+// an error, not a stop: no round may measure its budget from a time that has not
+// happened. An agent, commit or worktree failure is a *StopError, and a round
+// with no findings a plain error.
 //
 // The caller guarantees what the job does not check: the state belongs to this
-// branch and head, an absent state is round 1 of a fresh loop (it seeds one
-// starting now), and the branch exists as a local ref in c.Repo that is not
-// checked out there.
+// branch and head, an absent state is round 1 of a fresh loop and a round 0 state
+// is one already started, and the branch exists as a local ref in c.Repo that is
+// not checked out there.
 func FixRoundJob(ctx context.Context, d BuildDeps, c BuildConfig, in FixRoundInput) (FixRoundResult, error) {
 	if err := FixRoundIdentity(c.Identity); err != nil {
 		return FixRoundResult{}, err
@@ -85,6 +93,9 @@ func FixRoundJob(ctx context.Context, d BuildDeps, c BuildConfig, in FixRoundInp
 		}
 	}
 	state := seedOrContinue(d, in)
+	if err := checkFixStart(state.StartedAt, d.Now()); err != nil {
+		return FixRoundResult{}, err
+	}
 	if state.Round >= DefaultReviewFixRounds {
 		return FixRoundResult{Round: state.Round, Stop: FixStopCap, Detail: fixCapDetail(DefaultReviewFixRounds)}, nil
 	}
@@ -149,12 +160,23 @@ func FixRoundJob(ctx context.Context, d BuildDeps, c BuildConfig, in FixRoundInp
 
 // seedOrContinue is the state the round runs from: the previous round's, with its
 // last round's record filled from the review that followed it, or a new one
-// starting now at round 0 when there is none.
+// starting at this job's clock at round 0 when there is none.
 func seedOrContinue(d BuildDeps, in FixRoundInput) FixRoundsState {
 	if in.State == nil {
 		return NewFixRoundsState(0, 0, d.Now(), "", nil, nil)
 	}
 	return in.State.WithReview(in.Findings)
+}
+
+// checkFixStart refuses a loop start further ahead of this job's clock than
+// FixRoundsClockSkew, which no budget can be measured from. It is an error rather
+// than a budget stop, so the run fails on the record instead of handing the pull
+// request to the owner as a loop that ran out of time.
+func checkFixStart(started, now time.Time) error {
+	if started.After(now.Add(FixRoundsClockSkew)) {
+		return fmt.Errorf("%w: no budget is measured from a start this job has not reached", errFixRoundStart)
+	}
+	return nil
 }
 
 // gateFixModel is the stop for a model the agent's harness cannot serve: a

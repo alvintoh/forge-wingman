@@ -63,6 +63,7 @@ func parseRecordFixRounds(logger *slog.Logger, e env, args []string) (fixLoopRec
 	pushDetail := fs.String("push-detail", "", "fix-push's detail output")
 	awaitReason := fs.String("await-reason", "", "fix-await's reason output")
 	awaitDetail := fs.String("await-detail", "", "fix-await's detail output")
+	awaitFindings := fs.String("await-findings", "", "fix-await's findings output, the review of the last round's commit")
 	if err := fs.Parse(args); err != nil {
 		return fixLoopRecord{}, "", err
 	}
@@ -73,8 +74,9 @@ func parseRecordFixRounds(logger *slog.Logger, e env, args []string) (fixLoopRec
 		return fixLoopRecord{}, "", err
 	}
 	return fixLoopRecord{
-		RunID:     *runID,
-		AttemptID: buildAttempt(logger, *attemptID, e),
+		RunID:         *runID,
+		AttemptID:     buildAttempt(logger, *attemptID, e),
+		AwaitFindings: *awaitFindings,
 		End: runner.FixLoopEnd{
 			RoundReason: *roundReason, PushReason: *pushReason, AwaitReason: *awaitReason, Stop: runner.FixStop(*roundStop),
 			RoundNote: *roundDetail, PushNote: *pushDetail, AwaitNote: *awaitDetail,
@@ -104,12 +106,17 @@ type fixLoopRecord struct {
 	AttemptID string
 	// State is the state the last round wrote, nil when no round ran.
 	State *runner.FixRoundsState
-	End   runner.FixLoopEnd
+	// AwaitFindings is fix-await's findings output for the last await: the
+	// review of the last round's commit, which fills that round's record.
+	AwaitFindings string
+	End           runner.FixLoopEnd
 }
 
 // writeFixLoop writes why the PR waits, when the loop stopped, and then merges
-// the state's rounds, each held to the limits a summary's are. The wait reason is
-// written first so a round the check refuses still leaves the PR with its reason.
+// the state's rounds, each held to the limits a summary's are. The last round's
+// review is filled first, from the findings the last await reported when it
+// reported a review. The wait reason is written first so a round the check
+// refuses still leaves the PR with its reason.
 func writeFixLoop(ctx context.Context, logger *slog.Logger, rec fixRoundsRecorder, in fixLoopRecord, now time.Time) error {
 	if reason, detail, ok := runner.FixRoundsWait(in.End); ok {
 		if err := rec.SetWaitReason(ctx, in.RunID, reason, detail); err != nil {
@@ -119,6 +126,10 @@ func writeFixLoop(ctx context.Context, logger *slog.Logger, rec fixRoundsRecorde
 	}
 	if in.State == nil || len(in.State.Rounds) == 0 {
 		return nil
+	}
+	if lastRoundAwaited(in.End) && awaitedReviewPosted(in.End.AwaitReason, in.AwaitFindings) {
+		s := in.State.WithReview(in.AwaitFindings)
+		in.State = &s
 	}
 	for _, r := range in.State.Rounds {
 		if err := runner.ValidateMergedFixRound(in.AttemptID, r, now); err != nil {
@@ -130,4 +141,25 @@ func writeFixLoop(ctx context.Context, logger *slog.Logger, rec fixRoundsRecorde
 	}
 	logger.Info("fixRoundsMerged", "run", in.RunID, "rounds", len(in.State.Rounds))
 	return nil
+}
+
+// lastRoundAwaited reports whether a review was awaited for the last round's own
+// commit. A round that changed no file or whose push was refused has no commit to
+// review, and the workflow's await output then holds an earlier round's.
+func lastRoundAwaited(end runner.FixLoopEnd) bool {
+	return end.Stop != runner.FixStopNoChange && end.PushReason == ""
+}
+
+// awaitedReviewPosted reports whether fix-await reported a review of the head it
+// awaited: its findings or clean reason, and findings only with the text that
+// reason carries. Any other reason ended the wait without a verdict, so the
+// round before it keeps no review rather than reading as a clean one.
+func awaitedReviewPosted(reason, findings string) bool {
+	switch reason {
+	case fixAwaitReasonFindings:
+		return findings != ""
+	case fixAwaitReasonClean:
+		return true
+	}
+	return false
 }

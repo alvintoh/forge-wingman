@@ -36,10 +36,14 @@ const fixRoundsBudget = nfr1RunCap
 // left: no round ran, and the findings are the owner's.
 var ErrFixRoundsBudget = errors.New("no fix round fits the loop's own budget")
 
-// fixRoundsClockSkew is how far ahead of this job's clock a loop's recorded start
-// may be, for a record another machine wrote: further ahead, the start is not
+// FixRoundsClockSkew is how far ahead of a job's clock a fix-round loop's start
+// may be, for one another machine wrote: further ahead, the start is not
 // believable and the budget cannot be enforced from it.
-const fixRoundsClockSkew = time.Minute
+const FixRoundsClockSkew = time.Minute
+
+// errFixRoundStart reports a loop start further ahead of this job's clock than
+// FixRoundsClockSkew: no round runs against a start that has not happened.
+var errFixRoundStart = errors.New("the fix-round loop starts ahead of the clock")
 
 // ErrBranchMismatch reports a worktree that is not on the branch a round was
 // given: a round commits to the pull request's branch, never to another.
@@ -492,7 +496,7 @@ func RunFixRound(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, s
 	if started.IsZero() {
 		started = now
 	}
-	if started.After(now.Add(fixRoundsClockSkew)) {
+	if started.After(now.Add(FixRoundsClockSkew)) {
 		return ReviewFixRound{}, "", fmt.Errorf("%w: the loop's start %s is ahead of the clock", ErrFixRoundsBudget, started.Format(time.RFC3339))
 	}
 	timeout, inBudget := roundTimeout(c.AgentTimeout, started, now, fixRoundsBudget, reviewStartRoom)

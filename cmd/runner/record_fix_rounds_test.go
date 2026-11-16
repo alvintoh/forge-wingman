@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -139,6 +140,82 @@ func TestWriteFixLoopStopsAtTheFirstWriteThatFails(t *testing.T) {
 	}
 }
 
+// unreviewedState is a loop state whose one round was given issued and whose
+// re-review no fix state could fill.
+func unreviewedState(now time.Time, issued ...string) *runner.FixRoundsState {
+	r := loopRound(1, now)
+	r.Findings, r.Reviewed, r.Resolved, r.New = issued, false, 0, 0
+	return loopState(r)
+}
+
+// TestWriteFixLoopFillsTheLastRoundsReviewFromTheLastAwait: the re-review after
+// the final round reaches no fix state, so the record step fills that round from
+// the await, and only when the wait reported a review of the head.
+func TestWriteFixLoopFillsTheLastRoundsReviewFromTheLastAwait(t *testing.T) {
+	tests := []struct {
+		name        string
+		reason      string
+		findings    string
+		reviewed    bool
+		resolved    int
+		newFindings int
+	}{
+		{"one finding still open", fixAwaitReasonFindings, "another finding", true, 1, 0},
+		{"a finding the round never saw", fixAwaitReasonFindings, "another finding\none nobody raised", true, 1, 1},
+		{"clean", fixAwaitReasonClean, "", true, 2, 0},
+		{"a findings reason with no text", fixAwaitReasonFindings, "", false, 0, 0},
+		{"a wait that timed out", fixAwaitReasonTimeout, "another finding", false, 0, 0},
+		{"a wait that saw no verdict", fixAwaitReasonNoVerdict, "another finding", false, 0, 0},
+		{"a wait that failed", fixAwaitReasonError, "another finding", false, 0, 0},
+		{"no await reason", "", "another finding", false, 0, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Now()
+			rec := &fakeFixRecorder{}
+			in := fixLoopRecord{RunID: "run-1", AttemptID: "42-1", State: unreviewedState(now, "a finding", "another finding"),
+				AwaitFindings: tt.findings, End: runner.FixLoopEnd{AwaitReason: tt.reason, Stop: runner.FixStopCap}}
+			if err := writeFixLoop(context.Background(), quietLogger(), rec, in, now); err != nil {
+				t.Fatal(err)
+			}
+			if len(rec.merged) != 1 {
+				t.Fatalf("merged %+v, want the one round", rec.merged)
+			}
+			got := rec.merged[0]
+			if got.Reviewed != tt.reviewed || got.Resolved != tt.resolved || got.New != tt.newFindings {
+				t.Fatalf("round = reviewed %v, %d resolved, %d new; want %v, %d and %d",
+					got.Reviewed, got.Resolved, got.New, tt.reviewed, tt.resolved, tt.newFindings)
+			}
+		})
+	}
+}
+
+// TestWriteFixLoopLeavesALastRoundWithNoCommitUnreviewed: the workflow's await
+// reason falls back through earlier rounds, so a last round that changed no file
+// or whose push was refused must not be filled from an await that reviewed another.
+func TestWriteFixLoopLeavesALastRoundWithNoCommitUnreviewed(t *testing.T) {
+	for name, end := range map[string]runner.FixLoopEnd{
+		"a round that changed no file": {Stop: runner.FixStopNoChange, AwaitReason: fixAwaitReasonFindings},
+		"a push that was refused":      {PushReason: "lease-lost", AwaitReason: fixAwaitReasonFindings},
+	} {
+		t.Run(name, func(t *testing.T) {
+			now := time.Now()
+			rec := &fakeFixRecorder{}
+			in := fixLoopRecord{RunID: "run-1", AttemptID: "42-1", State: unreviewedState(now, "a finding", "another finding"),
+				AwaitFindings: "b", End: end}
+			if err := writeFixLoop(context.Background(), quietLogger(), rec, in, now); err != nil {
+				t.Fatal(err)
+			}
+			if len(rec.merged) != 1 {
+				t.Fatalf("merged %+v, want the one round", rec.merged)
+			}
+			if got := rec.merged[0]; got.Reviewed || got.Resolved != 0 || got.New != 0 {
+				t.Fatalf("round = reviewed %v, %d resolved, %d new; want it left unreviewed", got.Reviewed, got.Resolved, got.New)
+			}
+		})
+	}
+}
+
 func writeState(t *testing.T, s *runner.FixRoundsState) string {
 	t.Helper()
 	raw, err := json.Marshal(s)
@@ -209,11 +286,12 @@ func TestParseRecordFixRoundsReadsEachJobsOutput(t *testing.T) {
 	}
 	in, state, err := parseRecordFixRounds(quietLogger(), e, []string{"-run-id", "run-1", "-state", "s.json",
 		"-round-reason", "commit", "-round-stop", "round-cap", "-round-detail", "rd",
-		"-push-reason", "lease-lost", "-push-detail", "pd", "-await-reason", "timeout", "-await-detail", "ad"})
+		"-push-reason", "lease-lost", "-push-detail", "pd", "-await-reason", "timeout", "-await-detail", "ad",
+		"-await-findings", "a finding"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := fixLoopRecord{RunID: "run-1", AttemptID: "42-1", End: runner.FixLoopEnd{
+	want := fixLoopRecord{RunID: "run-1", AttemptID: "42-1", AwaitFindings: "a finding", End: runner.FixLoopEnd{
 		RoundReason: "commit", Stop: runner.FixStopCap, RoundNote: "rd", PushReason: "lease-lost", PushNote: "pd", AwaitReason: "timeout", AwaitNote: "ad"}}
 	if state != "s.json" || in != want {
 		t.Fatalf("state %q, record %+v; want s.json and %+v", state, in, want)
@@ -258,21 +336,33 @@ func TestRecordFixRoundsWritesTheStopAndMergesTheRoundsAgainstTheEmulator(t *tes
 	}
 	round := loopRound(1, time.Now())
 	round.Step.Tokens = runner.Usage{Input: 10, Steps: 1}
+	round.Findings, round.Reviewed, round.Resolved = []string{"a finding", "another finding"}, false, 0
 	state := writeState(t, loopState(round))
-	args := []string{"record-fix-rounds", "-run-id", runID, "-state", state, "-round-stop", "round-cap"}
+	args := []string{"record-fix-rounds", "-run-id", runID, "-state", state, "-round-stop", "round-cap",
+		"-await-reason", fixAwaitReasonFindings, "-await-findings", "another finding"}
+	var rows []runner.Record
 	for range 2 {
 		if err := run(ctx, quietLogger(), args, recordFixEnv("", nil)); err != nil {
 			t.Fatal(err)
 		}
+		row, err := records.GetRecord(ctx, runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows = append(rows, row)
 	}
-	got, err := records.GetRecord(ctx, runID)
-	if err != nil {
-		t.Fatal(err)
+	got := rows[1]
+	if !reflect.DeepEqual(rows[0], rows[1]) {
+		t.Fatalf("the second run changed the row:\nfirst  = %+v\nsecond = %+v", rows[0], rows[1])
 	}
 	if got.WaitReason != "fix-rounds-stopped" || got.WaitDetail != "fix loop ended: round-cap" {
 		t.Fatalf("wait = %q, %q", got.WaitReason, got.WaitDetail)
 	}
 	if len(got.FixRounds) != 1 || len(got.Steps) != 1 || got.Tokens.Input != 10 {
 		t.Fatalf("%d rounds, %d steps, tokens %+v after running twice; want 1, 1 and 10 input", len(got.FixRounds), len(got.Steps), got.Tokens)
+	}
+	if r := got.FixRounds[0]; !r.Reviewed || r.Resolved != 1 || r.New != 0 {
+		t.Fatalf("round = reviewed %v, %d resolved, %d new; want the await's review: reviewed, 1 resolved and no new finding",
+			r.Reviewed, r.Resolved, r.New)
 	}
 }

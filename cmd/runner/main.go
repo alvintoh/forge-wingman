@@ -7,7 +7,7 @@
 //	runner pr-meta         -run-id <id> ...          render the PR's title and body from the run record
 //	runner pr              -pr <n> [-shots <dir>]    push a run's screenshots to the evidence branch and show them in the PR body
 //	runner record          -run-id <id> -summary ... validate the build's summary and merge it into the run record
-//	runner record-fix-rounds -run-id <id> [-state <path>] ...  record why a stopped fix-round loop leaves the PR to the owner and merge its rounds into the run record
+//	runner record-fix-rounds -run-id <id> [-state <path>] [-await-findings <text>] ...  record why a stopped fix-round loop leaves the PR to the owner and merge its rounds, the last with the await's review, into the run record
 //	runner enable-provider -provider <name>          admit a halted provider back to dispatch (AC5)
 //	runner reset-breaker                             clear the breaker a systemic stop tripped, admitting dispatch again
 //	runner peak-mode       [-mode off-peak-only|always] print the peak mode, or set whether a run waits out its model's peak-price hours
@@ -30,7 +30,7 @@
 //	runner pr-review       -context <path> ...       review the context on each model in turn and write the verdict
 //	runner pr-review-post  -pr <n> -verdict <path>   post the review comment and status, and decide the auto-merge request
 //	runner fix-await        -pr <n> -sha <sha> -started <RFC3339>  wait, bounded, for the review of a head and print whether the loop continues
-//	runner fix-round       -branch <b> -head <sha> [-state <path>] -findings <text> -out <dir> -ticket-file <path> -agent-image <ref> -model <m>  run one fix round at a head and write its commit as fix.bundle and its state as fix-state.json
+//	runner fix-round       -branch <b> -head <sha> [-state <path>] [-started <RFC3339>] -findings <text> -out <dir> -ticket-file <path> -agent-image <ref> -model <m>  run one fix round at a head and write its commit as fix.bundle and its state as fix-state.json
 //	runner fix-push        -pr <n> -branch <b> -expected <sha> -bundle <path> [-repo <dir>] [-remote <name>]  check a fix round's bundle and push its one commit to the PR's branch under a lease
 //	runner agent-probe     -agent-image <ref> [-egress] -- <command...>  run a command in the agent container, to prove what it cannot reach
 //	runner egress-proxy    -allow <host,...>         serve the proxy that lets the agent container reach only those hosts
