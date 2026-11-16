@@ -67,12 +67,18 @@ func ValidNote(note string) bool {
 // Validate reports whether the ticket has an id, a one-line title, a size of S, M
 // or L and a body, each within its limit.
 func (t Ticket) Validate() error {
+	return t.validate(true)
+}
+
+// validate reports the same, except that sized false admits any size: a draft is
+// a ticket the sizer is asked about, so it need not carry a size yet.
+func (t Ticket) validate(sized bool) error {
 	switch {
 	case len(t.ID) > maxTicketIDBytes || !ticketIDPattern.MatchString(t.ID):
 		return fmt.Errorf("%w: id %q is not a branch-safe ticket id", ErrTicketInvalid, truncate(t.ID, logErrorLimit))
 	case strings.TrimSpace(t.Title) == "" || len(t.Title) > maxTicketTitleBytes || !printable(t.Title):
 		return fmt.Errorf("%w: title is empty, over %d bytes or not one printable line", ErrTicketInvalid, maxTicketTitleBytes)
-	case !ticketSizes[t.Size]:
+	case sized && !ticketSizes[t.Size]:
 		return fmt.Errorf("%w: size %q is not S, M or L", ErrTicketInvalid, truncate(t.Size, logErrorLimit))
 	case len(t.SizedBy) > maxSizedByBytes || !printable(t.SizedBy):
 		return fmt.Errorf("%w: sized-by is over %d bytes or not one printable line", ErrTicketInvalid, maxSizedByBytes)
@@ -151,6 +157,17 @@ func (t Ticket) Encode() (string, error) {
 
 // ParseTicket decodes a ticket encoded by Encode and validates it.
 func ParseTicket(raw string) (Ticket, error) {
+	return parseTicket(raw, true)
+}
+
+// ParseTicketDraft decodes a ticket encoded by Encode and validates it as a
+// draft: everything Validate checks but the size, which a ticket the sizer is
+// asked about need not carry yet.
+func ParseTicketDraft(raw string) (Ticket, error) {
+	return parseTicket(raw, false)
+}
+
+func parseTicket(raw string, sized bool) (Ticket, error) {
 	dec := json.NewDecoder(bytes.NewReader([]byte(raw)))
 	dec.DisallowUnknownFields()
 	var t Ticket
@@ -160,7 +177,7 @@ func ParseTicket(raw string) (Ticket, error) {
 	if dec.More() {
 		return Ticket{}, fmt.Errorf("%w: trailing data", ErrTicketInvalid)
 	}
-	if err := t.Validate(); err != nil {
+	if err := t.validate(sized); err != nil {
 		return Ticket{}, err
 	}
 	return t, nil

@@ -65,9 +65,9 @@ func TestSignalSize(t *testing.T) {
 			"## Outcome\n\nAcceptance criteria follow the PRD:\n- a\n- b\n\n## Acceptance criteria\n\n" + strings.Repeat("1. a\n", 7), ceilingSize},
 	} {
 		t.Run(name, func(t *testing.T) {
-			got, reason := signalSize(tt.title, tt.body)
+			got, reason := SignalSize(tt.title, tt.body)
 			if got != tt.want {
-				t.Fatalf("signalSize = %s (%s), want %s", got, reason, tt.want)
+				t.Fatalf("SignalSize = %s (%s), want %s", got, reason, tt.want)
 			}
 			if reason == "" {
 				t.Fatal("no reason recorded")
@@ -100,7 +100,7 @@ func TestSignalSizeNeverSizesAHandSizedLTicketSmaller(t *testing.T) {
 	matrix := map[string]map[string]int{}
 	agree := 0
 	for _, tk := range tickets {
-		got, reason := signalSize(tk.Title, tk.Body)
+		got, reason := SignalSize(tk.Title, tk.Body)
 		if matrix[tk.Size] == nil {
 			matrix[tk.Size] = map[string]int{}
 		}

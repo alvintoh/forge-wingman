@@ -140,8 +140,8 @@ func TestBuildTakesTheSizeLabelOverTheSignals(t *testing.T) {
 	if rejection.Reason != "" {
 		t.Fatalf("refused %s: %s", rejection.Reason, rejection.Detail)
 	}
-	if q.Ticket.Size != "S" || q.Ticket.SizedBy != sizedByLabel {
-		t.Fatalf("ticket sized %s by %q, want S by %q", q.Ticket.Size, q.Ticket.SizedBy, sizedByLabel)
+	if q.Ticket.Size != "S" || q.Ticket.SizedBy != SizedByLabel {
+		t.Fatalf("ticket sized %s by %q, want S by %q", q.Ticket.Size, q.Ticket.SizedBy, SizedByLabel)
 	}
 }
 
@@ -179,7 +179,7 @@ func TestPriorityRankSortsNoPriorityLast(t *testing.T) {
 }
 
 func TestLabelValueTakesTheFirstMatch(t *testing.T) {
-	got, ok := labelValue([]string{"size:M", "size:XL", "repo:octo/scratch"}, sizePrefix)
+	got, ok := labelValue([]string{"size:M", "size:XL", "repo:octo/scratch"}, SizePrefix)
 	if !ok || got != "M" {
 		t.Fatalf("labelValue = %q, %v", got, ok)
 	}

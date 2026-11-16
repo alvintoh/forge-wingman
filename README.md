@@ -45,7 +45,11 @@ criteria naming two or more modules. Doubt picks the larger size: S needs at mos
 4 criteria and no doubt, M at most 4 with one doubt or at most 6 with none, and
 everything else is L, which plans and waits for the owner's merge. No criteria to
 count reads as L, and more than 12 is above the ceiling. The run record's
-`sized_by` says which sized it: `linear-label` or `deterministic`.
+`sized_by` says which sized it: `linear-label` or `deterministic`. To read the
+size and reason before the run exists, `runner size -ticket-file <path>` prints
+them, one per line, from the ticket file alone: no store and no environment. A
+ticket a size label sized says so on a further line, since the label overrides
+the sizer, and the file need not carry a size at all.
 
 Without a repo label the ticket is refused rather than queued, and the reason is
 recorded against it in the store as `dispatch/rejected-<identifier>`:
