@@ -161,6 +161,14 @@ this file as project memory, so the rules below reach the run.
   block the other on it. *(Judgment call, owner's instruction 2026-11-06, after FRG-297 grounded at
   12 files and was split into FRG-297 and FRG-298.)*
 
+- **A ticket is sized by the sizer's rule, not by hand.** The sizer counts acceptance criteria
+  (S up to 4, M up to 6, L above 6; any doubt signal moves it up one band,
+  `internal/dispatcher/sizer.go:14-20`), so write at most 6 criteria for an M and never label a
+  size the sizer would not give. Leave the `size:` label off and read `sized_by` on the first run
+  to check. *(Judgment call on the policy; the thresholds are code. Verified 2026-11-16: an
+  8-criteria ticket labelled M was sized L when unlabelled, built 11 files and stopped on a
+  workflow edit.)*
+
 - **Edit a ticket before delegating it: a claimed run never re-reads it.** The run copies the
   ticket's title and description onto its run row at claim, and the plan and build read that copy,
   so an edit made after the claim changes Linear and nothing else (the surface shows the stale
