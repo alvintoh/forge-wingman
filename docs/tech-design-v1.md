@@ -363,10 +363,11 @@ while an unparseable value holds every PR. A rename reports both its old and new
 The PR body names why it waits and tells the reviewer to run `/fe-sweep` before
 `/pr-review`.
 
-**When the reviewer is unavailable — decided 2026-10-12 by the owner; not yet built.**
-A review whose models all fail returns **no verdict**, which today requests nothing
-and leaves the PR to the owner (seen on two PRs on 2026-10-11 and 2026-10-12, when the
-GOAT allowance was spent). The decision splits the two causes a no-verdict hides:
+**When the reviewer is unavailable — decided 2026-10-12 by the owner; the cause is
+reported, the merge request is not yet built.** A review whose models all fail returns
+**no verdict**, which requests nothing and leaves the PR to the owner (seen on two PRs on
+2026-10-11 and 2026-10-12, when the GOAT allowance was spent). The decision splits the two
+causes a no-verdict hides:
 
 | Review ended | Today | Decided |
 |---|---|---|
@@ -396,11 +397,25 @@ being recognised as that state, not as a finding. The builder's own plan allowan
 different matter: admission already defers or falls through it (`FR-22`, `FR-26`) and
 it never reaches the merge.
 
-**It needs a classifier the review does not have.** "No verdict" is not evidence of an
-exhausted allowance: the two failures above read *agent failed* and *timed out*, which
-fits a spent allowance without proving one. The cause must come from the reviewer's own
+**The classifier the review needed — built 2026-11-16.** "No verdict" is not evidence of
+an exhausted allowance: the two failures above read *agent failed* and *timed out*, which
+fits a spent allowance without proving one. The cause comes from the reviewer's own
 marker, carried through the verdict step as a closed state, never inferred from the
-absence of a verdict. Until that exists the rule is inert and every no-verdict PR waits.
+absence of a verdict: each attempt the review records is classified from the plan's
+allowance markers (`FR-26`), and an attempt whose model reported its allowance spent is
+kept as **allowance exhausted** rather than *agent failed*. The comment and the
+`wingman-review` status then name the cause — *no verdict: allowance exhausted* when
+every model reported it, *no verdict: failed* otherwise — so a spent allowance reads
+differently from a broken reviewer, and `fix-await` still stops the loop on either. The
+merge request on an exhausted allowance is the remaining half, not built.
+
+**The markers are a documented assumption, not a verified message.** The phrases in
+`internal/providers/providers.json` have never been confirmed against a live exhaustion
+or outage — `internal/providers/config.go` records them as UNVERIFIED — so a provider
+whose wording they do not cover still reads as *no verdict: failed*. That is the safe
+direction: an unrecognised allowance costs the owner a look at an eligible PR, while a
+marker guessed too broadly would report a spent allowance for a review that merely
+failed.
 
 ### Surface — Cloud Run service behind IAP
 

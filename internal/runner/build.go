@@ -963,11 +963,10 @@ func bindModel(agent Agent, model string) Agent {
 	return agent
 }
 
-// classifyStderrTail is how much of the agent's stderr classifyAgentFailure
-// reads, from the END of the file — an exhaustion message is the process's
-// last output before it exits, and bounding the read keeps a runaway stream
-// from being loaded into memory on the one path meant to handle a bad run
-// gracefully.
+// classifyStderrTail is how much of the agent's stderr the failure classifiers
+// read, taken from the END: an exhaustion message is the process's last output
+// before it exits. Bounding the read also keeps a runaway stream from being
+// loaded into memory on the one path meant to handle a bad run gracefully.
 const classifyStderrTail = 64 << 10
 
 const logStderrTail = 2 << 10
@@ -975,23 +974,29 @@ const logStderrTail = 2 << 10
 const redactedMarker = "[redacted]"
 
 // classifyAgentFailure reads a bounded tail of the agent's stderr file and
-// classifies the failure: a refusal by provider naming a plan setting first,
-// with that setting, then through the agent's own harness when it has one,
-// else by the assumed provider markers. A read it cannot perform falls back to
-// the ordinary agent-failure classification, never to a false budget stop.
+// classifies the failure. A read it cannot perform falls back to the ordinary
+// agent-failure classification, never to a false budget stop.
 func classifyAgentFailure(agent Agent, provider, stderrPath string, exitErr error) (Outcome, StopReason, string) {
 	raw, err := readTail(stderrPath, classifyStderrTail)
 	if err != nil {
 		return OutcomeAgentFailed, StopAgentExit, ""
 	}
-	if setting, ok := providers.SettingFor(provider, string(raw)); ok {
+	return classifyAgentStderr(agent, provider, string(raw), exitErr)
+}
+
+// classifyAgentStderr classifies a failed run from the stderr its caller hands
+// it, in this order: a provider's refusal naming a plan setting, returned as the
+// third result, then the agent's own harness rules when it has them, and
+// otherwise the assumed provider markers.
+func classifyAgentStderr(agent Agent, provider, stderr string, exitErr error) (Outcome, StopReason, string) {
+	if setting, ok := providers.SettingFor(provider, stderr); ok {
 		return OutcomeStopped, StopProviderSetting, setting
 	}
 	if c, ok := agent.(failureClassifier); ok {
-		outcome, reason := c.Classify(string(raw), exitErr)
+		outcome, reason := c.Classify(stderr, exitErr)
 		return outcome, reason, ""
 	}
-	outcome, reason := classifyMarkers(string(raw))
+	outcome, reason := classifyMarkers(stderr)
 	return outcome, reason, ""
 }
 

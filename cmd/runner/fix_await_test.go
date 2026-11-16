@@ -209,13 +209,20 @@ func TestReviewAtKeepsPollingWhenTheCommentNamesNoHead(t *testing.T) {
 }
 
 func TestReviewAtStopsOnANoVerdict(t *testing.T) {
-	gh := reviewClient(t, []commitStatusEntry{statusOf("failure", noVerdictStatusDescription, awaitStart)}, nil)
-	got, ok, err := reviewAt(context.Background(), gh, 7, headSHA)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok || got.Decision != fixAwaitStop || got.Reason != fixAwaitReasonNoVerdict || got.Detail != noVerdictStatusDescription {
-		t.Fatalf("outcome = %+v, ok = %v, want a stop for no verdict", got, ok)
+	for name, description := range map[string]string{
+		"an exhausted allowance": noVerdictAllowanceStatusDescription,
+		"a failed review":        noVerdictFailedStatusDescription,
+	} {
+		t.Run(name, func(t *testing.T) {
+			gh := reviewClient(t, []commitStatusEntry{statusOf("failure", description, awaitStart)}, nil)
+			got, ok, err := reviewAt(context.Background(), gh, 7, headSHA)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !ok || got.Decision != fixAwaitStop || got.Reason != "no-verdict" || got.Detail != description {
+				t.Fatalf("outcome = %+v, ok = %v, want a stop for no verdict", got, ok)
+			}
+		})
 	}
 }
 

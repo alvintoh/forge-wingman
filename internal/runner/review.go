@@ -77,6 +77,11 @@ func ParseReviewFindings(text string) (string, error) {
 // ErrReviewOutput reports a review agent's final message that carries no readable review-findings block.
 var ErrReviewOutput = errors.New("findings unreadable")
 
+// ErrReviewAllowance reports a review model whose run failed with the plan's
+// allowance exhausted, which is the reviewer's own marker rather than an
+// inference from the missing verdict.
+var ErrReviewAllowance = errors.New("review model allowance exhausted")
+
 // ReviewResult is what one model's review produced and cost.
 type ReviewResult struct {
 	Model string
@@ -92,16 +97,26 @@ type ReviewResult struct {
 // Review runs prompt on model in dir and meters the run against the plan's rates.
 //
 // A run that fails, or outlives ctx, is an error; its message carries the end of
-// the agent's stderr with every secret redacted. A final message with no
-// review-findings block is ErrReviewOutput, returned with the metered result.
+// the agent's stderr with every secret redacted. A failure the plan's allowance
+// markers name is ErrReviewAllowance. A final message with no review-findings
+// block is ErrReviewOutput, returned with the metered result.
 func Review(ctx context.Context, agent Agent, model, dir, prompt string, secrets []string) (ReviewResult, error) {
 	var out, errOut bytes.Buffer
-	if err := bindModel(agent, model).Run(ctx, dir, "", prompt, "", &out, &errOut); err != nil {
+	run := bindModel(agent, model)
+	if err := run.Run(ctx, dir, "", prompt, "", &out, &errOut); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ReviewResult{}, fmt.Errorf("review agent on %s: %w", model, ctxErr)
 		}
+		stderr := errOut.String()
 		errOut.WriteString("\n" + err.Error())
-		return ReviewResult{}, fmt.Errorf("review agent on %s: %s", model, redactedTail(errOut.Bytes(), smokeTextLimit, secrets))
+		detail := redactedTail(errOut.Bytes(), smokeTextLimit, secrets)
+		if len(stderr) > classifyStderrTail {
+			stderr = stderr[len(stderr)-classifyStderrTail:]
+		}
+		if _, reason, _ := classifyAgentStderr(run, Provider(model), stderr, err); reason == StopAllowanceExhausted {
+			return ReviewResult{}, fmt.Errorf("%w: review agent on %s: %s", ErrReviewAllowance, model, detail)
+		}
+		return ReviewResult{}, fmt.Errorf("review agent on %s: %s", model, detail)
 	}
 	usage, err := meterUsage(bytes.NewReader(out.Bytes()), model, providers.RatesFor)
 	if err != nil {

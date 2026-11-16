@@ -118,6 +118,34 @@ func TestParsePRVerdictAcceptsEachOutcome(t *testing.T) {
 	}
 }
 
+// TestParsePRVerdictAcceptsAnExhaustedAttempt: the reviewer's own marker travels
+// between the review and the post as a closed attempt state, so the artifact has
+// to carry it verbatim and read it back.
+func TestParsePRVerdictAcceptsAnExhaustedAttempt(t *testing.T) {
+	raw := encodeJSON(t, PRVerdict{Outcome: PRReviewNoVerdict,
+		Attempts: []PRReviewAttempt{{Model: freeReviewModel, Outcome: AttemptExhausted}}})
+	v, err := ParsePRVerdict(raw)
+	if err != nil || !v.AllowanceExhausted() {
+		t.Fatalf("parse = %+v, err = %v, want the exhausted attempt read back", v, err)
+	}
+}
+
+// TestAllowanceExhaustedNeedsAVerdictAndAnAttempt: a missing artifact zeroes the
+// verdict and planPost reads that as no verdict, so a verdict with no attempt
+// must never claim the allowance; nor may one that named another outcome.
+func TestAllowanceExhaustedNeedsAVerdictAndAnAttempt(t *testing.T) {
+	for name, v := range map[string]PRVerdict{
+		"no attempts":     {Outcome: PRReviewNoVerdict},
+		"a clean verdict": {Outcome: PRReviewClean, Model: freeReviewModel, Attempts: []PRReviewAttempt{{Model: freeReviewModel, Outcome: AttemptExhausted}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if v.AllowanceExhausted() {
+				t.Fatalf("verdict = %+v reads as an exhausted allowance", v)
+			}
+		})
+	}
+}
+
 func TestParsePRVerdictRefuses(t *testing.T) {
 	for name, v := range map[string]PRVerdict{
 		"an unknown outcome":          verdictOf("approved", "", freeReviewModel),
@@ -150,6 +178,9 @@ type modelAgent struct {
 	model   string
 	replies map[string]func(ctx context.Context, stdout io.Writer) error
 	prompts *[]string
+	// stderr is what each model writes to its error stream before it replies,
+	// which is where a provider names a spent allowance.
+	stderr map[string]string
 }
 
 func (a modelAgent) WithModel(model string) Agent {
@@ -157,8 +188,9 @@ func (a modelAgent) WithModel(model string) Agent {
 	return a
 }
 
-func (a modelAgent) Run(ctx context.Context, _, _, prompt, _ string, stdout, _ io.Writer) error {
+func (a modelAgent) Run(ctx context.Context, _, _, prompt, _ string, stdout, stderr io.Writer) error {
 	*a.prompts = append(*a.prompts, prompt)
+	_, _ = io.WriteString(stderr, a.stderr[a.model])
 	return a.replies[a.model](ctx, stdout)
 }
 
@@ -175,27 +207,33 @@ func TestReviewPR(t *testing.T) {
 	hanging := func(ctx context.Context, _ io.Writer) error { <-ctx.Done(); return ctx.Err() }
 	for name, tt := range map[string]struct {
 		first, then  func(context.Context, io.Writer) error
+		stderr       map[string]string
 		wantOutcome  string
 		wantModel    string
 		wantFindings string
 		wantAttempts []string
+		wantSpent    bool
 	}{
 		"a clean review on the first model": {replyWith(usedTokens + reviewEvent("")), nil,
-			"clean", freeReviewModel, "", []string{"reviewed"}},
+			nil, "clean", freeReviewModel, "", []string{"reviewed"}, false},
 		"findings on the first model": {replyWith(reviewEvent("x is missing")), nil,
-			"findings", freeReviewModel, "x is missing", []string{"reviewed"}},
+			nil, "findings", freeReviewModel, "x is missing", []string{"reviewed"}, false},
 		"a failed model moves to the next": {failing, replyWith(reviewEvent("")),
-			"clean", second, "", []string{"agent failed", "reviewed"}},
+			nil, "clean", second, "", []string{"agent failed", "reviewed"}, false},
 		"an unreadable model moves to the next": {replyWith(planEvent("looks fine")), replyWith(reviewEvent("y")),
-			"findings", second, "y", []string{"findings unreadable", "reviewed"}},
+			nil, "findings", second, "y", []string{"findings unreadable", "reviewed"}, false},
 		"a timed-out model moves to the next": {hanging, replyWith(reviewEvent("")),
-			"clean", second, "", []string{"timed out", "reviewed"}},
+			nil, "clean", second, "", []string{"timed out", "reviewed"}, false},
 		"every model failing is no verdict": {failing, replyWith(planEvent("no block")),
-			"no-verdict", "", "", []string{"agent failed", "findings unreadable"}},
+			nil, "no-verdict", "", "", []string{"agent failed", "findings unreadable"}, false},
+		"every model out of allowance": {failing, failing,
+			map[string]string{freeReviewModel: allowanceStderr, second: allowanceStderr},
+			"no-verdict", "", "", []string{"allowance exhausted", "allowance exhausted"}, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var prompts []string
-			agent := modelAgent{replies: map[string]func(context.Context, io.Writer) error{freeReviewModel: tt.first, second: tt.then}, prompts: &prompts}
+			agent := modelAgent{replies: map[string]func(context.Context, io.Writer) error{freeReviewModel: tt.first, second: tt.then},
+				prompts: &prompts, stderr: tt.stderr}
 			v, err := ReviewPR(context.Background(), agent, []string{freeReviewModel, second}, 50*time.Millisecond, validPRContext(), nil)
 			if err != nil {
 				t.Fatal(err)
@@ -207,10 +245,104 @@ func TestReviewPR(t *testing.T) {
 			if v.Outcome != tt.wantOutcome || v.Model != tt.wantModel || v.Findings != tt.wantFindings || !slices.Equal(outcomes, tt.wantAttempts) {
 				t.Fatalf("verdict = %+v", v)
 			}
+			if v.AllowanceExhausted() != tt.wantSpent {
+				t.Fatalf("AllowanceExhausted = %v, want %v", v.AllowanceExhausted(), tt.wantSpent)
+			}
 			if _, err := ParsePRVerdict(encodeJSON(t, v)); err != nil {
 				t.Fatalf("the verdict does not parse back: %v", err)
 			}
 		})
+	}
+}
+
+// TestReviewPRKeepsASpentAllowanceApartFromAFailure: a verdict is the
+// allowance's only when every model reported it, so one spent model beside a
+// failed or an unavailable one leaves the review a failure.
+func TestReviewPRKeepsASpentAllowanceApartFromAFailure(t *testing.T) {
+	const second = "opencode-go/second/model"
+	failing := func(context.Context, io.Writer) error { return errors.New("exit status 1") }
+	for name, tt := range map[string]struct {
+		stderr map[string]string
+		want   []string
+	}{
+		"one spent, one failed": {map[string]string{freeReviewModel: allowanceStderr},
+			[]string{"allowance exhausted", "agent failed"}},
+		"both unavailable": {map[string]string{freeReviewModel: "Error: model unavailable", second: "Error: model unavailable"},
+			[]string{"agent failed", "agent failed"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var prompts []string
+			agent := modelAgent{replies: map[string]func(context.Context, io.Writer) error{freeReviewModel: failing, second: failing},
+				prompts: &prompts, stderr: tt.stderr}
+			v, err := ReviewPR(context.Background(), agent, []string{freeReviewModel, second}, 50*time.Millisecond, validPRContext(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var outcomes []string
+			for _, a := range v.Attempts {
+				outcomes = append(outcomes, a.Outcome)
+			}
+			if !slices.Equal(outcomes, tt.want) || v.AllowanceExhausted() {
+				t.Fatalf("verdict = %+v, want %v and no exhausted allowance", v, tt.want)
+			}
+		})
+	}
+}
+
+// TestReviewPRClassifiesTheEndOfAModelsStderr: an allowance message is the
+// process's last output, so the review classifies the same bounded tail the
+// build reads. A marker named earlier in a runaway stream claims nothing.
+func TestReviewPRClassifiesTheEndOfAModelsStderr(t *testing.T) {
+	var prompts []string
+	failing := func(context.Context, io.Writer) error { return errors.New("exit status 1") }
+	early := allowanceStderr + strings.Repeat("\n", classifyStderrTail)
+	agent := modelAgent{replies: map[string]func(context.Context, io.Writer) error{freeReviewModel: failing},
+		prompts: &prompts, stderr: map[string]string{freeReviewModel: early}}
+	v, err := ReviewPR(context.Background(), agent, []string{freeReviewModel}, time.Minute, validPRContext(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v.Attempts) != 1 || v.Attempts[0].Outcome != AttemptFailed || v.AllowanceExhausted() {
+		t.Fatalf("verdict = %+v, want a failure, not an allowance named before the tail", v)
+	}
+}
+
+// harnessAgent runs modelAgent's script and classifies every failure itself, as
+// a Router does, so a test can drive a verdict the plan's markers do not name.
+type harnessAgent struct {
+	modelAgent
+	outcome Outcome
+	reason  StopReason
+}
+
+func (a harnessAgent) WithModel(model string) Agent {
+	a.model = model
+	return a
+}
+
+func (a harnessAgent) Classify(string, error) (Outcome, StopReason) { return a.outcome, a.reason }
+
+// TestReviewPRReadsAHarnessClassifiedAllowance: a harness that classifies its
+// failures reaches the same closed state the plan's markers name, so the review
+// does not rest on the assumed marker wording alone.
+func TestReviewPRReadsAHarnessClassifiedAllowance(t *testing.T) {
+	var prompts []string
+	failing := func(context.Context, io.Writer) error { return errors.New("exit status 1") }
+	agent := harnessAgent{
+		modelAgent: modelAgent{replies: map[string]func(context.Context, io.Writer) error{freeReviewModel: failing},
+			prompts: &prompts, stderr: map[string]string{freeReviewModel: "Error: the turn failed"}},
+		outcome: OutcomeBudgetStop,
+		reason:  StopAllowanceExhausted,
+	}
+	if _, err := Review(context.Background(), agent, freeReviewModel, t.TempDir(), "p", nil); !errors.Is(err, ErrReviewAllowance) {
+		t.Fatalf("Review err = %v, want ErrReviewAllowance", err)
+	}
+	v, err := ReviewPR(context.Background(), agent, []string{freeReviewModel}, time.Minute, validPRContext(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v.Attempts) != 1 || v.Attempts[0].Outcome != AttemptExhausted || !v.AllowanceExhausted() {
+		t.Fatalf("verdict = %+v, want the harness's allowance read as an exhausted attempt", v)
 	}
 }
 
