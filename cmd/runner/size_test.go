@@ -61,6 +61,20 @@ func TestSizeNamesTheSizeLabelThatOverridesTheSizer(t *testing.T) {
 	}
 }
 
+// TestSizeStaysSilentWhenTheSizeLabelAgreesWithTheSizer covers the ticket a
+// label sized to the size the sizer also gives it: the label changes nothing,
+// so the command names none.
+func TestSizeStaysSilentWhenTheSizeLabelAgreesWithTheSizer(t *testing.T) {
+	tk := runner.Ticket{ID: "FRG-91", Title: "[BE] Move the store", Size: "L", SizedBy: dispatcher.SizedByLabel, Body: sevenCriteria}
+	var out bytes.Buffer
+	if err := sizeTicket(&out, []string{"-ticket-file", ticketFile(t, tk)}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := out.String(), "L\n7 acceptance criteria\n"; got != want {
+		t.Fatalf("size printed %q, want %q", got, want)
+	}
+}
+
 // TestSizePrintsLAndTheSizersReasonWithNoAcceptanceCriteria covers the ticket
 // the sizer has nothing to count, which it sizes L.
 func TestSizePrintsLAndTheSizersReasonWithNoAcceptanceCriteria(t *testing.T) {

@@ -171,3 +171,48 @@ func TestParseTicketRoundTripsEncode(t *testing.T) {
 		}
 	}
 }
+
+// TestParseTicketRefusesWhatTheDraftParseAdmits pins the two entry points apart:
+// a ticket carrying no size, or one outside S, M and L, is a draft the sizer can
+// be asked about and is not a ticket the runner can build.
+func TestParseTicketRefusesWhatTheDraftParseAdmits(t *testing.T) {
+	for name, size := range map[string]string{"no size": "", "an unknown size": "XL"} {
+		t.Run(name, func(t *testing.T) {
+			tk := testTicket
+			tk.Size = size
+			raw, err := tk.Encode()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ParseTicket(raw); !errors.Is(err, ErrTicketInvalid) {
+				t.Fatalf("ParseTicket err = %v, want ErrTicketInvalid", err)
+			}
+			got, err := ParseTicketDraft(raw)
+			if err != nil || got.Size != size {
+				t.Fatalf("ParseTicketDraft = %+v, %v, want the draft admitted with size %q", got, err, size)
+			}
+		})
+	}
+}
+
+// TestParseTicketDraftStillChecksTheIDAndTitle covers the two checks a draft
+// keeps, since only the size is optional on one.
+func TestParseTicketDraftStillChecksTheIDAndTitle(t *testing.T) {
+	for name, mutate := range map[string]func(*Ticket){
+		"no id":    func(tk *Ticket) { tk.ID = "" },
+		"no title": func(tk *Ticket) { tk.Title = " " },
+	} {
+		t.Run(name, func(t *testing.T) {
+			tk := testTicket
+			tk.Size = ""
+			mutate(&tk)
+			raw, err := tk.Encode()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ParseTicketDraft(raw); !errors.Is(err, ErrTicketInvalid) {
+				t.Fatalf("err = %v, want ErrTicketInvalid", err)
+			}
+		})
+	}
+}
