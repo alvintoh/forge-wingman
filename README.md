@@ -243,11 +243,11 @@ still open as findings, those left unprobed and any the round added are probed a
 A fix round that leaves the code not building — `vet`, the web build, or a format gate
 the formatter's own pass could not fix — gets one repair round on that gate's output
 before the guards are probed again and the diff re-reviewed, since the agent's sandbox
-has no Go toolchain to see the error itself. A run takes at most one, only while the run
-cap still has six minutes of its eight-minute commit reserve for the round and the checks
-after it, and the round stops two minutes short so those checks have room of their own; a
-test or lint failure gets none, and a gate still failing after the repair is named in the
-PR's notes.
+has no Go toolchain to see the error itself. A run takes at most one, and only while the
+run cap, less the two minutes its commit steps keep, leaves six minutes for the round and
+the checks after it; the round's own deadline is four minutes before the cap, so those
+checks have room of their own. A test or lint failure gets none, and a gate still failing
+after the repair is named in the PR's notes.
 
 Go's `go.mod` sets **`go 1.27`** (anything from 1.22 has the stdlib `ServeMux` routing the
 services use) and the **toolchain** that builds it; raise the toolchain deliberately.

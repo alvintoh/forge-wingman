@@ -384,17 +384,17 @@ func repairCapSpent() error {
 // repairRound gives a fix round's failing compile-level gate one repair round
 // on that gate's own output: the build agent's session continued, the gate as
 // its step's detail so its time and tokens reach the run record. It starts only
-// while repairBudget leaves repairRoundFloor, and its own deadline stops
-// repairCheckRoom short of that budget so the checks after it still have room.
-// ran is false when it started none. round and session advance to the round it
-// ran as and the session it reported, and a valid commit-message block from it
-// replaces msg.
+// while repairBudget leaves repairRoundFloor, and its own deadline is
+// repairCheckRoom before repairBudget, so the checks after it still have room.
+// A round that times out at that deadline is the run cap spent, not an agent
+// timeout. ran is false when it started none. The returned round and session
+// are the round it ran as and the session it reported, and a valid
+// commit-message block from it replaces msg.
 func repairRound(ctx context.Context, d BuildDeps, c BuildConfig, dir string, sum *Summary, rules, session string, round int,
-	msg *CommitMessage, gate, output string) (newSession string, newRound int, ran bool, err error) {
-	// The round starts only while repairBudget leaves repairRoundFloor, and it
-	// stops repairCheckRoom short of that budget so the checks after it have
-	// room: the gate and the deadline are both expressed against the budget less
-	// that room, which leaves the rule itself unchanged.
+	msg *CommitMessage, gate, output string) (string, int, bool, error) {
+	// Both the start rule and the deadline are measured against repairBudget
+	// less repairCheckRoom, so the round starts while repairBudget leaves
+	// repairRoundFloor and ends repairCheckRoom before repairBudget.
 	budget, minStart := repairBudget()-repairCheckRoom, repairRoundFloor-repairCheckRoom
 	timeout, inBudget := roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now(), budget, minStart)
 	if !inBudget {
@@ -406,6 +406,10 @@ func repairRound(ctx context.Context, d BuildDeps, c BuildConfig, dir string, su
 	text, resumed, round, err := runAgentInOrder(ctx, d, c, call, buildOrder(c), d.Agent, dir,
 		withCommitInstruction(checkFeedbackPrompt(gate, output)), sum, sum.StartedAt, budget, minStart)
 	if err != nil {
+		var s *StopError
+		if errors.As(err, &s) && s.Reason == StopAgentTimeout && !withinBudget(sum.StartedAt, d.Now(), budget) {
+			err = repairCapSpent()
+		}
 		return session, round, true, err
 	}
 	msg.adopt(text, c.Ticket.ID)
@@ -864,6 +868,7 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 		// A substitution inside the round advanced it, so the checks, the
 		// re-review and the next round continue from the round that answered.
 		round, session = ran, resumed
+		fixRound := round
 		msg.adopt(fixText, c.Ticket.ID)
 		if n > 1 {
 			// The one extra round this run took is priced in the PR notes, so the
@@ -891,7 +896,7 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 			var ranRepair bool
 			session, round, ranRepair, err = repairRound(ctx, d, c, wt.Dir, sum, rules, session, round, msg, gate, output)
 			if err != nil {
-				return false, "", reviewCallError(err, d.Now(), reviewStarted, budget)
+				return false, "", err
 			}
 			if ranRepair {
 				deadline := sum.StartedAt.Add(repairBudget())
@@ -916,7 +921,7 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 		surviving = append(surviving, openUnprobed(findings, unprobed)...)
 		recheckTimeout, inBudget := roundTimeout(c.AgentTimeout, reviewStarted, d.Now(), budget, reviewStartRoom)
 		if !inBudget {
-			rounds = append(rounds, fixRoundResult{round: round, issued: findings})
+			rounds = append(rounds, fixRoundResult{round: fixRound, issued: findings})
 			if open, ok := recheckFromReserve(ctx, d, c, wt, sum, round, rules, surviving); ok {
 				rounds[len(rounds)-1].open, rounds[len(rounds)-1].rechecked = open, true
 				sum.setReviewFindings(reviewRows(rounds))
@@ -934,7 +939,7 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 			return false, "", reviewCallError(err, d.Now(), reviewStarted, budget)
 		}
 		open := append(surviving, remaining...)
-		rounds = append(rounds, fixRoundResult{round: round, issued: findings, open: open, rechecked: true})
+		rounds = append(rounds, fixRoundResult{round: fixRound, issued: findings, open: open, rechecked: true})
 		if len(open) == 0 {
 			sum.setReviewFindings(reviewRows(rounds))
 			return checksDetail == "", checksDetail, nil

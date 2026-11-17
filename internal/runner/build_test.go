@@ -5800,3 +5800,128 @@ func TestPrePRLoopStopsWhenTheChangedPathsCannotBeListed(t *testing.T) {
 		t.Fatalf("record = %s/%s, want infra-failure/%s", rec.Outcome, rec.StopReason, StopChecksRun)
 	}
 }
+
+// TestPrePRLoopCarriesTheRepairRoundsSessionAndCommitMessageForward covers what
+// a repair round hands on: its prompt asks for the commit message, a valid block
+// from it is the run's message, and the next fix round resumes the session it
+// reported.
+func TestPrePRLoopCarriesTheRepairRoundsSessionAndCommitMessageForward(t *testing.T) {
+	const finding = "the retry never bounds its attempts"
+	agent := &fakeAgent{
+		edit: edit("version.go", "package x\n"),
+		eventsFn: func(call int) string {
+			if call == 3 {
+				return `{"type":"step_finish","sessionID":"ses_repair","part":{"tokens":{}}}` + "\n" +
+					planEvent(commitBlock("fix(x): ABC-12 repair the build"))
+			}
+			return `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{}}}` + "\n"
+		},
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	deps.ReviewAgent = &fakeAgent{eventsFn: func(call int) string {
+		if call < 3 {
+			return reviewEvent(finding)
+		}
+		return reviewEvent("")
+	}}
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		if agent.calls == 2 {
+			return checkVet, "vet failed: bad format", nil
+		}
+		return "", "", nil
+	}
+
+	if _, err := Build(context.Background(), deps, testConfig(t, initRepo(t))); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 4 {
+		t.Fatalf("build agent ran %d times, want the build, two fix rounds and one repair round", agent.calls)
+	}
+	if !strings.HasSuffix(agent.prompts[2], commitMessageInstruction) {
+		t.Fatalf("repair round prompt = %q, want it to end with the commit-message instruction", agent.prompts[2])
+	}
+	if agent.sessions[3] != "ses_repair" {
+		t.Fatalf("second fix round session = %q, want the repair round's ses_repair", agent.sessions[3])
+	}
+	if sum := reported.last(t); sum.CommitSubject != "fix(x): ABC-12 repair the build" {
+		t.Fatalf("commit subject = %q, want the repair round's", sum.CommitSubject)
+	}
+}
+
+// TestPrePRLoopNamesTheFixRoundThatFixedAFindingNotTheRepairRound covers the
+// review table after a repair: the finding was fixed by the fix round, which
+// ran as round 2, and the repair round that followed it ran as round 3.
+func TestPrePRLoopNamesTheFixRoundThatFixedAFindingNotTheRepairRound(t *testing.T) {
+	rec, _, _, _ := repairRun(t, checkVet, time.Minute)
+
+	want := []ReviewFinding{{Finding: "the retry never bounds its attempts", Resolution: "fixed in round 2", Source: "p/r"}}
+	if !slices.Equal(rec.ReviewFindings, want) {
+		t.Fatalf("review findings = %+v, want %+v", rec.ReviewFindings, want)
+	}
+}
+
+// timingOutAgent runs the build agent normally except for its call-th call,
+// which moves the clock to at after the run's start and then outlives its
+// deadline.
+type timingOutAgent struct {
+	agent   *fakeAgent
+	clock   *time.Time
+	started time.Time
+	at      time.Duration
+	call    int
+}
+
+func (a timingOutAgent) Run(ctx context.Context, dir, session, prompt, rules string, stdout, stderr io.Writer) error {
+	if a.agent.calls+1 != a.call {
+		return a.agent.Run(ctx, dir, session, prompt, rules, stdout, stderr)
+	}
+	*a.clock = a.started.Add(a.at)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// TestPrePRLoopJudgesARepairRoundsTimeoutByTheRunCap covers the repair round's
+// timeout label: the round is paid from the run cap, so a timeout is the cap
+// spent only when the clock is past the round's deadline against it, however
+// long ago the review stage's own budget ran out.
+func TestPrePRLoopJudgesARepairRoundsTimeoutByTheRunCap(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		at   time.Duration
+		want StopReason
+	}{
+		{"cap left", nfr1RunCap - reserveRecheckFloor - repairCheckRoom - time.Minute, StopAgentTimeout},
+		{"cap spent", nfr1RunCap - reserveRecheckFloor, StopRunBudget},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			agent := &fakeAgent{
+				edit:   edit("version.go", "package x\n"),
+				events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{}}}` + "\n",
+			}
+			deps, _, reported := testDeps(validObjects(), agent)
+			started := time.Now()
+			clock := started
+			deps.Now = func() time.Time { return clock }
+			deps.Agent = timingOutAgent{agent: agent, clock: &clock, started: started, at: tt.at, call: 3}
+			deps.ReviewAgent = &fakeAgent{events: reviewEvent("the retry never bounds its attempts")}
+			checks := 0
+			deps.Checks = func(context.Context, string, []string) (string, string, error) {
+				checks++
+				if checks == 2 {
+					clock = started.Add(time.Minute)
+					return checkVet, "vet failed: bad format", nil
+				}
+				return "", "", nil
+			}
+			c := testConfig(t, initRepo(t))
+			c.AgentTimeout = 100 * time.Millisecond
+
+			if _, err := Build(context.Background(), deps, c); err != nil {
+				t.Fatal(err)
+			}
+			if rec := reported.last(t); rec.Ready || !strings.Contains(rec.LoopDetail, "("+string(tt.want)+")") {
+				t.Fatalf("ready = %v, detail = %q, want a draft stopped on %q", rec.Ready, rec.LoopDetail, tt.want)
+			}
+		})
+	}
+}
