@@ -82,6 +82,11 @@ var ErrReviewOutput = errors.New("findings unreadable")
 // inference from the missing verdict.
 var ErrReviewAllowance = errors.New("review model allowance exhausted")
 
+// reviewClassifyTail is how much of a failed review's stderr is read for an
+// exhausted allowance, which a merge can rest on: the message is the process's
+// last output, so text further back claims nothing.
+const reviewClassifyTail = 4 << 10
+
 // ReviewResult is what one model's review produced and cost.
 type ReviewResult struct {
 	Model string
@@ -110,8 +115,8 @@ func Review(ctx context.Context, agent Agent, model, dir, prompt string, secrets
 		stderr := errOut.String()
 		errOut.WriteString("\n" + err.Error())
 		detail := redactedTail(errOut.Bytes(), smokeTextLimit, secrets)
-		if len(stderr) > classifyStderrTail {
-			stderr = stderr[len(stderr)-classifyStderrTail:]
+		if len(stderr) > reviewClassifyTail {
+			stderr = stderr[len(stderr)-reviewClassifyTail:]
 		}
 		if _, reason, _ := classifyAgentStderr(run, Provider(model), stderr, err); reason == StopAllowanceExhausted {
 			return ReviewResult{}, fmt.Errorf("%w: review agent on %s: %s", ErrReviewAllowance, model, detail)

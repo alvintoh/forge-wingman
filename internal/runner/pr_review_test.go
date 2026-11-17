@@ -307,6 +307,33 @@ func TestReviewPRClassifiesTheEndOfAModelsStderr(t *testing.T) {
 	}
 }
 
+// An exhausted allowance counts only in the end of a failed review's stderr: a
+// marker followed by a full tail of other output is a failure, and one inside the
+// tail is an exhausted allowance.
+func TestReviewPRReadsAnAllowanceOnlyInTheLastOfTheStderr(t *testing.T) {
+	failing := func(context.Context, io.Writer) error { return errors.New("exit status 1") }
+	for name, tt := range map[string]struct {
+		stderr string
+		want   string
+	}{
+		"a marker followed by a full tail": {allowanceStderr + "\n" + strings.Repeat("x", reviewClassifyTail), AttemptFailed},
+		"a marker inside the tail":         {strings.Repeat("x", reviewClassifyTail) + "\n" + allowanceStderr, AttemptExhausted},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var prompts []string
+			agent := modelAgent{replies: map[string]func(context.Context, io.Writer) error{freeReviewModel: failing},
+				prompts: &prompts, stderr: map[string]string{freeReviewModel: tt.stderr}}
+			v, err := ReviewPR(context.Background(), agent, []string{freeReviewModel}, time.Minute, validPRContext(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(v.Attempts) != 1 || v.Attempts[0].Outcome != tt.want {
+				t.Fatalf("verdict = %+v, want the attempt %q", v, tt.want)
+			}
+		})
+	}
+}
+
 // harnessAgent runs modelAgent's script and classifies every failure itself, as
 // a Router does, so a test can drive a verdict the plan's markers do not name.
 type harnessAgent struct {
