@@ -64,6 +64,10 @@ const (
 	noVerdictStatusPrefix               = "No verdict: "
 	noVerdictAllowanceStatusDescription = noVerdictStatusPrefix + "allowance exhausted; waits for the owner"
 	noVerdictFailedStatusDescription    = noVerdictStatusPrefix + "failed; waits for the owner"
+	// noVerdictAllowanceMergeStatusDescription is the same cause once the review
+	// left the merge to the workflow, so the status never says it waits while the
+	// pull request is set to merge.
+	noVerdictAllowanceMergeStatusDescription = noVerdictStatusPrefix + "allowance exhausted; merges without review"
 )
 
 // errReviewAppNoTeam fails a review whose ticket reads as missing because the
@@ -260,56 +264,201 @@ func readCapped(path string) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(f, maxPRReviewArtifactBytes+1))
 }
 
+// withStore runs fn with a Firestore client for the job's project, opened by open
+// for the one read and closed with it.
+func withStore(ctx context.Context, getenv func(string) string, open func(context.Context, string) (*firestore.Client, error), fn func(*firestore.Client) error) error {
+	project := getenv("GOOGLE_CLOUD_PROJECT")
+	if project == "" {
+		return errors.New("missing environment: GOOGLE_CLOUD_PROJECT")
+	}
+	fsc, err := open(ctx, project)
+	if err != nil {
+		return fmt.Errorf("firestore client: %w", err)
+	}
+	defer func() { _ = fsc.Close() }()
+	return fn(fsc)
+}
+
+// openProjectStore is firestore.NewClient in the fixed-arity shape withStore's seam
+// takes, its options dropped: every read here opens a client without one.
+func openProjectStore(ctx context.Context, project string) (*firestore.Client, error) {
+	return firestore.NewClient(ctx, project)
+}
+
 // autoMergeSettings reads the owner's auto-merge settings.
 type autoMergeSettings func(ctx context.Context) (store.AutoMergeSetting, error)
 
 // storedAutoMergeSettings reads the settings from Firestore with the job's own
-// credentials, opening the client for the one read: only a clean review of an
-// eligible PR gets here.
+// credentials, opening the client for the one read: only a review that would
+// otherwise request the merge gets here.
 func storedAutoMergeSettings(getenv func(string) string) autoMergeSettings {
 	return func(ctx context.Context) (store.AutoMergeSetting, error) {
-		project := getenv("GOOGLE_CLOUD_PROJECT")
-		if project == "" {
-			return store.AutoMergeSetting{}, errors.New("missing environment: GOOGLE_CLOUD_PROJECT")
-		}
-		fsc, err := firestore.NewClient(ctx, project)
-		if err != nil {
-			return store.AutoMergeSetting{}, fmt.Errorf("firestore client: %w", err)
-		}
-		defer func() { _ = fsc.Close() }()
-		return store.NewAutoMergeSwitches(fsc).Read(ctx)
+		var setting store.AutoMergeSetting
+		err := withStore(ctx, getenv, openProjectStore, func(fsc *firestore.Client) error {
+			var err error
+			setting, err = store.NewAutoMergeSwitches(fsc).Read(ctx)
+			return err
+		})
+		return setting, err
 	}
 }
 
-// mergeHold is why a clean review must not request the merge, as a stable reason
-// and the words for it; the reason is empty when the owner's switch is on and no
-// escaped PR holds it. Settings that cannot be read hold: eligibility was decided
-// at pr-meta, and this is the last look before the request.
-func mergeHold(ctx context.Context, read autoMergeSettings) (reason, detail string) {
-	setting, err := read(ctx)
+// rewriteRate reads the trailing rewrite rate over the PRs a human merged.
+type rewriteRate func(ctx context.Context) dispatcher.AutoMergeDecision
+
+// storedRewriteRate reads the rate from Firestore with the job's own credentials,
+// opening the client for the one read: only an allowance-exhausted review of an
+// eligible PR whose checks pass gets here.
+func storedRewriteRate(logger *slog.Logger, getenv func(string) string) rewriteRate {
+	return func(ctx context.Context) dispatcher.AutoMergeDecision {
+		var d dispatcher.AutoMergeDecision
+		err := withStore(ctx, getenv, openProjectStore, func(fsc *firestore.Client) error {
+			var err error
+			d, err = autoMergeRateOf(ctx, store.NewRewrites(fsc))
+			return err
+		})
+		if err != nil {
+			logger.Warn("prReviewRateUnread", "detail", err.Error())
+			return dispatcher.AutoMergeDecision{Reason: dispatcher.AutoMergeReasonEvidenceUnread}
+		}
+		return d
+	}
+}
+
+// settingsGate is what the owner's auto-merge settings hold a merge on, in the
+// shape the review comment and the decline log both read: the zero note when the
+// switch is on and no escaped PR holds it. Settings that cannot be read hold:
+// eligibility was decided at pr-meta, and this is the last look before the
+// request.
+func settingsGate(setting store.AutoMergeSetting, err error) mergeNote {
 	switch {
 	case err != nil:
-		return "settings-unread", err.Error()
+		return mergeNote{Reason: settingsUnreadReason, Words: "the owner's auto-merge settings could not be read", Detail: err.Error()}
 	case !setting.Enabled:
-		return dispatcher.AutoMergeReasonSwitchOff, "the owner's auto-merge switch is off"
+		return mergeNote{Reason: dispatcher.AutoMergeReasonSwitchOff, Words: "the owner's auto-merge switch is off"}
 	case setting.Escaped.PR > 0:
-		return dispatcher.AutoMergeReasonEscaped, setting.Escaped.Words()
+		return mergeNote{Reason: dispatcher.AutoMergeReasonEscaped, Words: setting.Escaped.Words()}
 	}
-	return "", ""
+	return mergeNote{}
+}
+
+// logDetail is what a decline logs: the evidence behind it, or its words when
+// there is none.
+func (n mergeNote) logDetail() string {
+	if n.Detail != "" {
+		return n.Detail
+	}
+	return n.Words
+}
+
+// The decline reasons pr-review-post logs for a gate of its own; the others are
+// the dispatcher's auto-merge tokens.
+const (
+	settingsUnreadReason = "settings-unread"
+	pullUnreadReason     = "pull-unread"
+	notEligibleReason    = "not-eligible"
+	checksUnreadReason   = "checks-unread"
+	checksNotGreenReason = "checks-not-green"
+)
+
+// mergeChecks are the checks a merge must see green before an
+// allowance-exhausted review requests it: the pair branch protection requires
+// on main. `.github/workflows/pr-review.yml`'s auto-merge step guards the same
+// two contexts before it requests the merge, so a rename here is half a change.
+var mergeChecks = []string{"go", "web"}
+
+// mergeNote is what an allowance-exhausted review decided about the merge, and
+// what its comment says about it: whether the request was made, and the gate
+// that held it when it was not.
+type mergeNote struct {
+	// Requested is set when auto-merge was requested at the reviewed head.
+	Requested bool
+	// Reason is the holding gate's stable token, empty when the request was made.
+	Reason string
+	// Words is that gate for the review comment, empty when the request was made.
+	Words string
+	// Detail is the evidence behind the refusal for the log line, empty when none holds.
+	Detail string
+}
+
+// cleanMerge reports whether a clean review requests the merge: the pull request
+// is eligible at the reviewed head, and the owner's switch is still on with no
+// escaped PR holding it. A pull request that cannot be read requests nothing, so
+// the review still posts.
+func cleanMerge(ctx context.Context, logger *slog.Logger, gh pullRequests, number int, reviewedSHA string, read autoMergeSettings) bool {
+	p, err := gh.pull(ctx, number)
+	if err != nil {
+		logger.Warn("prReviewMergeDeclined", "pr", number, "reason", pullUnreadReason, "detail", err.Error())
+		return false
+	}
+	if !mergeReady(p, reviewedSHA) {
+		return false
+	}
+	// The eligibility label was set when the PR opened, and the review took
+	// minutes: a switch turned off or an escape latched since must still stop it.
+	readCtx, cancel := context.WithTimeout(ctx, prReviewRequestTimeout)
+	setting, err := read(readCtx)
+	cancel()
+	if hold := settingsGate(setting, err); hold.Reason != "" {
+		logger.Warn("prReviewMergeDeclined", "pr", number, "reason", hold.Reason, "detail", hold.logDetail())
+		return false
+	}
+	return true
+}
+
+// exhaustedMerge decides whether a review whose every model reported an
+// exhausted allowance requests the merge: the owner's switch is on with no
+// escaped PR, the pull request is eligible at the reviewed head, its go and web
+// checks pass there, and the trailing rewrite rate is measured and at or under
+// the guideline. Every refusal names the gate that held it, in the words the
+// review comment carries; a rate that cannot be measured holds, because merging
+// without a review is the one case the rate must not be guessed at. A check read
+// that fails or finds no result is read as not green, and a pull request that
+// cannot be read requests nothing so the review still posts.
+//
+// The settings come first even though eligibility is also decided at pr-meta: a
+// switch turned off or an escape latched before the PR opened leaves no label, so
+// reading the label first would name the missing label and not the cause.
+func exhaustedMerge(ctx context.Context, gh pullRequests, number int, reviewedSHA string, read autoMergeSettings, rate rewriteRate) mergeNote {
+	p, err := gh.pull(ctx, number)
+	if err != nil {
+		return mergeNote{Reason: pullUnreadReason, Words: "the pull request could not be read", Detail: err.Error()}
+	}
+	setting, err := read(ctx)
+	if hold := settingsGate(setting, err); hold.Reason != "" {
+		return hold
+	}
+	if !mergeReady(p, reviewedSHA) {
+		return mergeNote{Reason: notEligibleReason, Words: "the pull request is not eligible for auto-merge"}
+	}
+	state, err := dispatcher.GitHub{Endpoint: gh.API, Token: gh.Token, Client: gh.Client}.
+		ChecksOutcome(ctx, gh.Repo, reviewedSHA, mergeChecks)
+	switch {
+	case err != nil:
+		return mergeNote{Reason: checksUnreadReason, Words: "the `go` and `web` check results could not be read", Detail: err.Error()}
+	case state != dispatcher.CheckGreen:
+		return mergeNote{Reason: checksNotGreenReason, Words: "the `go` and `web` checks are not both green at this head"}
+	}
+	if d := rate(ctx); !d.WithinGuideline {
+		return mergeNote{Reason: d.Reason, Words: rateWords(d)}
+	}
+	return mergeNote{Requested: true}
 }
 
 // prReviewPost publishes a review: one marked comment, created or edited, and
-// the wingman-review status on the reviewed sha. It writes merge=true only when
-// the review is clean, the pull request is a run's, labelled eligible, open,
-// not a draft, its head is still the reviewed sha, and the owner's switch is
-// still on with no escaped PR holding it.
+// the wingman-review status on the reviewed sha. It writes merge=true when the
+// review is clean, or its every model reported an exhausted allowance, and the
+// pull request is a run's, labelled eligible, open, not a draft, its head is
+// still the reviewed sha; the clean review then needs the owner's switch still
+// on with no escaped PR holding it, and the exhausted one its go and web checks
+// green and a rewrite rate measured and at or under the guideline.
 func prReviewPost(ctx context.Context, logger *slog.Logger, getenv func(string) string, args []string) error {
-	return prReviewPostWith(ctx, logger, getenv, storedAutoMergeSettings(getenv), args)
+	return prReviewPostWith(ctx, logger, getenv, storedAutoMergeSettings(getenv), storedRewriteRate(logger, getenv), args)
 }
 
-// prReviewPostWith is prReviewPost with settings reading the owner's auto-merge
-// settings.
-func prReviewPostWith(ctx context.Context, logger *slog.Logger, getenv func(string) string, settings autoMergeSettings, args []string) error {
+// prReviewPostWith is prReviewPost with settings and rate reading the owner's
+// auto-merge evidence.
+func prReviewPostWith(ctx context.Context, logger *slog.Logger, getenv func(string) string, settings autoMergeSettings, rate rewriteRate, args []string) error {
 	fs := flag.NewFlagSet("pr-review-post", flag.ContinueOnError)
 	number := fs.Int("pr", 0, "the reviewed pull request")
 	sha := fs.String("reviewed-sha", "", "the head sha the review read")
@@ -333,6 +482,30 @@ func prReviewPostWith(ctx context.Context, logger *slog.Logger, getenv func(stri
 	post := planPost(*skipReason, *contextResult, v, verdictErr, *sha, *runURL)
 	gh := pullRequests{API: getenv("GITHUB_API_URL"), Token: getenv("GH_TOKEN"), Repo: getenv("GITHUB_REPOSITORY"),
 		Client: &http.Client{Timeout: prReviewRequestTimeout}}
+	merge := false
+	switch {
+	case post.clean:
+		merge = cleanMerge(ctx, logger, gh, *number, *sha, settings)
+	case post.exhausted:
+		// The comment and the status both state the decision, so the decision comes
+		// first: an allowance-exhausted review merges only where every gate allows it.
+		// One prReviewRequestTimeout window covers the decision's four reads — the pull
+		// request, the settings, the check runs and the rate, each a round trip, and the
+		// HTTP ones bounded again by the client's own timeout. A step that cannot
+		// finish inside it fails, which is a refusal, never a merge.
+		readCtx, cancel := context.WithTimeout(ctx, prReviewRequestTimeout)
+		note := exhaustedMerge(readCtx, gh, *number, *sha, settings, rate)
+		cancel()
+		merge = note.Requested
+		if !merge {
+			logger.Warn("prReviewMergeDeclined", "pr", *number, "reason", note.Reason, "detail", note.logDetail())
+		}
+		post.comment = renderReviewComment(v, *sha, *runURL, note)
+		post.status.Description = noVerdictAllowanceStatusDescription
+		if merge {
+			post.status.Description = noVerdictAllowanceMergeStatusDescription
+		}
+	}
 	if post.comment != "" {
 		if err := upsertComment(ctx, gh, *number, post.comment); err != nil {
 			return err
@@ -340,25 +513,6 @@ func prReviewPostWith(ctx context.Context, logger *slog.Logger, getenv func(stri
 	}
 	if err := gh.setStatus(ctx, *sha, post.status); err != nil {
 		return err
-	}
-	merge := false
-	if post.clean {
-		p, err := gh.pull(ctx, *number)
-		if err != nil {
-			return err
-		}
-		merge = mergeReady(p, *sha)
-	}
-	if merge {
-		// The eligibility label was set when the PR opened, and the review took
-		// minutes: a switch turned off or an escape latched since must still stop it.
-		readCtx, cancel := context.WithTimeout(ctx, prReviewRequestTimeout)
-		reason, detail := mergeHold(readCtx, settings)
-		cancel()
-		if reason != "" {
-			merge = false
-			logger.Warn("prReviewMergeDeclined", "pr", *number, "reason", reason, "detail", detail)
-		}
 	}
 	logger.Info("prReviewPosted", "pr", *number, "state", post.status.State, "merge", merge)
 	return writeOutputs(getenv("GITHUB_OUTPUT"), map[string]string{"merge": strconv.FormatBool(merge)})
@@ -385,11 +539,13 @@ type commitStatus struct {
 }
 
 // postPlan is what pr-review-post publishes: a comment (empty for none), the
-// status, and whether the review was clean.
+// status, whether the review was clean, and whether it ended on an exhausted
+// allowance, which decides a merge of its own.
 type postPlan struct {
-	comment string
-	status  commitStatus
-	clean   bool
+	comment   string
+	status    commitStatus
+	clean     bool
+	exhausted bool
 }
 
 // planPost decides what a review publishes. A skipped or failed context sets
@@ -413,7 +569,7 @@ func planPost(skipReason, contextResult string, v runner.PRVerdict, verdictErr e
 	if verdictErr != nil {
 		v = runner.PRVerdict{Outcome: runner.PRReviewNoVerdict}
 	}
-	comment := renderReviewComment(v, sha, runURL)
+	comment := renderReviewComment(v, sha, runURL, mergeNote{})
 	switch v.Outcome {
 	case runner.PRReviewClean:
 		return postPlan{comment: comment, status: status("success", cleanStatusDescription+v.Model), clean: true}
@@ -421,13 +577,15 @@ func planPost(skipReason, contextResult string, v runner.PRVerdict, verdictErr e
 		return postPlan{comment: comment, status: status("failure", findingsStatusDescription+v.Model+"; see the review comment")}
 	default:
 		if v.AllowanceExhausted() {
-			return postPlan{comment: comment, status: status("failure", noVerdictAllowanceStatusDescription)}
+			return postPlan{comment: comment, status: status("failure", noVerdictAllowanceStatusDescription), exhausted: true}
 		}
 		return postPlan{comment: comment, status: status("failure", noVerdictFailedStatusDescription)}
 	}
 }
 
-// mergeReady reports whether a clean review may request auto-merge on p.
+// mergeReady reports whether a review may request auto-merge on p: a run's pull
+// request, still open, labelled eligible by pr-meta, not a draft, and at the head
+// this review read.
 func mergeReady(p pull, reviewedSHA string) bool {
 	return p.State == "open" && !p.Draft && strings.HasPrefix(p.Head.Ref, runner.BranchPrefix) &&
 		p.hasLabel(autoMergeEligibleLabel) && p.Head.SHA == reviewedSHA
@@ -459,8 +617,10 @@ func upsertComment(ctx context.Context, gh pullRequests, number int, body string
 
 // renderReviewComment is the review comment: the marker, the outcome, the
 // findings in a code fence, where GitHub renders no HTML, markdown or mention,
-// and a footer naming the model and its cost.
-func renderReviewComment(v runner.PRVerdict, sha, runURL string) string {
+// and a footer naming the model and its cost. note states what an
+// allowance-exhausted review decided about the merge; it is the zero note for
+// every other review, which decides none.
+func renderReviewComment(v runner.PRVerdict, sha, runURL string, note mergeNote) string {
 	var b strings.Builder
 	b.WriteString(prReviewMarker + "\n")
 	switch v.Outcome {
@@ -472,7 +632,13 @@ func renderReviewComment(v runner.PRVerdict, sha, runURL string) string {
 		heading, opening := "no verdict: failed", "No review model returned a verdict at `"+shortSHA(sha)+"`, so this pull request waits for the owner."
 		if v.AllowanceExhausted() {
 			heading = "no verdict: allowance exhausted"
-			opening = "No review model returned a verdict at `" + shortSHA(sha) + "`: every one reported its plan's allowance spent, so this pull request waits for the owner."
+			opening = "No review model returned a verdict at `" + shortSHA(sha) + "`: every one reported its plan's allowance spent."
+			switch {
+			case note.Requested:
+				opening += " This pull request is to be merged without review, because the `go` and `web` checks pass at this head."
+			case note.Words != "":
+				opening += " Auto-merge is not requested, so this pull request waits for the owner: " + note.Words + "."
+			}
 		}
 		fmt.Fprintf(&b, "### Wingman review: %s\n\n%s\n", heading, opening)
 		for _, a := range v.Attempts {

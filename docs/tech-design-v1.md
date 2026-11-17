@@ -318,8 +318,10 @@ model can fix a full disk.
 code. Three jobs each hold one credential: `context` a read token, `review` the model
 key alone, `post` the comment and status writes plus the App token for the merge
 request. It posts one marked comment and the `wingman-review` status, and requests
-auto-merge only for a clean review of an eligible PR, pinned to the reviewed head
-(`FR-16`). Branch protection requires the `go` and `web` checks and no approval.
+auto-merge for a clean review of an eligible PR, or for one whose review ended on the
+reviewer's spent allowance once the owner's switch is on, `go` and `web` pass at the
+reviewed head and the rewrite rate is measured and within the guideline, pinned to that
+head (`FR-16`). Branch protection requires the `go` and `web` checks and no approval.
 
 **Auto-merge — *Updated (2026-10-19)*, `adr/0018`.** Whether an eligible PR may merge at
 all is ~~one metric-gated rule and~~ the owner's switch: the switch is stored at
@@ -363,17 +365,16 @@ while an unparseable value holds every PR. A rename reports both its old and new
 The PR body names why it waits and tells the reviewer to run `/fe-sweep` before
 `/pr-review`.
 
-**When the reviewer is unavailable — decided 2026-10-12 by the owner; the cause is
-reported, the merge request is not yet built.** A review whose models all fail returns
-**no verdict**, which requests nothing and leaves the PR to the owner (seen on two PRs on
-2026-10-11 and 2026-10-12, when the GOAT allowance was spent). The decision splits the two
-causes a no-verdict hides:
+**When the reviewer is unavailable — decided 2026-10-12 by the owner; built
+2026-11-16.** A review whose models all fail returns **no verdict**, which named no
+cause and requested nothing (seen on two PRs on 2026-10-11 and 2026-10-12, when the
+GOAT allowance was spent). The decision splits the two causes a no-verdict hides:
 
 | Review ended | Today | Decided |
 |---|---|---|
 | clean | auto-merge requested | unchanged |
 | findings | waits for the owner | unchanged |
-| no verdict — **allowance exhausted** | waits for the owner | requests auto-merge if the PR is eligible and `go` and `web` pass at the reviewed head |
+| no verdict — **allowance exhausted** | waits for the owner | requests auto-merge if the PR is eligible, its `go` and `web` checks pass at the reviewed head, the owner's switch is on with no escaped PR, and the trailing rewrite rate is measured and at or under the guideline |
 | no verdict — **failed or timed out** | waits for the owner | unchanged, still waits |
 
 An allowance runs out on a schedule and refills, so it is not a fault of the
@@ -406,8 +407,19 @@ allowance markers (`FR-26`), and an attempt whose model reported its allowance s
 kept as **allowance exhausted** rather than *agent failed*. The comment and the
 `wingman-review` status then name the cause — *no verdict: allowance exhausted* when
 every model reported it, *no verdict: failed* otherwise — so a spent allowance reads
-differently from a broken reviewer, and `fix-await` still stops the loop on either. The
-merge request on an exhausted allowance is the remaining half, not built.
+different from a broken reviewer, and `fix-await` still stops the loop on either. The
+merge request on an exhausted allowance is decided by `pr-review-post` as the last look
+before it posts: the owner's switch is on with no escaped PR holding it, the PR is still
+eligible at the reviewed head, its `go` and `web` checks are green there — a read that
+fails or finds no result is read as not green — and the trailing rewrite rate is
+measured and at or under the guideline. Every other rate holds: above the guideline, a
+window too short to measure, a window of PRs a human merged that carry no agent lines,
+and evidence that could not be read. That is the one place the rate gates despite being
+a guideline, because a merge nobody reviewed is the case its evidence must not be
+guessed at. Every refusal names the gate that held it in the comment, and a review that
+leaves the merge to the workflow says in the comment and the status that the PR is to be
+merged without a review. It is the `merge` output a clean review writes, so the request
+is pinned to the reviewed head and a later push withdraws it by the same workflow.
 
 **The markers are a documented assumption, not a verified message.** The phrases in
 `internal/providers/providers.json` have never been confirmed against a live exhaustion
@@ -415,7 +427,9 @@ or outage — `internal/providers/config.go` records them as UNVERIFIED — so a
 whose wording they do not cover still reads as *no verdict: failed*. That is the safe
 direction: an unrecognised allowance costs the owner a look at an eligible PR, while a
 marker guessed too broadly would report a spent allowance for a review that merely
-failed.
+failed. Because a merge can now rest on the classification, only the last 4 KiB of a
+failed review's stderr is read for a marker, and one named earlier in the stream claims
+nothing.
 
 ### Surface — Cloud Run service behind IAP
 
