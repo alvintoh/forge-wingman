@@ -427,7 +427,9 @@ or outage — `internal/providers/config.go` records them as UNVERIFIED — so a
 whose wording they do not cover still reads as *no verdict: failed*. That is the safe
 direction: an unrecognised allowance costs the owner a look at an eligible PR, while a
 marker guessed too broadly would report a spent allowance for a review that merely
-failed.
+failed. Because a merge can now rest on the classification, only the last 4 KiB of a
+failed review's stderr is read for a marker, and one named earlier in the stream claims
+nothing.
 
 ### Surface — Cloud Run service behind IAP
 
