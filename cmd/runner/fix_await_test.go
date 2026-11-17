@@ -211,7 +211,7 @@ func TestReviewAtKeepsPollingWhenTheCommentNamesNoHead(t *testing.T) {
 func TestReviewAtStopsOnANoVerdict(t *testing.T) {
 	for name, description := range map[string]string{
 		"an exhausted allowance":             noVerdictAllowanceStatusDescription,
-		"an exhausted allowance that merges": "No verdict: allowance exhausted; merges without review",
+		"an exhausted allowance that merges": noVerdictAllowanceMergeStatusDescription,
 		"a failed review":                    noVerdictFailedStatusDescription,
 	} {
 		t.Run(name, func(t *testing.T) {

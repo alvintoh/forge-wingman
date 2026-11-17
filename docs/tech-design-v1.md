@@ -319,7 +319,8 @@ code. Three jobs each hold one credential: `context` a read token, `review` the 
 key alone, `post` the comment and status writes plus the App token for the merge
 request. It posts one marked comment and the `wingman-review` status, and requests
 auto-merge for a clean review of an eligible PR, or for one whose review ended on the
-reviewer's spent allowance once `go` and `web` pass at the reviewed head, pinned to that
+reviewer's spent allowance once the owner's switch is on, `go` and `web` pass at the
+reviewed head and the rewrite rate is measured and within the guideline, pinned to that
 head (`FR-16`). Branch protection requires the `go` and `web` checks and no approval.
 
 **Auto-merge — *Updated (2026-10-19)*, `adr/0018`.** Whether an eligible PR may merge at

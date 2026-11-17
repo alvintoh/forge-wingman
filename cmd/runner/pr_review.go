@@ -309,7 +309,7 @@ type rewriteRate func(ctx context.Context) dispatcher.AutoMergeDecision
 // storedRewriteRate reads the rate from Firestore with the job's own credentials,
 // opening the client for the one read: only an allowance-exhausted review of an
 // eligible PR whose checks pass gets here.
-func storedRewriteRate(getenv func(string) string) rewriteRate {
+func storedRewriteRate(logger *slog.Logger, getenv func(string) string) rewriteRate {
 	return func(ctx context.Context) dispatcher.AutoMergeDecision {
 		var d dispatcher.AutoMergeDecision
 		err := withStore(ctx, getenv, openProjectStore, func(fsc *firestore.Client) error {
@@ -318,6 +318,7 @@ func storedRewriteRate(getenv func(string) string) rewriteRate {
 			return err
 		})
 		if err != nil {
+			logger.Warn("prReviewRateUnread", "detail", err.Error())
 			return dispatcher.AutoMergeDecision{Reason: dispatcher.AutoMergeReasonEvidenceUnread}
 		}
 		return d
@@ -334,7 +335,7 @@ func settingsGate(setting store.AutoMergeSetting, err error) mergeNote {
 	case err != nil:
 		return mergeNote{Reason: settingsUnreadReason, Words: "the owner's auto-merge settings could not be read", Detail: err.Error()}
 	case !setting.Enabled:
-		return mergeNote{Reason: dispatcher.AutoMergeReasonSwitchOff, Words: switchOffWords}
+		return mergeNote{Reason: dispatcher.AutoMergeReasonSwitchOff, Words: "the owner's auto-merge switch is off"}
 	case setting.Escaped.PR > 0:
 		return mergeNote{Reason: dispatcher.AutoMergeReasonEscaped, Words: setting.Escaped.Words()}
 	}
@@ -359,10 +360,6 @@ const (
 	checksUnreadReason   = "checks-unread"
 	checksNotGreenReason = "checks-not-green"
 )
-
-// switchOffWords is the owner's switch being off, in the words the log detail
-// and the review comment both carry.
-const switchOffWords = "the owner's auto-merge switch is off"
 
 // mergeChecks are the checks a merge must see green before an
 // allowance-exhausted review requests it: the pair branch protection requires
@@ -456,7 +453,7 @@ func exhaustedMerge(ctx context.Context, gh pullRequests, number int, reviewedSH
 // on with no escaped PR holding it, and the exhausted one its go and web checks
 // green and a rewrite rate measured and at or under the guideline.
 func prReviewPost(ctx context.Context, logger *slog.Logger, getenv func(string) string, args []string) error {
-	return prReviewPostWith(ctx, logger, getenv, storedAutoMergeSettings(getenv), storedRewriteRate(getenv), args)
+	return prReviewPostWith(ctx, logger, getenv, storedAutoMergeSettings(getenv), storedRewriteRate(logger, getenv), args)
 }
 
 // prReviewPostWith is prReviewPost with settings and rate reading the owner's
@@ -638,7 +635,7 @@ func renderReviewComment(v runner.PRVerdict, sha, runURL string, note mergeNote)
 			opening = "No review model returned a verdict at `" + shortSHA(sha) + "`: every one reported its plan's allowance spent."
 			switch {
 			case note.Requested:
-				opening += " This pull request is to be merged without review: reviewer allowance exhausted, because the `go` and `web` checks pass at this head."
+				opening += " This pull request is to be merged without review, because the `go` and `web` checks pass at this head."
 			case note.Words != "":
 				opening += " Auto-merge is not requested, so this pull request waits for the owner: " + note.Words + "."
 			}

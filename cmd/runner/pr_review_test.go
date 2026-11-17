@@ -542,6 +542,14 @@ func TestPRReviewPostDoesNotRequestTheMergeOnAnExhaustedAllowance(t *testing.T) 
 		{"id": 1, "name": "go", "status": "completed", "conclusion": "success"},
 		{"id": 2, "name": "web", "status": "in_progress", "conclusion": ""},
 	}
+	goFailing := []map[string]any{
+		{"id": 1, "name": "go", "status": "completed", "conclusion": "failure"},
+		{"id": 2, "name": "web", "status": "completed", "conclusion": "success"},
+	}
+	goPending := []map[string]any{
+		{"id": 1, "name": "go", "status": "in_progress", "conclusion": ""},
+		{"id": 2, "name": "web", "status": "completed", "conclusion": "success"},
+	}
 	for name, tt := range map[string]struct {
 		pull      map[string]any
 		checkRuns []map[string]any
@@ -551,6 +559,8 @@ func TestPRReviewPostDoesNotRequestTheMergeOnAnExhaustedAllowance(t *testing.T) 
 		"after a push":          {openPull("t", "", movedSHA, autoMergeEligibleLabel), greenChecks(), "not eligible for auto-merge"},
 		"a failing check":       {openPull("t", "", headSHA, autoMergeEligibleLabel), failing, "not both green"},
 		"a check still running": {openPull("t", "", headSHA, autoMergeEligibleLabel), pending, "not both green"},
+		"go failing alone":      {openPull("t", "", headSHA, autoMergeEligibleLabel), goFailing, "not both green"},
+		"go still running":      {openPull("t", "", headSHA, autoMergeEligibleLabel), goPending, "not both green"},
 		"no check reported":     {openPull("t", "", headSHA, autoMergeEligibleLabel), nil, "not both green"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -726,6 +736,47 @@ func TestExhaustedMergeDeclinesWhenTheDecisionWindowExpires(t *testing.T) {
 	}
 }
 
+// The decision's reads share one bounded window set by the post step itself: a
+// settings read sees a deadline no further out than prReviewRequestTimeout.
+func TestPRReviewPostBoundsTheExhaustedDecisionToOneWindow(t *testing.T) {
+	f := &fakePulls{pull: openPull("t", "", headSHA, autoMergeEligibleLabel), checkRuns: greenChecks()}
+	getenv := f.start(t)
+	var remaining time.Duration
+	var bounded bool
+	read := func(ctx context.Context) (store.AutoMergeSetting, error) {
+		var deadline time.Time
+		if deadline, bounded = ctx.Deadline(); bounded {
+			remaining = time.Until(deadline)
+		}
+		return switchedOn(ctx)
+	}
+	args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-verdict", writeVerdict(t, spentAllowance()), "-context-result", "success"}
+	if err := prReviewPostWith(context.Background(), quietLogger(), getenv, read, rateUnder, args); err != nil {
+		t.Fatal(err)
+	}
+	if !bounded || remaining <= 0 || remaining > prReviewRequestTimeout {
+		t.Fatalf("settings read saw bounded=%v, %s left, want a deadline within %s", bounded, remaining, prReviewRequestTimeout)
+	}
+}
+
+// An owner's switch that is off is named even where the PR also lacks the
+// eligibility label, because a switch turned off before the PR opened leaves no
+// label and the missing label would hide the cause.
+func TestPRReviewPostNamesTheSwitchBeforeTheMissingLabel(t *testing.T) {
+	f := &fakePulls{pull: openPull("t", "", headSHA), checkRuns: greenChecks()}
+	getenv := f.start(t)
+	off := func(context.Context) (store.AutoMergeSetting, error) {
+		return store.AutoMergeSetting{Enabled: false}, nil
+	}
+	args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-verdict", writeVerdict(t, spentAllowance()), "-context-result", "success"}
+	if err := prReviewPostWith(context.Background(), quietLogger(), getenv, off, rateUnder, args); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.created) != 1 || !strings.Contains(f.created[0], "auto-merge switch is off") {
+		t.Fatalf("comment = %v, want the switch named, not the missing label", f.created)
+	}
+}
+
 // logDetail logs the evidence a decline carries, and its words where it carries
 // none.
 func TestMergeNoteLogDetail(t *testing.T) {
@@ -784,10 +835,16 @@ func TestWithStoreWrapsAClientItCannotOpen(t *testing.T) {
 }
 
 // The rate the job should have read but could not is evidence that could not be
-// read, which holds the merge rather than letting it through.
+// read, which holds the merge rather than letting it through, and the cause is
+// logged so a Firestore or IAM failure is diagnosable from the job's log.
 func TestStoredRewriteRateReadsAMissingProjectAsEvidenceUnread(t *testing.T) {
-	if got := storedRewriteRate(func(string) string { return "" })(context.Background()); got.Reason != dispatcher.AutoMergeReasonEvidenceUnread {
-		t.Fatalf("rate = %+v, want the evidence-unread reason", got)
+	var logs bytes.Buffer
+	read := storedRewriteRate(slog.New(slog.NewTextHandler(&logs, nil)), func(string) string { return "" })
+	if got := read(context.Background()); got.Reason != dispatcher.AutoMergeReasonEvidenceUnread || got.WithinGuideline {
+		t.Fatalf("rate = %+v, want the evidence-unread reason and no pass", got)
+	}
+	if got := logs.String(); !strings.Contains(got, "prReviewRateUnread") || !strings.Contains(got, "GOOGLE_CLOUD_PROJECT") {
+		t.Fatalf("log = %q, want the unread rate and its cause", got)
 	}
 }
 
