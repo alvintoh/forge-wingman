@@ -135,8 +135,8 @@ func TestBuildGivesEachPlanAttemptWhatRemainsOfTheRunBudget(t *testing.T) {
 	deps.PlanAgent = planAgent
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	deps.Now = func() time.Time { return now }
-	// The first attempt consumes 20 minutes of the 60 the build stage may use.
-	planAgent.errFn = func(int) error { now = now.Add(20 * time.Minute); return errors.New("exit 1") }
+	// The first attempt consumes 50 minutes of the 90 the build stage may use.
+	planAgent.errFn = func(int) error { now = now.Add(50 * time.Minute); return errors.New("exit 1") }
 	c := testConfig(t, initRepo(t))
 	c.Ticket.Size = "M"
 	c.PlanModels = []string{"p/a", "p/b"}
@@ -148,9 +148,9 @@ func TestBuildGivesEachPlanAttemptWhatRemainsOfTheRunBudget(t *testing.T) {
 	}
 	// Both deadlines were set within milliseconds of each other in real time,
 	// so their gap is the difference between the two attempts' timeouts: the
-	// second gets what the first's 20 minutes left of the build stage's budget.
+	// second gets what the first's 50 minutes left of the build stage's budget.
 	if gap := planAgent.deadlines[0].Sub(planAgent.deadlines[1]); gap < 9*time.Minute || gap > 11*time.Minute {
-		t.Fatalf("first attempt's deadline is %s past the second's, want the 10m the first attempt's 20m cost off the build stage's budget", gap)
+		t.Fatalf("first attempt's deadline is %s past the second's, want the 10m the first attempt's 50m cost off the build stage's budget", gap)
 	}
 }
 

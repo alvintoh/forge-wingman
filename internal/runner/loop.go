@@ -29,22 +29,20 @@ const maxFixRounds = 2
 const (
 	// nfr1RunCap is NFR-1's whole-run duration ceiling — the build job's own
 	// timeout-minutes in .github/workflows/model.yml, which must agree with it.
-	nfr1RunCap = 90 * time.Minute
+	nfr1RunCap = nfr1BuildBudget + nfr1ReviewFloor + nfr1CommitReserve
 	// nfr1BuildBudget is how much of nfr1RunCap the build stage may spend, from
 	// the run's start: the plan phase, the build and check rounds, and the
 	// guard scan the review pass follows.
-	nfr1BuildBudget = 60 * time.Minute
+	nfr1BuildBudget = 90 * time.Minute
 	// nfr1ReviewFloor is the least the review stage may spend, from the
 	// review's own start: the review pass, its fix rounds and the re-checks
 	// that follow them. It is the share nfr1RunCap keeps for the review once
 	// the build stage has spent its own and the commit reserve is set aside, so
 	// a run that spent the whole build budget still gets this much.
 	nfr1ReviewFloor = 22 * time.Minute
-	// nfr1CommitReserve is what nfr1RunCap leaves once both stages have spent
-	// their own — nfr1RunCap - nfr1BuildBudget - nfr1ReviewFloor — for the
-	// commit, bundle and report steps that still run after the review. A
-	// re-check the review stage had no room for spends part of it, down to
-	// reserveRecheckFloor.
+	// nfr1CommitReserve is the share of nfr1RunCap kept for the commit, bundle
+	// and report steps that still run after the review. A re-check the review
+	// stage had no room for spends part of it, down to reserveRecheckFloor.
 	nfr1CommitReserve = 8 * time.Minute
 )
 
@@ -115,7 +113,7 @@ func roundTimeout(configured time.Duration, started, now time.Time, budget, minS
 }
 
 // stageBudgetSpent names the stage whose own budget ran out and how much it
-// had, so a review cut short reads differently from a build cut at 60 minutes.
+// had, so a review cut short reads differently from a build cut at 90 minutes.
 func stageBudgetSpent(stage string, budget time.Duration) string {
 	return fmt.Sprintf("the %s stage's %d-minute budget was spent", stage, int(budget.Minutes()))
 }
@@ -126,7 +124,7 @@ func stageBudgetSpent(stage string, budget time.Duration) string {
 // time it did not use. It is never below nfr1ReviewFloor, so the review keeps
 // the share the cap always gave it however late it begins.
 func reviewBudget(runStarted, now time.Time) time.Duration {
-	// A build that ran past its 60 minutes still gets the floor, so that run
+	// A build that ran past its 90 minutes still gets the floor, so that run
 	// can total more than nfr1RunCap: AC1 puts the floor ahead of the cap.
 	return max(nfr1ReviewFloor, nfr1RunCap-now.Sub(runStarted)-nfr1CommitReserve)
 }

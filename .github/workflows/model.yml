@@ -75,7 +75,7 @@ jobs:
     runs-on: ubuntu-latest
     # NFR-1's whole-run ceiling. internal/runner/loop.go's nfr1RunCap is the
     # other half — raise both together.
-    timeout-minutes: 90
+    timeout-minutes: 120
     permissions:
       contents: read
       id-token: write

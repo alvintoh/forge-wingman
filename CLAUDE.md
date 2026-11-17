@@ -154,12 +154,13 @@ this file as project memory, so the rules below reach the run.
   left five duplicates in Phase 5's view.)*
 
 - **A ticket that grounds at L is split into M tickets before it is built, in either lane.** START
-  can delegate any ticket, and a run's whole PR has 90 minutes: build 60, review with its fix round
-  22, an 8-minute reserve (`internal/runner/loop.go:28-48`). The only L sample, a p90 of 52.6 minutes
-  over 3 runs, leaves no margin, and an L diff is harder to review. Split along a contract both
+  can delegate any ticket, and a run's whole PR has 120 minutes: build 90, review with its fix round
+  22, an 8-minute reserve (`internal/runner/loop.go:29-47`). The only L sample, a p90 of 52.6 minutes
+  over 3 runs, is too thin to size a run by, and an L diff is harder to review. Split along a contract both
   halves can test against (a fixture, an API shape), keep the original ticket as one half, and
   block the other on it. *(Judgment call, owner's instruction 2026-11-06, after FRG-297 grounded at
-  12 files and was split into FRG-297 and FRG-298.)*
+  12 files and was split into FRG-297 and FRG-298. Updated (2026-11-17): the run cap is 120 minutes,
+  so the split rests on review difficulty and the thin sample, not on the old 90-minute cap.)*
 
 - **A ticket is sized by the sizer's rule, not by hand.** The sizer counts acceptance criteria
   (S up to 4, M up to 6, L above 6; any doubt signal moves it up one band,
