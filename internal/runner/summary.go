@@ -114,8 +114,8 @@ type Step struct {
 	// names; empty for a step no harness ran.
 	Harness string `firestore:"harness" json:"harness,omitempty"`
 	// Detail names what drove this round (FR-6): the failing gate for a
-	// check-rebuild round, or the review's findings for the fix round; empty
-	// for the initial build round and for the review round itself.
+	// check-rebuild or repair round, or the review's findings for the fix round;
+	// empty for the initial build round and for the review round itself.
 	Detail            string `firestore:"detail" json:"detail,omitempty"`
 	Tokens            Usage  `firestore:"tokens" json:"tokens"`
 	DurationMS        int64  `firestore:"duration_ms" json:"duration_ms"`

@@ -240,5 +240,14 @@ budget stopped the scan before, or whose probe could not run, is left unprobed a
 reported in the PR's notes, never read as covered. After a fix round, only the guards
 still open as findings, those left unprobed and any the round added are probed again.
 
+A fix round that leaves the code not building — `vet`, the web build, or a format gate
+the formatter's own pass could not fix — gets one repair round on that gate's output
+before the guards are probed again and the diff re-reviewed, since the agent's sandbox
+has no Go toolchain to see the error itself. A run takes at most one, only while the run
+cap still has six minutes of its eight-minute commit reserve for the round and the checks
+after it, and the round stops two minutes short so those checks have room of their own; a
+test or lint failure gets none, and a gate still failing after the repair is named in the
+PR's notes.
+
 Go's `go.mod` sets **`go 1.27`** (anything from 1.22 has the stdlib `ServeMux` routing the
 services use) and the **toolchain** that builds it; raise the toolchain deliberately.
