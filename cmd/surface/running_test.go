@@ -77,9 +77,9 @@ func TestRunningServesTheRunsOldestClaimFirst(t *testing.T) {
 	}}
 	got, _ := servedRunning(t, reader)
 	want := []runningRun{
-		{Ticket: "FRG-3", Repo: "octo/scratch", Stage: "building", ClaimedAt: "2026-10-31T09:10:00Z", Title: "build c", LimitMinutes: 90},
-		{Ticket: "FRG-2", Repo: "octo/scratch", Stage: "building", ClaimedAt: "2026-10-31T09:20:00Z", Title: "build and plan b", LimitMinutes: 90},
-		{Ticket: "FRG-1", Repo: "octo/other", Stage: "planning", ClaimedAt: "2026-10-31T09:30:00Z", Title: "plan a", LimitMinutes: 60},
+		{Ticket: "FRG-3", Repo: "octo/scratch", Stage: "building", ClaimedAt: "2026-10-31T09:10:00Z", Title: "build c", LimitMinutes: 120},
+		{Ticket: "FRG-2", Repo: "octo/scratch", Stage: "building", ClaimedAt: "2026-10-31T09:20:00Z", Title: "build and plan b", LimitMinutes: 120},
+		{Ticket: "FRG-1", Repo: "octo/other", Stage: "planning", ClaimedAt: "2026-10-31T09:30:00Z", Title: "plan a", LimitMinutes: 90},
 	}
 	if !slices.Equal(got.Runs, want) {
 		t.Fatalf("runs = %+v, want %+v", got.Runs, want)
@@ -94,8 +94,8 @@ func TestRunningTiesOnTheTicketWhenTwoClaimsShareATime(t *testing.T) {
 		{Ticket: "FRG-1", Repo: "octo/other", Stage: dispatcher.StagePlan, ClaimedAt: claimedAt(10), Title: "plan a"},
 	}})
 	want := []runningRun{
-		{Ticket: "FRG-1", Repo: "octo/other", Stage: "planning", ClaimedAt: "2026-10-31T09:10:00Z", Title: "plan a", LimitMinutes: 60},
-		{Ticket: "FRG-2", Repo: "octo/scratch", Stage: "building", ClaimedAt: "2026-10-31T09:10:00Z", Title: "build b", LimitMinutes: 90},
+		{Ticket: "FRG-1", Repo: "octo/other", Stage: "planning", ClaimedAt: "2026-10-31T09:10:00Z", Title: "plan a", LimitMinutes: 90},
+		{Ticket: "FRG-2", Repo: "octo/scratch", Stage: "building", ClaimedAt: "2026-10-31T09:10:00Z", Title: "build b", LimitMinutes: 120},
 	}
 	if !slices.Equal(got.Runs, want) {
 		t.Fatalf("runs = %+v, want %+v", got.Runs, want)
@@ -110,8 +110,8 @@ func TestRunningTiesOnTheStageWhenOneTicketHoldsTwoClaimsAtOneTime(t *testing.T)
 		{Ticket: "FRG-1", Repo: "octo/scratch", Stage: dispatcher.StageBuild, ClaimedAt: claimedAt(10), Title: "the widget"},
 	}})
 	want := []runningRun{
-		{Ticket: "FRG-1", Repo: "octo/scratch", Stage: "building", ClaimedAt: "2026-10-31T09:10:00Z", Title: "the widget", LimitMinutes: 90},
-		{Ticket: "FRG-1", Repo: "octo/scratch", Stage: "planning", ClaimedAt: "2026-10-31T09:10:00Z", Title: "the widget", LimitMinutes: 60},
+		{Ticket: "FRG-1", Repo: "octo/scratch", Stage: "building", ClaimedAt: "2026-10-31T09:10:00Z", Title: "the widget", LimitMinutes: 120},
+		{Ticket: "FRG-1", Repo: "octo/scratch", Stage: "planning", ClaimedAt: "2026-10-31T09:10:00Z", Title: "the widget", LimitMinutes: 90},
 	}
 	if !slices.Equal(got.Runs, want) {
 		t.Fatalf("runs = %+v, want %+v", got.Runs, want)
@@ -127,7 +127,7 @@ func TestRunningServesTheClaimTimeInUTC(t *testing.T) {
 		ClaimedAt: time.Date(2026, 10, 31, 19, 10, 0, 0, aedt), Title: "build a",
 	}}})
 	want := []runningRun{
-		{Ticket: "FRG-1", Repo: "octo/scratch", Stage: "building", ClaimedAt: "2026-10-31T08:10:00Z", Title: "build a", LimitMinutes: 90},
+		{Ticket: "FRG-1", Repo: "octo/scratch", Stage: "building", ClaimedAt: "2026-10-31T08:10:00Z", Title: "build a", LimitMinutes: 120},
 	}
 	if !slices.Equal(got.Runs, want) {
 		t.Fatalf("runs = %+v, want %+v", got.Runs, want)
@@ -140,7 +140,7 @@ func TestRunningServesAnEmptyTitleForARowWithoutOne(t *testing.T) {
 		Ticket: "FRG-1", Repo: "octo/other", Stage: dispatcher.StageBuild, ClaimedAt: claimedAt(10),
 	}}})
 	want := []runningRun{
-		{Ticket: "FRG-1", Repo: "octo/other", Stage: "building", ClaimedAt: "2026-10-31T09:10:00Z", LimitMinutes: 90},
+		{Ticket: "FRG-1", Repo: "octo/other", Stage: "building", ClaimedAt: "2026-10-31T09:10:00Z", LimitMinutes: 120},
 	}
 	if !slices.Equal(got.Runs, want) {
 		t.Fatalf("runs = %+v, want %+v", got.Runs, want)
@@ -192,10 +192,10 @@ func TestRunningServesEachRunsOwnLimit(t *testing.T) {
 		stage string
 		want  int
 	}{
-		{"a plan-stage reservation", dispatcher.StagePlan, 60},
-		{"a build-stage reservation", dispatcher.StageBuild, 90},
-		{"a single-stage claim", "", 90},
-		{"a stage the ledger does not name", "settled", 90},
+		{"a plan-stage reservation", dispatcher.StagePlan, 90},
+		{"a build-stage reservation", dispatcher.StageBuild, 120},
+		{"a single-stage claim", "", 120},
+		{"a stage the ledger does not name", "settled", 120},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got, _ := servedRunning(t, &stubRunning{runs: []store.Running{{

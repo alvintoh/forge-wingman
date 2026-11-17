@@ -87,13 +87,22 @@ func TestReviewRowsNamesTheRoundForAFindingOnlyTheLastReCheckMade(t *testing.T) 
 	}
 }
 
-// TestTheStageBudgetsAndTheReserveTotalTheRunCap keeps NFR-1's cap and the three
-// shares drawn from it from drifting apart: the reserve is what the two stages
-// must leave, so any change to one of them has to account for the others. The
-// review's floor is its share — what it gets when the build stage spent its own.
-func TestTheStageBudgetsAndTheReserveTotalTheRunCap(t *testing.T) {
-	if got := nfr1BuildBudget + nfr1ReviewFloor + nfr1CommitReserve; got != nfr1RunCap {
-		t.Fatalf("the build, review and commit shares total %s, want the run cap %s", got, nfr1RunCap)
+// TestTheStageBudgetsAndTheReserveAreNFR1sShares pins NFR-1's cap and the three
+// shares drawn from it.
+func TestTheStageBudgetsAndTheReserveAreNFR1sShares(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		got  time.Duration
+		want time.Duration
+	}{
+		{"nfr1BuildBudget", nfr1BuildBudget, 90 * time.Minute},
+		{"nfr1ReviewFloor", nfr1ReviewFloor, 22 * time.Minute},
+		{"nfr1CommitReserve", nfr1CommitReserve, 8 * time.Minute},
+		{"nfr1RunCap", nfr1RunCap, 120 * time.Minute},
+	} {
+		if tt.got != tt.want {
+			t.Errorf("%s = %s, want %s", tt.name, tt.got, tt.want)
+		}
 	}
 }
 
@@ -107,10 +116,10 @@ func TestReviewBudgetIsTheCapLessWhatTheRunSpentAndTheReserve(t *testing.T) {
 		elapsed time.Duration
 		want    time.Duration
 	}{
-		{"a review beginning at once", 0, 82 * time.Minute},
-		{"a build that finished 30 minutes in", 30 * time.Minute, 52 * time.Minute},
-		{"a build that spent its whole budget", 60 * time.Minute, 22 * time.Minute},
-		{"a run already past what the cap leaves", 85 * time.Minute, 22 * time.Minute},
+		{"a review beginning at once", 0, 112 * time.Minute},
+		{"a build that finished 30 minutes in", 30 * time.Minute, 82 * time.Minute},
+		{"a build that spent its whole budget", 90 * time.Minute, 22 * time.Minute},
+		{"a run already past what the cap leaves", 115 * time.Minute, 22 * time.Minute},
 	} {
 		if got := reviewBudget(started, started.Add(tt.elapsed)); got != tt.want {
 			t.Errorf("%s: review budget = %s, want %s", tt.name, got, tt.want)
@@ -184,10 +193,10 @@ func TestRunLimitMinutesByStageWord(t *testing.T) {
 		stage string
 		want  int
 	}{
-		{RunStagePlanning, 60},
-		{RunStageBuilding, 90},
-		{"", 90},
-		{"settled", 90},
+		{RunStagePlanning, 90},
+		{RunStageBuilding, 120},
+		{"", 120},
+		{"settled", 120},
 	} {
 		if got := RunLimitMinutes(tt.stage); got != tt.want {
 			t.Errorf("RunLimitMinutes(%q) = %d, want %d", tt.stage, got, tt.want)
@@ -239,9 +248,9 @@ func TestRunBudgetLeft(t *testing.T) {
 		elapsed time.Duration
 		want    time.Duration
 	}{
-		{"a run just started", 0, 90 * time.Minute},
-		{"a run part way through", 88 * time.Minute, 2 * time.Minute},
-		{"a run past the cap", 100 * time.Minute, 0},
+		{"a run just started", 0, 120 * time.Minute},
+		{"a run part way through", 118 * time.Minute, 2 * time.Minute},
+		{"a run past the cap", 130 * time.Minute, 0},
 	} {
 		if got := RunBudgetLeft(now.Add(-tt.elapsed), now); got != tt.want {
 			t.Errorf("%s: RunBudgetLeft = %s, want %s", tt.name, got, tt.want)

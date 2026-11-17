@@ -389,7 +389,7 @@ func TestAwaitReviewSleepsOnlyTheTimeThatRemains(t *testing.T) {
 
 func TestAwaitReviewIsBoundedByTheRunsBudget(t *testing.T) {
 	clock := &awaitClock{now: awaitStart}
-	w := fixAwaitWait{Timeout: 15 * time.Minute, Interval: 20 * time.Second, Started: awaitStart.Add(-88 * time.Minute)}
+	w := fixAwaitWait{Timeout: 15 * time.Minute, Interval: 20 * time.Second, Started: awaitStart.Add(-118 * time.Minute)}
 	got, err := awaitReview(context.Background(), noReview, w, clock.Now, clock.Sleep)
 	if err != nil {
 		t.Fatal(err)
@@ -404,7 +404,7 @@ func TestAwaitReviewIsBoundedByTheRunsBudget(t *testing.T) {
 
 func TestAwaitReviewEndsAtOnceWhenTheBudgetIsSpent(t *testing.T) {
 	clock := &awaitClock{now: awaitStart}
-	w := fixAwaitWait{Timeout: 15 * time.Minute, Interval: 20 * time.Second, Started: awaitStart.Add(-91 * time.Minute)}
+	w := fixAwaitWait{Timeout: 15 * time.Minute, Interval: 20 * time.Second, Started: awaitStart.Add(-121 * time.Minute)}
 	got, err := awaitReview(context.Background(), noReview, w, clock.Now, clock.Sleep)
 	if err != nil {
 		t.Fatal(err)

@@ -81,9 +81,9 @@ permissions: {}
 jobs:
   round:
     runs-on: ubuntu-latest
-    # The loop's 90-minute budget is enforced in Go from the state's started_at; this is
+    # The loop's 120-minute budget is enforced in Go from the state's started_at; this is
     # the backstop for one round.
-    timeout-minutes: 90
+    timeout-minutes: 120
     permissions:
       contents: read
       id-token: write
