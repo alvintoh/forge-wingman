@@ -1017,7 +1017,7 @@ func TestPRReviewWorkflow(t *testing.T) {
 	for job, want := range map[string]string{
 		"context": "    permissions:\n      id-token: write\n      pull-requests: read\n    outputs:",
 		"review":  "    permissions: {}\n",
-		"post":    "    permissions:\n      id-token: write\n      pull-requests: write\n      statuses: write\n    steps:",
+		"post":    "    permissions:\n      checks: read\n      id-token: write\n      pull-requests: write\n      statuses: write\n    steps:",
 	} {
 		if !strings.Contains(jobs[job], want) {
 			t.Errorf("the %s job's permissions are not %q", job, want)
