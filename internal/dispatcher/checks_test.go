@@ -206,6 +206,16 @@ func TestSettleChecksMarksAPendingResultPastADayUnresolvedOnceWithTheHeadSHA(t *
 	}
 }
 
+func TestSettleChecksCountsAStaleMarkWithTheUnresolvedMarks(t *testing.T) {
+	d, _, _, logs := checksFixture(CheckPending, stalePendingRun())
+	if err := settleChecks(context.Background(), d); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), "checksUnresolvedMarked count=1") {
+		t.Fatalf("logs = %s, want the stale mark counted as one unresolved mark", logs)
+	}
+}
+
 func TestSettleChecksRecordsAPendingResultUnresolvedOnlyPastADay(t *testing.T) {
 	for _, tt := range []struct {
 		age    time.Duration
