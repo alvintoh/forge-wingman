@@ -2,7 +2,8 @@
 # request already made, so a push nobody reviewed never merges, and removes the
 # eligibility label, so no later review can request a merge. A push by the App is a
 # fix round's (fix-round.yml), so it keeps the label: pr-review re-reviews that head
-# and requests the merge only when the review is clean.
+# and requests the merge only when the review is clean, or when the reviewer's allowance
+# ended the review while the go and web checks pass.
 # pull_request_target runs this file as it is on main, so a branch cannot rewrite
 # it; it never checks the branch out.
 name: automerge-withdraw

@@ -1,10 +1,12 @@
 # Reviews a ready pull request against the acceptance criteria of the Linear ticket it
 # names, posts one review comment and the wingman-review status, and requests auto-merge
-# only for a clean review of a PR the run marked eligible, at the head it reviewed.
+# only for a clean review of a PR the run marked eligible, at the head it reviewed, or
+# when the reviewer's allowance ended the review while the go and web checks pass.
 # pull_request_target runs this file as it is on main and never checks out or runs the
 # PR's code: the diff comes from the API and is data to the reviewer. Each job holds
 # one credential: `context` the pr-review identity and a read token, `review` the model
-# key alone, `post` comment and status writes plus the App token for the merge request.
+# key alone, `post` comment and status writes, check reads and the App token for the
+# merge request.
 # Needs the GCP_WIF_PROVIDER and GCP_PR_REVIEW_SERVICE_ACCOUNT variables, the
 # OPENCODE_API_KEY secret and the App's client id and key (infra/README.md);
 # WINGMAN_PR_REVIEW_MODELS is optional.
@@ -141,6 +143,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      checks: read
       id-token: write
       pull-requests: write
       statuses: write
