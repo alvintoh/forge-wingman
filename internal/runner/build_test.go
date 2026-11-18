@@ -4807,6 +4807,61 @@ func TestTheFixRoundWorkflowCapsTheLoopAtTheFixRoundsBudget(t *testing.T) {
 	}
 }
 
+// jobSection is the named job's text in a workflow file, up to the next job.
+func jobSection(t *testing.T, file, yml, job string) string {
+	t.Helper()
+	i := strings.Index(yml, "\n  "+job+":\n")
+	if i < 0 {
+		t.Fatalf("%s declares no %s job", file, job)
+	}
+	rest := yml[i+1:]
+	if loc := regexp.MustCompile(`\n  [a-z0-9-]+:\n`).FindStringIndex(rest[1:]); loc != nil {
+		rest = rest[:loc[0]+1]
+	}
+	return rest
+}
+
+// TestTheRunWorkflowHandsTheFixLoopItsStartAndItsLastReview holds the two values
+// the fix loop's runner commands read from the workflows: round 1 starts the
+// loop's budget at the PR's opening time, and the record job passes the last
+// await's findings so the last round reads as reviewed.
+func TestTheRunWorkflowHandsTheFixLoopItsStartAndItsLastReview(t *testing.T) {
+	read := func(name string) string {
+		raw, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
+	run, round := read("run.yml"), read("fix-round.yml")
+
+	const started = "started: ${{ needs.pr.outputs.opened_at }}"
+	if !strings.Contains(jobSection(t, "run.yml", run, "round-1"), started) {
+		t.Error("run.yml's round-1 does not pass the PR's opened_at as started")
+	}
+	for _, job := range []string{"round-2", "round-3"} {
+		if strings.Contains(jobSection(t, "run.yml", run, job), "started:") {
+			t.Errorf("run.yml's %s passes started, want it read from the state artifact", job)
+		}
+	}
+	roundStep := jobSection(t, "fix-round.yml", round, "round")
+	for _, want := range []string{"STARTED: ${{ inputs.started }}", `started=(-started "$STARTED")`, `"${started[@]}"`} {
+		if !strings.Contains(roundStep, want) {
+			t.Errorf("fix-round.yml's round job lacks %q", want)
+		}
+	}
+
+	record := jobSection(t, "run.yml", run, "record-fix-rounds")
+	const findings = "AWAIT_FINDINGS: ${{ needs.round-3.outputs.findings || needs.round-2.outputs.findings || " +
+		"needs.round-1.outputs.findings || needs.await-0.outputs.findings }}"
+	if !strings.Contains(record, findings) {
+		t.Error("run.yml's record-fix-rounds does not collect the last await's findings")
+	}
+	if !strings.Contains(record, `-await-findings "$AWAIT_FINDINGS"`) {
+		t.Error("run.yml's record-fix-rounds does not pass the findings to record-fix-rounds")
+	}
+}
+
 // jobTimeout is the timeout-minutes of the named job in the workflow file.
 func jobTimeout(t *testing.T, file, yml, job string) time.Duration {
 	t.Helper()

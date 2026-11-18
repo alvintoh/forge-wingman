@@ -690,6 +690,7 @@ jobs:
       statuses: read
     with:
       round: 1
+      started: ${{ needs.pr.outputs.opened_at }}
       pr: ${{ needs.pr.outputs.number }}
       branch: ${{ needs.model.outputs.branch }}
       head: ${{ needs.pr.outputs.head_sha }}
@@ -769,6 +770,7 @@ jobs:
       PUSH_DETAIL: ${{ needs.round-3.outputs.push_detail || needs.round-2.outputs.push_detail || needs.round-1.outputs.push_detail }}
       AWAIT_REASON: ${{ needs.round-3.outputs.await_reason || needs.round-2.outputs.await_reason || needs.round-1.outputs.await_reason || needs.await-0.outputs.reason }}
       AWAIT_DETAIL: ${{ needs.round-3.outputs.await_detail || needs.round-2.outputs.await_detail || needs.round-1.outputs.await_detail || needs.await-0.outputs.detail }}
+      AWAIT_FINDINGS: ${{ needs.round-3.outputs.findings || needs.round-2.outputs.findings || needs.round-1.outputs.findings || needs.await-0.outputs.findings }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -804,7 +806,7 @@ jobs:
           "$RUNNER_TEMP/runner" record-fix-rounds -run-id "$RUN_ID" -attempt-id "$ATTEMPT_ID" "${state[@]}" \
             -round-reason "$ROUND_REASON" -round-stop "$ROUND_STOP" -round-detail "$ROUND_DETAIL" \
             -push-reason "$PUSH_REASON" -push-detail "$PUSH_DETAIL" \
-            -await-reason "$AWAIT_REASON" -await-detail "$AWAIT_DETAIL"
+            -await-reason "$AWAIT_REASON" -await-detail "$AWAIT_DETAIL" -await-findings "$AWAIT_FINDINGS"
 
       # A stop is the loop working; a failed round, a refused push or an await error is not.
       - name: Fail on a round, push or await failure

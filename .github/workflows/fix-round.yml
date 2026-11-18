@@ -22,6 +22,11 @@ on:
       state_artifact:
         type: string
         default: ''
+      # When the loop started, RFC3339: round 1 seeds its budget from it, and later
+      # rounds take it from the state artifact. Empty starts the loop at this step's clock.
+      started:
+        type: string
+        default: ''
       pr:
         type: string
         required: true
@@ -161,6 +166,7 @@ jobs:
           FINDINGS: ${{ inputs.findings }}
           MODEL: ${{ inputs.model }}
           STATE_ARTIFACT: ${{ inputs.state_artifact }}
+          STARTED: ${{ inputs.started }}
           AGENT_IMAGE: ${{ vars.WINGMAN_AGENT_IMAGE }}
           AGENT_EGRESS: ${{ vars.WINGMAN_AGENT_EGRESS }}
           WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
@@ -169,7 +175,9 @@ jobs:
         run: |
           state=()
           [[ -z "$STATE_ARTIFACT" ]] || state=(-state "$RUNNER_TEMP/previous/fix-state.json")
-          "$RUNNER_TEMP/runner" fix-round -branch "$BRANCH" -head "$HEAD_SHA" "${state[@]}" \
+          started=()
+          [[ -z "$STARTED" ]] || started=(-started "$STARTED")
+          "$RUNNER_TEMP/runner" fix-round -branch "$BRANCH" -head "$HEAD_SHA" "${state[@]}" "${started[@]}" \
             -findings "$FINDINGS" -model "$MODEL" -ticket-file "$RUNNER_TEMP/ticket.json" \
             -out "$RUNNER_TEMP/fix" -agent-image "$AGENT_IMAGE" -agent-egress "$AGENT_EGRESS"
 
