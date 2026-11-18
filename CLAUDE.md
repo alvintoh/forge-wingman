@@ -169,12 +169,15 @@ this file as project memory, so the rules below reach the run.
   so the split rests on review difficulty and the thin sample, not on the old 90-minute cap.)*
 
 - **A ticket is sized by the sizer's rule, not by hand.** The sizer counts acceptance criteria
-  (S up to 4, M up to 6, L above 6; any doubt signal moves it up one band,
-  `internal/dispatcher/sizer.go:14-20`), so write at most 6 criteria for an M and never label a
-  size the sizer would not give. Leave the `size:` label off and read `sized_by` on the first run
-  to check. *(Judgment call on the policy; the thresholds are code. Verified 2026-11-16: an
-  8-criteria ticket labelled M was sized L when unlabelled, built 11 files and stopped on a
-  workflow edit.)*
+  (`internal/dispatcher/sizer.go:12-20`): with no doubt signal, S up to 4 and M up to 6; with one
+  doubt, M only up to 4; anything else is L. A doubt is a risk word in the title or criteria
+  (schema, API, auth, or money words such as price or cost) or criteria naming two modules. So
+  write at most 6 criteria for an M with no doubt, at most 4 with one, and never label a size the
+  sizer would not give. Leave the `size:` label off and check with `runner size` before
+  delegating, then read `sized_by` on the first run. *(Judgment call on the policy; the thresholds
+  are code. Verified 2026-11-16: an 8-criteria ticket labelled M was sized L when unlabelled, built
+  11 files and stopped on a workflow edit. Updated (2026-11-19): FRG-342's 5 criteria were sized L
+  because "price" counted as a money doubt.)*
 
 - **Edit a ticket before delegating it: a claimed run never re-reads it.** The run copies the
   ticket's title and description onto its run row at claim, and the plan and build read that copy,
