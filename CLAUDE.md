@@ -129,6 +129,12 @@ this file as project memory, so the rules below reach the run.
   truth is established; applying it to ticket text is a judgment call. Verified 2026-10-27: FRG-226,
   231, 233 and 234 told the runner not to build them while START would have delegated all four.)*
 
+- **A ticket whose change makes a document in `docs/` false names that document in an acceptance
+  criterion, and the pass that sees its PR merge syncs the vault copy.** The runner edits only the
+  repo copy, and an auto-merged PR gets no `/sync-docs` before it lands, so the vault, which is the
+  source, keeps the stale text. *(Judgment call. Verified 2026-11-18 on #385, whose ADR 0022 and
+  tech-design edits reached the vault a pass later; the same drift on #380, 2026-11-17.)*
+
 - **A ticket mixing code and workflow edits is split before it is delegated.** The runner
   refuses any plan that edits `.github/workflows/`, so one criterion naming a workflow file makes
   the whole ticket the owner's: put the code criteria in the ticket the runner builds, with the
