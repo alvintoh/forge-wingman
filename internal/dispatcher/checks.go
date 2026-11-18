@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -11,7 +12,7 @@ import (
 
 // CheckUnresolved is the result of a run whose checks can never be read: its
 // pull request holds no commit by the runner's login, or its URL names no pull
-// request.
+// request, or its checks stayed pending past checksStaleAfter.
 const CheckUnresolved = "unresolved"
 
 const (
@@ -65,9 +66,10 @@ type requiredChecks struct {
 
 // settleChecks records the result of the required checks of the agent's last
 // commit on each run whose pull request has none yet, once they have all
-// finished, and marks CheckUnresolved a run that can never be read. A run it
-// cannot settle yet, or whose read failed, is left for the next poll; only a
-// failure to list the runs is returned.
+// finished, and marks CheckUnresolved a run that can never be read or whose
+// checks stayed pending past checksStaleAfter. A run it cannot settle yet, or
+// whose read failed, is left for the next poll; only a failure to list the runs
+// is returned.
 func settleChecks(ctx context.Context, d Deps) error {
 	runs, err := d.Checks.Runs.UnsettledRuns(ctx, checksPerPoll)
 	if err != nil {
@@ -102,11 +104,7 @@ func settleChecks(ctx context.Context, d Deps) error {
 func settleRunChecks(ctx context.Context, d Deps, run UnsettledRun, required map[string]requiredChecks) string {
 	repo, number, err := ParsePullURL(run.PRURL)
 	if err != nil {
-		if recordChecks(ctx, d, run, "", CheckUnresolved) {
-			d.Logger.Warn("checksBadPRURL", "run", run.ID, "err", err)
-			return CheckUnresolved
-		}
-		return ""
+		return markUnresolved(ctx, d, run, "", "checksBadPRURL", slog.LevelWarn, "err", err)
 	}
 	gh := d.Checks.GitHub
 	commits, err := gh.PullCommits(ctx, repo, number)
@@ -116,11 +114,7 @@ func settleRunChecks(ctx context.Context, d Deps, run UnsettledRun, required map
 	}
 	sha := lastAgentCommit(commits)
 	if sha == "" {
-		if recordChecks(ctx, d, run, "", CheckUnresolved) {
-			d.Logger.Info("checksNoAgentCommit", "run", run.ID, "repo", repo, "pr", number)
-			return CheckUnresolved
-		}
-		return ""
+		return markUnresolved(ctx, d, run, "", "checksNoAgentCommit", slog.LevelInfo, "repo", repo, "pr", number)
 	}
 	names, ok := required[repo]
 	if !ok {
@@ -137,15 +131,26 @@ func settleRunChecks(ctx context.Context, d Deps, run UnsettledRun, required map
 		return ""
 	}
 	if outcome == CheckPending {
-		if !run.StartedAt.IsZero() && d.Now().Sub(run.StartedAt) > checksStaleAfter {
-			d.Logger.Warn("checksPendingStale", "run", run.ID, "repo", repo, "pr", number, "sha", sha)
+		if run.StartedAt.IsZero() || d.Now().Sub(run.StartedAt) <= checksStaleAfter {
+			return ""
 		}
-		return ""
+		return markUnresolved(ctx, d, run, sha, "checksPendingStale", slog.LevelWarn, "repo", repo, "pr", number, "sha", sha)
 	}
 	if recordChecks(ctx, d, run, sha, outcome) {
 		return outcome
 	}
 	return ""
+}
+
+// markUnresolved records CheckUnresolved on run's row with sha, logs event once
+// the row took it, and returns the result it recorded, or "" when the row
+// declined the write or it failed.
+func markUnresolved(ctx context.Context, d Deps, run UnsettledRun, sha, event string, level slog.Level, attrs ...any) string {
+	if !recordChecks(ctx, d, run, sha, CheckUnresolved) {
+		return ""
+	}
+	d.Logger.Log(ctx, level, event, append([]any{"run", run.ID}, attrs...)...)
+	return CheckUnresolved
 }
 
 // recordChecks writes result onto run's row and reports whether the row took it.

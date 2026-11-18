@@ -73,6 +73,7 @@ type fakeChecksGitHub struct {
 	commitsByPR   map[int][]PullCommit
 	required      []string
 	outcome       string
+	outcomeBySHA  map[string]string
 	commitsErr    error
 	requiredErr   error
 	outcomeErr    error
@@ -100,6 +101,9 @@ func (f *fakeChecksGitHub) RequiredChecks(_ context.Context, repo, branch string
 
 func (f *fakeChecksGitHub) ChecksOutcome(_ context.Context, repo, sha string, required []string) (string, error) {
 	f.outcomeCalls = append(f.outcomeCalls, outcomeCall{repo, sha, required})
+	if outcome, ok := f.outcomeBySHA[sha]; ok {
+		return outcome, f.outcomeErr
+	}
 	return f.outcome, f.outcomeErr
 }
 
@@ -109,6 +113,11 @@ func agentThenOwner() []PullCommit {
 		{SHA: "agent1", Login: runner.CommitAuthorLogin},
 		{SHA: "owner1", Login: "alvintoh"},
 	}
+}
+
+// stalePendingRun is a run whose checks have stayed pending past checksStaleAfter.
+func stalePendingRun() UnsettledRun {
+	return UnsettledRun{ID: "run-1", PRURL: checksPR, StartedAt: checksAt.Add(-25 * time.Hour)}
 }
 
 func checksFixture(outcome string, runs ...UnsettledRun) (Deps, *fakeChecksRuns, *fakeChecksGitHub, *bytes.Buffer) {
@@ -161,47 +170,171 @@ func TestSettleChecksReadsTheAgentsLastCommitNotTheOwnersNorAnEarlierAgentOne(t 
 }
 
 func TestSettleChecksWritesNothingWhileAnyRequiredCheckIsPending(t *testing.T) {
-	d, store, _, logs := checksFixture(CheckPending)
-	if err := settleChecks(context.Background(), d); err != nil {
-		t.Fatal(err)
+	d, store, gh, logs := checksFixture(CheckPending)
+	for range 2 {
+		if err := settleChecks(context.Background(), d); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if len(store.recorded) != 0 {
 		t.Fatalf("recorded %+v for a pending run", store.recorded)
+	}
+	if gh.commitCalls != 2 {
+		t.Fatalf("read the run %d times across two polls, want it read again on the second", gh.commitCalls)
 	}
 	if strings.Contains(logs.String(), "checksPendingStale") {
 		t.Fatalf("a run an hour old was reported stale: %s", logs)
 	}
 }
 
-func TestSettleChecksSaysSoWhenAChecksResultIsPendingPastADay(t *testing.T) {
-	d, store, _, logs := checksFixture(CheckPending,
-		UnsettledRun{ID: "run-1", PRURL: checksPR, StartedAt: checksAt.Add(-25 * time.Hour)})
-	if err := settleChecks(context.Background(), d); err != nil {
-		t.Fatal(err)
+func TestSettleChecksMarksAPendingResultPastADayUnresolvedOnceWithTheHeadSHA(t *testing.T) {
+	d, store, gh, logs := checksFixture(CheckPending, stalePendingRun())
+	for range 2 {
+		if err := settleChecks(context.Background(), d); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if !strings.Contains(logs.String(), "checksPendingStale") || !strings.Contains(logs.String(), "run=run-1") {
-		t.Fatalf("logs = %s, want checksPendingStale for run-1", logs)
+	want := []checksRecord{{"run-1", checksPR, "agent1", CheckUnresolved}}
+	if !slices.Equal(store.recorded, want) {
+		t.Fatalf("recorded %+v, want %+v", store.recorded, want)
 	}
-	if len(store.recorded) != 0 {
-		t.Fatalf("recorded %+v for a pending run", store.recorded)
+	if gh.commitCalls != 1 {
+		t.Fatalf("read the run %d times across two polls, want once", gh.commitCalls)
+	}
+	if got := strings.Count(logs.String(), "checksPendingStale"); got != 1 || !strings.Contains(logs.String(), "run=run-1") {
+		t.Fatalf("logs = %s, want checksPendingStale once for run-1", logs)
 	}
 }
 
-func TestSettleChecksCallsAPendingResultStaleOnlyPastADay(t *testing.T) {
+func TestSettleChecksRecordsAPendingResultUnresolvedOnlyPastADay(t *testing.T) {
 	for _, tt := range []struct {
-		age   time.Duration
-		stale bool
+		age    time.Duration
+		marked bool
 	}{{23 * time.Hour, false}, {24 * time.Hour, false}, {24*time.Hour + time.Minute, true}} {
 		t.Run(tt.age.String(), func(t *testing.T) {
-			d, _, _, logs := checksFixture(CheckPending,
+			d, store, _, _ := checksFixture(CheckPending,
 				UnsettledRun{ID: "run-1", PRURL: checksPR, StartedAt: checksAt.Add(-tt.age)})
 			if err := settleChecks(context.Background(), d); err != nil {
 				t.Fatal(err)
 			}
-			if got := strings.Contains(logs.String(), "checksPendingStale"); got != tt.stale {
-				t.Fatalf("stale reported = %v for a run %v old, want %v", got, tt.age, tt.stale)
+			var want []checksRecord
+			if tt.marked {
+				want = []checksRecord{{"run-1", checksPR, "agent1", CheckUnresolved}}
+			}
+			if !slices.Equal(store.recorded, want) {
+				t.Fatalf("recorded %+v for a run %v old, want %+v", store.recorded, tt.age, want)
 			}
 		})
+	}
+}
+
+func TestSettleChecksLeavesAStalePendingRunUnrecordedWhenTheWriteFails(t *testing.T) {
+	d, store, _, logs := checksFixture(CheckPending, stalePendingRun())
+	store.recordErr = errFirestore
+	if err := settleChecks(context.Background(), d); err != nil {
+		t.Fatalf("a failed write for one run failed the phase: %v", err)
+	}
+	if len(store.recorded) != 0 {
+		t.Fatalf("recorded %+v after a failed write", store.recorded)
+	}
+	if !strings.Contains(logs.String(), "checksRecordFailed") {
+		t.Fatalf("logs = %s, want checksRecordFailed", logs)
+	}
+	for _, token := range []string{"checksPendingStale", "checksUnresolvedMarked"} {
+		if strings.Contains(logs.String(), token) {
+			t.Fatalf("logs = %s, want no %s for a mark that was not written", logs, token)
+		}
+	}
+}
+
+func TestSettleChecksSaysNothingOfAStaleMarkTheRowDeclined(t *testing.T) {
+	d, store, _, logs := checksFixture(CheckPending, stalePendingRun())
+	store.stale = true
+	if err := settleChecks(context.Background(), d); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.recorded) != 0 {
+		t.Fatalf("recorded %+v for a row that moved on", store.recorded)
+	}
+	for _, token := range []string{"checksPendingStale", "checksUnresolvedMarked"} {
+		if strings.Contains(logs.String(), token) {
+			t.Fatalf("logs = %s, want no %s for a row that moved on", logs, token)
+		}
+	}
+}
+
+func TestSettleChecksDoesNotMarkAStaleRunWhoseChecksCannotBeRead(t *testing.T) {
+	for name, fail := range map[string]func(*fakeChecksGitHub){
+		"the commit listing fails": func(g *fakeChecksGitHub) { g.commitsErr = errors.New("502") },
+		"the outcome read fails":   func(g *fakeChecksGitHub) { g.outcomeErr = errors.New("502") },
+		"the required checks fail": func(g *fakeChecksGitHub) { g.requiredErr = errors.New("rules read") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			d, store, _, logs := checksFixture(CheckPending, stalePendingRun())
+			fail(d.Checks.GitHub.(*fakeChecksGitHub))
+			if err := settleChecks(context.Background(), d); err != nil {
+				t.Fatal(err)
+			}
+			if len(store.recorded) != 0 {
+				t.Fatalf("recorded %+v after a failed read, want the run left for the next poll", store.recorded)
+			}
+			if !strings.Contains(logs.String(), "checksReadFailed") {
+				t.Fatalf("logs = %s, want checksReadFailed", logs)
+			}
+		})
+	}
+}
+
+func TestSettleChecksSettlesAFinishedResultHoweverOldTheRunIs(t *testing.T) {
+	for _, outcome := range []string{CheckGreen, CheckFailing} {
+		t.Run(outcome, func(t *testing.T) {
+			d, store, _, _ := checksFixture(outcome,
+				UnsettledRun{ID: "run-1", PRURL: checksPR, StartedAt: checksAt.Add(-30 * 24 * time.Hour)})
+			if err := settleChecks(context.Background(), d); err != nil {
+				t.Fatal(err)
+			}
+			want := []checksRecord{{"run-1", checksPR, "agent1", outcome}}
+			if !slices.Equal(store.recorded, want) {
+				t.Fatalf("recorded %+v, want %+v", store.recorded, want)
+			}
+		})
+	}
+}
+
+func TestSettleChecksReachesANewerFinishedRunBehindTwentyStalePendingOnes(t *testing.T) {
+	var runs []UnsettledRun
+	commits := map[int][]PullCommit{}
+	outcomes := map[string]string{}
+	for i := range 20 {
+		number, sha := 100+i, fmt.Sprintf("stale-%d", i)
+		runs = append(runs, UnsettledRun{
+			ID:        fmt.Sprintf("stale-%d", i),
+			PRURL:     fmt.Sprintf("https://github.com/octo/scratch/pull/%d", number),
+			StartedAt: checksAt.Add(-25 * time.Hour),
+		})
+		commits[number] = []PullCommit{{SHA: sha, Login: runner.CommitAuthorLogin}}
+		outcomes[sha] = CheckPending
+	}
+	runs = append(runs, UnsettledRun{
+		ID:        "newer",
+		PRURL:     "https://github.com/octo/scratch/pull/200",
+		StartedAt: checksAt.Add(-time.Hour),
+	})
+	d, store, gh, _ := checksFixture(CheckGreen, runs...)
+	gh.commitsByPR = commits
+	gh.outcomeBySHA = outcomes
+	if err := settleChecks(context.Background(), d); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.recorded) != 20 {
+		t.Fatalf("the first poll recorded %d results, want the twenty stale pending runs it was capped to", len(store.recorded))
+	}
+	if err := settleChecks(context.Background(), d); err != nil {
+		t.Fatal(err)
+	}
+	last := store.recorded[len(store.recorded)-1]
+	if len(store.recorded) != 21 || last != (checksRecord{"newer", "https://github.com/octo/scratch/pull/200", "agent1", CheckGreen}) {
+		t.Fatalf("recorded %d results ending in %+v, want the newer run settled on the second poll", len(store.recorded), last)
 	}
 }
 
@@ -402,12 +535,15 @@ func TestSettleChecksCountsOnlyTheResultsItRecorded(t *testing.T) {
 }
 
 func TestSettleChecksDoesNotCallARunWithNoStartStale(t *testing.T) {
-	d, _, _, logs := checksFixture(CheckPending, UnsettledRun{ID: "run-1", PRURL: checksPR})
+	d, store, _, logs := checksFixture(CheckPending, UnsettledRun{ID: "run-1", PRURL: checksPR})
 	if err := settleChecks(context.Background(), d); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(logs.String(), "checksPendingStale") {
 		t.Fatalf("logs = %s, want no stale report for a run with no start", logs)
+	}
+	if len(store.recorded) != 0 {
+		t.Fatalf("recorded %+v for a pending run with no start, want it left for the next poll", store.recorded)
 	}
 }
 
