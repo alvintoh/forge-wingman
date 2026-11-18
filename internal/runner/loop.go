@@ -17,8 +17,8 @@ import (
 // advances Round without spending one of these three.
 const checkLoopMaxRounds = 3
 
-// checkFeedbackLimit bounds how much of a gate's output a rebuild round or
-// the loop's give-up detail carries.
+// checkFeedbackLimit bounds how much of a gate's output a rebuild or repair
+// round, or the loop's give-up detail, carries.
 const checkFeedbackLimit = 8 << 10
 
 // maxFixRounds is FR-28's fix-round ceiling for the pre-open review: a fix
@@ -55,6 +55,28 @@ const reviewStartRoom = 3 * time.Minute
 // reserveRecheckFloor is what a re-check run from the commit reserve leaves of
 // the run cap for the commit, bundle and report steps that follow the review.
 const reserveRecheckFloor = 2 * time.Minute
+
+// repairRoundFloor is the least repairBudget leaves to start a repair round:
+// the round and the checks that follow it. Under it no round starts and the
+// PR's notes name the failing gate. Measured against the cap rather than the
+// review stage's own budget, because the commit reserve is what pays for it.
+const repairRoundFloor = 6 * time.Minute
+
+// repairCheckRoom is the part of repairRoundFloor the checks after the round
+// get: the round's own deadline stops this much short of repairBudget, so the
+// gate re-check still has room to run and reach the PR's notes once the round
+// returns.
+const repairCheckRoom = 2 * time.Minute
+
+// compileLevelGate reports whether gate's failure leaves code that may not
+// build, which is the one failure a fix round can leave that a round on the
+// gate's own output repairs: vet and web-build compile it, and a format gate
+// still failing is one a formatter could not fix — for gofmt, a file it cannot
+// parse. A test or lint failure is deliberately not one: the repair round does
+// not address those.
+func compileLevelGate(gate string) bool {
+	return gate == checkVet || gate == checkWebBuild || isFormatGate(gate)
+}
 
 // The stage words a run in flight is shown with.
 const (
@@ -149,8 +171,8 @@ func reviewCallError(err error, now, started time.Time, budget time.Duration) er
 	return reviewBudgetSpent(budget)
 }
 
-// checkFeedbackPrompt is what a rebuild round receives: the failing gate's
-// name and output, asking for a fix and nothing else.
+// checkFeedbackPrompt is what a rebuild or repair round receives: the failing
+// gate's name and output, asking for a fix and nothing else.
 func checkFeedbackPrompt(gate, output string) string {
 	return "The `" + gate + "` check failed. Fix it and make no other change.\n\n```\n" +
 		truncate(output, checkFeedbackLimit) + "\n```"
@@ -318,6 +340,81 @@ func formatInPlace(ctx context.Context, d BuildDeps, sum *Summary, wt Worktree, 
 	}
 	d.Logger.Info("formatterRan", "round", round, "gate", gate, "durationMS", elapsed)
 	return nil
+}
+
+// checksWithin runs the checks on what round changed under deadline — what the
+// budget that paid for round leaves from now — so a round started near its
+// budget's end cannot run them past it. A budget that ran out under the checks
+// is spent, never an infrastructure failure.
+func checksWithin(ctx context.Context, d BuildDeps, wt Worktree, sum *Summary, deadline time.Time, round int, spent error) (gate, output string, err error) {
+	cctx, cancel := context.WithTimeout(ctx, deadline.Sub(d.Now()))
+	defer cancel()
+	gate, output, err = checksFormatted(cctx, d, sum, wt, round)
+	if ctx.Err() == nil && errors.Is(cctx.Err(), context.DeadlineExceeded) {
+		return "", "", spent
+	}
+	return gate, output, err
+}
+
+// checkDetail is how the PR's notes carry a gate still failing after a fix
+// round, empty when the checks passed.
+func checkDetail(gate, output string) string {
+	if gate == "" {
+		return ""
+	}
+	return "checks: " + gate + " failing after the fix round\n\n" + truncate(output, checkFeedbackLimit)
+}
+
+// repairBudget is the run cap less reserveRecheckFloor: what a round paid from
+// the commit reserve may spend, from the run's start — the review-only re-check
+// the last fix round gets, and a repair round with the checks after it.
+func repairBudget() time.Duration {
+	return nfr1RunCap - reserveRecheckFloor
+}
+
+// repairCapSpent is the stop a repair round's checks end with when repairBudget
+// ran out under them: the reserve the round was paid from is gone, so the run
+// stops on its cap rather than spending what the commit steps keep.
+func repairCapSpent() error {
+	return stopWith(OutcomeStopped, StopRunBudget,
+		fmt.Errorf("the run spent its %d-minute cap down to the %d minutes its commit steps keep",
+			int(nfr1RunCap/time.Minute), int(reserveRecheckFloor/time.Minute)))
+}
+
+// repairRound gives a fix round's failing compile-level gate one repair round
+// on that gate's own output: the build agent's session continued, the gate as
+// its step's detail so its time and tokens reach the run record. It starts only
+// while repairBudget leaves repairRoundFloor, and its own deadline is
+// repairCheckRoom before repairBudget, so the checks after it still have room.
+// A round that times out at that deadline is the run cap spent, not an agent
+// timeout. ran is false when it started none. The returned round and session
+// are the round it ran as and the session it reported, and a valid
+// commit-message block from it replaces msg.
+func repairRound(ctx context.Context, d BuildDeps, c BuildConfig, dir string, sum *Summary, rules, session string, round int,
+	msg *CommitMessage, gate, output string) (string, int, bool, error) {
+	// Both the start rule and the deadline are measured against repairBudget
+	// less repairCheckRoom, so the round starts while repairBudget leaves
+	// repairRoundFloor and ends repairCheckRoom before repairBudget.
+	budget, minStart := repairBudget()-repairCheckRoom, repairRoundFloor-repairCheckRoom
+	timeout, inBudget := roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now(), budget, minStart)
+	if !inBudget {
+		d.Logger.Info("repairRoundSkipped", "gate", gate, "reason", "budget")
+		return session, round, false, nil
+	}
+	round++
+	call := agentCall{Phase: PhaseBuild, Round: round, Model: buildOrder(c)[0], Session: session, Rules: rules, Detail: gate, Timeout: timeout}
+	text, resumed, round, err := runAgentInOrder(ctx, d, c, call, buildOrder(c), d.Agent, dir,
+		withCommitInstruction(checkFeedbackPrompt(gate, output)), sum, sum.StartedAt, budget, minStart)
+	if err != nil {
+		var s *StopError
+		if errors.As(err, &s) && s.Reason == StopAgentTimeout && !withinBudget(sum.StartedAt, d.Now(), budget) {
+			err = repairCapSpent()
+		}
+		return session, round, true, err
+	}
+	msg.adopt(text, c.Ticket.ID)
+	d.Logger.Info("repairRoundRan", "gate", gate, "round", round)
+	return resumed, round, true, nil
 }
 
 // reviewPass runs one review pass over the worktree's pending diff on the
@@ -651,14 +748,14 @@ func openUnprobed(issued, unprobed []pendingFinding) []pendingFinding {
 
 // recheckFromReserve is the review-only pass the last fix round gets when the
 // review stage's budget left no room to re-check it: one pass, started only
-// while the run cap, less reserveRecheckFloor, leaves room for it, so the
-// commit reserve pays for it and the steps after the review keep what they
-// need. open is the findings it leaves: surviving, the guards the round's own
-// scan found still uncovered, and what the pass reports. ok is false when the
-// pass could not run or failed, which leaves the round as not re-checked — the
-// run goes on either way, so its error is logged and not returned.
+// while repairBudget leaves reviewStartRoom, so the commit reserve pays for it
+// and the steps after the review keep what they need. open is the findings it
+// leaves: surviving, the guards the round's own scan found still uncovered, and
+// what the pass reports. ok is false when the pass could not run or failed,
+// which leaves the round as not re-checked — the run goes on either way, so its
+// error is logged and not returned.
 func recheckFromReserve(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum *Summary, round int, rules string, surviving []pendingFinding) (open []pendingFinding, ok bool) {
-	budget := nfr1RunCap - reserveRecheckFloor
+	budget := repairBudget()
 	timeout, inBudget := roundTimeout(c.AgentTimeout, sum.StartedAt, d.Now(), budget, reviewStartRoom)
 	if !inBudget {
 		return nil, false
@@ -681,6 +778,15 @@ func recheckFromReserve(ctx context.Context, d BuildDeps, c BuildConfig, wt Work
 // with how the run left it (AC5). The checks then run once, to catch a gate the
 // fix round newly broke, and — when the review stage's own budget still allows
 // it — the guards are probed again and the review re-run on the fixed diff.
+//
+// A gate the round left failing that is compile-level — vet, web-build, or a
+// format gate its own in-place pass did not fix — gets one repair round on that
+// gate's output before the guards are probed and the diff re-reviewed, so the
+// re-review never reads code that does not build (the agent's sandbox has no
+// toolchain to see it). One round per run, started only while repairBudget
+// leaves repairRoundFloor and stopping repairCheckRoom short of it so its own
+// checks have room; a test or lint failure gets none, and a gate still failing
+// after the repair is recorded in the PR's notes.
 //
 // A re-check that still reports a finding, the round's own or one it newly
 // made, starts one more fix round on the same session, up to maxFixRounds in
@@ -738,6 +844,9 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 	findings, checksDetail := pending, ""
 	round := buildRound
 	skipped := ""
+	// repaired is the run's one repair round: whichever fix round leaves a
+	// compile-level gate failing spends it, and a later round gets none.
+	repaired := false
 	for n := 1; n <= maxFixRounds; n++ {
 		round++
 		timeout, inBudget := roundTimeout(c.AgentTimeout, reviewStarted, d.Now(), budget, reviewStartRoom)
@@ -759,6 +868,7 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 		// A substitution inside the round advanced it, so the checks, the
 		// re-review and the next round continue from the round that answered.
 		round, session = ran, resumed
+		fixRound := round
 		msg.adopt(fixText, c.Ticket.ID)
 		if n > 1 {
 			// The one extra round this run took is priced in the PR notes, so the
@@ -768,19 +878,33 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 
 		// The checks get only what the review stage has left, so a fix round
 		// started near the stage's end cannot run them into the commit reserve.
-		cctx, cancel := context.WithTimeout(ctx, budget-d.Now().Sub(reviewStarted))
-		gate, output, cerr := checksFormatted(cctx, d, sum, wt, round)
-		expired := ctx.Err() == nil && errors.Is(cctx.Err(), context.DeadlineExceeded)
-		cancel()
-		if expired {
-			return false, "", reviewBudgetSpent(budget)
-		}
+		gate, output, cerr := checksWithin(ctx, d, wt, sum, reviewStarted.Add(budget), round, reviewBudgetSpent(budget))
 		if cerr != nil {
 			return false, "", cerr
 		}
-		checksDetail = ""
-		if gate != "" {
-			checksDetail = "checks: " + gate + " failing after the fix round\n\n" + truncate(output, checkFeedbackLimit)
+		checksDetail = checkDetail(gate, output)
+
+		// A compile-level gate the round left failing is the failure its
+		// sandbox cannot see, so the gate's own output buys one repair round
+		// before anything else reads the diff. The checks then run again, out of
+		// the same reserve the round came from, and a gate still failing is
+		// recorded in the PR's notes; no second round follows. The round is
+		// priced by its own step, so ReviewSecondRound stays the second fix
+		// round's cost.
+		if gate != "" && !repaired && compileLevelGate(gate) {
+			repaired = true
+			var ranRepair bool
+			session, round, ranRepair, err = repairRound(ctx, d, c, wt.Dir, sum, rules, session, round, msg, gate, output)
+			if err != nil {
+				return false, "", err
+			}
+			if ranRepair {
+				deadline := sum.StartedAt.Add(repairBudget())
+				if gate, output, cerr = checksWithin(ctx, d, wt, sum, deadline, round, repairCapSpent()); cerr != nil {
+					return false, "", cerr
+				}
+				checksDetail = checkDetail(gate, output)
+			}
 		}
 
 		// The post-fix scan is charged to the review stage and probes only the
@@ -797,7 +921,7 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 		surviving = append(surviving, openUnprobed(findings, unprobed)...)
 		recheckTimeout, inBudget := roundTimeout(c.AgentTimeout, reviewStarted, d.Now(), budget, reviewStartRoom)
 		if !inBudget {
-			rounds = append(rounds, fixRoundResult{round: round, issued: findings})
+			rounds = append(rounds, fixRoundResult{round: fixRound, issued: findings})
 			if open, ok := recheckFromReserve(ctx, d, c, wt, sum, round, rules, surviving); ok {
 				rounds[len(rounds)-1].open, rounds[len(rounds)-1].rechecked = open, true
 				sum.setReviewFindings(reviewRows(rounds))
@@ -815,7 +939,7 @@ func runReview(ctx context.Context, d BuildDeps, c BuildConfig, wt Worktree, sum
 			return false, "", reviewCallError(err, d.Now(), reviewStarted, budget)
 		}
 		open := append(surviving, remaining...)
-		rounds = append(rounds, fixRoundResult{round: round, issued: findings, open: open, rechecked: true})
+		rounds = append(rounds, fixRoundResult{round: fixRound, issued: findings, open: open, rechecked: true})
 		if len(open) == 0 {
 			sum.setReviewFindings(reviewRows(rounds))
 			return checksDetail == "", checksDetail, nil

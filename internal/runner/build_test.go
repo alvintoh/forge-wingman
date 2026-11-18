@@ -2133,9 +2133,9 @@ func TestPrePRLoopCleanReReviewWithPassingChecksOpensReady(t *testing.T) {
 }
 
 // TestPrePRLoopCleanReReviewWithAFailingCheckStaysADraft covers the other side
-// of FR-59's ready decision: a clean re-review cannot open the PR when the fix
-// round newly broke a gate, and the detail names the gate rather than a
-// finding.
+// of FR-59's ready decision: a clean re-review cannot open the PR when the gate
+// the fix round broke still fails after the repair round, and the detail names
+// the gate rather than a finding.
 func TestPrePRLoopCleanReReviewWithAFailingCheckStaysADraft(t *testing.T) {
 	const finding = "the retry never bounds its attempts"
 	agent := &fakeAgent{
@@ -2150,10 +2150,10 @@ func TestPrePRLoopCleanReReviewWithAFailingCheckStaysADraft(t *testing.T) {
 		return reviewEvent("")
 	}}
 	deps.ReviewAgent = review
-	checkCalls := 0
+	// The fix round breaks vet and neither the repair round nor anything else
+	// fixes it, so the gate is what holds the draft.
 	deps.Checks = func(context.Context, string, []string) (string, string, error) {
-		checkCalls++
-		if checkCalls == 2 {
+		if agent.calls >= 2 {
 			return checkVet, "vet failed: bad format", nil
 		}
 		return "", "", nil
@@ -2163,6 +2163,9 @@ func TestPrePRLoopCleanReReviewWithAFailingCheckStaysADraft(t *testing.T) {
 	res, err := Build(context.Background(), deps, c)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if agent.calls != 3 {
+		t.Fatalf("build agent ran %d times, want the fix round and its one repair round", agent.calls)
 	}
 	if review.calls != 2 {
 		t.Fatalf("review agent ran %d times, want 2: the re-review runs even when the checks fail", review.calls)
@@ -2176,6 +2179,407 @@ func TestPrePRLoopCleanReReviewWithAFailingCheckStaysADraft(t *testing.T) {
 	rec := reported.last(t)
 	if rec.Ready {
 		t.Fatalf("record ready = true, want false (detail %q)", rec.LoopDetail)
+	}
+}
+
+// repairRun drives a one-finding run whose fix round leaves gate failing on the
+// first check after it and passes every later one, with the clock at elapsed
+// after the run's start when the fix round's checks run.
+func repairRun(t *testing.T, gate string, elapsed time.Duration) (rec Summary, agent *fakeAgent, review *fakeAgent, logs string) {
+	t.Helper()
+	const finding = "the retry never bounds its attempts"
+	agent = &fakeAgent{
+		edit:   edit("version.go", "package x\n"),
+		events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{"input":5}}}` + "\n",
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	var out strings.Builder
+	deps.Logger = slog.New(slog.NewTextHandler(&out, nil))
+	started := time.Now()
+	clock := started
+	deps.Now = func() time.Time { return clock }
+	review = &fakeAgent{eventsFn: func(call int) string {
+		if call == 1 {
+			return reviewEvent(finding)
+		}
+		return reviewEvent("")
+	}}
+	deps.ReviewAgent = review
+	checkCalls := 0
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		checkCalls++
+		if checkCalls == 2 {
+			clock = started.Add(elapsed)
+			return gate, "output for " + gate, nil
+		}
+		return "", "", nil
+	}
+	if _, err := Build(context.Background(), deps, testConfig(t, initRepo(t))); err != nil {
+		t.Fatal(err)
+	}
+	return reported.last(t), agent, review, out.String()
+}
+
+// TestPrePRLoopRepairsACompileFailureLeftByAFixRound covers the gates that
+// compile the tree: a fix round that leaves one failing gets a round on that
+// gate's own output before the guards are probed again and the diff re-reviewed,
+// and its step carries the gate so its time and tokens reach the run record.
+func TestPrePRLoopRepairsACompileFailureLeftByAFixRound(t *testing.T) {
+	for _, gate := range []string{checkVet, checkWebBuild} {
+		t.Run(gate, func(t *testing.T) {
+			rec, agent, review, logs := repairRun(t, gate, time.Minute)
+
+			if agent.calls != 3 {
+				t.Fatalf("build agent ran %d times, want the build round, the fix round and one repair round", agent.calls)
+			}
+			if agent.sessions[2] != "ses_1" {
+				t.Fatalf("repair round session = %q, want the build agent's own session continued", agent.sessions[2])
+			}
+			if agent.rules[2] != agent.rules[0] {
+				t.Fatalf("repair round rules = %q, want the build round's %q", agent.rules[2], agent.rules[0])
+			}
+			if !strings.Contains(agent.prompts[2], gate) || !strings.Contains(agent.prompts[2], "output for "+gate) {
+				t.Fatalf("repair round prompt = %q, want it to carry %s and its output", agent.prompts[2], gate)
+			}
+			if review.calls != 2 {
+				t.Fatalf("review agent ran %d times, want the pass and the re-review after the repair", review.calls)
+			}
+			if !rec.Ready || rec.LoopDetail != "" {
+				t.Fatalf("ready = %v, detail = %q, want the repair to leave the run ready", rec.Ready, rec.LoopDetail)
+			}
+			if len(rec.Steps) != 5 || rec.Steps[3].Phase != PhaseBuild || rec.Steps[3].Round != 3 ||
+				rec.Steps[3].Detail != gate || rec.Steps[4].Phase != PhaseReview || rec.Steps[4].Round != 3 {
+				t.Fatalf("steps = %+v, want the repair round for %s and its re-review as rounds of their own", rec.Steps, gate)
+			}
+			if rec.Steps[3].Tokens.Input != 5 {
+				t.Fatalf("repair round tokens = %+v, want the round's own", rec.Steps[3].Tokens)
+			}
+			if !strings.Contains(logs, "msg=repairRoundRan") || !strings.Contains(logs, "gate="+gate) {
+				t.Fatalf("logs = %q, want the repair round logged with %s", logs, gate)
+			}
+		})
+	}
+}
+
+// TestPrePRLoopRepairsAFormatGateTheFormatterCouldNotFix covers both format
+// gates: one its in-place pass could not clear is a file the formatter cannot
+// parse, so the build session gets it like any other compile failure.
+func TestPrePRLoopRepairsAFormatGateTheFormatterCouldNotFix(t *testing.T) {
+	for _, gate := range []string{checkGofmt, checkWebFmtCheck} {
+		t.Run(gate, func(t *testing.T) {
+			agent := &fakeAgent{
+				edit:   edit("version.go", "package x\n"),
+				events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{}}}` + "\n",
+			}
+			deps, _, reported := testDeps(validObjects(), agent)
+			deps.ReviewAgent = &fakeAgent{eventsFn: func(call int) string {
+				if call == 1 {
+					return reviewEvent("the retry never bounds its attempts")
+				}
+				return reviewEvent("")
+			}}
+			var formatted []string
+			deps.Format = formatterWriting(&formatted, "version.go")
+			deps.Checks = func(context.Context, string, []string) (string, string, error) {
+				if agent.calls == 2 {
+					return gate, "version.go is not formatted", nil
+				}
+				return "", "", nil
+			}
+
+			if _, err := Build(context.Background(), deps, testConfig(t, initRepo(t))); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(formatted, []string{gate}) {
+				t.Fatalf("formatter ran for %q, want %s once, then the gate handed to the build session", formatted, gate)
+			}
+			if agent.calls != 3 {
+				t.Fatalf("build agent ran %d times, want the fix round and one repair round for %s", agent.calls, gate)
+			}
+			rec := reported.last(t)
+			if !rec.Ready || rec.Steps[3].Detail != gate {
+				t.Fatalf("ready = %v with steps %+v, want a repair round for %s leaving the run ready", rec.Ready, rec.Steps, gate)
+			}
+		})
+	}
+}
+
+// spendingAgent runs a fakeAgent and, on call, moves clock on to the deadline
+// the runner gave that call plus overrun — so a round that uses its whole
+// timeout costs the timeline what it would in production, and a round that
+// overruns its own deadline can be scripted too.
+type spendingAgent struct {
+	agent   *fakeAgent
+	clock   *time.Time
+	call    int
+	overrun time.Duration
+}
+
+func (a spendingAgent) Run(ctx context.Context, dir, session, prompt, rules string, stdout, stderr io.Writer) error {
+	if a.agent.calls+1 == a.call {
+		if deadline, ok := ctx.Deadline(); ok {
+			*a.clock = (*a.clock).Add(time.Until(deadline) + a.overrun)
+		}
+	}
+	return a.agent.Run(ctx, dir, session, prompt, rules, stdout, stderr)
+}
+
+// repairDeadlineRun drives a one-finding run whose fix round's checks leave gate
+// failing, with the clock at elapsed after the run's start when they run and
+// every later check reporting gate again. The build agent spends each deadline
+// it is given plus overrun, so a repair round that uses — or overruns — its own
+// timeout is the test's own doing rather than the fake standing still.
+func repairDeadlineRun(t *testing.T, gate string, elapsed, overrun time.Duration) (rec Summary, agent *fakeAgent, checks int) {
+	t.Helper()
+	agent = &fakeAgent{
+		edit:   edit("version.go", "package x\n"),
+		events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{}}}` + "\n",
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	started := time.Now()
+	clock := started
+	deps.Now = func() time.Time { return clock }
+	deps.Agent = spendingAgent{agent: agent, clock: &clock, call: 3, overrun: overrun}
+	deps.ReviewAgent = &fakeAgent{events: reviewEvent("the retry never bounds its attempts")}
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		checks++
+		if checks == 2 {
+			clock = started.Add(elapsed)
+		}
+		if checks >= 2 {
+			return gate, "output for " + gate, nil
+		}
+		return "", "", nil
+	}
+	if _, err := Build(context.Background(), deps, testConfig(t, initRepo(t))); err != nil {
+		t.Fatal(err)
+	}
+	return reported.last(t), agent, checks
+}
+
+// TestPrePRLoopLeavesTheRepairRoundsChecksTheirRoom covers a repair round that
+// spends its whole deadline at the floor: the round stops repairCheckRoom short
+// of the budget, so the checks after it still run and the gate they report
+// reaches the PR's notes instead of the run recording a spent cap.
+func TestPrePRLoopLeavesTheRepairRoundsChecksTheirRoom(t *testing.T) {
+	rec, agent, checks := repairDeadlineRun(t, checkVet, nfr1RunCap-reserveRecheckFloor-repairRoundFloor, 0)
+
+	if agent.calls != 3 {
+		t.Fatalf("build agent ran %d times, want the fix round and its repair round", agent.calls)
+	}
+	if checks != 3 {
+		t.Fatalf("checks ran %d times, want the fix round's, the repair's and the one after it", checks)
+	}
+	if !strings.Contains(rec.LoopDetail, "checks: "+checkVet+" failing after the fix round") {
+		t.Fatalf("loop detail = %q, want the gate the checks after the repair reported", rec.LoopDetail)
+	}
+	if strings.Contains(rec.LoopDetail, "commit steps keep") {
+		t.Fatalf("loop detail = %q, want no cap stop: the round left its checks repairCheckRoom", rec.LoopDetail)
+	}
+}
+
+// TestPrePRLoopRecordsTheRepairRoundsSpentCap covers the other side: the checks
+// after the repair find repairBudget already spent, so the run records the cap
+// it ran out of rather than a gate it never read, and still keeps the work as a
+// draft.
+func TestPrePRLoopRecordsTheRepairRoundsSpentCap(t *testing.T) {
+	rec, agent, _ := repairDeadlineRun(t, checkVet, nfr1RunCap-reserveRecheckFloor-repairRoundFloor,
+		repairCheckRoom+time.Minute)
+
+	if agent.calls != 3 {
+		t.Fatalf("build agent ran %d times, want the fix round and its repair round", agent.calls)
+	}
+	if rec.Outcome != OutcomeBuilt || rec.Phase != PhaseCommit || rec.Ready || !strings.Contains(rec.LoopDetail, "commit steps keep") {
+		t.Fatalf("record = %s at %s, ready = %v, detail = %q, want a draft naming the cap the repair left",
+			rec.Outcome, rec.Phase, rec.Ready, rec.LoopDetail)
+	}
+}
+
+// TestPrePRLoopDraftsWhenTheRepairRoundFails covers the repair round's own
+// failure: it is classified like any other build call's, nothing re-reviews the
+// diff, and the run opens as a draft naming it.
+func TestPrePRLoopDraftsWhenTheRepairRoundFails(t *testing.T) {
+	agent := &fakeAgent{
+		edit:   edit("version.go", "package x\n"),
+		events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{}}}` + "\n",
+		errFn: func(call int) error {
+			if call == 3 {
+				return errors.New("exit status 1")
+			}
+			return nil
+		},
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	review := &fakeAgent{events: reviewEvent("the retry never bounds its attempts")}
+	deps.ReviewAgent = review
+	checkCalls := 0
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		checkCalls++
+		if checkCalls == 2 {
+			return checkVet, "vet failed: bad format", nil
+		}
+		return "", "", nil
+	}
+
+	if _, err := Build(context.Background(), deps, testConfig(t, initRepo(t))); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 3 {
+		t.Fatalf("build agent ran %d times, want the repair round's own failed attempt", agent.calls)
+	}
+	if review.calls != 1 {
+		t.Fatalf("review agent ran %d times, want the pass alone: the repair failed before a re-review", review.calls)
+	}
+	if checkCalls != 2 {
+		t.Fatalf("checks ran %d times, want the fix round's alone: the repair never finished", checkCalls)
+	}
+	rec := reported.last(t)
+	if rec.Ready || !strings.Contains(rec.LoopDetail, "review:") || !strings.Contains(rec.LoopDetail, "exit status 1") {
+		t.Fatalf("ready = %v, detail = %q, want a draft naming the repair round's failure", rec.Ready, rec.LoopDetail)
+	}
+	if rec.Outcome != OutcomeBuilt || rec.Phase != PhaseCommit {
+		t.Fatalf("record = %s at %s, want built at commit with the fix round's edits kept", rec.Outcome, rec.Phase)
+	}
+}
+
+// TestPrePRLoopRepairsOnceAcrossTwoFixRounds covers the ceiling over the loop: a
+// second fix round that leaves vet failing starts no second repair round.
+func TestPrePRLoopRepairsOnceAcrossTwoFixRounds(t *testing.T) {
+	const finding = "the retry never bounds its attempts"
+	agent := &fakeAgent{
+		edit:   edit("version.go", "package x\n"),
+		events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{}}}` + "\n",
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	var out strings.Builder
+	deps.Logger = slog.New(slog.NewTextHandler(&out, nil))
+	deps.ReviewAgent = &fakeAgent{eventsFn: func(call int) string {
+		if call < 3 {
+			return reviewEvent(finding)
+		}
+		return reviewEvent("")
+	}}
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		if agent.calls >= 2 {
+			return checkVet, "vet failed: bad format", nil
+		}
+		return "", "", nil
+	}
+
+	if _, err := Build(context.Background(), deps, testConfig(t, initRepo(t))); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 4 {
+		t.Fatalf("build agent ran %d times, want the build, two fix rounds and one repair round", agent.calls)
+	}
+	if got := strings.Count(out.String(), "msg=repairRoundRan"); got != 1 {
+		t.Fatalf("repair rounds logged = %d, want the one across both fix rounds", got)
+	}
+	rec := reported.last(t)
+	if rec.Ready || !strings.Contains(rec.LoopDetail, "checks: vet failing after the fix round") {
+		t.Fatalf("ready = %v, detail = %q, want a draft naming the gate", rec.Ready, rec.LoopDetail)
+	}
+}
+
+// TestPrePRLoopTakesAtMostOneRepairRound covers the repair round's ceiling: a
+// gate still failing after it is recorded in the notes and starts no second
+// round.
+func TestPrePRLoopTakesAtMostOneRepairRound(t *testing.T) {
+	const finding = "the retry never bounds its attempts"
+	agent := &fakeAgent{
+		edit:   edit("version.go", "package x\n"),
+		events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{}}}` + "\n",
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	deps.ReviewAgent = &fakeAgent{eventsFn: func(call int) string {
+		if call == 1 {
+			return reviewEvent(finding)
+		}
+		return reviewEvent("")
+	}}
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		if agent.calls >= 2 {
+			return checkVet, "vet failed: duplicate function newThing", nil
+		}
+		return "", "", nil
+	}
+
+	if _, err := Build(context.Background(), deps, testConfig(t, initRepo(t))); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 3 {
+		t.Fatalf("build agent ran %d times, want the fix round and one repair round only", agent.calls)
+	}
+	rec := reported.last(t)
+	if rec.Ready {
+		t.Fatal("ready = true, want false: vet still fails")
+	}
+	if !strings.Contains(rec.LoopDetail, "checks: vet failing after the fix round") {
+		t.Fatalf("loop detail = %q, want the gate still failing named", rec.LoopDetail)
+	}
+}
+
+// TestPrePRLoopRepairsNoTestOrLintFailureLeftByAFixRound covers the gates the
+// repair round does not answer: one that is not compile-level gets no round,
+// and the notes carry its gate.
+func TestPrePRLoopRepairsNoTestOrLintFailureLeftByAFixRound(t *testing.T) {
+	for _, gate := range []string{checkTest, checkLint, checkWebLint} {
+		t.Run(gate, func(t *testing.T) {
+			rec, agent, review, logs := repairRun(t, gate, time.Minute)
+
+			if agent.calls != 2 {
+				t.Fatalf("build agent ran %d times, want the build round and the fix round only", agent.calls)
+			}
+			if review.calls != 2 {
+				t.Fatalf("review agent ran %d times, want the pass and the re-review", review.calls)
+			}
+			if strings.Contains(logs, "msg=repairRoundRan") {
+				t.Fatalf("logs = %q, want no repair round for %s", logs, gate)
+			}
+			if rec.Ready {
+				t.Fatalf("ready = true, want false: %s still fails", gate)
+			}
+			if !strings.Contains(rec.LoopDetail, "checks: "+gate+" failing after the fix round") {
+				t.Fatalf("loop detail = %q, want %s named in the notes", rec.LoopDetail, gate)
+			}
+		})
+	}
+}
+
+// TestPrePRLoopRepairsOnlyWithSixMinutesOfRunCapLeft covers the repair round's
+// budget gate: it needs repairRoundFloor of the run cap beyond the commit
+// reserve, and exactly that much still starts it and its checks.
+func TestPrePRLoopRepairsOnlyWithSixMinutesOfRunCapLeft(t *testing.T) {
+	tests := []struct {
+		name    string
+		elapsed time.Duration
+		repairs bool
+	}{
+		{"exactly the floor", nfr1RunCap - reserveRecheckFloor - repairRoundFloor, true},
+		{"one minute under it", nfr1RunCap - reserveRecheckFloor - repairRoundFloor + time.Minute, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec, agent, _, logs := repairRun(t, checkVet, tt.elapsed)
+
+			want := 2
+			if tt.repairs {
+				want = 3
+			}
+			if agent.calls != want {
+				t.Fatalf("build agent ran %d times, want %d with %s of the run cap beyond the reserve left",
+					agent.calls, want, (nfr1RunCap - reserveRecheckFloor - tt.elapsed).String())
+			}
+			if got := strings.Contains(logs, "msg=repairRoundRan"); got != tt.repairs {
+				t.Fatalf("repair round ran = %v, want %v (logs %q)", got, tt.repairs, logs)
+			}
+			if rec.Ready != tt.repairs {
+				t.Fatalf("ready = %v (detail %q), want %v", rec.Ready, rec.LoopDetail, tt.repairs)
+			}
+			if !tt.repairs && !strings.Contains(rec.LoopDetail, "checks: vet failing after the fix round") {
+				t.Fatalf("loop detail = %q, want the gate carried in the notes when no round fits", rec.LoopDetail)
+			}
+		})
 	}
 }
 
@@ -2628,8 +3032,9 @@ func reserveRecheckRun(t *testing.T, reviews *fakeAgent) (rec Summary, agent *fa
 }
 
 // reserveRecheckRunAt is reserveRecheckRun with the clock jumping to elapsed
-// after the run's start instead, and the fix round's checks reporting gate
-// failing when it is not empty.
+// after the run's start instead, and every check from the fix round's on
+// reporting gate failing when it is not empty — so a repair round, when one
+// fits, finds it failing too.
 func reserveRecheckRunAt(t *testing.T, reviews *fakeAgent, elapsed time.Duration, gate string) (rec Summary, agent *fakeAgent, logs string) {
 	t.Helper()
 	agent = &fakeAgent{
@@ -2647,6 +3052,8 @@ func reserveRecheckRunAt(t *testing.T, reviews *fakeAgent, elapsed time.Duration
 		checkCalls++
 		if checkCalls == 2 {
 			clock = started.Add(elapsed)
+		}
+		if checkCalls >= 2 {
 			return gate, "output", nil
 		}
 		return "", "", nil
@@ -2821,8 +3228,11 @@ func TestPrePRLoopKeepsFailingChecksOpenWhateverTheReserveRecheckReads(t *testin
 				return reviewEvent(tt.recheck)
 			}}
 
-			rec, _, _ := reserveRecheckRunAt(t, review, nfr1RunCap-nfr1CommitReserve, "vet")
+			rec, agent, _ := reserveRecheckRunAt(t, review, nfr1RunCap-nfr1CommitReserve, "vet")
 
+			if agent.calls != 3 {
+				t.Fatalf("build agent ran %d times, want the fix round and its one repair round", agent.calls)
+			}
 			if rec.Ready {
 				t.Fatalf("ready = true, want false: the fix round left vet failing (detail %q)", rec.LoopDetail)
 			}
@@ -5388,5 +5798,130 @@ func TestPrePRLoopStopsWhenTheChangedPathsCannotBeListed(t *testing.T) {
 	}
 	if rec := reported.last(t); rec.Outcome != OutcomeInfraFailure || rec.StopReason != StopChecksRun {
 		t.Fatalf("record = %s/%s, want infra-failure/%s", rec.Outcome, rec.StopReason, StopChecksRun)
+	}
+}
+
+// TestPrePRLoopCarriesTheRepairRoundsSessionAndCommitMessageForward covers what
+// a repair round hands on: its prompt asks for the commit message, a valid block
+// from it is the run's message, and the next fix round resumes the session it
+// reported.
+func TestPrePRLoopCarriesTheRepairRoundsSessionAndCommitMessageForward(t *testing.T) {
+	const finding = "the retry never bounds its attempts"
+	agent := &fakeAgent{
+		edit: edit("version.go", "package x\n"),
+		eventsFn: func(call int) string {
+			if call == 3 {
+				return `{"type":"step_finish","sessionID":"ses_repair","part":{"tokens":{}}}` + "\n" +
+					planEvent(commitBlock("fix(x): ABC-12 repair the build"))
+			}
+			return `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{}}}` + "\n"
+		},
+	}
+	deps, _, reported := testDeps(validObjects(), agent)
+	deps.ReviewAgent = &fakeAgent{eventsFn: func(call int) string {
+		if call < 3 {
+			return reviewEvent(finding)
+		}
+		return reviewEvent("")
+	}}
+	deps.Checks = func(context.Context, string, []string) (string, string, error) {
+		if agent.calls == 2 {
+			return checkVet, "vet failed: bad format", nil
+		}
+		return "", "", nil
+	}
+
+	if _, err := Build(context.Background(), deps, testConfig(t, initRepo(t))); err != nil {
+		t.Fatal(err)
+	}
+	if agent.calls != 4 {
+		t.Fatalf("build agent ran %d times, want the build, two fix rounds and one repair round", agent.calls)
+	}
+	if !strings.HasSuffix(agent.prompts[2], commitMessageInstruction) {
+		t.Fatalf("repair round prompt = %q, want it to end with the commit-message instruction", agent.prompts[2])
+	}
+	if agent.sessions[3] != "ses_repair" {
+		t.Fatalf("second fix round session = %q, want the repair round's ses_repair", agent.sessions[3])
+	}
+	if sum := reported.last(t); sum.CommitSubject != "fix(x): ABC-12 repair the build" {
+		t.Fatalf("commit subject = %q, want the repair round's", sum.CommitSubject)
+	}
+}
+
+// TestPrePRLoopNamesTheFixRoundThatFixedAFindingNotTheRepairRound covers the
+// review table after a repair: the finding was fixed by the fix round, which
+// ran as round 2, and the repair round that followed it ran as round 3.
+func TestPrePRLoopNamesTheFixRoundThatFixedAFindingNotTheRepairRound(t *testing.T) {
+	rec, _, _, _ := repairRun(t, checkVet, time.Minute)
+
+	want := []ReviewFinding{{Finding: "the retry never bounds its attempts", Resolution: "fixed in round 2", Source: "p/r"}}
+	if !slices.Equal(rec.ReviewFindings, want) {
+		t.Fatalf("review findings = %+v, want %+v", rec.ReviewFindings, want)
+	}
+}
+
+// timingOutAgent runs the build agent normally except for its call-th call,
+// which moves the clock to at after the run's start and then outlives its
+// deadline.
+type timingOutAgent struct {
+	agent   *fakeAgent
+	clock   *time.Time
+	started time.Time
+	at      time.Duration
+	call    int
+}
+
+func (a timingOutAgent) Run(ctx context.Context, dir, session, prompt, rules string, stdout, stderr io.Writer) error {
+	if a.agent.calls+1 != a.call {
+		return a.agent.Run(ctx, dir, session, prompt, rules, stdout, stderr)
+	}
+	*a.clock = a.started.Add(a.at)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// TestPrePRLoopJudgesARepairRoundsTimeoutByTheRunCap covers the repair round's
+// timeout label: the round is paid from the run cap, so a timeout is the cap
+// spent only when the clock is past the round's deadline against it, however
+// long ago the review stage's own budget ran out.
+func TestPrePRLoopJudgesARepairRoundsTimeoutByTheRunCap(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		at   time.Duration
+		want StopReason
+	}{
+		{"cap left", nfr1RunCap - reserveRecheckFloor - repairCheckRoom - time.Minute, StopAgentTimeout},
+		{"cap spent", nfr1RunCap - reserveRecheckFloor, StopRunBudget},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			agent := &fakeAgent{
+				edit:   edit("version.go", "package x\n"),
+				events: `{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{}}}` + "\n",
+			}
+			deps, _, reported := testDeps(validObjects(), agent)
+			started := time.Now()
+			clock := started
+			deps.Now = func() time.Time { return clock }
+			deps.Agent = timingOutAgent{agent: agent, clock: &clock, started: started, at: tt.at, call: 3}
+			deps.ReviewAgent = &fakeAgent{events: reviewEvent("the retry never bounds its attempts")}
+			checks := 0
+			deps.Checks = func(context.Context, string, []string) (string, string, error) {
+				checks++
+				if checks == 2 {
+					clock = started.Add(time.Minute)
+					return checkVet, "vet failed: bad format", nil
+				}
+				return "", "", nil
+			}
+			c := testConfig(t, initRepo(t))
+			c.AgentTimeout = 100 * time.Millisecond
+
+			if _, err := Build(context.Background(), deps, c); err != nil {
+				t.Fatal(err)
+			}
+			if rec := reported.last(t); rec.Ready || !strings.Contains(rec.LoopDetail, "("+string(tt.want)+")") {
+				t.Fatalf("ready = %v, detail = %q, want a draft stopped on %q", rec.Ready, rec.LoopDetail, tt.want)
+			}
+		})
 	}
 }
