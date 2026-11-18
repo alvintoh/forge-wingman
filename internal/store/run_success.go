@@ -67,8 +67,9 @@ type runResult struct {
 
 // counted reports whether the run counts in a window. A run the owner cancelled
 // counts in neither; a run that opened a pull request counts once its checks
-// result is green or failing, and one still pending, or that can never be read,
-// counts in neither until it settles.
+// result is green or failing, and one still pending counts in neither until it
+// settles or is recorded unresolved; a run that can never be read, or is
+// unresolved, never counts.
 func (row runResult) counted() bool {
 	if row.Cancelled {
 		return false
