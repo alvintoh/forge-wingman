@@ -580,3 +580,15 @@ func TestAPollWhoseStartCannotBeStampedStillPolls(t *testing.T) {
 		t.Fatalf("polled = %v, want a poll logged as pollStartNotRecorded:\n%s", polled, logs)
 	}
 }
+
+func TestPollConfigOffersABuildModelBesideTheDefaultTheReviewerAndTheFreeTier(t *testing.T) {
+	model := runner.DefaultModel()
+	c := pollConfig(config{}, nil, nil, model, nil)
+	unusable := append([]string{model}, runner.DefaultReviewModels()...)
+	for _, free := range c.LastResortPlans {
+		unusable = append(unusable, free...)
+	}
+	if !slices.ContainsFunc(c.BuildCandidates, func(m string) bool { return !slices.Contains(unusable, m) }) {
+		t.Fatalf("candidates = %v, want one that is neither the default %s, a review model nor a free one", c.BuildCandidates, model)
+	}
+}

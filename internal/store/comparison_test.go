@@ -1,6 +1,7 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"maps"
 	"reflect"
@@ -51,13 +52,15 @@ type comparedRun struct {
 	// rewrite is the measurement a merge wrote onto the run's row, absent for
 	// a run no merge has reached.
 	rewrite *dispatcher.Rewrite
+	// size is the ticket's size, S when unset.
+	size string
 }
 
 // comparedRecord writes id as the run Finalize would leave it, with the
 // comparison's own fields set.
 func comparedRecord(t *testing.T, client *firestore.Client, id string, c comparedRun) {
 	t.Helper()
-	tk := runner.Ticket{ID: id, Title: "feat(x): add a file", Size: "S", Body: "Add a file."}
+	tk := runner.Ticket{ID: id, Title: "feat(x): add a file", Size: cmp.Or(c.size, "S"), Body: "Add a file."}
 	// A run that has not settled yet has no time of its own, and a zero one
 	// would fall below Firestore's own range once the step's own span is taken
 	// off it.
@@ -568,4 +571,70 @@ func findProvider(providers []ProviderComparison, provider string) (ProviderComp
 		return providers[at], true
 	}
 	return ProviderComparison{}, false
+}
+
+func TestModelRecordsCountsEachModelsSettledAndPassedRunsPerSize(t *testing.T) {
+	_, client := queue(t)
+	model, other := "command-code/"+fresh("records"), "command-code/"+fresh("records-other")
+	settled := queueAt
+	runs := map[string]comparedRun{
+		fresh("rec-s-pass"):    {model: model, size: "S", settledAt: settled, outcome: runner.OutcomePROpened, input: 10, cacheRead: 90},
+		fresh("rec-s-nochg"):   {model: model, size: "S", settledAt: settled, outcome: runner.OutcomeNoChanges, input: 20, cacheRead: 80},
+		fresh("rec-s-stopped"): {model: model, size: "S", settledAt: settled, outcome: runner.OutcomeStopped, input: 5, cacheRead: 5},
+		fresh("rec-m-pass"):    {model: model, size: "M", settledAt: settled, outcome: runner.OutcomePROpened, input: 1, cacheRead: 1},
+		fresh("rec-other"):     {model: other, size: "S", settledAt: settled, outcome: runner.OutcomePROpened},
+		// Neither counts toward a model: one took no step, one has not settled.
+		fresh("rec-nosteps"): {model: model, size: "S", settledAt: settled, outcome: runner.OutcomePROpened, noSteps: true},
+		fresh("rec-open"):    {model: model, size: "S", outcome: runner.OutcomePROpened},
+	}
+	for id, run := range runs {
+		forget(t, client, id)
+		comparedRecord(t, client, id, run)
+	}
+	got, err := NewRecords(client).ModelRecords(context.Background(), queueAt.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = slices.DeleteFunc(got, func(r dispatcher.ModelRecord) bool { return r.Model != model && r.Model != other })
+	want := []dispatcher.ModelRecord{
+		{Model: model, Size: "M", Settled: 1, Passed: 1, FreshInput: 1, CacheRead: 1},
+		{Model: model, Size: "S", Settled: 3, Passed: 2, FreshInput: 35, CacheRead: 175},
+		{Model: other, Size: "S", Settled: 1, Passed: 1},
+	}
+	slices.SortFunc(want, func(a, b dispatcher.ModelRecord) int {
+		return cmp.Or(strings.Compare(a.Model, b.Model), strings.Compare(a.Size, b.Size))
+	})
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("records = %+v, want %+v", got, want)
+	}
+}
+
+func TestModelRecordsMeasuresTheCacheShareFromTheCreditedModelsBuildSteps(t *testing.T) {
+	_, client := queue(t)
+	model := "command-code/" + fresh("records-share")
+	id := fresh("rec-share")
+	forget(t, client, id)
+	reviewSteps := []runner.Step{
+		{Phase: runner.PhaseReview, Round: 1, Model: "command-code/reviewer", Tokens: runner.Usage{Input: 1000, CacheRead: 0}, At: queueAt},
+		{Phase: runner.PhasePlan, Round: 1, Model: model, Tokens: runner.Usage{Input: 500}, At: queueAt},
+		// A build step no model ran, which the credit ignores too.
+		{Phase: runner.PhaseBuild, Round: 1, Tokens: runner.Usage{Input: 300}, At: queueAt},
+	}
+	comparedRecord(t, client, id, comparedRun{model: model, size: "M", settledAt: queueAt, outcome: runner.OutcomePROpened,
+		input: 10, cacheRead: 90, leadingSteps: reviewSteps})
+	// The run's own totals hold every step, as Finalize sums them.
+	if _, err := client.Collection(runsCollection).Doc(id).Update(context.Background(), []firestore.Update{
+		{Path: "tokens.input", Value: int64(1810)}, {Path: "tokens.cache_read", Value: int64(90)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := NewRecords(client).ModelRecords(context.Background(), queueAt.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = slices.DeleteFunc(got, func(r dispatcher.ModelRecord) bool { return r.Model != model })
+	want := []dispatcher.ModelRecord{{Model: model, Size: "M", Settled: 1, Passed: 1, FreshInput: 10, CacheRead: 90}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("records = %+v, want only the build step's tokens", got)
+	}
 }

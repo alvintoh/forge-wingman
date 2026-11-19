@@ -423,9 +423,13 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 				OpenPoster: slackPoster(secrets.Token, client),
 				Plans:      plans,
 				ModelPlans: plans,
-				Overrides:  dispatcher.LabelOverrides{},
-				Workflow:   gh,
-				OpenPRs:    gh,
+				// An unlabelled run is given the cheapest model whose settled runs of
+				// its size have passed the bar, read from the same records the
+				// surface's model comparison reads.
+				ModelRecords: store.NewRecords(fsc).WithLogger(logger),
+				Overrides:    dispatcher.LabelOverrides{},
+				Workflow:     gh,
+				OpenPRs:      gh,
 				// The rewrite rate is measured from the same GitHub the dispatch uses,
 				// and recorded on the run rows the queue holds.
 				PullRequests: gh,
@@ -438,10 +442,20 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 				Elicit:       webhook.Linear{Tokens: tokens},
 				Logger:       logger,
 				Now:          time.Now,
-			}, dispatcher.Config{Repos: repos, ReposErr: reposErr, Budget: budgetConfig(runner.Provider(model)), Model: model, Plans: providers.Plans(), PlanBudgets: others, Limits: c.limits, Tuning: c.tuning, LastResortPlans: lastResortPlans(), TwoStage: c.twoStage, DecisionTimeout: c.decisionTimeout, DecisionMode: c.decisionMode})
+			}, pollConfig(c, repos, reposErr, model, others))
 			return err
 		}, nil
 	})
+}
+
+// pollConfig is the boundary one poll admits inside: the owner's repositories,
+// the default model's budget and plans, and the models an unlabelled run may be
+// given at claim.
+func pollConfig(c config, repos []string, reposErr error, model string, others []dispatcher.PaidPlan) dispatcher.Config {
+	return dispatcher.Config{Repos: repos, ReposErr: reposErr, Budget: budgetConfig(runner.Provider(model)), Model: model,
+		Plans: providers.Plans(), BuildCandidates: providers.BuildCandidates(), PlanBudgets: others, Limits: c.limits,
+		Tuning: c.tuning, LastResortPlans: lastResortPlans(), TwoStage: c.twoStage, DecisionTimeout: c.decisionTimeout,
+		DecisionMode: c.decisionMode}
 }
 
 // planBudgets is every paid plan after the default model's in order, each with

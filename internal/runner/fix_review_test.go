@@ -71,11 +71,10 @@ func fixReviewRun(t *testing.T, muse, fix func(context.Context, int, io.Writer, 
 	if prepare != nil {
 		prepare(&deps, &c)
 	}
-	fixModel := testFixReviewModel
-	if len(c.FixReviewModels) > 0 {
-		fixModel = c.FixReviewModels[0]
+	script.replies = map[string]func(context.Context, int, io.Writer, io.Writer) error{"p/r": muse, testFixReviewModel: fix}
+	for _, m := range c.FixReviewModels {
+		script.replies[m] = fix
 	}
-	script.replies = map[string]func(context.Context, int, io.Writer, io.Writer) error{"p/r": muse, fixModel: fix}
 	if _, err := Build(context.Background(), deps, c); err != nil {
 		t.Fatal(err)
 	}
@@ -377,15 +376,37 @@ func TestBuildStopsWhenAFixReviewModelIsTheBuilder(t *testing.T) {
 	}
 }
 
+func TestBuildDropsAFixReviewerThatIsTheBuilderAndReviewsWithTheNext(t *testing.T) {
+	const haiku, flash = "opencode-go/claude-haiku-5-5", "opencode-go/deepseek-v4.1-flash"
+	for build, want := range map[string]struct{ reviewer, dropped string }{
+		haiku: {reviewer: flash, dropped: haiku},
+		flash: {reviewer: haiku, dropped: flash},
+	} {
+		t.Run(build, func(t *testing.T) {
+			rec, _, script, logs := fixReviewRun(t, findingsPerCall(""), findingsPerCall(""), func(_ *BuildDeps, c *BuildConfig) {
+				c.Model = build
+				c.FixReviewModels = []string{haiku, flash}
+			})
+			if got := stepModels(rec, PhaseFixReview); !slices.Equal(got, []string{want.reviewer}) || len(script.prompts[build]) != 0 {
+				t.Fatalf("fix-review steps = %v, builder reviewed %d times; want only %s", got, len(script.prompts[build]), want.reviewer)
+			}
+			if strings.Count(logs, "msg=fixReviewDropped") != 1 || !strings.Contains(logs, "msg=fixReviewDropped model="+want.dropped+" reason=builder") {
+				t.Fatalf("logs = %s\nwant only %s logged as dropped", logs, want.dropped)
+			}
+		})
+	}
+}
+
 func TestValidateFixReviewModels(t *testing.T) {
 	for name, tc := range map[string]struct {
 		models []string
 		want   string
 	}{
-		"empty":     {nil, ""},
-		"malformed": {[]string{"not a model"}, "not provider/model"},
-		"repeated":  {[]string{"p/h", "p/h"}, "listed twice"},
-		"builder":   {[]string{"p/m"}, "is the build model"},
+		"empty":               {nil, ""},
+		"malformed":           {[]string{"not a model"}, "not provider/model"},
+		"repeated":            {[]string{"p/h", "p/h"}, "listed twice"},
+		"builder":             {[]string{"p/m"}, "is the build model"},
+		"builder and another": {[]string{"p/m", "p/h"}, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := ValidateFixReviewModels(tc.models, "p/m")

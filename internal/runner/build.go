@@ -269,6 +269,15 @@ func Build(ctx context.Context, d BuildDeps, c BuildConfig) (res BuildResult, er
 		if err := ValidateFixReviewModels(c.FixReviewModels, c.Model); err != nil {
 			return stopWith(OutcomeStopped, StopModelInvalid, err)
 		}
+		// A fix reviewer the builder may run on would be the builder checking its
+		// own work, so it is dropped and the next one in order reviews instead.
+		c.FixReviewModels = slices.DeleteFunc(slices.Clone(c.FixReviewModels), func(m string) bool {
+			builds := runsBuild(m, c.Model)
+			if builds {
+				d.Logger.Warn("fixReviewDropped", "model", m, "reason", "builder")
+			}
+			return builds
+		})
 		// A harness the run is not configured for stops here, before any
 		// agent runs (AC7): a plan whose harnesses all lack their key as a
 		// missing credential, any other as an invalid model.
@@ -833,8 +842,8 @@ func ValidateReviewModels(models []string, build string) error {
 }
 
 // ValidateFixReviewModels reports whether models is a usable fix-review list:
-// empty, or each well formed and none repeated, and none the build model or one
-// of its fallbacks.
+// empty, or each well formed and none repeated, with at least one that is not
+// the build model or one of its fallbacks. Build drops the ones that are.
 func ValidateFixReviewModels(models []string, build string) error {
 	if len(models) == 0 {
 		return nil
@@ -842,25 +851,27 @@ func ValidateFixReviewModels(models []string, build string) error {
 	if err := validateModelList("fix-review", models); err != nil {
 		return err
 	}
-	return notBuilder("fix-review", models, build)
+	if !slices.ContainsFunc(models, func(m string) bool { return !runsBuild(m, build) }) {
+		return fmt.Errorf("every fix-review model of %q is the build model or one of its fallbacks", models)
+	}
+	return nil
 }
 
 // notBuilder reports a model of models that the build may run on. label names
 // the list in the error.
 func notBuilder(label string, models []string, build string) error {
-	// The build phase falls back along fallbackModels when its model is
-	// unavailable, so a review on one of them would still be the builder
-	// checking its own work.
-	builder := map[string]bool{build: true}
-	for _, m := range fallbackModels(build) {
-		builder[m] = true
-	}
 	for _, m := range models {
-		if builder[m] {
+		if runsBuild(m, build) {
 			return fmt.Errorf("%s model %q is the build model or one of its fallbacks", label, m)
 		}
 	}
 	return nil
+}
+
+// runsBuild reports whether model is one the build may run on: the build model,
+// or one of the fallbacks the build phase moves along when it is unavailable.
+func runsBuild(model, build string) bool {
+	return model == build || slices.Contains(fallbackModels(build), model)
 }
 
 // validateModelList reports whether models is a usable ordered list: at least

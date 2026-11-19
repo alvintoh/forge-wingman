@@ -386,7 +386,7 @@ func TestRefreshRetriedModelsCarriesANewLabelIntoTheClaim(t *testing.T) {
 			if err != nil || !awaiting {
 				t.Fatalf("awaiting = %v (err %v), want the retry waiting to be claimed", awaiting, err)
 			}
-			changed, err := q.RefreshRetriedModels(context.Background(), id, runner.ModelLabels{Build: mimo})
+			_, changed, err := q.RefreshRetriedModels(context.Background(), id, runner.ModelLabels{Build: mimo})
 			if err != nil || !changed {
 				t.Fatalf("changed = %v (err %v), want the new label stored", changed, err)
 			}
@@ -397,11 +397,11 @@ func TestRefreshRetriedModelsCarriesANewLabelIntoTheClaim(t *testing.T) {
 			if row[operatorNoteField] != "Keep the old flag name." || row[attemptField] != int64(3) {
 				t.Fatalf("row = %v, want the retry's note and attempt kept", row)
 			}
-			if again, _ := q.RefreshRetriedModels(context.Background(), id, runner.ModelLabels{Build: mimo}); again {
+			if _, again, _ := q.RefreshRetriedModels(context.Background(), id, runner.ModelLabels{Build: mimo}); again {
 				t.Fatal("an unchanged label was written again")
 			}
 			for _, m := range []runner.ModelLabels{{Build: mimo, Review: "command-code/r"}, {Build: mimo, Review: "command-code/r", Plan: []string{"command-code/p"}}} {
-				if changed, err := q.RefreshRetriedModels(context.Background(), id, m); err != nil || !changed {
+				if _, changed, err := q.RefreshRetriedModels(context.Background(), id, m); err != nil || !changed {
 					t.Fatalf("changed = %v (err %v) for %+v, want a new review or plan label stored", changed, err, m)
 				}
 			}
@@ -413,7 +413,7 @@ func TestRefreshRetriedModelsLeavesAnUnlabelledRetryOnTheDefault(t *testing.T) {
 	q, client := queue(t)
 	id := fresh("retry-models-none")
 	retried(t, q, client, id)
-	if changed, err := q.RefreshRetriedModels(context.Background(), id, runner.ModelLabels{}); err != nil || changed {
+	if _, changed, err := q.RefreshRetriedModels(context.Background(), id, runner.ModelLabels{}); err != nil || changed {
 		t.Fatalf("changed = %v (err %v), want nothing to change", changed, err)
 	}
 	if c := candidate(t, q, id); c.Model != "" || c.ModelsNamed {
@@ -451,7 +451,7 @@ func TestRetriedWritesLeaveARunThatIsNotARetryAlone(t *testing.T) {
 	if awaiting, err := q.RetryAwaitingClaim(ctx, id); err != nil || awaiting {
 		t.Fatalf("awaiting = %v (err %v), want a queued run no one retried left out", awaiting, err)
 	}
-	if changed, err := q.RefreshRetriedModels(ctx, id, runner.ModelLabels{Build: "command-code/x"}); err != nil || changed {
+	if _, changed, err := q.RefreshRetriedModels(ctx, id, runner.ModelLabels{Build: "command-code/x"}); err != nil || changed {
 		t.Fatalf("changed = %v (err %v), want its models left alone", changed, err)
 	}
 	if stopped, err := q.StopRetried(ctx, id, runner.StopModelRefused, "x", queueAt); err != nil || stopped {
@@ -462,5 +462,82 @@ func TestRetriedWritesLeaveARunThatIsNotARetryAlone(t *testing.T) {
 	}
 	if awaiting, err := q.RetryAwaitingClaim(ctx, fresh("retry-models-absent")); err != nil || awaiting {
 		t.Fatalf("awaiting = %v (err %v), want an absent run left out", awaiting, err)
+	}
+}
+
+func TestRefreshRetriedModelsKeepsTheModelAnEarlierClaimChose(t *testing.T) {
+	const chosen, named = "opencode-go/claude-haiku-5-5", "opencode-go/kimi-k3"
+	q, client := queue(t)
+	id := chosenRetry(t, q, client, "retry-models-chosen", chosen)
+	effective, changed, err := q.RefreshRetriedModels(context.Background(), id, runner.ModelLabels{})
+	if err != nil || changed || effective.Build != chosen {
+		t.Fatalf("labels = %+v, changed = %v (err %v), want the chosen model kept for a ticket naming none", effective, changed, err)
+	}
+	if c := candidate(t, q, id); c.Model != chosen {
+		t.Fatalf("candidate = %+v, want it to claim on the chosen %s", c, chosen)
+	}
+	effective, changed, err = q.RefreshRetriedModels(context.Background(), id, runner.ModelLabels{Build: named})
+	if err != nil || !changed || effective.Build != named {
+		t.Fatalf("labels = %+v, changed = %v (err %v), want the ticket's new label stored", effective, changed, err)
+	}
+	if c := candidate(t, q, id); c.Model != named {
+		t.Fatalf("candidate = %+v, want the ticket's %s to win", c, named)
+	}
+	effective, _, err = q.RefreshRetriedModels(context.Background(), id, runner.ModelLabels{})
+	if err != nil || effective.Build != "" {
+		t.Fatalf("labels = %+v (err %v), want no build model once the ticket's label is removed, so the claim chooses again", effective, err)
+	}
+}
+
+// chosenRetry seeds a stopped run whose earlier claim chose model, and retries
+// it, so it waits to be claimed with that model on its row.
+func chosenRetry(t *testing.T, q *Queue, client *firestore.Client, prefix, model string) string {
+	t.Helper()
+	id := fresh(prefix)
+	seedRow(t, client, id, retryRow(map[string]any{
+		modelLabelsField: map[string]any{"build": model}, chosenModelField: model,
+	}))
+	if _, err := q.RetryWithNote(context.Background(), id, retryReq(nil), queueAt.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = archiveRef(client.Collection(runsCollection).Doc(id), 2).Delete(context.Background()) })
+	return id
+}
+
+func TestClearChosenModelLetsTheNextClaimChooseAgain(t *testing.T) {
+	const chosen, named = "opencode-go/claude-haiku-5-5", "opencode-go/kimi-k3"
+	q, client := queue(t)
+	ctx := context.Background()
+	id := chosenRetry(t, q, client, "retry-clear-chosen", chosen)
+	if cleared, err := q.ClearChosenModel(ctx, id); err != nil || !cleared {
+		t.Fatalf("cleared = %v (err %v), want the chosen model dropped", cleared, err)
+	}
+	if row := readRow(t, client, id); row[chosenModelField] != nil || buildModel(row) != "" {
+		t.Fatalf("row = %v, want neither the marker nor the build label", row)
+	}
+	if c := candidate(t, q, id); c.Model != "" {
+		t.Fatalf("candidate = %+v, want no build model, so the claim chooses again", c)
+	}
+	if cleared, err := q.ClearChosenModel(ctx, id); err != nil || cleared {
+		t.Fatalf("cleared = %v (err %v) again, want nothing to clear", cleared, err)
+	}
+
+	// A label the ticket named since stays; the refresh already dropped the marker.
+	named2 := chosenRetry(t, q, client, "retry-clear-named", chosen)
+	if _, _, err := q.RefreshRetriedModels(ctx, named2, runner.ModelLabels{Build: named}); err != nil {
+		t.Fatal(err)
+	}
+	if cleared, err := q.ClearChosenModel(ctx, named2); err != nil || cleared {
+		t.Fatalf("cleared = %v (err %v), want no marker left once the ticket named a model", cleared, err)
+	}
+	if row := readRow(t, client, named2); row[chosenModelField] != nil || buildModel(row) != named {
+		t.Fatalf("row = %v, want the ticket's %s kept", row, named)
+	}
+
+	// A run that is not a retry waiting to be claimed is left alone.
+	other := fresh("retry-clear-other")
+	seedRow(t, client, other, retryRow(map[string]any{modelLabelsField: map[string]any{"build": chosen}, chosenModelField: chosen}))
+	if cleared, err := q.ClearChosenModel(ctx, other); err != nil || cleared {
+		t.Fatalf("cleared = %v (err %v), want a run no one retried left alone", cleared, err)
 	}
 }

@@ -73,9 +73,9 @@ func TestParseModelSetRejectsAnInvalidSet(t *testing.T) {
 		"malformed review": {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":["p/r",""]}`, "not provider/model"},
 		"foreign review":   {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":["p/r","q/r"]}`, "not a p model"},
 		"repeated review":  {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":["p/r","p/r"]}`, "listed twice"},
-		"fix-review is the default": {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":["p/r"],"fix_review":["p/a"]}`,
+		"fix-review is only the default": {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":["p/r"],"fix_review":["p/a"]}`,
 			"is the default or one of its fallbacks"},
-		"fix-review is a fallback": {`{"default":"p/a","fallbacks":["p/b"],"plan":"p/a","review":["p/r"],"fix_review":["p/b"]}`,
+		"fix-review is only the default and a fallback": {`{"default":"p/a","fallbacks":["p/b"],"plan":"p/a","review":["p/r"],"fix_review":["p/a","p/b"]}`,
 			"is the default or one of its fallbacks"},
 		"repeated fix-review": {`{"default":"p/a","fallbacks":[],"plan":"p/a","review":["p/r"],"fix_review":["p/h","p/h"]}`,
 			"listed twice"},
@@ -92,6 +92,13 @@ func TestParseModelSetRejectsAnInvalidSet(t *testing.T) {
 				t.Fatalf("err = %v, want one containing %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestParseModelSetAcceptsAFixReviewListThatFallsBackToTheDefault(t *testing.T) {
+	s, err := parseModelSet([]byte(`{"default":"p/a","fallbacks":[],"plan":"p/a","review":["p/r"],"fix_review":["p/h","p/a"]}`))
+	if err != nil || !slices.Equal(s.FixReview, []string{"p/h", "p/a"}) {
+		t.Fatalf("set = %+v, err = %v; want the default kept as the next fix reviewer", s, err)
 	}
 }
 
@@ -138,5 +145,13 @@ func TestTheDefaultPlanHasNoFreeRungAndOneReviewModel(t *testing.T) {
 	}
 	if review := DefaultReviewModels(); len(review) != 1 {
 		t.Fatalf("the review list names %d models (%v), want one", len(review), review)
+	}
+}
+
+func TestNoBuildCandidateStopsAtStartOnTheDefaultFixReviewers(t *testing.T) {
+	for _, model := range providers.BuildCandidates() {
+		if err := ValidateFixReviewModels(DefaultFixReviewModels(), model); err != nil {
+			t.Errorf("a build on %s would stop at start: %v", model, err)
+		}
 	}
 }

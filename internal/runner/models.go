@@ -70,9 +70,9 @@ func mustParseModelSet(b []byte) ModelSet {
 // Validate reports whether the set names well-formed models of one provider:
 // the default and its fallbacks, which must also be distinct, the plan default,
 // which may repeat one of them, a non-empty review list with no entry repeated,
-// and a fix-review list, which may be empty, with no entry repeated and none the
-// default or a fallback. A free id among them must be one a plan-smoke run has
-// proved.
+// and a fix-review list, which may be empty, with no entry repeated and at least
+// one entry neither the default nor a fallback, since a build drops those. A
+// free id among them must be one a plan-smoke run has proved.
 func (s ModelSet) Validate() error {
 	provider := Provider(s.Default)
 	seen := map[string]bool{}
@@ -103,10 +103,8 @@ func (s ModelSet) Validate() error {
 			return fmt.Errorf("model %q is not a %s model", m, provider)
 		}
 	}
-	for _, m := range s.FixReview {
-		if seen[m] {
-			return fmt.Errorf("fix-review model %q is the default or one of its fallbacks", m)
-		}
+	if len(s.FixReview) > 0 && !slices.ContainsFunc(s.FixReview, func(m string) bool { return !seen[m] }) {
+		return fmt.Errorf("every fix-review model of %q is the default or one of its fallbacks", s.FixReview)
 	}
 	if err := providers.CheckFreeIDs(slices.Concat([]string{s.Default, s.Plan}, s.Fallbacks, s.Review, s.FixReview)); err != nil {
 		return err

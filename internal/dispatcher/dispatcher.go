@@ -119,6 +119,9 @@ type Config struct {
 	// Plans are the plans the runner is configured to reach; a named model of
 	// any other provider is refused.
 	Plans []string
+	// BuildCandidates are the models a claim may give a run whose ticket named
+	// no build model; empty gives none, and every run builds on Model.
+	BuildCandidates []string
 	// PlanBudgets are the paid plans after Model's in the owner's order, whose
 	// ceilings judge the build of a run its plan stage claimed on one of them.
 	// A ceiling that binds never moves a run onto one.
@@ -220,6 +223,10 @@ type Deps struct {
 	OpenPoster func(ctx context.Context) (Poster, error)
 	// Plans is optional: left unset, no verdict is looked up.
 	Plans ProviderVerdicts
+	// ModelRecords is optional: left unset, a run whose ticket names no build
+	// model builds on the default rather than on the cheapest one that has
+	// passed the bar for its size.
+	ModelRecords ModelRecords
 	// Verdicts is optional: left unset, no verdict is written to the run.
 	Verdicts VerdictRecorder
 	// Reach is optional: left unset, no repository reachability is recorded.
@@ -352,8 +359,13 @@ type TicketRefresher interface {
 type RetriedModeler interface {
 	// RetryAwaitingClaim reports whether the run is an owner's retry waiting to be claimed.
 	RetryAwaitingClaim(ctx context.Context, runID string) (bool, error)
-	// RefreshRetriedModels sets the run's named models to m.
-	RefreshRetriedModels(ctx context.Context, runID string, m runner.ModelLabels) (bool, error)
+	// RefreshRetriedModels sets the run's named models to m, keeping the build
+	// model a claim chose where m names none, and returns the labels the run
+	// now holds.
+	RefreshRetriedModels(ctx context.Context, runID string, m runner.ModelLabels) (runner.ModelLabels, bool, error)
+	// ClearChosenModel drops the build model a claim chose for a retry waiting
+	// to be claimed, reporting whether it held one.
+	ClearChosenModel(ctx context.Context, runID string) (bool, error)
 	// StopRetried ends the attempt on reason, so a refused model never reaches a claim.
 	StopRetried(ctx context.Context, runID string, reason runner.StopReason, detail string, at time.Time) (bool, error)
 }
@@ -699,7 +711,10 @@ func admit(ctx context.Context, d Deps, c Config, issue Issue, res *Result) erro
 
 // refreshRetriedModels gives a retried run waiting to be claimed the models its
 // ticket names now, checked as admission checks them; any other run's plans are
-// not read again. A refusal ends that attempt
+// not read again. Where the ticket names no build model, the one an earlier claim
+// chose stays, even for a size the ticket has since changed, as a retry keeps
+// its first claim's model; it is checked too, and one admission refuses is
+// cleared so the claim chooses again. A refusal of the ticket's own models ends that attempt
 // and is recorded against the ticket as admission records one; the owner fixes
 // the label and retries again. A failed plan read leaves the run's models as they
 // were and holds the run from this poll's claim walk, so it never starts on a
@@ -726,14 +741,35 @@ func refreshRetriedModels(ctx context.Context, d Deps, c Config, issue Issue, ru
 		}
 		return refuse(ctx, d, rejection(issue, reason, detail, d.Now()), res)
 	}
-	changed, err := d.Queue.RefreshRetriedModels(ctx, runID, models)
+	effective, changed, err := d.Queue.RefreshRetriedModels(ctx, runID, models)
 	if err != nil {
 		return err
 	}
 	if changed {
-		d.Logger.Info("retriedModelsRefreshed", "run", runID, "build", models.Build)
+		d.Logger.Info("retriedModelsRefreshed", "run", runID, "build", effective.Build)
 	}
-	return nil
+	if models.Build != "" || effective.Build == "" {
+		return nil
+	}
+	// The build model an earlier claim chose is checked as a named one would be;
+	// one admission now refuses is dropped, so this claim chooses again.
+	reason, detail, err = checkModels(ctx, d.ModelPlans, effective, c.Model, c.Plans)
+	if err != nil {
+		d.Logger.Warn("retriedModelsUnchecked", "run", runID, "err", err.Error())
+		if res.unchecked == nil {
+			res.unchecked = map[string]bool{}
+		}
+		res.unchecked[runID] = true
+		return nil
+	}
+	if reason == "" {
+		return nil
+	}
+	cleared, err := d.Queue.ClearChosenModel(ctx, runID)
+	if cleared {
+		d.Logger.Info("chosenModelCleared", "run", runID, "model", effective.Build, "reason", string(reason), "detail", detail)
+	}
+	return err
 }
 
 // refuse records the refusal against its ticket.
@@ -852,6 +888,7 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 	// The plan's live usage is read at most once in the walk, and only when a
 	// candidate's own tier is that plan.
 	goUsageHeld := newGoUsageHold(ctx, d)
+	chooser := newModelChooser(ctx, d, c)
 	var claims []Claim
 	noticed := map[string]bool{}
 	for _, cand := range candidates {
@@ -887,6 +924,9 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		reservation := Reservation{ProviderCost: est.ProviderCost, Stage: stage, Files: cand.PlanFiles}
 		if cand.Private {
 			reservation.RunnerMinutes = est.Minutes
+		}
+		if chosen := chooser.choose(cand, stage, d.Now()); chosen != "" {
+			cand.Model, reservation.ChosenModel = chosen, chosen
 		}
 		tier := c.tierOf(cand, stage)
 		budget, candModel := tier.budget, tier.model

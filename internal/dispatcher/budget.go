@@ -109,6 +109,9 @@ type Reservation struct {
 	// of a build-stage claim, and empty for a plan-stage or single-stage
 	// one, which plans its own.
 	Files []string
+	// ChosenModel is the build model the claim records for a run whose ticket
+	// named none, empty to record none.
+	ChosenModel string
 }
 
 // Totals sums a set of reservations, or of settled runs, for one comparison.

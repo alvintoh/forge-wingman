@@ -117,6 +117,10 @@ const (
 	sizeField        = "size"
 	privateField     = "private"
 	modelLabelsField = "model_labels"
+	// chosenModelField is the build model a claim gave a run whose ticket named
+	// none, beside the build label it wrote, so a retry that refreshes the
+	// ticket's labels keeps it.
+	chosenModelField = "chosen_build_model"
 	verdictField     = "provider_verdict"
 	ticketIDField    = "ticket_id"
 	outcomeField     = "outcome"
@@ -1089,6 +1093,13 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 		}
 		if res.Stage != dispatcher.StageBuild {
 			updates = append(updates, firestore.Update{Path: planField, Value: runner.Provider(facts.Model)})
+		}
+		// A row that already names a build model keeps it: the ticket's own
+		// label, or the model an earlier claim of the run chose.
+		if res.ChosenModel != "" && buildModel(data) == "" {
+			updates = append(updates,
+				firestore.Update{FieldPath: firestore.FieldPath{modelLabelsField, "build"}, Value: res.ChosenModel},
+				firestore.Update{Path: chosenModelField, Value: res.ChosenModel})
 		}
 		if err := tx.Update(rowRef, updates); err != nil {
 			return err
