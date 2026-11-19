@@ -213,7 +213,7 @@ func recordPlanStage(ctx context.Context, logger *slog.Logger, e env, args []str
 	if err != nil {
 		return fmt.Errorf("google credentials: %w", err)
 	}
-	if err := (webhook.Job{RunURI: *dispatcherURI, Client: client}).Wake(ctx); err != nil {
+	if err := wakeAfterPlan(ctx, logger, webhook.Job{RunURI: *dispatcherURI, Client: client, Requests: store.NewPollClock(fsc)}, *runID); err != nil {
 		return err
 	}
 	if plan.Decision != nil {

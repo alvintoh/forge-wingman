@@ -360,3 +360,223 @@ func TestAdoptRunsAtOnceLogsAnAdoptionItCouldNotMake(t *testing.T) {
 		t.Fatalf("no runsAtOnceNotAdopted line in:\n%s", logs.String())
 	}
 }
+
+// stubPollInterval is the owner's interval as a tick reads it, in minutes.
+type stubPollInterval = stubRunsPerRepo
+
+// fakePollClock is the dispatch/poll document in memory, stamping with the time
+// now holds, as Firestore stamps with its own.
+type fakePollClock struct {
+	now     time.Time
+	times   dispatcher.PollTimes
+	readErr error
+	markErr error
+	// marks is each stamp's scheduled flag, in order.
+	marks []bool
+}
+
+func (f *fakePollClock) Times(context.Context) (dispatcher.PollTimes, error) {
+	return f.times, f.readErr
+}
+
+func (f *fakePollClock) MarkPolled(_ context.Context, scheduled bool) error {
+	f.marks = append(f.marks, scheduled)
+	if f.markErr != nil {
+		return f.markErr
+	}
+	f.times.LastPoll = f.now
+	if scheduled {
+		f.times.LastScheduled = f.now
+	}
+	return nil
+}
+
+var pollT0 = time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
+
+// minutesIn is pollT0 plus m minutes.
+func minutesIn(m float64) time.Time { return pollT0.Add(time.Duration(m * float64(time.Minute))) }
+
+// execute starts one execution at at, whose setup succeeds, reporting whether
+// it polled and what it logged.
+func execute(t *testing.T, clock *fakePollClock, interval settingReader, at time.Time) (bool, string) {
+	t.Helper()
+	var logs strings.Builder
+	clock.now = at
+	polled := false
+	err := gatedPoll(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), interval, clock, at,
+		func(context.Context) (func(context.Context) error, error) {
+			return func(context.Context) error { polled = true; return nil }, nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return polled, logs.String()
+}
+
+// execution is one dispatcher execution on a simulated timeline: a scheduled
+// tick starting at minute at, or a wake recorded at minute at whose execution
+// starts 30 seconds later.
+type execution struct {
+	at   float64
+	wake bool
+	want bool
+}
+
+// simulate runs every execution in order against one poll clock, failing on
+// the first that polls when it should not, or does not when it should.
+func simulate(t *testing.T, minutes int, executions []execution) {
+	t.Helper()
+	clock := &fakePollClock{}
+	for _, e := range executions {
+		start := minutesIn(e.at)
+		if e.wake {
+			clock.times.WakeRequested = start
+			start = start.Add(30 * time.Second)
+		}
+		if polled, logs := execute(t, clock, stubPollInterval{value: minutes}, start); polled != e.want {
+			t.Fatalf("%+v polled = %v, want %v:\n%s", e, polled, e.want, logs)
+		}
+	}
+}
+
+// TestAFifteenMinuteSettingPollsEveryTickOfAFifteenMinuteSchedule: a wake poll
+// between ticks never delays the next tick, and a tick that starts up slowly
+// followed by one that starts up fast still both poll.
+func TestAFifteenMinuteSettingPollsEveryTickOfAFifteenMinuteSchedule(t *testing.T) {
+	simulate(t, 15, []execution{
+		{at: 0, want: true},
+		{at: 5, wake: true, want: true},
+		{at: 16, want: true},
+		{at: 18, wake: true, want: true},
+		{at: 32, want: true},
+		{at: 45, want: true},
+		{at: 60, wake: true, want: true},
+		{at: 60, want: true},
+	})
+}
+
+// TestATenMinuteSettingPollsEveryTickOfATenMinuteSchedule keeps the behaviour
+// of a schedule as long as the interval, start-up jitter and a wake included.
+func TestATenMinuteSettingPollsEveryTickOfATenMinuteSchedule(t *testing.T) {
+	simulate(t, 10, []execution{
+		{at: 0, want: true},
+		{at: 10.5, want: true},
+		{at: 14, wake: true, want: true},
+		{at: 19, want: true},
+		{at: 30, want: true},
+		{at: 41.5, want: true},
+		{at: 50, want: true},
+	})
+}
+
+// TestAFifteenMinuteSettingPollsEveryOtherTickOfATenMinuteSchedule: a wake in
+// between polls at once and does not move which ticks poll.
+func TestAFifteenMinuteSettingPollsEveryOtherTickOfATenMinuteSchedule(t *testing.T) {
+	simulate(t, 15, []execution{
+		{at: 0, want: true},
+		{at: 10.5, want: false},
+		{at: 12, wake: true, want: true},
+		{at: 20, want: true},
+		{at: 31, want: false},
+		{at: 40, want: true},
+		{at: 50, want: false},
+	})
+}
+
+// TestAnEarlyTickReadsAndStops is a scheduled tick before the interval has
+// passed: it reads the interval and the poll times, then neither sets up nor
+// stamps.
+func TestAnEarlyTickReadsAndStops(t *testing.T) {
+	clock := &fakePollClock{times: dispatcher.PollTimes{LastPoll: minutesIn(0), LastScheduled: minutesIn(0)}}
+	setups := 0
+	err := gatedPoll(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)), stubPollInterval{value: 15}, clock, minutesIn(10),
+		func(context.Context) (func(context.Context) error, error) {
+			setups++
+			return func(context.Context) error { return nil }, nil
+		})
+	if err != nil || setups != 0 || len(clock.marks) != 0 {
+		t.Fatalf("err = %v, %d setups, %d stamps, want a stop that sets up and stamps nothing", err, setups, len(clock.marks))
+	}
+}
+
+// TestAPollWhoseSetupFailsStampsNothing keeps a wake recorded before a failed
+// setup pending, so the next execution still polls for it.
+func TestAPollWhoseSetupFailsStampsNothing(t *testing.T) {
+	clock := &fakePollClock{times: dispatcher.PollTimes{LastPoll: minutesIn(0), LastScheduled: minutesIn(0), WakeRequested: minutesIn(5)}}
+	clock.now = minutesIn(5.5)
+	err := gatedPoll(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)), stubPollInterval{value: 15}, clock, minutesIn(5.5),
+		func(context.Context) (func(context.Context) error, error) {
+			return nil, errors.New("secret manager unavailable")
+		})
+	if err == nil || len(clock.marks) != 0 {
+		t.Fatalf("err = %v, %d stamps, want the setup's error and no stamp", err, len(clock.marks))
+	}
+	if polled, _ := execute(t, clock, stubPollInterval{value: 15}, minutesIn(6)); !polled {
+		t.Fatal("the next execution did not poll for the pending wake")
+	}
+}
+
+// TestAPollIsStampedAfterSetupAndBeforeItReads covers the stamp's place and
+// kind: a tick's poll is a scheduled one, a wake's is not.
+func TestAPollIsStampedAfterSetupAndBeforeItReads(t *testing.T) {
+	for name, tt := range map[string]struct {
+		times     dispatcher.PollTimes
+		scheduled bool
+	}{
+		"a tick": {dispatcher.PollTimes{LastPoll: minutesIn(0), LastScheduled: minutesIn(0)}, true},
+		"a wake": {dispatcher.PollTimes{LastPoll: minutesIn(0), LastScheduled: minutesIn(0), WakeRequested: minutesIn(3)}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			clock := &fakePollClock{times: tt.times, now: minutesIn(15)}
+			var atSetup, atPoll int
+			err := gatedPoll(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)), stubPollInterval{value: 15}, clock, minutesIn(15),
+				func(context.Context) (func(context.Context) error, error) {
+					atSetup = len(clock.marks)
+					return func(context.Context) error { atPoll = len(clock.marks); return nil }, nil
+				})
+			if err != nil || atSetup != 0 || atPoll != 1 || clock.marks[0] != tt.scheduled {
+				t.Fatalf("err = %v, stamps at setup %d, at poll %d, marks %v, want 0, 1 and scheduled %v",
+					err, atSetup, atPoll, clock.marks, tt.scheduled)
+			}
+		})
+	}
+}
+
+// TestAnUnreadableIntervalIsFifteenMinutes covers an interval that cannot be
+// read, or reads as one the owner could not save.
+func TestAnUnreadableIntervalIsFifteenMinutes(t *testing.T) {
+	for name, interval := range map[string]settingReader{
+		"unreadable":   stubPollInterval{err: errors.New("no document")},
+		"not 10 or 15": stubPollInterval{value: 5},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ten := &fakePollClock{times: dispatcher.PollTimes{LastPoll: minutesIn(0), LastScheduled: minutesIn(0)}}
+			if polled, logs := execute(t, ten, interval, minutesIn(10)); polled || !strings.Contains(logs, "pollIntervalNotRead") {
+				t.Fatalf("polled = %v ten minutes on, want a stop logged as pollIntervalNotRead:\n%s", polled, logs)
+			}
+			fifteen := &fakePollClock{times: dispatcher.PollTimes{LastPoll: minutesIn(0), LastScheduled: minutesIn(0)}}
+			if polled, _ := execute(t, fifteen, interval, minutesIn(15)); !polled {
+				t.Fatal("no poll fifteen minutes on")
+			}
+		})
+	}
+}
+
+// TestUnreadablePollTimesPollAsAWake keeps the behaviour from before the
+// setting, without letting a poll it cannot classify delay the next tick.
+func TestUnreadablePollTimesPollAsAWake(t *testing.T) {
+	clock := &fakePollClock{times: dispatcher.PollTimes{LastPoll: minutesIn(0), LastScheduled: minutesIn(0)}, readErr: errors.New("unavailable")}
+	polled, logs := execute(t, clock, stubPollInterval{value: 15}, minutesIn(1))
+	if !polled || !strings.Contains(logs, "pollTimesNotRead") || len(clock.marks) != 1 || clock.marks[0] {
+		t.Fatalf("polled = %v, marks %v, want a poll stamped as not scheduled:\n%s", polled, clock.marks, logs)
+	}
+}
+
+// TestAPollWhoseStartCannotBeStampedStillPolls: the next tick may then poll
+// early, which costs less than a skipped poll.
+func TestAPollWhoseStartCannotBeStampedStillPolls(t *testing.T) {
+	clock := &fakePollClock{markErr: errors.New("unavailable")}
+	if polled, logs := execute(t, clock, stubPollInterval{value: 15}, minutesIn(0)); !polled || !strings.Contains(logs, "pollStartNotRecorded") {
+		t.Fatalf("polled = %v, want a poll logged as pollStartNotRecorded:\n%s", polled, logs)
+	}
+}

@@ -160,7 +160,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 	})
 	mux.Handle("POST /linear", newLinearHandler(fsc, webhook.NewSecret(webhookSecret, signing, func(ctx context.Context) (string, error) {
 		return secrets.Token(ctx, webhookSecret)
-	}, time.Now, logger), sessions, webhook.Job{RunURI: c.runURI, Client: gcp}, logger))
+	}, time.Now, logger), sessions, webhook.Job{RunURI: c.runURI, Client: gcp, Requests: store.NewPollClock(fsc)}, logger))
 	srv := &http.Server{
 		Addr:              ":" + c.port,
 		Handler:           mux,

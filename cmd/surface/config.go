@@ -1,10 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
-	"time"
 
 	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 	"github.com/alvintoh/forge-wingman/internal/providers"
@@ -31,14 +31,14 @@ type configConcurrency struct {
 	ReviewWIP int `json:"review_wip"`
 	// PlatformCap is the concurrent jobs the platform allows one account.
 	PlatformCap int `json:"platform_cap"`
-	// PollMinutes is the dispatcher's scheduled poll period.
+	// PollMinutes is the interval a scheduled tick waits after the last poll.
 	PollMinutes int `json:"poll_minutes"`
 }
 
 // config serves GET /api/config. The concurrency settings are the dispatcher's
-// own WINGMAN_ variables, which this service is deployed with too; a nil Getenv
-// reads the process environment.
-func (d Deps) config(w http.ResponseWriter, _ *http.Request) {
+// own WINGMAN_ variables, which this service is deployed with too, and the poll
+// interval is the owner's saved one; a nil Getenv reads the process environment.
+func (d Deps) config(w http.ResponseWriter, r *http.Request) {
 	getenv := d.Getenv
 	if getenv == nil {
 		getenv = os.Getenv
@@ -60,8 +60,22 @@ func (d Deps) config(w http.ResponseWriter, _ *http.Request) {
 		Concurrency: configConcurrency{
 			ReviewWIP:   limits.ReviewWIP,
 			PlatformCap: limits.PlatformCap,
-			PollMinutes: int(dispatcher.PollInterval / time.Minute),
+			PollMinutes: d.pollMinutes(r.Context()),
 		},
 		PeakWindows: peakModels(providers.RunModels()),
 	})
+}
+
+// pollMinutes is the interval the dispatcher polls on: the owner's saved one,
+// or the default it falls back to while there is no store or none can be read.
+func (d Deps) pollMinutes(ctx context.Context) int {
+	if d.PollInterval == nil {
+		return dispatcher.DefaultPollMinutes
+	}
+	n, err := d.PollInterval.Value(ctx)
+	if err != nil {
+		d.Logger.Warn("pollIntervalNotRead", "err", err.Error(), "poll_minutes", dispatcher.DefaultPollMinutes)
+		return dispatcher.DefaultPollMinutes
+	}
+	return n
 }

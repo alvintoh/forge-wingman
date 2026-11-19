@@ -66,6 +66,7 @@ func run(logger *slog.Logger) error {
 	var progress ProgressReader
 	var retries RunRetries
 	var runsCap RunsPerRepoStore
+	var pollInterval PollIntervalStore
 	var runsAtOnce RunsAtOnceStore
 	var recommender RunsAtOnceRecommender
 	var concurrency ConcurrencyReader
@@ -98,6 +99,7 @@ func run(logger *slog.Logger) error {
 			Adds: store.NewProjects(owner), Names: store.NewProjectNames(fsc),
 		}
 		runsCap = store.NewRunsPerRepo(owner)
+		pollInterval = store.NewPollInterval(owner)
 		runsAtOnce = store.NewRunsAtOnce(owner)
 		gcs, err := storage.NewClient(context.Background())
 		if err != nil {
@@ -117,27 +119,28 @@ func run(logger *slog.Logger) error {
 	}
 
 	deps := Deps{
-		SPA:         spa,
-		Logger:      logger,
-		Comparison:  comparison,
-		Measured:    measured,
-		Peak:        peak,
-		AutoMerge:   autoMerge,
-		Projects:    projects,
-		Inbox:       inbox,
-		Runs:        runs,
-		Cancels:     cancels,
-		History:     history,
-		RunSuccess:  success,
-		Running:     running,
-		Progress:    progress,
-		Retries:     retries,
-		Merger:      merger,
-		Pulls:       pulls,
-		RepoCap:     runsCap,
-		RunsAtOnce:  runsAtOnce,
-		Recommend:   recommender,
-		Concurrency: concurrency,
+		SPA:          spa,
+		Logger:       logger,
+		Comparison:   comparison,
+		Measured:     measured,
+		Peak:         peak,
+		AutoMerge:    autoMerge,
+		Projects:     projects,
+		Inbox:        inbox,
+		Runs:         runs,
+		Cancels:      cancels,
+		History:      history,
+		RunSuccess:   success,
+		Running:      running,
+		Progress:     progress,
+		Retries:      retries,
+		Merger:       merger,
+		Pulls:        pulls,
+		RepoCap:      runsCap,
+		PollInterval: pollInterval,
+		RunsAtOnce:   runsAtOnce,
+		Recommend:    recommender,
+		Concurrency:  concurrency,
 	}
 
 	handler, err := gate(context.Background(), logger, newMux(deps))
@@ -191,13 +194,16 @@ type Deps struct {
 	RunSuccess RunSuccessReader
 	Running    RunningReader
 	// Progress reads the runs in flight's progress; nil serves every run's as null.
-	Progress   ProgressReader
-	Retries    RunRetries
-	Merger     PRMerger
-	Pulls      PullLister
-	RepoCap    RunsPerRepoStore
-	RunsAtOnce RunsAtOnceStore
-	Recommend  RunsAtOnceRecommender
+	Progress ProgressReader
+	Retries  RunRetries
+	Merger   PRMerger
+	Pulls    PullLister
+	RepoCap  RunsPerRepoStore
+	// PollInterval is the owner's poll interval; the configuration endpoint
+	// reports the default without it.
+	PollInterval PollIntervalStore
+	RunsAtOnce   RunsAtOnceStore
+	Recommend    RunsAtOnceRecommender
 	// Concurrency reads the peak in flight and the held runs; the concurrency
 	// endpoint needs RepoCap beside it.
 	Concurrency ConcurrencyReader
@@ -224,6 +230,8 @@ func newMux(d Deps) *http.ServeMux {
 	mux.HandleFunc("POST /api/auto-merge", d.setAutoMerge)
 	mux.HandleFunc("GET /api/runs-per-repo", d.runsPerRepo)
 	mux.HandleFunc("POST /api/runs-per-repo", d.setRunsPerRepo)
+	mux.HandleFunc("GET /api/poll-interval", d.pollInterval)
+	mux.HandleFunc("POST /api/poll-interval", d.setPollInterval)
 	mux.HandleFunc("GET /api/runs-at-once", d.runsAtOnce)
 	mux.HandleFunc("POST /api/runs-at-once", d.setRunsAtOnce)
 	mux.HandleFunc("GET /api/projects", d.projects)

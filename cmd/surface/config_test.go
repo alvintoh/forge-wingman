@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -38,6 +39,30 @@ func TestConfigServesTheDefaultsForAnEmptyEnvironment(t *testing.T) {
 	got := decodeConfig(t, getConfig(t, nil)).Concurrency
 	if want := (configConcurrency{ReviewWIP: 3, PlatformCap: 20, PollMinutes: 15}); got != want {
 		t.Fatalf("concurrency = %+v, want %+v", got, want)
+	}
+}
+
+// configWith reads the configuration through the endpoint with interval as
+// the owner's poll interval store.
+func configWith(t *testing.T, interval PollIntervalStore) configConcurrency {
+	t.Helper()
+	mux := newMux(Deps{SPA: fstest.MapFS{}, Logger: discardLogger(), Getenv: func(string) string { return "" }, PollInterval: interval})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	return decodeConfig(t, rec).Concurrency
+}
+
+func TestConfigServesTheSavedPollInterval(t *testing.T) {
+	if got := configWith(t, &stubPollInterval{n: 10}).PollMinutes; got != 10 {
+		t.Fatalf("poll minutes = %d, want the saved 10", got)
+	}
+}
+
+// TestConfigServesFifteenWhenThePollIntervalCannotBeRead reports the interval
+// the dispatcher falls back to rather than failing the whole configuration.
+func TestConfigServesFifteenWhenThePollIntervalCannotBeRead(t *testing.T) {
+	if got := configWith(t, &stubPollInterval{readErr: errors.New("no document")}).PollMinutes; got != 15 {
+		t.Fatalf("poll minutes = %d, want the fallback 15", got)
 	}
 }
 

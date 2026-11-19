@@ -209,6 +209,81 @@ func ownerRunsPerRepo(ctx context.Context, logger *slog.Logger, reader settingRe
 	return held
 }
 
+// pollClock is the record of the last polls and the last wake request as an
+// execution reads and stamps it.
+type pollClock interface {
+	Times(ctx context.Context) (dispatcher.PollTimes, error)
+	MarkPolled(ctx context.Context, scheduled bool) error
+}
+
+// ownerPollInterval reads the owner's interval once. One that cannot be read,
+// or is not an interval the owner may save, is the default 15 minutes, so the
+// dispatcher never polls less often than it did before the setting existed.
+func ownerPollInterval(ctx context.Context, logger *slog.Logger, reader settingReader) time.Duration {
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+	n, err := reader.Value(ctx)
+	if err == nil && !dispatcher.ValidPollMinutes(n) {
+		err = fmt.Errorf("%d is not an interval the owner may save", n)
+	}
+	if err != nil {
+		logger.Warn("pollIntervalNotRead", "err", err.Error(), "poll_minutes", dispatcher.DefaultPollMinutes)
+		n = dispatcher.DefaultPollMinutes
+	}
+	return time.Duration(n) * time.Minute
+}
+
+// decidePoll decides this execution, reading nothing but the owner's interval
+// and the poll times. A wake always polls; a scheduled tick polls only once the
+// interval has passed since the last scheduled poll. Poll times that cannot be
+// read let the execution poll, as every one did before the setting existed, as
+// a wake's poll, so it never delays the next tick.
+func decidePoll(ctx context.Context, logger *slog.Logger, interval settingReader, clock pollClock, now time.Time) dispatcher.PollStart {
+	every := ownerPollInterval(ctx, logger, interval)
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+	times, err := clock.Times(ctx)
+	start := dispatcher.PollDue(times, every, now)
+	if err != nil {
+		logger.Warn("pollTimesNotRead", "err", err.Error())
+		start = dispatcher.PollStart{Due: true, Reason: "poll-times-unread"}
+	}
+	minutes := int(every / time.Minute)
+	if !start.Due {
+		logger.Info("pollSkipped", "reason", start.Reason, "last_scheduled_poll", times.LastScheduled, "poll_minutes", minutes)
+		return start
+	}
+	logger.Info("pollStarting", "reason", start.Reason, "scheduled", start.Scheduled, "poll_minutes", minutes)
+	return start
+}
+
+// pollSetup readies a poll after the decision to make one: the credentials and
+// clients it needs, returning the poll itself.
+type pollSetup func(ctx context.Context) (func(ctx context.Context) error, error)
+
+// gatedPoll runs one execution: decide, set up, stamp, poll. The stamp comes
+// after setup and just before the poll's first read, so a poll whose setup
+// fails stamps nothing and leaves every wake recorded before it pending for the
+// next execution, while a wake recorded before the stamp is one the poll's reads
+// cover. A stamp that cannot be written is logged and the poll goes ahead.
+func gatedPoll(ctx context.Context, logger *slog.Logger, interval settingReader, clock pollClock, now time.Time, setup pollSetup) error {
+	start := decidePoll(ctx, logger, interval, clock, now)
+	if !start.Due {
+		return nil
+	}
+	poll, err := setup(ctx)
+	if err != nil {
+		return err
+	}
+	stampCtx, cancel := context.WithTimeout(ctx, requestTimeout)
+	err = clock.MarkPolled(stampCtx, start.Scheduled)
+	cancel()
+	if err != nil {
+		logger.Warn("pollStartNotRecorded", "err", err.Error())
+	}
+	return poll(ctx)
+}
+
 // runsAtOnceAdopter makes the owner's N the one admission claims under.
 type runsAtOnceAdopter interface {
 	AdoptRunsAtOnce(ctx context.Context, n int) error
@@ -247,26 +322,13 @@ func slackPoster(token func(context.Context, string) (string, error), client *ht
 	}
 }
 
-// run polls once: the schedule starts the job, and one execution is one poll.
+// run polls once, unless a scheduled tick comes before the owner's interval has
+// passed: the schedule and every wake start the job, and one execution is at
+// most one poll.
 func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) error {
 	started := time.Now()
 	logger.Info("dispatcherStarted")
 	c, err := loadConfig(getenv)
-	if err != nil {
-		return err
-	}
-	secretsClient, err := secretmanager.NewClient(ctx)
-	if err != nil {
-		return fmt.Errorf("secret manager client: %w", err)
-	}
-	defer func() { _ = secretsClient.Close() }()
-	secrets := dispatcher.NewSecrets(c.project, secretsClient)
-	client := &http.Client{Timeout: requestTimeout}
-	creds, err := linear.ReadCredentials(ctx, linear.DispatchApp, secrets.Token, client)
-	if err != nil {
-		return err
-	}
-	githubToken, err := secrets.Token(ctx, githubTokenSecret)
 	if err != nil {
 		return err
 	}
@@ -275,84 +337,110 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		return fmt.Errorf("firestore client: %w", err)
 	}
 	defer func() { _ = fsc.Close() }()
-	tokens := linear.NewPollSource(creds)
-	defer func() {
-		start := time.Now()
-		linear.RevokeAll(ctx, tokens, logger)
-		dispatcher.LogPhase(logger, "revoke", start, time.Now())
-	}()
 	owner, err := firestore.NewClientWithDatabase(ctx, c.project, store.OwnerDatabase)
 	if err != nil {
 		return fmt.Errorf("owner database client: %w", err)
 	}
 	defer func() { _ = owner.Close() }()
-	repos, reposErr := ownerRepositories(ctx, owner)
-	c.limits.RepoCap = ownerRunsPerRepo(ctx, logger, store.NewRunsPerRepo(owner))
-	dispatcher.LogPhase(logger, "setup", started, time.Now())
-	gh := dispatcher.GitHub{Token: githubToken, Workflow: runWorkflow, Branch: runBranch, Client: client}
-	queue := store.NewQueue(fsc).WithLogger(logger)
-	adoptRunsAtOnce(ctx, logger, store.NewRunsAtOnce(owner), queue, c.limits.OrDefault().PlatformCap)
-	plans := store.NewPlans(fsc)
-	model := runner.DefaultModel()
-	others, err := planBudgets(providers.PaidPlans(), model)
-	if err != nil {
-		return err
-	}
-	tickets := dispatcher.Linear{Tokens: tokens, Delegate: c.delegate, Client: client}
-	if _, err := dispatcher.Poll(ctx, dispatcher.Deps{
-		Source: tickets,
-		// The same client moves a claimed ticket In Progress and puts it back
-		// when a requeue or an abandon undoes the claim.
-		TicketStates: tickets,
-		Queue:        queue,
-		Verdicts:     queue,
-		Reach:        store.NewReaches(fsc),
-		Holds:        queue,
-		// The projects the owner may add are read as the agent the poll acts for,
-		// and recorded where the surface reads them without a Linear credential.
-		LinearProjects: tickets,
-		ProjectRecords: store.NewProjectNames(fsc),
-		ProjectPhases: dispatcher.ProjectPhaseDeps{
-			Projects:  store.NewPhases(owner),
-			Snapshots: store.NewPhaseSnapshots(fsc),
-			Runs:      queue,
-			Issues:    tickets,
-			Closures:  queue,
-		},
-		Estimator:  store.NewEstimates(fsc),
-		Visibility: gh,
-		Providers:  store.NewProviders(fsc),
-		// Admission reads the OpenCode Go plan's live windows with the key the
-		// runs bill against, held in Secret Manager rather than the environment.
-		GoUsage: dispatcher.GoUsageClient{
-			Token:  func(ctx context.Context) (string, error) { return secrets.Token(ctx, goUsageKeySecret) },
-			Client: client,
-		},
-		Breaker:    store.NewBreaker(fsc),
-		Phases:     store.NewPhases(owner),
-		PeakModes:  store.NewPeakModes(fsc),
-		Notices:    store.NewNotices(fsc),
-		OpenPoster: slackPoster(secrets.Token, client),
-		Plans:      plans,
-		ModelPlans: plans,
-		Overrides:  dispatcher.LabelOverrides{},
-		Workflow:   gh,
-		OpenPRs:    gh,
-		// The rewrite rate is measured from the same GitHub the dispatch uses,
-		// and recorded on the run rows the queue holds.
-		PullRequests: gh,
-		Rewrites:     store.NewRewrites(fsc),
-		Escapes:      store.NewAutoMergeSwitches(fsc),
-		Checks:       dispatcher.ChecksDeps{Runs: store.NewChecks(fsc), GitHub: gh, Branch: runBranch},
-		RulesetMarks: store.NewRulesetMarks(fsc),
-		Decisions:    queue,
-		Elicit:       webhook.Linear{Tokens: tokens},
-		Logger:       logger,
-		Now:          time.Now,
-	}, dispatcher.Config{Repos: repos, ReposErr: reposErr, Budget: budgetConfig(runner.Provider(model)), Model: model, Plans: providers.Plans(), PlanBudgets: others, Limits: c.limits, Tuning: c.tuning, LastResortPlans: lastResortPlans(), TwoStage: c.twoStage, DecisionTimeout: c.decisionTimeout, DecisionMode: c.decisionMode}); err != nil {
-		return err
-	}
-	return nil
+	// The setup's clients outlive it, into the poll, so they close as run returns.
+	var secretsClient *secretmanager.Client
+	defer func() {
+		if secretsClient != nil {
+			_ = secretsClient.Close()
+		}
+	}()
+	var tokens *linear.PollSource
+	defer func() {
+		if tokens != nil {
+			start := time.Now()
+			linear.RevokeAll(ctx, tokens, logger)
+			dispatcher.LogPhase(logger, "revoke", start, time.Now())
+		}
+	}()
+	return gatedPoll(ctx, logger, store.NewPollInterval(owner), store.NewPollClock(fsc), started, func(ctx context.Context) (func(context.Context) error, error) {
+		var err error
+		if secretsClient, err = secretmanager.NewClient(ctx); err != nil {
+			return nil, fmt.Errorf("secret manager client: %w", err)
+		}
+		secrets := dispatcher.NewSecrets(c.project, secretsClient)
+		client := &http.Client{Timeout: requestTimeout}
+		creds, err := linear.ReadCredentials(ctx, linear.DispatchApp, secrets.Token, client)
+		if err != nil {
+			return nil, err
+		}
+		githubToken, err := secrets.Token(ctx, githubTokenSecret)
+		if err != nil {
+			return nil, err
+		}
+		tokens = linear.NewPollSource(creds)
+		repos, reposErr := ownerRepositories(ctx, owner)
+		c.limits.RepoCap = ownerRunsPerRepo(ctx, logger, store.NewRunsPerRepo(owner))
+		dispatcher.LogPhase(logger, "setup", started, time.Now())
+		gh := dispatcher.GitHub{Token: githubToken, Workflow: runWorkflow, Branch: runBranch, Client: client}
+		queue := store.NewQueue(fsc).WithLogger(logger)
+		adoptRunsAtOnce(ctx, logger, store.NewRunsAtOnce(owner), queue, c.limits.OrDefault().PlatformCap)
+		plans := store.NewPlans(fsc)
+		model := runner.DefaultModel()
+		others, err := planBudgets(providers.PaidPlans(), model)
+		if err != nil {
+			return nil, err
+		}
+		tickets := dispatcher.Linear{Tokens: tokens, Delegate: c.delegate, Client: client}
+		return func(ctx context.Context) error {
+			_, err := dispatcher.Poll(ctx, dispatcher.Deps{
+				Source: tickets,
+				// The same client moves a claimed ticket In Progress and puts it back
+				// when a requeue or an abandon undoes the claim.
+				TicketStates: tickets,
+				Queue:        queue,
+				Verdicts:     queue,
+				Reach:        store.NewReaches(fsc),
+				Holds:        queue,
+				// The projects the owner may add are read as the agent the poll acts for,
+				// and recorded where the surface reads them without a Linear credential.
+				LinearProjects: tickets,
+				ProjectRecords: store.NewProjectNames(fsc),
+				ProjectPhases: dispatcher.ProjectPhaseDeps{
+					Projects:  store.NewPhases(owner),
+					Snapshots: store.NewPhaseSnapshots(fsc),
+					Runs:      queue,
+					Issues:    tickets,
+					Closures:  queue,
+				},
+				Estimator:  store.NewEstimates(fsc),
+				Visibility: gh,
+				Providers:  store.NewProviders(fsc),
+				// Admission reads the OpenCode Go plan's live windows with the key the
+				// runs bill against, held in Secret Manager rather than the environment.
+				GoUsage: dispatcher.GoUsageClient{
+					Token:  func(ctx context.Context) (string, error) { return secrets.Token(ctx, goUsageKeySecret) },
+					Client: client,
+				},
+				Breaker:    store.NewBreaker(fsc),
+				Phases:     store.NewPhases(owner),
+				PeakModes:  store.NewPeakModes(fsc),
+				Notices:    store.NewNotices(fsc),
+				OpenPoster: slackPoster(secrets.Token, client),
+				Plans:      plans,
+				ModelPlans: plans,
+				Overrides:  dispatcher.LabelOverrides{},
+				Workflow:   gh,
+				OpenPRs:    gh,
+				// The rewrite rate is measured from the same GitHub the dispatch uses,
+				// and recorded on the run rows the queue holds.
+				PullRequests: gh,
+				Rewrites:     store.NewRewrites(fsc),
+				Escapes:      store.NewAutoMergeSwitches(fsc),
+				Checks:       dispatcher.ChecksDeps{Runs: store.NewChecks(fsc), GitHub: gh, Branch: runBranch},
+				RulesetMarks: store.NewRulesetMarks(fsc),
+				Decisions:    queue,
+				Elicit:       webhook.Linear{Tokens: tokens},
+				Logger:       logger,
+				Now:          time.Now,
+			}, dispatcher.Config{Repos: repos, ReposErr: reposErr, Budget: budgetConfig(runner.Provider(model)), Model: model, Plans: providers.Plans(), PlanBudgets: others, Limits: c.limits, Tuning: c.tuning, LastResortPlans: lastResortPlans(), TwoStage: c.twoStage, DecisionTimeout: c.decisionTimeout, DecisionMode: c.decisionMode})
+			return err
+		}, nil
+	})
 }
 
 // planBudgets is every paid plan after the default model's in order, each with
