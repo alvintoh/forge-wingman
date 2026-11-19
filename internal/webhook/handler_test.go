@@ -129,6 +129,53 @@ func (w loggingWaker) Wake(context.Context) error {
 	return nil
 }
 
+// fakeDriven answers from the Linear projects it drives, recording each one
+// asked and the time it was asked at.
+type fakeDriven struct {
+	projects []string
+	err      error
+	asked    []string
+	at       []time.Time
+}
+
+func (f *fakeDriven) DrivesLinearProject(_ context.Context, project string, at time.Time) (bool, error) {
+	f.asked = append(f.asked, project)
+	f.at = append(f.at, at)
+	return slices.Contains(f.projects, project), f.err
+}
+
+// fakePhaseWakes keeps one claimed time as the store does, refusing a claim
+// within the window of it.
+type fakePhaseWakes struct {
+	last     *time.Time
+	err      error
+	claims   int
+	released []time.Time
+}
+
+func (f *fakePhaseWakes) Claim(_ context.Context, at time.Time, window time.Duration) (bool, error) {
+	f.claims++
+	if f.err != nil {
+		return false, f.err
+	}
+	if f.last != nil && at.Sub(*f.last).Abs() < window {
+		return false, nil
+	}
+	f.last = &at
+	return true, nil
+}
+
+func (f *fakePhaseWakes) Release(ctx context.Context, at time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	f.released = append(f.released, at)
+	if f.last != nil && f.last.Equal(at) {
+		f.last = nil
+	}
+	return nil
+}
+
 // fixedSecret holds a value that never needs re-reading.
 func fixedSecret(value string) *Secret {
 	return NewSecret("test", value, func(context.Context) (string, error) { return "", nil },
@@ -161,6 +208,7 @@ func handler(markers Markers, acker Acknowledger, waker Waker) Handler {
 	return Handler{
 		Key: fixedSecret(testSecret), Markers: markers, Sessions: acker, Poll: waker,
 		Replier: &fakeReplier{recorded: true}, Priority: &fakePriority{applied: true},
+		Driven: &fakeDriven{projects: []string{"Roadmap"}}, PhaseWakes: &fakePhaseWakes{},
 		Logger: slog.New(slog.DiscardHandler), Now: func() time.Time { return receivedAt },
 	}
 }
@@ -443,8 +491,13 @@ func TestPromptedFailsWhenTheWakeFails(t *testing.T) {
 // issueUpdate is an Issue update payload; data and updatedFrom are the raw JSON
 // of each, as Linear's data change events carry them.
 func issueUpdate(action, data, updatedFrom string) []byte {
+	return issueUpdateAt(receivedAt, action, data, updatedFrom)
+}
+
+// issueUpdateAt is issueUpdate sent at sentAt.
+func issueUpdateAt(sentAt time.Time, action, data, updatedFrom string) []byte {
 	body := `{"type":"Issue","action":"` + action + `","webhookTimestamp":` +
-		strconv.FormatInt(receivedAt.UnixMilli(), 10) + `,"data":` + data
+		strconv.FormatInt(sentAt.UnixMilli(), 10) + `,"data":` + data
 	if updatedFrom != "" {
 		body += `,"updatedFrom":` + updatedFrom
 	}
@@ -534,5 +587,134 @@ func TestIssueUpdateWritesThePriorityBeforeTheWake(t *testing.T) {
 	}
 	if !slices.Equal(log, []string{"write", "wake"}) {
 		t.Fatalf("order = %v, want the write before the wake", log)
+	}
+}
+
+// roadmapIssue is an issue of the driven Roadmap project, as Linear's Issue
+// payload carries its project.
+const roadmapIssue = `{"id":"issue-uuid-1","identifier":"ABC-22","priority":1,"stateId":"state-done",` +
+	`"projectMilestoneId":"milestone-2","project":{"id":"project-1","name":"Roadmap","url":"https://linear.app/p"}}`
+
+func TestIssueMovesRefreshThePhases(t *testing.T) {
+	otherProject := strings.Replace(roadmapIssue, `"name":"Roadmap"`, `"name":"Elsewhere"`, 1)
+	noProject := `{"id":"issue-uuid-1","identifier":"ABC-22","priority":1,"stateId":"state-done"}`
+	for _, tc := range []struct {
+		name       string
+		body       []byte
+		driven     *fakeDriven
+		wakes      *fakePhaseWakes
+		applied    bool
+		wakeErr    error
+		want       int
+		asked      []string
+		claims     int
+		woken      int
+		priorities int
+		released   bool
+	}{
+		{name: "state change wakes", body: issueUpdate("update", roadmapIssue, `{"stateId":"state-started"}`), want: 200, asked: []string{"Roadmap"}, claims: 1, woken: 1},
+		{name: "milestone change wakes", body: issueUpdate("update", roadmapIssue, `{"projectMilestoneId":"milestone-1"}`), want: 200, asked: []string{"Roadmap"}, claims: 1, woken: 1},
+		{name: "milestone set from none wakes", body: issueUpdate("update", roadmapIssue, `{"projectMilestoneId":null}`), want: 200, asked: []string{"Roadmap"}, claims: 1, woken: 1},
+		{name: "neither state nor milestone", body: issueUpdate("update", roadmapIssue, `{"title":"old"}`), want: 200},
+		{name: "project not driven", body: issueUpdate("update", otherProject, `{"stateId":"state-started"}`), want: 200, asked: []string{"Elsewhere"}},
+		{name: "no project", body: issueUpdate("update", noProject, `{"stateId":"state-started"}`), want: 200},
+		{name: "driven projects unreadable", body: issueUpdate("update", roadmapIssue, `{"stateId":"state-started"}`), driven: &fakeDriven{err: errors.New("unavailable")}, want: 500, asked: []string{"Roadmap"}},
+		{name: "claim fails", body: issueUpdate("update", roadmapIssue, `{"stateId":"state-started"}`), wakes: &fakePhaseWakes{err: errors.New("unavailable")}, want: 500, asked: []string{"Roadmap"}, claims: 1},
+		{name: "woken within the minute", body: issueUpdate("update", roadmapIssue, `{"stateId":"state-started"}`), wakes: &fakePhaseWakes{last: &receivedAt}, want: 200, asked: []string{"Roadmap"}, claims: 1},
+		{name: "wake fails releases", body: issueUpdate("update", roadmapIssue, `{"stateId":"state-started"}`), wakeErr: errors.New("403"), want: 500, asked: []string{"Roadmap"}, claims: 1, woken: 1, released: true},
+		{name: "a priority wake serves the move", body: issueUpdate("update", roadmapIssue, `{"stateId":"state-started","priority":3}`), applied: true, want: 200, claims: 1, woken: 1, priorities: 1},
+		{name: "a priority edit on no queued run still refreshes", body: issueUpdate("update", roadmapIssue, `{"stateId":"state-started","priority":3}`), want: 200, asked: []string{"Roadmap"}, claims: 1, woken: 1, priorities: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			driven, wakes := tc.driven, tc.wakes
+			if driven == nil {
+				driven = &fakeDriven{projects: []string{"Roadmap"}}
+			}
+			if wakes == nil {
+				wakes = &fakePhaseWakes{}
+			}
+			priority, waker := &fakePriority{applied: tc.applied}, &fakeWaker{err: tc.wakeErr}
+			h := handler(&fakeMarkers{}, &fakeAcker{}, waker)
+			h.Driven, h.PhaseWakes, h.Priority = driven, wakes, priority
+			if got := deliver(h, tc.body, testSecret); got != tc.want {
+				t.Fatalf("status = %d, want %d", got, tc.want)
+			}
+			if !slices.Equal(driven.asked, tc.asked) {
+				t.Errorf("asked about %v, want %v", driven.asked, tc.asked)
+			}
+			for _, at := range driven.at {
+				if !at.Equal(receivedAt) {
+					t.Errorf("asked at %v, want the delivery's receipt %v", at, receivedAt)
+				}
+			}
+			if wakes.claims != tc.claims || waker.woken != tc.woken || len(priority.calls) != tc.priorities {
+				t.Errorf("claims %d, woken %d, priority writes %d; want %d, %d, %d",
+					wakes.claims, waker.woken, len(priority.calls), tc.claims, tc.woken, tc.priorities)
+			}
+			if got := len(wakes.released) > 0; got != tc.released {
+				t.Errorf("released = %v, want %v", got, tc.released)
+			}
+			if tc.released && !wakes.released[0].Equal(receivedAt) {
+				t.Errorf("released the claim at %v, want %v", wakes.released[0], receivedAt)
+			}
+		})
+	}
+}
+
+func TestIssueMovesWithinAMinuteWakeOnce(t *testing.T) {
+	waker := &fakeWaker{}
+	h := handler(&fakeMarkers{}, &fakeAcker{}, waker)
+	for _, step := range []struct {
+		after time.Duration
+		woken int
+	}{
+		{0, 1},
+		{20 * time.Second, 1},
+		{59 * time.Second, 1},
+		{time.Minute, 2},
+	} {
+		at := receivedAt.Add(step.after)
+		h.Now = func() time.Time { return at }
+		if got := deliver(h, issueUpdateAt(at, "update", roadmapIssue, `{"stateId":"state-started"}`), testSecret); got != 200 {
+			t.Fatalf("after %v: status %d", step.after, got)
+		}
+		if waker.woken != step.woken {
+			t.Fatalf("after %v: woken %d, want %d", step.after, waker.woken, step.woken)
+		}
+	}
+}
+
+func TestARetriedMoveWakesAfterAFailedWake(t *testing.T) {
+	waker := &fakeWaker{err: errors.New("unavailable")}
+	h := handler(&fakeMarkers{}, &fakeAcker{}, waker)
+	body := issueUpdate("update", roadmapIssue, `{"stateId":"state-started"}`)
+	if got := deliver(h, body, testSecret); got != 500 {
+		t.Fatalf("first delivery = %d, want 500", got)
+	}
+	waker.err = nil
+	if got := deliver(h, body, testSecret); got != 200 || waker.woken != 2 {
+		t.Fatalf("retry = %d after %d wakes, want 200 after 2", got, waker.woken)
+	}
+}
+
+func TestAMoveJustAfterAPriorityWakeDoesNotWakeAgain(t *testing.T) {
+	waker := &fakeWaker{}
+	h := handler(&fakeMarkers{}, &fakeAcker{}, waker)
+	h.Priority = &fakePriority{applied: true}
+	for _, step := range []struct {
+		after       time.Duration
+		updatedFrom string
+	}{
+		{0, `{"stateId":"state-started","priority":3}`},
+		{10 * time.Second, `{"stateId":"state-review"}`},
+	} {
+		at := receivedAt.Add(step.after)
+		h.Now = func() time.Time { return at }
+		if got := deliver(h, issueUpdateAt(at, "update", roadmapIssue, step.updatedFrom), testSecret); got != 200 {
+			t.Fatalf("after %v: status %d", step.after, got)
+		}
+	}
+	if waker.woken != 1 {
+		t.Fatalf("woken %d, want 1", waker.woken)
 	}
 }

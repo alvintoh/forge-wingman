@@ -103,14 +103,16 @@ func optionalSecret(ctx context.Context, secrets tokenReader, name string, logge
 func newLinearHandler(fsc *firestore.Client, key *webhook.Secret, sessions webhook.Acknowledger, poll webhook.Waker, logger *slog.Logger) webhook.Handler {
 	queue := store.NewQueue(fsc)
 	return webhook.Handler{
-		Key:      key,
-		Markers:  store.NewMarkers(fsc),
-		Sessions: sessions,
-		Poll:     poll,
-		Replier:  queue,
-		Priority: queue,
-		Logger:   logger,
-		Now:      time.Now,
+		Key:        key,
+		Markers:    store.NewMarkers(fsc),
+		Sessions:   sessions,
+		Poll:       poll,
+		Replier:    queue,
+		Priority:   queue,
+		Driven:     store.NewPhaseSnapshots(fsc).WithLogger(logger),
+		PhaseWakes: store.NewPhaseWakes(fsc),
+		Logger:     logger,
+		Now:        time.Now,
 	}
 }
 

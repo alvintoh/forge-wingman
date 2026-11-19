@@ -25,6 +25,12 @@ const (
 	maxBodyBytes      = 1 << 20
 	requestBudget     = 4 * time.Second
 	callTimeout       = 2 * time.Second
+	// phaseWakeWindow is how long one phase wake covers the edits after it. It
+	// depends on a dispatcher job taking longer than the window to reach its
+	// Linear read (about 2 minutes measured, gen2 start-up included), so an edit
+	// inside the window is still in the poll the first one started. Revisit it if
+	// the job's start-up gets faster than the window.
+	phaseWakeWindow = time.Minute
 )
 
 // sessionPattern is a Linear agent session id, which becomes a document id.
@@ -60,6 +66,22 @@ type Reprioritizer interface {
 	UpdateQueuedPriority(ctx context.Context, runID string, rank int) (bool, error)
 }
 
+// DrivenProjects reports whether the dispatcher drives a Linear project, as
+// its polls read at at.
+type DrivenProjects interface {
+	DrivesLinearProject(ctx context.Context, linearProject string, at time.Time) (bool, error)
+}
+
+// PhaseWakes debounces the wakes that refresh the phase snapshots across every
+// instance of the webhook.
+type PhaseWakes interface {
+	// Claim records a wake at at, reporting false when one was recorded within
+	// window of it.
+	Claim(ctx context.Context, at time.Time, window time.Duration) (bool, error)
+	// Release removes the wake claimed at at, so a retried delivery wakes again.
+	Release(ctx context.Context, at time.Time) error
+}
+
 // Handler answers Linear's webhook deliveries.
 //
 // Only a verified, fresh AgentSessionEvent acts. A created one marks the
@@ -68,17 +90,21 @@ type Reprioritizer interface {
 // answering a run's decision — records the reply and wakes the dispatcher,
 // which does the matching and the resume itself; the handler decides nothing.
 // An Issue update that changes the priority is written to the issue's waiting
-// run and wakes the dispatcher; every other Issue update answers 200 and does
-// nothing.
+// run and wakes the dispatcher. One that moves an issue of a driven project to
+// another state or milestone wakes the dispatcher, at most once a minute, so the
+// poll rewrites the phase snapshots. Every other Issue update answers 200 and
+// does nothing.
 type Handler struct {
-	Key      *Secret
-	Markers  Markers
-	Sessions Acknowledger
-	Poll     Waker
-	Replier  Replier
-	Priority Reprioritizer
-	Logger   *slog.Logger
-	Now      func() time.Time
+	Key        *Secret
+	Markers    Markers
+	Sessions   Acknowledger
+	Poll       Waker
+	Replier    Replier
+	Priority   Reprioritizer
+	Driven     DrivenProjects
+	PhaseWakes PhaseWakes
+	Logger     *slog.Logger
+	Now        func() time.Time
 }
 
 // event is the part of a delivery the handler reads.
@@ -112,11 +138,14 @@ type event struct {
 }
 
 // issueChange is the part of an Issue update the handler reads: the issue's
-// identifier and current priority, and its previous priority.
+// identifier, project and current priority, its previous priority, and whether
+// the update moved it to another state or milestone.
 type issueChange struct {
 	Identifier   string
+	Project      string
 	Priority     *float64
 	PrevPriority *float64
+	Moved        bool
 }
 
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -144,7 +173,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ev.Type == issueEvent && ev.Action == actionUpdate {
-		h.reprioritize(w, r, ev)
+		h.issueUpdated(w, r, ev, now)
 		return
 	}
 	if ev.Type != agentSessionEvent {
@@ -226,57 +255,153 @@ func (h Handler) answerPrompted(w http.ResponseWriter, r *http.Request, ev event
 	w.WriteHeader(http.StatusOK)
 }
 
-// reprioritize writes an edited priority to the issue's waiting run and wakes
-// the dispatcher so the next poll orders by it. An update that does not carry a
-// priority change, or a payload that does not read as one, is ignored. A failed
-// write or wake answers 500 so Linear retries; both are idempotent.
-func (h Handler) reprioritize(w http.ResponseWriter, r *http.Request, ev event) {
+// issueUpdated answers an Issue update: a priority edit is written to the
+// issue's waiting run and wakes the dispatcher, and a move to another state or
+// milestone refreshes the phases. A priority wake also serves a move the same
+// update carries. A failed step answers 500 so Linear retries.
+func (h Handler) issueUpdated(w http.ResponseWriter, r *http.Request, ev event, now time.Time) {
 	change := readIssueChange(ev)
+	ctx, cancel := context.WithTimeout(r.Context(), requestBudget)
+	defer cancel()
+	woke, err := h.reprioritize(ctx, change)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	switch {
+	case woke:
+		if change.Moved {
+			h.notePhaseWake(ctx, change, now)
+		}
+	case change.Moved:
+		if err := h.refreshPhases(ctx, change, now); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	default:
+		h.Logger.Info("webhookIgnored", "type", ev.Type, "action", ev.Action)
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// reprioritize writes an edited priority to the issue's waiting run and wakes
+// the dispatcher so the next poll orders by it, reporting whether it woke. An
+// update that does not carry a priority change, or a payload that does not read
+// as one, does neither. A failed write or wake is logged and returned; both are
+// idempotent.
+func (h Handler) reprioritize(ctx context.Context, change issueChange) (bool, error) {
 	runID := change.Identifier
 	rank, rankOK := priorityRank(change.Priority)
 	prevRank, prevOK := priorityRank(change.PrevPriority)
 	if !runner.ValidRunID(runID) || !rankOK || !prevOK || rank == prevRank {
-		h.Logger.Info("webhookIgnored", "type", ev.Type, "action", ev.Action)
-		w.WriteHeader(http.StatusOK)
-		return
+		return false, nil
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), requestBudget)
-	defer cancel()
 	applied, err := h.Priority.UpdateQueuedPriority(ctx, runID, rank)
 	if err != nil {
 		h.Logger.Error("webhookFailed", "reason", "priority", "run", runID, "err", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
+		return false, err
 	}
 	if !applied {
-		h.Logger.Info("webhookIgnored", "type", ev.Type, "action", ev.Action, "run", runID)
-		w.WriteHeader(http.StatusOK)
-		return
+		return false, nil
 	}
 	callCtx, cancelCall := context.WithTimeout(ctx, callTimeout)
 	defer cancelCall()
 	if err := h.Poll.Wake(callCtx); err != nil {
 		h.Logger.Error("webhookWakeFailed", "run", runID, "err", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
+		return false, err
 	}
 	h.Logger.Info("webhookReprioritized", "run", runID, "rank", rank)
-	w.WriteHeader(http.StatusOK)
+	return true, nil
 }
 
-// readIssueChange reads an Issue update's identifier and priorities, leaving
-// any it cannot read nil or empty.
+// refreshPhases wakes the dispatcher for an issue moved to another state or
+// milestone, so its poll rewrites the phase snapshots: only for a project the
+// dispatcher drives, and only when no other instance has woken it within
+// phaseWakeWindow. A failed wake releases its claim, so Linear's retry wakes.
+func (h Handler) refreshPhases(ctx context.Context, change issueChange, now time.Time) error {
+	if change.Project == "" {
+		h.Logger.Info("webhookIgnored", "reason", "no-project", "issue", change.Identifier)
+		return nil
+	}
+	driven, err := h.Driven.DrivesLinearProject(ctx, change.Project, now)
+	if err != nil {
+		h.Logger.Error("webhookFailed", "reason", "driven-projects", "issue", change.Identifier, "err", err)
+		return err
+	}
+	if !driven {
+		h.Logger.Info("webhookIgnored", "reason", "project-not-driven", "issue", change.Identifier)
+		return nil
+	}
+	claimed, err := h.PhaseWakes.Claim(ctx, now, phaseWakeWindow)
+	if err != nil {
+		h.Logger.Error("webhookFailed", "reason", "phase-wake", "issue", change.Identifier, "err", err)
+		return err
+	}
+	if !claimed {
+		h.Logger.Info("webhookPhaseWakeDebounced", "issue", change.Identifier)
+		return nil
+	}
+	callCtx, cancelCall := context.WithTimeout(ctx, callTimeout)
+	defer cancelCall()
+	if err := h.Poll.Wake(callCtx); err != nil {
+		h.Logger.Error("webhookWakeFailed", "issue", change.Identifier, "err", err)
+		h.releasePhaseWake(ctx, now)
+		return err
+	}
+	h.Logger.Info("webhookPhasesRefreshed", "issue", change.Identifier)
+	return nil
+}
+
+// notePhaseWake records a wake a priority edit made for an update that also
+// moved the issue, so a move inside the window after it does not wake again. It
+// decides nothing: a failure is logged, since the wake itself already happened.
+func (h Handler) notePhaseWake(ctx context.Context, change issueChange, now time.Time) {
+	if _, err := h.PhaseWakes.Claim(ctx, now, phaseWakeWindow); err != nil {
+		h.Logger.Warn("webhookPhaseWakeNotRecorded", "issue", change.Identifier, "err", err)
+	}
+}
+
+// releasePhaseWake releases a claim on its own deadline, since a wake that
+// failed by timing out may have spent the request's.
+func (h Handler) releasePhaseWake(ctx context.Context, at time.Time) {
+	callCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), callTimeout)
+	defer cancel()
+	if err := h.PhaseWakes.Release(callCtx, at); err != nil {
+		h.Logger.Error("webhookPhaseWakeReleaseFailed", "err", err)
+	}
+}
+
+// movedFields are the updatedFrom keys whose presence means the issue moved to
+// another state or milestone. Linear lists a changed field's previous value
+// there, null included, so the key's presence is the signal, not its value.
+var movedFields = []string{"stateId", "projectMilestoneId"}
+
+// readIssueChange reads an Issue update's identifier, project, priorities and
+// moved fields, leaving any it cannot read nil, empty or false.
 func readIssueChange(ev event) issueChange {
 	var data struct {
 		Identifier string   `json:"identifier"`
 		Priority   *float64 `json:"priority"`
-	}
-	var from struct {
-		Priority *float64 `json:"priority"`
+		Project    *struct {
+			Name string `json:"name"`
+		} `json:"project"`
 	}
 	_ = json.Unmarshal(ev.Data, &data)
+	var from map[string]json.RawMessage
 	_ = json.Unmarshal(ev.UpdatedFrom, &from)
-	return issueChange{Identifier: data.Identifier, Priority: data.Priority, PrevPriority: from.Priority}
+	change := issueChange{Identifier: data.Identifier, Priority: data.Priority}
+	if data.Project != nil {
+		change.Project = data.Project.Name
+	}
+	if raw, ok := from["priority"]; ok {
+		_ = json.Unmarshal(raw, &change.PrevPriority)
+	}
+	for _, field := range movedFields {
+		if _, ok := from[field]; ok {
+			change.Moved = true
+		}
+	}
+	return change
 }
 
 // priorityRank is the queue rank of a Linear priority, or false when it is
