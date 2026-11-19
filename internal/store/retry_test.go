@@ -522,13 +522,13 @@ func TestClearChosenModelLetsTheNextClaimChooseAgain(t *testing.T) {
 		t.Fatalf("cleared = %v (err %v) again, want nothing to clear", cleared, err)
 	}
 
-	// A label the ticket named since stays; only the marker goes.
+	// A label the ticket named since stays; the refresh already dropped the marker.
 	named2 := chosenRetry(t, q, client, "retry-clear-named", chosen)
 	if _, _, err := q.RefreshRetriedModels(ctx, named2, runner.ModelLabels{Build: named}); err != nil {
 		t.Fatal(err)
 	}
-	if cleared, err := q.ClearChosenModel(ctx, named2); err != nil || !cleared {
-		t.Fatalf("cleared = %v (err %v), want the marker dropped", cleared, err)
+	if cleared, err := q.ClearChosenModel(ctx, named2); err != nil || cleared {
+		t.Fatalf("cleared = %v (err %v), want no marker left once the ticket named a model", cleared, err)
 	}
 	if row := readRow(t, client, named2); row[chosenModelField] != nil || buildModel(row) != named {
 		t.Fatalf("row = %v, want the ticket's %s kept", row, named)
