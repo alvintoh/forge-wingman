@@ -22,6 +22,16 @@ measured, and the assertion reports it on a drift.
 `<rule-stack-root>` may instead come from `RULE_STACK_ROOT`. `--out` is required:
 the projections are build output, and no repository should hold them.
 
+When the rule-stack root holds `.projection-redact`, every term it lists (one per
+line; blank lines and `#` lines ignored) is replaced by `[redacted]` in both
+projections, case-sensitively. The list belongs to the rule stack and never to
+this repository, since naming a term here would publish it. Redaction is the last
+pass, so the recorded sizes still measure the stack itself, and the check fails,
+giving a count and never the terms, if a listed term survives. With no list the
+output is unchanged. A term cannot start with `#`, which reads as a comment, and
+a list naming text the generator itself prints (its messages, file names, paths)
+is refused, again by count only.
+
 The tests run the generator against a synthetic stack:
 
     python3 -m unittest discover -s tools/projection
