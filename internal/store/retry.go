@@ -189,20 +189,25 @@ func (q *Queue) RetryAwaitingClaim(ctx context.Context, runID string) (bool, err
 // while its attempt waits to be claimed, so the claim and the run's ticket job
 // read the models the ticket names now. Where m names no build model, the one
 // an earlier claim chose for the run stays, even if the ticket's size has since
-// changed: a retry keeps its first claim's model. It returns the labels the run
+// changed: a retry keeps its first claim's model. Where m names one, the chosen
+// model is forgotten, so a later retry with no label chooses again. It returns the labels the run
 // then holds, zero for any other run, and whether it changed them; a run
 // already naming them is left untouched.
 func (q *Queue) RefreshRetriedModels(ctx context.Context, runID string, m runner.ModelLabels) (runner.ModelLabels, bool, error) {
 	var effective runner.ModelLabels
 	changed, err := q.updateRetried(ctx, runID, func(row map[string]any) []firestore.Update {
 		effective = m
+		chosen := str(row, chosenModelField)
+		var updates []firestore.Update
 		if effective.Build == "" {
-			effective.Build = str(row, chosenModelField)
+			effective.Build = chosen
+		} else if chosen != "" {
+			updates = append(updates, firestore.Update{Path: chosenModelField, Value: firestore.Delete})
 		}
-		if sameModels(modelLabelsOf(row), effective) {
-			return nil
+		if !sameModels(modelLabelsOf(row), effective) {
+			updates = append(updates, firestore.Update{Path: modelLabelsField, Value: effective})
 		}
-		return []firestore.Update{{Path: modelLabelsField, Value: effective}}
+		return updates
 	})
 	if err != nil {
 		return runner.ModelLabels{}, false, fmt.Errorf("refreshing the models of retried run %s: %w", runID, err)

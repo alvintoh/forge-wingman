@@ -483,6 +483,10 @@ func TestRefreshRetriedModelsKeepsTheModelAnEarlierClaimChose(t *testing.T) {
 	if c := candidate(t, q, id); c.Model != named {
 		t.Fatalf("candidate = %+v, want the ticket's %s to win", c, named)
 	}
+	effective, _, err = q.RefreshRetriedModels(context.Background(), id, runner.ModelLabels{})
+	if err != nil || effective.Build != "" {
+		t.Fatalf("labels = %+v (err %v), want no build model once the ticket's label is removed, so the claim chooses again", effective, err)
+	}
 }
 
 // chosenRetry seeds a stopped run whose earlier claim chose model, and retries
