@@ -112,6 +112,11 @@ type Reservation struct {
 	// ChosenModel is the build model the claim records for a run whose ticket
 	// named none, empty to record none.
 	ChosenModel string
+	// ModelReason is why a run whose row names no build model builds on what it
+	// does, empty to leave the row's reason as it is; RatesVersion is the
+	// version of the rate cards ChosenModel was ranked by.
+	ModelReason  string
+	RatesVersion string
 }
 
 // Totals sums a set of reservations, or of settled runs, for one comparison.

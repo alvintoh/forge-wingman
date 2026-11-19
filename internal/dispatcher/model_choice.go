@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"cmp"
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -48,6 +49,29 @@ const (
 	referenceInputTokens  = 1_000_000
 	referenceOutputTokens = 20_000
 )
+
+// ReasonNamedByTicket is the reason a run records for a build model its
+// ticket's model: label named.
+const ReasonNamedByTicket = "named by the ticket"
+
+// MaxModelReasonBytes bounds the reason a run records for its build model; the
+// store caps what it writes at it.
+const MaxModelReasonBytes = 64
+
+// ChosenReason is the reason a run records for a model the claim chose for
+// size at the hour of at, in UTC, since the rates it was ranked by change by
+// the hour.
+func ChosenReason(size string, at time.Time) string {
+	return fmt.Sprintf("cheapest eligible for size %s at %02d:00 UTC", size, at.UTC().Hour())
+}
+
+// noEligibleReason is the reason a run of size records for building on the
+// default because no candidate cleared the bar and admission.
+func noEligibleReason(size string) string { return "no eligible model for size " + size }
+
+// recordsUnreadableReason is the reason a run of size records for building on
+// the default because the settled records could not be read.
+func recordsUnreadableReason(size string) string { return "model records unreadable for size " + size }
 
 // eligible reports whether r clears the bar: enough settled runs, and enough of
 // them passed. The rate is compared in whole numbers so 4 of 5 is exactly 80%.
@@ -113,45 +137,64 @@ type modelChooser struct {
 	d       Deps
 	c       Config
 	read    bool
+	unread  bool
 	records []ModelRecord
 	refused map[string]bool
+}
+
+// modelChoice is the build model a claim records for a run, and why: a chosen
+// model with the version of the rates it was ranked by, the default with the
+// reason none was chosen, or nothing at all where the choice does not apply.
+type modelChoice struct {
+	model, reason, ratesVersion string
 }
 
 func newModelChooser(ctx context.Context, d Deps, c Config) *modelChooser {
 	return &modelChooser{ctx: ctx, d: d, c: c, refused: map[string]bool{}}
 }
 
-// choose is the build model a claim of cand at stage records, empty to record
-// none: a ticket that named a build model keeps it, a planned run's build keeps
-// what its plan-stage claim recorded, and a run no eligible model admission
-// allows builds on the default. A free model is never chosen, since moving a run
-// onto a free tier is the owner's choice. An unreadable record chooses none.
+// choose is the build model a claim of cand at stage records, and why. A ticket
+// that named a build model keeps it, as a retry keeps one an earlier claim chose,
+// and a planned run's build keeps what its plan-stage claim recorded: the choice
+// does not apply to them, and the store keeps or writes their reason. Otherwise
+// the cheapest eligible model admission allows is chosen, and with none the run
+// builds on the default for the reason none was chosen, an unreadable record
+// among them; a poll with no records reader or no candidates has none eligible.
+// A free model is never chosen, since moving a run onto a free tier is the
+// owner's choice.
 //
 // Two known limits matter once a second paid plan exists. A chosen model that
 // the budget, peak-hour or Go-usage checks then hold defers the run rather than
 // falling back to the default. And a chosen model on another plan is judged on
 // the default plan's budget, since tierOf reads a non-build claim's budget from
 // Config.Budget.
-func (m *modelChooser) choose(cand Candidate, stage string, at time.Time) string {
-	if m.d.ModelRecords == nil || len(m.c.BuildCandidates) == 0 || cand.Model != "" || stage == StageBuild {
-		return ""
+func (m *modelChooser) choose(cand Candidate, stage string, at time.Time) modelChoice {
+	if cand.Model != "" || stage == StageBuild {
+		return modelChoice{}
+	}
+	if m.d.ModelRecords == nil || len(m.c.BuildCandidates) == 0 {
+		return modelChoice{reason: noEligibleReason(cand.Size)}
 	}
 	if !m.read {
 		m.read = true
 		records, err := m.d.ModelRecords.ModelRecords(m.ctx, at.Add(-runner.TrailingWindow))
 		if err != nil {
 			m.d.Logger.Warn("modelRecordsUnread", "run", cand.RunID, "err", err.Error())
-			records = nil
+			m.unread = true
+		} else {
+			m.records = records
 		}
-		m.records = records
+	}
+	if m.unread {
+		return modelChoice{reason: recordsUnreadableReason(cand.Size)}
 	}
 	for _, model := range RankEligible(m.records, cand.Size, m.c.BuildCandidates, providers.RatesFor, at) {
 		if !m.c.isFree(model) && m.allows(cand, model) {
 			m.d.Logger.Info("buildModelChosen", "run", cand.RunID, "size", cand.Size, "model", model)
-			return model
+			return modelChoice{model: model, reason: ChosenReason(cand.Size, at), ratesVersion: providers.RatesVersion()}
 		}
 	}
-	return ""
+	return modelChoice{reason: noEligibleReason(cand.Size)}
 }
 
 // allows reports whether admission lets cand's run build on model beside the

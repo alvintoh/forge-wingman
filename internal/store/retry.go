@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
@@ -188,11 +189,13 @@ func (q *Queue) RetryAwaitingClaim(ctx context.Context, runID string) (bool, err
 // RefreshRetriedModels sets the model labels of a run the owner retried to m
 // while its attempt waits to be claimed, so the claim and the run's ticket job
 // read the models the ticket names now. Where m names no build model, the one
-// an earlier claim chose for the run stays, even if the ticket's size has since
-// changed: a retry keeps its first claim's model. Where m names one, the chosen
-// model is forgotten, so a later retry with no label chooses again. It returns the labels the run
-// then holds, zero for any other run, and whether it changed them; a run
-// already naming them is left untouched.
+// an earlier claim chose for the run stays with its reason, even if the
+// ticket's size has since changed: a retry keeps its first claim's model. Where
+// m names one, the chosen model is forgotten, so a later retry with no label
+// chooses again, and the reason becomes dispatcher.ReasonNamedByTicket. A run
+// left with no build model drops the label's reason for the claim to give its
+// own. It returns the labels the run then holds, zero for any other run, and
+// whether it changed the row; a run already naming them is left untouched.
 func (q *Queue) RefreshRetriedModels(ctx context.Context, runID string, m runner.ModelLabels) (runner.ModelLabels, bool, error) {
 	var effective runner.ModelLabels
 	changed, err := q.updateRetried(ctx, runID, func(row map[string]any) []firestore.Update {
@@ -207,6 +210,12 @@ func (q *Queue) RefreshRetriedModels(ctx context.Context, runID string, m runner
 		if !sameModels(modelLabelsOf(row), effective) {
 			updates = append(updates, firestore.Update{Path: modelLabelsField, Value: effective})
 		}
+		switch {
+		case m.Build != "":
+			updates = append(updates, modelReasonUpdates(row, dispatcher.ReasonNamedByTicket, "")...)
+		case effective.Build == "":
+			updates = append(updates, modelReasonUpdates(row, "", "")...)
+		}
 		return updates
 	})
 	if err != nil {
@@ -217,15 +226,17 @@ func (q *Queue) RefreshRetriedModels(ctx context.Context, runID string, m runner
 
 // ClearChosenModel drops the build model a claim chose for a run the owner
 // retried, while its attempt waits to be claimed, so the next claim chooses
-// again. The build label goes with it only while it is still that model. It
-// reports whether the run held a chosen model; any other run is left untouched.
+// again and records its own reason. The build label goes with it only while it
+// is still that model; the chosen model's reason and rates version always do.
+// It reports whether the run held a chosen model; any other run is left
+// untouched.
 func (q *Queue) ClearChosenModel(ctx context.Context, runID string) (bool, error) {
 	cleared, err := q.updateRetried(ctx, runID, func(row map[string]any) []firestore.Update {
 		chosen := str(row, chosenModelField)
 		if chosen == "" {
 			return nil
 		}
-		updates := []firestore.Update{{Path: chosenModelField, Value: firestore.Delete}}
+		updates := append([]firestore.Update{{Path: chosenModelField, Value: firestore.Delete}}, modelReasonUpdates(row, "", "")...)
 		if buildModel(row) == chosen {
 			updates = append(updates, firestore.Update{FieldPath: firestore.FieldPath{modelLabelsField, "build"}, Value: firestore.Delete})
 		}

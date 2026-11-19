@@ -2,7 +2,9 @@ package providers
 
 import (
 	"bytes"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -796,6 +798,66 @@ func BaseURL(plan string) string { return embeddedConfig.Providers[plan].BaseURL
 // RatesFor returns the plan's rate card for model, and whether the plan prices
 // it. A model the plan does not price keeps the harness's own cost figure.
 func RatesFor(model string) (Rates, bool) { return ratesFor(embeddedConfig, model) }
+
+// RatesVersion identifies the prices every plan's rate cards set: a digest of
+// the prices alone, so a price change gives a new version and an edit to
+// anything else in providers.json, or a new field on Rates, does not.
+func RatesVersion() string { return embeddedRatesVersion }
+
+var embeddedRatesVersion = ratesVersion(embeddedConfig)
+
+// priceDigest is one model's prices as the rates version hashes them. Its tags
+// fix the encoding, so a field added to Rates moves the version only once it
+// is projected here.
+type priceDigest struct {
+	Plan           string      `json:"plan"`
+	Model          string      `json:"model"`
+	Input          float64     `json:"input"`
+	Output         float64     `json:"output"`
+	CacheRead      float64     `json:"cache_read"`
+	CacheWrite     float64     `json:"cache_write"`
+	PeakMultiplier float64     `json:"peak_multiplier,omitempty"`
+	PeakHours      [][2]int    `json:"peak_hours,omitempty"`
+	Above          *tierDigest `json:"above,omitempty"`
+}
+
+// tierDigest is a card's long-context prices as the rates version hashes them.
+type tierDigest struct {
+	ContextTokens int64   `json:"context_tokens"`
+	Input         float64 `json:"input"`
+	Output        float64 `json:"output"`
+	CacheRead     float64 `json:"cache_read"`
+	CacheWrite    float64 `json:"cache_write"`
+}
+
+// ratesVersion is "sha256:" and the first 12 hex digits of the SHA-256 of cfg's
+// prices, listed by plan then model so the digest does not depend on map order.
+func ratesVersion(cfg Config) string {
+	var prices []priceDigest
+	for _, plan := range slices.Sorted(maps.Keys(cfg.Providers)) {
+		cards := cfg.Providers[plan].Rates
+		for _, model := range slices.Sorted(maps.Keys(cards)) {
+			r := cards[model]
+			d := priceDigest{Plan: plan, Model: model, Input: r.Input, Output: r.Output, CacheRead: r.CacheRead, CacheWrite: r.CacheWrite}
+			if r.Peak != nil {
+				d.PeakMultiplier = r.Peak.Multiplier
+				for _, h := range r.Peak.Hours {
+					d.PeakHours = append(d.PeakHours, [2]int{h.From, h.To})
+				}
+			}
+			if a := r.Above; a != nil {
+				d.Above = &tierDigest{ContextTokens: a.ContextTokens, Input: a.Input, Output: a.Output, CacheRead: a.CacheRead, CacheWrite: a.CacheWrite}
+			}
+			prices = append(prices, d)
+		}
+	}
+	b, err := json.Marshal(prices)
+	if err != nil {
+		panic(fmt.Sprintf("encoding the prices: %v", err))
+	}
+	sum := sha256.Sum256(b)
+	return "sha256:" + hex.EncodeToString(sum[:6])
+}
 
 // ratesFor returns cfg's rate card for model: the plan the model's provider
 // prefix names holds it, keyed by the full model id.

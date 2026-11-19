@@ -354,3 +354,90 @@ func TestPollReadsARetrysPlansOnceWhenNoChosenModelNeedsChecking(t *testing.T) {
 		})
 	}
 }
+
+func TestPollRecordsWhyEachRunBuildsOnItsModel(t *testing.T) {
+	passing := []ModelRecord{cachedRecord(flash, "M", 5, 5), cachedRecord(haiku, "M", 5, 5)}
+	for name, tt := range map[string]struct {
+		cand        Candidate
+		records     *fakeModelRecords
+		unwired     bool
+		noCands     bool
+		wantReason  string
+		wantVersion string
+	}{
+		"chosen, with the size, the hour and the rates": {records: &fakeModelRecords{records: passing},
+			wantReason: "cheapest eligible for size M at 07:00 UTC", wantVersion: providers.RatesVersion()},
+		"no model passed for an M":     {records: &fakeModelRecords{records: []ModelRecord{cachedRecord(flash, "M", 5, 3)}}, wantReason: "no eligible model for size M"},
+		"no model passed for an L":     {cand: Candidate{Size: "L"}, records: &fakeModelRecords{records: passing}, wantReason: "no eligible model for size L"},
+		"the records cannot be read":   {records: &fakeModelRecords{records: passing, err: errFirestore}, wantReason: "model records unreadable for size M"},
+		"the ticket's own label":       {cand: Candidate{Model: haiku}, records: &fakeModelRecords{records: passing}},
+		"a planned run's build":        {cand: Candidate{Stage: StageBuild}, records: &fakeModelRecords{records: passing}},
+		"no records wired":             {unwired: true, wantReason: "no eligible model for size M"},
+		"no candidates to choose from": {noCands: true, records: &fakeModelRecords{records: passing}, wantReason: "no eligible model for size M"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cand := tt.cand
+			cand.RunID, cand.Repo, cand.Priority = "run", "octo/scratch", 1
+			if cand.Size == "" {
+				cand.Size = "M"
+			}
+			q := &fakeQueue{candidates: []Candidate{cand}}
+			d := choiceDeps(q, tt.records)
+			d.Now = func() time.Time { return weekdayPeak.Add(42 * time.Minute) }
+			if tt.unwired {
+				d.ModelRecords = nil
+			}
+			cfg := choiceConfig()
+			cfg.TwoStage = true
+			if tt.noCands {
+				cfg.BuildCandidates = nil
+			}
+			if _, err := Poll(context.Background(), d, cfg); err != nil {
+				t.Fatal(err)
+			}
+			if len(q.tryClaims) != 1 {
+				t.Fatalf("claims = %+v, want one", q.tryClaims)
+			}
+			if res := q.tryClaims[0].res; res.ModelReason != tt.wantReason || res.RatesVersion != tt.wantVersion {
+				t.Fatalf("reason = %q, rates = %q, want %q, %q", res.ModelReason, res.RatesVersion, tt.wantReason, tt.wantVersion)
+			}
+		})
+	}
+}
+
+func TestPollGivesEveryRunAfterAnUnreadRecordTheUnreadReason(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{
+		{RunID: "first", Repo: "octo/scratch", Size: "M", Priority: 1},
+		{RunID: "second", Repo: "octo/scratch", Size: "S", Priority: 2},
+	}}
+	records := &fakeModelRecords{records: []ModelRecord{cachedRecord(flash, "S", 5, 5)}, err: errFirestore}
+	if _, err := Poll(context.Background(), choiceDeps(q, records), choiceConfig()); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, call := range q.tryClaims {
+		got[call.runID] = call.res.ModelReason
+	}
+	want := map[string]string{"first": "model records unreadable for size M", "second": "model records unreadable for size S"}
+	if !maps.Equal(got, want) || len(records.reads) != 1 {
+		t.Fatalf("reasons = %v after %d reads, want %v from one read", got, len(records.reads), want)
+	}
+}
+
+func TestEveryModelReasonFitsTheBoundTheStoreReadsBackWithin(t *testing.T) {
+	reasons := []string{ReasonNamedByTicket}
+	for _, size := range []string{"S", "M", "L"} {
+		reasons = append(reasons, noEligibleReason(size), recordsUnreadableReason(size))
+		for h := range 24 {
+			reasons = append(reasons, ChosenReason(size, time.Date(2026, 11, 18, h, 59, 0, 0, time.UTC)))
+		}
+	}
+	for _, r := range reasons {
+		if len(r) > MaxModelReasonBytes {
+			t.Errorf("%q is %d bytes, over %d", r, len(r), MaxModelReasonBytes)
+		}
+	}
+	if got := ChosenReason("M", time.Date(2026, 11, 18, 18, 5, 0, 0, time.FixedZone("AEDT", 11*3600))); got != "cheapest eligible for size M at 07:00 UTC" {
+		t.Errorf("a claim at 18:05 AEDT reads %q, want its UTC hour", got)
+	}
+}
