@@ -925,9 +925,11 @@ func admitClaims(ctx context.Context, d Deps, c Config, relations map[string]Rel
 		if cand.Private {
 			reservation.RunnerMinutes = est.Minutes
 		}
-		if chosen := chooser.choose(cand, stage, d.Now()); chosen != "" {
-			cand.Model, reservation.ChosenModel = chosen, chosen
+		choice := chooser.choose(cand, stage, d.Now())
+		if choice.model != "" {
+			cand.Model, reservation.ChosenModel = choice.model, choice.model
 		}
+		reservation.ModelReason, reservation.RatesVersion = choice.reason, choice.ratesVersion
 		tier := c.tierOf(cand, stage)
 		budget, candModel := tier.budget, tier.model
 		if budget.ProviderFree {

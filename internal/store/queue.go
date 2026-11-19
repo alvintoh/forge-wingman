@@ -121,9 +121,14 @@ const (
 	// none, beside the build label it wrote, so a retry that refreshes the
 	// ticket's labels keeps it.
 	chosenModelField = "chosen_build_model"
-	verdictField     = "provider_verdict"
-	ticketIDField    = "ticket_id"
-	outcomeField     = "outcome"
+	// modelReasonField is why the run builds on the model it does, and
+	// ratesVersionField the version of the rate cards a chosen model was ranked
+	// by. Both sit outside the record, beside the chosen model.
+	modelReasonField  = "build_model_reason"
+	ratesVersionField = "build_model_rates_version"
+	verdictField      = "provider_verdict"
+	ticketIDField     = "ticket_id"
+	outcomeField      = "outcome"
 	// ticketBodyField, sizedByField and frontEndField are Record's own ticket fields.
 	ticketBodyField = "ticket_body"
 	sizedByField    = "sized_by"
@@ -1095,11 +1100,24 @@ func (q *Queue) TryClaim(ctx context.Context, runID string, at time.Time, cfg di
 			updates = append(updates, firestore.Update{Path: planField, Value: runner.Provider(facts.Model)})
 		}
 		// A row that already names a build model keeps it: the ticket's own
-		// label, or the model an earlier claim of the run chose.
-		if res.ChosenModel != "" && buildModel(data) == "" {
+		// label, recorded as such, or the model an earlier claim of the run
+		// chose, with the reason that claim recorded.
+		switch build, chosen := buildModel(data), str(data, chosenModelField); {
+		case build != "" && build != chosen:
+			updates = append(updates, modelReasonUpdates(data, dispatcher.ReasonNamedByTicket, "")...)
+		case build != "":
+			// An earlier claim chose it, and its reason stands; a row claimed
+			// before reasons were recorded gets this claim's.
+			if str(data, modelReasonField) == "" {
+				updates = append(updates, modelReasonUpdates(data, dispatcher.ChosenReason(cand.Size, at), "")...)
+			}
+		case res.ChosenModel != "":
 			updates = append(updates,
 				firestore.Update{FieldPath: firestore.FieldPath{modelLabelsField, "build"}, Value: res.ChosenModel},
 				firestore.Update{Path: chosenModelField, Value: res.ChosenModel})
+			updates = append(updates, modelReasonUpdates(data, res.ModelReason, res.RatesVersion)...)
+		case res.ModelReason != "":
+			updates = append(updates, modelReasonUpdates(data, res.ModelReason, "")...)
 		}
 		if err := tx.Update(rowRef, updates); err != nil {
 			return err

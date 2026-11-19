@@ -764,3 +764,51 @@ func TestBuildCandidatesOfferMoreThanTheDefaultBuildModel(t *testing.T) {
 		t.Fatalf("candidates = %v, want a model other than the default build model", got)
 	}
 }
+
+func TestRatesVersionChangesWithAPriceAndNothingElse(t *testing.T) {
+	doc := func(cashLimit, input, other string) Config {
+		t.Helper()
+		cfg, err := parseConfig([]byte(`{"cash_limit_usd":` + cashLimit + `,"runner_free_minutes":2000,"providers":{"p":{` +
+			providerFacts + `,"rates":{"p/model":{"input_usd_per_mtok":` + input + `,"output_usd_per_mtok":2}}}` + other + `}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}
+	base := ratesVersion(doc("30", "1", ""))
+	if !strings.HasPrefix(base, "sha256:") || len(base) != len("sha256:")+12 {
+		t.Fatalf("version %q, want sha256: and 12 hex digits", base)
+	}
+	if got := ratesVersion(doc("40", "1", "")); got != base {
+		t.Errorf("a cash limit edit moved the version from %s to %s", base, got)
+	}
+	for name, other := range map[string]string{
+		"a plan with no rate cards": `,"q":{` + providerFacts + `}`,
+		"a plan's model caps":       `,"q":{` + providerFacts + `,"model_caps":{"q/model":5}}`,
+	} {
+		if got := ratesVersion(doc("30", "1", other)); got != base {
+			t.Errorf("%s moved the version from %s to %s", name, base, got)
+		}
+	}
+	withCap := doc("30", "1", "")
+	p := withCap.Providers["p"]
+	p.OutputCaps = map[string]int{"p/model": 4096}
+	p.KeySecret = "other"
+	withCap.Providers["p"] = p
+	if got := ratesVersion(withCap); got != base {
+		t.Errorf("a non-price field beside the card moved the version from %s to %s", base, got)
+	}
+	peak := doc("30", "1", "")
+	card := peak.Providers["p"].Rates["p/model"]
+	card.Peak = &Peak{Multiplier: 2, Hours: []HourRange{{From: 6, To: 10}}}
+	peak.Providers["p"].Rates["p/model"] = card
+	if got := ratesVersion(peak); got == base {
+		t.Errorf("a peak surcharge kept the version %s", got)
+	}
+	if got := ratesVersion(doc("30", "1.5", "")); got == base {
+		t.Errorf("a price edit kept the version %s", got)
+	}
+	if got := ratesVersion(mustParseConfig(configJSON)); got != RatesVersion() {
+		t.Errorf("parsing providers.json again gives %s, want the embedded %s", got, RatesVersion())
+	}
+}
