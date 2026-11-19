@@ -135,6 +135,13 @@ this file as project memory, so the rules below reach the run.
   source, keeps the stale text. *(Judgment call. Verified 2026-11-18 on #385, whose ADR 0022 and
   tech-design edits reached the vault a pass later; the same drift on #380, 2026-11-17.)*
 
+- **A ticket whose change reaches what a workflow job receives names the existing path for it and
+  ends with "Do not edit anything under `.github/workflows/`."** The runner meets a criterion by the
+  shortest edit, and a job's inputs live in a workflow it may not push, so an unnamed path sends the
+  build into `run.yml` and the run stops on `workflow-change`. *(Judgment call. Verified 2026-11-19 on
+  FRG-342, which edited `run.yml` to pass a model the run row already carries; FRG-332 named a
+  workflow file outright, 2026-11-16.)*
+
 - **A ticket mixing code and workflow edits is split before it is delegated.** The runner
   refuses any plan that edits `.github/workflows/`, so one criterion naming a workflow file makes
   the whole ticket the owner's: put the code criteria in the ticket the runner builds, with the
