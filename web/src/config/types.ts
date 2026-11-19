@@ -35,7 +35,6 @@ type ConfigPhase = {
 type Concurrency = {
   review_wip: number;
   platform_cap: number;
-  poll_minutes: number;
 };
 
 /** ConfigView is the configuration endpoint's answer. */
@@ -79,7 +78,6 @@ export const isConfigView = shape<ConfigView>({
   concurrency: shape<Concurrency>({
     review_wip: isNumber,
     platform_cap: isNumber,
-    poll_minutes: isNumber,
   }),
   peak_windows: listOf(isPeakModel),
 });
@@ -110,3 +108,29 @@ export type RunsPerRepoView = {
 
 /** isRunsPerRepoView narrows the runs-per-repo endpoint's answer. */
 export const isRunsPerRepoView = shape<RunsPerRepoView>({ runs_per_repo: isNumber });
+
+/**
+ * PollIntervalView is the poll-interval endpoint's answer: the minutes the dispatcher waits between
+ * polls, the default while the owner has saved none.
+ */
+export type PollIntervalView = {
+  poll_minutes: number;
+};
+
+/** The only intervals the owner may choose, in minutes, as the endpoint accepts them. */
+export const POLL_CHOICES = [10, 15] as const;
+
+/** isPollChoice says whether minutes is one of the intervals the owner may choose. */
+export function isPollChoice(minutes: number | null): boolean {
+  return POLL_CHOICES.some((choice) => choice === minutes);
+}
+
+const isPollIntervalShape = shape<PollIntervalView>({ poll_minutes: isNumber });
+
+/**
+ * isPollIntervalView narrows the poll-interval endpoint's answer to an interval the owner may
+ * choose, so any other reads as a failed read rather than a control with nothing ticked.
+ */
+export function isPollIntervalView(body: unknown): body is PollIntervalView {
+  return isPollIntervalShape(body) && isPollChoice(body.poll_minutes);
+}

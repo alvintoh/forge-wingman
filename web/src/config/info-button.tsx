@@ -59,7 +59,7 @@ export function InfoButton({ name, text }: InfoButtonProps) {
         onClick={() => setOpen((was) => !was)}
         onFocus={handleFocus}
         onBlur={() => setOpen(false)}
-        className="group absolute -top-4.25 -right-padx size-11 cursor-pointer text-ink2 focus-visible:outline-none"
+        className="group absolute -top-4.25 -right-padx size-11 cursor-pointer text-ink2 focus-visible:outline-none!"
       >
         <svg
           aria-hidden="true"

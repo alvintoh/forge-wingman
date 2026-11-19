@@ -32,7 +32,7 @@ function Switch({ on, labelledBy, describedBy, disabled, onToggle }: SwitchProps
         aria-describedby={describedBy}
         disabled={disabled}
         onClick={onToggle}
-        className="group -mr-1.5 inline-flex h-11 w-14 cursor-pointer items-center justify-center focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+        className="group -mr-1.5 inline-flex h-11 w-14 cursor-pointer items-center justify-center focus-visible:outline-none! disabled:cursor-not-allowed disabled:opacity-60"
       >
         <span
           className={`relative h-6.5 w-11 rounded-full group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-accent ${on ? "bg-accent" : "bg-card ring-2 ring-ink2 ring-inset"}`}

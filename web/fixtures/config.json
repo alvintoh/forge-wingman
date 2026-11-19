@@ -7,7 +7,7 @@
       "model": "command-code/meta/muse-spark-1.3-contributor"
     }
   ],
-  "concurrency": { "review_wip": 3, "platform_cap": 20, "poll_minutes": 5 },
+  "concurrency": { "review_wip": 3, "platform_cap": 20, "poll_minutes": 15 },
   "peak_windows": [
     {
       "model": "command-code/deepseek/deepseek-v4.1-flash",
