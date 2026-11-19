@@ -91,6 +91,7 @@ describe("a save of Poll every", () => {
     answering(200, { poll_minutes: 10 });
     let form = withStaged(EMPTY_FORM, "pollMinutes", 10, 15);
     expect(formView(SAVED, form, false).changed).toBe(true);
+    expect(formView(SAVED, form, false).shown.pollMinutes).toBe(10);
     await saveStaged(form.staged, (answer) => {
       form = afterSave(form, answer);
     });
