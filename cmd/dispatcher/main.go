@@ -344,6 +344,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 		Rewrites:     store.NewRewrites(fsc),
 		Escapes:      store.NewAutoMergeSwitches(fsc),
 		Checks:       dispatcher.ChecksDeps{Runs: store.NewChecks(fsc), GitHub: gh, Branch: runBranch},
+		RulesetMarks: store.NewRulesetMarks(fsc),
 		Decisions:    queue,
 		Elicit:       webhook.Linear{Tokens: tokens},
 		Logger:       logger,

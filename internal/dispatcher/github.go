@@ -393,8 +393,12 @@ func (g GitHub) combinedStatus(ctx context.Context, repo, sha string) (commitSta
 	return body, nil
 }
 
+// ErrNoRequiredChecks reports branch rules that were read and require no status
+// check, which a caller asking what is missing reads as every check missing.
+var ErrNoRequiredChecks = errors.New("requires no status checks")
+
 // RequiredChecks lists the status check contexts the branch rules of repo
-// require on branch; a branch that requires none is an error.
+// require on branch; a branch that requires none is ErrNoRequiredChecks.
 func (g GitHub) RequiredChecks(ctx context.Context, repo, branch string) ([]string, error) {
 	endpoint := fmt.Sprintf("%s/repos/%s/rules/branches/%s", g.endpoint(), repo, url.PathEscape(branch))
 	res, err := g.do(ctx, http.MethodGet, endpoint, nil, fmt.Sprintf("read the rules of %s@%s", repo, branch))
@@ -425,7 +429,7 @@ func (g GitHub) RequiredChecks(ctx context.Context, repo, branch string) ([]stri
 		}
 	}
 	if len(contexts) == 0 {
-		return nil, fmt.Errorf("%s@%s requires no status checks", repo, branch)
+		return nil, fmt.Errorf("%s@%s: %w", repo, branch, ErrNoRequiredChecks)
 	}
 	return contexts, nil
 }

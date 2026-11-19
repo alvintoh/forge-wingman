@@ -117,6 +117,7 @@ func pollReadDeps(q *Queue, openPRs int) dispatcher.Deps {
 		Rewrites:     pollRewrites{},
 		Escapes:      pollEscapes{},
 		Checks:       dispatcher.ChecksDeps{Runs: pollChecksRuns{}, GitHub: pollChecksGitHub{}, Branch: "main"},
+		RulesetMarks: pollRulesetMarks{},
 		Workflow:     pollWorkflow{},
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Now:          func() time.Time { return pollAt },
@@ -292,7 +293,7 @@ func (pollChecksGitHub) PullCommits(context.Context, string, int) ([]dispatcher.
 	return nil, nil
 }
 func (pollChecksGitHub) RequiredChecks(context.Context, string, string) ([]string, error) {
-	return nil, nil
+	return dispatcher.MergeChecks(), nil
 }
 func (pollChecksGitHub) ChecksOutcome(context.Context, string, string, []string) (string, error) {
 	return "", nil
@@ -325,6 +326,15 @@ func (pollNotices) Posted(context.Context, string, time.Time) error {
 func (pollNotices) Unclaim(context.Context, string) error {
 	return nil
 }
+func (pollNotices) Clear(context.Context, string) error {
+	return nil
+}
+
+// pollRulesetMarks has marked every repository as once requiring the merge checks.
+type pollRulesetMarks struct{}
+
+func (pollRulesetMarks) MarkRequired(context.Context, string, time.Time) error { return nil }
+func (pollRulesetMarks) SeenRequired(context.Context, string) (bool, error)    { return true, nil }
 
 // pollPoster posts no notice; nothing here claims one.
 type pollPoster struct{}

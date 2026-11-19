@@ -238,6 +238,9 @@ type Deps struct {
 	// Checks records, on each run's row, the agent's head commit and the result
 	// of its required checks.
 	Checks ChecksDeps
+	// RulesetMarks remembers the repositories whose rules were seen to require
+	// the merge checks; it is required, as without it no drift is noticed.
+	RulesetMarks RulesetMarks
 }
 
 // missing names the first dependency left unset, or "" when all are wired.
@@ -260,6 +263,7 @@ func (d Deps) missing() string {
 		{"Rewrites", d.Rewrites != nil},
 		{"Escapes", d.Escapes != nil},
 		{"Checks", d.Checks.ready()},
+		{"RulesetMarks", d.RulesetMarks != nil},
 		{"Workflow", d.Workflow != nil},
 		{"Logger", d.Logger != nil},
 		{"Now", d.Now != nil},
@@ -467,7 +471,8 @@ type Result struct {
 // whose ticket Linear closed, and walks the queue in priority order claiming
 // every run Admit lets start, abandons the claims that outlived
 // their window, measures the merges that landed since the last poll, raises a
-// notice for each run stuck past its limit, records whether each listed
+// notice for each run stuck past its limit and for each listed repository whose
+// branch rules stopped requiring the merge checks, records whether each listed
 // repository could be read and the names of the Linear projects an added one may
 // be picked from, and posts the notices waiting, whatever the rest of the poll
 // did.
@@ -495,6 +500,11 @@ func Poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	cancelChecks()
 	LogPhase(d.Logger, "checks", start, d.Now())
 	start = d.Now()
+	rulesetCtx, cancelRuleset := context.WithTimeout(ctx, rulesetTimeout)
+	rulesetErr := noticeRulesetDrift(rulesetCtx, d, c.Repos)
+	cancelRuleset()
+	LogPhase(d.Logger, "ruleset", start, d.Now())
+	start = d.Now()
 	decideErr := postDecisions(ctx, d, c)
 	LogPhase(d.Logger, "decisions", start, d.Now())
 	start = d.Now()
@@ -503,7 +513,7 @@ func Poll(ctx context.Context, d Deps, c Config) (Result, error) {
 	start = d.Now()
 	noticeErr := postNotices(ctx, d)
 	LogPhase(d.Logger, "notices", start, d.Now())
-	return res, errors.Join(err, sweepErr, rewriteErr, checksErr, decideErr, stuckErr, noticeErr)
+	return res, errors.Join(err, sweepErr, rewriteErr, checksErr, rulesetErr, decideErr, stuckErr, noticeErr)
 }
 
 // LogPhase logs how long one phase of a poll took, so a slow poll can be traced

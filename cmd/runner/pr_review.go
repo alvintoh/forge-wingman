@@ -361,12 +361,6 @@ const (
 	checksNotGreenReason = "checks-not-green"
 )
 
-// mergeChecks are the checks a merge must see green before an
-// allowance-exhausted review requests it: the pair branch protection requires
-// on main. `.github/workflows/pr-review.yml`'s auto-merge step guards the same
-// two contexts before it requests the merge, so a rename here is half a change.
-var mergeChecks = []string{"go", "web"}
-
 // mergeNote is what an allowance-exhausted review decided about the merge, and
 // what its comment says about it: whether the request was made, and the gate
 // that held it when it was not.
@@ -432,7 +426,7 @@ func exhaustedMerge(ctx context.Context, gh pullRequests, number int, reviewedSH
 		return mergeNote{Reason: notEligibleReason, Words: "the pull request is not eligible for auto-merge"}
 	}
 	state, err := dispatcher.GitHub{Endpoint: gh.API, Token: gh.Token, Client: gh.Client}.
-		ChecksOutcome(ctx, gh.Repo, reviewedSHA, mergeChecks)
+		ChecksOutcome(ctx, gh.Repo, reviewedSHA, dispatcher.MergeChecks())
 	switch {
 	case err != nil:
 		return mergeNote{Reason: checksUnreadReason, Words: "the `go` and `web` check results could not be read", Detail: err.Error()}

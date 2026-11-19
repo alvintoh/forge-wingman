@@ -50,12 +50,15 @@ func (n Notice) Text() string {
 //
 // Raise creates a notice unless one with its ID exists. Claim takes every
 // pending notice, and any claimed before staleBefore, in one transaction, so
-// two polls never post the same one; Posted and Unclaim settle a claim.
+// two polls never post the same one; Posted and Unclaim settle a claim. Clear
+// removes a notice whose condition has lifted, so raising its ID again is a new
+// notice; clearing one that does not exist is not an error.
 type Notices interface {
 	Raise(ctx context.Context, n Notice, at time.Time) error
 	Claim(ctx context.Context, at, staleBefore time.Time) ([]Notice, error)
 	Posted(ctx context.Context, id string, at time.Time) error
 	Unclaim(ctx context.Context, id string) error
+	Clear(ctx context.Context, id string) error
 }
 
 // Breaker reports whether a systemic stop has halted every dispatch, until an
