@@ -28,7 +28,7 @@ function Segment({ minutes, checked, tabStop, first, disabled, onClick, onKeyDow
       disabled={disabled}
       onClick={onClick}
       onKeyDown={onKeyDown}
-      className="group relative flex h-11 w-26.5 cursor-pointer items-center focus-visible:outline-none disabled:cursor-not-allowed"
+      className="group relative flex h-11 w-26.5 cursor-pointer items-center focus-visible:outline-none! disabled:cursor-not-allowed"
     >
       {/* The fill sits inside the unit's 1px edge, so the edge stays whole. */}
       <span
