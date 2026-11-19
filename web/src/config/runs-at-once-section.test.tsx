@@ -153,12 +153,14 @@ describe("the words under the row", () => {
 });
 
 describe("statusWords", () => {
-  const idle = { saving: false, changed: false, savedRunsAtOnce: null };
+  const idle = { saving: false, changed: false, lastSaved: {} };
   it("says each drawn status", () => {
     expect(statusWords(idle)).toBe("No changes to save.");
     expect(statusWords({ ...idle, changed: true })).toBe("Change not saved yet.");
     expect(statusWords({ ...idle, changed: true, saving: true })).toBe("Saving…");
-    expect(statusWords({ ...idle, savedRunsAtOnce: 3 })).toBe("Saved. Runs at once is now 3.");
+    expect(statusWords({ ...idle, lastSaved: { runsAtOnce: 3 } })).toBe(
+      "Saved. Runs at once is now 3.",
+    );
   });
 });
 

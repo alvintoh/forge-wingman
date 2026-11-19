@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isAutonomy, isRewrite } from "../../web/src/autonomy/guard";
 import { isRunsAtOnceView } from "../../web/src/config/runs-at-once";
-import { isConfigView, isPeakView, isRunsPerRepoView } from "../../web/src/config/types";
+import {
+  isConfigView,
+  isPeakView,
+  isPollIntervalView,
+  isRunsPerRepoView,
+} from "../../web/src/config/types";
 import { isInbox } from "../../web/src/inbox/run";
 import { isRunning } from "../../web/src/running/run";
 import { isConcurrency } from "../../web/src/stats/concurrency";
@@ -115,11 +120,12 @@ describe("the fixtures' shapes", () => {
     expect(isRewrite(autonomy.rewrite)).toBe(true);
   });
 
-  test("config, peak, runs-per-repo and runs-at-once pass their guards", () => {
+  test("config, peak, runs-per-repo, runs-at-once and poll-interval pass their guards", () => {
     expect(isConfigView(fixture("config"))).toBe(true);
     expect(isPeakView(fixture("peak"))).toBe(true);
     expect(isRunsPerRepoView(fixture("runs-per-repo"))).toBe(true);
     expect(isRunsAtOnceView(fixture("runs-at-once"))).toBe(true);
+    expect(isPollIntervalView(fixture("poll-interval"))).toBe(true);
   });
 
   test("inbox passes its guard", () => {

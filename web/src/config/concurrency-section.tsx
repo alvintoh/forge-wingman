@@ -1,10 +1,18 @@
 import type { Read } from "../stats/use-read";
 import { InfoButton } from "./info-button";
-import type { ConfigView, RunsPerRepoView } from "./types";
+import { PollEvery } from "./poll-every";
+import type { ConfigView, PollIntervalView, RunsPerRepoView } from "./types";
+
+const POLL_LABEL_ID = "config-poll-every";
 
 type ConcurrencySectionProps = {
   config: Read<ConfigView>;
   runsPerRepo: Read<RunsPerRepoView>;
+  pollInterval: Read<PollIntervalView>;
+  // The minutes the Poll every control shows, null until the interval is read.
+  pollMinutes: number | null;
+  disabled: boolean;
+  onPollChoose: (minutes: number) => void;
 };
 
 // The figures a row shows, once both reads have answered.
@@ -37,25 +45,30 @@ const ROWS: readonly Row[] = [
     value: ({ view }) => `${view.concurrency.platform_cap}`,
     note: "shared with CI",
   },
-  {
-    label: "Poll every",
-    value: ({ view }) => `${view.concurrency.poll_minutes} minutes`,
-  },
 ];
 
 /**
- * ConcurrencySection shows the limits admission runs under, read-only: the page offers no control
- * for them. Runs per repo is the cap saved in the surface's settings, the dispatcher's default
- * while none is saved; the rest are the dispatcher's own.
+ * ConcurrencySection shows the limits admission runs under. Poll every is the owner's, a choice of
+ * 10 or 15 minutes the page's SAVE saves; the rest are read-only. Runs per repo is the cap saved in
+ * the surface's settings, the dispatcher's default while none is saved; the others are the
+ * dispatcher's own.
  */
-export function ConcurrencySection({ config, runsPerRepo }: ConcurrencySectionProps) {
+export function ConcurrencySection({
+  config,
+  runsPerRepo,
+  pollInterval,
+  pollMinutes,
+  disabled,
+  onPollChoose,
+}: ConcurrencySectionProps) {
+  const reads = [config, runsPerRepo, pollInterval];
   const limits =
     config.status === "ready" && runsPerRepo.status === "ready"
       ? { view: config.body, runsPerRepo: runsPerRepo.body.runs_per_repo }
       : null;
-  const failed = config.status === "error" || runsPerRepo.status === "error";
-  // A failed read is the answer, even while the other is still pending.
-  const loading = !failed && (config.status === "loading" || runsPerRepo.status === "loading");
+  const failed = reads.some((read) => read.status === "error");
+  // A failed read is the answer, even while another is still pending.
+  const loading = !failed && reads.some((read) => read.status === "loading");
   return (
     <section
       aria-labelledby="config-concurrency"
@@ -78,7 +91,9 @@ export function ConcurrencySection({ config, runsPerRepo }: ConcurrencySectionPr
           The concurrency could not be read.
         </p>
       )}
-      {limits !== null && <p className="text-ink2">Read-only; set on the dispatcher.</p>}
+      {!failed && !loading && (
+        <p className="text-ink2">Set on the dispatcher, except Poll every.</p>
+      )}
       {!failed && (
         <dl className="mt-1.5 space-y-1.5">
           {ROWS.map((row) => (
@@ -94,6 +109,20 @@ export function ConcurrencySection({ config, runsPerRepo }: ConcurrencySectionPr
               {row.note !== undefined && <dd className="col-span-2 text-muted">{row.note}</dd>}
             </div>
           ))}
+          {/* The control wraps under its label where the row cannot hold both. */}
+          <div className="flex flex-wrap items-center justify-between gap-x-4">
+            <dt id={POLL_LABEL_ID} className="text-ink2">
+              Poll every
+            </dt>
+            <dd className="ml-auto">
+              <PollEvery
+                labelledBy={POLL_LABEL_ID}
+                value={pollMinutes}
+                disabled={disabled}
+                onChoose={onPollChoose}
+              />
+            </dd>
+          </div>
         </dl>
       )}
     </section>
