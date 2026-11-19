@@ -166,6 +166,12 @@ type RunRow struct {
 	// AutoMerge is whether the PR was marked eligible for auto-merge, the proof a
 	// row measured before the merge account was kept has that the PR merged itself.
 	AutoMerge bool
+	// RevertedBy is the number of the revert opened for the row's merged PR, 0
+	// while none is: a merge is reverted once.
+	RevertedBy int
+	// RevertRefusal is GitHub's last refusal to open that revert, empty when
+	// none is kept, so a refusal repeated poll after poll is raised once.
+	RevertRefusal string
 }
 
 // Sample is one merged agent PR as the rewrite rate reads it.

@@ -69,14 +69,16 @@ type outcomeCall struct {
 
 // fakeChecksGitHub answers every pull request with the same commits.
 type fakeChecksGitHub struct {
-	commits       []PullCommit
-	commitsByPR   map[int][]PullCommit
-	required      []string
-	outcome       string
-	outcomeBySHA  map[string]string
-	commitsErr    error
-	requiredErr   error
-	outcomeErr    error
+	commits      []PullCommit
+	commitsByPR  map[int][]PullCommit
+	required     []string
+	outcome      string
+	outcomeBySHA map[string]string
+	commitsErr   error
+	requiredErr  error
+	outcomeErr   error
+	// outcomeErrAt scopes outcomeErr to one commit, so the others still answer.
+	outcomeErrAt  string
 	requiredCalls []string
 	outcomeCalls  []outcomeCall
 	commitCalls   int
@@ -101,10 +103,14 @@ func (f *fakeChecksGitHub) RequiredChecks(_ context.Context, repo, branch string
 
 func (f *fakeChecksGitHub) ChecksOutcome(_ context.Context, repo, sha string, required []string) (string, error) {
 	f.outcomeCalls = append(f.outcomeCalls, outcomeCall{repo, sha, required})
-	if outcome, ok := f.outcomeBySHA[sha]; ok {
-		return outcome, f.outcomeErr
+	err := f.outcomeErr
+	if f.outcomeErrAt != "" && sha != f.outcomeErrAt {
+		err = nil
 	}
-	return f.outcome, f.outcomeErr
+	if outcome, ok := f.outcomeBySHA[sha]; ok {
+		return outcome, err
+	}
+	return f.outcome, err
 }
 
 // agentThenOwner is a pull request whose agent commit the owner built on.

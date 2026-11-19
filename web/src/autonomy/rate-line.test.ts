@@ -74,6 +74,27 @@ describe("rateLine", () => {
     );
   });
 
+  it("names the auto-merge that left main red and its revert", () => {
+    const red = (escaped_by: number) =>
+      rateLine(
+        state({
+          effective: false,
+          reason: "escaped",
+          escaped_pr: 7,
+          escaped_repo: "octo/scratch",
+          escaped_by,
+          escaped_reason: "red-main",
+        }),
+      );
+    expect(red(12)).toContain(
+      "octo/scratch#7 left main failing its required checks; revert #12 waits for you; auto-merge is off until you switch it on again",
+    );
+    expect(red(0)).toContain(
+      "octo/scratch#7 left main failing its required checks; auto-merge is off until you switch it on again",
+    );
+    expect(red(12)).not.toContain("days of merging");
+  });
+
   it("names the escaped PR and how it escaped", () => {
     const reverted = rateLine(
       state({

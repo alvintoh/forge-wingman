@@ -431,6 +431,7 @@ func run(ctx context.Context, logger *slog.Logger, getenv func(string) string) e
 				PullRequests: gh,
 				Rewrites:     store.NewRewrites(fsc),
 				Escapes:      store.NewAutoMergeSwitches(fsc),
+				Reverts:      gh,
 				Checks:       dispatcher.ChecksDeps{Runs: store.NewChecks(fsc), GitHub: gh, Branch: runBranch},
 				RulesetMarks: store.NewRulesetMarks(fsc),
 				Decisions:    queue,

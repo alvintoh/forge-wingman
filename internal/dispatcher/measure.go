@@ -21,6 +21,9 @@ type ClosedPR struct {
 	Body   string
 	// Head is the PR's head branch, the run's own branch for a run's PR.
 	Head string
+	// HeadRepo is the owner/name repository Head lives in, another one for a
+	// PR from a fork, and empty when that repository is gone.
+	HeadRepo string
 	// URL is the PR's own page, the value the run recorded when it opened it.
 	URL string
 	// MergedAt is when the PR merged, zero for one that closed unmerged.
@@ -29,6 +32,11 @@ type ClosedPR struct {
 	// resolved none or the reply carried none: the rate tells an auto-merged PR
 	// from the owner's by it.
 	MergedBy string
+	// NodeID is the PR's GraphQL id, which a revert names it by.
+	NodeID string
+	// MergeCommit is the commit the merge made on the base branch, empty for a
+	// PR that closed unmerged.
+	MergeCommit string
 }
 
 // PullRequests reads the pull requests the rewrite rate is measured from.
@@ -54,6 +62,12 @@ type Rewrites interface {
 	MarkUnfound(ctx context.Context, repo string, number int, at time.Time) (bool, error)
 	// Record writes m onto run id's row.
 	Record(ctx context.Context, id string, m Measured) error
+	// RecordRevert writes the number of the PR that reverts run id's merged PR
+	// onto its row.
+	RecordRevert(ctx context.Context, id string, number int) error
+	// RecordRevertRefusal keeps GitHub's refusal to open that revert on run id's
+	// row.
+	RecordRevertRefusal(ctx context.Context, id, refusal string) error
 	// Recent returns the merged PRs' samples, newest merge first, up to limit.
 	Recent(ctx context.Context, limit int) ([]Sample, error)
 }
@@ -64,6 +78,11 @@ const (
 	EscapeReverted = "reverted"
 	// EscapeFixed is an auto-merged PR a later merged PR names as fixed.
 	EscapeFixed = "fixed"
+	// EscapeRedMain is an auto-merged PR whose merge commit is the first red
+	// commit on main's first-parent chain: the oldest failing a required check
+	// whose own first parent passes. The surface's "red-main" literal in
+	// web/src/autonomy/format.ts must match it.
+	EscapeRedMain = "red-main"
 )
 
 // EscapeWindow is how long after an auto-merge a merge that takes it back, or
@@ -86,6 +105,15 @@ type MergeEscape struct {
 // Words names the escaped PR and how it escaped, as the run's wait reason and
 // its PR body word it.
 func (e MergeEscape) Words() string {
+	if e.Reason == EscapeRedMain {
+		// The first red commit on main's first-parent chain is read whenever main
+		// is red, so no window applies.
+		how := "left main failing its required checks"
+		if e.By > 0 {
+			how += fmt.Sprintf("; revert #%d waits for you", e.By)
+		}
+		return fmt.Sprintf("auto-merge is off until you switch it on again: %s#%d %s", e.Repo, e.PR, how)
+	}
 	how := "escaped the owner's read"
 	switch e.Reason {
 	case EscapeReverted:
@@ -180,8 +208,9 @@ type listingFailure struct {
 	err  error
 }
 
-// measureRepo measures the merged run PRs of one repository's listing, and
-// records the escapes its merged reverts and fix references name. A failure
+// measureRepo measures the merged run PRs of one repository's listing, records
+// the escapes its merged reverts and fix references name, and reverts an
+// auto-merge that left main failing its required checks. A failure
 // against one PR is gathered rather than returned, so the rest of the listing is
 // still measured and the next poll retries what failed.
 func measureRepo(ctx context.Context, d Deps, repo string, prs []ClosedPR, truncated bool) error {
@@ -226,6 +255,9 @@ func measureRepo(ctx context.Context, d Deps, repo string, prs []ClosedPR, trunc
 		}
 	}
 	if err := recordFixEscapes(ctx, d, repo, prs, byNumber, state); err != nil {
+		errs = append(errs, err)
+	}
+	if err := revertRedMain(ctx, d, repo, prs, state); err != nil {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
@@ -447,15 +479,26 @@ func revertedPR(pr ClosedPR, repo string, byTitle map[string]int) int {
 		// A revert that closed unmerged took nothing back.
 		return 0
 	}
-	if m := revertBody.FindStringSubmatch(pr.Body); m != nil {
-		if n, err := strconv.Atoi(m[2]); err == nil && strings.EqualFold(m[1], repo) {
-			return n
-		}
-		return 0
+	if n, named := revertNamed(pr.Body, repo); named {
+		return n
 	}
 	m := revertTitle.FindStringSubmatch(pr.Title)
 	if m == nil {
 		return 0
 	}
 	return byTitle[m[1]]
+}
+
+// revertNamed is the pull request of repo a revert's body names in the line
+// GitHub's Revert button writes, 0 when that line names another repository, and
+// whether the body carries the line at all.
+func revertNamed(body, repo string) (int, bool) {
+	m := revertBody.FindStringSubmatch(body)
+	if m == nil {
+		return 0, false
+	}
+	if n, err := strconv.Atoi(m[2]); err == nil && strings.EqualFold(m[1], repo) {
+		return n, true
+	}
+	return 0, true
 }

@@ -41,6 +41,11 @@ const (
 	prURLField              = "pr_url"
 	planModelField          = "plan_model"
 	stepsField              = "steps"
+	// revertedByField is the revert the dispatcher opened for the row's merged
+	// PR, kept beside runner.Record for the same reason as the measurement.
+	revertedByField = "reverted_by"
+	// revertRefusalField is GitHub's last refusal to open that revert.
+	revertRefusalField = "revert_refusal"
 )
 
 // Rewrites records each merged agent PR's measured lines on its run row and
@@ -110,6 +115,9 @@ func runRow(snap *firestore.DocumentSnapshot) dispatcher.RunRow {
 	}
 	row.MergedBy = str(snap.Data(), mergedByField)
 	row.AutoMerge, _ = snap.Data()[autoMergeField].(bool)
+	revertedBy, _ := snap.Data()[revertedByField].(int64)
+	row.RevertedBy = int(revertedBy)
+	row.RevertRefusal = str(snap.Data(), revertRefusalField)
 	return row
 }
 
@@ -166,6 +174,30 @@ func (r *Rewrites) Record(ctx context.Context, id string, m dispatcher.Measured)
 	}, firestore.MergeAll)
 	if err != nil {
 		return fmt.Errorf("recording run %s's rewrite: %w", id, err)
+	}
+	return nil
+}
+
+// RecordRevert writes the number of the revert opened for run id's merged PR
+// onto its row.
+func (r *Rewrites) RecordRevert(ctx context.Context, id string, number int) error {
+	_, err := r.client.Collection(runsCollection).Doc(id).Set(ctx, map[string]any{
+		revertedByField: int64(number),
+	}, firestore.MergeAll)
+	if err != nil {
+		return fmt.Errorf("recording run %s's revert: %w", id, err)
+	}
+	return nil
+}
+
+// RecordRevertRefusal keeps GitHub's refusal to open the revert of run id's
+// merged PR on its row.
+func (r *Rewrites) RecordRevertRefusal(ctx context.Context, id, refusal string) error {
+	_, err := r.client.Collection(runsCollection).Doc(id).Set(ctx, map[string]any{
+		revertRefusalField: refusal,
+	}, firestore.MergeAll)
+	if err != nil {
+		return fmt.Errorf("recording run %s's revert refusal: %w", id, err)
 	}
 	return nil
 }

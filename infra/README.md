@@ -374,14 +374,20 @@ and admission falls back to the plan's fixed limits.
 printf %s "$OPENCODE_API_KEY" | gcloud secrets versions add opencode-api-key --data-file=-
 ```
 
-The GitHub token also needs two permissions on every listed repository.
+The GitHub token also needs these permissions on every listed repository.
 `pull_requests: read`: admission counts the open agent PRs, and a repository it
 cannot read leaves that count unknown, which admits only a lone run.
 `actions: write`: the dispatch is a `workflow_dispatch`, which GitHub refuses
 with 403 "Resource not accessible by personal access token" without it.
+*Updated (2026-11-19):* **Contents: Read and write** and **Pull requests: Read and
+write** (the second replaces `pull_requests: read` above): when an auto-merged PR
+turns main red, the dispatcher opens its revert with GraphQL's `revertPullRequest`,
+which pushes a revert branch (Contents) and opens a pull request from it (Pull
+requests), and needs both. Without them GitHub refuses it, the dispatcher logs
+`revertNotOpened reason=refused` and latches auto-merge off with no revert prepared.
 
 The dispatcher's checks phase reads check runs, commit statuses and the branch rules of
-each listed repository with no permission beyond the two above, which works only on a public
+each listed repository with no permission beyond those above, which works only on a public
 repository; a private one is unsupported, since fine-grained tokens have no Checks permission.
 
 `secrets.tf` creates four more, empty and readable by no identity until the code

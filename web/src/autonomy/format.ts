@@ -190,6 +190,12 @@ export function rateLine(merge: MergeState): string {
     case "switch-off":
       return `off: switched off by you; ${rate}`;
     case "escaped": {
+      // "red-main" matches the Go constant EscapeRedMain in internal/dispatcher/measure.go.
+      if (merge.escaped_reason === "red-main") {
+        // The first red commit on main's first-parent chain is read whenever main is red, so no window applies.
+        const revert = merge.escaped_by > 0 ? `; revert #${merge.escaped_by} waits for you` : "";
+        return `off: ${merge.escaped_repo}#${merge.escaped_pr} left main failing its required checks${revert}; auto-merge is off until you switch it on again; ${rate}`;
+      }
       const how =
         merge.escaped_reason === "fixed"
           ? `was named as fixed by #${merge.escaped_by}`
