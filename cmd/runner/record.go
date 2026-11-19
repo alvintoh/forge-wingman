@@ -76,7 +76,7 @@ func record(ctx context.Context, logger *slog.Logger, getenv func(string) string
 	if err != nil {
 		return err
 	}
-	defer wakeAfterRecord(ctx, logger, googleClient, *dispatcherURI, *runID)
+	defer wakeAfterRecord(ctx, logger, googleClient, store.NewPollClock(fsc), *dispatcherURI, *runID)
 	if rec.StopReason == runner.StopSummaryInvalid {
 		logger.Warn("summaryRejected", "run", *runID, "err", rec.StopDetail)
 	}

@@ -101,10 +101,80 @@ func TestAcknowledgeRetriesWithAReMintedToken(t *testing.T) {
 	}
 }
 
+// wakeLog counts the wake requests a Job records, failing them with err, and
+// keeps how long the last one was given.
+type wakeLog struct {
+	n      int
+	err    error
+	budget time.Duration
+}
+
+func (w *wakeLog) RequestWake(ctx context.Context) error {
+	w.n++
+	w.budget = -1
+	if deadline, ok := ctx.Deadline(); ok {
+		w.budget = time.Until(deadline)
+	}
+	return w.err
+}
+
+// wakeServer counts the run requests it answers with status.
+func wakeServer(t *testing.T, status int) (*httptest.Server, *int) {
+	t.Helper()
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(status)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &calls
+}
+
+// TestWakeStartsTheExecutionItCouldNotRecord is a Firestore blip on the wake
+// record: the execution still starts, since it may still poll, and the error
+// says the wake was not recorded so a caller that can retry does.
+func TestWakeStartsTheExecutionItCouldNotRecord(t *testing.T) {
+	for name, requests := range map[string]WakeRequester{
+		"no store":      nil,
+		"a write fails": &wakeLog{err: errors.New("unavailable")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv, calls := wakeServer(t, http.StatusOK)
+			err := Job{RunURI: srv.URL + "/v2/jobs/d:run", Client: srv.Client(), Requests: requests}.Wake(context.Background())
+			if !errors.Is(err, ErrWakeNotRecorded) || *calls != 1 {
+				t.Fatalf("err = %v after %d run requests, want ErrWakeNotRecorded and one sent", err, *calls)
+			}
+		})
+	}
+}
+
+// TestWakeDoesNotCallAFailedStartUnrecorded keeps ErrWakeNotRecorded to a wake
+// whose execution did start, so no caller takes a failed start for one.
+func TestWakeDoesNotCallAFailedStartUnrecorded(t *testing.T) {
+	srv, _ := wakeServer(t, http.StatusForbidden)
+	err := Job{RunURI: srv.URL + "/v2/jobs/d:run", Client: srv.Client(), Requests: &wakeLog{err: errors.New("unavailable")}}.Wake(context.Background())
+	if err == nil || errors.Is(err, ErrWakeNotRecorded) {
+		t.Fatalf("err = %v, want the start's failure and not ErrWakeNotRecorded", err)
+	}
+}
+
+// TestWakeRecordsOnItsOwnShortDeadline keeps the record and the run request
+// inside the webhook's 2s call deadline.
+func TestWakeRecordsOnItsOwnShortDeadline(t *testing.T) {
+	srv, _ := wakeServer(t, http.StatusOK)
+	requests := &wakeLog{}
+	if err := (Job{RunURI: srv.URL + "/v2/jobs/d:run", Client: srv.Client(), Requests: requests}).Wake(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if requests.budget <= 0 || requests.budget > time.Second {
+		t.Fatalf("the record was given %v, want a deadline under 1s", requests.budget)
+	}
+}
+
 func TestWakeReportsAnUnreachableJob(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	srv.Close()
-	if err := (Job{RunURI: srv.URL + "/v2/jobs/d:run", Client: srv.Client()}).Wake(context.Background()); err == nil {
+	if err := (Job{RunURI: srv.URL + "/v2/jobs/d:run", Client: srv.Client(), Requests: &wakeLog{}}).Wake(context.Background()); err == nil {
 		t.Fatal("woke an unreachable job")
 	}
 }
@@ -126,9 +196,13 @@ func TestWake(t *testing.T) {
 				_, _ = io.WriteString(w, `{"name":"operations/1"}`)
 			}))
 			t.Cleanup(srv.Close)
-			err := Job{RunURI: srv.URL + "/v2/jobs/d:run", Client: srv.Client()}.Wake(context.Background())
+			requests := &wakeLog{}
+			err := Job{RunURI: srv.URL + "/v2/jobs/d:run", Client: srv.Client(), Requests: requests}.Wake(context.Background())
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("err = %v", err)
+			}
+			if requests.n != 1 {
+				t.Errorf("%d wake requests recorded, want 1", requests.n)
 			}
 			if method != http.MethodPost || !strings.HasSuffix(path, ":run") {
 				t.Errorf("%s %s", method, path)

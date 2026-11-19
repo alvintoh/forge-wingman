@@ -13,7 +13,8 @@ import (
 // + pr 10 + record 10 = 190, or 205 with the shots job a front-end PR adds.
 // Plan: ticket 10 + model 120 + record-plan-stage 10 = 140. Each adds 30 minutes
 // for Actions queueing, less the shots job's 15 on a front-end build; detection
-// lags by up to PollInterval on top.
+// lags by up to the gap between scheduled polls on top: PollInterval on the
+// 15-minute schedule, 20 minutes on a 10-minute one with a 15-minute setting.
 const (
 	buildAbandonWindow = 220 * time.Minute
 	planAbandonWindow  = 170 * time.Minute
