@@ -739,3 +739,28 @@ func TestCheckFreeIDsRefusesAMarkedFreeIDWithNoSmokeRun(t *testing.T) {
 		t.Fatalf("checkFreeIDs = %v, want a proven free model and a paid model accepted", err)
 	}
 }
+
+func TestBuildCandidatesArePaidPlansRateCardedModelsOffTheFreeTier(t *testing.T) {
+	cfg := Config{
+		PaidPlans: []string{"paid", "unrun"},
+		Providers: map[string]Provider{
+			"paid": {
+				Harnesses:  HarnessOrder{Default: "omp"},
+				Rates:      map[string]Rates{"paid/b": {}, "paid/a": {}, "paid/free": {}},
+				LastResort: LastResort{Models: []string{"paid/free"}},
+			},
+			"unrun": {Rates: map[string]Rates{"unrun/a": {}}},
+			"other": {Harnesses: HarnessOrder{Default: "omp"}, Rates: map[string]Rates{"other/a": {Input: 1}}},
+		},
+	}
+	if got, want := buildCandidates(cfg), []string{"paid/a", "paid/b"}; !slices.Equal(got, want) {
+		t.Fatalf("candidates = %v, want %v", got, want)
+	}
+}
+
+func TestBuildCandidatesOfferMoreThanTheDefaultBuildModel(t *testing.T) {
+	got := BuildCandidates()
+	if !slices.ContainsFunc(got, func(m string) bool { return m != PlanModels(PaidPlans()[0]).Build }) {
+		t.Fatalf("candidates = %v, want a model other than the default build model", got)
+	}
+}

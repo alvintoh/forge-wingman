@@ -3321,3 +3321,37 @@ func TestRequeuesDropTheOwnersNoteExceptTheAutomaticOnes(t *testing.T) {
 		})
 	}
 }
+
+func TestTryClaimRecordsTheChosenModelOnlyOnARowNamingNone(t *testing.T) {
+	const chosen, later, named = "opencode-go/claude-haiku-5-5", "opencode-go/deepseek-v4.1-flash", "opencode-go/kimi-k3"
+	q, client := queue(t)
+	ctx := context.Background()
+	unlabelled, labelled := queuedRun(fresh("choice-none"), 1), queuedRun(fresh("choice-named"), 1)
+	labelled.Models = runner.ModelLabels{Build: named}
+	forget(t, client, unlabelled.RunID, labelled.RunID)
+	resetLedger(t, client, 4)
+	for _, run := range []dispatcher.Queued{unlabelled, labelled} {
+		if err := q.Enqueue(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+		if ok, _, err := q.TryClaim(ctx, run.RunID, queueAt, generousBudget, openFacts, dispatcher.Reservation{ChosenModel: chosen}); err != nil || !ok {
+			t.Fatalf("claim of %s = %v, %v", run.RunID, ok, err)
+		}
+	}
+	if row := readRow(t, client, unlabelled.RunID); buildModel(row) != chosen || row[chosenModelField] != chosen {
+		t.Fatalf("unlabelled row = %v, want the chosen %s as its build label", row, chosen)
+	}
+	if row := readRow(t, client, labelled.RunID); buildModel(row) != named || row[chosenModelField] != nil {
+		t.Fatalf("labelled row = %v, want the ticket's %s kept and nothing chosen", row, named)
+	}
+	// A later claim of the same run keeps the model the first one chose.
+	if _, err := client.Collection(runsCollection).Doc(unlabelled.RunID).Update(ctx, []firestore.Update{{Path: stateField, Value: stateQueued}}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := q.TryClaim(ctx, unlabelled.RunID, queueAt, generousBudget, openFacts, dispatcher.Reservation{ChosenModel: later}); err != nil || !ok {
+		t.Fatalf("second claim = %v, %v", ok, err)
+	}
+	if row := readRow(t, client, unlabelled.RunID); buildModel(row) != chosen || row[chosenModelField] != chosen {
+		t.Fatalf("row = %v after a later claim, want the first claim's %s kept", row, chosen)
+	}
+}

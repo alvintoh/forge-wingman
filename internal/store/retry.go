@@ -187,19 +187,49 @@ func (q *Queue) RetryAwaitingClaim(ctx context.Context, runID string) (bool, err
 
 // RefreshRetriedModels sets the model labels of a run the owner retried to m
 // while its attempt waits to be claimed, so the claim and the run's ticket job
-// read the models the ticket names now. It reports whether it changed them; any
-// other run, or one already naming m, is left untouched.
-func (q *Queue) RefreshRetriedModels(ctx context.Context, runID string, m runner.ModelLabels) (bool, error) {
+// read the models the ticket names now. Where m names no build model, the one
+// an earlier claim chose for the run stays, even if the ticket's size has since
+// changed: a retry keeps its first claim's model. It returns the labels the run
+// then holds, zero for any other run, and whether it changed them; a run
+// already naming them is left untouched.
+func (q *Queue) RefreshRetriedModels(ctx context.Context, runID string, m runner.ModelLabels) (runner.ModelLabels, bool, error) {
+	var effective runner.ModelLabels
 	changed, err := q.updateRetried(ctx, runID, func(row map[string]any) []firestore.Update {
-		if sameModels(modelLabelsOf(row), m) {
+		effective = m
+		if effective.Build == "" {
+			effective.Build = str(row, chosenModelField)
+		}
+		if sameModels(modelLabelsOf(row), effective) {
 			return nil
 		}
-		return []firestore.Update{{Path: modelLabelsField, Value: m}}
+		return []firestore.Update{{Path: modelLabelsField, Value: effective}}
 	})
 	if err != nil {
-		return false, fmt.Errorf("refreshing the models of retried run %s: %w", runID, err)
+		return runner.ModelLabels{}, false, fmt.Errorf("refreshing the models of retried run %s: %w", runID, err)
 	}
-	return changed, nil
+	return effective, changed, nil
+}
+
+// ClearChosenModel drops the build model a claim chose for a run the owner
+// retried, while its attempt waits to be claimed, so the next claim chooses
+// again. The build label goes with it only while it is still that model. It
+// reports whether the run held a chosen model; any other run is left untouched.
+func (q *Queue) ClearChosenModel(ctx context.Context, runID string) (bool, error) {
+	cleared, err := q.updateRetried(ctx, runID, func(row map[string]any) []firestore.Update {
+		chosen := str(row, chosenModelField)
+		if chosen == "" {
+			return nil
+		}
+		updates := []firestore.Update{{Path: chosenModelField, Value: firestore.Delete}}
+		if buildModel(row) == chosen {
+			updates = append(updates, firestore.Update{FieldPath: firestore.FieldPath{modelLabelsField, "build"}, Value: firestore.Delete})
+		}
+		return updates
+	})
+	if err != nil {
+		return false, fmt.Errorf("clearing the chosen model of retried run %s: %w", runID, err)
+	}
+	return cleared, nil
 }
 
 // StopRetried ends the attempt of a run the owner retried, while it waits to be

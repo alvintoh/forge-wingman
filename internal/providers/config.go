@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -923,6 +924,27 @@ func runModels(providers map[string]Provider, plans []string) []string {
 		for _, model := range p.LastResort.Models {
 			add(model)
 		}
+	}
+	return models
+}
+
+// BuildCandidates are the models a claim may build an unlabelled run on: each
+// paid plan's rate-carded models that are not on its free tier, for a plan that
+// names a harness to run them through, in paid-plan order and by id within a
+// plan.
+func BuildCandidates() []string { return buildCandidates(embeddedConfig) }
+
+func buildCandidates(cfg Config) []string {
+	var models []string
+	for _, plan := range cfg.PaidPlans {
+		p := cfg.Providers[plan]
+		if p.Harnesses.Default == "" {
+			continue
+		}
+		priced := slices.Sorted(maps.Keys(p.Rates))
+		models = append(models, slices.DeleteFunc(priced, func(m string) bool {
+			return slices.Contains(p.LastResort.Models, m)
+		})...)
 	}
 	return models
 }

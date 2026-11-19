@@ -1,6 +1,7 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -148,7 +149,7 @@ func (r *Records) Comparison(ctx context.Context, since time.Time) (Comparison, 
 		if len(rec.Steps) == 0 {
 			continue
 		}
-		model := creditedModel(rec)
+		model := buildCredit(rec)
 		// A record with no build step and no label carries no model to
 		// credit, so it is left out of the model totals rather than reported
 		// under an empty name.
@@ -233,6 +234,62 @@ func (r *Records) Comparison(ctx context.Context, since time.Time) (Comparison, 
 	return out, nil
 }
 
+// ModelRecords implements dispatcher.ModelRecords: every settled run in the
+// window that the comparison credits to a build model, summed per model and
+// size, with "passed" meaning what the comparison's pass rate means. Only the
+// fields that takes are read, and a run's input counts only from its build
+// steps on the credited model, so another phase's model never moves its share.
+// Only PhaseBuild steps count toward the cache share: fix-round steps on the
+// same model do not.
+func (r *Records) ModelRecords(ctx context.Context, since time.Time) ([]dispatcher.ModelRecord, error) {
+	iter := r.client.Collection(runsCollection).Where(settledAtField, ">=", since).
+		Select(stepsField, sizeField, outcomeField, modelLabelsField).Documents(ctx)
+	defer iter.Stop()
+	type key struct{ model, size string }
+	totals := map[key]*dispatcher.ModelRecord{}
+	for {
+		snap, err := iter.Next()
+		if errors.Is(err, iterator.Done) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading the model records of runs settled since %s: %w", since.UTC().Format(time.RFC3339), err)
+		}
+		var rec runner.Record
+		if err := snap.DataTo(&rec); err != nil {
+			return nil, fmt.Errorf("decoding run %s: %w", snap.Ref.ID, err)
+		}
+		model := buildCredit(rec)
+		if model == "" {
+			continue
+		}
+		k := key{model, rec.Size}
+		t := totals[k]
+		if t == nil {
+			t = &dispatcher.ModelRecord{Model: model, Size: rec.Size}
+			totals[k] = t
+		}
+		t.Settled++
+		if rec.Succeeded() {
+			t.Passed++
+		}
+		for _, step := range rec.Steps {
+			if step.Phase == runner.PhaseBuild && step.Model == model {
+				t.FreshInput += step.Tokens.Input
+				t.CacheRead += step.Tokens.CacheRead
+			}
+		}
+	}
+	out := make([]dispatcher.ModelRecord, 0, len(totals))
+	for _, t := range totals {
+		out = append(out, *t)
+	}
+	slices.SortFunc(out, func(a, b dispatcher.ModelRecord) int {
+		return cmp.Or(strings.Compare(a.Model, b.Model), strings.Compare(a.Size, b.Size))
+	})
+	return out, nil
+}
+
 // PlanCaches sums every settled run in the window into its plan's own
 // prompt-cache figures per phase, so a plan reads the way one run of it does but
 // covers every run that recorded the phase. Runs with no provider, and phases a
@@ -302,6 +359,16 @@ type modelTotal struct {
 	lines dispatcher.Rewrite
 	// rewriteSample is how many of the model's runs carry a measurement.
 	rewriteSample int
+}
+
+// buildCredit is the model a settled run counts toward in the model
+// comparison, empty for one that counts toward none: a run that took no step,
+// or whose build is no one model's.
+func buildCredit(rec runner.Record) string {
+	if len(rec.Steps) == 0 {
+		return ""
+	}
+	return creditedModel(rec)
 }
 
 // creditedModel is the model a run is credited to: the one model its build-phase

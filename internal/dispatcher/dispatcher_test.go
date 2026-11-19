@@ -167,6 +167,10 @@ type fakeQueue struct {
 	retried        map[string]bool
 	retriedModels  map[string]runner.ModelLabels
 	stoppedRetried map[string]string
+	// chosenModels is the build model a claim chose for each retried run, and
+	// clearedChosen the runs whose chosen model was dropped.
+	chosenModels  map[string]string
+	clearedChosen []string
 	// stopRaced makes StopRetried find the run already claimed by another poll.
 	stopRaced bool
 
@@ -340,14 +344,26 @@ func (q *fakeQueue) RetryAwaitingClaim(_ context.Context, runID string) (bool, e
 	return q.retried[runID], nil
 }
 
-func (q *fakeQueue) RefreshRetriedModels(_ context.Context, runID string, m runner.ModelLabels) (bool, error) {
+func (q *fakeQueue) RefreshRetriedModels(_ context.Context, runID string, m runner.ModelLabels) (runner.ModelLabels, bool, error) {
 	if !q.retried[runID] {
-		return false, nil
+		return runner.ModelLabels{}, false, nil
+	}
+	if m.Build == "" {
+		m.Build = q.chosenModels[runID]
 	}
 	if q.retriedModels == nil {
 		q.retriedModels = map[string]runner.ModelLabels{}
 	}
 	q.retriedModels[runID] = m
+	return m, true, nil
+}
+
+func (q *fakeQueue) ClearChosenModel(_ context.Context, runID string) (bool, error) {
+	if !q.retried[runID] || q.chosenModels[runID] == "" {
+		return false, nil
+	}
+	delete(q.chosenModels, runID)
+	q.clearedChosen = append(q.clearedChosen, runID)
 	return true, nil
 }
 
