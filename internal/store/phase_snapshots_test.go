@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -158,5 +160,47 @@ func TestTicketRunsReadsEndedQueuedAndInFlightAndLastActivity(t *testing.T) {
 	}
 	if at, err := q.LastActivity(ctx, "octo/"+fresh("quiet")); err != nil || !at.IsZero() {
 		t.Errorf("LastActivity of a repository with no run = %v, %v, want zero", at, err)
+	}
+}
+
+func TestDrivesLinearProjectCountsOnlyRecentReadableSnapshots(t *testing.T) {
+	_, client := queue(t)
+	ctx := context.Background()
+	at := time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)
+	recent, stale, ahead, blank := fresh("Roadmap"), fresh("Delisted"), fresh("Ahead"), "Octo/"+fresh("Blank")
+	snapshots := []dispatcher.PhaseSnapshot{
+		{Repository: "Octo/" + fresh("Widget"), LinearProject: recent, At: at.Add(-maxSnapshotAge + time.Minute)},
+		{Repository: "Octo/" + fresh("Widget"), LinearProject: stale, At: at.Add(-maxSnapshotAge)},
+		{Repository: "Octo/" + fresh("Widget"), LinearProject: ahead, At: at.Add(maxSnapshotAge)},
+		{Repository: blank, At: at},
+	}
+	undecodable := client.Collection(phaseSnapshotCollection).Doc(fresh("undecodable"))
+	t.Cleanup(func() {
+		for _, snap := range snapshots {
+			_, _ = client.Collection(phaseSnapshotCollection).Doc(projectDocID(snap.Repository)).Delete(context.Background())
+		}
+		_, _ = undecodable.Delete(context.Background())
+	})
+	s := NewPhaseSnapshots(client).WithLogger(slog.New(slog.DiscardHandler))
+	if err := s.RecordSnapshots(ctx, snapshots); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := undecodable.Set(ctx, map[string]any{linearProjectField: 7, snapshotAtField: "yesterday"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, project string
+		want          bool
+	}{
+		{"read within the hour", recent, true},
+		{"another case", strings.ToUpper(recent), true},
+		{"read an hour ago", stale, false},
+		{"read an hour ahead", ahead, false},
+		{"not recorded", fresh("Elsewhere"), false},
+		{"no name, beside a snapshot without one", "", false},
+	} {
+		if got, err := s.DrivesLinearProject(ctx, tc.project, at); err != nil || got != tc.want {
+			t.Errorf("%s: drives %q = %v, %v; want %v", tc.name, tc.project, got, err, tc.want)
+		}
 	}
 }

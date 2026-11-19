@@ -57,7 +57,7 @@ func TestLoadConfigNamesWhatIsMissing(t *testing.T) {
 
 func TestNewLinearHandlerBindsTheQueueToRepliesAndPriorityEdits(t *testing.T) {
 	h := newLinearHandler(nil, nil, nil, nil, slog.New(slog.DiscardHandler))
-	if h.Priority == nil || h.Replier == nil || h.Markers == nil {
+	if h.Priority == nil || h.Replier == nil || h.Markers == nil || h.Driven == nil || h.PhaseWakes == nil {
 		t.Fatalf("handler has an unwired store dependency: %+v", h)
 	}
 	if any(h.Priority) != any(h.Replier) {

@@ -94,8 +94,11 @@ type PhaseTicket struct {
 // PhaseSnapshot is what one poll read of a project's phases. An unreadable one
 // says why and when, and carries nothing else.
 type PhaseSnapshot struct {
-	Repository string          `firestore:"repository" json:"repository"`
-	Phases     []PhaseProgress `firestore:"phases" json:"phases"`
+	Repository string `firestore:"repository" json:"repository"`
+	// LinearProject is the Linear project the snapshot reads, so the webhook can
+	// tell an issue of a driven project from any other without the owner database.
+	LinearProject string          `firestore:"linear_project" json:"-"`
+	Phases        []PhaseProgress `firestore:"phases" json:"phases"`
 	// Current is the first phase not fully done, empty when every phase is.
 	Current  string        `firestore:"current" json:"current"`
 	InFlight []PhaseTicket `firestore:"in_flight" json:"in_flight"`
@@ -206,7 +209,7 @@ func pollProjects(ctx context.Context, d Deps, reaches []RepoReach) {
 	views := make([]phaseView, 0, len(projects))
 	for _, p := range projects {
 		if err != nil {
-			views = append(views, phaseView{snapshot: unreadableSnapshot(p.Repository, StartRefusedUnreadable, at)})
+			views = append(views, phaseView{snapshot: unreadableSnapshot(p, StartRefusedUnreadable, at)})
 			continue
 		}
 		views = append(views, projectView(ctx, d, p, issues, at))
@@ -271,8 +274,8 @@ func linearProjects(projects []PhaseProject) []string {
 	return names
 }
 
-func unreadableSnapshot(repository, reason string, at time.Time) PhaseSnapshot {
-	return PhaseSnapshot{Repository: repository, Unreadable: true, Reason: reason, At: at}
+func unreadableSnapshot(p PhaseProject, reason string, at time.Time) PhaseSnapshot {
+	return PhaseSnapshot{Repository: p.Repository, LinearProject: p.LinearProject, Unreadable: true, Reason: reason, At: at}
 }
 
 // projectView reads the run rows of the project's open tickets in its current
@@ -299,11 +302,11 @@ func projectView(ctx context.Context, d Deps, p PhaseProject, all []Issue, at ti
 		var err error
 		if runs, err = d.ProjectPhases.Runs.TicketRuns(ctx, ids); err != nil {
 			d.Logger.Warn("phaseRunsUnread", "repo", p.Repository, "err", err.Error())
-			return phaseView{snapshot: unreadableSnapshot(p.Repository, SnapshotRunsUnreadable, at)}
+			return phaseView{snapshot: unreadableSnapshot(p, SnapshotRunsUnreadable, at)}
 		}
 	}
 	v := phaseView{snapshot: PhaseSnapshot{
-		Repository: p.Repository, Phases: progress, Current: current,
+		Repository: p.Repository, LinearProject: p.LinearProject, Phases: progress, Current: current,
 		InFlight: []PhaseTicket{}, Eligible: []string{}, At: at,
 	}}
 	for _, issue := range open {

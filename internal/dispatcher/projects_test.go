@@ -174,6 +174,9 @@ func TestPollProjectsSnapshotsTheCurrentPhase(t *testing.T) {
 	if !slices.Equal(got.Phases, wantPhases) || got.Current != "P2" {
 		t.Errorf("phases = %v current %q, want %v current P2", got.Phases, got.Current, wantPhases)
 	}
+	if got.LinearProject != "Roadmap" {
+		t.Errorf("linear project = %q, want Roadmap", got.LinearProject)
+	}
 	if want := []PhaseTicket{{ID: "FRG-3", Title: "[BE] FRG-3", Stage: "building"}}; !slices.Equal(got.InFlight, want) || got.Queued != 1 || got.QueuedBlocked != 1 || got.EligibleBlocked != 1 {
 		t.Errorf("in flight %v queued %d queued blocked %d eligible blocked %d", got.InFlight, got.Queued, got.QueuedBlocked, got.EligibleBlocked)
 	}
@@ -299,7 +302,8 @@ func TestStartDelegatesNothingWhenLinearCannotBeRead(t *testing.T) {
 	if len(closures.tickets) != 0 {
 		t.Fatalf("marked closed %v from a failed read", closures.tickets)
 	}
-	if len(snaps.got) != 1 || !snaps.got[0].Unreadable || snaps.got[0].Reason != StartRefusedUnreadable || !snaps.got[0].At.Equal(phaseNow) {
+	if len(snaps.got) != 1 || !snaps.got[0].Unreadable || snaps.got[0].Reason != StartRefusedUnreadable || !snaps.got[0].At.Equal(phaseNow) ||
+		snaps.got[0].LinearProject != "Roadmap" {
 		t.Errorf("snapshot = %+v, want unreadable with its reason and time", snaps.got)
 	}
 	if want := []string{"octo/widget:linear-unreadable"}; !slices.Equal(projects.resolved, want) {
