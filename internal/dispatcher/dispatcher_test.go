@@ -570,6 +570,7 @@ func pollDeps(source Source, q *fakeQueue, w *fakeWorkflow) Deps {
 		PullRequests: &fakePullRequests{},
 		Rewrites:     &fakeRewrites{},
 		Escapes:      &fakeEscapes{},
+		Reverts:      &fakeReverts{},
 		Checks:       ChecksDeps{Runs: &fakeChecksRuns{}, GitHub: &fakeChecksGitHub{required: MergeChecks()}, Branch: "main"},
 		RulesetMarks: newFakeRulesetMarks(),
 	}

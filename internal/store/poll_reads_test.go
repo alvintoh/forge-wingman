@@ -116,6 +116,7 @@ func pollReadDeps(q *Queue, openPRs int) dispatcher.Deps {
 		PullRequests: pollPullRequests{},
 		Rewrites:     pollRewrites{},
 		Escapes:      pollEscapes{},
+		Reverts:      pollReverts{},
 		Checks:       dispatcher.ChecksDeps{Runs: pollChecksRuns{}, GitHub: pollChecksGitHub{}, Branch: "main"},
 		RulesetMarks: pollRulesetMarks{},
 		Workflow:     pollWorkflow{},
@@ -261,8 +262,27 @@ func (pollRewrites) MarkUnfound(context.Context, string, int, time.Time) (bool, 
 func (pollRewrites) Record(context.Context, string, dispatcher.Measured) error {
 	return nil
 }
+func (pollRewrites) RecordRevert(context.Context, string, int) error {
+	return nil
+}
+func (pollRewrites) RecordRevertRefusal(context.Context, string, string) error {
+	return nil
+}
 func (pollRewrites) Recent(context.Context, int) ([]dispatcher.Sample, error) {
 	return nil, nil
+}
+
+// pollReverts answers a main whose head no run merged, so no revert is looked for.
+type pollReverts struct{}
+
+func (pollReverts) FirstParents(context.Context, string, string) ([]string, error) {
+	return []string{"0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c"}, nil
+}
+func (pollReverts) OpenPulls(context.Context, string) ([]dispatcher.ClosedPR, error) {
+	return nil, nil
+}
+func (pollReverts) RevertPull(context.Context, dispatcher.ClosedPR, string, string) (int, error) {
+	return 0, nil
 }
 
 // pollEscapes records nothing: the polls here count the queue's reads.

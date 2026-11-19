@@ -74,6 +74,34 @@ func TestRewritesFindsTheRunRowByBranch(t *testing.T) {
 	}
 }
 
+// The revert and the refusal recorded on a row are read back with it, so a later
+// poll opens no second revert of the same merge and raises a repeated refusal
+// once, and a measurement written after them keeps them.
+func TestRewritesRecordsTheRevertOnTheRunRow(t *testing.T) {
+	_, client := queue(t)
+	ctx := context.Background()
+	run := fresh("rewrites-revert")
+	branch := "wingman/rewrites-revert-1"
+	seedRow(t, client, run, map[string]any{branchField: branch})
+	r := NewRewrites(client)
+	if err := r.RecordRevert(ctx, run, 12); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Record(ctx, run, dispatcher.Measured{MergedAt: mergeAt}); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRow(t, client, run)[revertedByField]; got != int64(12) {
+		t.Fatalf("reverted_by = %v, want 12", got)
+	}
+	if err := r.RecordRevertRefusal(ctx, run, "GitHub refused to revert pull request #7: Resource not accessible"); err != nil {
+		t.Fatal(err)
+	}
+	row, ok, err := r.RunForMerged(ctx, "octo/scratch", dispatcher.ClosedPR{Number: 7, Head: branch})
+	if err != nil || !ok || row.RevertedBy != 12 || row.RevertRefusal != "GitHub refused to revert pull request #7: Resource not accessible" {
+		t.Fatalf("RunForMerged = %+v, %v, %v, want the row naming revert 12 and the refusal kept", row, ok, err)
+	}
+}
+
 // A run's recorded branches are the field a merge is matched on, so the record
 // job's own field name and this store's read of it are one name: a rename of
 // either has to fail here.

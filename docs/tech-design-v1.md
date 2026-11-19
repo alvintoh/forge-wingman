@@ -354,6 +354,17 @@ document is left unread. An auto-merged PR a later merge reverted or named as fi
 (`fixes #<n>`) within 7 days still latches auto-merge off until the owner switches it on
 again. A size-S run is eligible without a recorded plan; a size-M or L run without one still
 waits.
+**Updated (2026-11-19):** a red main whose first red commit is an auto-merge is a latch
+trigger, with a prepared revert. When main fails a required check, the dispatcher follows
+main's first parents back, at most 20 commits, to the commit that turned it red: the oldest
+failing commit whose own first parent passes. When that commit is the merge of a run PR the
+product merged itself, the dispatcher opens a `Revert "<title>"` PR of it through GitHub's
+`revertPullRequest` mutation, leaves it for the owner (never marked eligible), latches
+auto-merge off naming the auto-merged PR, and records `reverted_by` on its run row; a revert
+already open is taken instead of another, and a merge is reverted once. A first red commit
+that is not a product auto-merge opens and latches nothing, and checks still pending on the
+way leave it for the next poll. The dispatcher's GitHub token needs Contents and Pull
+requests write for the revert.
 
 **Front-end hold — *Updated (2026-10-13)*, forge-wingman #115.** Eligibility for auto-merge
 (`FR-5`) excludes an S or M PR that touches the front end, which stays ready, not a draft.

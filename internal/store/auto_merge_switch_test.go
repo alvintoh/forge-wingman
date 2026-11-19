@@ -152,6 +152,37 @@ func TestAutoMergeEscapeIsRecordedOnceAndClearedBySwitchingOn(t *testing.T) {
 	}
 }
 
+// A red main's revert can open on a later poll than the latch: the same escape
+// seen again names it, while another escape still leaves the latch alone.
+func TestALatchedEscapeTakesTheRevertOpenedLater(t *testing.T) {
+	a, _ := autoMergeSwitchesOver(t)
+	ctx := context.Background()
+	red := dispatcher.MergeEscape{Repo: "octo/scratch", PR: 7, Reason: dispatcher.EscapeRedMain, At: noticeAt}
+	if fresh, err := a.RecordEscape(ctx, red); err != nil || !fresh {
+		t.Fatalf("RecordEscape = %v, %v, want the first recorded", fresh, err)
+	}
+	named := red
+	named.By, named.At = 12, noticeAt.Add(time.Hour)
+	if fresh, err := a.RecordEscape(ctx, named); err != nil || fresh {
+		t.Fatalf("RecordEscape = %v, %v, want the same escape not counted as a first record", fresh, err)
+	}
+	for _, other := range []dispatcher.MergeEscape{
+		{Repo: "octo/scratch", PR: 7, By: 13, Reason: dispatcher.EscapeReverted},
+		{Repo: "octo/scratch", PR: 8, By: 14, Reason: dispatcher.EscapeRedMain},
+		{Repo: "octo/other", PR: 7, By: 15, Reason: dispatcher.EscapeRedMain},
+		{Repo: "octo/scratch", PR: 7, Reason: dispatcher.EscapeRedMain},
+	} {
+		if _, err := a.RecordEscape(ctx, other); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := red
+	want.By = 12
+	if setting, err := a.Read(ctx); err != nil || setting.Escaped != want {
+		t.Fatalf("Read = %+v, %v, want %+v", setting.Escaped, err, want)
+	}
+}
+
 // The owner switching on acknowledges the escaped PR: a poll reads the same revert
 // again, and it must not latch a second time, while an escape of another PR still
 // does.

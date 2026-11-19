@@ -128,23 +128,17 @@ func (g GitHub) Private(ctx context.Context, repo string) (bool, error) {
 // allowlist names, and fails rather than report a count that may be short when
 // the open PRs fill maxPullsPages pages.
 func (g GitHub) OpenAgentPRs(ctx context.Context, repo string) (int, error) {
+	pulls, err := g.OpenPulls(ctx, repo)
+	if err != nil {
+		return 0, err
+	}
 	n := 0
-	for page := 1; page <= maxPullsPages; page++ {
-		endpoint := fmt.Sprintf("%s/repos/%s/pulls?state=open&per_page=%d&page=%d", g.endpoint(), repo, pullsPerPage, page)
-		heads, err := g.openPullHeads(ctx, endpoint, repo)
-		if err != nil {
-			return 0, err
-		}
-		for _, ref := range heads {
-			if strings.HasPrefix(ref, runner.BranchPrefix) {
-				n++
-			}
-		}
-		if len(heads) < pullsPerPage {
-			return n, nil
+	for _, pr := range pulls {
+		if strings.HasPrefix(pr.Head, runner.BranchPrefix) {
+			n++
 		}
 	}
-	return 0, fmt.Errorf("%s may hold more than %d open pull requests", repo, maxPullsPages*pullsPerPage)
+	return n, nil
 }
 
 // PullOpen reports whether pull request number in repo is open.
@@ -162,28 +156,6 @@ func (g GitHub) PullOpen(ctx context.Context, repo string, number int) (bool, er
 		return false, fmt.Errorf("decoding pull request %d of %s: %w", number, repo, err)
 	}
 	return body.State == "open", nil
-}
-
-// openPullHeads is the head branch of every PR on one page of the listing.
-func (g GitHub) openPullHeads(ctx context.Context, endpoint, repo string) ([]string, error) {
-	res, err := g.do(ctx, http.MethodGet, endpoint, nil, fmt.Sprintf("list open pull requests in %s", repo))
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = res.Body.Close() }()
-	var pulls []struct {
-		Head struct {
-			Ref string `json:"ref"`
-		} `json:"head"`
-	}
-	if err := json.NewDecoder(io.LimitReader(res.Body, maxPullsResponseBytes)).Decode(&pulls); err != nil {
-		return nil, fmt.Errorf("decoding the open pull requests of %s: %w", repo, err)
-	}
-	heads := make([]string, len(pulls))
-	for i, p := range pulls {
-		heads[i] = p.Head.Ref
-	}
-	return heads, nil
 }
 
 // ErrClosedTruncated is returned with the PRs read when the closed listing runs
@@ -298,6 +270,129 @@ func (g GitHub) PullState(ctx context.Context, repo string, number int) (PullSta
 		return PullStatus{}, fmt.Errorf("decoding pull request %s#%d: %w", repo, number, err)
 	}
 	return PullStatus{Open: body.State == "open", Draft: body.Draft, Merged: body.Merged, HeadSHA: body.Head.SHA}, nil
+}
+
+// mainWalkLimit is how many commits of a branch's first-parent chain a red
+// main is traced back through to the commit that turned it red.
+const mainWalkLimit = 20
+
+// FirstParents returns branch's first-parent chain, its head first, at most
+// mainWalkLimit commits: the commits a branch merged in one by one, with no
+// commit a merge brought in beside them.
+func (g GitHub) FirstParents(ctx context.Context, repo, branch string) ([]string, error) {
+	endpoint := fmt.Sprintf("%s/repos/%s/commits?sha=%s&per_page=%d", g.endpoint(), repo, url.QueryEscape(branch), mainWalkLimit)
+	res, err := g.do(ctx, http.MethodGet, endpoint, nil, fmt.Sprintf("list the commits of %s@%s", repo, branch))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = res.Body.Close() }()
+	var commits []struct {
+		SHA     string `json:"sha"`
+		Parents []struct {
+			SHA string `json:"sha"`
+		} `json:"parents"`
+	}
+	if err := json.NewDecoder(io.LimitReader(res.Body, maxPullsResponseBytes)).Decode(&commits); err != nil {
+		return nil, fmt.Errorf("decoding the commits of %s@%s: %w", repo, branch, err)
+	}
+	if len(commits) == 0 || commits[0].SHA == "" {
+		return nil, fmt.Errorf("GitHub answered no commit for %s@%s", repo, branch)
+	}
+	// The listing is newest first, a merge's other parents among it, so the
+	// chain follows each commit's first parent rather than the listing's order.
+	firstParent := make(map[string]string, len(commits))
+	for _, c := range commits {
+		if len(c.Parents) > 0 {
+			firstParent[c.SHA] = c.Parents[0].SHA
+		} else {
+			firstParent[c.SHA] = ""
+		}
+	}
+	chain := []string{commits[0].SHA}
+	for len(chain) < mainWalkLimit {
+		next, listed := firstParent[chain[len(chain)-1]]
+		if !listed || next == "" {
+			break
+		}
+		// A parent the listing stops short of is still named; only its own
+		// parent is unknown.
+		chain = append(chain, next)
+	}
+	return chain, nil
+}
+
+// OpenPulls returns repo's open pull requests, failing rather than returning a
+// listing that may be short when they fill maxPullsPages pages.
+func (g GitHub) OpenPulls(ctx context.Context, repo string) ([]ClosedPR, error) {
+	var out []ClosedPR
+	for page := 1; page <= maxPullsPages; page++ {
+		endpoint := fmt.Sprintf("%s/repos/%s/pulls?state=open&per_page=%d&page=%d", g.endpoint(), repo, pullsPerPage, page)
+		res, err := g.do(ctx, http.MethodGet, endpoint, nil, fmt.Sprintf("list open pull requests in %s", repo))
+		if err != nil {
+			return nil, err
+		}
+		pulls, err := decodeClosedPRs(res.Body, repo)
+		_ = res.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, pulls...)
+		if len(pulls) < pullsPerPage {
+			return out, nil
+		}
+	}
+	return nil, fmt.Errorf("%s may hold more than %d open pull requests", repo, maxPullsPages*pullsPerPage)
+}
+
+// revertPullMutation opens a revert of a pull request, the way GitHub's Revert
+// button does: a branch holding the revert commit, and a pull request from it.
+const revertPullMutation = `mutation($id: ID!, $title: String!, $body: String!) {
+revertPullRequest(input: {pullRequestId: $id, title: $title, body: $body}) { revertPullRequest { number } }
+}`
+
+// RevertPull opens a pull request that reverts pr, titled title with body, and
+// returns its number. It needs contents and pull requests write on pr's
+// repository; GitHub refuses it inside a 200 reply, which comes back as an error.
+func (g GitHub) RevertPull(ctx context.Context, pr ClosedPR, title, body string) (int, error) {
+	if pr.NodeID == "" {
+		return 0, fmt.Errorf("pull request #%d carries no GraphQL id to revert it by", pr.Number)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"query":     revertPullMutation,
+		"variables": map[string]string{"id": pr.NodeID, "title": title, "body": body},
+	})
+	if err != nil {
+		return 0, fmt.Errorf("encoding the revert of #%d: %w", pr.Number, err)
+	}
+	action := fmt.Sprintf("revert pull request #%d", pr.Number)
+	res, err := g.do(ctx, http.MethodPost, g.endpoint()+"/graphql", bytes.NewReader(payload), action)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = res.Body.Close() }()
+	var reply struct {
+		Data *struct {
+			Revert *struct {
+				PullRequest *struct {
+					Number int `json:"number"`
+				} `json:"revertPullRequest"`
+			} `json:"revertPullRequest"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.NewDecoder(io.LimitReader(res.Body, maxRepoResponseBytes)).Decode(&reply); err != nil {
+		return 0, fmt.Errorf("decoding the revert of #%d: %w", pr.Number, err)
+	}
+	// A revert GitHub opened is taken even beside an error, since it exists.
+	if d := reply.Data; d != nil && d.Revert != nil && d.Revert.PullRequest != nil && d.Revert.PullRequest.Number > 0 {
+		return d.Revert.PullRequest.Number, nil
+	}
+	if len(reply.Errors) > 0 {
+		return 0, fmt.Errorf("GitHub refused to %s: %s", action, reply.Errors[0].Message)
+	}
+	return 0, fmt.Errorf("GitHub answered no revert pull request for #%d", pr.Number)
 }
 
 // ChecksGreen reports whether commit sha of repo passes everything that gates
@@ -744,7 +839,13 @@ type closedPR struct {
 	} `json:"merged_by"`
 	Head struct {
 		Ref string `json:"ref"`
+		// Repo is null when the head's repository was deleted.
+		Repo *struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
 	} `json:"head"`
+	NodeID      string `json:"node_id"`
+	MergeCommit string `json:"merge_commit_sha"`
 }
 
 // decodeClosedPRs reads a pull request reply — a listing, or one pull request
@@ -777,9 +878,15 @@ func decodeClosedPRs(body io.Reader, repo string) ([]ClosedPR, error) {
 	}
 	out := make([]ClosedPR, 0, len(pulls))
 	for _, p := range pulls {
-		pr := ClosedPR{Number: p.Number, Title: p.Title, Body: p.Body, Head: p.Head.Ref, URL: p.URL}
+		pr := ClosedPR{Number: p.Number, Title: p.Title, Body: p.Body, Head: p.Head.Ref, URL: p.URL, NodeID: p.NodeID}
+		if p.Head.Repo != nil {
+			pr.HeadRepo = p.Head.Repo.FullName
+		}
 		if p.MergedAt != nil {
 			pr.MergedAt = *p.MergedAt
+			// GitHub fills merge_commit_sha before a merge with a test merge it
+			// discards, so it names main's commit only once the PR merged.
+			pr.MergeCommit = p.MergeCommit
 		}
 		if p.MergedBy != nil {
 			pr.MergedBy = p.MergedBy.Login

@@ -204,7 +204,10 @@ type Deps struct {
 	Rewrites     Rewrites
 	// Escapes records the auto-merged PR a later merge takes back or fixes; it is
 	// required, as without it nothing latches.
-	Escapes  EscapeRecorder
+	Escapes EscapeRecorder
+	// Reverts traces main's first-parent chain to its first red commit and opens
+	// the revert of that commit when it is an auto-merge.
+	Reverts  MainReverts
 	Workflow Workflow
 	Logger   *slog.Logger
 	Now      func() time.Time
@@ -262,6 +265,7 @@ func (d Deps) missing() string {
 		{"PullRequests", d.PullRequests != nil},
 		{"Rewrites", d.Rewrites != nil},
 		{"Escapes", d.Escapes != nil},
+		{"Reverts", d.Reverts != nil},
 		{"Checks", d.Checks.ready()},
 		{"RulesetMarks", d.RulesetMarks != nil},
 		{"Workflow", d.Workflow != nil},

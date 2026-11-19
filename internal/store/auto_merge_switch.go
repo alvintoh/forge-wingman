@@ -164,7 +164,8 @@ func (a *AutoMergeSwitches) SetEnabled(ctx context.Context, enabled bool, at tim
 // RecordEscape records the escaped PR the latch names, reporting whether this is
 // the first record of it: the first escape holds auto-merge off until the owner
 // switches it on again, so a later one does not replace it, and a PR the owner
-// has already acknowledged does not latch again.
+// has already acknowledged does not latch again. The latched escape seen again
+// with a PR naming it now does take that PR's number, and is not a first record.
 func (a *AutoMergeSwitches) RecordEscape(ctx context.Context, e dispatcher.MergeEscape) (bool, error) {
 	fresh := false
 	err := a.client.RunTransaction(ctx, func(_ context.Context, tx *firestore.Transaction) error {
@@ -173,7 +174,15 @@ func (a *AutoMergeSwitches) RecordEscape(ctx context.Context, e dispatcher.Merge
 		if err != nil {
 			return err
 		}
-		if escapedOf(row).PR > 0 || slices.Contains(clearedOf(row), dispatcher.EscapeKey(e.Repo, e.PR)) {
+		if latched := escapedOf(row); latched.PR > 0 {
+			// The same escape seen again may name the PR that takes it back now
+			// that one is open: a red main's revert can open on a later poll.
+			if latched.Repo == e.Repo && latched.PR == e.PR && latched.Reason == e.Reason && e.By > 0 && latched.By != e.By {
+				return tx.Set(a.doc(), map[string]any{escapedByField: int64(e.By)}, firestore.MergeAll)
+			}
+			return nil
+		}
+		if slices.Contains(clearedOf(row), dispatcher.EscapeKey(e.Repo, e.PR)) {
 			return nil
 		}
 		fresh = true

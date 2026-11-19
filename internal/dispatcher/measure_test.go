@@ -76,6 +76,14 @@ type fakeRewrites struct {
 	recordErr error
 	recentErr error
 	markErr   error
+	// reverted and refusals are the revert and the refusal recorded on each run
+	// row.
+	reverted   map[string]int
+	refusals   map[string]string
+	revertErr  error
+	refusalErr error
+	// revertCalls counts the reverts recorded, so a test can prove one was not.
+	revertCalls int
 }
 
 func (r *fakeRewrites) RunForMerged(_ context.Context, _ string, pr ClosedPR) (RunRow, bool, error) {
@@ -136,6 +144,45 @@ func (r *fakeRewrites) Record(_ context.Context, id string, m Measured) error {
 	return nil
 }
 
+// RecordRevert keeps the revert on the row, as the store does, so a later poll
+// reads it back.
+func (r *fakeRewrites) RecordRevert(_ context.Context, id string, number int) error {
+	r.revertCalls++
+	if r.revertErr != nil {
+		return r.revertErr
+	}
+	if r.reverted == nil {
+		r.reverted = map[string]int{}
+	}
+	r.reverted[id] = number
+	for branch, row := range r.rows {
+		if row.RunID == id {
+			row.RevertedBy = number
+			r.rows[branch] = row
+		}
+	}
+	return nil
+}
+
+// RecordRevertRefusal keeps the refusal on the row, as the store does, so a
+// later poll reads it back.
+func (r *fakeRewrites) RecordRevertRefusal(_ context.Context, id, refusal string) error {
+	if r.refusalErr != nil {
+		return r.refusalErr
+	}
+	if r.refusals == nil {
+		r.refusals = map[string]string{}
+	}
+	r.refusals[id] = refusal
+	for branch, row := range r.rows {
+		if row.RunID == id {
+			row.RevertRefusal = refusal
+			r.rows[branch] = row
+		}
+	}
+	return nil
+}
+
 func (r *fakeRewrites) Recent(_ context.Context, limit int) ([]Sample, error) {
 	if r.recentErr != nil {
 		return nil, r.recentErr
@@ -154,13 +201,23 @@ type fakeEscapes struct {
 	cleared  []string
 	err      error
 	stateErr error
+	// calls counts the records asked for, so a test can prove one was skipped.
+	calls int
 }
 
 func (f *fakeEscapes) RecordEscape(_ context.Context, e MergeEscape) (bool, error) {
 	if f.err != nil {
 		return false, f.err
 	}
-	if len(f.escapes) > 0 || slices.Contains(f.cleared, EscapeKey(e.Repo, e.PR)) {
+	f.calls++
+	if len(f.escapes) > 0 {
+		// The latched escape seen again takes the revert that opened since.
+		if l := &f.escapes[0]; l.Repo == e.Repo && l.PR == e.PR && l.Reason == e.Reason && e.By > 0 {
+			l.By = e.By
+		}
+		return false, nil
+	}
+	if slices.Contains(f.cleared, EscapeKey(e.Repo, e.PR)) {
 		return false, nil
 	}
 	f.escapes = append(f.escapes, e)
@@ -189,6 +246,7 @@ func rewriteDeps(prs *fakePullRequests, rows *fakeRewrites) (Deps, *fakeNotices)
 		PullRequests: prs,
 		Rewrites:     rows,
 		Escapes:      &fakeEscapes{},
+		Reverts:      &fakeReverts{},
 		Notices:      notices,
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Now:          func() time.Time { return mergedAt },
