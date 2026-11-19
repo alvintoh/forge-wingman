@@ -570,7 +570,8 @@ func pollDeps(source Source, q *fakeQueue, w *fakeWorkflow) Deps {
 		PullRequests: &fakePullRequests{},
 		Rewrites:     &fakeRewrites{},
 		Escapes:      &fakeEscapes{},
-		Checks:       ChecksDeps{Runs: &fakeChecksRuns{}, GitHub: &fakeChecksGitHub{}, Branch: "main"},
+		Checks:       ChecksDeps{Runs: &fakeChecksRuns{}, GitHub: &fakeChecksGitHub{required: MergeChecks()}, Branch: "main"},
+		RulesetMarks: newFakeRulesetMarks(),
 	}
 }
 
@@ -809,6 +810,7 @@ func TestPollNamesTheDependencyItWasNotGiven(t *testing.T) {
 		"PullRequests": func(d *Deps) { d.PullRequests = nil },
 		"Rewrites":     func(d *Deps) { d.Rewrites = nil },
 		"Escapes":      func(d *Deps) { d.Escapes = nil },
+		"RulesetMarks": func(d *Deps) { d.RulesetMarks = nil },
 	}
 	for name, clear := range unset {
 		t.Run(name, func(t *testing.T) {

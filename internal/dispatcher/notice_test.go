@@ -62,6 +62,8 @@ func (n *fakeNotices) Unclaim(_ context.Context, id string) error {
 	return nil
 }
 
+func (n *fakeNotices) Clear(context.Context, string) error { return nil }
+
 // fakePoster records the notices it posted, failing the ones failFor names.
 type fakePoster struct {
 	posts   []Notice

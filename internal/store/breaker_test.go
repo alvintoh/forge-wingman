@@ -160,6 +160,58 @@ func TestUnclaimReturnsANoticeAndPostedRetiresIt(t *testing.T) {
 	}
 }
 
+func TestAClearedNoticeIsRaisedAnew(t *testing.T) {
+	id := fresh("ABC-35")
+	n, _ := noticesOver(t, id)
+	ctx := context.Background()
+	notice := dispatcher.Notice{ID: id, Class: "ruleset:octo/scratch"}
+	if err := n.Clear(ctx, id); err != nil {
+		t.Fatalf("clearing a notice that does not exist: %v", err)
+	}
+	if err := n.Raise(ctx, notice, noticeAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.Clear(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.Raise(ctx, notice, noticeAt.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if got := claimedIDs(t, n, noticeAt.Add(time.Hour), noticeAt, id); len(got) != 1 {
+		t.Fatalf("claimed %v, want the notice raised after a clear claimed again", got)
+	}
+}
+
+// A clear that lands while another poll holds the notice leaves it, so that
+// poll can still mark it posted; once posted, a clear removes it.
+func TestClearLeavesAClaimedNotice(t *testing.T) {
+	id := fresh("ABC-36")
+	n, _ := noticesOver(t, id)
+	ctx := context.Background()
+	notice := dispatcher.Notice{ID: id, Class: "ruleset:octo/scratch"}
+	if err := n.Raise(ctx, notice, noticeAt); err != nil {
+		t.Fatal(err)
+	}
+	if got := claimedIDs(t, n, noticeAt, noticeAt.Add(-time.Hour), id); len(got) != 1 {
+		t.Fatalf("claimed %v", got)
+	}
+	if err := n.Clear(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.Posted(ctx, id, noticeAt); err != nil {
+		t.Fatalf("marking posted after a clear: %v, want the claimed notice kept", err)
+	}
+	if err := n.Clear(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.Raise(ctx, notice, noticeAt.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if got := claimedIDs(t, n, noticeAt.Add(time.Hour), noticeAt, id); len(got) != 1 {
+		t.Fatalf("claimed %v, want the posted notice cleared and raised anew", got)
+	}
+}
+
 func TestSpendReadsTheReservedAndTheSettledAtTheMomentAsked(t *testing.T) {
 	q, client := queue(t)
 	ctx := context.Background()

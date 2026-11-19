@@ -935,7 +935,7 @@ func TestGitHubReadsTheStatusChecksTheBranchRulesRequire(t *testing.T) {
 			}))
 			defer srv.Close()
 			got, err := (GitHub{Endpoint: srv.URL, Token: "t", Client: srv.Client()}).RequiredChecks(context.Background(), "octo/scratch", "main")
-			if (err != nil) != tt.wantErr || !reflect.DeepEqual(got, tt.want) {
+			if errors.Is(err, ErrNoRequiredChecks) != tt.wantErr || !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("got %v, %v, want %v, error %v", got, err, tt.want, tt.wantErr)
 			}
 		})

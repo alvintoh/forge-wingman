@@ -188,6 +188,31 @@ func (n *Notices) Posted(ctx context.Context, id string, at time.Time) error {
 	return nil
 }
 
+// Clear removes the notice, so raising its ID again creates it anew. A notice a
+// poll has claimed is left for that poll to post and mark posted, and a later
+// Clear removes it; a notice that does not exist is not an error. The state is
+// read and the delete made in one transaction, so a claim cannot land between.
+func (n *Notices) Clear(ctx context.Context, id string) error {
+	ref := n.doc(id)
+	err := n.client.RunTransaction(ctx, func(_ context.Context, tx *firestore.Transaction) error {
+		snap, err := tx.Get(ref)
+		if status.Code(err) == codes.NotFound {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if state, _ := snap.Data()[noticeStateField].(string); state == noticeClaimed {
+			return nil
+		}
+		return tx.Delete(ref)
+	})
+	if err != nil {
+		return fmt.Errorf("clearing notice %s: %w", id, err)
+	}
+	return nil
+}
+
 // Unclaim returns a claimed notice to pending for the next poll.
 func (n *Notices) Unclaim(ctx context.Context, id string) error {
 	if _, err := n.doc(id).Update(ctx, []firestore.Update{
