@@ -23,7 +23,13 @@ def pack_body(rel, size, extra=""):
     return f'---\npaths:\n  - "**/*.{Path(rel).stem}"\n---\n\n{body}'
 
 
-def write_stack(root, *, leak_employer=False, pack_scale=100, pack_line=None):
+def write_redact_list(root, lines, *, bom=False):
+    root.mkdir(parents=True, exist_ok=True)
+    (root / gen.REDACT_LIST).write_text(("﻿" if bom else "") + "\n".join(lines) + "\n")
+
+
+def write_stack(root, *, leak_employer=False, pack_scale=100, pack_line=None, cite=None,
+                heading_term=None):
     per_section = gen.BUILD_DROP_BYTES // len(gen.BUILD_DROPS)
     drops = []
     for heading in gen.BUILD_DROPS:
@@ -32,14 +38,20 @@ def write_stack(root, *, leak_employer=False, pack_scale=100, pack_line=None):
     kept = f"## {MARKER} kept\n\n" + "\n".join(gen.MUST_SURVIVE_BUILD.values()) + "\n\n"
     if leak_employer:
         kept += f"{EMPLOYER_HEADING}\n\n"
+    if cite:
+        kept += f"{cite}\n\n"
     base = f"# {MARKER} base\n\n{kept}{''.join(drops)}{gen.ALWAYS_DROPS[0]}\n\n{MARKER} pointer\n"
     files = {
         "base/CLAUDE.md": base,
         "profiles/personal/CLAUDE.md": f"# {MARKER} personal\n",
         "profiles/work/CLAUDE.md": f"# work\n\n{EMPLOYER_HEADING}\n\n{MARKER} employer text\n",
     }
+    suffix = f" {heading_term}" if heading_term else ""
     for rel in gen.RULE_FILES + gen.BUILD_ONLY_RULES:
-        files[rel] = f"# {MARKER} {Path(rel).stem} rules\n\n{MARKER} rule body\n"
+        files[rel] = f"# {MARKER} {Path(rel).stem} rules{suffix}\n\n{MARKER} rule body\n"
+    if cite:
+        for rel in ("profiles/personal/CLAUDE.md", gen.RULE_FILES[-1]):
+            files[rel] += f"\n{cite}\n"
     per_pack = gen.STACK_PACK_BYTES // len(gen.STACK_PACKS)
     for rel in gen.STACK_PACKS:
         extra = f"{pack_line}\n\n" if pack_line and rel == gen.STACK_PACKS[0] else ""
@@ -225,6 +237,111 @@ class GenProjectionTest(unittest.TestCase):
         self.assertIn("employer layer leaked: 1 heading(s)", result.stderr)
         self.assertEqual(list(self.out.iterdir()), [])
         self.assertNotIn(MARKER, result.stdout + result.stderr)
+
+    def test_listed_terms_are_redacted_in_both_projections(self):
+        # A term inside a longer one, a lower-case variant, and a comment line
+        # whose text also appears in the stack.
+        cite = "cited from Acme Corp ACME-42 Acme, acme stays, #kept stays"
+        write_redact_list(self.root, ["# kept", "#kept", "", "Acme", "Acme Corp", "ACME-42"])
+        write_stack(self.root, cite=cite, pack_line=cite, heading_term="ACME-42")
+        result = run(self.root, self.out)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for name in ("projection-build.md", "projection-plan.md"):
+            with self.subTest(name=name):
+                text = (self.out / name).read_text()
+                self.assertNotIn("Acme", text)
+                self.assertNotIn("ACME-42", text)
+                self.assertIn("cited from [redacted] [redacted] [redacted], acme stays, "
+                              "#kept stays", text)
+        # the pack's citation is redacted too, without tripping its size check
+        build = (self.out / "projection-build.md").read_text()
+        self.assertEqual(build.count("cited from [redacted]"), 4)
+
+    def test_a_list_saved_with_a_byte_order_mark_still_redacts_its_first_term(self):
+        write_redact_list(self.root, ["Acme", "ACME-42"], bom=True)
+        write_stack(self.root, cite="cited from Acme ACME-42")
+        result = run(self.root, self.out)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for name in ("projection-build.md", "projection-plan.md"):
+            self.assertIn("cited from [redacted] [redacted]", (self.out / name).read_text())
+
+    def test_check_rejects_plan_text_carrying_redacted_build_content(self):
+        write_stack(self.root, pack_line="cited from Acme", heading_term="Acme")
+        terms = ("Acme",)
+        plan = gen.redact(gen.build(self.root, trimmed=False), terms)
+        carried = {rel: gen._own_heading(self.root, rel)
+                   for rel in gen.PLAN_DROP_RULES + gen.BUILD_ONLY_RULES}
+        carried[gen.STACK_PACKS[0]] = gen.pack_projection(self.root, gen.STACK_PACKS[0])
+        for rel, raw in carried.items():
+            with self.subTest(rel=rel):
+                text = plan.replace(gen.TICKET_SENTINEL,
+                                    f"{gen.redact(raw, terms)}\n\n{gen.TICKET_SENTINEL}")
+                with self.assertRaises(AssertionError) as caught:
+                    gen.check(self.root, "plan", text, trimmed=False, terms=terms)
+                self.assertIn("plan projection kept", str(caught.exception))
+
+    def test_a_term_inside_the_marker_is_not_counted_as_surviving(self):
+        write_stack(self.root, cite="cited from Acme")
+        text = gen.redact(gen.build(self.root, trimmed=False), ("Acme",))
+        gen.check(self.root, "plan", text, trimmed=False,
+                  terms=("Acme", "redacted", gen.REDACTED))
+
+    def test_a_list_naming_the_generators_own_strings_is_refused_by_count(self):
+        write_redact_list(self.root, ["projection-plan.md", "Acme"])
+        write_stack(self.root)
+        result = run(self.root, self.out)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("1 listed term(s) occur in the generator's own strings", result.stderr)
+        self.assertNotIn("projection-plan.md", result.stdout + result.stderr)
+        self.assertEqual(list(self.out.iterdir()), [])
+
+    def test_the_printed_trim_saving_is_measured_before_redaction(self):
+        write_stack(self.root, cite="cited from Acme Corp", pack_line="cited from Acme Corp")
+        plain = run(self.root, self.out)
+        self.assertEqual(plain.returncode, 0, plain.stderr)
+        write_redact_list(self.root, ["Acme"])
+        again = self.out.parent / "again"
+        again.mkdir()
+        redacted = run(self.root, again)
+        self.assertEqual(redacted.returncode, 0, redacted.stderr)
+
+        def saving(result):
+            return [l for l in result.stdout.splitlines() if "trim removes" in l]
+        self.assertEqual(len(saving(plain)), 1)
+        self.assertEqual(saving(redacted), saving(plain))
+
+    def test_check_counts_a_surviving_term_without_naming_it(self):
+        write_stack(self.root)
+        text = gen.build(self.root, trimmed=False).replace(
+            gen.TICKET_SENTINEL, f"Acme Acme ACME-42\n\n{gen.TICKET_SENTINEL}")
+        with self.assertRaises(AssertionError) as caught:
+            gen.check(self.root, "plan", text, trimmed=False, terms=("Acme", "ACME-42", "Zeta"))
+        self.assertIn("2 redacted term(s) survived", str(caught.exception))
+        self.assertNotIn("Acme", str(caught.exception))
+        self.assertNotIn("ACME-42", str(caught.exception))
+
+    def test_without_a_list_the_projections_are_the_stack_as_assembled(self):
+        write_stack(self.root, cite="cited from Acme Corp ACME-42")
+        self.assertEqual(run(self.root, self.out).returncode, 0)
+        for name, trimmed in (("projection-build.md", True), ("projection-plan.md", False)):
+            self.assertEqual((self.out / name).read_text(),
+                             gen.build(self.root, trimmed=trimmed))
+
+    def test_a_failure_never_prints_a_listed_term(self):
+        write_redact_list(self.root, ["Acme"])
+        write_stack(self.root, cite="see /home/Acme/tools")
+        result = run(self.root, self.out)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("outside the sandbox", result.stderr)
+        self.assertNotIn("Acme", result.stdout + result.stderr)
+        self.assertEqual(list(self.out.iterdir()), [])
+
+    def test_a_leaked_employer_heading_is_caught_after_redaction(self):
+        write_redact_list(self.root, [MARKER])
+        write_stack(self.root, leak_employer=True)
+        result = run(self.root, self.out)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("employer layer leaked: 1 heading(s)", result.stderr)
 
     def test_content_after_ticket_is_reported_by_length(self):
         write_stack(self.root)

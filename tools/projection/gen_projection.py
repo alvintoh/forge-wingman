@@ -82,6 +82,14 @@ ALWAYS_DROPS = (
 
 PLAN_DROP_RULES = ("base/rules/code-comments.md",)  # only a writer needs these
 
+# ---- identifiers the rule stack's citations quote --------------------------
+# The list lives in the rule stack, never here: naming a term in this public
+# file would publish the very thing it hides. Redaction is the LAST pass over
+# the assembled text, so every size the generator measures (STACK_PACK_BYTES,
+# BUILD_DROP_BYTES) still describes the stack itself, list or no list.
+REDACT_LIST = ".projection-redact"
+REDACTED = "[redacted]"
+
 # ---- a pack must not send the agent OUT of its sandbox ---------------------
 # A pack is written for a machine with the owner's config and checkouts in
 # place, so it may name a path that exists only there. Inlined in a projection,
@@ -214,12 +222,54 @@ def build(root, *, trimmed):
     return "\n\n".join(chunks) + f"\n\n# The ticket\n\n{TICKET_SENTINEL}\n"
 
 
-def check(root, name, text, *, trimmed):
+def _own_text():
+    """What the generator prints or writes on its own account: its source (every
+    message, file name and path it names), where it runs from, and the frame a
+    failed assertion prints. A term inside any of it would be printed unredacted."""
+    here = Path(__file__).resolve()
+    return "\n".join((here.read_text(), str(here), "Traceback (most recent call last):",
+                      "AssertionError", "File", "line", "in <module>"))
+
+
+def load_terms(root):
+    """The rule stack's redaction list, or () when it keeps none."""
+    path = root / REDACT_LIST
+    if not path.is_file():
+        return ()
+    # utf-8-sig: a list saved with a byte-order mark would otherwise carry U+FEFF
+    # on its first term, which then matches nothing and fails open.
+    lines = (line.strip() for line in path.read_text(encoding="utf-8-sig").splitlines())
+    terms = tuple(t for t in lines if t and not t.startswith("#"))
+    own = _own_text()
+    clashes = sum(1 for t in set(terms) if t in own)
+    assert not clashes, f"{clashes} listed term(s) occur in the generator's own strings"
+    return terms
+
+
+def redact(text, terms):
+    """Every listed term replaced by REDACTED, case-sensitively."""
+    if not terms:
+        return text                       # an empty alternation matches everywhere
+    # Longest first, so a term inside a longer one cannot leave the longer one's tail.
+    pattern = "|".join(re.escape(t) for t in sorted(set(terms), key=len, reverse=True))
+    return re.sub(pattern, REDACTED, text)
+
+
+def check(root, name, text, *, trimmed, terms=()):
     """Assert against the EMITTED text, never against what we meant to emit."""
+    # First, so no later message can quote a term that got through. Split on the
+    # marker so a term that is part of REDACTED is not counted as surviving.
+    survived = [t for t in set(terms) if any(t in part for part in text.split(REDACTED))]
+    assert not survived, f"{name}: {len(survived)} redacted term(s) survived"
+
+    # Stack text is compared in the form the projection carries it.
+    def emitted(stack_text):
+        return redact(stack_text, terms)
+
     # the employer layer contributes nothing — tested by its own headings, so no
     # employer-identifying string is ever written into this public file
     employer = sections((root / EMPLOYER_LAYER).read_text())
-    leaked = [h for h in employer if h and h in text]
+    leaked = [h for h in employer if h and emitted(h) in text]
     assert not leaked, f"{name}: employer layer leaked: {len(leaked)} heading(s)"
 
     # the ticket is LAST, or the cacheable prefix is broken
@@ -241,16 +291,17 @@ def check(root, name, text, *, trimmed):
         for label, phrase in MUST_SURVIVE_BUILD.items():
             assert phrase in text, f"{name}: LOST — {label}"
         # the build agent writes code, so it KEEPS comment conventions
-        assert _own_heading(root, PLAN_DROP_RULES[0]) in text, \
+        assert emitted(_own_heading(root, PLAN_DROP_RULES[0])) in text, \
             f"{name}: build projection lost comment conventions"
         for rel in BUILD_ONLY_RULES:
-            assert _own_heading(root, rel) in text, f"{name}: build projection lost {rel}"
-            assert text.index(_own_heading(root, rel)) < text.index(PROTOCOL_HEADING), \
+            heading = emitted(_own_heading(root, rel))
+            assert heading in text, f"{name}: build projection lost {rel}"
+            assert text.index(heading) < text.index(PROTOCOL_HEADING), \
                 f"{name}: {rel} is not before the protocol"
         # The packs are part of the invariant prefix, ahead of the protocol and
         # the ticket, so every ticket's cacheable head is the same bytes.
         for rel in STACK_PACKS:
-            pack = pack_projection(root, rel)
+            pack = emitted(pack_projection(root, rel))
             assert pack in text, f"{name}: build projection lost {rel}"
             assert text.index(pack) < text.index(PROTOCOL_HEADING), \
                 f"{name}: {rel} is not before the protocol"
@@ -258,7 +309,7 @@ def check(root, name, text, *, trimmed):
         for line in PROTOCOL.splitlines()[2:]:
             assert line in text, f"{name}: protocol line missing: {line[:40]!r}"
         head = text.index(PROTOCOL_HEADING)
-        last_rule = (root / RULE_FILES[-1]).read_text().strip()
+        last_rule = emitted((root / RULE_FILES[-1]).read_text().strip())
         assert text.rindex(last_rule) < head < text.index(TICKET_SENTINEL), \
             f"{name}: protocol is not between the rule stack and the ticket"
     else:
@@ -270,14 +321,15 @@ def check(root, name, text, *, trimmed):
         # layer's POINTER to the rule file, so it cannot tell the pointer from
         # the content — the first version of this assertion failed on exactly
         # that and reported a correct output as broken.
-        h1 = _own_heading(root, PLAN_DROP_RULES[0])
+        h1 = emitted(_own_heading(root, PLAN_DROP_RULES[0]))
         assert h1 not in text, f"{name}: plan projection kept comment conventions"
         for rel in BUILD_ONLY_RULES:
-            assert _own_heading(root, rel) not in text, f"{name}: plan projection kept {rel}"
+            assert emitted(_own_heading(root, rel)) not in text, \
+                f"{name}: plan projection kept {rel}"
         # a pack is build-agent guidance; the plan agent plans, and a plan
         # projection that grew the packs would change what the lane reads
         for rel in STACK_PACKS:
-            assert pack_projection(root, rel) not in text, \
+            assert emitted(pack_projection(root, rel)) not in text, \
                 f"{name}: plan projection kept {rel}"
         # the protocol serves the unattended build agent only
         assert PROTOCOL_HEADING not in text, f"{name}: plan projection kept the protocol"
@@ -303,10 +355,13 @@ def main():
     rest = sys.argv[1:i] + sys.argv[i + 2:]
     root = Path(rest[0] if rest else os.environ["RULE_STACK_ROOT"])
 
-    full = build(root, trimmed=False)
-    trim = build(root, trimmed=True)
-    check(root, "plan", full, trimmed=False)
-    check(root, "build", trim, trimmed=True)
+    terms = load_terms(root)
+    raw_full = build(root, trimmed=False)
+    raw_trim = build(root, trimmed=True)
+    full = redact(raw_full, terms)
+    trim = redact(raw_trim, terms)
+    check(root, "plan", full, trimmed=False, terms=terms)
+    check(root, "build", trim, trimmed=True, terms=terms)
 
     for name, text in (("projection-plan.md", full), ("projection-build.md", trim)):
         (out / name).write_text(text)
@@ -314,11 +369,12 @@ def main():
         print(f"  {name:22s} {n:7d} bytes  ~{n // 4:6d} tokens")
     packs = sum(len(pack_projection(root, rel).encode()) for rel in STACK_PACKS)
     # The packs are added, not trimmed, so they are left out of what the trim saves.
-    saved = len(full.encode()) - len(trim.encode()) + packs
+    # Measured before redaction, like the packs, so a list cannot move the figure.
+    saved = len(raw_full.encode()) - len(raw_trim.encode()) + packs
     print(f"  {'the stack packs':22s} {packs:7d} bytes  ~{packs // 4:6d} tokens"
           f"  (recorded {STACK_PACK_BYTES}±{STACK_PACK_TOLERANCE})")
     print(f"  the build trim removes {saved} bytes (~{saved // 4} tokens) "
-          f"= {100 * saved / len(full.encode()):.1f}% of the plan projection")
+          f"= {100 * saved / len(raw_full.encode()):.1f}% of the plan projection")
 
 
 if __name__ == "__main__":
