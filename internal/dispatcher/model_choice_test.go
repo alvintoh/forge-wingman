@@ -1,10 +1,13 @@
 package dispatcher
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"maps"
 	"math"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -405,6 +408,43 @@ func TestPollRecordsWhyEachRunBuildsOnItsModel(t *testing.T) {
 	}
 }
 
+// TestPollRecordsAnUnreadablePlanWhereAModelClearedTheBar asserts a claim whose
+// default model passed for the size but whose plan read fails records that the
+// plan could not be read, not that no model was eligible: a failed read is
+// neither a refusal nor an admission.
+func TestPollRecordsAnUnreadablePlanWhereAModelClearedTheBar(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{{RunID: "medium", Repo: "octo/scratch", Size: "M", Priority: 1}}}
+	d := choiceDeps(q, &fakeModelRecords{records: []ModelRecord{cachedRecord(flash, "M", 5, 5)}})
+	d.ModelPlans = &fakeModelPlans{err: errFirestore}
+	if _, err := Poll(context.Background(), d, choiceConfig()); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.tryClaims) != 1 || q.tryClaims[0].res.ModelReason != "model plans unreadable for size M" {
+		t.Fatalf("claims = %+v, want one recording the unreadable plan", q.tryClaims)
+	}
+}
+
+// TestPollRecordsNoEligibleModelWhenEveryPlanReadSucceeds asserts a claim whose
+// every passed candidate was refused records no model was eligible: the review
+// model and a free one are never chosen, and a plan read that succeeds and finds
+// the provider unconfigured is a refusal, not an unreadable plan.
+func TestPollRecordsNoEligibleModelWhenEveryPlanReadSucceeds(t *testing.T) {
+	q := &fakeQueue{candidates: []Candidate{{RunID: "medium", Repo: "octo/scratch", Size: "M", Priority: 1}}}
+	records := []ModelRecord{cachedRecord(haiku, "M", 5, 5), cachedRecord(muse, "M", 5, 5), cachedRecord(gemini, "M", 5, 5)}
+	plans := &fakeModelPlans{plans: map[string]providers.Plan{"gemini": planBilled(providers.BillingFree, false)}}
+	d := choiceDeps(q, &fakeModelRecords{records: records})
+	d.ModelPlans = plans
+	if _, err := Poll(context.Background(), d, choiceConfig()); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.tryClaims) != 1 || q.tryClaims[0].res.ModelReason != "no eligible model for size M" {
+		t.Fatalf("claims = %+v, want one recording no eligible model", q.tryClaims)
+	}
+	if !slices.Contains(plans.reads, "opencode-go") {
+		t.Fatalf("plans read %v, want the refusal drawn from a plan it could read", plans.reads)
+	}
+}
+
 func TestPollGivesEveryRunAfterAnUnreadRecordTheUnreadReason(t *testing.T) {
 	q := &fakeQueue{candidates: []Candidate{
 		{RunID: "first", Repo: "octo/scratch", Size: "M", Priority: 1},
@@ -424,10 +464,30 @@ func TestPollGivesEveryRunAfterAnUnreadRecordTheUnreadReason(t *testing.T) {
 	}
 }
 
+// TestPollLogsAClaimsFailedPlanReadAtWarn asserts the claim's failed plan read
+// logs modelConfigLookupFailed at warn and not also at info: admission's own
+// read of a ticket's named models is a separate line.
+func TestPollLogsAClaimsFailedPlanReadAtWarn(t *testing.T) {
+	var logs bytes.Buffer
+	q := &fakeQueue{candidates: []Candidate{{RunID: "medium", Repo: "octo/scratch", Size: "M", Priority: 1}}}
+	d := choiceDeps(q, &fakeModelRecords{records: []ModelRecord{cachedRecord(flash, "M", 5, 5)}})
+	d.ModelPlans = &fakeModelPlans{err: errFirestore}
+	d.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	if _, err := Poll(context.Background(), d, choiceConfig()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), "level=WARN msg=modelConfigLookupFailed") {
+		t.Fatalf("logs = %s, want the failed plan read at WARN", logs.String())
+	}
+	if strings.Contains(logs.String(), "level=INFO msg=modelConfigLookupFailed") {
+		t.Fatalf("logs = %s, want no INFO line for the same failure", logs.String())
+	}
+}
+
 func TestEveryModelReasonFitsTheBoundTheStoreReadsBackWithin(t *testing.T) {
 	reasons := []string{ReasonNamedByTicket}
 	for _, size := range []string{"S", "M", "L"} {
-		reasons = append(reasons, noEligibleReason(size), recordsUnreadableReason(size))
+		reasons = append(reasons, noEligibleReason(size), recordsUnreadableReason(size), plansUnreadableReason(size))
 		for h := range 24 {
 			reasons = append(reasons, ChosenReason(size, time.Date(2026, 11, 18, h, 59, 0, 0, time.UTC)))
 		}

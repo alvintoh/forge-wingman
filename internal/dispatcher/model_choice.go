@@ -73,6 +73,11 @@ func noEligibleReason(size string) string { return "no eligible model for size "
 // the default because the settled records could not be read.
 func recordsUnreadableReason(size string) string { return "model records unreadable for size " + size }
 
+// plansUnreadableReason is the reason a run of size records for building on the
+// default because a candidate's plan could not be read, so admission could
+// neither refuse nor admit it.
+func plansUnreadableReason(size string) string { return "model plans unreadable for size " + size }
+
 // eligible reports whether r clears the bar: enough settled runs, and enough of
 // them passed. The rate is compared in whole numbers so 4 of 5 is exactly 80%.
 func eligible(r ModelRecord) bool {
@@ -158,10 +163,11 @@ func newModelChooser(ctx context.Context, d Deps, c Config) *modelChooser {
 // and a planned run's build keeps what its plan-stage claim recorded: the choice
 // does not apply to them, and the store keeps or writes their reason. Otherwise
 // the cheapest eligible model admission allows is chosen, and with none the run
-// builds on the default for the reason none was chosen, an unreadable record
-// among them; a poll with no records reader or no candidates has none eligible.
-// A free model is never chosen, since moving a run onto a free tier is the
-// owner's choice.
+// builds on the default for the reason none was chosen: that no candidate
+// cleared the bar and admission, that the settled records could not be read, or
+// that a candidate's plan could not be read. A poll with no records reader or no
+// candidates has none eligible. A free model is never chosen, since moving a run
+// onto a free tier is the owner's choice.
 //
 // Two known limits matter once a second paid plan exists. A chosen model that
 // the budget, peak-hour or Go-usage checks then hold defers the run rather than
@@ -188,28 +194,41 @@ func (m *modelChooser) choose(cand Candidate, stage string, at time.Time) modelC
 	if m.unread {
 		return modelChoice{reason: recordsUnreadableReason(cand.Size)}
 	}
+	plansUnread := false
 	for _, model := range RankEligible(m.records, cand.Size, m.c.BuildCandidates, providers.RatesFor, at) {
-		if !m.c.isFree(model) && m.allows(cand, model) {
+		if m.c.isFree(model) {
+			continue
+		}
+		allowed, plansRead := m.allows(cand, model)
+		if !plansRead {
+			plansUnread = true
+			continue
+		}
+		if allowed {
 			m.d.Logger.Info("buildModelChosen", "run", cand.RunID, "size", cand.Size, "model", model)
 			return modelChoice{model: model, reason: ChosenReason(cand.Size, at), ratesVersion: providers.RatesVersion()}
 		}
+	}
+	if plansUnread {
+		return modelChoice{reason: plansUnreadableReason(cand.Size)}
 	}
 	return modelChoice{reason: noEligibleReason(cand.Size)}
 }
 
 // allows reports whether admission lets cand's run build on model beside the
-// review and plan models its ticket named. A failed plan read allows nothing.
-func (m *modelChooser) allows(cand Candidate, model string) bool {
+// review and plan models its ticket named, and whether its plan could be read:
+// a failed read is neither a refusal nor an admission.
+func (m *modelChooser) allows(cand Candidate, model string) (allowed, plansRead bool) {
 	labels := runner.ModelLabels{Build: model, Review: cand.ReviewModel, Plan: cand.PlanModels}
 	key := strings.Join(append([]string{labels.Build, labels.Review}, labels.Plan...), "\x00")
 	if refused, ok := m.refused[key]; ok {
-		return !refused
+		return !refused, true
 	}
 	reason, _, err := checkModels(m.ctx, m.d.ModelPlans, labels, m.c.Model, m.c.Plans)
 	if err != nil {
-		m.d.Logger.Info("modelConfigLookupFailed", "run", cand.RunID, "model", model, "err", err.Error())
-		return false
+		m.d.Logger.Warn("modelConfigLookupFailed", "run", cand.RunID, "model", model, "err", err.Error())
+		return false, false
 	}
 	m.refused[key] = reason != ""
-	return reason == ""
+	return reason == "", true
 }
