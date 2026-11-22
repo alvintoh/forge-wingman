@@ -42,7 +42,10 @@ func (v Vendor) Page(ctx context.Context, loc providers.Locator) (string, error)
 	return selectText(string(page), loc.Selector)
 }
 
-// Models reads provider's own model list from its models endpoint.
+// Models reads provider's own model list from its models endpoint, each id as
+// the vendor states it but for a leading "models/", which a vendor's own
+// resource path may carry where its other answers state the bare id. Whether the
+// list is whole is the refresh's to judge.
 func (v Vendor) Models(ctx context.Context, provider string) ([]string, error) {
 	base := providers.BaseURL(provider)
 	if v.Base != nil {
@@ -65,11 +68,9 @@ func (v Vendor) Models(ctx context.Context, provider string) ([]string, error) {
 	}
 	models := make([]string, 0, len(reply.Data))
 	for _, m := range reply.Data {
-		if id := strings.TrimSpace(m.ID); id != "" {
-			models = append(models, id)
-		}
+		models = append(models, strings.TrimPrefix(m.ID, "models/"))
 	}
-	return capList(models, maxModels), nil
+	return models, nil
 }
 
 // selectText returns the words of the region selector names, with runs of

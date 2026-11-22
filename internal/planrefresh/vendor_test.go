@@ -99,7 +99,7 @@ func TestVendorModelsReadsTheVendorsOwnList(t *testing.T) {
 	var path string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path = r.URL.Path
-		_, _ = io.WriteString(w, `{"data":[{"id":"glm-5"},{"id":" deepseek/deepseek-v4.1-flash "},{"id":""}]}`)
+		_, _ = io.WriteString(w, `{"data":[{"id":"glm-5"},{"id":" deepseek/deepseek-v4.1-flash"},{"id":""}]}`)
 	}))
 	t.Cleanup(srv.Close)
 	vendor := Vendor{HTTP: srv.Client(), Base: func(string) string { return srv.URL + "/v1" }}
@@ -107,7 +107,7 @@ func TestVendorModelsReadsTheVendorsOwnList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"glm-5", "deepseek/deepseek-v4.1-flash"}; !slices.Equal(got, want) {
+	if want := []string{"glm-5", " deepseek/deepseek-v4.1-flash", ""}; !slices.Equal(got, want) {
 		t.Fatalf("Models = %v, want %v", got, want)
 	}
 	if path != "/v1/models" {

@@ -1011,6 +1011,22 @@ func buildCandidates(cfg Config) []string {
 	return models
 }
 
+// RateCardModels are the ids plan's vendor states for each model on the plan's
+// rate card: each full model id with the plan's own prefix cut off, sorted.
+// Empty for a plan that prices nothing.
+func RateCardModels(plan string) []string { return rateCardModels(embeddedConfig, plan) }
+
+func rateCardModels(cfg Config, plan string) []string {
+	var ids []string
+	for model := range cfg.Providers[plan].Rates {
+		if isPlanModel(plan, model) {
+			ids = append(ids, strings.TrimPrefix(model, plan+"/"))
+		}
+	}
+	slices.Sort(ids)
+	return ids
+}
+
 // Plans are every configured plan's name, sorted, so a caller can iterate the
 // configuration rather than picking one by name.
 func Plans() []string {

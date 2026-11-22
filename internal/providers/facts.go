@@ -32,7 +32,8 @@ type Source struct {
 	// Changes names what this read found different from the facts before it, empty
 	// when nothing did or the source could not be read.
 	Changes []string `firestore:"changes"`
-	// Note is why the source could not be read, empty otherwise.
+	// Note is why the source could not be read, or why a model list that would
+	// have been refused was accepted; empty otherwise.
 	Note string `firestore:"note"`
 }
 
@@ -110,6 +111,19 @@ func NewPageFacts(url, selector, text string) PageFacts {
 type ModelsFacts struct {
 	Source Source       `firestore:"source"`
 	Models []ModelFacts `firestore:"models"`
+	// Refused is the list last refused for dropping too many of Models, kept
+	// apart from them: Models stays the last good list while a refusal stands.
+	Refused RefusedList `firestore:"refused"`
+}
+
+// RefusedList is a model list a refresh refused for dropping too many models,
+// and the date it was first refused. Empty when the last read was not such a
+// refusal.
+type RefusedList struct {
+	// Models are the refused list's ids, sorted.
+	Models []string `firestore:"models"`
+	// FirstOn is the yyyy-mm-dd date this list was first refused.
+	FirstOn string `firestore:"first_on"`
 }
 
 // FeedFacts is the free feed's own report of the plan, a change signal only: the
