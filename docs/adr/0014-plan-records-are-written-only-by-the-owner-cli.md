@@ -1,7 +1,7 @@
 # 0014 — The owner's plan records live in Firestore, written only by the owner CLI
 
 - **Date:** 2026-10-04
-- **Status:** accepted — built (FRG-32 part 1), and the refresh from a plan's recorded pages is built as the owner command `runner plans-refresh`; the weekly schedule that runs it and the surface's write path are not built
+- **Status:** accepted — built (FRG-32 part 1), and the refresh from a plan's recorded pages is built as the owner command `runner plans-refresh`; the weekly schedule that runs it and the surface's write path are not built. Updated (2026-11-23): the refresh also reads the settled runs and records a per-size ranking of the plan's models as a proposal
 
 ## Context
 
@@ -21,7 +21,7 @@ One document per provider, `provider_plans/<provider>`: the owner's definition (
 
 - The recorded verdict is evidence, never a gate: an unconfirmed verdict is shown, not enforced.
 - The surface (FR-32) will need a narrow write path for ordering plans and editing their models. It is not built, it must never hold an API key, and the identity it writes with is still to be decided.
-- The refresh from the recorded pages is built as the owner command `runner plans-refresh`, which reads the vendor's pages, its model list, the Coding leaderboard and the free feed into one dated facts document per plan and decides nothing; the weekly schedule that runs it is not built, so nothing reads a plan's sources on its own yet.
+- The refresh from the recorded pages is built as the owner command `runner plans-refresh`, which reads the vendor's pages, its model list, the Coding leaderboard and the free feed into one dated facts document per plan and decides nothing. Updated (2026-11-23): it also reads the settled runs from the runs collection and records, per size, the plan's models ranked by the claim's own bar and order as a proposal for the owner to apply; it still writes only the dated facts and changes neither a plan record nor the escalation ladder. The weekly schedule that runs it is not built, so nothing reads a plan's sources on its own yet.
 
 ## Alternatives
 

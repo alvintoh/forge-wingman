@@ -6,10 +6,14 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"time"
 
+	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 	"github.com/alvintoh/forge-wingman/internal/planrefresh"
 	"github.com/alvintoh/forge-wingman/internal/providers"
+	"github.com/alvintoh/forge-wingman/internal/runner"
+	"github.com/alvintoh/forge-wingman/internal/store"
 )
 
 // planFactsStore is everything plans-refresh reads and the one document it
@@ -24,9 +28,11 @@ type planFactsStore interface {
 }
 
 // plansRefresh reads each configured plan's own pages and model list, the Coding
-// leaderboard's scores and the free feed, diffs them against the facts last
-// recorded for the plan and writes a new dated facts document. It informs the
-// owner and changes nothing about which provider runs.
+// leaderboard's scores and the free feed, and the settled runs it ranks the
+// plan's models from, diffs them against the facts last recorded for the plan
+// and writes a new dated facts document. The ranking is a proposal for the owner
+// to apply: it informs the owner and changes nothing about which provider or
+// model runs.
 func plansRefresh(ctx context.Context, logger *slog.Logger, e env, args []string) error {
 	fs := flag.NewFlagSet("plans-refresh", flag.ContinueOnError)
 	provider := fs.String("provider", "", "refresh only this plan (default: every configured plan)")
@@ -35,16 +41,17 @@ func plansRefresh(ctx context.Context, logger *slog.Logger, e env, args []string
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	plans, closeStore, err := openPlans(ctx, e, *provider, *provider != "", nil)
+	fsc, closeStore, err := openStore(ctx, e, *provider, *provider != "", nil)
 	if err != nil {
 		return err
 	}
 	defer closeStore()
+	plans := store.NewPlans(fsc)
 
 	// The leaderboard and the free feed are one document for every plan, so each
 	// is read once here and the readings handed to every plan's refresh.
 	client := planrefresh.NewClient()
-	refresher := planrefresh.Refresher{Vendor: planrefresh.Vendor{HTTP: client}, Now: time.Now}
+	refresher := newRefresher(client, store.NewRecords(fsc).WithLogger(logger), logger)
 	board := planrefresh.Board{Endpoint: *leaderboard, HTTP: client}
 	refresher.Board, refresher.BoardErr = board.Read(ctx)
 	if refresher.BoardErr != nil {
@@ -56,6 +63,37 @@ func plansRefresh(ctx context.Context, logger *slog.Logger, e env, args []string
 		logger.Warn("plansRefreshSourceUnread", "source", "free-feed", "err", refresher.FeedErr.Error())
 	}
 	return refreshPlans(ctx, logger, plans, refresher, *provider)
+}
+
+// newRefresher is the refresher a plans-refresh run starts from: the vendor read
+// through client, the real clock, and the plans' models ranked from the settled
+// runs records holds. The run then sets the shared leaderboard and feed readings.
+func newRefresher(client *http.Client, records dispatcher.ModelRecords, logger *slog.Logger) planrefresh.Refresher {
+	return planrefresh.Refresher{
+		Vendor: planrefresh.Vendor{HTTP: client},
+		Now:    time.Now,
+		Rank:   settledRanker(records, logger),
+	}
+}
+
+// settledRanker ranks a plan's models from the settled runs records holds over
+// the trailing window, by the same bar and ranking a claim chooses by. The
+// candidates are the models on the plan's rate card, which an accepted model
+// list holds every one of. A read that fails is logged here, since the refresh
+// records it as could-not-read and still succeeds.
+func settledRanker(records dispatcher.ModelRecords, logger *slog.Logger) planrefresh.Ranker {
+	return func(ctx context.Context, provider string, now time.Time) ([]providers.SizeRanking, error) {
+		settled, err := records.ModelRecords(ctx, now.Add(-runner.TrailingWindow))
+		if err != nil {
+			logger.Warn("planRankingUnread", "provider", provider, "err", err.Error())
+			return nil, err
+		}
+		var candidates []string
+		for _, id := range providers.RateCardModels(provider) {
+			candidates = append(candidates, provider+"/"+id)
+		}
+		return dispatcher.RankSizes(settled, candidates, providers.RatesFor), nil
+	}
 }
 
 // refreshPlans refreshes every configured plan the store lists, or the one named,

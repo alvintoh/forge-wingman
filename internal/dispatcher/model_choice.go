@@ -134,6 +134,46 @@ func RankEligible(records []ModelRecord, size string, candidates []string, rates
 	return out
 }
 
+// rankingReference is the instant the weekly ranking prices every model at: a
+// Sunday, which no peak window covers (Peak.Covers), so each plan's off-peak
+// rates apply whatever hours its card names and the ranking does not move with
+// the weekday the refresh ran on. The claim's own ranking prices at its own hour.
+var rankingReference = time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+
+// RankSizes is where candidates stand on records for each ticket size, S, M and
+// L in that order: those clearing the bar in the order RankEligible gives at the
+// reference off-peak hour, each with its counts, and every other candidate
+// below the bar with its counts, a model with no settled run of the size among
+// them. A candidate that clears the bar but has no rate card is in neither
+// list, since it cannot be priced.
+func RankSizes(records []ModelRecord, candidates []string, rates func(model string) (providers.Rates, bool)) []providers.SizeRanking {
+	type key struct{ model, size string }
+	counts := make(map[key]providers.RankedModel, len(records))
+	cleared := make(map[key]bool, len(records))
+	for _, r := range records {
+		k := key{r.Model, r.Size}
+		counts[k] = providers.RankedModel{Model: r.Model, Settled: r.Settled, Passed: r.Passed}
+		cleared[k] = eligible(r)
+	}
+	var out []providers.SizeRanking
+	for _, size := range []string{SizeSmall, SizeMedium, SizeLarge} {
+		row := providers.SizeRanking{Size: size}
+		ranked := RankEligible(records, size, candidates, rates, rankingReference)
+		for _, model := range ranked {
+			row.Ranked = append(row.Ranked, counts[key{model, size}])
+		}
+		for _, model := range candidates {
+			if k := (key{model, size}); !cleared[k] {
+				count := counts[k]
+				count.Model = model
+				row.BelowBar = append(row.BelowBar, count)
+			}
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
 // modelChooser gives one poll's unlabelled candidates their build model: the
 // settled records are read once, the first time a candidate needs them, and
 // each model admission is asked about once per set of labels.

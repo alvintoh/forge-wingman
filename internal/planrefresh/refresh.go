@@ -30,6 +30,9 @@ type Refresher struct {
 	// each of which a model list must hold; nil means the embedded provider
 	// configuration's own.
 	RateCard func(provider string) []string
+	// Rank ranks a plan's models from its settled runs; nil means no ranking is
+	// read and the last one stands.
+	Rank Ranker
 }
 
 // Refresh reads provider's sources and returns the facts document to record,
@@ -39,7 +42,8 @@ type Refresher struct {
 //
 // The error is non-nil only when the vendor's model list answered and was
 // refused as partial or malformed. The document is still returned, recording the
-// list as could-not-read beside the last good one, and is the one to write.
+// list and the ranking as could-not-read beside the last good ones, and is the
+// one to write.
 func (r Refresher) Refresh(ctx context.Context, provider string, def providers.Definition, last providers.Facts) (providers.Facts, error) {
 	on := r.now().UTC().Format(dateLayout)
 	facts := providers.Facts{
@@ -52,6 +56,7 @@ func (r Refresher) Refresh(ctx context.Context, provider string, def providers.D
 	var refused error
 	facts.Models, facts.Leaderboard, refused = r.models(ctx, provider, last, on)
 	facts.Feed = r.feed(provider, def, last, on)
+	facts.Ranking = r.ranking(ctx, provider, last, on, refused)
 	return facts, refused
 }
 

@@ -42,6 +42,10 @@ const (
 	maxFieldBytes = 200
 	// maxNoteBytes caps the reason a source could not be read.
 	maxNoteBytes = 500
+	// maxRankedModels caps each list of a plan's ranking. The ranking is of the
+	// models on the plan's rate card, a handful, so a list over it is a ranker
+	// fault rather than a plan.
+	maxRankedModels = 50
 
 	// maxDroppedPercent is the share of the last good model list one read may
 	// drop: a read dropping more is refused as a partial reply rather than

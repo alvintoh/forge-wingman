@@ -32,8 +32,9 @@ type Source struct {
 	// Changes names what this read found different from the facts before it, empty
 	// when nothing did or the source could not be read.
 	Changes []string `firestore:"changes"`
-	// Note is why the source could not be read, or why a model list that would
-	// have been refused was accepted; empty otherwise.
+	// Note is why the source could not be read, why a model list that would have
+	// been refused was accepted, or that a ranking's list was cut; empty
+	// otherwise.
 	Note string `firestore:"note"`
 }
 
@@ -126,6 +127,31 @@ type RefusedList struct {
 	FirstOn string `firestore:"first_on"`
 }
 
+// RankedModel is one model's settled record of one size, as the ranking read it.
+// Model is the full id a run names, the plan's own prefix included.
+type RankedModel struct {
+	Model   string `firestore:"model"`
+	Settled int    `firestore:"settled"`
+	Passed  int    `firestore:"passed"`
+}
+
+// SizeRanking is where the plan's models stand for one ticket size: Ranked are
+// those clearing the bar, in the order the claim's own ranking gives, and
+// BelowBar those that do not, each with its counts and none ranked.
+type SizeRanking struct {
+	Size     string        `firestore:"size"`
+	Ranked   []RankedModel `firestore:"ranked"`
+	BelowBar []RankedModel `firestore:"below_bar"`
+}
+
+// RankingFacts is the plan's models ranked from its settled runs, one entry per
+// ticket size. It is a proposal for the owner to apply: nothing reads it to
+// choose a model, and the escalation ladder is only ever changed by hand.
+type RankingFacts struct {
+	Source Source        `firestore:"source"`
+	Sizes  []SizeRanking `firestore:"sizes"`
+}
+
 // FeedFacts is the free feed's own report of the plan, a change signal only: the
 // figures it states are never the ones recorded, and Disagreements names where
 // they differ from the recorded plan's.
@@ -144,8 +170,9 @@ type FeedFacts struct {
 
 // Facts is one dated read of a plan's sources: the vendor's own pages, quoted,
 // the vendor's own model list, the Coding leaderboard's reading of each model,
-// and the free feed's report. It is written to
-// provider_plans/<provider>/facts/<date>, one document per read date.
+// the free feed's report and the plan's models ranked from its settled runs. It
+// is written to provider_plans/<provider>/facts/<date>, one document per read
+// date.
 //
 // Price and Limits are the figures in the recorded plan, which the owner took from
 // the vendor's own page; a refresh copies them from the plan and never reads them
@@ -172,6 +199,8 @@ type Facts struct {
 	Leaderboard Source `firestore:"leaderboard"`
 	// Feed is the free feed's own read of the plan.
 	Feed FeedFacts `firestore:"free_feed"`
+	// Ranking is the plan's models ranked from its settled runs, per ticket size.
+	Ranking RankingFacts `firestore:"ranking"`
 	// Flags is what about the plan the owner should look at, as plan-list shows it.
 	Flags []Flag `firestore:"flags"`
 }
