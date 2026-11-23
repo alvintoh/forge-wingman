@@ -266,3 +266,239 @@ func TestAttachPlanCachesJoinsByProvider(t *testing.T) {
 		t.Errorf("a provider with no figures = %q, want %q", got, want)
 	}
 }
+
+// stubPlanCaches hands plan-list its trailing runs' cache figures, none.
+type stubPlanCaches struct{}
+
+func (stubPlanCaches) PlanCaches(context.Context, time.Time) (map[string]store.PlanCache, error) {
+	return nil, nil
+}
+
+// The ladder the plan-list tests configure, cheapest first, and the plan it is for.
+const ladderPlan = "tiered"
+
+var ladderTiers = []string{"tiered/cheap", "tiered/mid", "tiered/top"}
+
+func tieredOf(plan string) []string {
+	if plan == ladderPlan {
+		return ladderTiers
+	}
+	return nil
+}
+
+// rankedSize is one size's ranking with the models clearing the bar, in order.
+func rankedSize(size string, models ...string) providers.SizeRanking {
+	row := providers.SizeRanking{Size: size}
+	for _, m := range models {
+		row.Ranked = append(row.Ranked, providers.RankedModel{Model: m, Settled: 5, Passed: 5})
+	}
+	return row
+}
+
+// belowBar adds models to size's below-bar list.
+func belowBar(size providers.SizeRanking, models ...string) providers.SizeRanking {
+	for _, m := range models {
+		size.BelowBar = append(size.BelowBar, providers.RankedModel{Model: m, Settled: 5, Passed: 1})
+	}
+	return size
+}
+
+// rankedFacts is the facts of a plan read on readOn whose ranking was last good
+// on goodOn, in state.
+func rankedFacts(readOn, goodOn string, state providers.ReadState, sizes ...providers.SizeRanking) providers.Facts {
+	return providers.Facts{ReadOn: readOn, Ranking: providers.RankingFacts{
+		Source: providers.Source{State: state, LastGoodReadOn: goodOn}, Sizes: sizes}}
+}
+
+// listPlans runs plan-list's command function over the plans named in facts, in
+// the order given, and returns what it printed and what it asked of the store.
+func listPlans(t *testing.T, ladderOf func(string) []string, order []string, facts map[string]providers.Facts) (string, []string) {
+	t.Helper()
+	plans := &recordingPlans{facts: facts}
+	for _, name := range order {
+		plans.rows = append(plans.rows, providers.Listing{Provider: name})
+	}
+	var out strings.Builder
+	if err := runPlanList(context.Background(), &out, plans, stubPlanCaches{}, nil, ladderOf, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	return out.String(), plans.calls
+}
+
+// listTiered is listPlans over the one plan with a ladder.
+func listTiered(t *testing.T, facts providers.Facts) (string, []string) {
+	t.Helper()
+	return listPlans(t, tieredOf, []string{ladderPlan}, map[string]providers.Facts{ladderPlan: facts})
+}
+
+// TestPlanListComparesRungOneWithTheTopRankedModelOfEachSize asserts a size whose
+// top ranked model is not the ladder's cheapest is printed with both, a size
+// whose top ranked model is the cheapest prints no rung 1 line, and the store is
+// only read.
+func TestPlanListComparesRungOneWithTheTopRankedModelOfEachSize(t *testing.T) {
+	facts := rankedFacts("2026-11-22", "2026-11-22", providers.ReadChanged,
+		rankedSize("S", "tiered/cheap", "tiered/mid"),
+		rankedSize("M", "tiered/other", "tiered/cheap"))
+	out, calls := listTiered(t, facts)
+	if !strings.Contains(out, "tiered: ranking (ranked on 2026-11-22) differs from the ladder") ||
+		!strings.Contains(out, "  size M rung 1: configured tiered/cheap, ranked top tiered/other\n") {
+		t.Errorf("output lacks the rung 1 difference for M:\n%s", out)
+	}
+	if strings.Contains(out, "size S rung 1") {
+		t.Errorf("output prints rung 1 for S, whose top ranked model is the cheapest:\n%s", out)
+	}
+	if !slices.Equal(calls, []string{"list", "latest tiered"}) {
+		t.Errorf("store calls = %v, want only reads", calls)
+	}
+}
+
+// TestPlanListSaysWhereEachHigherRungStandsInEachRanking asserts every ladder
+// model above rung 1 gets one line with its place for each size: ordinals
+// including the teens, below the bar, and not ranked, with no verdict.
+func TestPlanListSaysWhereEachHigherRungStandsInEachRanking(t *testing.T) {
+	var filler []string
+	for i := 0; i < 11; i++ {
+		filler = append(filler, "tiered/f"+strconv.Itoa(i))
+	}
+	ladder := func(string) []string { return []string{"tiered/cheap", "tiered/mid", "tiered/top", "tiered/deep"} }
+	facts := rankedFacts("2026-11-22", "2026-11-22", providers.ReadChanged,
+		rankedSize("S", "tiered/other", "tiered/mid", "tiered/top"),
+		belowBar(rankedSize("M", "tiered/cheap", "tiered/mid"), "tiered/top"),
+		rankedSize("L", append(filler, "tiered/deep")...))
+	out, _ := listPlans(t, ladder, []string{ladderPlan}, map[string]providers.Facts{ladderPlan: facts})
+	for _, want := range []string{
+		"  rung 2 tiered/mid: ranked 2nd for S, ranked 2nd for M, not ranked for L\n",
+		"  rung 3 tiered/top: ranked 3rd for S, below the bar for M, not ranked for L\n",
+		"  rung 4 tiered/deep: not ranked for S, not ranked for M, ranked 12th for L\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestPlanListNamesASizeWhereNoModelClearedTheBarOnce asserts a size with no
+// ranked model gets one line however long the ladder, while a size with one
+// still reports its own rung 1.
+func TestPlanListNamesASizeWhereNoModelClearedTheBarOnce(t *testing.T) {
+	facts := rankedFacts("2026-11-22", "2026-11-22", providers.ReadChanged,
+		rankedSize("S", "tiered/cheap"), rankedSize("M", "tiered/cheap"), rankedSize("L"))
+	out, _ := listTiered(t, facts)
+	if strings.Count(out, "size L: no model cleared the bar") != 1 || strings.Contains(out, "size L rung") {
+		t.Errorf("output does not name size L once:\n%s", out)
+	}
+	if strings.Contains(out, "size S rung 1") || strings.Contains(out, "size M rung 1") {
+		t.Errorf("output prints rung 1 for sizes that agree:\n%s", out)
+	}
+}
+
+// TestPlanListSaysOnceWhenNoModelHasClearedTheBar asserts a ranking whose every
+// size is empty prints one line, and neither the per-size lines nor a rung.
+func TestPlanListSaysOnceWhenNoModelHasClearedTheBar(t *testing.T) {
+	facts := rankedFacts("2026-11-22", "2026-11-22", providers.ReadChanged, rankedSize("S"), rankedSize("M"), rankedSize("L"))
+	out, _ := listTiered(t, facts)
+	want := "tiered: ranking (ranked on 2026-11-22): no model has cleared the bar yet\n"
+	if !strings.HasSuffix(out, want) || strings.Contains(out, "rung") || strings.Contains(out, "size") {
+		t.Fatalf("output = %q, want it to end with the one line %q", out, want)
+	}
+}
+
+// TestPlanListSaysOnceWhenTheRankingMatchesTheLadder asserts a top ranked model
+// equal to rung 1 for every size prints one line and no rung, whatever else is
+// ranked, and that the line says rungs 2 and up are positions only.
+func TestPlanListSaysOnceWhenTheRankingMatchesTheLadder(t *testing.T) {
+	facts := rankedFacts("2026-11-22", "2026-11-22", providers.ReadUnchanged,
+		rankedSize("S", "tiered/cheap", "tiered/other", "tiered/mid"),
+		rankedSize("M", "tiered/cheap"))
+	out, _ := listTiered(t, facts)
+	if !strings.Contains(out, "tiered: ranking (ranked on 2026-11-22) matches the ladder at rung 1; rungs 2 and up are positions only\n") ||
+		strings.Contains(out, "size") || strings.Contains(out, "rung 2") {
+		t.Fatalf("output = %q, want one matching line and no size or rung line", out)
+	}
+}
+
+// TestPlanListSaysOnceWhenAPlanHasNoLadder asserts a plan with no ladder prints
+// one line, even beside a ranking, and its facts are not read.
+func TestPlanListSaysOnceWhenAPlanHasNoLadder(t *testing.T) {
+	facts := rankedFacts("2026-11-22", "2026-11-22", providers.ReadChanged, rankedSize("M", "tiered/mid"))
+	out, calls := listPlans(t, func(string) []string { return nil }, []string{ladderPlan}, map[string]providers.Facts{ladderPlan: facts})
+	if !strings.Contains(out, "tiered: no escalation ladder to compare\n") || strings.Contains(out, "rung") {
+		t.Fatalf("output = %q, want one no-ladder line and no rung", out)
+	}
+	if !slices.Equal(calls, []string{"list"}) {
+		t.Errorf("store calls = %v, want the facts unread", calls)
+	}
+}
+
+// TestPlanListShowsTheDateACarriedForwardRankingWasRankedOn asserts a ranking the
+// latest read could not refresh shows the earlier date it was ranked on, not the
+// date of the facts that carry it.
+func TestPlanListShowsTheDateACarriedForwardRankingWasRankedOn(t *testing.T) {
+	facts := rankedFacts("2026-11-22", "2026-11-08", providers.ReadCouldNotRead, rankedSize("M", "tiered/top"))
+	out, _ := listTiered(t, facts)
+	if !strings.Contains(out, "tiered: ranking (ranked on 2026-11-08, carried forward) differs from the ladder") || strings.Contains(out, "2026-11-22") {
+		t.Fatalf("output = %q, want the ranked-on date of 2026-11-08 marked carried forward", out)
+	}
+}
+
+// TestPlanListSaysWhenNoRankingWasRecorded asserts facts with no ranking are not
+// read as a ranking equal to the ladder.
+func TestPlanListSaysWhenNoRankingWasRecorded(t *testing.T) {
+	out, _ := listTiered(t, providers.Facts{ReadOn: "2026-11-22"})
+	if !strings.Contains(out, "tiered: no ranking recorded\n") || strings.Contains(out, "matches") {
+		t.Fatalf("output = %q, want one no-ranking line", out)
+	}
+}
+
+// TestPlanListSeparatesTheReportFromTheTableAndKeepsPlanOrder asserts the report
+// follows the table after one blank line, lists plans in the store's order, and
+// prints no blank line when there are no plans.
+func TestPlanListSeparatesTheReportFromTheTableAndKeepsPlanOrder(t *testing.T) {
+	ladder := func(plan string) []string {
+		if plan == "none" {
+			return nil
+		}
+		return ladderTiers
+	}
+	facts := map[string]providers.Facts{"alpha": rankedFacts("2026-11-22", "2026-11-22", providers.ReadChanged, rankedSize("M", "tiered/other"))}
+	out, _ := listPlans(t, ladder, []string{"alpha", "none"}, facts)
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) < 5 || lines[3] != "" || !strings.HasPrefix(lines[4], "alpha: ranking") || lines[len(lines)-1] != "none: no escalation ladder to compare" {
+		t.Fatalf("output = %q, want the table, one blank line, then alpha's report and none's line last", out)
+	}
+	empty, _ := listPlans(t, ladder, nil, nil)
+	if strings.Contains(empty, "\n\n") {
+		t.Fatalf("output = %q, want no blank line with no plans", empty)
+	}
+}
+
+// failingFacts is a plan store whose facts cannot be read for one plan.
+type failingFacts struct {
+	*recordingPlans
+	failing string
+}
+
+func (f failingFacts) LatestFacts(ctx context.Context, provider string) (providers.Facts, string, bool, error) {
+	if provider == f.failing {
+		return providers.Facts{}, "", false, errors.New("unavailable")
+	}
+	return f.recordingPlans.LatestFacts(ctx, provider)
+}
+
+// TestPlanListReportsTheOtherPlansWhenOnesFactsCannotBeRead asserts a plan whose
+// facts cannot be read is named unreadable, the plans after it are still
+// reported, and the error returned names it.
+func TestPlanListReportsTheOtherPlansWhenOnesFactsCannotBeRead(t *testing.T) {
+	plans := failingFacts{failing: "alpha", recordingPlans: &recordingPlans{
+		rows:  []providers.Listing{{Provider: "alpha"}, {Provider: "beta"}},
+		facts: map[string]providers.Facts{"beta": rankedFacts("2026-11-22", "2026-11-22", providers.ReadChanged, rankedSize("M", "tiered/other"))},
+	}}
+	var out strings.Builder
+	err := runPlanList(context.Background(), &out, plans, stubPlanCaches{}, nil, func(string) []string { return ladderTiers }, time.Now())
+	if err == nil || !strings.Contains(err.Error(), "alpha") || strings.Contains(err.Error(), "beta") {
+		t.Fatalf("err = %v, want it to name alpha alone", err)
+	}
+	if !strings.Contains(out.String(), "alpha: ranking unreadable\n") || !strings.Contains(out.String(), "beta: ranking (ranked on 2026-11-22) differs from the ladder") {
+		t.Fatalf("output = %q, want alpha unreadable and beta still reported", out.String())
+	}
+}
