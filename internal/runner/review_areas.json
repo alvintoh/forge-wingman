@@ -1,0 +1,72 @@
+{
+  "areas": [
+    {
+      "name": "data",
+      "paths": [
+        "**/*.sql",
+        "**/migrations/**",
+        "infra/firestore.tf",
+        "internal/runner/fixroundstate.go",
+        "internal/runner/record.go",
+        "internal/store/**",
+        "web/src/**/types.ts"
+      ],
+      "prompt": "Review this change as a data reviewer. It touches a stored or exchanged data shape: Firestore fields, a record or response type, an event payload, a migration or SQL. Look for a field renamed, removed or retyped while existing records or an older reader still depend on it, a write the reader would reject, a new required field with no value for records already stored, and an index or query the data no longer serves.",
+      "models": [
+        "opencode-go/claude-haiku-5-5"
+      ],
+      "high_when_run": false
+    },
+    {
+      "name": "infra",
+      "paths": [
+        ".github/actions/**",
+        ".github/workflows/**",
+        "**/Dockerfile",
+        "**/Dockerfile.*",
+        "infra/**"
+      ],
+      "prompt": "Review this change as an infrastructure reviewer. It touches infrastructure code or CI workflows. Look for a resource a plan would replace or destroy when only an update is meant, a workflow step that runs with more permissions or inputs than it needs, an unpinned action or image in a job that holds credentials, a trigger that runs on untrusted input, and a change whose effect only shows after it is applied.",
+      "models": [
+        "opencode-go/claude-haiku-5-5"
+      ],
+      "high_when_run": false
+    },
+    {
+      "name": "cloud",
+      "paths": [
+        "infra/settings.auto.tfvars",
+        "internal/providers/providers.json"
+      ],
+      "prompt": "Review this change as a cloud reviewer. It touches permissions, quotas or budget settings. Look for a role or binding wider than the identity needs, a limit raised or removed without the reason that bounds it, a budget or spending cap that no longer stops spend, and a setting whose live value differs from what the file now says.",
+      "models": [
+        "opencode-go/claude-haiku-5-5"
+      ],
+      "high_when_run": true
+    },
+    {
+      "name": "security",
+      "paths": [
+        "cmd/runner/auto_merge.go",
+        "cmd/runner/egress_proxy.go",
+        "cmd/surface/auth*.go",
+        "cmd/webhook/**",
+        "infra/identity.tf",
+        "infra/secrets.tf",
+        "internal/dispatcher/ruleset.go",
+        "internal/dispatcher/secrets*.go",
+        "internal/linear/oauth*.go",
+        "internal/runner/agent_egress.go",
+        "internal/runner/egress_proxy.go",
+        "internal/runner/range_secrets*.go",
+        "internal/store/ruleset.go",
+        "internal/webhook/**"
+      ],
+      "prompt": "Review this change as a security reviewer. It touches identity, authentication, tokens or secrets. Look for a check that can be skipped or fails open, a signature or token compared or verified incorrectly, a secret logged, stored or sent where it should not go, an identity trusted because the caller said so, and a credential that outlives its use.",
+      "models": [
+        "opencode-go/claude-haiku-5-5"
+      ],
+      "high_when_run": true
+    }
+  ]
+}
