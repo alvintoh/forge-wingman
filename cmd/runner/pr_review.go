@@ -471,9 +471,11 @@ func exhaustedMerge(ctx context.Context, gh pullRequests, number int, reviewedSH
 // the wingman-review status on the reviewed sha. It writes merge=true when the
 // review is clean, or its every model reported an exhausted allowance, and the
 // pull request is a run's, labelled eligible, open, not a draft, its head is
-// still the reviewed sha; the clean review then needs the owner's switch still
-// on with no escaped PR holding it, and the exhausted one its go and web checks
-// green and a rewrite rate measured and at or under the guideline.
+// still the reviewed sha, and the verdict itself holds nothing: no specialist
+// reported findings or went unreviewed, and the risk is low. The clean review
+// then needs the owner's switch still on with no escaped PR holding it, and the
+// exhausted one its go and web checks green and a rewrite rate measured and at
+// or under the guideline.
 func prReviewPost(ctx context.Context, logger *slog.Logger, getenv func(string) string, args []string) error {
 	return prReviewPostWith(ctx, logger, getenv, storedAutoMergeSettings(getenv), storedRewriteRate(logger, getenv), args)
 }
@@ -507,7 +509,11 @@ func prReviewPostWith(ctx context.Context, logger *slog.Logger, getenv func(stri
 	merge := false
 	switch {
 	case post.clean:
-		merge = cleanMerge(ctx, logger, gh, *number, *sha, settings)
+		if hold := verdictHold(v); hold.Reason != "" {
+			logger.Warn("prReviewMergeDeclined", "pr", *number, "reason", hold.Reason, "detail", hold.logDetail())
+		} else {
+			merge = cleanMerge(ctx, logger, gh, *number, *sha, settings)
+		}
 	case post.exhausted:
 		// The comment and the status both state the decision, so the decision comes
 		// first: an allowance-exhausted review merges only where every gate allows it.
@@ -515,8 +521,9 @@ func prReviewPostWith(ctx context.Context, logger *slog.Logger, getenv func(stri
 		// request, the settings, the check runs and the rate, each a round trip, and the
 		// HTTP ones bounded again by the client's own timeout. A step that cannot
 		// finish inside it fails, which is a refusal, never a merge.
-		note := mergeNote{Reason: specialistFindingsHoldReason, Words: "a specialist reported findings"}
-		if len(specialistsWithFindings(v)) == 0 {
+		hold := verdictHold(v)
+		note := hold
+		if hold.Reason == "" {
 			readCtx, cancel := context.WithTimeout(ctx, prReviewRequestTimeout)
 			note = exhaustedMerge(readCtx, gh, *number, *sha, settings, rate)
 			cancel()
@@ -526,7 +533,7 @@ func prReviewPostWith(ctx context.Context, logger *slog.Logger, getenv func(stri
 			logger.Warn("prReviewMergeDeclined", "pr", *number, "reason", note.Reason, "detail", note.logDetail())
 		}
 		post.comment = renderReviewComment(v, *sha, *runURL, note)
-		post.status.Description = noVerdictAllowanceStatusDescription
+		post.status.Description = heldStatusDescription(noVerdictAllowanceStatusDescription, v, hold)
 		if merge {
 			post.status.Description = noVerdictAllowanceMergeStatusDescription
 		}
@@ -578,7 +585,8 @@ type postPlan struct {
 // that failed, and a verdict whose every model reported an exhausted allowance
 // is no verdict that says so. A clean review whose specialist reported findings
 // is not clean: it posts a findings status naming the specialists and is not
-// eligible to merge.
+// eligible to merge. A clean review whose verdict holds the merge any other way,
+// a specialist not reviewed or a high risk, stays clean and says so in its status.
 func planPost(skipReason, contextResult string, v runner.PRVerdict, verdictErr error, sha, runURL string) postPlan {
 	status := func(state, description string) commitStatus {
 		return commitStatus{State: state, Description: truncateRunes(description, maxStatusDescription), Context: prReviewStatusContext, TargetURL: runURL}
@@ -603,7 +611,7 @@ func planPost(skipReason, contextResult string, v runner.PRVerdict, verdictErr e
 		if len(specialists) > 0 {
 			return postPlan{comment: comment, status: status("failure", findingsStatusDescription+strings.Join(specialists, ", ")+"; see the review comment")}
 		}
-		return postPlan{comment: comment, status: status("success", cleanStatusDescription+v.Model), clean: true}
+		return postPlan{comment: comment, status: status("success", heldStatusDescription(cleanStatusDescription+v.Model, v, verdictHold(v))), clean: true}
 	case runner.PRReviewFindings:
 		from := v.Model
 		if len(specialists) > 0 {
@@ -651,19 +659,26 @@ func upsertComment(ctx context.Context, gh pullRequests, number int, body string
 }
 
 // renderReviewComment is the review comment: the marker, the outcome, the
-// findings in a code fence, where GitHub renders no HTML, markdown or mention,
-// a section for each specialist that ran, and a footer naming the model and its
-// cost. note states what an
+// risk line, the findings in a code fence, where GitHub renders no HTML, markdown
+// or mention, a section for each specialist that ran, and a footer naming the
+// model and its cost. The risk line comes before any findings and is derived from
+// the verdict, so no finding can state it. note states what an
 // allowance-exhausted review decided about the merge; it is the zero note for
 // every other review, which decides none.
 func renderReviewComment(v runner.PRVerdict, sha, runURL string, note mergeNote) string {
 	var b strings.Builder
 	b.WriteString(prReviewMarker + "\n")
+	risk := riskLine(v.Risk())
 	switch v.Outcome {
 	case runner.PRReviewClean:
-		fmt.Fprintf(&b, "### Wingman review: clean\n\nNo findings against the ticket's acceptance criteria at `%s`.\n", shortSHA(sha))
+		opening := "No findings against the ticket's acceptance criteria at `" + shortSHA(sha) + "`."
+		// A specialist's findings are the status's and the sections' to report.
+		if hold := verdictHold(v); hold.Reason != "" && hold.Reason != specialistFindingsHoldReason {
+			opening += " Auto-merge is not requested, so this pull request waits for the owner: " + hold.Words + "."
+		}
+		fmt.Fprintf(&b, "### Wingman review: clean\n\n%s\n\n%s\n", risk, opening)
 	case runner.PRReviewFindings:
-		fmt.Fprintf(&b, "### Wingman review: findings\n\nAt `%s`:\n\n%s\n", shortSHA(sha), fenced(neutralise(v.Findings)))
+		fmt.Fprintf(&b, "### Wingman review: findings\n\n%s\n\nAt `%s`:\n\n%s\n", risk, shortSHA(sha), fenced(neutralise(v.Findings)))
 	default:
 		heading, opening := "no verdict: failed", "No review model returned a verdict at `"+shortSHA(sha)+"`, so this pull request waits for the owner."
 		if v.AllowanceExhausted() {
@@ -676,7 +691,7 @@ func renderReviewComment(v runner.PRVerdict, sha, runURL string, note mergeNote)
 				opening += " Auto-merge is not requested, so this pull request waits for the owner: " + note.Words + "."
 			}
 		}
-		fmt.Fprintf(&b, "### Wingman review: %s\n\n%s\n", heading, opening)
+		fmt.Fprintf(&b, "### Wingman review: %s\n\n%s\n\n%s\n", heading, risk, opening)
 		for _, a := range v.Attempts {
 			fmt.Fprintf(&b, "\n- `%s`: %s", a.Model, a.Outcome)
 		}

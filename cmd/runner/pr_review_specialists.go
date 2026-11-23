@@ -27,6 +27,12 @@ const (
 	// specialistFindingsHoldReason is the gate that keeps an allowance-exhausted
 	// review from requesting the merge once a specialist reported findings.
 	specialistFindingsHoldReason = "specialist-findings"
+	// specialistNotReviewedHoldReason is the gate that keeps a review from
+	// requesting the merge while a specialist it asked for never reviewed.
+	specialistNotReviewedHoldReason = "specialist-not-reviewed"
+	// riskHighHoldReason is the gate that keeps a review whose risk is high from
+	// requesting the merge.
+	riskHighHoldReason = "risk-high"
 )
 
 // specialistHeadingLine is the heading renderSpecialist opens a section with, and
@@ -66,21 +72,89 @@ func configuredSpecialists(v runner.PRVerdict) []runner.SpecialistVerdict {
 	return out
 }
 
-// hasFindings reports whether a specialist reviewed and found something.
-func hasFindings(s runner.SpecialistVerdict) bool {
-	return s.Outcome == runner.SpecialistReviewed && strings.TrimSpace(s.Findings) != ""
-}
-
 // specialistsWithFindings is the names of the specialists that reported
 // findings, in configuration order.
 func specialistsWithFindings(v runner.PRVerdict) []string {
 	var names []string
 	for _, s := range configuredSpecialists(v) {
-		if hasFindings(s) {
+		if s.HasFindings() {
 			names = append(names, s.Name)
 		}
 	}
 	return names
+}
+
+// specialistsNotReviewed is the names of the specialists no model reviewed, in
+// configuration order.
+func specialistsNotReviewed(v runner.PRVerdict) []string {
+	var names []string
+	for _, s := range configuredSpecialists(v) {
+		if s.Outcome != runner.SpecialistReviewed {
+			names = append(names, s.Name)
+		}
+	}
+	return names
+}
+
+// verdictHold is what the verdict alone holds a merge on: a specialist's
+// findings, a specialist no model reviewed, or a high risk, in that order, the
+// zero note when it holds nothing. It reads no state outside the verdict, so a
+// review that cannot merge never reads the pull request or the owner's settings.
+func verdictHold(v runner.PRVerdict) mergeNote {
+	if len(specialistsWithFindings(v)) > 0 {
+		return mergeNote{Reason: specialistFindingsHoldReason, Words: "a specialist reported findings"}
+	}
+	if names := specialistsNotReviewed(v); len(names) > 0 {
+		return mergeNote{Reason: specialistNotReviewedHoldReason, Words: "a specialist was not reviewed: " + strings.Join(names, ", ")}
+	}
+	if risk := v.Risk(); risk.High() {
+		return mergeNote{Reason: riskHighHoldReason, Words: "the risk is high", Detail: strings.Join(risk.Reasons, "; ")}
+	}
+	return mergeNote{}
+}
+
+// riskLine is the one line a review comment states its risk on.
+func riskLine(r runner.ReviewRisk) string {
+	if !r.High() {
+		return "Risk: " + runner.RiskLow
+	}
+	return "Risk: " + runner.RiskHigh + " (" + strings.Join(r.Reasons, "; ") + ")"
+}
+
+// heldStatusDescription is base followed by what hold says the verdict holds the
+// merge on. The specialists not reviewed are named last, so a long list is cut
+// first: names are dropped for a count until the description fits, and a base
+// too long even for the count is cut on its own tail, so the hold words and the
+// prefix at the base's start survive whatever the model's name is. Any other
+// hold, or none, leaves base as it is.
+func heldStatusDescription(base string, v runner.PRVerdict, hold mergeNote) string {
+	if hold.Reason != specialistNotReviewedHoldReason && hold.Reason != riskHighHoldReason {
+		return base
+	}
+	risk := ""
+	if v.Risk().High() {
+		risk = "; risk high"
+	}
+	names := specialistsNotReviewed(v)
+	tails := []string{risk}
+	if len(names) > 0 {
+		tails = tails[:0]
+		for k := len(names); k > 0; k-- {
+			tail := risk + "; not reviewed: " + strings.Join(names[:k], ", ")
+			if k < len(names) {
+				tail += fmt.Sprintf(", +%d more", len(names)-k)
+			}
+			tails = append(tails, tail)
+		}
+		tails = append(tails, fmt.Sprintf("%s; not reviewed: %d specialists", risk, len(names)))
+	}
+	for _, tail := range tails {
+		if len(base)+len(tail) <= maxStatusDescription {
+			return base + tail
+		}
+	}
+	last := tails[len(tails)-1]
+	return truncateRunes(base, maxStatusDescription-len(last)) + last
 }
 
 // renderSpecialists is the sections of v's specialists, one after another, that
@@ -111,7 +185,7 @@ func renderSpecialist(s runner.SpecialistVerdict, sha string, room int) string {
 			reason = runner.SpecialistReasonFailed
 		}
 		return heading + "Not reviewed: " + reason + ".\n" + figures
-	case !hasFindings(s):
+	case !s.HasFindings():
 		return heading + "No findings in this area.\n" + figures
 	}
 	section := func(raw string, note string) string {

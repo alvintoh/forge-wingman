@@ -317,11 +317,12 @@ model can fix a full disk.
 `pr-review.yml` runs as `pull_request_target` from main's copy and never runs the PR's
 code. Three jobs each hold one credential: `context` a read token, `review` the model
 key alone, `post` the comment and status writes plus the App token for the merge
-request. It posts one marked comment and the `wingman-review` status, and requests
-auto-merge for a clean review of an eligible PR, or for one whose review ended on the
-reviewer's spent allowance once the owner's switch is on, `go` and `web` pass at the
-reviewed head and the rewrite rate is measured and within the guideline, pinned to that
-head (`FR-16`). Branch protection requires the `go` and `web` checks and no approval.
+request. It posts one marked comment and the `wingman-review` status, and, unless the
+verdict holds it (risk level, below), requests auto-merge for a clean review of an
+eligible PR, or for one whose review ended on the reviewer's spent allowance, once the
+owner's switch is on, `go` and `web` pass at the reviewed head and the rewrite rate is
+measured and within the guideline, pinned to that head (`FR-16`). Branch protection
+requires the `go` and `web` checks and no approval.
 
 **Auto-merge — *Updated (2026-10-19)*, `adr/0018`.** Whether an eligible PR may merge at
 all is ~~one metric-gated rule and~~ the owner's switch: the switch is stored at
@@ -431,6 +432,30 @@ guessed at. Every refusal names the gate that held it in the comment, and a revi
 leaves the merge to the workflow says in the comment and the status that the PR is to be
 merged without a review. It is the `merge` output a clean review writes, so the request
 is pinned to the reviewed head and a later push withdraws it by the same workflow.
+
+**Risk level and the specialist hold — built 2026-11-24.** After the general review, one
+specialist reviews each area the diff touches (`internal/runner/review_areas.json`: its
+globs, its lens and a `high_when_run` flag), and each one's findings, or why no model
+reviewed it, are kept in the verdict. Every review comment carries one line, `Risk: low`
+or `Risk: high (…)`, right under its heading and outside every code fence, naming what
+raised it. The level is derived from the verdict and the loaded configuration whenever it
+is read and is never stored, so no finding or verdict field can state it. It is **high**
+when any specialist reported findings, or when a specialist the configuration marks
+`high_when_run` ran at all, answered or not; otherwise **low**, and always low when no
+specialist ran. A specialist the configuration does not name raises it too, since it
+cannot be checked against the flag; the verdict reader already refuses such a name, so
+that is a second line. The verdict alone holds the merge before any other gate is read,
+in this order: a specialist reported findings (`specialist-findings`), a specialist no
+model reviewed (`specialist-not-reviewed`), a high risk (`risk-high`). The hold applies
+to a clean review and to one that ended on an exhausted allowance alike, so a change in a
+high-risk area never merges without a model having read it, and a review with no
+specialist merges as before. A held review requests no merge, writes `merge=false`, logs
+`prReviewMergeDeclined` with the hold's reason, and says in the comment why the PR waits
+for the owner. A clean review stays clean on its status, and its description gains
+`; risk high` and `; not reviewed: <names>`, the names cut to fit GitHub's 140 characters
+first and then the model's name, so `fix-await` still reads the `Clean:` prefix; an exhausted one
+gains the same words after `waits for the owner`. A review whose specialist reported
+findings keeps the findings status.
 
 **The markers are a documented assumption, not a verified message.** The phrases in
 `internal/providers/providers.json` have never been confirmed against a live exhaustion

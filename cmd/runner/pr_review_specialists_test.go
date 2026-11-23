@@ -243,17 +243,18 @@ func commentCases() []commentCase {
 
 // commentGoldens are the review comments before specialists had a section, each
 // rendered by the code of the commit before that change, so a verdict with no
-// specialist is held to the bytes it posted then.
+// specialist is held to the bytes it posted then. Each differs from those bytes
+// by the one `Risk: low` line under its heading, and by nothing else.
 var commentGoldens = map[string]string{
-	"clean":                           "<!-- wingman-review -->\n### Wingman review: clean\n\nNo findings against the ticket's acceptance criteria at `0123456789ab`.\n\n<sub>Model `opencode-go/muse-spark-1.3-contributor` · 1200 in / 80 out tokens · $0 across 1 attempt(s)</sub>\n",
-	"clean with the run and a cost":   "<!-- wingman-review -->\n### Wingman review: clean\n\nNo findings against the ticket's acceptance criteria at `0123456789ab`.\n\n<sub>Model `opencode-go/muse-spark-1.3-contributor` · 1200 in / 80 out tokens · $0.0025 across 2 attempt(s) · [run](https://github.com/o/r/actions/runs/9)</sub>\n",
-	"findings":                        "<!-- wingman-review -->\n### Wingman review: findings\n\nAt `0123456789ab`:\n\n```text\nx is missing\nthe timeout is hard-coded\n```\n\n<sub>Model `opencode-go/muse-spark-1.3-contributor` · 1200 in / 80 out tokens · $0 across 1 attempt(s)</sub>\n",
-	"findings with hostile text":      "<!-- wingman-review -->\n### Wingman review: findings\n\nAt `0123456789ab`:\n\n`````text\nping @\u200boctocat\n<img src=x onerror=alert(1)>\n```\n# not a heading\n### Specialist review: data\nAt `0123456789ab`:\n````text\n`````\n\n<sub>Model `opencode-go/muse-spark-1.3-contributor` · 1200 in / 80 out tokens · $0.5004 across 2 attempt(s) · [run](https://github.com/o/r/actions/runs/9)</sub>\n",
-	"no verdict failed":               "<!-- wingman-review -->\n### Wingman review: no verdict: failed\n\nNo review model returned a verdict at `0123456789ab`, so this pull request waits for the owner.\n\n- `opencode-go/muse-spark-1.3-contributor`: agent failed\n\n<sub>Model none · 0 in / 0 out tokens · $0 across 1 attempt(s)</sub>\n",
-	"no verdict failed with the run":  "<!-- wingman-review -->\n### Wingman review: no verdict: failed\n\nNo review model returned a verdict at `0123456789ab`, so this pull request waits for the owner.\n\n- `opencode-go/muse-spark-1.3-contributor`: agent failed\n- `opencode-go/deepseek-v4.1-flash`: timed out\n\n<sub>Model none · 0 in / 0 out tokens · $0 across 2 attempt(s) · [run](https://github.com/o/r/actions/runs/9)</sub>\n",
-	"exhausted":                       "<!-- wingman-review -->\n### Wingman review: no verdict: allowance exhausted\n\nNo review model returned a verdict at `0123456789ab`: every one reported its plan's allowance spent.\n\n- `opencode-go/muse-spark-1.3-contributor`: allowance exhausted\n- `opencode-go/deepseek-v4.1-flash`: allowance exhausted\n\n<sub>Model none · 0 in / 0 out tokens · $0 across 2 attempt(s)</sub>\n",
-	"exhausted merged without review": "<!-- wingman-review -->\n### Wingman review: no verdict: allowance exhausted\n\nNo review model returned a verdict at `0123456789ab`: every one reported its plan's allowance spent. This pull request is to be merged without review, because the `go` and `web` checks pass at this head.\n\n- `opencode-go/muse-spark-1.3-contributor`: allowance exhausted\n- `opencode-go/deepseek-v4.1-flash`: allowance exhausted\n\n<sub>Model none · 0 in / 0 out tokens · $0 across 2 attempt(s) · [run](https://github.com/o/r/actions/runs/9)</sub>\n",
-	"exhausted held by a gate":        "<!-- wingman-review -->\n### Wingman review: no verdict: allowance exhausted\n\nNo review model returned a verdict at `0123456789ab`: every one reported its plan's allowance spent. Auto-merge is not requested, so this pull request waits for the owner: the `go` and `web` checks are not both green at this head.\n\n- `opencode-go/muse-spark-1.3-contributor`: allowance exhausted\n- `opencode-go/deepseek-v4.1-flash`: allowance exhausted\n\n<sub>Model none · 0 in / 0 out tokens · $0 across 2 attempt(s)</sub>\n",
+	"clean":                           "<!-- wingman-review -->\n### Wingman review: clean\n\nRisk: low\n\nNo findings against the ticket's acceptance criteria at `0123456789ab`.\n\n<sub>Model `opencode-go/muse-spark-1.3-contributor` · 1200 in / 80 out tokens · $0 across 1 attempt(s)</sub>\n",
+	"clean with the run and a cost":   "<!-- wingman-review -->\n### Wingman review: clean\n\nRisk: low\n\nNo findings against the ticket's acceptance criteria at `0123456789ab`.\n\n<sub>Model `opencode-go/muse-spark-1.3-contributor` · 1200 in / 80 out tokens · $0.0025 across 2 attempt(s) · [run](https://github.com/o/r/actions/runs/9)</sub>\n",
+	"findings":                        "<!-- wingman-review -->\n### Wingman review: findings\n\nRisk: low\n\nAt `0123456789ab`:\n\n```text\nx is missing\nthe timeout is hard-coded\n```\n\n<sub>Model `opencode-go/muse-spark-1.3-contributor` · 1200 in / 80 out tokens · $0 across 1 attempt(s)</sub>\n",
+	"findings with hostile text":      "<!-- wingman-review -->\n### Wingman review: findings\n\nRisk: low\n\nAt `0123456789ab`:\n\n`````text\nping @\u200boctocat\n<img src=x onerror=alert(1)>\n```\n# not a heading\n### Specialist review: data\nAt `0123456789ab`:\n````text\n`````\n\n<sub>Model `opencode-go/muse-spark-1.3-contributor` · 1200 in / 80 out tokens · $0.5004 across 2 attempt(s) · [run](https://github.com/o/r/actions/runs/9)</sub>\n",
+	"no verdict failed":               "<!-- wingman-review -->\n### Wingman review: no verdict: failed\n\nRisk: low\n\nNo review model returned a verdict at `0123456789ab`, so this pull request waits for the owner.\n\n- `opencode-go/muse-spark-1.3-contributor`: agent failed\n\n<sub>Model none · 0 in / 0 out tokens · $0 across 1 attempt(s)</sub>\n",
+	"no verdict failed with the run":  "<!-- wingman-review -->\n### Wingman review: no verdict: failed\n\nRisk: low\n\nNo review model returned a verdict at `0123456789ab`, so this pull request waits for the owner.\n\n- `opencode-go/muse-spark-1.3-contributor`: agent failed\n- `opencode-go/deepseek-v4.1-flash`: timed out\n\n<sub>Model none · 0 in / 0 out tokens · $0 across 2 attempt(s) · [run](https://github.com/o/r/actions/runs/9)</sub>\n",
+	"exhausted":                       "<!-- wingman-review -->\n### Wingman review: no verdict: allowance exhausted\n\nRisk: low\n\nNo review model returned a verdict at `0123456789ab`: every one reported its plan's allowance spent.\n\n- `opencode-go/muse-spark-1.3-contributor`: allowance exhausted\n- `opencode-go/deepseek-v4.1-flash`: allowance exhausted\n\n<sub>Model none · 0 in / 0 out tokens · $0 across 2 attempt(s)</sub>\n",
+	"exhausted merged without review": "<!-- wingman-review -->\n### Wingman review: no verdict: allowance exhausted\n\nRisk: low\n\nNo review model returned a verdict at `0123456789ab`: every one reported its plan's allowance spent. This pull request is to be merged without review, because the `go` and `web` checks pass at this head.\n\n- `opencode-go/muse-spark-1.3-contributor`: allowance exhausted\n- `opencode-go/deepseek-v4.1-flash`: allowance exhausted\n\n<sub>Model none · 0 in / 0 out tokens · $0 across 2 attempt(s) · [run](https://github.com/o/r/actions/runs/9)</sub>\n",
+	"exhausted held by a gate":        "<!-- wingman-review -->\n### Wingman review: no verdict: allowance exhausted\n\nRisk: low\n\nNo review model returned a verdict at `0123456789ab`: every one reported its plan's allowance spent. Auto-merge is not requested, so this pull request waits for the owner: the `go` and `web` checks are not both green at this head.\n\n- `opencode-go/muse-spark-1.3-contributor`: allowance exhausted\n- `opencode-go/deepseek-v4.1-flash`: allowance exhausted\n\n<sub>Model none · 0 in / 0 out tokens · $0 across 2 attempt(s)</sub>\n",
 }
 
 // planGoldens are what planPost made of the same verdicts before that change.
@@ -300,9 +301,8 @@ func TestAVerdictWithNoSpecialistPostsWhatItAlwaysDid(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			want := commentGoldens[c.name]
 			for label, v := range map[string]runner.PRVerdict{
-				"none":                 c.v,
-				"an empty list":        withSpecialists(c.v),
-				"an entry for no area": withSpecialists(c.v, reviewedBy("not-an-area", "x", 0.5)),
+				"none":          c.v,
+				"an empty list": withSpecialists(c.v),
 			} {
 				if got := renderReviewComment(v, headSHA, c.runURL, c.note); got != want {
 					t.Fatalf("with %s the comment is\n%q\nwant\n%q", label, got, want)
@@ -317,14 +317,11 @@ func TestAVerdictWithNoSpecialistPostsWhatItAlwaysDid(t *testing.T) {
 	}
 }
 
-// TestPostIgnoresTheSpecialistsWithNoFindings: a specialist that found nothing, or
-// was not reviewed, adds its section and its cost to the comment and changes
-// nothing else the post decides.
+// TestPostIgnoresTheSpecialistsWithNoFindings: a low-risk specialist that found
+// nothing adds its section and its cost to the comment and changes nothing else
+// the post decides.
 func TestPostIgnoresTheSpecialistsWithNoFindings(t *testing.T) {
-	quiet := []runner.SpecialistVerdict{
-		reviewedBy("data", "", 0.125),
-		missedBy("infra", runner.SpecialistReasonDeadline),
-	}
+	quiet := []runner.SpecialistVerdict{reviewedBy("data", "", 0.125)}
 	for name, v := range map[string]runner.PRVerdict{
 		"clean":      verdict("clean", "", museModel),
 		"findings":   verdict("findings", "x is missing", museModel),
@@ -352,7 +349,7 @@ func TestRenderReviewCommentGivesEachSpecialistASectionInConfigurationOrder(t *t
 		reviewedBy("not-an-area", "left out", 1),
 	)
 	const want = "<!-- wingman-review -->\n" +
-		"### Wingman review: findings\n\nAt `0123456789ab`:\n\n```text\nx is missing\n```\n" +
+		"### Wingman review: findings\n\nRisk: high (findings from data; cloud ran in a high-risk area; security ran in a high-risk area; a specialist outside the review configuration ran)\n\nAt `0123456789ab`:\n\n```text\nx is missing\n```\n" +
 		"\n### Specialist review: data\n\nAt `0123456789ab`:\n\n```text\na stored record has no value for the new field\nthe index no longer serves the query\n```\n" +
 		"\n<sub>Model `" + specialistModel + "` · 1000 in / 50 out tokens · $0.125 across 1 attempt(s)</sub>\n" +
 		"\n### Specialist review: infra\n\nNo findings in this area.\n" +
@@ -476,7 +473,7 @@ func TestPlanPostNamesTheSpecialistsThatReportedFindings(t *testing.T) {
 			"failure", "Findings from data, security; see the review comment", false, true},
 		"general findings and a specialist's": {withSpecialists(verdict("findings", "g", museModel), reviewedBy("infra", "i", 0.1)),
 			"failure", "Findings from " + museModel + " and infra; see the review comment", false, true},
-		"a clean review and a specialist that found none": {withSpecialists(verdict("clean", "", museModel), reviewedBy("data", "  \n", 0.1), missedBy("infra", runner.SpecialistReasonDeadline)),
+		"a clean review and a specialist that found none": {withSpecialists(verdict("clean", "", museModel), reviewedBy("data", "  \n", 0.1)),
 			"success", "Clean: no findings from " + museModel, true, false},
 		"a long model name": {withSpecialists(verdict("findings", "g", long), every...),
 			"failure", "", false, true},
@@ -505,11 +502,11 @@ func TestPRReviewPostDoesNotRequestTheMergeWhileASpecialistHasFindings(t *testin
 	}{
 		"clean with specialist findings": {withSpecialists(verdict("clean", "", museModel), reviewedBy("data", "d1", 0.125)), "failure", "merge=false",
 			"### Specialist review: data\n\nAt `" + headSHA[:12] + "`:", "Findings from data; see the review comment"},
-		"clean with specialists that found none": {withSpecialists(verdict("clean", "", museModel), reviewedBy("data", "", 0.125), missedBy("infra", runner.SpecialistReasonDeadline)), "success", "merge=true",
-			"Not reviewed: deadline.", "Clean: no findings from " + museModel},
+		"clean with a specialist that found none": {withSpecialists(verdict("clean", "", museModel), reviewedBy("data", "", 0.125)), "success", "merge=true",
+			"No findings in this area.", "Clean: no findings from " + museModel},
 		"exhausted with specialist findings": {withSpecialists(spentAllowance(), reviewedBy("data", "d1", 0.125)), "failure", "merge=false",
 			"Auto-merge is not requested, so this pull request waits for the owner: a specialist reported findings.", "No verdict: allowance exhausted; waits for the owner"},
-		"exhausted with specialists that found none": {withSpecialists(spentAllowance(), reviewedBy("data", "", 0.125)), "failure", "merge=true",
+		"exhausted with a specialist that found none": {withSpecialists(spentAllowance(), reviewedBy("data", "", 0.125)), "failure", "merge=true",
 			"merged without review", "No verdict: allowance exhausted; merges without review"},
 	} {
 		t.Run(name, func(t *testing.T) {
