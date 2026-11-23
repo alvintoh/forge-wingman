@@ -192,9 +192,17 @@ func issueWith(ctx context.Context, logger *slog.Logger, src *linear.PollSource,
 }
 
 // prReview reviews the context file on each model of the list in turn and
-// writes the verdict. A review no model completes is a no-verdict verdict, not
-// a failure; it needs only the agent binary and its key.
+// writes the verdict, then runs the specialist of each review area the diff
+// touches. A review no model completes is a no-verdict verdict, not a failure;
+// it needs only the agent binary and its key.
 func prReview(ctx context.Context, logger *slog.Logger, getenv func(string) string, args []string) error {
+	return prReviewWith(ctx, logger, getenv, args, runner.ReviewAreas(), time.Now)
+}
+
+// prReviewWith is prReview with the configured review areas and the clock the
+// total review deadline counts from.
+func prReviewWith(ctx context.Context, logger *slog.Logger, getenv func(string) string, args []string, areas []runner.ReviewArea, now func() time.Time) error {
+	started := now()
 	fs := flag.NewFlagSet("pr-review", flag.ContinueOnError)
 	contextPath := fs.String("context", "", "the review context pr-review-context wrote")
 	out := fs.String("out", "", "path to write the verdict to")
@@ -211,19 +219,30 @@ func prReview(ctx context.Context, logger *slog.Logger, getenv func(string) stri
 	if err := runner.ValidateReviewModels(list, runner.DefaultModel()); err != nil {
 		return err
 	}
+	if err := runner.ValidateReviewAreas(areas, runner.DefaultModel()); err != nil {
+		return err
+	}
+	pass := specialistPass(areas, started, now)
 	_, err := withAgents(ctx, logger, agentSettings{Image: *agentImage}, ".", runner.Harnesses(getenv),
 		func(contained []runner.Harness, _ func(context.Context, string) error) error {
 			// No harness opt-in: a PR review runs unattended, so it admits no
 			// harness that only the owner's own commands may opt in.
 			agent := runner.NewRouter(runner.ProfileReview, contained...)
-			return runPRReview(ctx, logger, agent, list, *timeout, *contextPath, *out, getenv("GITHUB_STEP_SUMMARY"), runner.HarnessSecrets(getenv))
+			return runPRReview(ctx, logger, agent, list, *timeout, *contextPath, *out, getenv("GITHUB_STEP_SUMMARY"), runner.HarnessSecrets(getenv), pass)
 		})
 	return err
 }
 
+// specialistPass is the specialists' pass over areas for a review that began at
+// started: none starts once the total review deadline has passed.
+func specialistPass(areas []runner.ReviewArea, started time.Time, now func() time.Time) runner.SpecialistPass {
+	return runner.SpecialistPass{Areas: areas, Deadline: started.Add(runner.PRReviewDeadline), Now: now}
+}
+
 // runPRReview is prReview's review of the context at contextPath, with the
-// verdict written to out and its footer to summaryPath when that is set.
-func runPRReview(ctx context.Context, logger *slog.Logger, agent runner.Agent, models []string, timeout time.Duration, contextPath, out, summaryPath string, secrets []string) error {
+// verdict written to out and its footer to summaryPath when that is set. pass
+// holds the review areas and the deadline after which no specialist starts.
+func runPRReview(ctx context.Context, logger *slog.Logger, agent runner.Agent, models []string, timeout time.Duration, contextPath, out, summaryPath string, secrets []string, pass runner.SpecialistPass) error {
 	raw, err := readCapped(contextPath)
 	if err != nil {
 		return err
@@ -232,12 +251,18 @@ func runPRReview(ctx context.Context, logger *slog.Logger, agent runner.Agent, m
 	if err != nil {
 		return err
 	}
-	v, err := runner.ReviewPR(ctx, agent, models, timeout, c, secrets)
+	v, err := runner.ReviewPRWithSpecialists(ctx, agent, models, timeout, c, secrets, pass)
 	if err != nil {
 		return err
 	}
 	for _, a := range v.Attempts {
 		logger.Info("prReviewAttempt", "pr", c.PR, "model", a.Model, "outcome", a.Outcome, "detail", a.Detail)
+	}
+	for _, s := range v.Specialists {
+		logger.Info("prReviewSpecialist", "pr", c.PR, "name", s.Name, "outcome", s.Outcome, "reason", s.Reason, "model", s.Model, "cost", s.Cost)
+		for _, a := range s.Attempts {
+			logger.Info("prReviewSpecialistAttempt", "pr", c.PR, "name", s.Name, "model", a.Model, "outcome", a.Outcome, "detail", a.Detail)
+		}
 	}
 	logger.Info("prReviewVerdict", "pr", c.PR, "outcome", v.Outcome, "model", v.Model, "cost", v.Usage.Cost)
 	encoded, err := json.Marshal(v)

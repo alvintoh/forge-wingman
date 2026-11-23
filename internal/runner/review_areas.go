@@ -223,3 +223,34 @@ func checkPattern(pattern string) error {
 	}
 	return nil
 }
+
+// ReviewAreas returns the configured review areas, in configuration order.
+func ReviewAreas() []ReviewArea {
+	areas := make([]ReviewArea, len(embeddedReviewAreas))
+	for i, a := range embeddedReviewAreas {
+		areas[i] = a.clone()
+	}
+	return areas
+}
+
+// ValidateReviewAreas reports whether every area's model list is a usable review
+// list as ValidateReviewModels says it, and also of one provider: the build
+// model's, so a specialist never runs on a provider the plan does not hold. The
+// error names the area.
+func ValidateReviewAreas(areas []ReviewArea, build string) error {
+	for _, a := range areas {
+		label := fmt.Sprintf("review area %q", a.Name)
+		if err := validateModelList(label, a.Models); err != nil {
+			return err
+		}
+		if err := notBuilder(label, a.Models, build); err != nil {
+			return err
+		}
+		for _, m := range a.Models {
+			if Provider(m) != Provider(build) {
+				return fmt.Errorf("%s model %q is not a %s model", label, m, Provider(build))
+			}
+		}
+	}
+	return nil
+}
