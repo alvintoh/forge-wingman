@@ -446,7 +446,7 @@ func TestPRReviewPost(t *testing.T) {
 			getenv := f.start(t)
 			args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-verdict", writeVerdict(t, tt.v), "-context-result", "success",
 				"-run-url", "https://github.com/o/r/actions/runs/9"}
-			if err := prReviewPostWith(context.Background(), quietLogger(), getenv, switchedOn, rateUnder, args); err != nil {
+			if err := prReviewPostWith(context.Background(), quietLogger(), getenv, switchedOn, rateUnder, recordNothing, args); err != nil {
 				t.Fatal(err)
 			}
 			if s, ok := f.statuses[headSHA]; !ok || s.State != tt.wantState || len(f.statuses) != 1 {
@@ -513,7 +513,7 @@ func TestPRReviewPostRequestsTheMergeOnAnExhaustedAllowance(t *testing.T) {
 	f := &fakePulls{pull: openPull("t", "", headSHA, autoMergeEligibleLabel), checkRuns: greenChecks()}
 	getenv := f.start(t)
 	args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-verdict", writeVerdict(t, spentAllowance()), "-context-result", "success"}
-	if err := prReviewPostWith(context.Background(), quietLogger(), getenv, switchedOn, rateUnder, args); err != nil {
+	if err := prReviewPostWith(context.Background(), quietLogger(), getenv, switchedOn, rateUnder, recordNothing, args); err != nil {
 		t.Fatal(err)
 	}
 	if got := readOutput(t, getenv); !strings.Contains(got, "merge=true") {
@@ -567,7 +567,7 @@ func TestPRReviewPostDoesNotRequestTheMergeOnAnExhaustedAllowance(t *testing.T) 
 			f := &fakePulls{pull: tt.pull, checkRuns: tt.checkRuns}
 			getenv := f.start(t)
 			args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-verdict", writeVerdict(t, spentAllowance()), "-context-result", "success"}
-			if err := prReviewPostWith(context.Background(), quietLogger(), getenv, switchedOn, rateUnder, args); err != nil {
+			if err := prReviewPostWith(context.Background(), quietLogger(), getenv, switchedOn, rateUnder, recordNothing, args); err != nil {
 				t.Fatal(err)
 			}
 			if got := readOutput(t, getenv); !strings.Contains(got, "merge=false") {
@@ -590,7 +590,7 @@ func TestPRReviewPostRequestsNothingOnANoVerdictThatFailed(t *testing.T) {
 	getenv := f.start(t)
 	failed := noVerdict(attempted(museModel, runner.AttemptExhausted), attempted(pricedModel, runner.AttemptTimedOut))
 	args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-verdict", writeVerdict(t, failed), "-context-result", "success"}
-	if err := prReviewPostWith(context.Background(), quietLogger(), getenv, switchedOn, rateUnder, args); err != nil {
+	if err := prReviewPostWith(context.Background(), quietLogger(), getenv, switchedOn, rateUnder, recordNothing, args); err != nil {
 		t.Fatal(err)
 	}
 	if got := readOutput(t, getenv); !strings.Contains(got, "merge=false") {
@@ -613,7 +613,7 @@ func TestPRReviewPostReadsAFailedCheckReadAsNotGreen(t *testing.T) {
 			getenv := f.start(t)
 			var logs bytes.Buffer
 			args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-verdict", writeVerdict(t, spentAllowance()), "-context-result", "success"}
-			if err := prReviewPostWith(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), getenv, switchedOn, rateUnder, args); err != nil {
+			if err := prReviewPostWith(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), getenv, switchedOn, rateUnder, recordNothing, args); err != nil {
 				t.Fatal(err)
 			}
 			if got := readOutput(t, getenv); !strings.Contains(got, "merge=false") {
@@ -659,7 +659,7 @@ func TestPRReviewPostDeclinesTheMergeOnAnExhaustedAllowance(t *testing.T) {
 			getenv := f.start(t)
 			var logs bytes.Buffer
 			args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-verdict", writeVerdict(t, spentAllowance()), "-context-result", "success"}
-			if err := prReviewPostWith(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), getenv, tt.settings, tt.rate, args); err != nil {
+			if err := prReviewPostWith(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), getenv, tt.settings, tt.rate, recordNothing, args); err != nil {
 				t.Fatal(err)
 			}
 			if got := readOutput(t, getenv); !strings.Contains(got, "merge=false") {
@@ -692,7 +692,7 @@ func TestPRReviewPostPostsTheReviewWhenThePullCannotBeRead(t *testing.T) {
 			getenv := f.start(t)
 			var logs bytes.Buffer
 			args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-verdict", writeVerdict(t, tt.v), "-context-result", "success"}
-			if err := prReviewPostWith(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), getenv, switchedOn, rateUnder, args); err != nil {
+			if err := prReviewPostWith(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), getenv, switchedOn, rateUnder, recordNothing, args); err != nil {
 				t.Fatal(err)
 			}
 			if got := readOutput(t, getenv); !strings.Contains(got, "merge=false") {
@@ -751,7 +751,7 @@ func TestPRReviewPostBoundsTheExhaustedDecisionToOneWindow(t *testing.T) {
 		return switchedOn(ctx)
 	}
 	args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-verdict", writeVerdict(t, spentAllowance()), "-context-result", "success"}
-	if err := prReviewPostWith(context.Background(), quietLogger(), getenv, read, rateUnder, args); err != nil {
+	if err := prReviewPostWith(context.Background(), quietLogger(), getenv, read, rateUnder, recordNothing, args); err != nil {
 		t.Fatal(err)
 	}
 	if !bounded || remaining <= 0 || remaining > prReviewRequestTimeout {
@@ -769,7 +769,7 @@ func TestPRReviewPostNamesTheSwitchBeforeTheMissingLabel(t *testing.T) {
 		return store.AutoMergeSetting{Enabled: false}, nil
 	}
 	args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-verdict", writeVerdict(t, spentAllowance()), "-context-result", "success"}
-	if err := prReviewPostWith(context.Background(), quietLogger(), getenv, off, rateUnder, args); err != nil {
+	if err := prReviewPostWith(context.Background(), quietLogger(), getenv, off, rateUnder, recordNothing, args); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.created) != 1 || !strings.Contains(f.created[0], "auto-merge switch is off") {
@@ -872,7 +872,7 @@ func TestPRReviewPostDeclinesTheMergeWhileTheSettingsHold(t *testing.T) {
 			getenv := f.start(t)
 			var logs bytes.Buffer
 			args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-verdict", writeVerdict(t, verdict("clean", "", museModel)), "-context-result", "success"}
-			if err := prReviewPostWith(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), getenv, tt.settings, rateUnder, args); err != nil {
+			if err := prReviewPostWith(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), getenv, tt.settings, rateUnder, recordNothing, args); err != nil {
 				t.Fatal(err)
 			}
 			if got := readOutput(t, getenv); !strings.Contains(got, "merge=false") {
@@ -898,7 +898,7 @@ func TestPRReviewPostReadsTheSettingsOnlyForAMergeItWouldRequest(t *testing.T) {
 		return switchedOn(ctx)
 	}
 	args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-verdict", writeVerdict(t, verdict("clean", "", museModel)), "-context-result", "success"}
-	if err := prReviewPostWith(context.Background(), quietLogger(), getenv, counting, rateUnder, args); err != nil {
+	if err := prReviewPostWith(context.Background(), quietLogger(), getenv, counting, rateUnder, recordNothing, args); err != nil {
 		t.Fatal(err)
 	}
 	if reads != 0 {
@@ -910,7 +910,7 @@ func TestPRReviewPostSetsAnErrorStatusForASkippedReview(t *testing.T) {
 	f := &fakePulls{}
 	getenv := f.start(t)
 	args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-skip-reason", "no-ticket-id", "-context-result", "success"}
-	if err := prReviewPostWith(context.Background(), quietLogger(), getenv, switchedOn, rateUnder, args); err != nil {
+	if err := prReviewPostWith(context.Background(), quietLogger(), getenv, switchedOn, rateUnder, recordNothing, args); err != nil {
 		t.Fatal(err)
 	}
 	if s := f.statuses[headSHA]; s.State != "error" || !strings.Contains(s.Description, "no ticket id") || len(f.created) != 0 {

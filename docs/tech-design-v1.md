@@ -457,6 +457,17 @@ first and then the model's name, so `fix-await` still reads the `Clean:` prefix;
 gains the same words after `waits for the owner`. A review whose specialist reported
 findings keeps the findings status.
 
+**The review record — built 2026-11-24.** Once the post step has written the comment,
+the status and the `merge` output, it stores one document at `pr_reviews/<pr>-<head sha>`
+with every model call the review made (role `general` or the specialist's area name,
+model, outcome, tokens and dollars; only the call that answered has tokens), the call
+count and their total, the risk level and the specialists the review asked for. The
+total is the footer's. It holds no finding text, the same head posted again replaces the
+document (so a re-run of a head overwrites the first run's spend), and a new head adds one. A write that fails is logged as
+`prReviewRecordUnwritten` and changes nothing already posted or decided. The post
+identity holds only `roles/datastore.viewer`, so the write is refused until that role is
+`roles/datastore.user` (`infra/identity.tf`).
+
 **The markers are a documented assumption, not a verified message.** The phrases in
 `internal/providers/providers.json` have never been confirmed against a live exhaustion
 or outage — `internal/providers/config.go` records them as UNVERIFIED — so a provider

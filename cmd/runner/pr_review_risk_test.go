@@ -86,7 +86,7 @@ func TestPRReviewPostHoldsTheMergeOnTheVerdict(t *testing.T) {
 				return switchedOn(ctx)
 			}
 			args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-verdict", writeVerdict(t, tt.v), "-context-result", "success"}
-			if err := prReviewPostWith(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), getenv, settings, rateUnder, args); err != nil {
+			if err := prReviewPostWith(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), getenv, settings, rateUnder, recordNothing, args); err != nil {
 				t.Fatal(err)
 			}
 			wantOutput := "merge=false"
@@ -127,7 +127,7 @@ func TestPRReviewPostRefusesASpecialistOutsideTheConfiguration(t *testing.T) {
 	getenv := f.start(t)
 	v := withSpecialists(verdict("clean", "", museModel), reviewedBy("not-an-area", "", 0.1))
 	args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-verdict", writeVerdict(t, v), "-context-result", "success"}
-	if err := prReviewPostWith(context.Background(), quietLogger(), getenv, switchedOn, rateUnder, args); err != nil {
+	if err := prReviewPostWith(context.Background(), quietLogger(), getenv, switchedOn, rateUnder, recordNothing, args); err != nil {
 		t.Fatal(err)
 	}
 	if got := readOutput(t, getenv); !strings.Contains(got, "merge=false") {

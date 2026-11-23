@@ -293,7 +293,7 @@ func readCapped(path string) ([]byte, error) {
 }
 
 // withStore runs fn with a Firestore client for the job's project, opened by open
-// for the one read and closed with it.
+// for the one read or write and closed with it.
 func withStore(ctx context.Context, getenv func(string) string, open func(context.Context, string) (*firestore.Client, error), fn func(*firestore.Client) error) error {
 	project := getenv("GOOGLE_CLOUD_PROJECT")
 	if project == "" {
@@ -308,7 +308,7 @@ func withStore(ctx context.Context, getenv func(string) string, open func(contex
 }
 
 // openProjectStore is firestore.NewClient in the fixed-arity shape withStore's seam
-// takes, its options dropped: every read here opens a client without one.
+// takes, its options dropped: every read or write here opens a client without one.
 func openProjectStore(ctx context.Context, project string) (*firestore.Client, error) {
 	return firestore.NewClient(ctx, project)
 }
@@ -475,14 +475,15 @@ func exhaustedMerge(ctx context.Context, gh pullRequests, number int, reviewedSH
 // reported findings or went unreviewed, and the risk is low. The clean review
 // then needs the owner's switch still on with no escaped PR holding it, and the
 // exhausted one its go and web checks green and a rewrite rate measured and at
-// or under the guideline.
+// or under the guideline. A review whose verdict was read then has its calls and
+// cost recorded, which never changes what was posted or decided.
 func prReviewPost(ctx context.Context, logger *slog.Logger, getenv func(string) string, args []string) error {
-	return prReviewPostWith(ctx, logger, getenv, storedAutoMergeSettings(getenv), storedRewriteRate(logger, getenv), args)
+	return prReviewPostWith(ctx, logger, getenv, storedAutoMergeSettings(getenv), storedRewriteRate(logger, getenv), storedReviewRecorder(getenv), args)
 }
 
 // prReviewPostWith is prReviewPost with settings and rate reading the owner's
-// auto-merge evidence.
-func prReviewPostWith(ctx context.Context, logger *slog.Logger, getenv func(string) string, settings autoMergeSettings, rate rewriteRate, args []string) error {
+// auto-merge evidence and record storing the review's calls and cost.
+func prReviewPostWith(ctx context.Context, logger *slog.Logger, getenv func(string) string, settings autoMergeSettings, rate rewriteRate, record reviewRecorder, args []string) error {
 	fs := flag.NewFlagSet("pr-review-post", flag.ContinueOnError)
 	number := fs.Int("pr", 0, "the reviewed pull request")
 	sha := fs.String("reviewed-sha", "", "the head sha the review read")
@@ -547,7 +548,14 @@ func prReviewPostWith(ctx context.Context, logger *slog.Logger, getenv func(stri
 		return err
 	}
 	logger.Info("prReviewPosted", "pr", *number, "state", post.status.State, "merge", merge)
-	return writeOutputs(getenv("GITHUB_OUTPUT"), map[string]string{"merge": strconv.FormatBool(merge)})
+	outErr := writeOutputs(getenv("GITHUB_OUTPUT"), map[string]string{"merge": strconv.FormatBool(merge)})
+	// Last, so the decision is written before the database is asked for anything
+	// and a failed write changes nothing already published. Only a review whose
+	// verdict was read has calls to record.
+	if *skipReason == "" && *contextResult == "success" && verdictErr == nil {
+		recordReview(ctx, logger, record, *number, *sha, v)
+	}
+	return outErr
 }
 
 // readVerdict reads and validates the verdict at path.
@@ -815,11 +823,22 @@ func readFindingsBlock(lines []string) (reviewComment, bool) {
 // attempt. A review with specialists totals the tokens, the cost and the attempts
 // across the general review and each specialist section the comment shows.
 func verdictFooter(v runner.PRVerdict) string {
-	cost := 0.0
+	usage, cost, attempts := reviewTotals(v)
+	footer := usageLine(v.Model, usage, cost, attempts)
+	if len(configuredSpecialists(v)) > 0 {
+		footer += ", specialists included"
+	}
+	return footer
+}
+
+// reviewTotals is the tokens, the dollar figure and the attempts of the general
+// review and every configured specialist, as the footer prints them and the
+// review's record stores them.
+func reviewTotals(v runner.PRVerdict) (usage runner.Usage, cost float64, attempts int) {
 	for _, a := range v.Attempts {
 		cost += a.Cost
 	}
-	usage, attempts := v.Usage, len(v.Attempts)
+	usage, attempts = v.Usage, len(v.Attempts)
 	specialists := configuredSpecialists(v)
 	for _, s := range specialists {
 		cost += s.Cost
@@ -832,11 +851,7 @@ func verdictFooter(v runner.PRVerdict) string {
 		// review with no specialist is left as it always printed.
 		cost = math.Round(cost*costFooterScale) / costFooterScale
 	}
-	footer := usageLine(v.Model, usage, cost, attempts)
-	if len(specialists) > 0 {
-		footer += ", specialists included"
-	}
-	return footer
+	return usage, cost, attempts
 }
 
 // neutralise breaks every @mention, so a finding cannot notify anyone.
