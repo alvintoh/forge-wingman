@@ -165,10 +165,11 @@ func reviewAt(ctx context.Context, gh pullRequests, number int, sha string) (fix
 	return fixAwaitOutcome{}, false, nil
 }
 
-// findingsAt reads the findings a findings status reports. The review comment
-// holds them only when its At line names sha: a comment for another head is not
-// this review, so the poll continues. A pull request with no review comment yet
-// reads as one naming no head.
+// findingsAt reads the findings a findings status reports: the general review's
+// and each specialist's, general first. The review comment holds them only when
+// its At line names sha: a comment for another head is not this review, so the
+// poll continues. A pull request with no review comment yet reads as one naming
+// no head.
 func findingsAt(ctx context.Context, gh pullRequests, number int, sha, description string) (fixAwaitOutcome, bool, error) {
 	comments, err := gh.comments(ctx, number)
 	if err != nil {
@@ -183,11 +184,12 @@ func findingsAt(ctx context.Context, gh pullRequests, number int, sha, descripti
 		return fixAwaitOutcome{Decision: fixAwaitStop, Reason: fixAwaitReasonError,
 			Detail: "the review comment for " + shortSHA(sha) + " has an unclosed findings fence"}, true, nil
 	}
-	if strings.TrimSpace(parsed.Findings) == "" {
+	findings := parsed.allFindings()
+	if strings.TrimSpace(findings) == "" {
 		return fixAwaitOutcome{Decision: fixAwaitStop, Reason: fixAwaitReasonError,
 			Detail: "the review comment for " + shortSHA(sha) + " lists no findings"}, true, nil
 	}
-	capped, omitted, cut := runner.CapReviewFindings(parsed.Findings)
+	capped, omitted, cut := runner.CapReviewFindings(findings)
 	return fixAwaitOutcome{Decision: fixAwaitContinue, Reason: fixAwaitReasonFindings, Findings: capped,
 		Omitted: omitted, Cut: cut, Detail: description}, true, nil
 }

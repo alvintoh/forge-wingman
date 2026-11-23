@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"regexp"
@@ -26,13 +27,15 @@ import (
 )
 
 const (
-	defaultPRReviewTimeout   = 8 * time.Minute
-	prReviewRequestTimeout   = 30 * time.Second
-	prReviewMarker           = "<!-- wingman-review -->"
-	prReviewStatusContext    = "wingman-review"
-	prReviewCommentAuthor    = "github-actions[bot]"
-	autoMergeEligibleLabel   = "wingman:auto-merge-eligible"
-	maxStatusDescription     = 140
+	defaultPRReviewTimeout = 8 * time.Minute
+	prReviewRequestTimeout = 30 * time.Second
+	prReviewMarker         = "<!-- wingman-review -->"
+	prReviewStatusContext  = "wingman-review"
+	prReviewCommentAuthor  = "github-actions[bot]"
+	autoMergeEligibleLabel = "wingman:auto-merge-eligible"
+	maxStatusDescription   = 140
+	// costFooterScale rounds a footer's summed cost to millionths of a dollar.
+	costFooterScale          = 1e6
 	maxPRReviewArtifactBytes = 1 << 20
 	// reviewSHALen is how much of a head sha a review comment names.
 	reviewSHALen = 12
@@ -512,9 +515,12 @@ func prReviewPostWith(ctx context.Context, logger *slog.Logger, getenv func(stri
 		// request, the settings, the check runs and the rate, each a round trip, and the
 		// HTTP ones bounded again by the client's own timeout. A step that cannot
 		// finish inside it fails, which is a refusal, never a merge.
-		readCtx, cancel := context.WithTimeout(ctx, prReviewRequestTimeout)
-		note := exhaustedMerge(readCtx, gh, *number, *sha, settings, rate)
-		cancel()
+		note := mergeNote{Reason: specialistFindingsHoldReason, Words: "a specialist reported findings"}
+		if len(specialistsWithFindings(v)) == 0 {
+			readCtx, cancel := context.WithTimeout(ctx, prReviewRequestTimeout)
+			note = exhaustedMerge(readCtx, gh, *number, *sha, settings, rate)
+			cancel()
+		}
 		merge = note.Requested
 		if !merge {
 			logger.Warn("prReviewMergeDeclined", "pr", *number, "reason", note.Reason, "detail", note.logDetail())
@@ -570,7 +576,9 @@ type postPlan struct {
 // planPost decides what a review publishes. A skipped or failed context sets
 // an error status and no comment; an unreadable or absent verdict is no verdict
 // that failed, and a verdict whose every model reported an exhausted allowance
-// is no verdict that says so.
+// is no verdict that says so. A clean review whose specialist reported findings
+// is not clean: it posts a findings status naming the specialists and is not
+// eligible to merge.
 func planPost(skipReason, contextResult string, v runner.PRVerdict, verdictErr error, sha, runURL string) postPlan {
 	status := func(state, description string) commitStatus {
 		return commitStatus{State: state, Description: truncateRunes(description, maxStatusDescription), Context: prReviewStatusContext, TargetURL: runURL}
@@ -589,11 +597,19 @@ func planPost(skipReason, contextResult string, v runner.PRVerdict, verdictErr e
 		v = runner.PRVerdict{Outcome: runner.PRReviewNoVerdict}
 	}
 	comment := renderReviewComment(v, sha, runURL, mergeNote{})
+	specialists := specialistsWithFindings(v)
 	switch v.Outcome {
 	case runner.PRReviewClean:
+		if len(specialists) > 0 {
+			return postPlan{comment: comment, status: status("failure", findingsStatusDescription+strings.Join(specialists, ", ")+"; see the review comment")}
+		}
 		return postPlan{comment: comment, status: status("success", cleanStatusDescription+v.Model), clean: true}
 	case runner.PRReviewFindings:
-		return postPlan{comment: comment, status: status("failure", findingsStatusDescription+v.Model+"; see the review comment")}
+		from := v.Model
+		if len(specialists) > 0 {
+			from += " and " + strings.Join(specialists, ", ")
+		}
+		return postPlan{comment: comment, status: status("failure", findingsStatusDescription+from+"; see the review comment")}
 	default:
 		if v.AllowanceExhausted() {
 			return postPlan{comment: comment, status: status("failure", noVerdictAllowanceStatusDescription), exhausted: true}
@@ -636,7 +652,8 @@ func upsertComment(ctx context.Context, gh pullRequests, number int, body string
 
 // renderReviewComment is the review comment: the marker, the outcome, the
 // findings in a code fence, where GitHub renders no HTML, markdown or mention,
-// and a footer naming the model and its cost. note states what an
+// a section for each specialist that ran, and a footer naming the model and its
+// cost. note states what an
 // allowance-exhausted review decided about the merge; it is the zero note for
 // every other review, which decides none.
 func renderReviewComment(v runner.PRVerdict, sha, runURL string, note mergeNote) string {
@@ -665,20 +682,46 @@ func renderReviewComment(v runner.PRVerdict, sha, runURL string, note mergeNote)
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString("\n<sub>" + verdictFooter(v))
+	footer := "\n<sub>" + verdictFooter(v)
 	if runURL != "" {
-		b.WriteString(" · [run](" + runURL + ")")
+		footer += " · [run](" + runURL + ")"
 	}
-	b.WriteString("</sub>\n")
+	footer += "</sub>\n"
+	b.WriteString(renderSpecialists(v, sha, max(0, maxReviewCommentChars-utf8.RuneCountInString(b.String()+footer))))
+	b.WriteString(footer)
 	return b.String()
 }
 
 // reviewComment is what a posted review comment says: the head its At line names
-// — empty when it names none, as a clean or no-verdict comment does — and the
-// findings its fenced block holds, with the mention neutralisation reversed.
+// — empty when it names none, as a clean or no-verdict comment with no specialist
+// findings does — the findings its fenced block holds, with the mention
+// neutralisation reversed, and the findings of each specialist section that has
+// any, in the order they appear.
 type reviewComment struct {
-	SHA      string
-	Findings string
+	SHA         string
+	Findings    string
+	Specialists []specialistFindings
+}
+
+// allFindings is the general findings and then each specialist's, one block of
+// lines for the fix round to work from.
+func (c reviewComment) allFindings() string {
+	parts := []string{}
+	for _, f := range append([]string{c.Findings}, specialistTexts(c.Specialists)...) {
+		if strings.TrimSpace(f) != "" {
+			parts = append(parts, f)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+// specialistTexts is the findings of each specialist section, in order.
+func specialistTexts(specialists []specialistFindings) []string {
+	texts := make([]string, len(specialists))
+	for i, s := range specialists {
+		texts[i] = s.Findings
+	}
+	return texts
 }
 
 // shortSHA is the head a review comment names, as renderReviewComment writes it.
@@ -691,12 +734,33 @@ func shortSHA(sha string) string {
 
 // parseReviewComment reads a comment renderReviewComment wrote: the head its At
 // line names and the findings block under it, un-neutralised so a finding reads
-// as the review wrote it. A comment naming no head reports no findings, which is
-// what a clean or no-verdict comment says. It reports false when the findings
-// block is unreadable — opened with no closing fence — and still names the head
-// it read, so a caller can tell another head's comment from this one's.
+// as the review wrote it, then each specialist section's findings the same way.
+// The general findings are the first block after the first At line, as ever; a
+// comment naming no head reports no findings, which is what a clean or
+// no-verdict comment says. When a clean review has specialist findings the head
+// is the first section's At line. It reports false when any findings block is
+// unreadable — opened with no closing fence — and still names the head it read,
+// so a caller can tell another head's comment from this one's.
 func parseReviewComment(body string) (reviewComment, bool) {
-	lines := strings.Split(body, "\n")
+	general, sections := readReviewSections(strings.Split(body, "\n"))
+	c, readable := readFindingsBlock(general)
+	for _, section := range sections {
+		found, ok := readFindingsBlock(section.lines)
+		readable = readable && ok
+		if c.SHA == "" {
+			c.SHA = found.SHA
+		}
+		if found.Findings != "" {
+			c.Specialists = append(c.Specialists, specialistFindings{Name: section.name, Findings: found.Findings})
+		}
+	}
+	return c, readable
+}
+
+// readFindingsBlock reads the first At line of lines and the fenced block after
+// it. Lines with no At line hold no findings; an At line whose block never
+// closes is unreadable.
+func readFindingsBlock(lines []string) (reviewComment, bool) {
 	at := -1
 	var c reviewComment
 	for i, line := range lines {
@@ -723,22 +787,41 @@ func parseReviewComment(body string) (reviewComment, bool) {
 			c.Findings = unneutralise(strings.Join(lines[open+1:i], "\n"))
 			return c, true
 		}
+		// fenced makes the fence longer than any backtick run in its block, so a run
+		// that long is the next block's fence, and this one was never closed.
+		if backtickRun(lines[i]) >= len(fence) {
+			return c, false
+		}
 	}
 	return c, false
 }
 
-// verdictFooter names the model that reviewed, its tokens and the cost of every attempt.
+// verdictFooter names the model that reviewed, its tokens and the cost of every
+// attempt. A review with specialists totals the tokens, the cost and the attempts
+// across the general review and each specialist section the comment shows.
 func verdictFooter(v runner.PRVerdict) string {
 	cost := 0.0
 	for _, a := range v.Attempts {
 		cost += a.Cost
 	}
-	model := "none"
-	if v.Model != "" {
-		model = "`" + v.Model + "`"
+	usage, attempts := v.Usage, len(v.Attempts)
+	specialists := configuredSpecialists(v)
+	for _, s := range specialists {
+		cost += s.Cost
+		usage.Input += s.Usage.Input
+		usage.Output += s.Usage.Output
+		attempts += len(s.Attempts)
 	}
-	return fmt.Sprintf("Model %s · %d in / %d out tokens · $%s across %d attempt(s)",
-		model, v.Usage.Input, v.Usage.Output, strconv.FormatFloat(cost, 'f', -1, 64), len(v.Attempts))
+	if len(specialists) > 0 {
+		// A sum of several floats carries binary noise ($0.30000000000000004); a
+		// review with no specialist is left as it always printed.
+		cost = math.Round(cost*costFooterScale) / costFooterScale
+	}
+	footer := usageLine(v.Model, usage, cost, attempts)
+	if len(specialists) > 0 {
+		footer += ", specialists included"
+	}
+	return footer
 }
 
 // neutralise breaks every @mention, so a finding cannot notify anyone.
@@ -752,8 +835,8 @@ func unneutralise(s string) string {
 	return strings.ReplaceAll(s, "@\u200b", "@")
 }
 
-// fenced puts s in a code fence longer than any run of backticks it holds.
-func fenced(s string) string {
+// backtickRun is the longest run of backticks in s.
+func backtickRun(s string) int {
 	longest, run := 0, 0
 	for _, r := range s {
 		if r == '`' {
@@ -763,7 +846,12 @@ func fenced(s string) string {
 			run = 0
 		}
 	}
-	fence := strings.Repeat("`", max(3, longest+1))
+	return longest
+}
+
+// fenced puts s in a code fence longer than any run of backticks it holds.
+func fenced(s string) string {
+	fence := strings.Repeat("`", max(3, backtickRun(s)+1))
 	return fence + "text\n" + s + "\n" + fence
 }
 
