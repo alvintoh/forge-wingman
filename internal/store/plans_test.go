@@ -295,6 +295,40 @@ func TestSetPrivateOptInLeavesTheSpendOptInAlone(t *testing.T) {
 	}
 }
 
+// TestFactsRoundTripTheRankingWithItsCountsAndLastGoodDate asserts a ranking's
+// sizes, lists, counts and could-not-read source come back as written, with an
+// empty list read back empty.
+func TestFactsRoundTripTheRankingWithItsCountsAndLastGoodDate(t *testing.T) {
+	id := fresh("plan-ranking")
+	p, _ := planStore(t, id)
+	ctx := context.Background()
+	if err := p.PutDefinition(ctx, id, planDef); err != nil {
+		t.Fatal(err)
+	}
+	ranking := prov.RankingFacts{
+		Source: prov.Source{State: prov.ReadCouldNotRead, LastGoodReadOn: "2026-09-20", Note: "settled runs unreadable"},
+		Sizes: []prov.SizeRanking{{
+			Size:     "S",
+			Ranked:   []prov.RankedModel{{Model: "alpha/fast", Settled: 6, Passed: 5}, {Model: "alpha/slow", Settled: 5, Passed: 5}},
+			BelowBar: []prov.RankedModel{{Model: "alpha/new"}},
+		}, {Size: "M"}},
+	}
+	facts := prov.Facts{ReadOn: "2026-09-27", Ranking: ranking}
+	if err := p.PutFacts(ctx, id, facts.ReadOn, facts); err != nil {
+		t.Fatal(err)
+	}
+	got, _, ok, err := p.LatestFacts(ctx, id)
+	if err != nil || !ok {
+		t.Fatalf("ok = %t, err = %v, want the facts recorded", ok, err)
+	}
+	if got.Ranking.Source.State != ranking.Source.State || got.Ranking.Source.LastGoodReadOn != "2026-09-20" ||
+		!slices.Equal(got.Ranking.Sizes[0].Ranked, ranking.Sizes[0].Ranked) ||
+		!slices.Equal(got.Ranking.Sizes[0].BelowBar, ranking.Sizes[0].BelowBar) ||
+		got.Ranking.Sizes[1].Size != "M" || len(got.Ranking.Sizes[1].Ranked) != 0 {
+		t.Fatalf("ranking = %+v, want %+v", got.Ranking, ranking)
+	}
+}
+
 // TestPutFactsWritesOneDatedDocumentAndLeavesThePlanAlone asserts the facts
 // subcollection holds one document per read date, that the newest is the one read
 // back, and that writing facts never reaches the plan's own record.

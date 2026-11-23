@@ -3,14 +3,19 @@ package dispatcher
 import (
 	"bytes"
 	"context"
+	"io"
 	"log/slog"
 	"maps"
 	"math"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/alvintoh/forge-wingman/internal/planrefresh"
 	"github.com/alvintoh/forge-wingman/internal/providers"
 	"github.com/alvintoh/forge-wingman/internal/runner"
 )
@@ -499,5 +504,93 @@ func TestEveryModelReasonFitsTheBoundTheStoreReadsBackWithin(t *testing.T) {
 	}
 	if got := ChosenReason("M", time.Date(2026, 11, 18, 18, 5, 0, 0, time.FixedZone("AEDT", 11*3600))); got != "cheapest eligible for size M at 07:00 UTC" {
 		t.Errorf("a claim at 18:05 AEDT reads %q, want its UTC hour", got)
+	}
+}
+
+func TestRankSizesListsEachSizesClearingModelsInOrderAndTheRestBelowTheBar(t *testing.T) {
+	records := []ModelRecord{
+		cachedRecord(flash, "S", 5, 5), cachedRecord(haiku, "S", 6, 5),
+		cachedRecord(flash, "M", 5, 3), cachedRecord(haiku, "M", 5, 4),
+		cachedRecord(muse, "L", 4, 4),
+	}
+	got := RankSizes(records, []string{flash, haiku, muse}, providers.RatesFor)
+	want := []providers.SizeRanking{
+		{Size: "S",
+			Ranked:   []providers.RankedModel{{Model: flash, Settled: 5, Passed: 5}, {Model: haiku, Settled: 6, Passed: 5}},
+			BelowBar: []providers.RankedModel{{Model: muse}}},
+		{Size: "M",
+			Ranked:   []providers.RankedModel{{Model: haiku, Settled: 5, Passed: 4}},
+			BelowBar: []providers.RankedModel{{Model: flash, Settled: 5, Passed: 3}, {Model: muse}}},
+		{Size: "L",
+			BelowBar: []providers.RankedModel{{Model: flash}, {Model: haiku}, {Model: muse, Settled: 4, Passed: 4}}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ranking = %+v, want %+v", got, want)
+	}
+}
+
+func TestRankSizesPricesAtTheOffPeakReferenceWhateverTheHour(t *testing.T) {
+	records := []ModelRecord{cachedRecord(flash, "M", 5, 5), cachedRecord(haiku, "M", 5, 5)}
+	if at := RankEligible(records, "M", []string{flash, haiku}, providers.RatesFor, weekdayPeak); at[0] != haiku {
+		t.Fatalf("a weekday peak hour ranks %v, want Haiku first so the reference hour is what is under test", at)
+	}
+	got := RankSizes(records, []string{flash, haiku}, providers.RatesFor)
+	if first := got[1].Ranked[0].Model; first != flash {
+		t.Fatalf("ranked %s first for M, want Flash at its off-peak card", first)
+	}
+}
+
+func TestRankSizesLeavesAnUnpricedModelOutOfBothLists(t *testing.T) {
+	const unpriced = "opencode-go/unpriced"
+	got := RankSizes([]ModelRecord{cachedRecord(unpriced, "M", 5, 5)}, []string{unpriced}, providers.RatesFor)
+	if len(got[1].Ranked) != 0 || len(got[1].BelowBar) != 0 {
+		t.Fatalf("M = %+v, want a model that clears the bar with no rate card in neither list", got[1])
+	}
+}
+
+// TestRefreshChangesNoModelAClaimChooses asserts a weekly refresh that records a
+// ranking leaves the rates, the build candidates and the model a claim chooses
+// as they were: the claim after the refresh chooses what the claim before it did.
+func TestRefreshChangesNoModelAClaimChooses(t *testing.T) {
+	records := []ModelRecord{
+		cachedRecord(flash, "S", 5, 5), cachedRecord(haiku, "S", 5, 5),
+		cachedRecord(haiku, "M", 5, 4), cachedRecord(flash, "M", 5, 3),
+	}
+	claim := func() map[string]string {
+		q := &fakeQueue{candidates: []Candidate{
+			{RunID: "small", Repo: "octo/scratch", Size: "S", Priority: 1},
+			{RunID: "medium", Repo: "octo/scratch", Size: "M", Priority: 2},
+		}}
+		if _, err := Poll(context.Background(), choiceDeps(q, &fakeModelRecords{records: records}), choiceConfig()); err != nil {
+			t.Fatal(err)
+		}
+		return chosen(q)
+	}
+	before, candidates, version := claim(), providers.BuildCandidates(), providers.RatesVersion()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"data":[{"id":"deepseek-v4.1-flash"},{"id":"muse-spark-1.3-contributor"},{"id":"claude-haiku-5-5"}]}`)
+	}))
+	t.Cleanup(srv.Close)
+	refresher := planrefresh.Refresher{
+		Vendor: planrefresh.Vendor{HTTP: srv.Client(), Base: func(string) string { return srv.URL }},
+		Now:    func() time.Time { return pollAt },
+		Rank: func(context.Context, string, time.Time) ([]providers.SizeRanking, error) {
+			return RankSizes(records, []string{flash, haiku, muse}, providers.RatesFor), nil
+		},
+	}
+	facts, err := refresher.Refresh(context.Background(), "opencode-go", providers.Definition{}, providers.Facts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(facts.Ranking.Sizes) != 3 || facts.Ranking.Source.State != providers.ReadChanged {
+		t.Fatalf("ranking = %+v, want the refresh to have recorded one", facts.Ranking)
+	}
+
+	if after := claim(); !maps.Equal(before, after) || before["small"] != flash || before["medium"] != haiku {
+		t.Fatalf("chosen %v before the refresh and %v after, want the same, Flash for S and Haiku for M", before, after)
+	}
+	if !slices.Equal(providers.BuildCandidates(), candidates) || providers.RatesVersion() != version {
+		t.Fatal("the refresh changed the embedded build candidates or rates")
 	}
 }

@@ -1,21 +1,26 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/alvintoh/forge-wingman/internal/dispatcher"
 	"github.com/alvintoh/forge-wingman/internal/money"
 	"github.com/alvintoh/forge-wingman/internal/planrefresh"
 	"github.com/alvintoh/forge-wingman/internal/providers"
+	"github.com/alvintoh/forge-wingman/internal/runner"
 )
 
 // recordingPlans is a plan store recording every call made on it. A refresh is
@@ -414,5 +419,212 @@ func TestRefreshPlansAcceptsOnlyTheSameDropReadRunning(t *testing.T) {
 				t.Fatalf("err %v, models %v, want the list refused and the last good list kept", err, ids(last))
 			}
 		})
+	}
+}
+
+// stubRecords hands over a refresh's settled records, or fails, and notes each
+// window start it was asked for.
+type stubRecords struct {
+	records []dispatcher.ModelRecord
+	err     error
+	since   []time.Time
+}
+
+func (s *stubRecords) ModelRecords(_ context.Context, since time.Time) ([]dispatcher.ModelRecord, error) {
+	s.since = append(s.since, since)
+	return s.records, s.err
+}
+
+// The priced plan the ranking tests refresh, and its models as a run names them.
+const (
+	rankedPlan = "opencode-go"
+	rankFlash  = "opencode-go/deepseek-v4.1-flash"
+	rankHaiku  = "opencode-go/claude-haiku-5-5"
+	rankMuse   = "opencode-go/muse-spark-1.3-contributor"
+)
+
+// rankedList is the vendor's own list holding every model on rankedPlan's rate card.
+var rankedList = modelList("deepseek-v4.1-flash", "claude-haiku-5-5", "muse-spark-1.3-contributor")
+
+// rankingRecord is a model's settled record of a size at a 95% cache share.
+func rankingRecord(model, size string, settled, passed int) dispatcher.ModelRecord {
+	return dispatcher.ModelRecord{Model: model, Size: size, Settled: settled, Passed: passed, FreshInput: 50, CacheRead: 950}
+}
+
+// rankedPlanRow is rankedPlan's listing, built afresh each call so a test can
+// compare the one a refresh was handed with one it had no part in.
+func rankedPlanRow(base string) providers.Listing {
+	row := configuredPlan(base)
+	row.Provider = rankedPlan
+	return row
+}
+
+// refreshRanking refreshes rankedPlan once, as the command does, ranking from
+// records, with the vendor answering list; last is the facts it last recorded.
+func refreshRanking(t *testing.T, records *stubRecords, list string, last providers.Facts) (*recordingPlans, error) {
+	t.Helper()
+	return refreshRankingAt(t, listSources(t, map[string]string{rankedPlan: list}), records, last, quietLogger())
+}
+
+// refreshRankingAt is refreshRanking against sources already served at base,
+// logging to logger. The ranker is the one newRefresher wires for the command.
+func refreshRankingAt(t *testing.T, base string, records *stubRecords, last providers.Facts, logger *slog.Logger) (*recordingPlans, error) {
+	t.Helper()
+	plans := &recordingPlans{rows: []providers.Listing{rankedPlanRow(base)}}
+	if last.ReadOn != "" {
+		plans.facts = map[string]providers.Facts{rankedPlan: last}
+	}
+	refresher := refresherFor(t, base)
+	refresher.Vendor.Base = func(plan string) string { return base + "/" + plan }
+	refresher.Rank = newRefresher(http.DefaultClient, records, logger).Rank
+	return plans, refreshPlans(context.Background(), logger, plans, refresher, "")
+}
+
+// lastRanking is the facts rankedPlan last recorded, its ranking good on
+// 2026-10-07: Haiku alone ranked for S.
+func lastRanking() providers.Facts {
+	return providers.Facts{ReadOn: "2026-10-07", Ranking: providers.RankingFacts{
+		Source: providers.Source{State: providers.ReadUnchanged, LastGoodReadOn: "2026-10-07"},
+		Sizes:  []providers.SizeRanking{{Size: "S", Ranked: []providers.RankedModel{{Model: rankHaiku, Settled: 7, Passed: 7}}}},
+	}}
+}
+
+// TestRefreshPlansRecordsEachSizesRankingFromSettledRuns asserts the facts carry,
+// for each size, the models clearing the bar in the order a claim ranks them at
+// the off-peak reference hour, and those below it with their counts and unranked,
+// over the trailing window.
+func TestRefreshPlansRecordsEachSizesRankingFromSettledRuns(t *testing.T) {
+	records := &stubRecords{records: []dispatcher.ModelRecord{
+		rankingRecord(rankFlash, "S", 5, 5), rankingRecord(rankHaiku, "S", 6, 5),
+		rankingRecord(rankHaiku, "M", 5, 4), rankingRecord(rankFlash, "M", 5, 3),
+		rankingRecord(rankMuse, "L", 4, 4),
+	}}
+	plans, err := refreshRanking(t, records, rankedList, providers.Facts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []providers.SizeRanking{
+		{Size: "S",
+			Ranked:   []providers.RankedModel{{Model: rankFlash, Settled: 5, Passed: 5}, {Model: rankHaiku, Settled: 6, Passed: 5}},
+			BelowBar: []providers.RankedModel{{Model: rankMuse}}},
+		{Size: "M",
+			Ranked:   []providers.RankedModel{{Model: rankHaiku, Settled: 5, Passed: 4}},
+			BelowBar: []providers.RankedModel{{Model: rankFlash, Settled: 5, Passed: 3}, {Model: rankMuse}}},
+		{Size: "L",
+			BelowBar: []providers.RankedModel{{Model: rankHaiku}, {Model: rankFlash}, {Model: rankMuse, Settled: 4, Passed: 4}}},
+	}
+	got := plans.facts[rankedPlan].Ranking
+	if !reflect.DeepEqual(got.Sizes, want) || got.Source.State != providers.ReadChanged || got.Source.LastGoodReadOn != "2026-10-14" {
+		t.Fatalf("ranking = %+v, want %+v read changed on 2026-10-14", got, want)
+	}
+	if len(records.since) != 1 || !records.since[0].Equal(time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC).Add(-runner.TrailingWindow)) {
+		t.Fatalf("records read from %v, want once over the trailing window", records.since)
+	}
+}
+
+// TestRefreshPlansKeepsTheLastRankingWhenItCannotBeRead asserts settled runs that
+// cannot be read, and a model list the refresh refused, each record the ranking
+// as could-not-read beside the last good ranking and its date, and that a refused
+// list reads no settled runs at all.
+func TestRefreshPlansKeepsTheLastRankingWhenItCannotBeRead(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		records   *stubRecords
+		list      string
+		wantNote  string
+		wantReads int
+	}{
+		{"settled runs that cannot be read", &stubRecords{err: errors.New("firestore unavailable")}, rankedList, "firestore unavailable", 1},
+		{"a refused model list", &stubRecords{records: []dispatcher.ModelRecord{rankingRecord(rankFlash, "S", 5, 5)}}, modelList("New"), "not a model id", 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			plans, err := refreshRanking(t, tt.records, tt.list, lastRanking())
+			if (tt.wantReads == 0) != (err != nil) {
+				t.Fatalf("err = %v, want one only for the refused list", err)
+			}
+			got := plans.facts[rankedPlan].Ranking
+			if got.Source.State != providers.ReadCouldNotRead || got.Source.LastGoodReadOn != "2026-10-07" ||
+				!strings.Contains(got.Source.Note, tt.wantNote) {
+				t.Fatalf("source = %+v, want could-not-read, dated 2026-10-07, naming %q", got.Source, tt.wantNote)
+			}
+			if !reflect.DeepEqual(got.Sizes, lastRanking().Ranking.Sizes) {
+				t.Fatalf("sizes = %+v, want the last good ranking carried forward", got.Sizes)
+			}
+			if len(tt.records.since) != tt.wantReads {
+				t.Fatalf("settled runs read %d times, want %d", len(tt.records.since), tt.wantReads)
+			}
+		})
+	}
+}
+
+// TestRefreshPlansLeavesThePlanAndTheLadderAsTheyWere asserts a refresh that
+// records a ranking touches nothing but the facts: the plan's own record is the
+// one it was handed, the embedded configuration file is the same bytes, and the
+// store saw a listing, a read and the one facts write. That a claim chooses the
+// same model after a refresh is the dispatcher's TestRefreshChangesNoModelAClaimChooses.
+func TestRefreshPlansLeavesThePlanAndTheLadderAsTheyWere(t *testing.T) {
+	const embedded = "../../internal/providers/providers.json"
+	before, err := os.ReadFile(embedded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := &stubRecords{records: []dispatcher.ModelRecord{rankingRecord(rankFlash, "S", 5, 5)}}
+	base := listSources(t, map[string]string{rankedPlan: rankedList})
+	plans, err := refreshRankingAt(t, base, records, lastRanking(), quietLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after, err := os.ReadFile(embedded); err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("the embedded configuration changed across the refresh (read error %v)", err)
+	}
+	if want := rankedPlanRow(base); !reflect.DeepEqual(plans.rows[0], want) {
+		t.Fatalf("the plan's record is %+v, want the one it was handed %+v", plans.rows[0], want)
+	}
+	if want := []string{"list", "latest opencode-go", "put opencode-go 2026-10-14"}; !slices.Equal(plans.calls, want) {
+		t.Fatalf("calls %v, want exactly %v", plans.calls, want)
+	}
+}
+
+// TestNewRefresherWiresTheRankerToTheSettledRuns asserts the refresher a
+// plans-refresh run starts from carries a ranker, which reads the settled runs
+// over the trailing window: without one a refresh would silently keep the last
+// ranking.
+func TestNewRefresherWiresTheRankerToTheSettledRuns(t *testing.T) {
+	records := &stubRecords{records: []dispatcher.ModelRecord{rankingRecord(rankFlash, "S", 5, 5)}}
+	refresher := newRefresher(http.DefaultClient, records, quietLogger())
+	if refresher.Rank == nil || refresher.Now == nil {
+		t.Fatalf("refresher = %+v, want a ranker and a clock wired", refresher)
+	}
+	now := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	sizes, err := refresher.Rank(context.Background(), rankedPlan, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records.since) != 1 || !records.since[0].Equal(now.Add(-runner.TrailingWindow)) {
+		t.Fatalf("records read from %v, want once over the trailing window", records.since)
+	}
+	if sizes[0].Size != "S" || len(sizes[0].Ranked) != 1 || sizes[0].Ranked[0].Model != rankFlash {
+		t.Fatalf("sizes = %+v, want Flash ranked for S", sizes)
+	}
+}
+
+// TestRefreshPlansLogsSettledRunsItCannotRead asserts a refresh whose settled
+// runs cannot be read logs it once with the plan and the cause, though the run
+// still ends without error.
+func TestRefreshPlansLogsSettledRunsItCannotRead(t *testing.T) {
+	var logged bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logged, nil))
+	base := listSources(t, map[string]string{rankedPlan: rankedList})
+	records := &stubRecords{err: errors.New("firestore unavailable")}
+	if _, err := refreshRankingAt(t, base, records, lastRanking(), logger); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"planRankingUnread", "provider=" + rankedPlan, "firestore unavailable"} {
+		if !strings.Contains(logged.String(), want) {
+			t.Fatalf("log %q lacks %q", logged.String(), want)
+		}
+	}
+	if n := strings.Count(logged.String(), "planRankingUnread"); n != 1 {
+		t.Fatalf("logged %d times, want once", n)
 	}
 }
