@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -32,9 +33,13 @@ const (
 	// MaxPRReviewDiffBytes is the largest diff a pull request review reads.
 	MaxPRReviewDiffBytes = 200 << 10
 	maxPRContextBytes    = 512 << 10
-	maxPRVerdictBytes    = 64 << 10
-	maxPRFindingsBytes   = 32 << 10
-	maxPRReviewAttempts  = 16
+	// maxPRVerdictBytes is the reader's cap: the whole artifact the post job reads,
+	// which is what cmd/runner's readCapped lets through. A verdict's findings are
+	// untrusted text that JSON escapes up to six bytes a character, so the cap holds
+	// every finding at its own cap fully escaped.
+	maxPRVerdictBytes   = 1 << 20
+	maxPRFindingsBytes  = 32 << 10
+	maxPRReviewAttempts = 16
 )
 
 // prReviewPreamble tells the reviewer that the diff and the ticket are material
@@ -127,14 +132,17 @@ type PRReviewAttempt struct {
 }
 
 // PRVerdict is a pull request review's outcome, the findings and the model
-// that produced it, and every attempt it took.
+// that produced it, and every attempt it took. Specialists are the area
+// reviews that ran after it, in configuration order; the outcome is the general
+// review's alone, and none is recorded when the diff touches no area.
 type PRVerdict struct {
-	Outcome  string            `json:"outcome"`
-	Findings string            `json:"findings"`
-	Model    string            `json:"model"`
-	Priced   bool              `json:"priced"`
-	Usage    Usage             `json:"usage"`
-	Attempts []PRReviewAttempt `json:"attempts"`
+	Outcome     string              `json:"outcome"`
+	Findings    string              `json:"findings"`
+	Model       string              `json:"model"`
+	Priced      bool                `json:"priced"`
+	Usage       Usage               `json:"usage"`
+	Attempts    []PRReviewAttempt   `json:"attempts"`
+	Specialists []SpecialistVerdict `json:"specialists,omitempty"`
 }
 
 var attemptOutcomes = map[string]bool{AttemptReviewed: true, AttemptTimedOut: true, AttemptUnreadable: true, AttemptExhausted: true, AttemptFailed: true}
@@ -166,12 +174,21 @@ func ParsePRVerdict(raw []byte) (PRVerdict, error) {
 	if len(v.Attempts) == 0 || len(v.Attempts) > maxPRReviewAttempts {
 		return PRVerdict{}, fmt.Errorf("%w: %d attempts", ErrPRReviewInvalid, len(v.Attempts))
 	}
-	for _, a := range v.Attempts {
-		if !ValidModel(a.Model) || !attemptOutcomes[a.Outcome] || !(a.Cost >= 0 && a.Cost <= maxCost) {
-			return PRVerdict{}, fmt.Errorf("%w: an attempt is malformed", ErrPRReviewInvalid)
-		}
+	if !validAttempts(v.Attempts) {
+		return PRVerdict{}, fmt.Errorf("%w: an attempt is malformed", ErrPRReviewInvalid)
+	}
+	if err := validateSpecialists(v.Specialists); err != nil {
+		return PRVerdict{}, err
 	}
 	return v, nil
+}
+
+// validAttempts reports whether every attempt names a model, an outcome and a
+// cost the reader accepts.
+func validAttempts(attempts []PRReviewAttempt) bool {
+	return !slices.ContainsFunc(attempts, func(a PRReviewAttempt) bool {
+		return !ValidModel(a.Model) || !attemptOutcomes[a.Outcome] || !(a.Cost >= 0 && a.Cost <= maxCost)
+	})
 }
 
 // AllowanceExhausted reports whether the review ended without a verdict because
@@ -212,17 +229,56 @@ func decodeArtifact(raw []byte, limit int, out any) error {
 // exhausted allowance among them, read from the plan's markers; only a cancelled
 // ctx or a directory that cannot be made is an error.
 func ReviewPR(ctx context.Context, agent Agent, models []string, timeout time.Duration, c PRReviewContext, secrets []string) (PRVerdict, error) {
-	prompt := PRReviewPrompt(c.Diff, c.Ticket)
-	v := PRVerdict{Outcome: PRReviewNoVerdict}
+	ans, err := reviewOnModels(ctx, agent, models, timeout, PRReviewPrompt(c.Diff, c.Ticket), secrets, nil)
+	if err != nil {
+		return PRVerdict{}, err
+	}
+	v := PRVerdict{Outcome: PRReviewNoVerdict, Attempts: ans.attempts}
+	if !ans.answered {
+		return v, nil
+	}
+	v.Outcome, v.Model, v.Priced, v.Usage = PRReviewClean, ans.model, ans.result.Priced, ans.result.Usage
+	if ans.result.Findings != "" {
+		v.Outcome, v.Findings = PRReviewFindings, truncate(ans.result.Findings, maxPRFindingsBytes-len("…"))
+	}
+	return v, nil
+}
+
+// reviewAnswer is what one prompt produced on an ordered list of models.
+type reviewAnswer struct {
+	attempts []PRReviewAttempt
+	// answered is set when a model returned readable findings; model and result
+	// are that model's, and the last attempt is its own.
+	answered bool
+	model    string
+	result   ReviewResult
+}
+
+// errReviewDeadline reports a model not started because mayStart said no.
+var errReviewDeadline = errors.New("the review deadline has passed")
+
+// reviewOnModels runs prompt on each model in turn, each in a fresh directory
+// under its own timeout, until one returns readable findings, recording each
+// attempt. mayStart, when set, is asked before each model and a no ends the list
+// with errReviewDeadline. Only a done ctx, mayStart's no or a directory that
+// cannot be made is an error. The attempt a done ctx cut short and the one whose
+// directory failed are recorded, as a timeout and as a failure.
+func reviewOnModels(ctx context.Context, agent Agent, models []string, timeout time.Duration, prompt string, secrets []string, mayStart func() bool) (reviewAnswer, error) {
+	var ans reviewAnswer
 	for _, model := range models {
 		if err := ctx.Err(); err != nil {
-			return PRVerdict{}, err
+			return ans, err
+		}
+		if mayStart != nil && !mayStart() {
+			return ans, errReviewDeadline
 		}
 		res, err := reviewInTempDir(ctx, agent, model, timeout, prompt, secrets)
 		attempt := PRReviewAttempt{Model: model, Outcome: AttemptReviewed, Cost: res.Cost}
 		switch {
 		case errors.Is(err, errReviewDir):
-			return PRVerdict{}, err
+			attempt.Outcome, attempt.Detail = AttemptFailed, err.Error()
+			ans.attempts = append(ans.attempts, attempt)
+			return ans, err
 		case errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil:
 			attempt.Outcome, attempt.Detail = AttemptTimedOut, "exceeded "+timeout.String()
 		case errors.Is(err, ErrReviewOutput):
@@ -230,21 +286,22 @@ func ReviewPR(ctx context.Context, agent Agent, models []string, timeout time.Du
 		case errors.Is(err, ErrReviewAllowance):
 			attempt.Outcome, attempt.Detail = AttemptExhausted, err.Error()
 		case err != nil && ctx.Err() != nil:
-			return PRVerdict{}, ctx.Err()
+			attempt.Outcome, attempt.Detail = AttemptFailed, "cancelled"
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				attempt.Outcome, attempt.Detail = AttemptTimedOut, "stopped at the review deadline"
+			}
+			ans.attempts = append(ans.attempts, attempt)
+			return ans, ctx.Err()
 		case err != nil:
 			attempt.Outcome, attempt.Detail = AttemptFailed, err.Error()
 		}
-		v.Attempts = append(v.Attempts, attempt)
-		if attempt.Outcome != AttemptReviewed {
-			continue
+		ans.attempts = append(ans.attempts, attempt)
+		if attempt.Outcome == AttemptReviewed {
+			ans.answered, ans.model, ans.result = true, model, res
+			return ans, nil
 		}
-		v.Outcome, v.Model, v.Priced, v.Usage = PRReviewClean, model, res.Priced, res.Usage
-		if res.Findings != "" {
-			v.Outcome, v.Findings = PRReviewFindings, truncate(res.Findings, maxPRFindingsBytes-len("…"))
-		}
-		return v, nil
 	}
-	return v, nil
+	return ans, nil
 }
 
 // errReviewDir reports a review directory that could not be made.

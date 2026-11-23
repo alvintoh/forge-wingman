@@ -944,7 +944,7 @@ func TestRunPRReviewWritesTheVerdict(t *testing.T) {
 	if err := os.WriteFile(contextPath, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := runPRReview(context.Background(), quietLogger(), agent, []string{museModel, pricedModel}, time.Minute, contextPath, out, summary, nil); err != nil {
+	if err := runPRReview(context.Background(), quietLogger(), agent, []string{museModel, pricedModel}, time.Minute, contextPath, out, summary, nil, noSpecialists); err != nil {
 		t.Fatal(err)
 	}
 	v, err := readVerdict(out)
@@ -962,7 +962,7 @@ func TestRunPRReviewRefusesAMalformedContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent, dirs := newSmokeAgent(nil)
-	err := runPRReview(context.Background(), quietLogger(), agent, []string{museModel}, time.Minute, path, filepath.Join(t.TempDir(), "v"), "", nil)
+	err := runPRReview(context.Background(), quietLogger(), agent, []string{museModel}, time.Minute, path, filepath.Join(t.TempDir(), "v"), "", nil, noSpecialists)
 	if !errors.Is(err, runner.ErrPRReviewInvalid) || len(*dirs) != 0 {
 		t.Fatalf("err = %v, ran %d models", err, len(*dirs))
 	}
