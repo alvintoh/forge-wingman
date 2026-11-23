@@ -60,8 +60,9 @@ func plansRefresh(ctx context.Context, logger *slog.Logger, e env, args []string
 
 // refreshPlans refreshes every configured plan the store lists, or the one named,
 // writing one facts document per plan under the plan's own read date and nothing
-// else. A plan whose facts cannot be read or written is logged and the rest are
-// still refreshed; the error returned names every plan that failed.
+// else. A plan whose facts cannot be read or written, or whose model list was
+// refused, is logged and the rest are still refreshed; the error returned names
+// every plan that failed.
 func refreshPlans(ctx context.Context, logger *slog.Logger, plans planFactsStore, refresher planrefresh.Refresher, named string) error {
 	rows, err := plans.List(ctx)
 	if err != nil {
@@ -86,11 +87,15 @@ func refreshPlans(ctx context.Context, logger *slog.Logger, plans planFactsStore
 			failed = append(failed, fmt.Errorf("reading the facts last recorded for %s: %w", row.Provider, err))
 			continue
 		}
-		facts := refresher.Refresh(ctx, row.Provider, row.Plan.Definition, last)
+		facts, refused := refresher.Refresh(ctx, row.Provider, row.Plan.Definition, last)
 		if err := plans.PutFacts(ctx, row.Provider, facts.ReadOn, facts); err != nil {
 			logger.Error("planFactsWriteFailed", "provider", row.Provider, "err", err.Error())
 			failed = append(failed, fmt.Errorf("writing the facts for %s: %w", row.Provider, err))
 			continue
+		}
+		if refused != nil {
+			logger.Error("planModelListRefused", "provider", row.Provider, "err", refused.Error())
+			failed = append(failed, refused)
 		}
 		logger.Info("planFactsWritten", "provider", row.Provider, "read_on", facts.ReadOn, "flags", fmt.Sprint(facts.Flags))
 	}

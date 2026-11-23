@@ -765,6 +765,19 @@ func TestBuildCandidatesOfferMoreThanTheDefaultBuildModel(t *testing.T) {
 	}
 }
 
+func TestRateCardModelsAreTheVendorsIDsForThePlansRateCard(t *testing.T) {
+	cfg := Config{Providers: map[string]Provider{
+		"p":     {Rates: map[string]Rates{"p/b": {}, "p/vendor/a:free": {}}},
+		"other": {Rates: map[string]Rates{"other/c": {}}},
+	}}
+	if got, want := rateCardModels(cfg, "p"), []string{"b", "vendor/a:free"}; !slices.Equal(got, want) {
+		t.Fatalf("ids = %v, want %v", got, want)
+	}
+	if got := rateCardModels(cfg, "unpriced"); len(got) != 0 {
+		t.Fatalf("ids = %v, want none for a plan that prices nothing", got)
+	}
+}
+
 func TestRatesVersionChangesWithAPriceAndNothingElse(t *testing.T) {
 	doc := func(cashLimit, input, other string) Config {
 		t.Helper()

@@ -42,6 +42,11 @@ const (
 	maxFieldBytes = 200
 	// maxNoteBytes caps the reason a source could not be read.
 	maxNoteBytes = 500
+
+	// maxDroppedPercent is the share of the last good model list one read may
+	// drop: a read dropping more is refused as a partial reply rather than
+	// recorded as the vendor retiring that many models in a week.
+	maxDroppedPercent = 25
 )
 
 // errInternalAddress is why a dial was refused: the address a name resolved to is

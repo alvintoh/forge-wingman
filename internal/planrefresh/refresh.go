@@ -26,13 +26,21 @@ type Refresher struct {
 	FeedErr  error
 	// Now is the clock the read date comes from; nil means time.Now.
 	Now func() time.Time
+	// RateCard is the vendor's ids for the models a plan's rate card prices,
+	// each of which a model list must hold; nil means the embedded provider
+	// configuration's own.
+	RateCard func(provider string) []string
 }
 
 // Refresh reads provider's sources and returns the facts document to record,
 // dated by the refresher's clock. A source it could not read is recorded as
 // could-not-read rather than failing the refresh, with its last good read date
 // and the figures it last answered with carried forward.
-func (r Refresher) Refresh(ctx context.Context, provider string, def providers.Definition, last providers.Facts) providers.Facts {
+//
+// The error is non-nil only when the vendor's model list answered and was
+// refused as partial or malformed. The document is still returned, recording the
+// list as could-not-read beside the last good one, and is the one to write.
+func (r Refresher) Refresh(ctx context.Context, provider string, def providers.Definition, last providers.Facts) (providers.Facts, error) {
 	on := r.now().UTC().Format(dateLayout)
 	facts := providers.Facts{
 		ReadOn: on,
@@ -41,9 +49,10 @@ func (r Refresher) Refresh(ctx context.Context, provider string, def providers.D
 		Flags:  providers.Flags(def),
 	}
 	facts.Pages = r.pages(ctx, def, last, on)
-	facts.Models, facts.Leaderboard = r.models(ctx, provider, last, on)
+	var refused error
+	facts.Models, facts.Leaderboard, refused = r.models(ctx, provider, last, on)
 	facts.Feed = r.feed(provider, def, last, on)
-	return facts
+	return facts, refused
 }
 
 // now is the time the read is dated from.
@@ -96,9 +105,19 @@ func pageChanges(before providers.PageFacts, seen bool, now providers.PageFacts)
 // models reads the vendor's own model list and the leaderboard's reading of each
 // model, and diffs each against the last document. A list or a leaderboard that
 // could not be read keeps what the last document recorded, beside the date it was
-// read.
-func (r Refresher) models(ctx context.Context, provider string, last providers.Facts, on string) (providers.ModelsFacts, providers.Source) {
+// read, and so does a list that answered and was refused, which is returned too.
+func (r Refresher) models(ctx context.Context, provider string, last providers.Facts, on string) (providers.ModelsFacts, providers.Source, error) {
 	names, err := r.Vendor.Models(ctx, provider)
+	var refused error
+	pending, accepted := last.Models.Refused, ""
+	if err == nil {
+		var check *listRefusal
+		check, pending, accepted = judgeList(names, r.rateCard(provider), last.Models, on)
+		if check != nil {
+			refused = fmt.Errorf("refusing the model list of %s: %w", provider, check)
+			err = refused
+		}
+	}
 	if err != nil {
 		names = modelNames(last.Models.Models)
 	}
@@ -107,9 +126,45 @@ func (r Refresher) models(ctx context.Context, provider string, last providers.F
 	for _, name := range names {
 		models = append(models, r.model(name, feed, last))
 	}
-	facts := providers.ModelsFacts{Models: models}
+	facts := providers.ModelsFacts{Models: models, Refused: pending}
 	facts.Source = classify(on, err, modelChanges(last.Models.Models, models), last.Models.Source)
-	return facts, classify(on, r.BoardErr, scoreChanges(last.Models.Models, models), last.Leaderboard)
+	if accepted != "" {
+		facts.Source.Note = accepted
+	}
+	return facts, classify(on, r.BoardErr, scoreChanges(last.Models.Models, models), last.Leaderboard), refused
+}
+
+// judgeList decides a model list read on the date on against the last
+// document's: the refusal, nil when the list stands; the refused list to
+// remember; and, for a list accepted only because the same list was refused for
+// dropping too many models on an earlier date, why it was accepted, as the
+// vendor's own retirements rather than a partial reply. Only that refusal is
+// remembered, so an empty list, or one over the cap, holding a malformed id or
+// missing a rate-carded model, is never accepted however often it repeats, and
+// any other outcome clears what was remembered. A repeat read on the date the
+// list was first refused stays refused, so a retry cannot accept a partial
+// reply the vendor gives every time.
+func judgeList(ids, rateCard []string, last providers.ModelsFacts, on string) (*listRefusal, providers.RefusedList, string) {
+	check := checkModelList(ids, rateCard, last.Models)
+	if check == nil || check.reason != refusedDroppedShare || len(ids) == 0 {
+		return check, providers.RefusedList{}, ""
+	}
+	sorted := slices.Sorted(slices.Values(ids))
+	if !slices.Equal(sorted, last.Refused.Models) {
+		return check, providers.RefusedList{Models: sorted, FirstOn: on}, ""
+	}
+	if on <= last.Refused.FirstOn {
+		return check, last.Refused, ""
+	}
+	return nil, providers.RefusedList{}, "accepted as the new list, read the same on 2 dates running: " + check.detail
+}
+
+// rateCard is the vendor's ids for the models provider's rate card prices.
+func (r Refresher) rateCard(provider string) []string {
+	if r.RateCard == nil {
+		return providers.RateCardModels(provider)
+	}
+	return r.RateCard(provider)
 }
 
 // model is one model's facts: whether the feed lists it, and the leaderboard's
