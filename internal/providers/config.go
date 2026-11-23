@@ -931,6 +931,12 @@ func tierOf(cfg Config, model string) Tier {
 	return t
 }
 
+// Escalation is plan's escalation ladder, cheapest tier first, empty for a plan
+// with no ladder or one that is not configured.
+func Escalation(plan string) []string {
+	return slices.Clone(embeddedConfig.Providers[plan].Escalation)
+}
+
 // LastResortModels are a plan's free models in fall-through order, empty for a
 // plan with no free tier.
 func LastResortModels(plan string) []string {

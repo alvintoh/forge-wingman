@@ -23,7 +23,7 @@
 //	runner plan-optin      -provider <name>          record the owner's consent to a per-token provider's spend, or with -private to private repos on its free tier, or with -harness to a harness that is not open-source
 //	runner plan-verdict    -provider <name> ...      record the verdict on a plan's terms with its wording and source
 //	runner plan-reply      -provider <name> ...      record a vendor reply and the verdict it leads to
-//	runner plan-list                                 print every plan side by side with its harnesses, their licences and its trailing runs' cached share per phase, flagging the ones to look at
+//	runner plan-list                                 print every plan side by side with its harnesses, their licences and its trailing runs' cached share per phase, flagging the ones to look at, then each plan's latest ranking against its ladder: rung 1 against the top ranked model, the other rungs by their place in the ranking (-h gives the rule)
 //	runner plans-refresh   [-provider <name>]        read each configured plan's own pages and model list, the leaderboard's scores and the free feed into a dated facts document
 //	runner plan-smoke      -plan-models <list>       prove the plan agent refuses edit, a new file and bash on the list's first and last model
 //	runner review-smoke    -review-models <list>     try the review agent on a fixture diff with each model, passing those whose findings parse on a priced run

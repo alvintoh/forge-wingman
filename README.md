@@ -161,7 +161,7 @@ export GITHUB_REPOSITORY_OWNER=<owner>  # the account the repository belongs to
 | `runner plan-optin -provider <name> [-private]` | records the owner's consent to a per-token provider's spend, or with `-private` to private repositories' runs on its free tier |
 | `runner plan-verdict -provider <name> …` | records the verdict on a plan's terms with its wording and source |
 | `runner plan-reply -provider <name> …` | records a vendor reply and the verdict it leads to |
-| `runner plan-list` | prints every plan side by side, flagging the ones to look at |
+| `runner plan-list` | prints every plan side by side, flagging the ones to look at, then each plan's latest ranking against its escalation ladder: rung 1 against the top ranked model per size, the other rungs by their place in the ranking |
 
 Read-only: `plan-list` only reads, and `peak-mode` without `-mode` and `backfill-queued-at -dry-run` write nothing, so
 they are safe to run against the store to look. Every other command above writes to it.

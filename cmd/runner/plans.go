@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"slices"
@@ -142,11 +143,40 @@ func planReply(ctx context.Context, logger *slog.Logger, e env, args []string) e
 	return nil
 }
 
+// planListHelp is what plan-list -h prints: the rule the ranking section follows.
+const planListHelp = `usage: runner plan-list
+
+Prints every plan side by side, then each plan's latest recorded ranking against
+its escalation ladder, which is one hand-picked list of models, cheapest first.
+Rung 1, the cheapest ladder model, is compared with the top ranked model for each
+size S, M and L, the model a claim would choose; a size where they differ is
+printed with both, and a size where no model cleared the bar is named once. Every
+other rung gets one line saying where that ladder model stands in each size's
+ranking (ranked 2nd, below the bar, not ranked), with no verdict. A plan with no
+ladder, no ranking or a top ranked model equal to rung 1 for every size gets one
+line. The date is when the ranking was last read, so a carried-forward ranking
+shows its own week.
+`
+
+// planListStore is what plan-list reads of the plans: each plan and the facts
+// last recorded for it. It writes nothing.
+type planListStore interface {
+	List(ctx context.Context) ([]providers.Listing, error)
+	LatestFacts(ctx context.Context, provider string) (facts providers.Facts, date string, ok bool, err error)
+}
+
+// planCaches reads the trailing runs' prompt-cache figures per plan.
+type planCaches interface {
+	PlanCaches(ctx context.Context, since time.Time) (map[string]store.PlanCache, error)
+}
+
 // planList prints every plan side by side, flagging the ones to look at, with
 // each plan's harness pairs and their licences and its trailing runs' cached
-// share per phase.
+// share per phase, then each plan's latest ranking against its ladder.
 func planList(ctx context.Context, _ *slog.Logger, e env, args []string) error {
-	if err := flag.NewFlagSet("plan-list", flag.ContinueOnError).Parse(args); err != nil {
+	fs := flag.NewFlagSet("plan-list", flag.ContinueOnError)
+	fs.Usage = func() { _, _ = fmt.Fprint(fs.Output(), planListHelp) }
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	fsc, closeStore, err := openStore(ctx, e, "", false, nil)
@@ -154,20 +184,55 @@ func planList(ctx context.Context, _ *slog.Logger, e env, args []string) error {
 		return err
 	}
 	defer closeStore()
-	rows, err := store.NewPlans(fsc).List(ctx)
+	return runPlanList(ctx, os.Stdout, store.NewPlans(fsc), store.NewRecords(fsc), harnessLicences(e.harnesses), providers.Escalation, time.Now())
+}
+
+// runPlanList writes the side-by-side table and then the ranking report, reading
+// the ladder of each plan through ladderOf. A plan's facts are read only when it
+// has a ladder to compare them with, and one that cannot be read is named as
+// unreadable while the other plans are still reported; the error returned names
+// each such plan.
+func runPlanList(ctx context.Context, w io.Writer, plans planListStore, records planCaches, licences map[string]runner.Licence, ladderOf func(plan string) []string, now time.Time) error {
+	rows, err := plans.List(ctx)
 	if err != nil {
 		return err
 	}
-	caches, err := store.NewRecords(fsc).PlanCaches(ctx, time.Now().Add(-runner.TrailingWindow))
+	caches, err := records.PlanCaches(ctx, now.Add(-runner.TrailingWindow))
 	if err != nil {
 		return err
 	}
-	licences := harnessLicences(e.harnesses)
 	for i := range rows {
 		rows[i].Harnesses = harnessLines(rows[i].Plan.Definition.Harnesses, licences)
 	}
 	attachPlanCaches(rows, caches)
-	return providers.WriteTable(os.Stdout, rows)
+	if err := providers.WriteTable(w, rows); err != nil {
+		return err
+	}
+	if len(rows) > 0 {
+		if _, err := fmt.Fprintln(w); err != nil {
+			return err
+		}
+	}
+	var failed []error
+	for _, row := range rows {
+		ladder := ladderOf(row.Provider)
+		var ranking providers.RankingFacts
+		if len(ladder) > 0 {
+			facts, _, _, err := plans.LatestFacts(ctx, row.Provider)
+			if err != nil {
+				failed = append(failed, fmt.Errorf("reading the facts of %s: %w", row.Provider, err))
+				if _, err := fmt.Fprintln(w, row.Provider+": ranking unreadable"); err != nil {
+					return err
+				}
+				continue
+			}
+			ranking = facts.Ranking
+		}
+		if _, err := fmt.Fprintln(w, strings.Join(providers.RankingLines(row.Provider, ladder, ranking), "\n")); err != nil {
+			return err
+		}
+	}
+	return errors.Join(failed...)
 }
 
 // attachPlanCaches sets each row's phase cache cells from the figures of the
