@@ -36,12 +36,11 @@ You are a senior backend engineer **implementing** server-side code from a plan 
 
 ### go
 
-Reusable best practices for Go. **Default for a backend with no maintained FE
-type-sharing seam** — a standalone service, webhook receiver, media/PDF processor,
-scheduled job or proxy — plus the older performance doors (profiler-proven bottleneck,
-known-CPU-bound, ecosystem-bound). TS keeps the work where the seam is REAL: anything
-wanting a tRPC client, and anything inside the Next app, where Payload's Local API is
-TS-only. The seam test, not performance, decides — see `profile.md`.
+Reusable best practices for Go. **The default backend language** — a standalone
+service, webhook receiver, media/PDF processor, scheduled job, proxy or cloud-side
+ingest — plus the performance doors (profiler-proven bottleneck, known-CPU-bound,
+ecosystem-bound). A TS backend exists only inside an existing TS codebase (work:
+NestJS); Rust takes code on the device. See `profile.md`.
 
 ## Practices
 
@@ -81,6 +80,7 @@ TS-only. The seam test, not performance, decides — see `profile.md`.
   run record unwritable.)*
 - **Outbound vendor quota: `golang.org/x/time/rate` per process, a shared counter across replicas.** `rate.Limiter` is a concurrency-safe token bucket, but only inside one process (pkg.go.dev); behind several replicas the real ceiling is its rate times the replica count, so a vendor quota needs a shared counter (see `base/stacks/valkey.md`). Use `Wait` in a worker that may sleep, `Allow` or `Reserve` in a request path that must fail fast with a retry-after. Goroutines make this more necessary, not less: a loop of `go call()` fans out faster than any quota allows.
 - **Give every outbound call a context with a deadline (`context.WithTimeout`).** For a Google Cloud client prefer `gax.WithTimeout`, a total across retries (`gcp.md` Timeouts); a caller-side wrapper is only for an API that takes no context.
+- **Compare a secret with `subtle.ConstantTimeCompare` (`crypto/subtle`), never `==`.** It returns an `int` (`1` equal, `0` otherwise), not a `bool`, so compare it with `== 1`. A length mismatch returns `0` without panicking, so no pre-check is needed. *(Verified on go1.27.1; the rule itself is in `base/stacks/architecture.md`.)*
 
 ## Version policy — track current stable, pin it once
 
@@ -154,6 +154,14 @@ TS-only. The seam test, not performance, decides — see `profile.md`.
 
 - `gofmt`/`goimports` are non-negotiable; lint with `golangci-lint`.
 
+## Field protocols (edge gateway, cloud ingest)
+*(Verified 2026-11-24 on GitHub; protocol facts in `modbus.md`.)*
+- **Modbus: `github.com/simonvetter/modbus`** — client and server, RTU over RS-232/485
+  and TCP. `grid-x/modbus` is the maintained alternative; **avoid `goburrow/modbus`**,
+  which has had no push since 2024-06 despite the most stars.
+- **MQTT 5: `github.com/eclipse-paho/paho.golang`** (with `autopaho` for reconnects).
+  `paho.mqtt.golang` is the 3.1/3.1.1 client; take it only for a 3.1.1 broker.
+
 ## Serverless (Cloud Run)
 
 - **The static binary IS the advantage — keep it one.** `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w"` into `scratch`/`distroless` (~10MB vs ~150MB with `node_modules`), so image pull — itself part of cold start — is near-free, and the 128MB tier is reachable where a JS runtime needs 256–512MB. Cloud Run bills memory × time, so that tier is a direct cost multiple, not a micro-optimisation.
@@ -216,6 +224,16 @@ Reusable recipes for reaching + operating a GCP dev environment (personal cloud;
   wrong — the whole class of vulnerability is absent rather than mitigated. Access
   control is an allowlist in GCP. *(IAP's own pricing was not verified on the
   enablement page — confirm before calling a hosted setup free.)*
+- **Verifying IAP's signed header (`x-goog-iap-jwt-assertion`) in Go: the Cloud Run audience is
+  `/projects/<number>/locations/<region>/services/<name>`, the issuer `https://cloud.google.com/iap`,
+  the algorithm ES256, and the `email` claim has no `accounts.google.com:` prefix** (Google's
+  signed-headers page, https://docs.cloud.google.com/iap/docs/signed-headers-howto, read
+  2026-10-22). At the installed `google.golang.org/api` v0.287.1, `idtoken.Validate` also accepts
+  Google's RS256 ID tokens, never checks the issuer, and halves an ES256 signature without
+  checking its length, so a short signature crashes the request: check the issuer, the three
+  segments and a 64-byte signature yourself. Take the project number from config, not a literal;
+  `/healthz` is the one exempt route. *(Verified against the installed library, FRG-193.)*
+- **Signing out of an IAP app clears IAP's cookie, not Google's, so the next sign-in is silent; only `prompt=select_account` shows a chooser.** `GET /?gcp-iap-mode=CLEAR_LOGIN_COOKIE` answers 302 with `Set-Cookie: GCP_IAP_UID=none; expires=1970…` to `/?__gcp_iap_oauth_prompt=1`, which redirects to Google's OAuth with `prompt=select_account`; a plain visit redirects with no prompt, and Google approves it unasked while its own session lives. A sign-out that must end on a public page sends that request from the page (`fetch` with `redirect: "manual"`, which still applies the cookie) and then navigates; treat any answer that is not an opaque redirect as a failure and fall back to the full navigation, so a 403 or 500 never leaves the visitor on the public page still signed in. *(Verified 2026-10-23 on forge-wingman: the redirects by `curl` against the live service, and in Chrome DevTools `GCP_IAP_UID` was present before Sign out and gone after. The fetch-then-navigate shape is a judgment call.)*
 
 ## Auth
 
@@ -244,10 +262,11 @@ Reusable recipes for reaching + operating a GCP dev environment (personal cloud;
 
 ## Compute (Cloud Run)
 
-- **Serverless default**: deploy scale-to-zero (`gcloud run deploy`), Hono on Bun. Move to **always-on** (min-instances ≥ 1) or GKE only when a workload must hold a connection open (stream/socket/long task — see `architecture` execution split)
+- **Serverless default**: deploy scale-to-zero (`gcloud run deploy`), Go (static binary, 128MB tier). Move to **always-on** (min-instances ≥ 1) or GKE only when a workload must hold a connection open (stream/socket/long task — see `architecture` execution split)
 - Fire a deployed service directly for testing against a **designated test resource only** — never prod data; pass ids as env, never hardcoded
 - Front Cloud SQL via the Auth Proxy/connector (see `postgres`)
 - **A Cloud Run job's start-up can dwarf its work, and jobs run only on gen2.** Google: jobs "only use the second generation execution environment, and this cannot be changed", and gen2 "has longer cold start times" (docs.cloud.google.com/run/docs/about-execution-environments, read 2026-10-08). Measured the same day on forge-wingman's dispatcher, an 11 MB static Go binary: ~2 min from task start to `main`, against 2.7 s of work. So a job is wrong for a path that must act in seconds; that belongs in a service. And a job's start time is not when your code runs: log a line at process start to tell them apart.
+- **Read an EXECUTION's own image and logs, not the job's.** `gcloud run jobs executions describe <exec> --format='value(spec.template.spec.containers[0].image)'` names the digest that execution ran, so "the first poll after the deploy ran the new image" is checkable; the job resource shows only the latest. For logs, `gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="<job>" AND labels."run.googleapis.com/execution_name"="<exec>"' --format=json`, then read `jsonPayload.msg`: `--format='value(textPayload)'` prints blank rows for a structured (JSON) logger. *(Verified 2026-10-27 on forge-wingman's dispatcher: the 00:30 UTC execution ran the new digest, and the `value()` form returned twenty empty rows.)*
 
 ## Object storage (GCS)
 
@@ -267,6 +286,7 @@ Reusable recipes for reaching + operating a GCP dev environment (personal cloud;
 ## IaC & images
 
 - gcloud CLI first; **OpenTofu** once manual drift costs (same HCL, no BSL risk). Images in GHCR
+- **Add a cleanup policy before the first automated deploy: an Artifact Registry that gains an image per merge grows without bound.** *(Established: Artifact Registry's cleanup-policy documentation.)* A `mostRecentVersions` keep rule sets a minimum and deletes nothing, so pruning needs a delete rule beside it (the keep rule wins where both match; they cannot share one policy; a Docker image a parent manifest references is not deleted); run it as a dry run first. <!-- snapshot checked=2026-11-08 refresh="docs.cloud.google.com/artifact-registry/pricing" --> Storage is 0.5 GiB free (per billing account, not per project) then $0.10 per GiB-month, so one ~11 MB image per merge is cents a month that compound if never pruned. *(Verified 2026-11-02 on forge-wingman: FRG-268's first AC6 said 'keeps the newest 20', which would have deleted nothing.)*
 - Budget alerts per project from day one — Vertex spend compounds silently
 
 ## Cloud Build (dispatch & poll)
@@ -281,6 +301,12 @@ Reusable recipes for reaching + operating a GCP dev environment (personal cloud;
 ## Cloud KMS (additional authenticated data)
 
 - **Bind the cached value's identity into the AAD.** Cloud KMS "will not decrypt ciphertext unless the same AAD value is used for both encryption and decryption", so use the cache key's identity (client id, scope) as the AAD and a ciphertext copied under another key fails to decrypt: Google's own confused-deputy example is a diary app using the user's identity as AAD. **AAD is not stored with the ciphertext, so rebuild it from the key at read time or you cannot decrypt, and Cloud Audit Logs do not log it (AWS's encryption context is logged, see `valkey.md`); still put nothing secret in it.** (docs.cloud.google.com/kms/docs/additional-authenticated-data)
+
+## Credential revocation delay (API Gateway, Endpoints, IAM)
+
+- **GCP has no single decision-cache TTL to set; know which delay applies.** API Gateway authenticates with API keys or JWTs and caches the JWT signing-key set (JWKS) for five minutes. ESPv2 (Cloud Endpoints) exposes it as `--jwks_cache_duration_in_s` (default five minutes) and caches verified tokens (`--jwt_cache_size`, 0 disables), with no documented API-key check cache option. An API key "identifies a Google Cloud project for quota, billing, and monitoring purposes", so it is not an authentication secret; verify a shared-secret webhook header in the service itself. IAM changes, including revoking a role, take "typically 2 minutes, potentially 7 minutes or longer"; the Cloud Run invoker page states no figure of its own. *(Google Cloud docs: "Choosing an Authentication Method", "Using JWT to authenticate users", "Specify ESP v2 startup options", "Access change propagation", fetched 2026-10-20. Not documented: how long a removed API key stays accepted. Apigee Edge's roughly 180 s key cache appears only in forum posts.)*
+
+- **GCP API Gateway: authenticate with a JWT, an ID token or a service account where the sender can, and use an API key to identify a project; for a sender that can attach only a static header (a webhook), gate with a key in the HEADER, restricted to your API, and never as the only protection for sensitive data.** Use the OpenAPI 3 `apiKey` scheme with `in: header` (for example `x-api-key`), not the OpenAPI 2 query parameter `key`, since a secret in the URL gets logged (RFC 6750 §5.3; see `architecture.md` inbound webhook auth). One key per integration, with an API restriction, because Google says a key is unrestricted by default and so "vulnerable to unauthorized use". Google also says a key identifies a project, is "less secure than other authentication credentials", and should not be the only protection when calls carry sensitive data, so for a sender that can attach only a static header treat the key as the gate and keep the handler's own validation *(judgment call)*. Not verified: the status for a missing key. Google says a standard API key does not authenticate a principal and identifies a project for quota, billing and monitoring; restrictions work per API and per application (websites, IPs, apps), and the docs do not say a key can be limited to routes or methods, so isolate a third-party sender with its own API and add an IP application restriction if the sender publishes its addresses. **A second gateway needs its own domain work:** Google's API Gateway guide gets a custom domain by putting a global external Application Load Balancer with a serverless NEG in front of it, which needs an SSL certificate resource and a DNS record. Whether a second gateway bills extra is not verified (the pricing page returned no text, 2026-10-26). The AWS pack records a second gateway built and then reversed over domain handling (`aws.md`, API Gateway built-in API key). *(Google Cloud API Gateway serverless NEG guide, fetched 2026-10-26.)* For server-to-server callers Google points to service accounts and JWTs. Rotate by creating a new key and deleting the old one (console only; a deleted key can be restored within 30 days). *(Google Cloud API Gateway and API key docs, fetched 2026-10-23; per-route scoping is not documented.)*
 
 ## Gotcha
 
@@ -326,9 +352,9 @@ permissions: { id-token: write, contents: read }
 
 ### command-code
 
-Vendor facts for **Command Code's GOAT plan** and its **Provider API**, the endpoint every
-harness here bills model calls through. omp is the interactive harness
-and forge-wingman's runner default (`omp.md`); opencode is the runner fallback (`opencode.md`).
+Vendor facts for **Command Code's GOAT plan** and its **Provider API**, which now bills only
+**forge-wingman's runner**. Interactive omp moved to OpenCode Go on 2026-11-08 (`opencode-go.md`).
+**Delete this pack once the runner is migrated**; until then its facts still govern that runner.
 
 *The `cmd` CLI was retired on 2026-10-07 (forge-vault `adr/0015`); omp is the harness (`omp.md`). Its mechanics are in git history.*
 
@@ -339,11 +365,17 @@ and forge-wingman's runner default (`omp.md`); opencode is the runner fallback (
 
 `GET https://api.commandcode.ai/provider/v1/models` (85 at this date). DeepSeek:
 `deepseek/deepseek-v4.1-flash`, `deepseek/deepseek-v4-flash`, `-fast` variants,
-`deepseek/deepseek-v4-pro`. Free ids exist (`poolside/laguna-s-2.1-free`, `inclusionai/ling-3.1-flash:free`,
-`stealth/space-bunny-alpha`); their quality and unattended-use terms are UNVERIFIED.
+`deepseek/deepseek-v4-pro`. Free ids exist (`poolside/laguna-s-2.1-free`, `inclusionai/ling-3.0-flash-sante:free`,
+`stealth/space-bunny-alpha`); their quality and unattended-use terms are UNVERIFIED. `inclusionai/ling-3.1-flash:free`
+is retired — the pricing page lists only the paid Ling 3.1 Flash (read 2026-10-15) — and each live free id allows 100
+requests a day per account, reset at midnight UTC. **A listing is not availability.** On 2026-10-15 the
+models endpoint still listed `ling-3.0-flash-sante:free`, `glyph-cluster:free` and
+`stealth/space-bunny-alpha`, while all three failed `plan-smoke.yml` inside 4-6 s (`agent run: exit
+status 1`) and `laguna-s-2.1-free` passed the same job — so prove a free id with the smoke before
+configuring it.
 
-<!-- snapshot checked=2026-10-06 refresh="GET api.commandcode.ai/provider/v1/models; commandcode.ai/docs/resources/pricing-limits" -->
-**Prices (checked 2026-10-06, `commandcode.ai/docs/resources/pricing-limits`; per 1M: uncached
+<!-- snapshot checked=2026-11-08 refresh="GET api.commandcode.ai/provider/v1/models; commandcode.ai/docs/resources/pricing-limits" -->
+**Prices (checked 2026-10-06, re-checked 2026-11-08 and unchanged, `commandcode.ai/docs/resources/pricing-limits`; per 1M: uncached
 / output / cache read).** Only DeepSeek models are time-of-use priced (since 2026-08-16): peak is
 01:00-04:00 and 06:00-10:00 UTC Mon-Fri at double the off-peak rate; weekends are all off-peak.
 The last column is the cost per 1M input at 95% cached plus output at 2% of input — the shape
@@ -366,8 +398,8 @@ FRG-32's weekly refresh writes the model list and prices; point at its output in
 
 **The Provider API serves any harness (verified live 2026-10-06).**
 `https://api.commandcode.ai/provider/v1` serves OpenAI-compatible `/chat/completions` and
-Anthropic-compatible `/messages` on the plan's API key, metered against the plan; omp and opencode
-both bill through it. A GOAT key got 200 from `/models` (85 models) and from a Flash completion; `usage.prompt_tokens_details.cache_read_input_tokens` reports cache
+Anthropic-compatible `/messages` on the plan's API key, metered against the plan; omp bills through
+it, as opencode did before its retirement. A GOAT key got 200 from `/models` (85 models) and from a Flash completion; `usage.prompt_tokens_details.cache_read_input_tokens` reports cache
 hits. The GOAT plan page says GOAT has API access; an older blog post said "Pro or higher", and the
 plan page wins. Codex CLI cannot use it: since February 2026 Codex speaks only the Responses API.
 **Open question:** the key in use was copied from the retired CLI's `~/.commandcode/auth.json`
@@ -418,9 +450,9 @@ throwaway HOME per harness holding only the rules and the repo's `CLAUDE.md`; op
 MIT, a fork of pi; package `@oh-my-pi/pi-coding-agent` (18.7.0 measured), binary `omp`, needs
 bun (its `engines` field). Repo: github.com/can1357/oh-my-pi; its `docs/` are the reference.
 
-omp is the interactive harness and forge-wingman's runner default because it measured best
-(§Measured), until another measures better; opencode is the runner fallback (`opencode.md`).
-Model calls bill to the GOAT plan through its Provider API (`command-code.md`).
+omp is the interactive harness and forge-wingman's only runner harness because it measured best
+(§Measured), until another measures better; opencode, the former fallback, is retired (`opencode.md`).
+Interactive model calls bill to OpenCode Go through omp's built-in `opencode-go` provider (`opencode-go.md`); forge-wingman's runner still bills to Command Code's GOAT plan until it is migrated (`command-code.md`).
 
 ## Install
 
@@ -444,8 +476,9 @@ Model calls bill to the GOAT plan through its Provider API (`command-code.md`).
   assert it is set. `config.yml` sets each model role, `startup.checkUpdate: false`, telemetry off,
   `mcp.enableProjectConfig: false`, and `disabledProviders` (claude, codex, opencode, cursor, …)
   so it loads no other tool's config.
-- **On Command Code, prefer the built-in `commandcode` provider** (`COMMAND_CODE_API_KEY` in the
-  environment, no `models.yml`); the `models.yml` route above is for a plan omp has no provider for.
+- **Prefer a built-in provider where omp has one** (`opencode-go` for OpenCode Go, `commandcode` for
+  the runner's GOAT plan), so no `models.yml` is needed; the `models.yml` route above is for a plan omp
+  has no provider for.
 - **Headless:** `omp -p --mode json --model <provider>/<model> --no-extensions --no-skills
   --approval-mode yolo "<prompt>"`.
 - **Project rules:** it reads the repo's `AGENTS.md` and expands `@CLAUDE.md` imports (opencode
@@ -462,7 +495,11 @@ Model calls bill to the GOAT plan through its Provider API (`command-code.md`).
 - **Install:** `bun install -g @oh-my-pi/pi-coding-agent@18.7.0`. The binary lands in
   `~/.bun/bin`, which bun does NOT put on PATH: add `export PATH="$HOME/.bun/bin:$PATH"` to
   `~/.zshrc`.
-- **Command Code is a built-in provider, `commandcode`** (`docs/providers.md`): omp reads
+- **OpenCode Go is a built-in provider, `opencode-go`** (18.7.0): omp reads `OPENCODE_API_KEY`, lists
+  the plan's models (30 on 2026-11-08) and `omp usage` shows its 5-hour, weekly and monthly windows.
+  Both models in `config.yml` also need the workspace's privacy settings (`opencode-go.md` §Access).
+  *(Switched from Command Code 2026-11-08.)*
+- **Command Code is also built in, `commandcode`** (`docs/providers.md`), and is what the runner uses: omp reads
   `COMMAND_CODE_API_KEY` (or `/login commandcode`), lists all of Command Code's models (85 on
   2026-10-07, e.g. `deepseek/deepseek-v4.1-flash` at 1M context), routes Claude models to the
   Messages API, GPT models to Responses and the rest to Chat Completions, and `omp usage` shows the
@@ -470,8 +507,9 @@ Model calls bill to the GOAT plan through its Provider API (`command-code.md`).
   earlier custom `command-code-goat` provider written on the false belief that omp had none; the
   id `commandcode` is omp's own and cannot be renamed.)*
 - **`~/.omp/agent/config.yml`** (owner's, re-read 2026-10-09): `modelRoles: {default:
-  commandcode/deepseek/deepseek-v4.1-flash:high, plan/slow: …flash:max}`, `retry.fallbackChains:
-  {default: [commandcode/poolside/laguna-s-2.1-free, commandcode/inclusionai/ling-3.1-flash:free]}`, `startup: {checkUpdate: false}`,
+  opencode-go/deepseek-v4.1-flash:high, plan/slow: …flash:max}`, `enabledModels:
+  [opencode-go/deepseek-v4.1-flash, opencode-go/muse-spark-1.3-contributor]`, no `retry.fallbackChains`
+  (removed 2026-11-01, next bullet), `startup: {checkUpdate: false}`,
   `enabledProviders: [claude]`, `tools: {approvalMode: yolo}`, `advisor: {enabled: false}`,
   `symbolPreset: nerd` (`unicode` is the fallback where Nerd icons do not draw — the thinking level
   once showed as `~`), plus the look keys an onboarding agent would otherwise miss: `composer:
@@ -497,12 +535,20 @@ Model calls bill to the GOAT plan through its Provider API (`command-code.md`).
   (verified 2026-10-07; re-check after an omp upgrade). **Open measurement:** Muse Spark 1.3 Contributor
   costs about half of Flash per run on GOAT and Meta reports it far stronger on coding; compare it
   against Flash on our tasks before using it as a primary (training rights go to Meta).
-- **`~/.omp/agent/.env`** (mode 600) holds `COMMAND_CODE_API_KEY=…`; omp loads the active agent
+- **No silent fallback: when the coding-plan model cannot continue, stop and prompt.** The owner's
+  omp has no `retry.fallbackChains`. A rejected key or an exhausted plan is raised as a choice of
+  free-model options (for example Gemini's documented free tier through omp's built-in `google`
+  provider, with `GEMINI_API_KEY`), and the owner sets the replacement up. *(Judgment call, owner's
+  instruction 2026-11-01. Verified the same day: a rejected Command Code key returned `401 Invalid
+  'Authorization' header or token` for DeepSeek and for Laguna alike, so a fallback model on the
+  same credential cannot cover a credential failure.)*
+- **`~/.omp/agent/.env`** (mode 600) holds `OPENCODE_API_KEY=…`; omp loads the active agent
   dir's `.env` for keys not already set (`docs/environment-variables.md`, `$env` loading order
-  step 3). **The owner pastes the key; an agent never types it.** On the first Mac it was copied
-  from the retired CLI's `~/.commandcode/auth.json` (`apiKey`, the login's own `cli-<time>` key);
-  whether commandcode.ai issues a key without `cmd login` is an open question (`command-code.md`).
-- **Check:** `omp models commandcode` lists the models and `omp usage` shows the GOAT windows.
+  step 3), so after rotating a key, a terminal opened before it still holds the old
+  one as a variable and omp there uses it: close it or `unset` the variable (verified 2026-11-08: the
+  old key returned `Invalid credential` while `.env` held the new one). **The owner pastes the key; an agent never types it.** The key comes from the OpenCode
+  console (`opencode-go.md` §Access).
+- **Check:** `omp models opencode-go` lists the models and `omp usage` shows the Go windows.
 - **Cost:** run heavy sessions off-peak. DeepSeek's peak is 01:00-04:00 and 06:00-10:00 UTC on
   weekdays (12:00-15:00 and 17:00-21:00 AEDT, an hour earlier in AEST) at double the price. omp's own
   cost figure is wrong in both directions (2x high on a custom provider, 2x low in peak on the
@@ -510,7 +556,7 @@ Model calls bill to the GOAT plan through its Provider API (`command-code.md`).
   cache hit over 75 turns.)*
 - **Smoke:** in a scratch git repo, `omp -p --mode json --no-extensions --no-skills
   --approval-mode yolo "say hi"` exits 0 with `message_end` events whose `provider` is
-  `commandcode` and `model` is `deepseek/deepseek-v4.1-flash`. With `config.yml` set, no `--model` flag is needed.
+  `opencode-go` and `model` is `deepseek-v4.1-flash`. With `config.yml` set, no `--model` flag is needed.
 - ⚠️ **`-p` reads piped stdin and waits forever on an open pipe** (stderr repeats `Still starting
   … phase: readPipedInput`). From an agent shell or a backgrounded job, pass `< /dev/null` or pipe
   the prompt in. *(Verified 2026-10-07: two "hangs" of 3 and 12 minutes were this, not the config.)*
@@ -530,8 +576,13 @@ Model calls bill to the GOAT plan through its Provider API (`command-code.md`).
   or press Enter without `n` first. *(Mechanism read from the installed source 2026-10-09; the
   digit half verified live — `2` committed `green` with no Enter on a PATCHED bundle, WSL 2026-10-09.)*
 - **`patch-omp-ask.py` (poly-mind root) is the ONE patch for the `ask` dialog** — no radio
-  circle, one-Enter notes, a numbered `Other` you type into directly, and a visible cancel on the
-  Review-answers stage. Run it `--check` first; the
+  circle, one-Enter notes, a numbered `Other` you type into directly, a visible cancel on the
+  Review-answers stage, and **the cursor answers on leaving**: stock omp records nothing when
+  you arrow to a row and press tab/right, so the question shows "unanswered"
+  (`#switchTab` only moves the tab, `pi-tui/src/overlays/ask-dialog.ts:1261`); the patch picks
+  the single-select option row under the cursor, replacing an earlier pick. *(Added
+  2026-10-15, WSL, omp 18.7.0: owner keypress-tested arrow-then-tab, cursor replacing an
+  earlier pick, and Submit.)* Run it `--check` first; the
   steps and effects live in `/onboard-device` step 10. *(Updated 2026-10-09: replaces four
   per-feature scripts whose chained backups made restore order-dependent.)*
 - **The radio circle is gone from single-select rows** where the patch is applied: rows read `❯ 1. red`, as in Claude Code; multi-select keeps its checkboxes.
@@ -589,7 +640,7 @@ Model calls bill to the GOAT plan through its Provider API (`command-code.md`).
 ## Unattended build: git and `gh` unguarded
 
 The owner's decision (2026-10-05) binds every harness the runner uses: the build agent keeps full
-git and `gh` access, omp under `--approval-mode yolo` and opencode under `--auto` alike, and no
+git and `gh` access (omp under `--approval-mode yolo`), and no
 harness gets a git/`gh` guard hook. `--approval-mode yolo` skips every prompt, so "do not commit
 or push" in the prompt binds nothing. A guard is a change to this decision, not a detail; Claude
 Code has never carried one.
@@ -628,6 +679,12 @@ Verified live 2026-10-08 (forge-wingman FRG-15, FRG-22). Re-run before quoting.
 - While one exists, an authorization-code exchange is refused: "Scope updates are not
   supported for client credentials tokens". Revoke first (`POST /oauth/revoke`, form
   field `token`).
+- An OAuth app's user cannot be unsuspended with `userUnsuspend` (Linear: "Users tied
+  to an OAuth client cannot be directly unsuspended. Please reauthorize the OAuth client
+  instead."). Reauthorizing with `actor=app`, which needs a registered callback URL,
+  reactivates it and restores its team membership. A suspended app user still mints
+  client-credentials tokens but sees no teams, so an issue read fails with "Entity not
+  found: Issue". (Verified 2026-10-22.)
 
 ## Agent apps and webhooks
 - **A workspace's copy of the app webhook is created only when the workspace
@@ -690,6 +747,12 @@ is"*, with descriptions *"optional–not required"*. A ported Jira body still re
 markdown, no ADF); it just reads as imported. The ACs stay — they are the falsifiable part
 every testing table and `/feat-test` run maps back to.
 
+**A strikethrough that crosses an inline `code` span is split by Linear's markdown.** Sending a
+struck sentence with a code span inside it stored the strike closed at the first backtick and
+reopened around the code (verified 2026-10-30, reading FRG-226 back). Quote struck text without
+backticks, and read the description back after any edit that mixes the two. Jira's markdown does
+the same (work profile).
+
 **PR linking — a magic word, or none at all.** Linear links a PR by issue id in the
 branch name or PR title, and a **magic word** before the id in the title or body also
 moves the status on merge. The closing set is broad
@@ -715,7 +778,11 @@ that ticket.
   links to (`LINEAR_GET_LINEAR_ISSUE` on any ticket the title/body could plausibly match,
   checking `attachments.nodes`) and confirm the set is exactly what was intended, BEFORE
   the PR merges — that's the window where a wrong link can still be fixed (rename the
-  title, or delete the attachment).
+  title, or delete the attachment). **A runner-written PR body quotes the ticket text, so it
+  can carry OTHER tickets' keys** (an "out of scope: the table (FRG-n)" line, an example key
+  in the template comment): grep the body for the key pattern and neutralise every key but
+  the PR's own before merge. *(Verified 2026-10-29 on forge-wingman #260: the body named two
+  other tickets, one of them blocked.)*
 - **A ticket delivered in SEVERAL PRs:** the merge of any one of them marks the ticket
   Done, so leave the id out of a non-final PR (accepting the branch name may still link
   it — read the attachments back before merging), or merge, read the state back at once,
@@ -723,6 +790,45 @@ that ticket.
   alvintoh/forge-wingman and the ticket read Done 30 seconds later, while part 2 was
   unbuilt; restored to In Progress by id. The link arrived minutes after the PR was
   opened, so an empty attachments list right after opening proves nothing.)*
+
+## Slack notifications: there is no issue-created event
+
+- **Linear's Slack integration has no plain issue-created notification.** `IntegrationsSettings` offers only new comment, status changed (all or done), added to triage, added to view, SLA, and project or initiative updates, so a new Backlog issue posts nothing. For created-issue messages use a saved view with added-to-view, or read the project page. *(Verified 2026-11-08 via the GraphQL type; the project channel showed status and comment messages for FRG-299 to FRG-301 and none for any creation.)*
+
+## Staying under the Free plan's issue limit
+
+- **The Free plan caps a workspace at 250 issues, and archived issues do not count; open and
+  closed issues both do.** Past the cap, `issueCreate` fails with `USAGE_LIMIT_EXCEEDED`
+  ("You've exceeded the free issue limit for this workspace") and nothing is filed. The pricing
+  page states only "250 issues"; that archived issues are excluded was measured, not documented.
+  *(Verified 2026-11-04 on the forge-wingman workspace: 275 issues refused two creates;
+  archiving 90 closed issues let both succeed at once.)*
+- **Do both: a short auto-archive as the standing rule, and a one-time archive of finished
+  phases when the cap binds.** Auto-archive is Linear's own mechanism (team setting
+  `autoArchivePeriod`, Team Settings > Workflows & automations; the default is 6 months). Set it
+  to 1 month on a solo free workspace. It only takes issues closed longer ago than the period,
+  on its next run (usually within 24h), so it never frees room the moment the cap binds. For
+  that, archive by phase through the API (`issueArchive` per issue; the UI has no manual
+  archive): every closed issue in each finished milestone, oldest first, up to but NOT
+  including the latest finished phase whose tickets are still referenced (live checks or open
+  work pointing back to it). *(Judgment call, owner's instruction 2026-11-04. The 1-month
+  figure is a trade-off: shorter keeps a free workspace under the cap, longer keeps closed
+  issues in board views. Archiving is reversible: restore from the team's archives.)*
+- **Never delete to make room:** a deleted issue is kept 30 days, then gone for good (Linear docs).
+- **Folding an issue into another: mark it Duplicate of the survivor, then archive it in the same
+  pass (`issueArchive`).** A duplicate link shows on both issues ("duplicate of" and "duplicated
+  by"), and a closed issue stays in milestone and board views until auto-archive, so folded
+  issues clutter the phase the work moved to. Archiving keeps the link and the history, frees the
+  issue from the 250 cap, and can be undone. *(Judgment call; the owner counted ten entries for
+  five folded issues on 2026-11-06.)*
+
+## Reading a ticket back through Composio
+
+- After a write, read the issue back through `LINEAR_RUN_QUERY_OR_MUTATION`
+  (`query { issue(id: "TEAM-n") { state { name } updatedAt description } }`), not
+  `LINEAR_GET_LINEAR_ISSUE`: the GET tool returned the pre-write description and state
+  minutes after two successful writes, while the direct query showed both landed.
+  *(Verified 2026-10-20 on FRG-187; the cache lifetime is not documented.)*
 
 ## Return format
 
