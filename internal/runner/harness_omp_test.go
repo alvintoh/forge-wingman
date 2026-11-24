@@ -626,3 +626,49 @@ func TestTranslateOmpEventsKeepsCallsOfARequestWithNoUsage(t *testing.T) {
 		t.Fatalf("a trailing usage-less edit is missing from the record:\n%s", tail.String())
 	}
 }
+
+// TestOmpCapabilitiesMatchTheArgumentsOfAPlanningRun runs the plan profile on
+// each plan the adapter reaches and asserts the command line carries what the
+// capabilities claim, so changing the arguments fails here, not in the comparison.
+func TestOmpCapabilitiesMatchTheArgumentsOfAPlanningRun(t *testing.T) {
+	h := OmpHarness{Key: "k", Home: t.TempDir()}
+	for plan, model := range map[string]string{"opencode-go": ompTestModel, "gemini": geminiTestModel} {
+		t.Run(plan, func(t *testing.T) {
+			caps := h.Capabilities(plan)
+			if !caps.Headless.Known || !caps.StructuredOutput.Known {
+				t.Fatalf("capabilities = %+v, want headless and structured output recorded", caps)
+			}
+			bin, attempts := scriptedOmp(t, "readonly")
+			h := OmpHarness{Bin: bin, Key: "k", Home: t.TempDir()}
+			var out, errBuf strings.Builder
+			if err := h.Agent(ProfilePlan, model).Run(context.Background(), t.TempDir(), "", "p", "", &out, &errBuf); err != nil {
+				t.Fatal(err)
+			}
+			got := attempts()
+			if len(got) != 1 {
+				t.Fatalf("omp ran %d times, want 1", len(got))
+			}
+			args := got[0].args
+			if caps.Headless.Value && !slices.Contains(args, "-p") {
+				t.Errorf("args %v lack -p, which Capabilities records as headless", args)
+			}
+			if i := slices.Index(args, "--mode"); caps.StructuredOutput.Value && (i < 0 || i+1 >= len(args) || args[i+1] != "json") {
+				t.Errorf("args %v lack --mode json, which Capabilities records as structured output", args)
+			}
+		})
+	}
+}
+
+func TestOmpCapabilitiesAreRecordedOnlyForAPlanItReaches(t *testing.T) {
+	h := OmpHarness{}
+	reached := providers.HarnessCapabilities{Headless: providers.Known(true), StructuredOutput: providers.Known(true)}
+	for plan, want := range map[string]providers.HarnessCapabilities{
+		"opencode-go": reached,
+		"gemini":      reached,
+		"unreached":   {},
+	} {
+		if got := h.Capabilities(plan); got != want {
+			t.Errorf("Capabilities(%q) = %+v, want %+v", plan, got, want)
+		}
+	}
+}

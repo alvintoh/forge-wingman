@@ -41,6 +41,9 @@ func (h fakeHarness) Licence() Licence {
 	}
 	return h.licence
 }
+func (h fakeHarness) Capabilities(string) providers.HarnessCapabilities {
+	return providers.HarnessCapabilities{}
+}
 func (h fakeHarness) Agent(Profile, string) Agent {
 	if h.agent == nil {
 		return &fakeAgent{}
