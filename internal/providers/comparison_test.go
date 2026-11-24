@@ -229,10 +229,86 @@ func TestComparePlansKeepsACeilingItCannotConvert(t *testing.T) {
 		if c := got.FiveHour; !c.Known || c.Value.Limit != 20*money.Dollar || c.Value.Name != "p-5h" || c.Value.Requests != nil {
 			t.Errorf("%s: ceiling = %+v, want the published $20 with no request figure", name, c)
 		}
+		if got.RequestsPerDollar.Known {
+			t.Errorf("%s: requests per dollar = %+v, want no figure", name, got.RequestsPerDollar)
+		}
 	}
 	free := comparisonByPlan(t, comparePlans(cfg, ComparisonInput{}), "p")
 	if i := slices.IndexFunc(free.Models, func(m ModelPrice) bool { return m.Model == "p/free" }); i < 0 || free.Models[i].Input != 0 || free.Models[i].Output != 0 || free.Models[i].CacheRead != 0 {
 		t.Errorf("models = %+v, want p/free listed at $0", free.Models)
+	}
+}
+
+func TestComparePlansStatesRequestsPerDollarAtOffPeakAndPeakWithItsShape(t *testing.T) {
+	// $0.0087066 a request off-peak (52000 x 0.15 + 2200 x 0.003 + 1500 x 0.6 per million) is 114.85 a dollar, and
+	// double that at peak is 57.43: both floored.
+	got := ComparePlans(ComparisonInput{Request: planShape})
+	want := Known(RequestsPerDollar{RequestCounts: RequestCounts{OffPeak: 114, HasPeak: true, Peak: 57}, Shape: planShape, Mark: MarkExact})
+	if g := comparisonByPlan(t, got, "opencode-go").RequestsPerDollar; g != want {
+		t.Errorf("opencode-go = %+v, want %+v", g, want)
+	}
+	if g := comparisonByPlan(t, got, "gemini").RequestsPerDollar; g.Known {
+		t.Errorf("gemini = %+v, want no figure: its rate card does not price %s", g, planShape.Model)
+	}
+}
+
+func TestComparePlansFloorsTheRequestsPerDollarAtEachRate(t *testing.T) {
+	// $0.01 a request off-peak and $0.03 at peak: 100 a dollar, and 33.33 at peak.
+	peaked := comparisonConfig(t, windows20h5+`,"rates":{"p/m":{"output_usd_per_mtok":10,"peak":{"multiplier":3,"weekday_utc_hours":[{"from":1,"to":4}]}}}`)
+	req := Request{Model: "p/m", Output: 1000}
+	got := comparisonByPlan(t, comparePlans(peaked, ComparisonInput{Request: req}), "p").RequestsPerDollar
+	if want := Known(RequestsPerDollar{RequestCounts: RequestCounts{OffPeak: 100, HasPeak: true, Peak: 33}, Shape: req, Mark: MarkExact}); got != want {
+		t.Errorf("peak-priced model = %+v, want %+v", got, want)
+	}
+	flat := comparisonConfig(t, windows20h5+`,"rates":{"p/m":`+perMtok10+`}`)
+	got = comparisonByPlan(t, comparePlans(flat, ComparisonInput{Request: req}), "p").RequestsPerDollar
+	if want := Known(RequestsPerDollar{RequestCounts: RequestCounts{OffPeak: 100}, Shape: req, Mark: MarkExact}); got != want {
+		t.Errorf("flat-priced model = %+v, want %+v with no peak figure", got, want)
+	}
+}
+
+func TestComparePlansMarksARequestsPerDollarFigureEstimatedFromAnApproximateShape(t *testing.T) {
+	cfg := comparisonConfig(t, windows20h5+`,"rates":{"p/m":`+perMtok10+`}`)
+	req := Request{Model: "p/m", Output: 1000, Approximate: true}
+	got := comparisonByPlan(t, comparePlans(cfg, ComparisonInput{Request: req}), "p").RequestsPerDollar
+	if want := Known(RequestsPerDollar{RequestCounts: RequestCounts{OffPeak: 100}, Shape: req, Mark: MarkEstimated}); got != want {
+		t.Errorf("figure = %+v, want %+v: the count is unchanged and only the mark differs", got, want)
+	}
+}
+
+func TestComparePlansConvertsRequestsPerDollarAtTheRateOfTheRequestsContext(t *testing.T) {
+	haiku := func(fresh, cached int64) Field[RequestsPerDollar] {
+		return comparisonByPlan(t, ComparePlans(ComparisonInput{
+			Request: Request{Model: "opencode-go/claude-haiku-5-5", Fresh: fresh, Cached: cached, Output: 1000},
+		}), "opencode-go").RequestsPerDollar
+	}
+	// At the threshold the base rates apply, $0.0105 a request: 95.2 a dollar.
+	if got := haiku(100000, 0); !got.Known || got.Value.RequestCounts != (RequestCounts{OffPeak: 95}) {
+		t.Errorf("at the threshold = %+v, want 95", got)
+	}
+	// One cached token past it the long-context rates apply, $0.05250005 a request: 19.04 a dollar.
+	if got := haiku(100000, 1); !got.Known || got.Value.RequestCounts != (RequestCounts{OffPeak: 19}) {
+		t.Errorf("past the threshold = %+v, want 19", got)
+	}
+}
+
+func TestComparePlansFloorsRequestsPerDollarAtThePicodollar(t *testing.T) {
+	// An input rate of a millionth of a dollar a million tokens makes each fresh token cost one picodollar.
+	cfg := comparisonConfig(t, windows20h5+`,"rates":{"p/m":{"input_usd_per_mtok":0.000001}}`)
+	for name, tt := range map[string]struct {
+		pico int64
+		want int64
+	}{
+		"a cost that divides a dollar exactly":      {500_000_000_000, 2},
+		"a picodollar past the exact division":      {500_000_000_001, 1},
+		"a picodollar short of the exact division":  {499_999_999_999, 2},
+		"a cost of exactly one dollar":              {1_000_000_000_000, 1},
+		"a request that costs more than one dollar": {1_000_000_000_001, 0},
+	} {
+		got := comparisonByPlan(t, comparePlans(cfg, ComparisonInput{Request: Request{Model: "p/m", Fresh: tt.pico}}), "p").RequestsPerDollar
+		if !got.Known || got.Value.OffPeak != tt.want || got.Value.HasPeak {
+			t.Errorf("%s: figure = %+v, want %d off-peak and no peak figure", name, got, tt.want)
+		}
 	}
 }
 
@@ -368,6 +444,10 @@ func TestComparePlansWritesAnUnconfirmedFieldAsTheWordNeverAsAZeroValue(t *testi
 		"a recorded $0 price":  {ComparisonInput{Plans: map[string]Plan{"p": {}}}, []string{"MonthlyPrice"}, float64(0)},
 		"a known bool":         {ComparisonInput{Harness: func(string, string) HarnessCapabilities { return HarnessCapabilities{Headless: Known(false)} }}, []string{"Harnesses", "0", "Headless"}, false},
 		"a known ceiling name": {ComparisonInput{}, []string{"FiveHour", "Name"}, "p-5h"},
+		"no requests figure":   {ComparisonInput{}, []string{"RequestsPerDollar"}, "unconfirmed"},
+		"a figure's count":     {ComparisonInput{Request: Request{Model: "p/m", Output: 1000}}, []string{"RequestsPerDollar", "OffPeak"}, float64(100)},
+		"a figure's mark":      {ComparisonInput{Request: Request{Model: "p/m", Output: 1000}}, []string{"RequestsPerDollar", "Mark"}, "exact"},
+		"a figure's shape":     {ComparisonInput{Request: Request{Model: "p/m", Output: 1000}}, []string{"RequestsPerDollar", "Shape", "Output"}, float64(1000)},
 	} {
 		b, err := json.Marshal(comparisonByPlan(t, comparePlans(cfg, tt.in), "p"))
 		if err != nil {
