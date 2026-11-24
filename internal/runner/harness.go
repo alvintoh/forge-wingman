@@ -31,6 +31,9 @@ type Harness interface {
 	Name() string
 	// Licence is the harness's own licence, recorded once beside its adapter.
 	Licence() Licence
+	// Capabilities is what the harness does on plan, each fact unconfirmed
+	// until this adapter records it.
+	Capabilities(plan string) providers.HarnessCapabilities
 	// Agent returns the agent that runs profile p on model.
 	Agent(p Profile, model string) Agent
 	// Classify maps a failed run's stderr tail and exit error to an outcome.

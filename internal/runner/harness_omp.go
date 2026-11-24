@@ -133,6 +133,18 @@ func (h OmpHarness) Name() string { return ompName }
 // Licence is the harness's own licence, recorded here alone.
 func (h OmpHarness) Licence() Licence { return ompLicence }
 
+// Capabilities is what omp does on plan. It runs headless (-p) and emits
+// structured output (--mode json) on every plan it reaches, and nothing on a
+// plan it cannot. Whether a planning run's always-ask approval refuses edits
+// and shell is recorded only for a different plan's model
+// (testdata/omp/PACKAGE.txt), so it stays unconfirmed for every plan.
+func (h OmpHarness) Capabilities(plan string) providers.HarnessCapabilities {
+	if _, ok := ompPlans[plan]; !ok {
+		return providers.HarnessCapabilities{}
+	}
+	return providers.HarnessCapabilities{Headless: providers.Known(true), StructuredOutput: providers.Known(true)}
+}
+
 // Agent returns the omp agent for profile p, keyed for the model's plan.
 func (h OmpHarness) Agent(p Profile, model string) Agent {
 	return OmpAgent{Bin: h.Bin, Key: h.keyFor(Provider(model)), Home: h.Home, Model: model, Profile: p, Container: h.Container}

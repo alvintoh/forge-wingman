@@ -38,6 +38,11 @@ type Source struct {
 	Note string `firestore:"note"`
 }
 
+// ReadOK reports whether the source's last read succeeded, so the figures
+// beside it are this read's and not carried forward from an earlier one. A
+// document recorded no read at all has an empty state, which is not a success.
+func (s Source) ReadOK() bool { return s.State == ReadChanged || s.State == ReadUnchanged }
+
 // Provenance is who ran a model to produce a leaderboard figure.
 type Provenance string
 
