@@ -217,7 +217,7 @@ func validateSpecialists(specialists []SpecialistVerdict) error {
 		if len(s.Findings) > maxPRSpecialistFindingsBytes {
 			return fmt.Errorf("%w: specialist %q findings are over %d bytes", ErrPRReviewInvalid, label, maxPRSpecialistFindingsBytes)
 		}
-		if err := s.Usage.validate(); err != nil || !(s.Cost >= 0 && s.Cost <= maxCost) {
+		if err := s.Usage.validate(); err != nil || !ValidCost(s.Cost) {
 			return fmt.Errorf("%w: specialist %q has a figure out of range", ErrPRReviewInvalid, label)
 		}
 		if len(s.Attempts) > maxPRReviewAttempts || !validAttempts(s.Attempts) {

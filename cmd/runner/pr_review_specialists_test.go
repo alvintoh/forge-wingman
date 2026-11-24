@@ -513,7 +513,7 @@ func TestPRReviewPostDoesNotRequestTheMergeWhileASpecialistHasFindings(t *testin
 			f := &fakePulls{pull: eligible, checkRuns: greenChecks()}
 			getenv := f.start(t)
 			args := []string{"-pr", "7", "-reviewed-sha", headSHA, "-verdict", writeVerdict(t, tt.v), "-context-result", "success"}
-			if err := prReviewPostWith(context.Background(), quietLogger(), getenv, switchedOn, rateUnder, args); err != nil {
+			if err := prReviewPostWith(context.Background(), quietLogger(), getenv, switchedOn, rateUnder, recordNothing, args); err != nil {
 				t.Fatal(err)
 			}
 			if got := readOutput(t, getenv); !strings.Contains(got, tt.wantMerge) {

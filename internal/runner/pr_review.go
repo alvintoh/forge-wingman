@@ -187,7 +187,7 @@ func ParsePRVerdict(raw []byte) (PRVerdict, error) {
 // cost the reader accepts.
 func validAttempts(attempts []PRReviewAttempt) bool {
 	return !slices.ContainsFunc(attempts, func(a PRReviewAttempt) bool {
-		return !ValidModel(a.Model) || !attemptOutcomes[a.Outcome] || !(a.Cost >= 0 && a.Cost <= maxCost)
+		return !ValidModel(a.Model) || !ValidAttemptOutcome(a.Outcome) || !ValidCost(a.Cost)
 	})
 }
 

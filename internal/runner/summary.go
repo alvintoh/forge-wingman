@@ -571,7 +571,7 @@ func (u Usage) validate() error {
 			return fmt.Errorf("token count %d is out of range", n)
 		}
 	}
-	if !(u.Cost >= 0 && u.Cost <= maxCost) {
+	if !ValidCost(u.Cost) {
 		return errors.New("cost is out of range")
 	}
 	return nil
