@@ -29,7 +29,9 @@ Review and suggest improvements — do NOT rewrite unless a change is small and 
   - **Only user input becomes form state.** After every NON-typing interaction (a picker choice, an applied default, a programmatic set), assert the form value still holds only what the user entered. A widget-written value that reaches validation produces the wrong message CLASS: "invalid" implies they typed something wrong; "required"/silence is the truth when they typed nothing.
   - **Walk the state JOURNEY, not one transition.** Fixing transition A routinely shifts the defect to transition B (default→discard fixed; discard→re-pick then broke). Enumerate the cycle for any stateful control — load→default, default→discard, discard→re-pick, pick→type, type→switch-away — and check message + display + form value at each stop, via the real interaction path (a dispatched synthetic event can behave differently from a real click).
   - **Probe for ANY message, not the one you expect.** Grepping for the expected error string reports "clean" when a DIFFERENT message is showing; capture all text around the control and classify what appears.
+- **A phone card shows about three elements; the rest sits one tap away.** *(Judgment call, owner 2026-10-21; it applies progressive disclosure — a card is a short summary, key information first.)* Name the three on the card (identity, the main number or state, one status line), put secondary lines behind the card's details control, and keep the desktop card as the design draws it.
 - Accessibility baseline: semantic elements, full keyboard navigation, visible focus, alt text, labelled controls, sufficient contrast.
+- **Build to the design's tokens; a value the design draws that the build cannot reach is a defect in the projection, not licence to approximate.** *(Established practice: design tokens are the shared source of truth that components consume — W3C Design Tokens Community Group.)* Before writing a component, read the design's token source and the generated theme file the build consumes. Every colour, type step, spacing and **corner radius** in a component comes from a token or a stated rule (a pill is `rounded-full`), never a literal or an unstyled browser default — square corners are a default, not a decision. If the design draws something (a card corner, a bar cap, a chip) with no token in the theme file, stop and report it so it is added at the source and regenerated. Before returning, MEASURE each changed surface — computed `border-radius`, colour and size — against the design's, and report the numbers.
 - Security baseline: never expose secrets to the client; set appropriate security headers.
 - Reuse before creating: before hand-rolling a scalar/date/unit constant or generic helper, grep the shared constants / `*.utils` modules and import the existing one; a sibling file's local copy is a shared constant to reuse from its canonical home, not a pattern to mirror.
 - Place a new file where its siblings say it belongs, BEFORE writing it: read two or three nearest neighbours and note what they do NOT contain — if every comparable file delegates its logic elsewhere, yours must too (grep the sibling set, e.g. `grep "^export type" <dir>/`; being the only file exporting a given kind of thing is the signal). Framework-routed entry points stay where the framework mandates and stay THIN; domain logic and shared types live in the project's own tree. Name the precedent file you matched in your report.
@@ -119,6 +121,7 @@ Next-vs-SPA comparison turns on.
 | Shape | Choose it when | Rule it out when |
 |---|---|---|
 | **Server-rendered + htmx** (no client runtime — the comparison row) | forms saved to a store; updates inside well-defined blocks — the htmx author's own fit | frequent state updates, UI dependencies across the page, or offline — *"far better off writing your own client-side state management"* |
+| **Astro** (static HTML + islands; Actions/endpoints on an adapter) | content-first pages with a few interactive islands; a form or webhook fits Actions, so no separate service | the UI is app-like, with client state across views → Vite SPA |
 | **Vite SPA + a router**, served static by the backend | client state is earned AND the server is not TypeScript — one server language, no Node at runtime | you would rebuild routing/data/SSR by hand — React's docs call it *"a lot like building your own framework"* |
 | **Next.js static export** (`output: 'export'`) | you want Next's routing and per-route HTML with no Node server | nothing server-side is used anyway — Next's weight for Vite's result |
 | **Next.js with a server** | the server IS TypeScript: RSC, Server Actions, SEO, streaming | the backend is another language — the seam moves to two DB bindings |
@@ -197,6 +200,7 @@ Reusable best practices for TypeScript. A scaffold step inlines these into an ag
 - Keep types co-located with the code that uses them; promote to a shared types location only when used across multiple features
 - **For a client-side library the cost axis is BUNDLE SIZE, not per-call CPU — measure the one that matters.** A validator at 6µs vs 8µs per call is noise on a per-interaction path; the same choice moving a metadata bundle from 80 KB to 145 KB ships 65 KB to every visitor. Before answering "which is faster", check whether CPU is even the axis — it rarely is outside a loop or a render path. `require.resolve('<pkg>')` names the entry point actually in play, and the package's `main` / `module` / `exports` fields say which build variants exist.
 - **A build tool's own CONFIG file is loaded before its plugins, so a path alias resolves in your source and test files but NOT in the config that declares it.** The plugin teaching the bundler about `@scope/lib` (`nxViteTsPaths()` and equivalents) is not active while the bundler is still reading the config that lists it — so a config importing a shared value must use a relative path, however many `../` that takes, and that is a constraint rather than a style choice. The error names nothing useful: `Cannot find module '@scope/lib'` with the config file at the top of the require stack, which reads as a missing dependency. A test or setup file has no such limit — plugins are active by then, so prefer the alias there. (Verified against a Vitest config; the same ordering holds for webpack and jest configs.) **The consequence in a monorepo: that relative path is a cross-project import, so a boundary rule set to `error` (`@nx/enforce-module-boundaries` and equivalents) will reject it until the config file is added to the rule's `allow` list.** Two things then fight over the same line — one tool forbids the alias, another forbids the relative path — and the allow entry is what settles it, so add it in the same change rather than discovering it at lint time.
+- **Compare a secret with `crypto.timingSafeEqual`, and hash both sides first.** It needs equal-length buffers and raises `RangeError` (`ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH`) otherwise, and a `string` raises too, so a bare call on a request value turns a wrong-length key into a 500. SHA-256 both sides to a fixed 32 bytes and compare the digests; a length pre-check would leak the length. *(Verified on Node 22.22.3; the rule is in `base/stacks/architecture.md`.)*
 
 ## Testing (Vitest / Jest — shared matcher set)
 
@@ -331,6 +335,16 @@ Reusable best practices for Bun. A scaffold step inlines these into an agent whe
 - Run one-off scripts with `bun scripts/<name>.ts` — no need for a `ts-node` or `tsx` shim
 - Use `bun --watch <entrypoint>` for the inner dev loop on backend services — not `nodemon`
 - Use `bun test` for the test runner — it is built in and works with `@testcontainers/postgresql` for integration tests
+- **`mock.module` can outlive its test file — stub a shared module only where nothing else imports
+  it, and prefer rendering through the real thing.** Bun's docs say "Module mocks are removed when
+  the test file ends", but on bun 1.4.2 a file mocking `@tanstack/react-router` with only `Link`
+  broke a LATER file in the same run ("Export named 'useNavigate' not found"); alone, that file
+  passed. The suite stays green or not by file order, so the failure appears when a file is added
+  or renamed, not when the mock is. For a component that needs a router, render it inside a
+  one-route memory router (`createRouter` + `createMemoryHistory` + `RouterProvider`) instead of
+  mocking the module; `mock.restore()` does not undo module mocks either (Bun docs). *(Verified
+  2026-11-05 on forge-wingman PR 325: `bun test <mock file> <router file>` failed, reversed it
+  passed.)*
 - Lock bun version in CI via `oven-sh/setup-bun@v2` with `bun-version: latest` (or pin a specific version for reproducibility)
 - Cache the Bun install cache in CI: path `~/.bun/install/cache`, key `${{ runner.os }}-bun-${{ hashFiles('bun.lock*') }}` (Bun 1.2+ writes the text `bun.lock`; older versions wrote `bun.lockb`. Verified 2026-09-30: bun.com/docs/install/lockfile)
 
@@ -386,6 +400,7 @@ user-facing UI.
     carry over.
   - **When swapping one colour for another, measure the DELTA, not just the new value** — a swap
     between two already-failing colours can quietly make things worse.
+- **A legend of counts is not a non-colour cue for a colour-coded mark.** *Established: WCAG 1.4.1 (A): "Color is not used as the only visual means of conveying information… or distinguishing a visual element". W3C's Understanding page passes its colour-coded image only because each element also carries a visible number or label, and lists G111 (colour and pattern) and G14 (the information also in text) as the sufficient techniques.* A legend that names categories without tying each to a mark does neither. Give each mark its own cue (a pattern, fill versus outline, a glyph, a visible label); words read by assistive technology cover screen readers, not sighted colour-blind users. An owner may accept the gap knowingly: record it in the PR's notes as their decision. *(Verified 2026-10-23: forge-wingman's run-history strip; the owner rejected an outlined variant and a legend as ugly, and both the review bot and the sweep flagged the gap.)*
 
   What to DO about a conflict is `css.md`'s "Build what the frame DRAWS" section; this is about noticing it
   at the moment of choosing. (Verified: `Functional/Success` `#5fbd68`, taken from a success badge
@@ -446,6 +461,18 @@ user-facing UI.
   and Material ships STATE_COLLAPSED/HALF_EXPANDED/EXPANDED plus a drag handle that "supports
   tapping to cycle". Both model the component as detents; the fixed height was the deviation, and it
   had been chosen by assumption rather than decision.)
+
+## Icons in links
+
+- **An icon beside a link's word goes INSIDE the same link, marked decorative; never as a separate
+  link.** *Established: Nielsen Norman Group's icon-usability research says icons need a visible
+  text label, and WCAG 1.1.1 treats an icon whose meaning the adjacent word already carries as
+  decorative (`aria-hidden="true"`).* One `<a>` holding icon and word gives one focus stop, an
+  accessible name taken from the visible word (so a voice-control user can say what they see,
+  WCAG 2.5.3), and a bigger hit area than either part alone. Separate icon and text links to the
+  same place double the tab stops and leave the icon link nameless unless a label is added by hand.
+  *(Judgment call on compactness: owner's preference 2026-11-15, for footer social links.)* A bare
+  icon with no word is for universally recognised controls only, and then needs an `aria-label`.
 
 ### typography
 
@@ -714,6 +741,17 @@ continuous — see `/fe-sweep` for the drag-both-directions method and the 320px
   `@scope (.card) to (.card__content)` applies inside `.card` and stops at `.card__content`, so a
   nested component's own elements are untouched. Ordinary scoping BEM and CSS Modules already
   did; the lower bound is the part they cannot.
+- **`text-box: trim-both cap alphabetic` replaces a hard-coded offset when a box must align with a
+  heading's capitals.** A line box's top is not the glyphs' top: IBM Plex Sans 600 at 22px on a 33px
+  line box starts its capitals 9.66px below the box top (read off the built page; a pixel scan agreed,
+  the title's first dark row equalling the aligned card's top border). Written by hand, that offset
+  breaks when the font, size or line-height changes. The property trims the box's top to the capitals
+  and its bottom to the baseline: in Chromium 152 it moved a 33px box's top onto the capitals within
+  0.01px and shortened it to 15.8px, so **the margins around the heading must be re-derived**, since
+  the trim removes its half-leading from layout. MDN lists it as Baseline 2026, newly available since
+  August 2026 (read 2026-10-27). To measure instead of trim: the baseline, read from a zero-size
+  `inline-block` probe inside the element, minus `measureText('A').actualBoundingBoxAscent`.
+  *(Verified 2026-10-27 on forge-wingman's Autonomy title.)*
 - **These are not one cohort — check caniuse before reaching for the newest.** This pack
   deliberately records no support percentages: they rot, and the check is thirty seconds. One
   durable caveat worth carrying: **CSS anchor positioning still needs a fallback — Firefox was
@@ -960,6 +998,12 @@ lands in one column and the list it labels in the next unless the break is place
 the break is positional: `nth-child(5)` quietly means something else the moment anyone reorders the
 section, so anchor it to the element itself in shipped code even where a prototype used an index.
 
+**A card that is a direct child of a row-spanning subgrid stretches over every row it spans.** Grid
+items default to `align-self: stretch` (CSS Box Alignment), so in Statistics' filter column a 268px
+card grew to 875px at 1280 (measured 2026-10-30). Put `items-start` on the subgrid container: the
+card keeps its content height and its top stays level with the sibling column's. Symptom: an empty
+tall card, on the wide layout only.
+
 ## Capping a scroll container: cut a row in half, never at its edge
 
 A list capped to a whole number of rows reads as complete — a *false bottom* — and the rows below
@@ -1013,6 +1057,20 @@ is not: measured on one flow the button sat 44px below the fold at a 16px top ma
 at 28px — out of view at both, so margin was never what hid it. Removing it was still right, because
 it bought nothing and on a short viewport nothing is not free — but the reason was waste, not
 visibility. The two have different fixes, so establish which one you have before choosing.
+
+## Comparing two visual options: hand over the live page, not screenshots
+
+*Moved from `base/CLAUDE.md` §Presenting Information 2026-10-26 (a visual rule, per the codify
+section's placement test).* **Put each option on the REAL page and hand me the URL; do NOT hand me
+screenshots.** A capture is one viewport at one instant: I cannot resize it, zoom it, scroll it or
+inspect it, and the differences that actually need judging (a weight step, 2px of leading, a
+hairline border) are precisely the ones a still renders worst. Apply option A to the source, let
+hot reload serve it, tell me to look; then apply B on my word. **Reserve captures for EVIDENCE that
+must outlive the session** — a PR's before/after — which is `/fe-evidence`'s job. A comparison is a
+DECISION, and a decision wants the live thing; evidence is a RECORD, and a record wants the still.
+(Verified 2026-09-09: two screenshots of a 15px paragraph at weight 300 vs 400 were nearly
+indistinguishable as images, and both carried a stray text selection from an earlier probe that
+read as a style.)
 
 ## Return format
 

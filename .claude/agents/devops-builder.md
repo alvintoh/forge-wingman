@@ -43,11 +43,15 @@ Reusable best practices for GitHub Actions. A scaffold step inlines these into a
 - Cache Bun dependencies between runs: path `~/.bun/install/cache`, key keyed on `hashFiles('bun.lock*')` (text `bun.lock` on Bun 1.2+, `bun.lockb` before), restore-key `${{ runner.os }}-bun-`
 - Run typecheck before lint — type errors are more fundamental; failing fast saves CI minutes
 - Add the `deploy` job in the same workflow file; gate it with `needs: ci` and `if: github.ref == 'refs/heads/main'` — never deploy code that failed quality checks
+- **Deploy every merge automatically to the one environment you have, when a bad deploy affects only you and rollback is one command; keep a human gate where a second user, environment or live job exists, and decide per deployable.** *(Continuous deployment is established, a merge is the release; where the human gate goes is a judgment call.)* A stateless UI behind identity-aware access qualifies; a worker whose redeploy interrupts live runs does not. Filter by path so a docs-only merge builds nothing, serialise with a `concurrency` group and `cancel-in-progress: false` so an apply is never killed mid-flight, and end the job by reading the new revision back: fail unless it is Ready and serving the pushed digest.
 - Tag all built artifacts with `${{ github.sha }}` — never tag with `latest`; SHA tags make rollbacks deterministic and auditable
 - **A `workflow_run` chain filtered on `branches: [main]` does NOT cascade on a feature branch — every stage needs its own `workflow_dispatch`.** The filter tests the branch of the *upstream* run, so a multi-stage deploy chain (infra → serverless → app) that self-drives on `main` silently drives nothing on a branch, with no error anywhere: the first stage runs and the rest simply never trigger. Before assuming a chain is running, read each downstream workflow's own trigger block rather than the first one's. *(Verified in a 3-stage chain where only the manually-dispatched stages ever ran.)*
 - **A workflow and the binary it builds from the same commit are ONE deployable, so a new flag lands in the consumer first.** A step that passes `-flag "$X"` to a tool built from the run's own sha fails with `flag provided but not defined` on every run between the workflow change and the tool change, even when the value is empty. Order it **tool (flag defined, absent means legacy) → workflow (passes it) → whatever sends the value (a dispatcher or caller)**: the same expand-before-contract as a schema change. A new `workflow_dispatch` input must exist BEFORE its sender (an undeclared input answers 422), so it comes with the workflow step, never ahead of the tool. *(Established practice: expand/contract for rolling deploys. Verified 2026-10-14 on forge-wingman: `run.yml` was pushed ahead of the Go change that defined `-attempt`, and the one run in that window failed its `record` job with the flag undefined; its PR still opened.)*
 - **Read the whole trigger GRAPH, not one path through it.** More than one workflow can hang off the same upstream, so a remembered "A → B → C" sequence can be a path rather than the graph, and a hardcoded stage list silently drops a sibling. Derive order from `on.workflow_run.workflows:` (cross-workflow) and `needs:` (intra-workflow) edges.
+- **A change to a `pull_request_target` workflow, or to one that only runs from `main`, can only be tested live after it merges.** `pull_request_target` runs the base branch's copy of the file, so the PR is reviewed by the old version and the new behaviour first runs once merged; a dispatch that federated identity trusts only on `main` is the same. A PR that holds its merge until a live check of that behaviour passes waits forever: merge it with the behaviour dormant (its switch off, its trigger paused), then run the live legs on `main`. *(GitHub documents that `pull_request_target` runs in the context of the base of the pull request. Verified 2026-11-15 on forge-wingman PR 368.)*
+- **A SKIPPED job's `name:` is never evaluated, so an expression in it shows raw.** A job that runs shows `check FRG-149`; the same job skipped by its `if:` shows `check ${{ inputs.run_id }}` in the Actions UI. It is cosmetic: only a job that ran can fail, so a failure email always carries the evaluated name. Do not "fix" it by gating per step to keep the job alive, which spends a runner VM per skipped job for a label, or by dropping the id from stage-only jobs, which loses it from their failure emails. The run's `run-name` names the run on every row. *(Observed, not documented: no GitHub doc found. Verified 2026-10-15 on forge-wingman `run.yml`: in a build run the skipped `record-plan-stage` showed raw, and in a plan run the four skipped build jobs did; every job that ran showed the id.)*
 - Pin third-party actions to a full-length commit SHA (see *Supply chain*); a major-version tag (e.g. `actions/checkout@v4`) is the convenient tradeoff, least acceptable in a job that holds credentials
+- **A base image pulled anonymously from a public registry shares a per-source-IP quota, and hosted runners' IPs are likely shared** (not verified for GitHub's runners): authenticate the pull or mirror the image into a registry you control, with the per-registry facts in `aws.md` and `gcp.md`. Docker Hub documents anonymous pulls at "100 per IPv4 address or IPv6 /64 subnet" on a rolling 6-hour window, 200 per window authenticated on Personal and unlimited (fair use) on paid plans. GCP Artifact Registry remote repositories are documented as a caching proxy for upstreams such as Docker Hub, but their overview page does not say they relieve upstream rate limits. *(Verified 2026-10-26 against Docker's pull-usage page and Google's remote-repository overview.)*
 
 ## Claude review bot (`anthropics/claude-code-action`)
 
@@ -61,7 +65,10 @@ Two workflow files, split by trigger — replicate both:
 - `claude.yml` — the *on-demand* review. Fires on `issue_comment`,
   `pull_request_review_comment`, `pull_request_review`, `issues`, gated by an `if:`
   requiring `@claude` in the body. No `prompt:` — it follows the comment that
-  mentioned it.
+  mentioned it. With no draft filter, an explicit `@claude` comment reviews a
+  DRAFT PR even though the auto-review skips drafts *(verified 2026-10-20 on
+  `urban-rest-services` #468: a comment on a draft started a run that posted a
+  review)*.
 
 - **`opened` includes a DRAFT PR, and `ready_for_review` is a separate activity
   type.** With `types: [opened]` alone the auto-review fires once — at draft
@@ -69,6 +76,11 @@ Two workflow files, split by trigger — replicate both:
   `@claude` comment is the only way to review anything pushed later. To keep the bot
   off drafts and review the flip instead, add `ready_for_review` to the types AND
   `if: github.event.pull_request.draft == false`.
+- **A review workflow with `paths-ignore` skips a PR that touches only the ignored paths, so a
+  `.github/**`-only PR gets no automatic review.** Ask with an explicit `@claude` comment:
+  `claude.yml` has no path filter. *(Verified 2026-10-26 on `urban-rest-services` #474:
+  `claude-code-review.yml` ignores `.github/**`, only CI ran, and the `@claude` comment started a
+  `claude.yml` run whose review landed in 26 s.)*
 - Both need `secrets.ANTHROPIC_API_KEY` and `permissions: id-token: write`; add
   `actions: read` (and `additional_permissions: actions: read`) so it can read CI
   results on the PR.
@@ -210,6 +222,18 @@ credentials. The per-cloud instantiation lives in that cloud's pack: `aws.md`, `
   field requires — a package needing Node ≥ 22 fails on a runner's default. (Verified 2026-10-05:
   a CLI installed with `npm i -g command-code@1.74.1` pulled ~50 caret dependencies unpinned;
   fixed with a committed lockfile plus `setup-node` at 22, the CLI's engines floor.)
+- **A tool binary fetched from a GitHub release needs a second source that no untrusted job
+  can write.** Release downloads (`github.com/<owner>/<repo>/releases/download/…`) can
+  answer 504 for many minutes while githubstatus.com reads all operational, and
+  `curl --retry 3` gives up within about 7 seconds. Retry every error for minutes
+  (`--retry-all-errors --retry-max-time 300`), then fall back to a mirror you own (an
+  object only you can write), and verify the checksum before extracting either. Never use
+  `actions/cache` for it in a workflow that runs untrusted code under the default branch:
+  restore extracts the archive before any checksum runs, and a cache key is
+  first-write-wins in that scope, which is the poisoning the rule above warns of.
+  *(Verified 2026-11-09: forge-wingman's run for FRG-314 failed three times in 10 minutes
+  on golangci-lint's release download, which answered 504 throughout while GitHub
+  reported no incident; a security review caught the first, cache-based fix before merge.)*
 - **Order gates cheapest-and-most-fundamental first** so a run fails fast: format →
   typecheck/vet → lint → test → build. `tsc --noEmit` / `go vet` / `mypy` go *before* the
   linter, because a type error makes every lint finding downstream noise. **Exception: a step
@@ -382,6 +406,16 @@ Reusable recipes for reaching + operating a GCP dev environment (personal cloud;
   wrong — the whole class of vulnerability is absent rather than mitigated. Access
   control is an allowlist in GCP. *(IAP's own pricing was not verified on the
   enablement page — confirm before calling a hosted setup free.)*
+- **Verifying IAP's signed header (`x-goog-iap-jwt-assertion`) in Go: the Cloud Run audience is
+  `/projects/<number>/locations/<region>/services/<name>`, the issuer `https://cloud.google.com/iap`,
+  the algorithm ES256, and the `email` claim has no `accounts.google.com:` prefix** (Google's
+  signed-headers page, https://docs.cloud.google.com/iap/docs/signed-headers-howto, read
+  2026-10-22). At the installed `google.golang.org/api` v0.287.1, `idtoken.Validate` also accepts
+  Google's RS256 ID tokens, never checks the issuer, and halves an ES256 signature without
+  checking its length, so a short signature crashes the request: check the issuer, the three
+  segments and a 64-byte signature yourself. Take the project number from config, not a literal;
+  `/healthz` is the one exempt route. *(Verified against the installed library, FRG-193.)*
+- **Signing out of an IAP app clears IAP's cookie, not Google's, so the next sign-in is silent; only `prompt=select_account` shows a chooser.** `GET /?gcp-iap-mode=CLEAR_LOGIN_COOKIE` answers 302 with `Set-Cookie: GCP_IAP_UID=none; expires=1970…` to `/?__gcp_iap_oauth_prompt=1`, which redirects to Google's OAuth with `prompt=select_account`; a plain visit redirects with no prompt, and Google approves it unasked while its own session lives. A sign-out that must end on a public page sends that request from the page (`fetch` with `redirect: "manual"`, which still applies the cookie) and then navigates; treat any answer that is not an opaque redirect as a failure and fall back to the full navigation, so a 403 or 500 never leaves the visitor on the public page still signed in. *(Verified 2026-10-23 on forge-wingman: the redirects by `curl` against the live service, and in Chrome DevTools `GCP_IAP_UID` was present before Sign out and gone after. The fetch-then-navigate shape is a judgment call.)*
 
 ## Auth
 
@@ -410,10 +444,11 @@ Reusable recipes for reaching + operating a GCP dev environment (personal cloud;
 
 ## Compute (Cloud Run)
 
-- **Serverless default**: deploy scale-to-zero (`gcloud run deploy`), Hono on Bun. Move to **always-on** (min-instances ≥ 1) or GKE only when a workload must hold a connection open (stream/socket/long task — see `architecture` execution split)
+- **Serverless default**: deploy scale-to-zero (`gcloud run deploy`), Go (static binary, 128MB tier). Move to **always-on** (min-instances ≥ 1) or GKE only when a workload must hold a connection open (stream/socket/long task — see `architecture` execution split)
 - Fire a deployed service directly for testing against a **designated test resource only** — never prod data; pass ids as env, never hardcoded
 - Front Cloud SQL via the Auth Proxy/connector (see `postgres`)
 - **A Cloud Run job's start-up can dwarf its work, and jobs run only on gen2.** Google: jobs "only use the second generation execution environment, and this cannot be changed", and gen2 "has longer cold start times" (docs.cloud.google.com/run/docs/about-execution-environments, read 2026-10-08). Measured the same day on forge-wingman's dispatcher, an 11 MB static Go binary: ~2 min from task start to `main`, against 2.7 s of work. So a job is wrong for a path that must act in seconds; that belongs in a service. And a job's start time is not when your code runs: log a line at process start to tell them apart.
+- **Read an EXECUTION's own image and logs, not the job's.** `gcloud run jobs executions describe <exec> --format='value(spec.template.spec.containers[0].image)'` names the digest that execution ran, so "the first poll after the deploy ran the new image" is checkable; the job resource shows only the latest. For logs, `gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="<job>" AND labels."run.googleapis.com/execution_name"="<exec>"' --format=json`, then read `jsonPayload.msg`: `--format='value(textPayload)'` prints blank rows for a structured (JSON) logger. *(Verified 2026-10-27 on forge-wingman's dispatcher: the 00:30 UTC execution ran the new digest, and the `value()` form returned twenty empty rows.)*
 
 ## Object storage (GCS)
 
@@ -433,6 +468,7 @@ Reusable recipes for reaching + operating a GCP dev environment (personal cloud;
 ## IaC & images
 
 - gcloud CLI first; **OpenTofu** once manual drift costs (same HCL, no BSL risk). Images in GHCR
+- **Add a cleanup policy before the first automated deploy: an Artifact Registry that gains an image per merge grows without bound.** *(Established: Artifact Registry's cleanup-policy documentation.)* A `mostRecentVersions` keep rule sets a minimum and deletes nothing, so pruning needs a delete rule beside it (the keep rule wins where both match; they cannot share one policy; a Docker image a parent manifest references is not deleted); run it as a dry run first. <!-- snapshot checked=2026-11-08 refresh="docs.cloud.google.com/artifact-registry/pricing" --> Storage is 0.5 GiB free (per billing account, not per project) then $0.10 per GiB-month, so one ~11 MB image per merge is cents a month that compound if never pruned. *(Verified 2026-11-02 on forge-wingman: FRG-268's first AC6 said 'keeps the newest 20', which would have deleted nothing.)*
 - Budget alerts per project from day one — Vertex spend compounds silently
 
 ## Cloud Build (dispatch & poll)
@@ -447,6 +483,12 @@ Reusable recipes for reaching + operating a GCP dev environment (personal cloud;
 ## Cloud KMS (additional authenticated data)
 
 - **Bind the cached value's identity into the AAD.** Cloud KMS "will not decrypt ciphertext unless the same AAD value is used for both encryption and decryption", so use the cache key's identity (client id, scope) as the AAD and a ciphertext copied under another key fails to decrypt: Google's own confused-deputy example is a diary app using the user's identity as AAD. **AAD is not stored with the ciphertext, so rebuild it from the key at read time or you cannot decrypt, and Cloud Audit Logs do not log it (AWS's encryption context is logged, see `valkey.md`); still put nothing secret in it.** (docs.cloud.google.com/kms/docs/additional-authenticated-data)
+
+## Credential revocation delay (API Gateway, Endpoints, IAM)
+
+- **GCP has no single decision-cache TTL to set; know which delay applies.** API Gateway authenticates with API keys or JWTs and caches the JWT signing-key set (JWKS) for five minutes. ESPv2 (Cloud Endpoints) exposes it as `--jwks_cache_duration_in_s` (default five minutes) and caches verified tokens (`--jwt_cache_size`, 0 disables), with no documented API-key check cache option. An API key "identifies a Google Cloud project for quota, billing, and monitoring purposes", so it is not an authentication secret; verify a shared-secret webhook header in the service itself. IAM changes, including revoking a role, take "typically 2 minutes, potentially 7 minutes or longer"; the Cloud Run invoker page states no figure of its own. *(Google Cloud docs: "Choosing an Authentication Method", "Using JWT to authenticate users", "Specify ESP v2 startup options", "Access change propagation", fetched 2026-10-20. Not documented: how long a removed API key stays accepted. Apigee Edge's roughly 180 s key cache appears only in forum posts.)*
+
+- **GCP API Gateway: authenticate with a JWT, an ID token or a service account where the sender can, and use an API key to identify a project; for a sender that can attach only a static header (a webhook), gate with a key in the HEADER, restricted to your API, and never as the only protection for sensitive data.** Use the OpenAPI 3 `apiKey` scheme with `in: header` (for example `x-api-key`), not the OpenAPI 2 query parameter `key`, since a secret in the URL gets logged (RFC 6750 §5.3; see `architecture.md` inbound webhook auth). One key per integration, with an API restriction, because Google says a key is unrestricted by default and so "vulnerable to unauthorized use". Google also says a key identifies a project, is "less secure than other authentication credentials", and should not be the only protection when calls carry sensitive data, so for a sender that can attach only a static header treat the key as the gate and keep the handler's own validation *(judgment call)*. Not verified: the status for a missing key. Google says a standard API key does not authenticate a principal and identifies a project for quota, billing and monitoring; restrictions work per API and per application (websites, IPs, apps), and the docs do not say a key can be limited to routes or methods, so isolate a third-party sender with its own API and add an IP application restriction if the sender publishes its addresses. **A second gateway needs its own domain work:** Google's API Gateway guide gets a custom domain by putting a global external Application Load Balancer with a serverless NEG in front of it, which needs an SSL certificate resource and a DNS record. Whether a second gateway bills extra is not verified (the pricing page returned no text, 2026-10-26). The AWS pack records a second gateway built and then reversed over domain handling (`aws.md`, API Gateway built-in API key). *(Google Cloud API Gateway serverless NEG guide, fetched 2026-10-26.)* For server-to-server callers Google points to service accounts and JWTs. Rotate by creating a new key and deleting the old one (console only; a deleted key can be restored within 30 days). *(Google Cloud API Gateway and API key docs, fetched 2026-10-23; per-route scoping is not documented.)*
 
 ## Gotcha
 
@@ -506,7 +548,11 @@ Reusable best practices for OpenTofu (Terraform-compatible IaC, no BSL risk). A 
   `errored.tfstate` or this ORDER, which is a judgment call proven once, on a
   Firestore index.)* Confirm no tofu process is running and the lock's `Who` and
   `Created` are yours; read the remote state object directly and check whether the
-  resource is in it; `force-unlock` only a lock you can attribute; then `import` the
+  resource is in it; `force-unlock` only a lock you can attribute (on the GCS
+  backend it takes the lock OBJECT's generation from `gcloud storage objects
+  describe gs://<bucket>/<prefix>/default.tflock --format='value(generation)'`, and
+  rejects the `ID` UUID inside the lock file with "Lock ID should be numerical
+  value"; verified 2026-10-15); then `import` the
   real resource (or `state push` the errored file, only if it holds the resource);
   finish with a targeted plan that reports no changes. Never commit `errored.tfstate`.
   A targeted plan still needs every required
@@ -530,6 +576,7 @@ Reusable best practices for OpenTofu (Terraform-compatible IaC, no BSL risk). A 
   instance. *(Expand-contract is established; Terraform's docs discourage `-target`
   for routine applies. Found in review 2026-09-25 on forge-wingman's runner binding.)*
 - **`-target` also pulls in what its targets depend on**, including a `depends_on` on a whole `for_each` set, so a targeted plan can add more than the resources you named. Read the plan's add count against your list before applying. *(Verified 2026-09-29 on forge-wingman: five resources named, eight planned — three API enablements came in through one `depends_on`.)*
+- **A deploy outside IaC drifts, and a deploy through it is `-target`-scoped; pick which cost you accept.** *(Judgment call: the drift is how Terraform works; the `ignore_changes` route is blog guidance, not provider docs, so check the attribute path against the provider.)* If the service pins `image = var.x`, a `gcloud run deploy` makes a revision the next `tofu plan` reverts. Either apply only the service from CI with the digest the push printed, so state stays the truth, at the price of the `-target` caveats above; or `ignore_changes` the image path and deploy with the CLI, which is simpler but leaves state not recording what serves.
 - One state per environment, same modules + different `.tfvars` — parity by var files, not copy-paste. **How MANY environments is a judgment call, and the count is the shallow question — an environment earns its place only if some class of failure surfaces THERE and nowhere else.** A staging that cannot faithfully reproduce the integration is not a rehearsal, it is a third place to deploy that manufactures confidence (the same reason prod-E2E against designated test resources is sometimes the honest answer). Practically: **work → dev/staging/prod**, because a release cadence and a QA handoff mean someone who is not the author checks before customers do; **personal → dev/prod**, because it is solo and per-PR preview deployments already do what staging was for. Note the asymmetry — ADDING an environment later is a new state prefix and a new `.tfvars`, while REMOVING one means destroying or orphaning its resources, so under-provisioning is the recoverable mistake.
 - Modules for anything used twice; pin provider + module versions, commit the lock file
 - `plan` in CI on PR, `apply` gated behind review/approval — never auto-apply from a push
