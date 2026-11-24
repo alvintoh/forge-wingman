@@ -61,6 +61,30 @@ type Request struct {
 	Fresh  int64
 	Cached int64
 	Output int64
+	// Approximate is set by the caller when any token count is a published
+	// approximation rather than one measured from recorded runs. Nothing in the
+	// configuration marks a rate card as approximate, so a card never does.
+	Approximate bool
+}
+
+// Mark says how firm a derived figure is.
+type Mark string
+
+const (
+	// MarkExact is a figure computed from the plan's own rate card and token
+	// counts that are not published approximations.
+	MarkExact Mark = "exact"
+	// MarkEstimated is a figure with at least one published-approximation input.
+	MarkEstimated Mark = "estimated"
+)
+
+// RequestsPerDollar is how many whole requests of Shape one dollar buys, with
+// the shape beside the figure so it is read against the request it was computed
+// for.
+type RequestsPerDollar struct {
+	RequestCounts
+	Shape Request
+	Mark  Mark
 }
 
 // ComparisonInput is what ComparePlans reads beside the configuration.
@@ -145,10 +169,13 @@ type ModelPrice struct {
 type PlanComparison struct {
 	Plan         string
 	MonthlyPrice Field[money.Micros]
-	FiveHour     Field[Ceiling]
-	Weekly       Field[Ceiling]
-	Monthly      Field[Ceiling]
-	Strongest    Field[StrongestModel]
+	// RequestsPerDollar is unconfirmed when the plan has no rate card for the
+	// stated model or a request of the stated shape costs nothing.
+	RequestsPerDollar Field[RequestsPerDollar]
+	FiveHour          Field[Ceiling]
+	Weekly            Field[Ceiling]
+	Monthly           Field[Ceiling]
+	Strongest         Field[StrongestModel]
 	// StrongestCap is the monthly cap the configuration sets on the strongest
 	// model; unconfirmed when there is no strongest model or no cap for it.
 	StrongestCap Field[money.Micros]
@@ -197,6 +224,7 @@ func comparePlan(plan string, p Provider, in ComparisonInput) PlanComparison {
 		}
 	}
 	card := p.Rates[in.Request.Model]
+	c.RequestsPerDollar = requestsPerDollar(card, in.Request)
 	for _, w := range p.Windows {
 		field := c.ceilingFor(w.Period)
 		if field == nil || field.Known {
@@ -276,6 +304,21 @@ func requestCounts(limit money.Micros, card Rates, req Request) *RequestCounts {
 		counts.Peak = requestsWithin(limit, peakRates(card.ForContext(ctxTokens)), req)
 	}
 	return counts
+}
+
+// requestsPerDollar is the whole requests of req's shape one dollar buys on
+// card, unconfirmed when a request costs nothing: no figure is better than a
+// default, and a free card has no finite one.
+func requestsPerDollar(card Rates, req Request) Field[RequestsPerDollar] {
+	counts := requestCounts(money.Dollar, card, req)
+	if counts == nil {
+		return Field[RequestsPerDollar]{}
+	}
+	mark := MarkExact
+	if req.Approximate {
+		mark = MarkEstimated
+	}
+	return Known(RequestsPerDollar{RequestCounts: *counts, Shape: req, Mark: mark})
 }
 
 // peakRates is r with its peak surcharge applied: Rates.At prices a zero time at
