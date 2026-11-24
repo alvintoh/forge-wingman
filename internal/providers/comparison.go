@@ -273,10 +273,14 @@ func requestCounts(limit money.Micros, card Rates, req Request) *RequestCounts {
 	counts := &RequestCounts{OffPeak: offPeak}
 	if card.Peak != nil {
 		counts.HasPeak = true
-		counts.Peak = requestsWithin(limit, card.ForContext(ctxTokens).At(time.Time{}), req)
+		counts.Peak = requestsWithin(limit, peakRates(card.ForContext(ctxTokens)), req)
 	}
 	return counts
 }
+
+// peakRates is r with its peak surcharge applied: Rates.At prices a zero time at
+// peak, so the comparison states the peak figure without picking an hour.
+func peakRates(r Rates) Rates { return r.At(time.Time{}) }
 
 // requestsWithin floors limit over the cost of one request at r, or -1 when
 // that cost is not positive.
@@ -291,7 +295,7 @@ func requestsWithin(limit money.Micros, r Rates, req Request) int64 {
 func modelPrice(model string, r Rates) ModelPrice {
 	price := ModelPrice{Model: model, Input: r.Input, Output: r.Output, CacheRead: r.CacheRead}
 	if r.Peak != nil {
-		at := r.At(time.Time{})
+		at := peakRates(r)
 		price.Peak = &PeakPrice{Multiplier: r.Peak.Multiplier, Hours: slices.Clone(r.Peak.Hours), Input: at.Input, Output: at.Output, CacheRead: at.CacheRead}
 	}
 	if a := r.Above; a != nil {
