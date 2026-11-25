@@ -15,6 +15,7 @@ describe("routesFromRouter", () => {
       "/stats",
       "/config",
       "/autonomy",
+      "/plans",
       "/projects",
     ]);
     expect(routes.map((route) => route.page)).toEqual([
@@ -23,6 +24,7 @@ describe("routesFromRouter", () => {
       "web/src/pages/stats.tsx",
       "web/src/pages/config.tsx",
       "web/src/pages/autonomy.tsx",
+      "web/src/pages/plans.tsx",
       "web/src/projects.tsx",
     ]);
   });

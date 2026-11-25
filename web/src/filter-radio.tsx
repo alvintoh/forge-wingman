@@ -1,4 +1,5 @@
 import { useId } from "react";
+import { moveCheck } from "./radio-keys";
 
 type RadioChoiceProps = {
   // The id of the element that names the choice.
@@ -9,6 +10,9 @@ type RadioChoiceProps = {
   bulletClass: string;
   // What the radio holds over its row, such as a tooltip for the name it covers.
   children?: React.ReactNode;
+  // Opt in to the radio group pattern's keys: the group has one tab stop, the radio tabStop names,
+  // and the arrow keys move the check, wrapping at either end. Without it every radio is a tab stop.
+  arrows?: { tabStop: boolean };
 };
 
 /**
@@ -17,7 +21,8 @@ type RadioChoiceProps = {
  * 10px dot while chosen.
  *
  * Every radio is a tab stop and Space or Enter chooses it, with no arrow keys: a choice hides the
- * other rows, so the arrows could not reach them.
+ * other rows, so the arrows could not reach them. A group whose rows all stay shown passes `arrows`
+ * for the radio group pattern instead.
  */
 export function RadioChoice({
   labelledBy,
@@ -25,6 +30,7 @@ export function RadioChoice({
   onChoose,
   bulletClass,
   children,
+  arrows,
 }: RadioChoiceProps) {
   return (
     <>
@@ -34,6 +40,8 @@ export function RadioChoice({
         aria-checked={checked}
         aria-labelledby={labelledBy}
         onClick={onChoose}
+        tabIndex={arrows === undefined ? undefined : arrows.tabStop ? 0 : -1}
+        onKeyDown={arrows === undefined ? undefined : moveCheck}
         className="absolute inset-y-0 -inset-x-padx cursor-pointer rounded-tile focus-visible:outline-offset-[-7.5px]!"
       >
         {children}

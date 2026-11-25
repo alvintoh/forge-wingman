@@ -1,0 +1,192 @@
+import { isNumber, isString, listOf, nullable, shape } from "../autonomy/guard";
+import type { Read } from "../stats/use-read";
+
+/** The tokens one request of a stage sends fresh, reads from cache and writes out. */
+export type Tokens = { fresh: number; cached: number; output: number };
+
+// A stage's typical request, or null when too few runs recorded one.
+type StageShape = { stage: string; runs: number; shape: Tokens | null };
+
+// A model a plan prices, with its uncached input and output rates in US dollars per million tokens.
+type PricedModel = { model: string; input_usd_per_mtok: number; output_usd_per_mtok: number };
+
+type Plan = { plan: string; models: PricedModel[] };
+
+/** What GET /api/plans answers that the price card reads: the plans' priced models and each stage's request. */
+export type PlansView = {
+  plans: Plan[];
+  shapes: StageShape[];
+  model: string | null;
+  stage: string | null;
+};
+
+const isPricedModel = shape<PricedModel>({
+  model: isString,
+  input_usd_per_mtok: isNumber,
+  output_usd_per_mtok: isNumber,
+});
+
+const isPlan = shape<Plan>({ plan: isString, models: listOf(isPricedModel) });
+
+const isTokens = shape<Tokens>({ fresh: isNumber, cached: isNumber, output: isNumber });
+
+const isStageShape = shape<StageShape>({
+  stage: isString,
+  runs: isNumber,
+  shape: nullable(isTokens),
+});
+
+export const isPlansView = shape<PlansView>({
+  plans: listOf(isPlan),
+  shapes: listOf(isStageShape),
+  model: nullable(isString),
+  stage: nullable(isString),
+});
+
+/** The endpoint's route, which answers the plans alone and, given a model and a stage, the figures. */
+export const PLANS_URL = "/api/plans";
+
+/** The model and the stage a figure is priced at. */
+export type Choice = { model: string; stage: string };
+
+/** What the owner has chosen so far: either part is unchosen until they touch its control. */
+export type Picked = { model?: string; stage?: string };
+
+/** A stage that has a recorded request, so the owner can price it. */
+export type ListedShape = { stage: string; tokens: Tokens };
+
+/** One plan's models for the select: the endpoint's qualified id, and the name shown under the plan's heading. */
+export type ModelGroup = { plan: string; models: { id: string; name: string }[] };
+
+/**
+ * modelGroups lists each plan's models in the order the server sends them, plans first. A model a
+ * plan listed before is left out of the later plan, so every id is one option, and a plan left with
+ * none is left out.
+ */
+export function modelGroups(view: PlansView): ModelGroup[] {
+  const seen = new Set<string>();
+  const groups: ModelGroup[] = [];
+  for (const plan of view.plans) {
+    const models = [];
+    for (const priced of plan.models) {
+      if (seen.has(priced.model)) {
+        continue;
+      }
+      seen.add(priced.model);
+      const prefix = `${plan.plan}/`;
+      const name = priced.model.startsWith(prefix)
+        ? priced.model.slice(prefix.length)
+        : priced.model;
+      models.push({ id: priced.model, name });
+    }
+    if (models.length > 0) {
+      groups.push({ plan: plan.plan, models });
+    }
+  }
+  return groups;
+}
+
+/** modelsOf lists the ids of every model in the select, in its order. */
+export function modelsOf(view: PlansView): string[] {
+  return modelGroups(view).flatMap((group) => group.models.map((model) => model.id));
+}
+
+// The first model some plan prices above $0, so the card does not open on a free tier's $0 rates,
+// else the first model.
+function defaultModel(view: PlansView, models: readonly string[]): string | undefined {
+  const paid = models.find((id) =>
+    view.plans.some((plan) =>
+      plan.models.some(
+        (priced) =>
+          priced.model === id && priced.input_usd_per_mtok + priced.output_usd_per_mtok > 0,
+      ),
+    ),
+  );
+  return paid ?? models[0];
+}
+
+/** listedShapes is the stages with a recorded request, in the server's order; a stage with none is left out. */
+export function listedShapes(view: PlansView): ListedShape[] {
+  return view.shapes.flatMap((stage) =>
+    stage.shape === null ? [] : [{ stage: stage.stage, tokens: stage.shape }],
+  );
+}
+
+/**
+ * resolveChoice is the model and stage the card shows: the owner's own while the catalogue still
+ * lists them, else the first model some plan prices above $0 and the first listed stage. It is null while there is no model
+ * or no listed stage, so nothing is priced.
+ */
+export function resolveChoice(view: PlansView, picked: Picked): Choice | null {
+  const models = modelsOf(view);
+  const stages = listedShapes(view);
+  const model = models.find((id) => id === picked.model) ?? defaultModel(view, models);
+  const stage = stages.find((listed) => listed.stage === picked.stage) ?? stages[0];
+  return model === undefined || stage === undefined ? null : { model, stage: stage.stage };
+}
+
+/** figuresUrl is the read that prices the choice, or null while there is nothing to price. */
+export function figuresUrl(choice: Choice | null): string | null {
+  if (choice === null) {
+    return null;
+  }
+  return `${PLANS_URL}?${new URLSearchParams({ model: choice.model, stage: choice.stage })}`;
+}
+
+/** What the figures read holds for the url asked: a read of an earlier url is still loading this one. */
+export type FiguresState = "none" | "loading" | "error" | "ready";
+
+export function figuresState(read: Read<PlansView>, url: string | null): FiguresState {
+  if (url === null) {
+    return "none";
+  }
+  if (read.status === "loading" || read.url !== url) {
+    return "loading";
+  }
+  return read.status;
+}
+
+/** reloadFor is the read TRY AGAIN runs: the catalogue when it failed, else the figures. */
+export function reloadFor(
+  catalogue: Read<PlansView> & { reload: () => void },
+  figures: { reload: () => void },
+): () => void {
+  return catalogue.status === "error" ? catalogue.reload : figures.reload;
+}
+
+/** The "<n> fresh · <n> cached · <n> output" line a shape row prints. */
+export function tokensLine(tokens: Tokens): string {
+  const count = (n: number) => n.toLocaleString("en-US");
+  return `${count(tokens.fresh)} fresh · ${count(tokens.cached)} cached · ${count(tokens.output)} output`;
+}
+
+/** The name a shape row carries: its stage, capitalised. */
+export function stageLabel(stage: string): string {
+  return stage.charAt(0).toUpperCase() + stage.slice(1);
+}
+
+/** One choice the owner made: a model, or a stage. */
+export type PickChange = { model: string } | { stage: string };
+
+/** pick records a choice and leaves the other one as it was. */
+export function pick(now: Picked, change: PickChange): Picked {
+  return { ...now, ...change };
+}
+
+/** What the page says while the plans are read, and when they could not be. */
+export const READING = "Reading the plans…";
+export const NOT_READ = "The plans could not be read.";
+
+/**
+ * statusLine is the sentence the page's live region holds: the plans being read, or not read, whether
+ * the catalogue or the figures for the choice; empty once both are in.
+ */
+export function statusLine(catalogue: Read<PlansView>["status"], figures: FiguresState): string {
+  if (catalogue === "loading" || (catalogue === "ready" && figures === "loading")) {
+    return READING;
+  }
+  if (catalogue === "error" || (catalogue === "ready" && figures === "error")) {
+    return NOT_READ;
+  }
+  return "";
+}
