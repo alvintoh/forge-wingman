@@ -46,25 +46,25 @@ func Known[T any](v T) Field[T] { return Field[T]{Value: v, Known: true} }
 // HarnessCapabilities is what one harness does on one plan, each fact
 // unconfirmed until the harness's adapter records it.
 type HarnessCapabilities struct {
-	Headless         Field[bool]
-	StructuredOutput Field[bool]
+	Headless         Field[bool] `json:"headless"`
+	StructuredOutput Field[bool] `json:"structured_output"`
 	// DeniesPlanningEdits is whether a planning run refuses file edits and shell
 	// commands.
-	DeniesPlanningEdits Field[bool]
+	DeniesPlanningEdits Field[bool] `json:"denies_planning_edits"`
 }
 
 // Request is the shape of one request a ceiling is converted to: the model and
 // the tokens it sends fresh, reads from cache and writes out. The zero Request
 // converts nothing.
 type Request struct {
-	Model  string
-	Fresh  int64
-	Cached int64
-	Output int64
+	Model  string `json:"model"`
+	Fresh  int64  `json:"fresh"`
+	Cached int64  `json:"cached"`
+	Output int64  `json:"output"`
 	// Approximate is set by the caller when any token count is a published
 	// approximation rather than one measured from recorded runs. Nothing in the
 	// configuration marks a rate card as approximate, so a card never does.
-	Approximate bool
+	Approximate bool `json:"approximate"`
 }
 
 // Mark says how firm a derived figure is.
@@ -82,9 +82,10 @@ const (
 // the shape beside the figure so it is read against the request it was computed
 // for.
 type RequestsPerDollar struct {
+	// RequestCounts is embedded untagged so its fields sit beside the shape and mark.
 	RequestCounts
-	Shape Request
-	Mark  Mark
+	Shape Request `json:"shape"`
+	Mark  Mark    `json:"mark"`
 }
 
 // ComparisonInput is what ComparePlans reads beside the configuration.
@@ -104,93 +105,93 @@ type ComparisonInput struct {
 // RequestCounts is how many whole requests of the Request shape a ceiling
 // buys, at the model's off-peak rates and, where it prices by the hour, at peak.
 type RequestCounts struct {
-	OffPeak int64
-	HasPeak bool
-	Peak    int64
+	OffPeak int64 `json:"off_peak"`
+	HasPeak bool  `json:"has_peak"`
+	Peak    int64 `json:"peak"`
 }
 
 // Ceiling is one of a plan's allowance windows as the vendor published it, in
 // dollars. Requests is nil when the ceiling cannot be converted: the model is
 // not on the plan's rate card, or a request of that shape costs nothing.
 type Ceiling struct {
-	Name     string
-	Limit    money.Micros
-	Requests *RequestCounts
+	Name     string         `json:"name"`
+	Limit    money.Micros   `json:"limit_micros"`
+	Requests *RequestCounts `json:"requests"`
 }
 
 // StrongestModel is the plan's highest-scored model on the Coding leaderboard
 // the refresh read, with the score as the leaderboard stated it.
 type StrongestModel struct {
-	Model string
-	Score Score
+	Model string `json:"model"`
+	Score Score  `json:"score"`
 }
 
 // HarnessComparison is one plan-and-harness pair.
 type HarnessComparison struct {
-	Harness             string
-	Headless            Field[bool]
-	StructuredOutput    Field[bool]
-	DeniesPlanningEdits Field[bool]
+	Harness             string      `json:"harness"`
+	Headless            Field[bool] `json:"headless"`
+	StructuredOutput    Field[bool] `json:"structured_output"`
+	DeniesPlanningEdits Field[bool] `json:"denies_planning_edits"`
 }
 
 // PeakPrice is a model's price in force inside its peak window: weekdays, UTC,
 // in each of Hours.
 type PeakPrice struct {
-	Multiplier float64
-	Hours      []HourRange
-	Input      float64
-	Output     float64
-	CacheRead  float64
+	Multiplier float64     `json:"multiplier"`
+	Hours      []HourRange `json:"hours"`
+	Input      float64     `json:"input_usd_per_mtok"`
+	Output     float64     `json:"output_usd_per_mtok"`
+	CacheRead  float64     `json:"cache_read_usd_per_mtok"`
 }
 
 // ContextPrice is a model's price for a request whose context is over
 // ContextTokens.
 type ContextPrice struct {
-	ContextTokens int64
-	Input         float64
-	Output        float64
-	CacheRead     float64
+	ContextTokens int64   `json:"context_tokens"`
+	Input         float64 `json:"input_usd_per_mtok"`
+	Output        float64 `json:"output_usd_per_mtok"`
+	CacheRead     float64 `json:"cache_read_usd_per_mtok"`
 }
 
 // ModelPrice is a model's rates in US dollars per million tokens: uncached
 // input, output and cache read, with the peak and long-context prices where it
 // has them.
 type ModelPrice struct {
-	Model     string
-	Input     float64
-	Output    float64
-	CacheRead float64
-	Peak      *PeakPrice
-	Above     *ContextPrice
+	Model     string        `json:"model"`
+	Input     float64       `json:"input_usd_per_mtok"`
+	Output    float64       `json:"output_usd_per_mtok"`
+	CacheRead float64       `json:"cache_read_usd_per_mtok"`
+	Peak      *PeakPrice    `json:"peak"`
+	Above     *ContextPrice `json:"above"`
 }
 
 // PlanComparison is one plan's comparison fields, every value either confirmed
 // or unconfirmed.
 type PlanComparison struct {
-	Plan         string
-	MonthlyPrice Field[money.Micros]
+	Plan         string              `json:"plan"`
+	MonthlyPrice Field[money.Micros] `json:"monthly_price_micros"`
 	// RequestsPerDollar is unconfirmed when the plan has no rate card for the
 	// stated model or a request of the stated shape costs nothing.
-	RequestsPerDollar Field[RequestsPerDollar]
-	FiveHour          Field[Ceiling]
-	Weekly            Field[Ceiling]
-	Monthly           Field[Ceiling]
-	Strongest         Field[StrongestModel]
+	RequestsPerDollar Field[RequestsPerDollar] `json:"requests_per_dollar"`
+	FiveHour          Field[Ceiling]           `json:"five_hour"`
+	Weekly            Field[Ceiling]           `json:"weekly"`
+	Monthly           Field[Ceiling]           `json:"monthly"`
+	Strongest         Field[StrongestModel]    `json:"strongest"`
 	// StrongestCap is the monthly cap the configuration sets on the strongest
 	// model; unconfirmed when there is no strongest model or no cap for it.
-	StrongestCap Field[money.Micros]
+	StrongestCap Field[money.Micros] `json:"strongest_cap_micros"`
 	// Features are what the configuration shows the plan has.
-	Features []string
+	Features []string `json:"features"`
 	// FeedPerks are what the free feed lists the plan as including, as it states
 	// them: confirmed only when the feed's last read succeeded.
-	FeedPerks Field[[]string]
+	FeedPerks Field[[]string] `json:"feed_perks"`
 	// UnshownWindows are the names of configured windows no ceiling field shows:
 	// one of a period other than 5 hours, a week or a month, or a repeat of a
 	// period another window already fills.
-	UnshownWindows []string
-	Harnesses      []HarnessComparison
-	Verdict        Field[Verdict]
-	Models         []ModelPrice
+	UnshownWindows []string            `json:"unshown_windows"`
+	Harnesses      []HarnessComparison `json:"harnesses"`
+	Verdict        Field[Verdict]      `json:"verdict"`
+	Models         []ModelPrice        `json:"models"`
 }
 
 // ComparePlans builds every configured plan's comparison fields: paid plans in
@@ -252,7 +253,17 @@ func comparePlan(plan string, p Provider, in ComparisonInput) PlanComparison {
 	for _, model := range slices.Sorted(maps.Keys(p.Rates)) {
 		c.Models = append(c.Models, modelPrice(model, p.Rates[model]))
 	}
+	c.Features, c.UnshownWindows, c.Models = nonNil(c.Features), nonNil(c.UnshownWindows), nonNil(c.Models)
 	return c
+}
+
+// nonNil is s, or an empty list for a nil one, so a list marshals as [] and
+// never as null.
+func nonNil[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
 }
 
 // ceilingFor is the field a window of period fills, nil for a period the

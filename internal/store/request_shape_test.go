@@ -285,3 +285,15 @@ func TestTheStoredShapesFailWhenASettledRowCannotBeDecoded(t *testing.T) {
 		t.Fatal("the read succeeded over a row whose steps are not a list")
 	}
 }
+
+func TestRequestStagesAreThePlanBuildReviewStagesOnACopy(t *testing.T) {
+	want := []runner.Phase{runner.PhasePlan, runner.PhaseBuild, runner.PhaseReview}
+	got := RequestStages()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("stages = %v, want %v", got, want)
+	}
+	got[0] = runner.PhaseFixReview
+	if again := RequestStages(); !reflect.DeepEqual(again, want) {
+		t.Fatalf("a caller's edit reached the stages: %v", again)
+	}
+}

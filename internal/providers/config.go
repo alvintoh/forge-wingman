@@ -87,8 +87,8 @@ type Peak struct {
 
 // HourRange is the hours [From, To) of a UTC day.
 type HourRange struct {
-	From int
-	To   int
+	From int `json:"from"`
+	To   int `json:"to"`
 }
 
 // At returns the rates in force at t: the card's own, multiplied when t falls

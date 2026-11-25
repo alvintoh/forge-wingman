@@ -28,6 +28,10 @@ const (
 // phases belong to a pull request's own review loop, not to these three.
 var requestStages = []runner.Phase{runner.PhasePlan, runner.PhaseBuild, runner.PhaseReview}
 
+// RequestStages are the stages a request is priced for, in the order
+// RequestShapes reports them.
+func RequestStages() []runner.Phase { return slices.Clone(requestStages) }
+
 // RequestShape is the typical request of a stage: the tokens one model request
 // reads uncached, reads from the provider's cache, and writes (reasoning
 // included).

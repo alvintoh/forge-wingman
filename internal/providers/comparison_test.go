@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"maps"
 	"reflect"
+	"regexp"
 	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/alvintoh/forge-wingman/internal/money"
@@ -77,7 +79,7 @@ func TestComparePlansReadsTheEmbeddedConfiguration(t *testing.T) {
 	if !slices.Equal(g.Features, wantFeatures) {
 		t.Errorf("features = %v, want %v", g.Features, wantFeatures)
 	}
-	if g.FeedPerks.Known || g.UnshownWindows != nil {
+	if g.FeedPerks.Known || len(g.UnshownWindows) != 0 {
 		t.Errorf("perks = %+v, unshown windows = %v, want unconfirmed perks and no unshown window", g.FeedPerks, g.UnshownWindows)
 	}
 	if len(g.Harnesses) != 1 || g.Harnesses[0] != (HarnessComparison{Harness: "omp"}) {
@@ -436,18 +438,18 @@ func TestComparePlansWritesAnUnconfirmedFieldAsTheWordNeverAsAZeroValue(t *testi
 		path []string
 		want any
 	}{
-		"an unknown number":    {ComparisonInput{}, []string{"MonthlyPrice"}, "unconfirmed"},
-		"an unknown struct":    {ComparisonInput{}, []string{"Strongest"}, "unconfirmed"},
-		"an unknown bool":      {ComparisonInput{}, []string{"Harnesses", "0", "DeniesPlanningEdits"}, "unconfirmed"},
-		"an unknown ceiling":   {ComparisonInput{}, []string{"Monthly"}, "unconfirmed"},
-		"unknown perks":        {ComparisonInput{}, []string{"FeedPerks"}, "unconfirmed"},
-		"a recorded $0 price":  {ComparisonInput{Plans: map[string]Plan{"p": {}}}, []string{"MonthlyPrice"}, float64(0)},
-		"a known bool":         {ComparisonInput{Harness: func(string, string) HarnessCapabilities { return HarnessCapabilities{Headless: Known(false)} }}, []string{"Harnesses", "0", "Headless"}, false},
-		"a known ceiling name": {ComparisonInput{}, []string{"FiveHour", "Name"}, "p-5h"},
-		"no requests figure":   {ComparisonInput{}, []string{"RequestsPerDollar"}, "unconfirmed"},
-		"a figure's count":     {ComparisonInput{Request: Request{Model: "p/m", Output: 1000}}, []string{"RequestsPerDollar", "OffPeak"}, float64(100)},
-		"a figure's mark":      {ComparisonInput{Request: Request{Model: "p/m", Output: 1000}}, []string{"RequestsPerDollar", "Mark"}, "exact"},
-		"a figure's shape":     {ComparisonInput{Request: Request{Model: "p/m", Output: 1000}}, []string{"RequestsPerDollar", "Shape", "Output"}, float64(1000)},
+		"an unknown number":    {ComparisonInput{}, []string{"monthly_price_micros"}, "unconfirmed"},
+		"an unknown struct":    {ComparisonInput{}, []string{"strongest"}, "unconfirmed"},
+		"an unknown bool":      {ComparisonInput{}, []string{"harnesses", "0", "denies_planning_edits"}, "unconfirmed"},
+		"an unknown ceiling":   {ComparisonInput{}, []string{"monthly"}, "unconfirmed"},
+		"unknown perks":        {ComparisonInput{}, []string{"feed_perks"}, "unconfirmed"},
+		"a recorded $0 price":  {ComparisonInput{Plans: map[string]Plan{"p": {}}}, []string{"monthly_price_micros"}, float64(0)},
+		"a known bool":         {ComparisonInput{Harness: func(string, string) HarnessCapabilities { return HarnessCapabilities{Headless: Known(false)} }}, []string{"harnesses", "0", "headless"}, false},
+		"a known ceiling name": {ComparisonInput{}, []string{"five_hour", "name"}, "p-5h"},
+		"no requests figure":   {ComparisonInput{}, []string{"requests_per_dollar"}, "unconfirmed"},
+		"a figure's count":     {ComparisonInput{Request: Request{Model: "p/m", Output: 1000}}, []string{"requests_per_dollar", "off_peak"}, float64(100)},
+		"a figure's mark":      {ComparisonInput{Request: Request{Model: "p/m", Output: 1000}}, []string{"requests_per_dollar", "mark"}, "exact"},
+		"a figure's shape":     {ComparisonInput{Request: Request{Model: "p/m", Output: 1000}}, []string{"requests_per_dollar", "shape", "output"}, float64(1000)},
 	} {
 		b, err := json.Marshal(comparisonByPlan(t, comparePlans(cfg, tt.in), "p"))
 		if err != nil {
@@ -533,4 +535,107 @@ func withFiveHourLimit(p Provider, limit money.Micros) Provider {
 	p.Windows = slices.Clone(p.Windows)
 	p.Windows[0].Limit = limit
 	return p
+}
+
+// marshalled is plans marshalled and decoded back, as a client reads it.
+func marshalled(t *testing.T, plans ...PlanComparison) []any {
+	t.Helper()
+	b, err := json.Marshal(plans)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc []any
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	return doc
+}
+
+func TestPlanComparisonWritesEveryFieldUnderItsSnakeCaseKey(t *testing.T) {
+	doc := marshalled(t, ComparePlans(ComparisonInput{})[0])
+	plan, _ := doc[0].(map[string]any)
+	got := slices.Sorted(maps.Keys(plan))
+	want := []string{
+		"features", "feed_perks", "five_hour", "harnesses", "models", "monthly", "monthly_price_micros",
+		"plan", "requests_per_dollar", "strongest", "strongest_cap_micros", "unshown_windows", "verdict", "weekly",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("keys = %v, want %v", got, want)
+	}
+}
+
+// nullableObjects are the keys whose object is absent rather than unconfirmed:
+// a ceiling no request figure converts, and a model with no peak or long-context price.
+var nullableObjects = []string{"requests", "peak", "above"}
+
+// nullsIn lists the paths of every null in v outside nullableObjects.
+func nullsIn(v any, path string) []string {
+	var found []string
+	switch node := v.(type) {
+	case nil:
+		found = append(found, path)
+	case map[string]any:
+		for key, child := range node {
+			if child == nil && slices.Contains(nullableObjects, key) {
+				continue
+			}
+			found = append(found, nullsIn(child, path+"."+key)...)
+		}
+	case []any:
+		for i, child := range node {
+			found = append(found, nullsIn(child, path+"["+strconv.Itoa(i)+"]")...)
+		}
+	}
+	return found
+}
+
+func TestComparePlansMarshalNoListAsNull(t *testing.T) {
+	bare := comparisonConfig(t, windows20h5)
+	for name, plans := range map[string][]PlanComparison{
+		"the embedded configuration": ComparePlans(ComparisonInput{}),
+		"a plan with no rates":       comparePlans(bare, ComparisonInput{}),
+	} {
+		if nulls := nullsIn(marshalled(t, plans...), ""); len(nulls) != 0 {
+			t.Errorf("%s: null at %v, want an empty list", name, nulls)
+		}
+	}
+}
+
+var snakeCase = regexp.MustCompile(`^[a-z][a-z0-9]*(_[a-z0-9]+)*$`)
+
+// keysIn lists the path of every object key in v that is not snake case.
+func keysIn(v any, path string) []string {
+	var bad []string
+	switch node := v.(type) {
+	case map[string]any:
+		for key, child := range node {
+			if !snakeCase.MatchString(key) {
+				bad = append(bad, path+"."+key)
+			}
+			bad = append(bad, keysIn(child, path+"."+key)...)
+		}
+	case []any:
+		for i, child := range node {
+			bad = append(bad, keysIn(child, path+"["+strconv.Itoa(i)+"]")...)
+		}
+	}
+	return bad
+}
+
+func TestPlanComparisonWritesEveryNestedKeyInSnakeCase(t *testing.T) {
+	got := ComparePlans(ComparisonInput{
+		Plans: map[string]Plan{"opencode-go": {Definition: Definition{MonthlyPrice: 10 * money.Dollar}, Verdict: VerdictAllowed}},
+		Facts: map[string]Facts{"opencode-go": {
+			Leaderboard: Source{State: ReadChanged},
+			Models:      ModelsFacts{Models: []ModelFacts{{Model: "opencode-go/m", Leaderboard: Score{Listed: true, Value: 70, Benchmark: "coding", ScoredOn: "2026-11-01", Provenance: ProvenanceUnknown, Margin: "1"}}}},
+			Feed:        FeedFacts{Source: Source{State: ReadUnchanged}, Perks: []string{"Prompt caching"}},
+		}},
+		Harness: func(string, string) HarnessCapabilities {
+			return HarnessCapabilities{Headless: Known(true), StructuredOutput: Known(true), DeniesPlanningEdits: Known(false)}
+		},
+		Request: planShape,
+	})
+	if bad := keysIn(marshalled(t, got...), ""); len(bad) != 0 {
+		t.Fatalf("keys not in snake case: %v", bad)
+	}
 }
