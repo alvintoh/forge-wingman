@@ -48,7 +48,7 @@ func run(logger *slog.Logger) error {
 		port = "8080"
 	}
 
-	// The comparison, run history, running, run-success, concurrency, autonomy and peak endpoints
+	// The comparison, plans, run history, running, run-success, concurrency, autonomy and peak endpoints
 	// read past runs, the runs in flight, the measured merges and the peak mode, so
 	// they need the store. A local run without GOOGLE_CLOUD_PROJECT has none and serves
 	// the SPA alone, answering those endpoints with 503.
@@ -70,6 +70,8 @@ func run(logger *slog.Logger) error {
 	var runsAtOnce RunsAtOnceStore
 	var recommender RunsAtOnceRecommender
 	var concurrency ConcurrencyReader
+	var plans PlanReader
+	var shapes RequestShapeReader
 	if project := os.Getenv("GOOGLE_CLOUD_PROJECT"); project != "" {
 		fsc, err := firestore.NewClient(context.Background(), project)
 		if err != nil {
@@ -78,7 +80,8 @@ func run(logger *slog.Logger) error {
 		defer func() { _ = fsc.Close() }()
 		records := store.NewRecords(fsc).WithLogger(logger)
 		comparison, inbox, runs, history, success = records, records, records, records, records
-		cancels = records
+		cancels, shapes = records, records
+		plans = store.NewPlans(fsc)
 		measured = store.NewRewrites(fsc)
 		peak = store.NewPeakModes(fsc)
 		autoMerge = store.NewAutoMergeSwitches(fsc)
@@ -141,6 +144,8 @@ func run(logger *slog.Logger) error {
 		RunsAtOnce:   runsAtOnce,
 		Recommend:    recommender,
 		Concurrency:  concurrency,
+		Plans:        plans,
+		Shapes:       shapes,
 	}
 
 	handler, err := gate(context.Background(), logger, newMux(deps))
@@ -207,7 +212,10 @@ type Deps struct {
 	// Concurrency reads the peak in flight and the held runs; the concurrency
 	// endpoint needs RepoCap beside it.
 	Concurrency ConcurrencyReader
-	Getenv      func(string) string
+	// Plans and Shapes feed the plans endpoint, which needs both.
+	Plans  PlanReader
+	Shapes RequestShapeReader
+	Getenv func(string) string
 }
 
 // newMux claims /api/ explicitly so an unknown endpoint 404s instead of
@@ -219,6 +227,7 @@ func newMux(d Deps) *http.ServeMux {
 	mux.HandleFunc("GET /api/version", version)
 	mux.HandleFunc("GET /api/me", me)
 	mux.HandleFunc("GET /api/comparison", d.comparison)
+	mux.HandleFunc("GET /api/plans", d.plans)
 	mux.HandleFunc("GET /api/run-history", d.runHistory)
 	mux.HandleFunc("GET /api/run-success", d.runSuccess)
 	mux.HandleFunc("GET /api/running", d.running)

@@ -74,12 +74,12 @@ func ParseProvenance(word string) Provenance {
 type Score struct {
 	// Listed reports the leaderboard carried the model at all; the fields below
 	// are the leaderboard's own and are absent when it did not.
-	Listed     bool       `firestore:"listed"`
-	Value      float64    `firestore:"value"`
-	Benchmark  string     `firestore:"benchmark"`
-	ScoredOn   string     `firestore:"scored_on"`
-	Provenance Provenance `firestore:"provenance"`
-	Margin     string     `firestore:"margin"`
+	Listed     bool       `firestore:"listed" json:"listed"`
+	Value      float64    `firestore:"value" json:"value"`
+	Benchmark  string     `firestore:"benchmark" json:"benchmark"`
+	ScoredOn   string     `firestore:"scored_on" json:"scored_on"`
+	Provenance Provenance `firestore:"provenance" json:"provenance"`
+	Margin     string     `firestore:"margin" json:"margin"`
 }
 
 // ModelFacts is one model of the vendor's own list, and what each source says
