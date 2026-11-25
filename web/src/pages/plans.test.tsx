@@ -153,6 +153,7 @@ describe("the Plans page", () => {
       PlansPageView(
         props({
           figures: "error",
+          compared: null,
           onRetry: () => {
             retries += 1;
           },
@@ -168,7 +169,10 @@ describe("the Plans page", () => {
 
   it("picks a model without a stage, and a stage without a model", () => {
     const picks: PickChange[] = [];
-    const page = elementsOf(PlansPageView(props({ onPick: (change) => picks.push(change) })));
+    // The tree is read without the tables, whose scroll hook only a render can run.
+    const page = elementsOf(
+      PlansPageView(props({ compared: null, onPick: (change) => picks.push(change) })),
+    );
     press(
       page.find((element) => element.type === "select")!,
       "onChange",
@@ -190,7 +194,11 @@ describe("the Plans page's plans side by side", () => {
   it("sits under the price-a-request card, one column per plan", () => {
     const html = markup();
     expect(html.indexOf("price a request")).toBeLessThan(html.indexOf("plans side by side"));
-    expect(html.match(/<th scope="col"/g)).toHaveLength(2);
+    const table = html.slice(
+      html.indexOf("compare-card-title"),
+      html.indexOf("model-prices-title"),
+    );
+    expect(table.match(/<th scope="col"/g)).toHaveLength(2);
     expect(html).toContain(">Paid</span>");
     expect(html).toContain(">Free</span>");
   });
@@ -225,6 +233,63 @@ describe("the Plans page's plans side by side", () => {
     expect(html.indexOf("price a request")).toBeLessThan(
       html.indexOf("Reading the plans…", html.indexOf("price a request")),
     );
+  });
+});
+
+describe("the Plans page's model prices", () => {
+  const TITLE = 'id="model-prices-title"';
+
+  it("come after the plans side by side, which come after the price-a-request card", () => {
+    const html = markup();
+    const price = html.indexOf('id="price-card-title"');
+    const compare = html.indexOf('id="compare-card-title"');
+    const prices = html.indexOf(TITLE);
+    expect(price).toBeGreaterThan(-1);
+    expect(compare).toBeGreaterThan(price);
+    expect(prices).toBeGreaterThan(compare);
+  });
+
+  it("list every plan's models, each plan under its name and id", () => {
+    const html = markup();
+    const card = html.slice(html.indexOf(TITLE));
+    expect([...card.matchAll(/<th scope="row"[^>]*>(.*?)<\/th>/g)].map((m) => m[1])).toEqual([
+      "zeta",
+      "alpha",
+      "beta",
+    ]);
+    expect(card).toContain("USD per 1M tokens");
+  });
+
+  it("are drawn from the answer the plans side by side are, and go with them", () => {
+    const answer = viewOf([planOf("alone", { models: [pricedModel("alone/only", 1, 2, 3)] })]);
+    expect(markup({ compared: answer })).toContain(">only</th>");
+    expect(markup({ compared: answer })).not.toContain(">zeta</th>");
+    for (const html of [
+      markup({ figures: "loading", compared: null }),
+      markup({ figures: "error", compared: null }),
+    ]) {
+      expect(html).not.toContain(TITLE);
+      expect(html).not.toContain("model prices, USD");
+    }
+  });
+
+  it("are not drawn, nor is anything of theirs, while the plans are first read or could not be", () => {
+    const loading = markup({ catalogue: { status: "loading" }, choice: null, compared: null });
+    const failed = markup({
+      catalogue: { status: "error", url: CATALOGUE },
+      choice: null,
+      compared: null,
+    });
+    for (const html of [loading, failed]) {
+      expect(html).not.toContain(TITLE);
+    }
+    expect(loading).toContain("Reading the plans…");
+    expect(failed).toContain("TRY AGAIN");
+  });
+
+  it("are left out when no plan prices a model", () => {
+    const html = markup({ compared: viewOf([planOf("paid"), planOf("free")]) });
+    expect(html).not.toContain(TITLE);
   });
 });
 

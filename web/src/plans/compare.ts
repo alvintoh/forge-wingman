@@ -1,3 +1,5 @@
+import { modelPrices } from "./prices";
+import type { PriceModel } from "./prices";
 import { count, modelName, stageLabel, tokensLine, UNCONFIRMED } from "./view";
 import type { Ceiling, Choice, Field, Mark, Plan, PlansView } from "./view";
 
@@ -26,8 +28,11 @@ export type Row = { label: string; pieces: Piece[] };
 
 export type Section = { title: string; rows: Row[] };
 
-/** One plan's column: its name and id, then every section of the comparison in the order drawn. */
-export type Column = { id: string; name: string; sections: Section[] };
+/**
+ * One plan's column: its name and id, then every section of the comparison in the order drawn, and
+ * the prices of its models, which a phone's card ends on and the model prices card lists.
+ */
+export type Column = { id: string; name: string; sections: Section[]; prices: PriceModel[] };
 
 const MICROS_PER_DOLLAR = 1_000_000;
 
@@ -231,5 +236,6 @@ export function compareColumns(view: PlansView, choice: Choice | null): Column[]
     id: plan.plan,
     name: planName(plan.plan),
     sections: sectionsOf(plan, choice),
+    prices: modelPrices(plan),
   }));
 }

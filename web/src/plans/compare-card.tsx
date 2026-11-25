@@ -1,5 +1,8 @@
+import type { Ref } from "react";
 import { captionClass } from "../caption";
 import type { Column, Piece } from "./compare";
+import { ScrollRegion } from "./scroll-region";
+import { useHiddenPlans } from "./use-hidden-plans";
 
 // The card's title, and the phone's heading over its cards; the page holds one, so they are fixed.
 const TITLE_ID = "compare-card-title";
@@ -7,6 +10,10 @@ const TITLE_ID = "compare-card-title";
 // Every @[47rem] below is the width of the column the cards sit in from which the plans draw as
 // one table, and under it as one card per plan. 47rem less the card's 26px sides is the 700px the
 // loading card's table is drawn at (43.75rem): a 176px label column and two plan columns of 262px.
+// The table is never narrower than that label column (11rem, w-44) and a column of 14.5rem (232px)
+// for each plan: past what the card holds the plans scroll inside it.
+const LABEL_WIDTH = "11rem";
+const PLAN_MIN_WIDTH = "14.5rem";
 
 const sectionTitleClass = "text-cap font-semibold leading-4 tracking-[1.2px] text-ink2 uppercase";
 const labelClass = "text-label font-semibold leading-4.5 text-ink2";
@@ -167,7 +174,139 @@ function PlanCard({ column, at }: { column: Column; at: number }) {
           </dl>
         </div>
       ))}
+      {column.prices.length > 0 && (
+        <div className="mt-3 border-t border-hair pt-3">
+          <h4 className={sectionTitleClass}>model prices, USD per 1M tokens</h4>
+          {column.prices.map((model) => (
+            <div key={model.name} className="mt-3.5">
+              <h5 className="font-mono text-label leading-6 font-semibold break-words text-ink">
+                {model.name}
+              </h5>
+              <dl>
+                {model.tiers.map((tier) => (
+                  <div key={tier.label} className="mt-1">
+                    <dt className="text-cap leading-4.5 font-semibold text-ink2">{tier.label}</dt>
+                    <dd>
+                      {tier.window !== null && (
+                        <p className="text-cap leading-4 text-ink2">{tier.window}</p>
+                      )}
+                      <p className="font-mono text-cap leading-4.5 break-words text-ink">
+                        {`input ${tier.input} · output ${tier.output} · cache read ${tier.cacheRead}`}
+                      </p>
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+          ))}
+        </div>
+      )}
     </section>
+  );
+}
+
+// The label column and the heads' corner stay at the left while the plans scroll under them, so
+// each takes the card's own fill to cover what passes beneath; z-10 lifts it above the cells.
+const stickyClass = "sticky left-0 z-10 bg-card";
+
+type WideTableProps = {
+  columns: readonly Column[];
+  // Whether the table scrolls inside its card, and the width it is then drawn at, in px.
+  scrolls: boolean;
+  table: number | null;
+  labelRef: Ref<HTMLTableCellElement>;
+};
+
+/**
+ * WideTable is the one table the plans draw as from a wide column. Once it scrolls its heads keep
+ * 28px clear at the right, the width the cue's plate reaches past the gutter, so a plan's name is
+ * never cut at rest by the cue that sits over the next plans.
+ */
+export function WideTable({ columns, scrolls, table, labelRef }: WideTableProps) {
+  const [first] = columns;
+  if (first === undefined) {
+    return null;
+  }
+  return (
+    <table
+      className="w-full table-fixed border-collapse text-left"
+      style={{
+        minWidth: `calc(${LABEL_WIDTH} + ${columns.length} * ${PLAN_MIN_WIDTH})`,
+        width: table ?? undefined,
+      }}
+    >
+      <colgroup>
+        <col className="w-44" />
+        {columns.map((column, at) => (
+          <col key={`${at}-${column.id}`} />
+        ))}
+      </colgroup>
+      <thead>
+        <tr className="border-b border-hair">
+          <td ref={labelRef} className={stickyClass} />
+          {columns.map((column, at) => (
+            <th
+              key={`${at}-${column.id}`}
+              scope="col"
+              className={`h-15 ${scrolls ? "pr-7" : "pr-4"} pb-3 align-top font-normal`}
+            >
+              <span className="block min-w-0 pt-4 text-body leading-5 font-semibold break-words text-ink">
+                {column.name}
+              </span>
+              <span className="block font-mono text-cap leading-4 break-words text-ink2">
+                {column.id}
+              </span>
+            </th>
+          ))}
+        </tr>
+      </thead>
+      {first.sections.map((section, sectionAt) => {
+        const lastSection = sectionAt === first.sections.length - 1;
+        return (
+          <tbody key={section.title}>
+            <tr>
+              {/* The title is one cell across every column, so it sticks by an inner span. */}
+              <th
+                scope="rowgroup"
+                colSpan={columns.length + 1}
+                className={`h-8.5 pt-3.5 text-left align-top ${sectionTitleClass}`}
+              >
+                <span className="sticky left-0">{section.title}</span>
+              </th>
+            </tr>
+            {section.rows.map((row, rowAt) => {
+              const last = lastSection && rowAt === section.rows.length - 1;
+              return (
+                <tr key={row.label} className={last ? "" : "border-b border-hair"}>
+                  <th
+                    scope="row"
+                    className={`${stickyClass} py-3 pr-4 text-left align-top ${labelClass}`}
+                  >
+                    {row.label}
+                  </th>
+                  {columns.map((column, at) => {
+                    return (
+                      <td key={`${at}-${column.id}`} className="py-3 pr-4 align-top">
+                        <Cell pieces={column.sections[sectionAt].rows[rowAt].pieces} />
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
+          </tbody>
+        );
+      })}
+    </table>
+  );
+}
+
+function PlansTable({ columns }: CompareCardProps) {
+  const { region, label, scrolls, hidden, table } = useHiddenPlans(columns.length);
+  return (
+    <ScrollRegion regionRef={region} scrolls={scrolls} hidden={hidden}>
+      <WideTable columns={columns} scrolls={scrolls} table={table} labelRef={label} />
+    </ScrollRegion>
   );
 }
 
@@ -175,12 +314,11 @@ function PlanCard({ column, at }: { column: Column; at: number }) {
  * CompareCard draws the plans side by side: from a wide column one card holding a table, a
  * column per plan under its name and id; narrower, one card per plan with the same rows and no
  * table. Both are in the markup and the container query shows one, so no script decides it. The
- * label column is the rows' own, not sticky: the table fits its two plans, and a wider one is
- * for the card that scrolls it.
+ * table's label column is sticky and each plan column at least 232px; when the plans do not fit
+ * the card they scroll inside it, and the card says how many are still to reach.
  */
 export function CompareCard({ columns }: CompareCardProps) {
-  const [first] = columns;
-  if (first === undefined) {
+  if (columns.length === 0) {
     return null;
   }
   return (
@@ -195,66 +333,7 @@ export function CompareCard({ columns }: CompareCardProps) {
         <h2 id={TITLE_ID} className={`${captionClass} leading-5 text-ink2`}>
           plans side by side
         </h2>
-        <table className="mt-3 w-full table-fixed border-collapse text-left">
-          <colgroup>
-            <col className="w-44" />
-            {columns.map((column, at) => (
-              <col key={`${at}-${column.id}`} />
-            ))}
-          </colgroup>
-          <thead>
-            <tr className="border-b border-hair">
-              <td />
-              {columns.map((column, at) => (
-                <th
-                  key={`${at}-${column.id}`}
-                  scope="col"
-                  className="h-15 pr-4 pb-3 align-top font-normal"
-                >
-                  <span className="block min-w-0 pt-4 text-body leading-5 font-semibold break-words text-ink">
-                    {column.name}
-                  </span>
-                  <span className="block font-mono text-cap leading-4 break-words text-ink2">
-                    {column.id}
-                  </span>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          {first.sections.map((section, sectionAt) => {
-            const lastSection = sectionAt === first.sections.length - 1;
-            return (
-              <tbody key={section.title}>
-                <tr>
-                  <th
-                    scope="rowgroup"
-                    colSpan={columns.length + 1}
-                    className={`h-8.5 pt-3.5 text-left align-top ${sectionTitleClass}`}
-                  >
-                    {section.title}
-                  </th>
-                </tr>
-                {section.rows.map((row, rowAt) => {
-                  const last = lastSection && rowAt === section.rows.length - 1;
-                  return (
-                    <tr key={row.label} className={last ? "" : "border-b border-hair"}>
-                      <th scope="row" className={`py-3 pr-4 text-left align-top ${labelClass}`}>
-                        {row.label}
-                      </th>
-                      {columns.map((column, at) => {
-                        return (
-                          <td key={`${at}-${column.id}`} className="py-3 pr-4 align-top">
-                            <Cell pieces={column.sections[sectionAt].rows[rowAt].pieces} />
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            );
-          })}
-        </table>
+        <PlansTable columns={columns} />
       </section>
     </div>
   );

@@ -1,8 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { compareColumns } from "./compare";
-import { CompareCard } from "./compare-card";
-import { planOf, pricedModel, viewOf } from "./sample";
+import { CompareCard, WideTable } from "./compare-card";
+import { ScrollRegion } from "./scroll-region";
+import { peakOf, planOf, pricedModel, viewOf } from "./sample";
 import { UNCONFIRMED } from "./view";
 import type { Figure, Plan } from "./view";
 
@@ -17,7 +18,7 @@ const FIGURE: Figure = {
 };
 
 const PAID = planOf("paid", {
-  models: [{ ...pricedModel("paid/zeta"), peak: { multiplier: 2 } }],
+  models: [{ ...pricedModel("paid/zeta"), peak: peakOf(2) }],
   monthly_price_micros: 10_000_000,
   requests_per_dollar: FIGURE,
   five_hour: { limit_micros: 20_000_000, requests: { off_peak: 2297, has_peak: true, peak: 1148 } },
@@ -92,19 +93,22 @@ describe("the plans side by side, wide", () => {
   });
 
   it("sets each section's title as an uppercase caption", () => {
-    expect(parts(markup()).wide).toMatch(/<th scope="rowgroup"[^>]*uppercase[^>]*>Cost<\/th>/);
+    expect(parts(markup()).wide).toMatch(
+      /<th scope="rowgroup"[^>]*uppercase[^>]*><span class="sticky left-0">Cost<\/span><\/th>/,
+    );
   });
 
   it("holds a cell for every plan in every row, none empty", () => {
-    const { wide } = parts(markup());
-    const rows = wide.match(/<tr class="[^"]*">.*?<\/tr>/g) ?? [];
+    // The heads' corner is empty by design: it is the label column's top.
+    const body = parts(markup()).wide.slice(parts(markup()).wide.indexOf("<tbody"));
+    const rows = body.match(/<tr class="[^"]*">.*?<\/tr>/g) ?? [];
     expect(rows.length).toBeGreaterThanOrEqual(12);
     for (const row of rows) {
       for (const cell of row.match(/<td [^>]*>.*?<\/td>/g) ?? []) {
         expect(cell.replace(/<[^>]*>/g, "").trim()).not.toBe("");
       }
     }
-    expect(wide.match(/<td /g)).toHaveLength(13 * 2);
+    expect(body.match(/<td /g)).toHaveLength(13 * 2);
   });
 
   it("draws every value of a paid plan's figures", () => {
@@ -197,9 +201,13 @@ describe("the plans side by side, on a phone", () => {
     const cards = phone.split("<section ").slice(1);
     expect(cards).toHaveLength(2);
     for (const card of cards) {
-      expect(texts(card, "h4")).toEqual(texts(wide, "th", ' scope="rowgroup"'));
-      expect(texts(card, "dt")).toEqual(texts(wide, "th", ' scope="row"'));
-      expect(card.match(/<dd/g)).toHaveLength(13);
+      // The card's rows end where its models' prices begin.
+      const rows = card.split("model prices, USD")[0] ?? "";
+      expect(texts(card, "h4").filter((title) => !title.startsWith("model prices"))).toEqual(
+        texts(wide, "th", ' scope="rowgroup"'),
+      );
+      expect(texts(rows, "dt")).toEqual(texts(wide, "th", ' scope="row"'));
+      expect(rows.match(/<dd/g)).toHaveLength(13);
     }
   });
 
@@ -216,6 +224,157 @@ describe("the plans side by side, on a phone", () => {
     expect(html).toContain('<h2 class="sr-only @[47rem]:hidden">plans side by side</h2>');
     expect(html).toContain('<div class="flex min-w-0 flex-col gap-y-2 @[47rem]:hidden">');
     expect(parts(html).wide).toMatch(/^<section[^>]* class="[^"]*hidden[^"]*@\[47rem\]:block/);
+  });
+});
+
+describe("the plans side by side, scrolling inside the card", () => {
+  function plansNamed(n: number): Plan[] {
+    return Array.from({ length: n }, (_, at) => planOf(`plan-${at}`));
+  }
+
+  it("is as wide as a 176px label column and 232px for each plan, so five plans scroll", () => {
+    expect(parts(markup(plansNamed(5))).wide).toContain(
+      'style="min-width:calc(11rem + 5 * 14.5rem)"',
+    );
+    expect(parts(markup(plansNamed(2))).wide).toContain(
+      'style="min-width:calc(11rem + 2 * 14.5rem)"',
+    );
+  });
+
+  it("holds the label column at 11rem and lets the plans share the rest", () => {
+    const { wide } = parts(markup(plansNamed(5)));
+    expect(wide).toContain('<colgroup><col class="w-44"/>');
+    expect(wide.match(/<col\/>/g)).toHaveLength(5);
+  });
+
+  it("sits in the card's scrolling region, which carries the table and not the card's heading", () => {
+    const { wide } = parts(markup(plansNamed(5)));
+    expect(wide.indexOf("plans side by side")).toBeLessThan(wide.indexOf("overflow-x-auto"));
+    expect(wide.indexOf("overflow-x-auto")).toBeLessThan(wide.indexOf("<table"));
+  });
+
+  it("sticks every row label, the heads' corner and each section's title to the left edge, on the card's fill", () => {
+    const { wide } = parts(markup(plansNamed(5)));
+    const labels = wide.match(/<th scope="row" class="[^"]*">/g) ?? [];
+    expect(labels).toHaveLength(13);
+    for (const label of labels) {
+      expect(label).toContain("sticky left-0 z-10 bg-card");
+    }
+    expect(wide).toContain('<td class="sticky left-0 z-10 bg-card"></td>');
+    expect(wide.match(/<span class="sticky left-0">/g)).toHaveLength(6);
+  });
+
+  it("leaves the plan columns to scroll: none of their heads or cells sticks", () => {
+    const { wide } = parts(markup(plansNamed(5)));
+    for (const cell of wide.match(/<th scope="col"[^>]*>|<td class="py-3[^>]*>/g) ?? []) {
+      expect(cell).not.toContain("sticky");
+    }
+  });
+
+  it("shows no region and no cue until the table has been measured as wider than the card", () => {
+    const { wide } = parts(markup(plansNamed(5)));
+    expect(wide).not.toContain('role="region"');
+    expect(wide).not.toContain("tabindex");
+    expect(wide).not.toContain("compare-card-cue");
+  });
+});
+
+describe("the wide table once it scrolls", () => {
+  function wide(scrolls: boolean, table: number | null): string {
+    const columns = compareColumns(viewOf([planOf("alpha"), planOf("bravo")]), null);
+    return renderToStaticMarkup(
+      <WideTable columns={columns} scrolls={scrolls} table={table} labelRef={null} />,
+    );
+  }
+
+  it("is drawn at the width it is given, never under its least", () => {
+    expect(wide(true, 1359.33)).toContain("min-width:calc(11rem + 2 * 14.5rem);width:1359.33px");
+    expect(wide(false, null)).not.toContain("width:null");
+    expect(wide(false, null)).toContain('style="min-width:calc(11rem + 2 * 14.5rem)"');
+  });
+
+  it("keeps 28px clear at the right of each plan's head, the width of the cue's plate past the gutter", () => {
+    const heads = wide(true, 1000).match(/<th scope="col" class="[^"]*">/g) ?? [];
+    expect(heads).toHaveLength(2);
+    for (const head of heads) {
+      expect(head).toContain(" pr-7 ");
+    }
+  });
+
+  it("keeps each head clear of the cue's plate, which reaches past the gutter's cover by no more", () => {
+    // Tailwind's spacing steps are 0.25rem, so w-19 is 4.75rem and pr-7 1.75rem.
+    const rem = (html: string, utility: string) =>
+      Number(new RegExp(`[ "]${utility}-(\\d+) `).exec(html)?.[1]) * 0.25;
+    const region = renderToStaticMarkup(
+      <ScrollRegion regionRef={null} scrolls hidden={2}>
+        <table />
+      </ScrollRegion>,
+    );
+    const gutter = rem(region, "w");
+    const plate = rem(region.slice(region.indexOf("h-15")), "w");
+    const heads = wide(true, 1000).match(/<th scope="col" class="[^"]*">/g)?.[0] ?? "";
+    expect(plate - gutter).toBeGreaterThan(0);
+    expect(rem(heads, "pr")).toBeGreaterThanOrEqual(plate - gutter);
+  });
+
+  it("keeps the usual 16px while the table fits", () => {
+    for (const head of wide(false, null).match(/<th scope="col" class="[^"]*">/g) ?? []) {
+      expect(head).toContain(" pr-4 ");
+      expect(head).not.toContain("pr-7");
+    }
+  });
+});
+
+describe("a plan's models' prices, on a phone", () => {
+  it("end the plan's card under a MODEL PRICES, USD PER 1M TOKENS heading", () => {
+    const { phone } = parts(markup());
+    const card = phone.split("<section ")[1] ?? "";
+    expect(card).toMatch(/<h4 class="[^"]*uppercase[^"]*">model prices, USD per 1M tokens<\/h4>/);
+    expect(card.indexOf("Unattended use")).toBeLessThan(card.indexOf("model prices, USD"));
+  });
+
+  it("print each model's rows as one line of three rates, any hour for one with no tier", () => {
+    const flat = markup([planOf("flat", { models: [pricedModel("flat/muse", 0.1, 0.2, 0.002)] })]);
+    const { phone } = parts(flat);
+    expect(texts(phone, "h5")).toEqual(["muse"]);
+    expect(texts(phone, "dt")).toContain("any hour");
+    expect(phone).toContain("input 0.100 · output 0.200 · cache read 0.002");
+  });
+
+  it("print an off-peak row, then peak, price ×2 with its window, for a model with a peak", () => {
+    const { phone } = parts(markup());
+    const card = phone.split("<section ")[1] ?? "";
+    const tiers = texts(card.slice(card.indexOf("model prices, USD")), "dt");
+    expect(tiers).toEqual(["off-peak", "peak, price ×2"]);
+    expect(card).toContain("weekdays 01:00–04:00 UTC");
+    expect(card).toContain("input 0.200 · output 1.000 · cache read 0.020");
+  });
+
+  it("print a long-context row with the length separated by commas", () => {
+    const model = {
+      ...pricedModel("paid/haiku"),
+      above: {
+        context_tokens: 100000,
+        input_usd_per_mtok: 0.5,
+        output_usd_per_mtok: 2.5,
+        cache_read_usd_per_mtok: 0.05,
+      },
+    };
+    const { phone } = parts(markup([planOf("paid", { models: [model] })]));
+    expect(texts(phone, "dt")).toContain("over 100,000 tokens of context");
+    expect(phone).toContain("input 0.500 · output 2.500 · cache read 0.050");
+  });
+
+  it("are left out of a plan with no models", () => {
+    const { phone } = parts(markup([planOf("bare")]));
+    expect(phone).not.toContain("model prices, USD");
+  });
+
+  it("show a model's name as text", () => {
+    const hostile = '<img src=x onerror="alert(1)">';
+    const { phone } = parts(markup([planOf("paid", { models: [pricedModel(`paid/${hostile}`)] })]));
+    expect(phone).not.toContain("<img");
+    expect(phone).toContain("&lt;img src=x");
   });
 });
 

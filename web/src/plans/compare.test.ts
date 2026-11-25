@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { compareColumns, dollars, monthlyPrice, planName } from "./compare";
 import type { Piece, Row } from "./compare";
-import { planOf, pricedModel, viewOf } from "./sample";
+import { peakOf, planOf, pricedModel, viewOf } from "./sample";
 import { isPlansView, UNCONFIRMED } from "./view";
 import type { Choice, Figure, Plan, PlansView } from "./view";
 
@@ -78,6 +78,15 @@ describe("compareColumns", () => {
       ["Opencode Go", "opencode-go"],
       ["Gemini", "gemini"],
     ]);
+  });
+
+  it("carries each plan's models' prices, none for a plan with no models", () => {
+    const [paid, bare] = compareColumns(
+      viewOf([planOf("paid", { models: [pricedModel("paid/zeta")] }), planOf("bare")]),
+      null,
+    );
+    expect(paid?.prices.map((model) => model.name)).toEqual(["zeta"]);
+    expect(bare?.prices).toEqual([]);
   });
 
   it("is no column for no plan", () => {
@@ -161,7 +170,7 @@ describe("the requests per $1 cell", () => {
   });
 
   it("adds the peak figure, in the multiplier the model's own price carries, when the model has a peak", () => {
-    const peaked = { ...pricedModel("paid/zeta"), peak: { multiplier: 2 } };
+    const peaked = { ...pricedModel("paid/zeta"), peak: peakOf(2) };
     const plan = planOf("paid", {
       models: [peaked],
       requests_per_dollar: figure({ has_peak: true, peak: 57 }),
@@ -175,7 +184,7 @@ describe("the requests per $1 cell", () => {
 
   it("reads the multiplier off the figure's own model, not the plan's first", () => {
     const plan = planOf("paid", {
-      models: [pricedModel("paid/alpha"), { ...pricedModel("paid/zeta"), peak: { multiplier: 2 } }],
+      models: [pricedModel("paid/alpha"), { ...pricedModel("paid/zeta"), peak: peakOf(2) }],
       requests_per_dollar: figure({ has_peak: true, peak: 57 }),
     });
     expect(cell(plan, "Requests per $1")[1]).toEqual({
@@ -186,7 +195,7 @@ describe("the requests per $1 cell", () => {
   });
 
   it("says the multiplier the price carries and never a drawn 2", () => {
-    const peaked = { ...pricedModel("paid/zeta"), peak: { multiplier: 1.5 } };
+    const peaked = { ...pricedModel("paid/zeta"), peak: peakOf(1.5) };
     const plan = planOf("paid", {
       models: [peaked],
       requests_per_dollar: figure({ has_peak: true, peak: 76 }),
