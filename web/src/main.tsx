@@ -10,6 +10,7 @@ import {
 import { Autonomy } from "./pages/autonomy";
 import { Configuration } from "./pages/config";
 import { Inbox } from "./pages/overview";
+import { Plans } from "./pages/plans";
 import { Root } from "./pages/root";
 import { Run } from "./pages/run";
 import { Stats } from "./pages/stats";
@@ -69,6 +70,12 @@ const autonomyRoute = createRoute({
   component: Autonomy,
 });
 
+const plansRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/plans",
+  component: Plans,
+});
+
 const projectsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/projects",
@@ -84,6 +91,7 @@ const router = createRouter({
     providersRoute,
     peakRoute,
     autonomyRoute,
+    plansRoute,
     projectsRoute,
   ]),
 });

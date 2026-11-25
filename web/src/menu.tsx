@@ -23,7 +23,7 @@ const MENU_WIDTH_KEY = "forge-wingman.menu-width";
 type MenuWidth = "expanded" | "rail";
 
 type Screen = {
-  to: "/" | "/stats" | "/autonomy" | "/config";
+  to: "/" | "/stats" | "/autonomy" | "/plans" | "/config";
   label: string;
   // The icon's path in a 24px box, stroked 2px and drawn at 22px.
   icon: string;
@@ -52,6 +52,12 @@ const SETTINGS_SCREENS: readonly Screen[] = [
     label: "Autonomy",
     icon: "M20 12a8 8 0 1 1-16 0a8 8 0 1 1 16 0ZM12 8v4l3 2",
     filtered: true,
+  },
+  {
+    to: "/plans",
+    label: "Plans",
+    // Two columns side by side, the plans compared.
+    icon: "M5 4H9A2 2 0 0 1 11 6V18A2 2 0 0 1 9 20H5A2 2 0 0 1 3 18V6A2 2 0 0 1 5 4ZM15 4H19A2 2 0 0 1 21 6V18A2 2 0 0 1 19 20H15A2 2 0 0 1 13 18V6A2 2 0 0 1 15 4Z",
   },
   {
     to: "/config",
@@ -267,15 +273,27 @@ type MenuProps = {
   onNavigate?: () => void;
 };
 
-/**
- * Menu lists every top-level screen, the run screens then, past a rule, the settings. Each item is
- * a 44px row, its icon in the accent on a track pill while it is the current screen; a rail shows
- * the icons alone, each named for its screen. Only Overview carries a count: how many actions wait.
- */
+// Menu is the menu with the count and project it reads from the inbox and the URL.
 function Menu({ rail, onNavigate }: MenuProps) {
   const { state } = useInbox();
   const { project } = useProjectFilter();
   const actions = state.status === "ready" ? state.runs.length : 0;
+  return <MenuScreens rail={rail} actions={actions} project={project} onNavigate={onNavigate} />;
+}
+
+type MenuScreensProps = MenuProps & {
+  // How many actions wait, the Overview's count.
+  actions: number;
+  // The project the filter is on, which a filtered screen's link carries.
+  project: string | null;
+};
+
+/**
+ * MenuScreens lists every top-level screen, the run screens then, past a rule, the settings. Each item is
+ * a 44px row, its icon in the accent on a track pill while it is the current screen; a rail shows
+ * the icons alone, each named for its screen. Only Overview carries a count: how many actions wait.
+ */
+export function MenuScreens({ rail, actions, project, onNavigate }: MenuScreensProps) {
   return (
     <nav id={MENU_ID} aria-label="Menu" className={`pt-3 pb-3 ${rail ? "px-3.5" : "px-3"}`}>
       <ul className="flex flex-col gap-1">

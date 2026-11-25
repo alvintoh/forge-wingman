@@ -11,6 +11,7 @@ import {
   isRunsPerRepoView,
 } from "../../web/src/config/types";
 import { isInbox } from "../../web/src/inbox/run";
+import { isPlansView } from "../../web/src/plans/view";
 import { isRunning } from "../../web/src/running/run";
 import { isConcurrency } from "../../web/src/stats/concurrency";
 import { isRunSuccess } from "../../web/src/stats/run-success";
@@ -153,5 +154,11 @@ describe("the fixtures' shapes", () => {
 
   test("concurrency passes its guard", () => {
     expect(isConcurrency(fixture("concurrency"))).toBe(true);
+  });
+
+  test("plans passes its guard and lists all three stages' requests", () => {
+    const plans = fixture("plans");
+    expect(isPlansView(plans)).toBe(true);
+    expect(plans.shapes.map((s: { shape: unknown }) => s.shape === null)).toEqual([false, false, false]);
   });
 });
