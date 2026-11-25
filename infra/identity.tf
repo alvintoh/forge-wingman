@@ -32,6 +32,15 @@ resource "google_service_account" "pr_review" {
   depends_on = [google_project_service.this]
 }
 
+# The identity plans-refresh.yml runs under: it reads the plans, the settled runs and the
+# vendors' public pages and writes each plan's dated facts, and holds nothing else.
+resource "google_service_account" "plans_refresh" {
+  account_id   = "wingman-plans-refresh"
+  display_name = "Forge Wingman plans refresh"
+
+  depends_on = [google_project_service.this]
+}
+
 locals {
   # A job's token names the workflow file its steps come from; for a job outside a
   # reusable workflow that is checked by the README's rollout step 1, not assumed.
@@ -108,6 +117,30 @@ resource "google_service_account_iam_member" "pr_review_wif" {
   service_account_id = google_service_account.pr_review.name
   role               = "roles/iam.workloadIdentityUser"
   member             = format(local.workflow_principal, "pr-review.yml")
+}
+
+resource "google_service_account_iam_member" "plans_refresh_wif" {
+  service_account_id = google_service_account.plans_refresh.name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = format(local.workflow_principal, "plans-refresh.yml")
+}
+
+# The refresh writes only a plan's facts documents, but Firestore IAM scopes to databases,
+# not subcollections, so it holds the same read/write the runner does and the command's
+# store interface is what holds it to the facts. Like the runner's, it leaves the owner's
+# database out.
+resource "google_project_iam_member" "plans_refresh_datastore" {
+  project = var.project_id
+  role    = "roles/datastore.user"
+  member  = google_service_account.plans_refresh.member
+
+  condition {
+    title       = "not-the-owner-database"
+    description = "Every Firestore database except the owner's controls (adr/0019)"
+    expression  = "resource.name != \"projects/${var.project_id}/databases/${google_firestore_database.owner.name}\""
+  }
+
+  depends_on = [google_project_service.this]
 }
 
 # pr-review.yml's post job reads the owner's auto-merge settings once more before it

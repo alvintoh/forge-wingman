@@ -28,6 +28,7 @@ this repository — the model's included — cannot become the runner.
 | `wingman-model` | `model.yml`, `model-smoke.yml` | completions create, projections read |
 | `wingman-publisher` | any job of the rule stack on `main` | projections create; get and overwrite of `projections/current` only |
 | `wingman-pr-review` | `pr-review.yml` | read of `linear-review-client-id` and `linear-review-client-secret`; read of the Firestore documents outside the owner database |
+| `wingman-plans-refresh` | `plans-refresh.yml` | Firestore read/write on the default database, as the runner has it; no storage, secret or Cloud Run grant |
 | `wingman-surface-deploy` | `deploy-surface.yml` | push to the `forge-wingman` registry; deploy of the surface service, acting as `surface`; the state objects under `infra/`; the reads a plan of the surface needs ([Deploy](#deploy)) |
 
 The publisher is the one identity for another repository: the rule stack, which is
@@ -46,6 +47,7 @@ Set from the outputs after `apply`:
 | `GCP_SERVICE_ACCOUNT` | `runner_service_account` |
 | `GCP_MODEL_SERVICE_ACCOUNT` | `model_service_account` |
 | `GCP_PR_REVIEW_SERVICE_ACCOUNT` | `pr_review_service_account` |
+| `GCP_PLANS_REFRESH_SERVICE_ACCOUNT` | `plans_refresh_service_account` |
 | `GCP_SURFACE_DEPLOY_SERVICE_ACCOUNT` | `surface_deploy_service_account` |
 
 `WINGMAN_ACCOUNT` is set by hand, not from an output: it must name the repository's
@@ -89,6 +91,10 @@ able to invoke the job.
 `WINGMAN_PR_REVIEW_MODELS` is optional: the models `pr-review.yml` reviews with, in order,
 comma-separated provider/model. Unset, it reviews with
 `opencode-go/muse-spark-1.3-contributor`.
+
+`WINGMAN_LEADERBOARD_URL` and `WINGMAN_FEED_URL` are optional: the Coding leaderboard and the
+free feed `plans-refresh.yml` reads. Unset, both are empty and the runner reads the endpoints
+built into it (`internal/planrefresh`).
 
 `WINGMAN_AGENT_IMAGE` is required by the build and plan stages and optional for the rest:
 an agent image pinned by digest that provides omp, git and sh. It runs those
@@ -235,6 +241,70 @@ OAuth client cannot be directly unsuspended"), so repeat step 3, which reactivat
 and restores its team membership. Revoking its client-credentials tokens does not
 suspend it (tested 2026-10-22). Do not suspend `Forge Wingman` or `Forge Wingman Review`
 in Linear's Members.
+
+## Plans refresh
+
+`plans-refresh.yml` runs `runner plans-refresh` every Monday at 03:17 UTC and on
+`workflow_dispatch`: it writes one dated facts document per configured plan and changes nothing
+else. It runs as `wingman-plans-refresh` (`identity.tf`), bound to that workflow file alone,
+with `roles/datastore.user` carrying the runner's owner-database condition. It holds no
+storage or Cloud Run grant and no secret.
+
+Firestore IAM scopes to databases, not collections, so the account holds the same write the
+runner does on the default database: plan records, settings and the auto-merge switch
+included. That the refresh writes facts alone is enforced by the command's store interface
+(`planFactsStore` in `cmd/runner/plans_refresh.go`), not by IAM. Like the runner, it cannot
+reach the owner database.
+
+The job needs `GCP_WIF_PROVIDER`, `GCP_PLANS_REFRESH_SERVICE_ACCOUNT` and `WINGMAN_ACCOUNT`
+(already set repository-wide: the owner commands refuse to open the store without it), and
+fails at its first step naming the first two when one is empty. `WINGMAN_LEADERBOARD_URL` and
+`WINGMAN_FEED_URL` are optional.
+
+A plan whose model list was refused, or whose facts could not be read or written, makes the
+command exit 1 once the other plans are done, so the run goes red and GitHub's failed-run
+email is the notice. An unreadable leaderboard, free feed or settled-run read only logs
+`plansRefreshSourceUnread` or `planRankingUnread` and the run stays green, so one vendor's
+outage does not fail the job; the run shows each such line as a warning annotation.
+
+Roll it out in this order:
+
+1. Apply the identity alone. The plan names the service account and its two bindings and
+   changes nothing existing; the placeholders satisfy variables these targets do not use.
+
+```sh
+cd infra
+V=(-var=dispatcher_image=x -var=webhook_image=x -var=linear_delegate=x -var=surface_image=x -var=surface_owner_email=x)
+T=(-target=google_service_account.plans_refresh -target=google_service_account_iam_member.plans_refresh_wif -target=google_project_iam_member.plans_refresh_datastore)
+# expect: Plan: 3 to add, 0 to change, 0 to destroy.
+tofu plan "${T[@]}" "${V[@]}" -out="$TMPDIR/plans-refresh.tfplan"
+tofu apply "$TMPDIR/plans-refresh.tfplan"
+```
+
+2. Add `plans_refresh_service_account` to the `for` loop of the probe in
+   [Owner database, Read it back](#read-it-back). Expect `owner: w=403 r=403  default: w=200 r=200`,
+   then delete the `probe/check` documents.
+3. Set `GCP_PLANS_REFRESH_SERVICE_ACCOUNT` from `plans_refresh_service_account`.
+4. Push `.github/workflows/plans-refresh.yml` by hand and merge.
+5. Count the configured plans. With none, the run is green, logs `plansRefreshNothingToRead` and
+   writes no document, so define one with `plan-define` first ([List a project](#list-a-project)
+   shows the environment the owner commands need).
+
+```sh
+GOOGLE_CLOUD_PROJECT=forge-wingman WINGMAN_ACCOUNT=alvintoh GITHUB_REPOSITORY_OWNER=alvintoh \
+  go run ./cmd/runner plan-list
+```
+
+6. Dispatch it on `main`, then read the facts back:
+
+```sh
+gh workflow run plans-refresh.yml --ref main
+gh run watch "$(gh run list --workflow plans-refresh.yml --limit 1 --json databaseId --jq '.[0].databaseId')" --exit-status
+```
+
+The run's log must show one `planFactsWritten` line per configured plan, each with today's
+`read_on`, and a document under each plan's `facts` collection dated that day. A refused list
+shows `planModelListRefused` and `runnerFailed` and a red run.
 
 ## Rolling out the publisher
 

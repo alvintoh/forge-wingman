@@ -18,6 +18,10 @@ output "pr_review_service_account" {
   value = google_service_account.pr_review.email
 }
 
+output "plans_refresh_service_account" {
+  value = google_service_account.plans_refresh.email
+}
+
 output "publisher_service_account" {
   value = google_service_account.publisher.email
 }
