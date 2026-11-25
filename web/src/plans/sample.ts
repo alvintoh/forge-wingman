@@ -1,7 +1,7 @@
-import type { Plan, PlansView, PricedModel } from "./view";
+import type { HourRange, Plan, PlansView, PeakPrice, PricedModel } from "./view";
 import { UNCONFIRMED } from "./view";
 
-/** A priced model with the rates a test gives it, and no peak price. */
+/** A priced model with the rates a test gives it, and neither a peak price nor a long-context one. */
 export function pricedModel(
   model: string,
   input = 0.1,
@@ -14,6 +14,24 @@ export function pricedModel(
     output_usd_per_mtok: output,
     cache_read_usd_per_mtok: cacheRead,
     peak: null,
+    above: null,
+  };
+}
+
+/** A peak price of `multiplier` times the base rates of pricedModel, open over `hours`. */
+export function peakOf(
+  multiplier: number,
+  hours: HourRange[] = [{ from: 1, to: 4 }],
+  input = 0.2,
+  output = 1,
+  cacheRead = 0.02,
+): PeakPrice {
+  return {
+    multiplier,
+    hours,
+    input_usd_per_mtok: input,
+    output_usd_per_mtok: output,
+    cache_read_usd_per_mtok: cacheRead,
   };
 }
 
@@ -49,4 +67,28 @@ export function viewOf(plans: Plan[], overrides: Partial<PlansView> = {}): Plans
     stage: null,
     ...overrides,
   };
+}
+
+/** The five plans a wide table is stressed with: each prices one model, the first two with a peak and a long-context price. */
+export function fivePlans(): Plan[] {
+  return ["alpha", "bravo", "charlie", "delta", "echo"].map((id, at) =>
+    planOf(id, {
+      models: [
+        {
+          ...pricedModel(`${id}/model-${at}`),
+          peak: at === 0 ? peakOf(2) : null,
+          above:
+            at === 1
+              ? {
+                  context_tokens: 100000,
+                  input_usd_per_mtok: 0.5,
+                  output_usd_per_mtok: 2.5,
+                  cache_read_usd_per_mtok: 0.05,
+                }
+              : null,
+        },
+      ],
+      monthly_price_micros: (at + 1) * 5_000_000,
+    }),
+  );
 }

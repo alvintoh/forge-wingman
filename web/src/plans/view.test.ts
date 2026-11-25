@@ -64,6 +64,61 @@ describe("isPlansView", () => {
   });
 });
 
+// The fixture's first plan's models, with the first replaced by the fixture's own with `change` applied.
+function withModel(change: (model: Record<string, unknown>) => void): unknown {
+  const body = JSON.parse(JSON.stringify(fixture));
+  change(body.plans[0].models[1]);
+  return body;
+}
+
+describe("isPlansView, a model's peak and long-context prices", () => {
+  it("accepts a peak with its hours and a price that has none", () => {
+    expect(isPlansView(withModel(() => {}))).toBe(true);
+    expect(isPlansView(withModel((model) => (model.peak = null)))).toBe(true);
+  });
+
+  it("rejects a model with no above field, since the endpoint always sends it", () => {
+    expect(isPlansView(withModel((model) => delete model.above))).toBe(false);
+  });
+
+  it("rejects a peak with no hours, or hours that are not ranges", () => {
+    expect(
+      isPlansView(
+        withModel((model) => {
+          delete (model.peak as Record<string, unknown>).hours;
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      isPlansView(withModel((model) => ((model.peak as { hours: unknown }).hours = [1, 4]))),
+    ).toBe(false);
+    expect(
+      isPlansView(withModel((model) => ((model.peak as { hours: unknown }).hours = [{ from: 1 }]))),
+    ).toBe(false);
+  });
+
+  it("rejects a peak with no rates of its own", () => {
+    expect(
+      isPlansView(
+        withModel((model) => {
+          delete (model.peak as Record<string, unknown>).output_usd_per_mtok;
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects a long-context price with no length or a text one", () => {
+    const haiku = (change: (above: Record<string, unknown>) => void) => {
+      const body = JSON.parse(JSON.stringify(fixture));
+      change(body.plans[0].models[0].above);
+      return body;
+    };
+    expect(isPlansView(haiku(() => {}))).toBe(true);
+    expect(isPlansView(haiku((above) => delete above.context_tokens))).toBe(false);
+    expect(isPlansView(haiku((above) => (above.context_tokens = "100000")))).toBe(false);
+  });
+});
+
 // The fixture's plans with one field of the first replaced.
 function withField(field: string, value: unknown): unknown {
   const body = JSON.parse(JSON.stringify(fixture));

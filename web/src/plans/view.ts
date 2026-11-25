@@ -19,14 +19,28 @@ export type Mark = "exact" | "estimated";
 /** The unattended-use verdicts the endpoint states; any other is unconfirmed. */
 export type Verdict = "allowed" | "restricted";
 
-// A model a plan prices, with its uncached input, output and cache-read rates in US dollars per
-// million tokens, and the multiplier of its peak-hour price where it has one.
-export type PricedModel = {
-  model: string;
+/** The three rates a model is priced at, in US dollars per million tokens. */
+export type Rates = {
   input_usd_per_mtok: number;
   output_usd_per_mtok: number;
   cache_read_usd_per_mtok: number;
-  peak: { multiplier: number } | null;
+};
+
+/** A peak window: the hour it opens and the hour it closes, in UTC, the close not included. */
+export type HourRange = { from: number; to: number };
+
+/** The surcharge a model carries on weekdays inside `hours`: its rates then, and how many times the base they are. */
+export type PeakPrice = Rates & { multiplier: number; hours: HourRange[] };
+
+/** The rates a model costs once a request's context passes `context_tokens`. */
+export type ContextPrice = Rates & { context_tokens: number };
+
+// A model a plan prices, with its uncached input, output and cache-read rates, and where it has
+// them the peak-hour price and the long-context price.
+export type PricedModel = Rates & {
+  model: string;
+  peak: PeakPrice | null;
+  above: ContextPrice | null;
 };
 
 // How many requests a figure buys at off-peak rates and, where the model prices by the hour, at peak.
@@ -78,12 +92,21 @@ function field(check: (value: unknown) => boolean) {
   return (value: unknown) => value === UNCONFIRMED || check(value);
 }
 
-const isPricedModel = shape<PricedModel>({
-  model: isString,
+const rateChecks = {
   input_usd_per_mtok: isNumber,
   output_usd_per_mtok: isNumber,
   cache_read_usd_per_mtok: isNumber,
-  peak: nullable(shape<{ multiplier: number }>({ multiplier: isNumber })),
+};
+
+const isHourRange = shape<HourRange>({ from: isNumber, to: isNumber });
+
+const isPricedModel = shape<PricedModel>({
+  model: isString,
+  ...rateChecks,
+  peak: nullable(
+    shape<PeakPrice>({ ...rateChecks, multiplier: isNumber, hours: listOf(isHourRange) }),
+  ),
+  above: nullable(shape<ContextPrice>({ ...rateChecks, context_tokens: isNumber })),
 });
 
 const isCounts = shape<RequestCounts>({

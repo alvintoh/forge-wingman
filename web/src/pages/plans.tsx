@@ -1,6 +1,7 @@
 import { captionClass } from "../caption";
 import { compareColumns } from "../plans/compare";
 import { CompareCard } from "../plans/compare-card";
+import { ModelPricesCard } from "../plans/model-prices-card";
 import { PriceCard } from "../plans/price-card";
 import { PlansError, PlansLoading } from "../plans/plans-status";
 import { usePlansPage } from "../plans/use-plans-page";
@@ -10,8 +11,10 @@ import { useRead } from "../stats/use-read";
 
 /**
  * PlansPageView draws the page for the reads it is given: the price-a-request card, once the plans
- * are known, and under it the plans side by side. The cards the figures fill go under it, in the
- * one column; the figures' own skeleton and failure stand in that place until they do. One live
+ * are known, and under it the plans side by side and the models' prices. The cards the figures
+ * fill go under it, in the one column; the figures' own skeleton and failure stand in that place
+ * until they do. The prices come from the same answer as the plans beside them, since a phone draws
+ * them inside each plan's card and so they leave and return together. One live
  * region holds the sentence for whichever of them shows, and stays in the page so a change to its
  * text is announced.
  */
@@ -23,6 +26,8 @@ export function PlansPageView({
   onPick,
   onRetry,
 }: PlansPageProps) {
+  const columns = compared === null ? null : compareColumns(compared, choice);
+
   function chooseModel(model: string) {
     onPick({ model });
   }
@@ -50,7 +55,8 @@ export function PlansPageView({
               onModel={chooseModel}
               onStage={chooseStage}
             />
-            {compared !== null && <CompareCard columns={compareColumns(compared, choice)} />}
+            {columns !== null && <CompareCard columns={columns} />}
+            {columns !== null && <ModelPricesCard columns={columns} />}
             {figures === "loading" && <PlansLoading />}
             {figures === "error" && <PlansError onRetry={onRetry} />}
           </>
