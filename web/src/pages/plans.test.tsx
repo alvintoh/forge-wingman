@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { elementsOf, press } from "../element-tree";
+import { planOf, pricedModel, viewOf } from "../plans/sample";
 import { isPlansView } from "../plans/view";
 import type { Picked, PickChange, PlansView } from "../plans/view";
 import type { Read } from "../stats/use-read";
@@ -8,24 +9,11 @@ import { usePlansPage } from "../plans/use-plans-page";
 import type { PlansReader } from "../plans/use-plans-page";
 import { PlansPageView } from "./plans";
 
-function priced(model: string, input = 0.1, output = 0.5) {
-  return { model, input_usd_per_mtok: input, output_usd_per_mtok: output };
-}
-
 // The free tier's model comes last, as the server sends it, and prices at $0.
-const VIEW: PlansView = {
-  plans: [
-    { plan: "paid", models: [priced("paid/zeta"), priced("paid/alpha")] },
-    { plan: "free", models: [priced("free/beta", 0, 0)] },
-  ],
-  shapes: [
-    { stage: "plan", runs: 7, shape: { fresh: 52000, cached: 2200, output: 1500 } },
-    { stage: "build", runs: 4, shape: { fresh: 900, cached: 60000, output: 800 } },
-    { stage: "review", runs: 5, shape: { fresh: 13000, cached: 0, output: 1200 } },
-  ],
-  model: null,
-  stage: null,
-};
+const VIEW: PlansView = viewOf([
+  planOf("paid", { models: [pricedModel("paid/zeta"), pricedModel("paid/alpha")] }),
+  planOf("free", { models: [pricedModel("free/beta", 0, 0, 0)] }),
+]);
 
 const CATALOGUE = "/api/plans";
 const FIGURES = "/api/plans?model=paid%2Fzeta&stage=plan";
@@ -40,6 +28,7 @@ function props(overrides: Partial<PageProps> = {}): PageProps {
     catalogue: { status: "ready", body: VIEW, url: CATALOGUE },
     figures: "ready",
     choice: { model: "paid/zeta", stage: "plan" },
+    compared: VIEW,
     onPick: noop,
     onRetry: noop,
     ...overrides,
@@ -197,6 +186,48 @@ describe("the Plans page", () => {
   });
 });
 
+describe("the Plans page's plans side by side", () => {
+  it("sits under the price-a-request card, one column per plan", () => {
+    const html = markup();
+    expect(html.indexOf("price a request")).toBeLessThan(html.indexOf("plans side by side"));
+    expect(html.match(/<th scope="col"/g)).toHaveLength(2);
+    expect(html).toContain(">Paid</span>");
+    expect(html).toContain(">Free</span>");
+  });
+
+  it("is drawn from the answer it is given, and from none while the figures are read", () => {
+    const answer = viewOf([planOf("alone", { monthly_price_micros: 10_000_000 })]);
+    expect(markup({ compared: answer })).toContain("$10 a month");
+    const loading = markup({ figures: "loading", compared: null });
+    expect(loading).not.toContain("plans side by side");
+    expect(loading).toContain("Reading the plans…");
+  });
+
+  it("leaves the card out, under the price card's error, when the figures could not be read", () => {
+    const html = markup({ figures: "error", compared: null });
+    expect(html).not.toContain("plans side by side");
+    expect(html).toContain("The plans could not be read.");
+  });
+
+  it("is not drawn while the plans are first read, or when they could not be", () => {
+    const loading = markup({ catalogue: { status: "loading" }, choice: null, compared: null });
+    const failed = markup({
+      catalogue: { status: "error", url: CATALOGUE },
+      choice: null,
+      compared: null,
+    });
+    expect(loading).not.toContain("plans side by side");
+    expect(failed).not.toContain("plans side by side");
+  });
+
+  it("puts the skeleton for new figures after the card it covers, not instead of the price card", () => {
+    const html = markup({ figures: "loading", compared: null });
+    expect(html.indexOf("price a request")).toBeLessThan(
+      html.indexOf("Reading the plans…", html.indexOf("price a request")),
+    );
+  });
+});
+
 describe("the Plans page's live region", () => {
   it("is in the page, empty, once the plans and the figures are read", () => {
     expect(status(markup())).toBe("");
@@ -323,6 +354,24 @@ describe("usePlansPage", () => {
     expect(pageOf(answered.read).figures).toBe("ready");
     const failed = reader((url) => (url === CATALOGUE ? READY : { status: "error", url: FIGURES }));
     expect(pageOf(failed.read).figures).toBe("error");
+  });
+
+  it("compares the figures' own answer once it is in, the catalogue's while nothing is priced", () => {
+    const figuresBody = viewOf([planOf("priced")]);
+    const priced = reader((url) =>
+      url === CATALOGUE ? READY : { status: "ready", body: figuresBody, url: FIGURES },
+    );
+    expect(pageOf(priced.read).compared).toBe(figuresBody);
+    const noShapes = { ...VIEW, shapes: VIEW.shapes.map((s) => ({ ...s, shape: null })) };
+    const none = reader(() => ({ status: "ready", body: noShapes, url: CATALOGUE }));
+    expect(pageOf(none.read).compared).toBe(noShapes);
+  });
+
+  it("compares nothing while the figures are read or could not be", () => {
+    const loading = reader((url) => (url === CATALOGUE ? READY : { status: "loading" }));
+    expect(pageOf(loading.read).compared).toBeNull();
+    const failed = reader((url) => (url === CATALOGUE ? READY : { status: "error", url: FIGURES }));
+    expect(pageOf(failed.read).compared).toBeNull();
   });
 
   it("retries the plans when they failed, and the figures when only they did", () => {

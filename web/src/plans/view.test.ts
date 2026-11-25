@@ -1,11 +1,14 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
+  comparedView,
+  count,
   figuresState,
   figuresUrl,
   isPlansView,
   listedShapes,
   modelGroups,
+  modelName,
   modelsOf,
   pick,
   reloadFor,
@@ -14,6 +17,7 @@ import {
   stageLabel,
   tokensLine,
 } from "./view";
+import { planOf, pricedModel } from "./sample";
 import type { PlansView } from "./view";
 import type { Read } from "../stats/use-read";
 
@@ -21,15 +25,13 @@ const fixture: unknown = JSON.parse(
   readFileSync(new URL("../../fixtures/plans.json", import.meta.url), "utf8"),
 );
 
-function priced(model: string, input = 0.1, output = 0.5) {
-  return { model, input_usd_per_mtok: input, output_usd_per_mtok: output };
-}
+const priced = pricedModel;
 
 function plansView(overrides: Partial<PlansView> = {}): PlansView {
   return {
     plans: [
-      { plan: "paid", models: [priced("paid/zeta"), priced("shared/alpha")] },
-      { plan: "free", models: [priced("shared/alpha", 0, 0), priced("free/beta", 0, 0)] },
+      planOf("paid", { models: [priced("paid/zeta"), priced("shared/alpha")] }),
+      planOf("free", { models: [priced("shared/alpha", 0, 0), priced("free/beta", 0, 0)] }),
     ],
     shapes: [
       { stage: "plan", runs: 7, shape: { fresh: 52000, cached: 2200, output: 1500 } },
@@ -62,6 +64,91 @@ describe("isPlansView", () => {
   });
 });
 
+// The fixture's plans with one field of the first replaced.
+function withField(field: string, value: unknown): unknown {
+  const body = JSON.parse(JSON.stringify(fixture));
+  body.plans[0][field] = value;
+  return body;
+}
+
+describe("isPlansView, the comparison's fields", () => {
+  it("accepts a field that is its value or the word unconfirmed", () => {
+    expect(isPlansView(withField("monthly_price_micros", "unconfirmed"))).toBe(true);
+    expect(isPlansView(withField("verdict", "restricted"))).toBe(true);
+    expect(isPlansView(withField("five_hour", { limit_micros: 1, requests: null }))).toBe(true);
+  });
+
+  it("rejects a field that is neither its value nor that word", () => {
+    expect(isPlansView(withField("monthly_price_micros", "unknown"))).toBe(false);
+    expect(isPlansView(withField("verdict", "maybe"))).toBe(false);
+    expect(isPlansView(withField("strongest", { model: 3 }))).toBe(false);
+  });
+
+  it("rejects a money amount that is not a whole count of micros", () => {
+    expect(isPlansView(withField("monthly_price_micros", 12.5))).toBe(false);
+    expect(isPlansView(withField("strongest_cap_micros", -1))).toBe(false);
+    expect(isPlansView(withField("five_hour", { limit_micros: 0.5, requests: null }))).toBe(false);
+  });
+
+  it("rejects a figure whose mark is neither exact nor estimated", () => {
+    const figure = {
+      off_peak: 1,
+      has_peak: false,
+      peak: 0,
+      shape: { model: "m", fresh: 1, cached: 1, output: 1 },
+    };
+    expect(isPlansView(withField("requests_per_dollar", { ...figure, mark: "exact" }))).toBe(true);
+    expect(isPlansView(withField("requests_per_dollar", { ...figure, mark: "rough" }))).toBe(false);
+  });
+
+  it("rejects a harness whose value is not a boolean or unconfirmed, and a plan with no harnesses list", () => {
+    const harness = {
+      harness: "omp",
+      headless: "yes",
+      structured_output: true,
+      denies_planning_edits: true,
+    };
+    expect(isPlansView(withField("harnesses", [harness]))).toBe(false);
+    expect(isPlansView(withField("harnesses", undefined))).toBe(false);
+  });
+});
+
+describe("modelName", () => {
+  it("drops the plan's own prefix and keeps another plan's", () => {
+    expect(modelName("a", "a/one")).toBe("one");
+    expect(modelName("a", "b/one")).toBe("b/one");
+  });
+});
+
+describe("count", () => {
+  it("separates thousands", () => {
+    expect(count(0)).toBe("0");
+    expect(count(2297)).toBe("2,297");
+    expect(count(1_234_567)).toBe("1,234,567");
+  });
+});
+
+describe("comparedView", () => {
+  const catalogueBody = plansView();
+  const figuresBody = plansView({ model: "paid/zeta", stage: "plan" });
+  const catalogue: Read<PlansView> = { status: "ready", body: catalogueBody, url: "/api/plans" };
+  const figures: Read<PlansView> = { status: "ready", body: figuresBody, url: "/api/plans?x" };
+
+  it("is the figures' answer once they are in", () => {
+    expect(comparedView(catalogue, figures, "ready")).toBe(figuresBody);
+  });
+
+  it("is the catalogue's while there is nothing to price", () => {
+    expect(comparedView(catalogue, { status: "loading" }, "none")).toBe(catalogueBody);
+  });
+
+  it("is nothing while the figures are read, or could not be, or the catalogue is not in", () => {
+    expect(comparedView(catalogue, figures, "loading")).toBeNull();
+    expect(comparedView(catalogue, { status: "error", url: "/api/plans?x" }, "error")).toBeNull();
+    expect(comparedView({ status: "loading" }, { status: "loading" }, "none")).toBeNull();
+  });
+});
+
 describe("modelGroups", () => {
   it("lists the plans and their models in the server's order, a repeated model once", () => {
     expect(modelGroups(plansView())).toEqual([
@@ -78,8 +165,8 @@ describe("modelGroups", () => {
 
   it("leaves out a plan whose models were all listed before", () => {
     const plans = [
-      { plan: "a", models: [priced("a/one")] },
-      { plan: "b", models: [priced("a/one")] },
+      planOf("a", { models: [priced("a/one")] }),
+      planOf("b", { models: [priced("a/one")] }),
     ];
     expect(modelGroups(plansView({ plans })).map((group) => group.plan)).toEqual(["a"]);
   });
@@ -104,23 +191,23 @@ describe("resolveChoice", () => {
 
   it("skips a model no plan prices above $0 for the first that one does", () => {
     const plans = [
-      { plan: "free", models: [priced("free/beta", 0, 0)] },
-      { plan: "paid", models: [priced("paid/zeta")] },
+      planOf("free", { models: [priced("free/beta", 0, 0)] }),
+      planOf("paid", { models: [priced("paid/zeta")] }),
     ];
     expect(resolveChoice(plansView({ plans }), {})?.model).toBe("paid/zeta");
   });
 
   it("counts a model priced above $0 by any plan that lists it", () => {
     const plans = [
-      { plan: "free", models: [priced("shared/alpha", 0, 0)] },
-      { plan: "paid", models: [priced("shared/alpha")] },
+      planOf("free", { models: [priced("shared/alpha", 0, 0)] }),
+      planOf("paid", { models: [priced("shared/alpha")] }),
     ];
     expect(resolveChoice(plansView({ plans }), {})?.model).toBe("shared/alpha");
   });
 
   it("chooses the first model when every one is $0", () => {
     const plans = [
-      { plan: "free", models: [priced("free/beta", 0, 0), priced("free/gamma", 0, 0)] },
+      planOf("free", { models: [priced("free/beta", 0, 0), priced("free/gamma", 0, 0)] }),
     ];
     expect(resolveChoice(plansView({ plans }), {})?.model).toBe("free/beta");
   });

@@ -1,6 +1,7 @@
 import { useReducer } from "react";
 import type { Read } from "../stats/use-read";
 import {
+  comparedView,
   figuresState,
   figuresUrl,
   isPlansView,
@@ -16,6 +17,8 @@ export type PlansPageProps = {
   // What the figures read holds for the choice's url.
   figures: FiguresState;
   choice: Choice | null;
+  // The answer the plans side by side are drawn from; null while there is none to draw.
+  compared: PlansView | null;
   onPick: (change: PickChange) => void;
   onRetry: () => void;
 };
@@ -40,10 +43,12 @@ export function usePlansPage(read: PlansReader, initial: Picked = {}): PlansPage
   const choice = catalogue.status === "ready" ? resolveChoice(catalogue.body, picked) : null;
   const url = figuresUrl(choice);
   const figures = read(url, isPlansView, "plansFiguresNotRead");
+  const state = figuresState(figures, url);
   return {
     catalogue,
-    figures: figuresState(figures, url),
+    figures: state,
     choice,
+    compared: comparedView(catalogue, figures, state),
     onPick,
     onRetry: reloadFor(catalogue, figures),
   };
