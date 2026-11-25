@@ -68,27 +68,3 @@ export function viewOf(plans: Plan[], overrides: Partial<PlansView> = {}): Plans
     ...overrides,
   };
 }
-
-/** The five plans a wide table is stressed with: each prices one model, the first two with a peak and a long-context price. */
-export function fivePlans(): Plan[] {
-  return ["alpha", "bravo", "charlie", "delta", "echo"].map((id, at) =>
-    planOf(id, {
-      models: [
-        {
-          ...pricedModel(`${id}/model-${at}`),
-          peak: at === 0 ? peakOf(2) : null,
-          above:
-            at === 1
-              ? {
-                  context_tokens: 100000,
-                  input_usd_per_mtok: 0.5,
-                  output_usd_per_mtok: 2.5,
-                  cache_read_usd_per_mtok: 0.05,
-                }
-              : null,
-        },
-      ],
-      monthly_price_micros: (at + 1) * 5_000_000,
-    }),
-  );
-}

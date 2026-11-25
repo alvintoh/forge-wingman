@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { elementsOf } from "../element-tree";
 import { compareColumns } from "./compare";
 import { ModelPricesCard } from "./model-prices-card";
 import { peakOf, planOf, pricedModel, viewOf } from "./sample";
@@ -141,5 +143,22 @@ describe("the model prices card", () => {
     expect(html).toContain(
       "&lt;img src=x onerror=&quot;alert(1)&quot;&gt; &amp; &quot;quote&quot;",
     );
+  });
+
+  it("keys every model's rows apart even when two models of a plan print the same tier label", () => {
+    const flat = planOf("flat", {
+      models: [pricedModel("flat/one"), pricedModel("flat/two"), pricedModel("flat/three")],
+    });
+    const tree = elementsOf(ModelPricesCard({ columns: columns([flat]) }));
+    const groups = tree.filter((element) => element.type === Fragment);
+    expect(groups.map((group) => group.key)).toEqual(["0-one", "1-two", "2-three"]);
+    const rows = groups.flatMap((group) => {
+      const children = group.props.children;
+      return (Array.isArray(children) ? children.flat() : [children]).map(
+        (row) => `${group.key}/${row.key}`,
+      );
+    });
+    expect(rows).toEqual(["0-one/0-any hour", "1-two/0-any hour", "2-three/0-any hour"]);
+    expect(new Set(rows).size).toBe(rows.length);
   });
 });

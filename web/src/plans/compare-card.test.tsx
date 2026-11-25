@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { compareColumns } from "./compare";
-import { CompareCard } from "./compare-card";
+import { CompareCard, WideTable } from "./compare-card";
+import { ScrollRegion } from "./scroll-region";
 import { peakOf, planOf, pricedModel, viewOf } from "./sample";
 import { UNCONFIRMED } from "./view";
 import type { Figure, Plan } from "./view";
@@ -275,6 +276,52 @@ describe("the plans side by side, scrolling inside the card", () => {
     expect(wide).not.toContain('role="region"');
     expect(wide).not.toContain("tabindex");
     expect(wide).not.toContain("compare-card-cue");
+  });
+});
+
+describe("the wide table once it scrolls", () => {
+  function wide(scrolls: boolean, table: number | null): string {
+    const columns = compareColumns(viewOf([planOf("alpha"), planOf("bravo")]), null);
+    return renderToStaticMarkup(
+      <WideTable columns={columns} scrolls={scrolls} table={table} labelRef={null} />,
+    );
+  }
+
+  it("is drawn at the width it is given, never under its least", () => {
+    expect(wide(true, 1359.33)).toContain("min-width:calc(11rem + 2 * 14.5rem);width:1359.33px");
+    expect(wide(false, null)).not.toContain("width:null");
+    expect(wide(false, null)).toContain('style="min-width:calc(11rem + 2 * 14.5rem)"');
+  });
+
+  it("keeps 28px clear at the right of each plan's head, the width of the cue's plate past the gutter", () => {
+    const heads = wide(true, 1000).match(/<th scope="col" class="[^"]*">/g) ?? [];
+    expect(heads).toHaveLength(2);
+    for (const head of heads) {
+      expect(head).toContain(" pr-7 ");
+    }
+  });
+
+  it("keeps each head clear of the cue's plate, which reaches past the gutter's cover by no more", () => {
+    // Tailwind's spacing steps are 0.25rem, so w-19 is 4.75rem and pr-7 1.75rem.
+    const rem = (html: string, utility: string) =>
+      Number(new RegExp(`[ "]${utility}-(\\d+) `).exec(html)?.[1]) * 0.25;
+    const region = renderToStaticMarkup(
+      <ScrollRegion regionRef={null} scrolls hidden={2}>
+        <table />
+      </ScrollRegion>,
+    );
+    const gutter = rem(region, "w");
+    const plate = rem(region.slice(region.indexOf("h-15")), "w");
+    const heads = wide(true, 1000).match(/<th scope="col" class="[^"]*">/g)?.[0] ?? "";
+    expect(plate - gutter).toBeGreaterThan(0);
+    expect(rem(heads, "pr")).toBeGreaterThanOrEqual(plate - gutter);
+  });
+
+  it("keeps the usual 16px while the table fits", () => {
+    for (const head of wide(false, null).match(/<th scope="col" class="[^"]*">/g) ?? []) {
+      expect(head).toContain(" pr-4 ");
+      expect(head).not.toContain("pr-7");
+    }
   });
 });
 

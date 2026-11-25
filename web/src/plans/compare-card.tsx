@@ -1,3 +1,4 @@
+import type { Ref } from "react";
 import { captionClass } from "../caption";
 import type { Column, Piece } from "./compare";
 import { ScrollRegion } from "./scroll-region";
@@ -208,84 +209,103 @@ function PlanCard({ column, at }: { column: Column; at: number }) {
 // each takes the card's own fill to cover what passes beneath; z-10 lifts it above the cells.
 const stickyClass = "sticky left-0 z-10 bg-card";
 
-function PlansTable({ columns }: CompareCardProps) {
-  const { region, label, scrolls, hidden, table } = useHiddenPlans(columns.length);
+type WideTableProps = {
+  columns: readonly Column[];
+  // Whether the table scrolls inside its card, and the width it is then drawn at, in px.
+  scrolls: boolean;
+  table: number | null;
+  labelRef: Ref<HTMLTableCellElement>;
+};
+
+/**
+ * WideTable is the one table the plans draw as from a wide column. Once it scrolls its heads keep
+ * 28px clear at the right, the width the cue's plate reaches past the gutter, so a plan's name is
+ * never cut at rest by the cue that sits over the next plans.
+ */
+export function WideTable({ columns, scrolls, table, labelRef }: WideTableProps) {
   const [first] = columns;
   if (first === undefined) {
     return null;
   }
   return (
-    <ScrollRegion regionRef={region} scrolls={scrolls} hidden={hidden}>
-      <table
-        className="w-full table-fixed border-collapse text-left"
-        style={{
-          minWidth: `calc(${LABEL_WIDTH} + ${columns.length} * ${PLAN_MIN_WIDTH})`,
-          width: table ?? undefined,
-        }}
-      >
-        <colgroup>
-          <col className="w-44" />
+    <table
+      className="w-full table-fixed border-collapse text-left"
+      style={{
+        minWidth: `calc(${LABEL_WIDTH} + ${columns.length} * ${PLAN_MIN_WIDTH})`,
+        width: table ?? undefined,
+      }}
+    >
+      <colgroup>
+        <col className="w-44" />
+        {columns.map((column, at) => (
+          <col key={`${at}-${column.id}`} />
+        ))}
+      </colgroup>
+      <thead>
+        <tr className="border-b border-hair">
+          <td ref={labelRef} className={stickyClass} />
           {columns.map((column, at) => (
-            <col key={`${at}-${column.id}`} />
+            <th
+              key={`${at}-${column.id}`}
+              scope="col"
+              className={`h-15 ${scrolls ? "pr-7" : "pr-4"} pb-3 align-top font-normal`}
+            >
+              <span className="block min-w-0 pt-4 text-body leading-5 font-semibold break-words text-ink">
+                {column.name}
+              </span>
+              <span className="block font-mono text-cap leading-4 break-words text-ink2">
+                {column.id}
+              </span>
+            </th>
           ))}
-        </colgroup>
-        <thead>
-          <tr className="border-b border-hair">
-            <td ref={label} className={stickyClass} />
-            {columns.map((column, at) => (
+        </tr>
+      </thead>
+      {first.sections.map((section, sectionAt) => {
+        const lastSection = sectionAt === first.sections.length - 1;
+        return (
+          <tbody key={section.title}>
+            <tr>
+              {/* The title is one cell across every column, so it sticks by an inner span. */}
               <th
-                key={`${at}-${column.id}`}
-                scope="col"
-                className="h-15 pr-4 pb-3 align-top font-normal"
+                scope="rowgroup"
+                colSpan={columns.length + 1}
+                className={`h-8.5 pt-3.5 text-left align-top ${sectionTitleClass}`}
               >
-                <span className="block min-w-0 pt-4 text-body leading-5 font-semibold break-words text-ink">
-                  {column.name}
-                </span>
-                <span className="block font-mono text-cap leading-4 break-words text-ink2">
-                  {column.id}
-                </span>
+                <span className="sticky left-0">{section.title}</span>
               </th>
-            ))}
-          </tr>
-        </thead>
-        {first.sections.map((section, sectionAt) => {
-          const lastSection = sectionAt === first.sections.length - 1;
-          return (
-            <tbody key={section.title}>
-              <tr>
-                {/* The title is one cell across every column, so it sticks by an inner span. */}
-                <th
-                  scope="rowgroup"
-                  colSpan={columns.length + 1}
-                  className={`h-8.5 pt-3.5 text-left align-top ${sectionTitleClass}`}
-                >
-                  <span className="sticky left-0">{section.title}</span>
-                </th>
-              </tr>
-              {section.rows.map((row, rowAt) => {
-                const last = lastSection && rowAt === section.rows.length - 1;
-                return (
-                  <tr key={row.label} className={last ? "" : "border-b border-hair"}>
-                    <th
-                      scope="row"
-                      className={`${stickyClass} py-3 pr-4 text-left align-top ${labelClass}`}
-                    >
-                      {row.label}
-                    </th>
-                    {columns.map((column, at) => {
-                      return (
-                        <td key={`${at}-${column.id}`} className="py-3 pr-4 align-top">
-                          <Cell pieces={column.sections[sectionAt].rows[rowAt].pieces} />
-                        </td>
-                      );
-                    })}
-                  </tr>
-                );
-              })}
-            </tbody>
-          );
-        })}
-      </table>
+            </tr>
+            {section.rows.map((row, rowAt) => {
+              const last = lastSection && rowAt === section.rows.length - 1;
+              return (
+                <tr key={row.label} className={last ? "" : "border-b border-hair"}>
+                  <th
+                    scope="row"
+                    className={`${stickyClass} py-3 pr-4 text-left align-top ${labelClass}`}
+                  >
+                    {row.label}
+                  </th>
+                  {columns.map((column, at) => {
+                    return (
+                      <td key={`${at}-${column.id}`} className="py-3 pr-4 align-top">
+                        <Cell pieces={column.sections[sectionAt].rows[rowAt].pieces} />
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
+          </tbody>
+        );
+      })}
+    </table>
+  );
+}
+
+function PlansTable({ columns }: CompareCardProps) {
+  const { region, label, scrolls, hidden, table } = useHiddenPlans(columns.length);
+  return (
+    <ScrollRegion regionRef={region} scrolls={scrolls} hidden={hidden}>
+      <WideTable columns={columns} scrolls={scrolls} table={table} labelRef={label} />
     </ScrollRegion>
   );
 }

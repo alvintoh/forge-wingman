@@ -58,6 +58,14 @@ describe("ScrollRegion", () => {
     expect(markup(true, 0)).not.toContain("w-12 bg-card");
   });
 
+  it("puts the cue on a plate as wide as it and as tall as the heads, over the gutter's cover", () => {
+    const html = markup(true, 2);
+    expect(html).toContain(
+      '<div class="absolute top-0 right-0 h-15 w-19 bg-card"><p id="compare-card-cue"',
+    );
+    expect(html.indexOf("w-12 bg-card")).toBeLessThan(html.indexOf("h-15 w-19 bg-card"));
+  });
+
   it("leaves the cue out of the pointer's way, so a touch on it still scrolls the table", () => {
     expect(markup(true, 2)).toContain("pointer-events-none");
   });

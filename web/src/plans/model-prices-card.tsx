@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import { captionClass } from "../caption";
 import type { Column } from "./compare";
 
@@ -83,36 +84,47 @@ export function ModelPricesCard({ columns }: ModelPricesCardProps) {
                 </tr>
                 {column.prices.map((model, at) => {
                   const lastModel = at === column.prices.length - 1;
-                  return model.tiers.map((tier, tierAt) => {
-                    const last = lastPlan && lastModel && tierAt === model.tiers.length - 1;
-                    return (
-                      <tr key={tier.label} className={last ? "" : "border-b border-hair"}>
-                        {tierAt === 0 ? (
-                          <th
-                            scope="row"
-                            className="py-3 pr-4 text-left align-top font-mono text-label leading-4.5 font-semibold break-words text-ink"
+                  return (
+                    <Fragment key={`${at}-${model.name}`}>
+                      {model.tiers.map((tier, tierAt) => {
+                        const last = lastPlan && lastModel && tierAt === model.tiers.length - 1;
+                        return (
+                          <tr
+                            key={`${tierAt}-${tier.label}`}
+                            className={last ? "" : "border-b border-hair"}
                           >
-                            {model.name}
-                          </th>
-                        ) : (
-                          <td className="py-3 pr-4 align-top">
-                            <span className="sr-only">{model.name}</span>
-                          </td>
-                        )}
-                        <td className="py-3 pr-4 align-top">
-                          <p className="text-label leading-4.5 text-ink2">{tier.label}</p>
-                          {tier.window !== null && (
-                            <p className="text-cap leading-4 text-ink2">{tier.window}</p>
-                          )}
-                        </td>
-                        <td className={`${numberClass} py-3 align-top text-ink`}>{tier.input}</td>
-                        <td className={`${numberClass} py-3 align-top text-ink`}>{tier.output}</td>
-                        <td className={`${numberClass} py-3 align-top text-ink`}>
-                          {tier.cacheRead}
-                        </td>
-                      </tr>
-                    );
-                  });
+                            {tierAt === 0 ? (
+                              <th
+                                scope="row"
+                                className="py-3 pr-4 text-left align-top font-mono text-label leading-4.5 font-semibold break-words text-ink"
+                              >
+                                {model.name}
+                              </th>
+                            ) : (
+                              <td className="py-3 pr-4 align-top">
+                                <span className="sr-only">{model.name}</span>
+                              </td>
+                            )}
+                            <td className="py-3 pr-4 align-top">
+                              <p className="text-label leading-4.5 text-ink2">{tier.label}</p>
+                              {tier.window !== null && (
+                                <p className="text-cap leading-4 text-ink2">{tier.window}</p>
+                              )}
+                            </td>
+                            <td className={`${numberClass} py-3 align-top text-ink`}>
+                              {tier.input}
+                            </td>
+                            <td className={`${numberClass} py-3 align-top text-ink`}>
+                              {tier.output}
+                            </td>
+                            <td className={`${numberClass} py-3 align-top text-ink`}>
+                              {tier.cacheRead}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </Fragment>
+                  );
                 })}
               </tbody>
             );

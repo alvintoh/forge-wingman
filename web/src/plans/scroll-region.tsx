@@ -20,7 +20,7 @@ type ScrollRegionProps = {
  * arrow keys move it while it has focus; Tab leaves it, since nothing in it takes focus. A scrolling
  * table keeps a 3rem gutter at its right, drawn as the cue's own: while plans lie past the edge the
  * gutter is covered in the card's fill, so none shows cut beside the cue, and the cue names how
- * many in words and a chevron. At the end of the scroll the cover goes and the gutter rests empty
+ * many in words and a chevron, on a plate as wide as them (4.75rem) over the heads. At the end of the scroll the cover goes and the gutter rests empty
  * after the last plan.
  */
 export function ScrollRegion({ regionRef, scrolls, hidden, children }: ScrollRegionProps) {
@@ -40,25 +40,29 @@ export function ScrollRegion({ regionRef, scrolls, hidden, children }: ScrollReg
       </div>
       {hidden > 0 && (
         <div className="pointer-events-none absolute inset-y-0 right-0 z-20 w-12 bg-card">
-          <p
-            id={CUE_ID}
-            className="absolute top-4 right-2 flex h-5 items-center gap-1.5 text-cap font-semibold whitespace-nowrap text-ink2"
-          >
-            {cueWords(hidden)}
-            <svg
-              aria-hidden="true"
-              width="6"
-              height="10"
-              viewBox="0 0 6 10"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.75"
-              strokeLinecap="round"
-              strokeLinejoin="round"
+          {/* The plate reaches 28px past the gutter and is as tall as the heads, so the head of a
+              plan scrolling under the cue is hidden by it, never printed over. */}
+          <div className="absolute top-0 right-0 h-15 w-19 bg-card">
+            <p
+              id={CUE_ID}
+              className="absolute top-4 right-2 flex h-5 items-center gap-1.5 text-cap font-semibold whitespace-nowrap text-ink2"
             >
-              <path d="M1 1l4 4l-4 4" />
-            </svg>
-          </p>
+              {cueWords(hidden)}
+              <svg
+                aria-hidden="true"
+                width="6"
+                height="10"
+                viewBox="0 0 6 10"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.75"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M1 1l4 4l-4 4" />
+              </svg>
+            </p>
+          </div>
         </div>
       )}
     </div>
