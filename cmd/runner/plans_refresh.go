@@ -55,12 +55,12 @@ func plansRefresh(ctx context.Context, logger *slog.Logger, e env, args []string
 	board := planrefresh.Board{Endpoint: *leaderboard, HTTP: client}
 	refresher.Board, refresher.BoardErr = board.Read(ctx)
 	if refresher.BoardErr != nil {
-		logger.Warn("plansRefreshSourceUnread", "source", "leaderboard", "err", refresher.BoardErr.Error())
+		logger.Warn("plansRefreshSourceUnread", "source", planrefresh.SourceLeaderboard, "err", refresher.BoardErr.Error())
 	}
 	feed := planrefresh.Feed{Endpoint: *feedURL, HTTP: client}
 	refresher.Feed, refresher.FeedErr = feed.Read(ctx)
 	if refresher.FeedErr != nil {
-		logger.Warn("plansRefreshSourceUnread", "source", "free-feed", "err", refresher.FeedErr.Error())
+		logger.Warn("plansRefreshSourceUnread", "source", planrefresh.SourceFreeFeed, "err", refresher.FeedErr.Error())
 	}
 	return refreshPlans(ctx, logger, plans, refresher, *provider)
 }
@@ -98,9 +98,12 @@ func settledRanker(records dispatcher.ModelRecords, logger *slog.Logger) planref
 
 // refreshPlans refreshes every configured plan the store lists, or the one named,
 // writing one facts document per plan under the plan's own read date and nothing
-// else. A plan whose facts cannot be read or written, or whose model list was
-// refused, is logged and the rest are still refreshed; the error returned names
-// every plan that failed.
+// else. A plan whose facts cannot be read or written, whose model list was
+// refused, or one of whose sources has stayed unread for more than
+// planrefresh.DefaultMaxUnreadDays is logged and the rest are still refreshed; the
+// error returned names every plan that failed. The leaderboard and the free feed
+// are one reading for every plan, so one that stayed unread that long fails the
+// run once, not once per plan.
 func refreshPlans(ctx context.Context, logger *slog.Logger, plans planFactsStore, refresher planrefresh.Refresher, named string) error {
 	rows, err := plans.List(ctx)
 	if err != nil {
@@ -108,6 +111,7 @@ func refreshPlans(ctx context.Context, logger *slog.Logger, plans planFactsStore
 	}
 	attempted := 0
 	var failed []error
+	var shared sharedUnread
 	for _, row := range rows {
 		if named != "" && row.Provider != named {
 			continue
@@ -135,6 +139,13 @@ func refreshPlans(ctx context.Context, logger *slog.Logger, plans planFactsStore
 			logger.Error("planModelListRefused", "provider", row.Provider, "err", refused.Error())
 			failed = append(failed, refused)
 		}
+		for _, u := range planrefresh.PlanUnread(facts, refused != nil) {
+			logUnread(logger, row.Provider, u)
+			if u.Stale {
+				failed = append(failed, fmt.Errorf("plan %s: %w", row.Provider, staleError(u)))
+			}
+		}
+		shared.note(facts)
 		logger.Info("planFactsWritten", "provider", row.Provider, "read_on", facts.ReadOn, "flags", fmt.Sprint(facts.Flags))
 	}
 	switch {
@@ -143,5 +154,25 @@ func refreshPlans(ctx context.Context, logger *slog.Logger, plans planFactsStore
 	case attempted == 0:
 		logger.Info("plansRefreshNothingToRead")
 	}
-	return errors.Join(failed...)
+	return errors.Join(append(failed, shared.errors()...)...)
+}
+
+// logUnread logs one plan's source that its read could not reach, with the plan
+// and the source as fields of their own and never the page's address, which can
+// carry credentials; the reason is in the facts document's own note.
+func logUnread(logger *slog.Logger, provider string, u planrefresh.Unread) {
+	attrs := []any{"provider", provider, "source", u.Name, "unread_since", u.Since, "days_unread", u.Days}
+	if u.Host != "" {
+		attrs = append(attrs, "host", u.Host)
+	}
+	logger.Warn("plansRefreshSourceUnread", attrs...)
+}
+
+// staleError says which source has stayed unread past the limit, and since when.
+func staleError(u planrefresh.Unread) error {
+	source := u.Name
+	if u.Host != "" {
+		source += " " + u.Host
+	}
+	return fmt.Errorf("%s has not been read since %s, over the %d-day limit", source, u.Since, planrefresh.DefaultMaxUnreadDays)
 }

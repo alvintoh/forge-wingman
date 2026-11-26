@@ -263,7 +263,11 @@ fails at its first step naming the first two when one is empty. `WINGMAN_LEADERB
 
 A plan whose model list was refused, or whose facts could not be read or written, makes the
 command exit 1 once the other plans are done, so the run goes red and GitHub's failed-run
-email is the notice. An unreadable leaderboard, free feed or settled-run read only logs
+email is the notice. So does a source that has stayed unread for more than 21 days (a vendor
+page, a model list, the leaderboard or the free feed): the error names the plan and the source,
+or the shared source once, and a source never read well is aged from the first run that found
+it unreadable. A plan with no API base to read a model list from is recorded as not applicable
+and is never aged, since that is how the plan is configured and not an outage. Until then an unreadable source or settled-run read only logs
 `plansRefreshSourceUnread` or `planRankingUnread` and the run stays green, so one vendor's
 outage does not fail the job; the run shows each such line as a warning annotation.
 
