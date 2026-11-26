@@ -1,0 +1,81 @@
+# Runs `runner plans-refresh` once a week: it reads each configured plan's own pages and
+# model list, the Coding leaderboard and the free feed, and writes one dated facts document
+# per plan. It proposes and decides nothing; a plan's record stays the owner CLI's to write.
+# A plan whose model list the refresh refused, or whose facts could not be read or written,
+# makes the command exit 1 after the other plans are refreshed, so the run goes red and
+# GitHub's failed-run notification is the alert; nothing else watches it.
+# The job's identity is wingman-plans-refresh: Firestore read/write outside the owner
+# database, and nothing else. It holds no secret, and the endpoints it reads need no key.
+# Needs the GCP_WIF_PROVIDER, GCP_PLANS_REFRESH_SERVICE_ACCOUNT and WINGMAN_ACCOUNT
+# variables; the service account exists only after infra/identity.tf is applied
+# (infra/README.md, Plans refresh).
+# WINGMAN_LEADERBOARD_URL and WINGMAN_FEED_URL are optional: unset, the runner reads its
+# built-in leaderboard and free feed.
+# The minute is off the hour because GitHub delays scheduled runs that start at the top of one.
+name: plans-refresh
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: plans-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    # The identity's provider admits main only; this keeps a dispatch from another ref from
+    # reaching authentication at all.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # An unset service account would make the auth action fall back to direct federation.
+      - name: Require the identity variables
+        env:
+          PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+          SERVICE_ACCOUNT: ${{ vars.GCP_PLANS_REFRESH_SERVICE_ACCOUNT }}
+        run: |
+          test -n "$PROVIDER" || { echo "::error::the GCP_WIF_PROVIDER variable is not set"; exit 1; }
+          test -n "$SERVICE_ACCOUNT" || { echo "::error::the GCP_PLANS_REFRESH_SERVICE_ACCOUNT variable is not set (infra/README.md, Plans refresh)"; exit 1; }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_PLANS_REFRESH_SERVICE_ACCOUNT }}
+
+      - run: go build -o "$RUNNER_TEMP/runner" ./cmd/runner
+
+      # An unreadable source does not fail the run, so its log lines become warnings; the
+      # runner's own exit status still decides the job.
+      - name: Refresh every configured plan
+        shell: bash
+        env:
+          GOOGLE_CLOUD_PROJECT: ${{ steps.auth.outputs.project_id }}
+          WINGMAN_ACCOUNT: ${{ vars.WINGMAN_ACCOUNT }}
+          LEADERBOARD_URL: ${{ vars.WINGMAN_LEADERBOARD_URL }}
+          FEED_URL: ${{ vars.WINGMAN_FEED_URL }}
+        run: |
+          set -euo pipefail
+          status=0
+          "$RUNNER_TEMP/runner" plans-refresh -leaderboard-url "$LEADERBOARD_URL" -feed-url "$FEED_URL" 2>&1 \
+            | tee "$RUNNER_TEMP/plans-refresh.log" || status=$?
+          grep -E 'plansRefreshSourceUnread|planRankingUnread' "$RUNNER_TEMP/plans-refresh.log" \
+            | while IFS= read -r line; do echo "::warning title=plans-refresh source unread::${line//$'\n'/ }"; done || true
+          exit "$status"
