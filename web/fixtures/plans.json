@@ -59,7 +59,6 @@
         "Long-context pricing over 100000 tokens on claude-haiku-5-5",
         "Peak-hour pricing on deepseek-v4.1-flash"
       ],
-      "feed_perks": "unconfirmed",
       "unshown_windows": [],
       "harnesses": [
         {
@@ -127,7 +126,6 @@
       "strongest": "unconfirmed",
       "strongest_cap_micros": "unconfirmed",
       "features": ["Free tier at $0"],
-      "feed_perks": "unconfirmed",
       "unshown_windows": [],
       "harnesses": [
         {

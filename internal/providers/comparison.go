@@ -182,9 +182,6 @@ type PlanComparison struct {
 	StrongestCap Field[money.Micros] `json:"strongest_cap_micros"`
 	// Features are what the configuration shows the plan has.
 	Features []string `json:"features"`
-	// FeedPerks are what the free feed lists the plan as including, as it states
-	// them: confirmed only when the feed's last read succeeded.
-	FeedPerks Field[[]string] `json:"feed_perks"`
 	// UnshownWindows are the names of configured windows no ceiling field shows:
 	// one of a period other than 5 hours, a week or a month, or a repeat of a
 	// period another window already fills.
@@ -215,9 +212,6 @@ func comparePlans(cfg Config, in ComparisonInput) []PlanComparison {
 func comparePlan(plan string, p Provider, in ComparisonInput) PlanComparison {
 	facts := in.Facts[plan]
 	c := PlanComparison{Plan: plan, Features: features(p)}
-	if facts.Feed.Source.ReadOK() {
-		c.FeedPerks = Known(append([]string{}, facts.Feed.Perks...))
-	}
 	if rec, ok := in.Plans[plan]; ok {
 		c.MonthlyPrice = Known(rec.Definition.MonthlyPrice)
 		if v := rec.RecordedVerdict(); v == VerdictAllowed || v == VerdictRestricted {

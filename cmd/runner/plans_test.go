@@ -40,6 +40,7 @@ func TestPlanCommandsRefuseInvalidInputBeforeOpeningFirestore(t *testing.T) {
 		"a definition with no billing":           {[]string{"plan-define", "-provider", "opencode-go", "-name", "n", "-price-usd", "15"}, "is not free, allowance or per-token"},
 		"an opt-in naming a malformed provider":  {[]string{"plan-optin", "-provider", "Open Code"}, "is not a provider name"},
 		"a refresh naming a malformed provider":  {[]string{"plans-refresh", "-provider", "Open Code"}, "is not a provider name"},
+		"a refresh still given the feed flag":    {[]string{"plans-refresh", "-feed-url", "", "-provider", "Open Code"}, "is not a provider name"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := run(context.Background(), logger, tt.args, planEnv("octo"))

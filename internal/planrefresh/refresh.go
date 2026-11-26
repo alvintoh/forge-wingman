@@ -14,18 +14,15 @@ import (
 )
 
 // Refresher reads one plan's sources and diffs them against the facts last
-// written for it. The Coding leaderboard and the free feed are one document for
-// every plan, so a run reads each once and sets it here.
+// written for it. The Coding leaderboard is one document for every plan, so a run
+// reads it once and sets it here.
 type Refresher struct {
 	// Vendor reads the plan's own pages and its models endpoint.
 	Vendor Vendor
-	// Board is the leaderboard as read and Feed is the free feed as read, both
-	// shared by every plan in the run; BoardErr and FeedErr are why one could not
-	// be read, nil when it was.
+	// Board is the leaderboard as read, shared by every plan in the run; BoardErr
+	// is why it could not be read, nil when it was.
 	Board    BoardReport
 	BoardErr error
-	Feed     FeedReport
-	FeedErr  error
 	// Now is the clock the read date comes from; nil means time.Now.
 	Now func() time.Time
 	// RateCard is the vendor's ids for the models a plan's rate card prices,
@@ -58,7 +55,6 @@ func (r Refresher) Refresh(ctx context.Context, provider string, def providers.D
 	facts.Pages = r.pages(ctx, def, last, on)
 	var refused error
 	facts.Models, facts.Leaderboard, refused = r.models(ctx, provider, last, on)
-	facts.Feed = r.feed(provider, def, last, on)
 	facts.Ranking = r.ranking(ctx, provider, last, on, refused)
 	return facts, refused
 }
@@ -129,10 +125,9 @@ func (r Refresher) models(ctx context.Context, provider string, last providers.F
 	if err != nil {
 		names = modelNames(last.Models.Models)
 	}
-	feed := r.Feed.Plans[provider]
 	models := make([]providers.ModelFacts, 0, len(names))
 	for _, name := range names {
-		models = append(models, r.model(name, feed, last))
+		models = append(models, r.model(name, names, last))
 	}
 	facts := providers.ModelsFacts{Models: models, Refused: pending}
 	facts.Source = classify(on, err, modelChanges(last.Models.Models, models), last.Models.Source)
@@ -175,91 +170,38 @@ func (r Refresher) rateCard(provider string) []string {
 	return r.RateCard(provider)
 }
 
-// model is one model's facts: whether the feed lists it, and the leaderboard's
-// reading of it. A source that could not be read keeps what the last document
-// recorded for it, so a model never reads as unlisted because its source went
-// quiet.
-func (r Refresher) model(name string, feed FeedPlan, last providers.Facts) providers.ModelFacts {
-	before, seen := last.Model(name)
-	facts := providers.ModelFacts{Model: name, Feed: listsModel(feed, name)}
-	if seen && r.FeedErr != nil {
-		facts.Feed = before.Feed
-	}
-	if seen && r.BoardErr != nil {
+// model is one model's facts: the leaderboard's reading of it, among names, the
+// plan's whole model list. A leaderboard that could not be read keeps what the
+// last document recorded for the model, so a model never reads as unscored
+// because its source went quiet.
+func (r Refresher) model(name string, names []string, last providers.Facts) providers.ModelFacts {
+	facts := providers.ModelFacts{Model: name}
+	if before, seen := last.Model(name); seen && r.BoardErr != nil {
 		facts.Leaderboard = before.Leaderboard
 	} else {
-		facts.Leaderboard = r.Board.Models[name]
+		facts.Leaderboard = boardScore(r.Board.Models, name, names)
 	}
 	return facts
 }
 
-// listsModel reports whether the free feed lists model among the plan's own,
-// matched by the name the feed states and by the same name's own last segment.
-func listsModel(feed FeedPlan, model string) bool {
-	short := bare(model)
-	for _, m := range feed.Models {
-		m = strings.TrimSpace(m)
-		if m == model || bare(m) == short {
-			return true
+// boardScore is the leaderboard's reading of the model name, by the id the
+// vendor states, else by that id's bare name: its own segment after the last "/",
+// without a ":free" suffix. The bare name is a match only where no other model of
+// the plan has it too, so one score is never attributed to two models.
+func boardScore(board map[string]providers.Score, name string, names []string) providers.Score {
+	if score, ok := board[name]; ok {
+		return score
+	}
+	short := bare(name)
+	if short == name {
+		return providers.Score{}
+	}
+	for _, other := range names {
+		if other != name && bare(other) == short {
+			return providers.Score{}
 		}
 	}
-	return false
-}
-
-// feed is the free feed's own report of the plan, diffed against the last
-// document. Nothing here supplies a figure the document records: where the feed's
-// own figures differ from the recorded plan's, the recorded plan's stand and the
-// difference is named.
-func (r Refresher) feed(provider string, def providers.Definition, last providers.Facts, on string) providers.FeedFacts {
-	if r.FeedErr != nil {
-		carried := last.Feed
-		carried.Source = classify(on, r.FeedErr, nil, last.Feed.Source)
-		return carried
-	}
-	plan, listed := r.Feed.Plans[provider]
-	if !listed {
-		facts := providers.FeedFacts{}
-		facts.Source = classify(on, nil, feedChanges(last.Feed, facts), last.Feed.Source)
-		return facts
-	}
-	facts := providers.FeedFacts{
-		Price:          plan.Price,
-		LimitBehaviour: plan.LimitBehaviour,
-		Disagreements:  disagreements(def, plan),
-		Models:         plan.Models,
-		Perks:          plan.Perks,
-	}
-	facts.Source = classify(on, nil, feedChanges(last.Feed, facts), last.Feed.Source)
-	return facts
-}
-
-// disagreements names where the free feed's own figures differ from the recorded
-// plan's, which are the figures the facts document records.
-func disagreements(def providers.Definition, plan FeedPlan) []string {
-	var found []string
-	if plan.Price != def.MonthlyPrice {
-		found = append(found, fmt.Sprintf("price: the feed states $%.2f a month, the recorded plan $%.2f",
-			plan.Price.USD(), def.MonthlyPrice.USD()))
-	}
-	if plan.LimitBehaviour != "" && plan.LimitBehaviour != def.LimitBehaviour {
-		found = append(found, fmt.Sprintf("limit: the feed states %s, the recorded plan %s",
-			plan.LimitBehaviour, def.LimitBehaviour))
-	}
-	return found
-}
-
-// feedChanges names what the feed's own report moved: the figures it states, the
-// models it lists and the perks it names.
-func feedChanges(before, now providers.FeedFacts) []string {
-	changes := listChanges("model", before.Models, now.Models)
-	changes = append(changes, listChanges("perk", before.Perks, now.Perks)...)
-	if before.Price != now.Price {
-		changes = append(changes, fmt.Sprintf("price $%.2f -> $%.2f", before.Price.USD(), now.Price.USD()))
-	}
-	if before.LimitBehaviour != now.LimitBehaviour {
-		changes = append(changes, "limit "+orNone(string(before.LimitBehaviour))+" -> "+orNone(string(now.LimitBehaviour)))
-	}
-	return changes
+	return board[short]
 }
 
 // modelChanges names the models a read added to and dropped from the vendor's own
@@ -341,22 +283,6 @@ func orNone(s string) string {
 	return s
 }
 
-// listChanges names the entries a source's own list added and dropped.
-func listChanges(what string, before, now []string) []string {
-	var changes []string
-	for _, name := range now {
-		if !slices.Contains(before, name) {
-			changes = append(changes, "added "+what+" "+name)
-		}
-	}
-	for _, name := range before {
-		if !slices.Contains(now, name) {
-			changes = append(changes, "dropped "+what+" "+name)
-		}
-	}
-	return changes
-}
-
 // index is a list of model facts by their own model id.
 func index(models []providers.ModelFacts) map[string]providers.ModelFacts {
 	byModel := make(map[string]providers.ModelFacts, len(models))
@@ -399,9 +325,9 @@ func classify(on string, err error, changes []string, last providers.Source) pro
 	return providers.Source{State: state, LastGoodReadOn: on, Changes: changes}
 }
 
-// bare is the name a leaderboard or a feed is likely to carry a model under: its
-// own segment after the last "/", without the ":free" suffix a plan's model id
-// may carry. A source that names the model differently is recorded as one that
+// bare is the name a leaderboard is likely to carry a model under: its own
+// segment after the last "/", without the ":free" suffix a plan's model id may
+// carry. A leaderboard that names the model differently is recorded as one that
 // does not carry it, rather than matched to a guess.
 func bare(model string) string {
 	name := model[strings.LastIndexByte(model, '/')+1:]

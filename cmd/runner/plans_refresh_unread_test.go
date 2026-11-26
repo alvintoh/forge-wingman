@@ -220,9 +220,9 @@ func TestRefreshPlansFailsOnlyThePlanWhoseSourceIsStale(t *testing.T) {
 	}
 }
 
-// TestRefreshPlansFailsASharedSourceOnceForEveryPlan asserts a leaderboard and a
-// free feed unread for 22 days each fail the run once however many plans share
-// them, and neither does at 21 days.
+// TestRefreshPlansFailsASharedSourceOnceForEveryPlan asserts a leaderboard unread
+// for 22 days fails the run once however many plans share it, and does not at 21
+// days.
 func TestRefreshPlansFailsASharedSourceOnceForEveryPlan(t *testing.T) {
 	for _, tt := range []struct {
 		since string
@@ -236,19 +236,19 @@ func TestRefreshPlansFailsASharedSourceOnceForEveryPlan(t *testing.T) {
 			for _, plan := range []string{"first", "second"} {
 				rows = append(rows, credentialed("http://BASE", plan))
 				lists[plan] = modelList("glm-5")
-				last[plan] = providers.Facts{ReadOn: "2026-10-07", Leaderboard: src, Feed: providers.FeedFacts{Source: src}}
+				last[plan] = providers.Facts{ReadOn: "2026-10-07", Leaderboard: src}
 			}
 			plans, _, err := unreadRun(t, rows, last, lists, func(r *planrefresh.Refresher) {
-				r.BoardErr, r.FeedErr = context.DeadlineExceeded, context.DeadlineExceeded
+				r.BoardErr = context.DeadlineExceeded
 			})
 			if !tt.red {
 				if err != nil {
-					t.Fatalf("err = %v, want shared sources unread for 21 days green", err)
+					t.Fatalf("err = %v, want a shared source unread for 21 days green", err)
 				}
 				return
 			}
-			if err == nil || strings.Count(err.Error(), planrefresh.SourceLeaderboard) != 1 || strings.Count(err.Error(), planrefresh.SourceFreeFeed) != 1 {
-				t.Fatalf("err = %v, want each shared source named once", err)
+			if err == nil || strings.Count(err.Error(), planrefresh.SourceLeaderboard) != 1 {
+				t.Fatalf("err = %v, want the shared source named once", err)
 			}
 			if _, ok := plans.facts["second"]; !ok {
 				t.Fatal("the second plan was not refreshed before the run failed")

@@ -52,14 +52,14 @@ func (p *recordingPlans) PutFacts(_ context.Context, provider, date string, fact
 	return nil
 }
 
-// planSources serves one plan's page, model list, leaderboard and free feed, so
-// that a refresh has all four to read.
+// planSources serves one plan's page, model list and leaderboard, so that a
+// refresh has all three to read.
 func planSources(t *testing.T) string {
 	t.Helper()
 	return listSources(t, map[string]string{"": `{"data":[{"id":"glm-5"}]}`})
 }
 
-// listSources serves planSources' page, leaderboard and feed, and each plan's own
+// listSources serves planSources' page and leaderboard, and each plan's own
 // model list at /<plan>/models from lists, keyed by the plan's name; the key ""
 // answers /models.
 func listSources(t *testing.T, lists map[string]string) string {
@@ -71,11 +71,8 @@ func listSources(t *testing.T, lists map[string]string) string {
 		}
 		switch r.URL.Path {
 		case "/leaderboard":
-			_, _ = io.WriteString(w, `{"benchmark":"Coding","date":"2026-10-12","models":[`+
-				`{"model":"glm-5","score":61.2,"provenance":"independent","margin":"±1.8"}]}`)
-		case "/feed":
-			_, _ = io.WriteString(w, `{"plans":[{"provider":"configured","price_usd":15,`+
-				`"limit_behaviour":"hard-stop","models":["glm-5"],"perks":["No training on your data"]}]}`)
+			_, _ = io.WriteString(w, `{"category_id":"code","method":"trueskill","methodology":{"version":"3.1"},`+
+				`"models":[{"model_id":"glm-5","conservative":61.2,"sigma":1.8,"games_played":9,"games_available":70}]}`)
 		default:
 			_, _ = io.WriteString(w, `<html><body><div id="plans">GOAT $15 a month</div></body></html>`)
 		}
@@ -94,10 +91,6 @@ func refresherFor(t *testing.T, base string) planrefresh.Refresher {
 	}
 	var err error
 	r.Board, err = planrefresh.Board{Endpoint: base + "/leaderboard", HTTP: http.DefaultClient}.Read(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.Feed, err = planrefresh.Feed{Endpoint: base + "/feed", HTTP: http.DefaultClient}.Read(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -626,5 +619,44 @@ func TestRefreshPlansLogsSettledRunsItCannotRead(t *testing.T) {
 	}
 	if n := strings.Count(logged.String(), "planRankingUnread"); n != 1 {
 		t.Fatalf("logged %d times, want once", n)
+	}
+}
+
+// TestReadLeaderboardLogsAnUnreadOneUnderTheWorkflowsToken asserts a leaderboard
+// that answers 404 is logged as plansRefreshSourceUnread for the leaderboard, the
+// token plans-refresh.yml greps for its warning annotation, and one that answers
+// logs nothing.
+func TestReadLeaderboardLogsAnUnreadOneUnderTheWorkflowsToken(t *testing.T) {
+	var logged bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logged, nil))
+	missing := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(missing.Close)
+	if _, err := readLeaderboard(context.Background(), logger, planrefresh.Board{Endpoint: missing.URL, HTTP: http.DefaultClient}); err == nil {
+		t.Fatal("a 404 leaderboard was read")
+	}
+	if line := logged.String(); !strings.Contains(line, "plansRefreshSourceUnread") || !strings.Contains(line, "source=leaderboard") {
+		t.Fatalf("logged %q, want plansRefreshSourceUnread for the leaderboard", line)
+	}
+
+	logged.Reset()
+	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"models":[{"model_id":"a","conservative":1}]}`)
+	}))
+	t.Cleanup(ok.Close)
+	if _, err := readLeaderboard(context.Background(), logger, planrefresh.Board{Endpoint: ok.URL, HTTP: http.DefaultClient}); err != nil || logged.Len() != 0 {
+		t.Fatalf("err %v, logged %q, want a read leaderboard to log nothing", err, logged.String())
+	}
+}
+
+// TestPlansRefreshWarnsOfTheRetiredFeedFlag asserts a non-empty -feed-url is logged
+// as ignored, so a stale repository variable surfaces, and an empty one is not.
+func TestPlansRefreshWarnsOfTheRetiredFeedFlag(t *testing.T) {
+	for value, want := range map[string]bool{"https://feed.example": true, "": false} {
+		var logged bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&logged, nil))
+		_ = run(context.Background(), logger, []string{"plans-refresh", "-feed-url", value, "-provider", "Open Code"}, planEnv("octo"))
+		if got := strings.Contains(logged.String(), "plansRefreshFlagIgnored"); got != want {
+			t.Errorf("-feed-url %q: logged %q, want a warning: %t", value, logged.String(), want)
+		}
 	}
 }

@@ -7,10 +7,10 @@ import (
 	"github.com/alvintoh/forge-wingman/internal/providers"
 )
 
-// sharedUnread collects the shared sources, the leaderboard and the free feed,
-// that stayed unread for more than planrefresh.DefaultMaxUnreadDays. Every plan's
-// facts records the same reading of each, so a source stale in several plans'
-// facts is kept once and fails the run once.
+// sharedUnread collects the shared sources, the leaderboard, that stayed unread
+// for more than planrefresh.DefaultMaxUnreadDays. Every plan's facts records the
+// same reading of it, so a source stale in several plans' facts is kept once and
+// fails the run once.
 type sharedUnread struct{ stale []planrefresh.Unread }
 
 // note adds each shared source facts records as stale and not already noted.
