@@ -1,7 +1,9 @@
 package planrefresh
 
 import (
+	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -46,6 +48,7 @@ type Refresher struct {
 // one to write.
 func (r Refresher) Refresh(ctx context.Context, provider string, def providers.Definition, last providers.Facts) (providers.Facts, error) {
 	on := r.now().UTC().Format(dateLayout)
+	last = withLegacyUnreadDates(last)
 	facts := providers.Facts{
 		ReadOn: on,
 		Price:  def.MonthlyPrice,
@@ -374,10 +377,20 @@ func modelNames(models []providers.ModelFacts) []string {
 
 // classify is one source's read as a source record: today's date and the changes
 // when it was read, and the previous state with its last good read date carried
-// forward when it was not.
+// forward when it was not. A source with no good read yet records the date it
+// was first found unreadable instead, so it can be aged, and a source the plan
+// has no way to read is recorded as not applicable and never aged.
 func classify(on string, err error, changes []string, last providers.Source) providers.Source {
 	if err != nil {
-		return providers.Source{State: providers.ReadCouldNotRead, LastGoodReadOn: last.LastGoodReadOn, Note: providers.CapText(err.Error(), maxNoteBytes)}
+		note := providers.CapText(err.Error(), maxNoteBytes)
+		if errors.Is(err, ErrNoModelList) {
+			return providers.Source{State: providers.ReadNotApplicable, LastGoodReadOn: last.LastGoodReadOn, Note: note}
+		}
+		unread := providers.Source{State: providers.ReadCouldNotRead, LastGoodReadOn: last.LastGoodReadOn, Note: note}
+		if unread.LastGoodReadOn == "" {
+			unread.FirstUnreadOn = cmp.Or(last.FirstUnreadOn, on)
+		}
+		return unread
 	}
 	state := providers.ReadUnchanged
 	if len(changes) > 0 {

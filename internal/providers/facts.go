@@ -19,6 +19,10 @@ const (
 	// ReadCouldNotRead is a source this read could not reach: the figures it last
 	// answered with stand, and LastGoodReadOn says when they were read.
 	ReadCouldNotRead ReadState = "could-not-read"
+	// ReadNotApplicable is a source the plan has no way to read, such as a model
+	// list for a plan with no API base: a fact about the plan, not an outage, so it
+	// is never aged and the figures beside it are carried forward.
+	ReadNotApplicable ReadState = "not-applicable"
 )
 
 // Source is one source's outcome in a facts document, which every source a
@@ -29,6 +33,11 @@ type Source struct {
 	// successfully: this read's date when it succeeded, and the date carried
 	// forward from the facts before it when it did not.
 	LastGoodReadOn string `firestore:"last_good_read_on"`
+	// FirstUnreadOn is the yyyy-mm-dd date a source that has never been read well
+	// was first found unreadable, carried forward until a read succeeds. It is set
+	// only while LastGoodReadOn is empty, and is what a source with no good read yet
+	// is aged from.
+	FirstUnreadOn string `firestore:"first_unread_on"`
 	// Changes names what this read found different from the facts before it, empty
 	// when nothing did or the source could not be read.
 	Changes []string `firestore:"changes"`

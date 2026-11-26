@@ -266,6 +266,33 @@ func TestRefreshCarriesTheLastGoodReadForward(t *testing.T) {
 	}
 }
 
+// TestRefreshDatesASourceNeverReadFromItsFirstFailure asserts a source with no
+// good read records the date it was first found unreadable, keeps that date
+// across later failed reads, and drops it once a read succeeds; and that a source
+// read well once records no such date, its last good read dating it instead.
+func TestRefreshDatesASourceNeverReadFromItsFirstFailure(t *testing.T) {
+	s, base := newSources(t)
+	def := plan(base)
+	s.page.stop(http.StatusInternalServerError)
+	first := refresh(t, s.refresher(t, base, readOn), def, providers.Facts{})
+	later := refresh(t, s.refresher(t, base, readOn.AddDate(0, 0, 7)), def, first)
+	if got := later.Pages[0].Source; got.FirstUnreadOn != "2026-10-14" || got.LastGoodReadOn != "" {
+		t.Fatalf("page source is %+v, want it dated from the first failure with no good read", got)
+	}
+
+	s.page.set(pageReply)
+	read := refresh(t, s.refresher(t, base, readOn.AddDate(0, 0, 14)), def, later)
+	if got := read.Pages[0].Source; got.FirstUnreadOn != "" || got.LastGoodReadOn != "2026-10-28" {
+		t.Fatalf("page source is %+v, want the first-failure date dropped once read", got)
+	}
+
+	s.page.stop(http.StatusInternalServerError)
+	again := refresh(t, s.refresher(t, base, readOn.AddDate(0, 0, 21)), def, read)
+	if got := again.Pages[0].Source; got.FirstUnreadOn != "" || got.LastGoodReadOn != "2026-10-28" {
+		t.Fatalf("page source is %+v, want a source once read dated by that read alone", got)
+	}
+}
+
 // TestRefreshKeepsTheVendorsFigureWhereTheFeedDisagrees asserts the feed's own
 // figures are kept beside the recorded plan's, that the recorded plan's are the
 // ones the document records, and that each difference is named.

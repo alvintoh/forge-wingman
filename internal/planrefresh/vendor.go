@@ -3,6 +3,7 @@ package planrefresh
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -20,6 +21,11 @@ const (
 	// maxModelsBytes caps what a models endpoint's reply is read as.
 	maxModelsBytes = 1 << 20
 )
+
+// ErrNoModelList is why a plan's model list cannot be read at all: the plan has
+// no API base to read it from. It is a fact about the plan, which a refresh
+// records as not applicable rather than as a source that went quiet.
+var ErrNoModelList = errors.New("has no API base to read a model list from")
 
 // Vendor reads a plan's own sources: each vendor page its definition names, and
 // the vendor's OpenAI-compatible models endpoint.
@@ -52,7 +58,7 @@ func (v Vendor) Models(ctx context.Context, provider string) ([]string, error) {
 		base = v.Base(provider)
 	}
 	if base == "" {
-		return nil, fmt.Errorf("provider %s has no API base to read a model list from", provider)
+		return nil, fmt.Errorf("provider %s %w", provider, ErrNoModelList)
 	}
 	body, err := readBody(ctx, v.HTTP, strings.TrimSuffix(base, "/")+"/models", maxModelsBytes)
 	if err != nil {
