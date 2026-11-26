@@ -1,7 +1,6 @@
 // Package planrefresh reads what a provider plan's own sources say about it — the
-// vendor's pages and models endpoint, the Coding leaderboard's scores and the
-// tokenplans free feed — and turns one read of them into the dated facts document
-// the owner reads.
+// vendor's pages and models endpoint and the Coding leaderboard's scores — and
+// turns one read of them into the dated facts document the owner reads.
 //
 // A read that fails is never an error here: the source is recorded as
 // could-not-read, with the date it was last read and the figures it last answered
@@ -19,26 +18,24 @@ import (
 	"net/netip"
 	"syscall"
 	"time"
-
-	"github.com/alvintoh/forge-wingman/internal/providers"
 )
 
-// dateLayout is the yyyy-mm-dd shape a read date and a leaderboard's own date are
-// stored in.
+// dateLayout is the yyyy-mm-dd shape a read date is stored in.
 const dateLayout = "2006-01-02"
 
 const (
+	// userAgent names the refresh to every source it reads.
+	userAgent = "forge-wingman-plans-refresh"
 	// requestTimeout bounds one request a refresh makes, so a source that hangs
 	// cannot hold the weekly read open.
 	requestTimeout = 30 * time.Second
 	// maxRedirects is how many same-host redirects a read follows.
 	maxRedirects = 3
 
-	// maxModels, maxPerks and maxFieldBytes cap what a source's own lists and
-	// strings are stored as, so a source cannot carry a facts document past what
-	// the store accepts.
+	// maxModels and maxFieldBytes cap what a source's own lists and strings are
+	// stored as, so a source cannot carry a facts document past what the store
+	// accepts.
 	maxModels     = 500
-	maxPerks      = 50
 	maxFieldBytes = 200
 	// maxNoteBytes caps the reason a source could not be read.
 	maxNoteBytes = 500
@@ -105,18 +102,6 @@ func sameHostHTTPS(req *http.Request, via []*http.Request) error {
 	return nil
 }
 
-// capList caps a source's own list at n entries, each at maxFieldBytes.
-func capList(items []string, n int) []string {
-	if len(items) > n {
-		items = items[:n]
-	}
-	capped := make([]string, len(items))
-	for i, item := range items {
-		capped[i] = providers.CapText(item, maxFieldBytes)
-	}
-	return capped
-}
-
 // readBody reads url, refusing any status but 200 and any body over limit bytes,
 // so one source answering with an error page or a flood is recorded as unread
 // rather than parsed.
@@ -125,6 +110,7 @@ func readBody(ctx context.Context, client *http.Client, url string, limit int) (
 	if err != nil {
 		return nil, fmt.Errorf("building the request for %s: %w", url, err)
 	}
+	req.Header.Set("User-Agent", userAgent)
 	if client == nil {
 		client = NewClient()
 	}

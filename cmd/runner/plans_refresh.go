@@ -28,7 +28,7 @@ type planFactsStore interface {
 }
 
 // plansRefresh reads each configured plan's own pages and model list, the Coding
-// leaderboard's scores and the free feed, and the settled runs it ranks the
+// leaderboard's scores, and the settled runs it ranks the
 // plan's models from, diffs them against the facts last recorded for the plan
 // and writes a new dated facts document. The ranking is a proposal for the owner
 // to apply: it informs the owner and changes nothing about which provider or
@@ -37,9 +37,14 @@ func plansRefresh(ctx context.Context, logger *slog.Logger, e env, args []string
 	fs := flag.NewFlagSet("plans-refresh", flag.ContinueOnError)
 	provider := fs.String("provider", "", "refresh only this plan (default: every configured plan)")
 	leaderboard := fs.String("leaderboard-url", "", "the Coding leaderboard to read scores from")
-	feedURL := fs.String("feed-url", "", "the free feed to read as a change signal")
+	// The free feed is no longer read, but plans-refresh.yml still passes this flag,
+	// and an undefined one would fail every run.
+	feedURL := fs.String("feed-url", "", "ignored: the free feed is no longer read")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *feedURL != "" {
+		logger.Warn("plansRefreshFlagIgnored", "flag", "feed-url")
 	}
 	fsc, closeStore, err := openStore(ctx, e, *provider, *provider != "", nil)
 	if err != nil {
@@ -48,26 +53,28 @@ func plansRefresh(ctx context.Context, logger *slog.Logger, e env, args []string
 	defer closeStore()
 	plans := store.NewPlans(fsc)
 
-	// The leaderboard and the free feed are one document for every plan, so each
-	// is read once here and the readings handed to every plan's refresh.
+	// The leaderboard is one document for every plan, so it is read once here and
+	// the reading handed to every plan's refresh.
 	client := planrefresh.NewClient()
 	refresher := newRefresher(client, store.NewRecords(fsc).WithLogger(logger), logger)
-	board := planrefresh.Board{Endpoint: *leaderboard, HTTP: client}
-	refresher.Board, refresher.BoardErr = board.Read(ctx)
-	if refresher.BoardErr != nil {
-		logger.Warn("plansRefreshSourceUnread", "source", planrefresh.SourceLeaderboard, "err", refresher.BoardErr.Error())
-	}
-	feed := planrefresh.Feed{Endpoint: *feedURL, HTTP: client}
-	refresher.Feed, refresher.FeedErr = feed.Read(ctx)
-	if refresher.FeedErr != nil {
-		logger.Warn("plansRefreshSourceUnread", "source", planrefresh.SourceFreeFeed, "err", refresher.FeedErr.Error())
-	}
+	refresher.Board, refresher.BoardErr = readLeaderboard(ctx, logger, planrefresh.Board{Endpoint: *leaderboard, HTTP: client})
 	return refreshPlans(ctx, logger, plans, refresher, *provider)
+}
+
+// readLeaderboard reads the leaderboard. One that cannot be read is logged under
+// the token plans-refresh.yml turns into a warning annotation, and returned for
+// the refresh to record as could-not-read.
+func readLeaderboard(ctx context.Context, logger *slog.Logger, board planrefresh.Board) (planrefresh.BoardReport, error) {
+	report, err := board.Read(ctx)
+	if err != nil {
+		logger.Warn("plansRefreshSourceUnread", "source", planrefresh.SourceLeaderboard, "err", err.Error())
+	}
+	return report, err
 }
 
 // newRefresher is the refresher a plans-refresh run starts from: the vendor read
 // through client, the real clock, and the plans' models ranked from the settled
-// runs records holds. The run then sets the shared leaderboard and feed readings.
+// runs records holds. The run then sets the shared leaderboard reading.
 func newRefresher(client *http.Client, records dispatcher.ModelRecords, logger *slog.Logger) planrefresh.Refresher {
 	return planrefresh.Refresher{
 		Vendor: planrefresh.Vendor{HTTP: client},
@@ -101,9 +108,9 @@ func settledRanker(records dispatcher.ModelRecords, logger *slog.Logger) planref
 // else. A plan whose facts cannot be read or written, whose model list was
 // refused, or one of whose sources has stayed unread for more than
 // planrefresh.DefaultMaxUnreadDays is logged and the rest are still refreshed; the
-// error returned names every plan that failed. The leaderboard and the free feed
-// are one reading for every plan, so one that stayed unread that long fails the
-// run once, not once per plan.
+// error returned names every plan that failed. The leaderboard is one reading
+// for every plan, so it stayed unread that long fails the run once, not once per
+// plan.
 func refreshPlans(ctx context.Context, logger *slog.Logger, plans planFactsStore, refresher planrefresh.Refresher, named string) error {
 	rows, err := plans.List(ctx)
 	if err != nil {

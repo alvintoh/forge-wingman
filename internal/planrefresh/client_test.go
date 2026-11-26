@@ -124,3 +124,23 @@ func TestReadBodyRefusesABodyOverTheLimit(t *testing.T) {
 		t.Fatalf("read %d bytes, err %v, want a body at the limit read", len(body), err)
 	}
 }
+
+// TestReadsNameThemselvesToTheSource asserts every read, the leaderboard's and the
+// vendor's alike, sends the refresh's own User-Agent rather than Go's default.
+func TestReadsNameThemselvesToTheSource(t *testing.T) {
+	var agents []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		agents = append(agents, r.UserAgent())
+		_, _ = w.Write([]byte(`{"models":[{"model_id":"a","conservative":1}],"data":[{"id":"a"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	if _, err := (Board{Endpoint: srv.URL, HTTP: srv.Client()}).Read(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Vendor{HTTP: srv.Client(), Base: func(string) string { return srv.URL }}).Models(context.Background(), "p"); err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 2 || agents[0] != "forge-wingman-plans-refresh" || agents[1] != "forge-wingman-plans-refresh" {
+		t.Fatalf("user agents %q, want the refresh's own on both reads", agents)
+	}
+}

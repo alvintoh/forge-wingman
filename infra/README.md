@@ -92,9 +92,11 @@ able to invoke the job.
 comma-separated provider/model. Unset, it reviews with
 `opencode-go/muse-spark-1.3-contributor`.
 
-`WINGMAN_LEADERBOARD_URL` and `WINGMAN_FEED_URL` are optional: the Coding leaderboard and the
-free feed `plans-refresh.yml` reads. Unset, both are empty and the runner reads the endpoints
-built into it (`internal/planrefresh`).
+`WINGMAN_LEADERBOARD_URL` is optional: the Coding leaderboard `plans-refresh.yml` reads. Leave
+it unset to use the endpoint built into the runner (`internal/planrefresh`); a set value
+overrides it. `WINGMAN_FEED_URL` is ignored: the free feed was removed, and the workflow still
+passes the variable to a flag the runner accepts, logging `plansRefreshFlagIgnored` when it is
+non-empty. Delete the variable.
 
 `WINGMAN_AGENT_IMAGE` is required by the build and plan stages and optional for the rest:
 an agent image pinned by digest that provides omp, git and sh. It runs those
@@ -258,16 +260,17 @@ reach the owner database.
 
 The job needs `GCP_WIF_PROVIDER`, `GCP_PLANS_REFRESH_SERVICE_ACCOUNT` and `WINGMAN_ACCOUNT`
 (already set repository-wide: the owner commands refuse to open the store without it), and
-fails at its first step naming the first two when one is empty. `WINGMAN_LEADERBOARD_URL` and
-`WINGMAN_FEED_URL` are optional.
+fails at its first step naming the first two when one is empty. `WINGMAN_LEADERBOARD_URL` is
+optional.
 
 A plan whose model list was refused, or whose facts could not be read or written, makes the
 command exit 1 once the other plans are done, so the run goes red and GitHub's failed-run
 email is the notice. So does a source that has stayed unread for more than 21 days (a vendor
-page, a model list, the leaderboard or the free feed): the error names the plan and the source,
-or the shared source once, and a source never read well is aged from the first run that found
-it unreadable. A plan with no API base to read a model list from is recorded as not applicable
-and is never aged, since that is how the plan is configured and not an outage. Until then an unreadable source or settled-run read only logs
+page, a model list or the leaderboard): the error names the plan and the source, or the shared
+source once, and a source never read well is aged from the first run that found it unreadable.
+A plan with no API base to read a model list from is recorded as not applicable and is never
+aged, since that is how the plan is configured and not an outage. Until then an unreadable
+source or settled-run read only logs
 `plansRefreshSourceUnread` or `planRankingUnread` and the run stays green, so one vendor's
 outage does not fail the job; the run shows each such line as a warning annotation.
 

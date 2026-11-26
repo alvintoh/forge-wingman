@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -25,8 +24,7 @@ var readOn = time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
 const (
 	pageReply   = `<html><body><div id="plans">GOAT $15 a month</div></body></html>`
 	modelsReply = `{"data":[{"id":"glm-5"}]}`
-	boardNow    = `{"benchmark":"Coding","date":"2026-10-12","models":[{"model":"glm-5","score":61.2,"provenance":"independent","margin":"±1.8"}]}`
-	feedNow     = `{"plans":[{"provider":"command-code","price_usd":15,"limit_behaviour":"hard-stop","models":["glm-5"],"perks":["No training on your data"]}]}`
+	boardNow    = `{"category_id":"code","method":"trueskill","methodology":{"version":"3.1"},"models":[{"model_id":"glm-5","conservative":61.2,"sigma":1.8,"games_played":9,"games_available":70,"benchmark_results":{"b":{"source":"self_reported"}}}]}`
 )
 
 // reply is one source's answer, which a test replaces between reads to make the
@@ -59,22 +57,20 @@ func (r *reply) stop(status int) {
 	r.status, r.body = status, "unavailable"
 }
 
-// sources is one test's four sources, each on its own path so one can move or
+// sources is one test's three sources, each on its own path so one can move or
 // stop answering while the others answer as before.
 type sources struct {
-	page, models, board, feed *reply
+	page, models, board *reply
 }
 
-// newSources serves one plan's page at /pricing, its model list at /models, the
-// leaderboard at /leaderboard and the feed at /feed, and returns the base URL
-// they share.
+// newSources serves one plan's page at /pricing, its model list at /models and
+// the leaderboard at /leaderboard, and returns the base URL they share.
 func newSources(t *testing.T) (*sources, string) {
 	t.Helper()
 	s := &sources{
 		page:   &reply{status: http.StatusOK, body: pageReply},
 		models: &reply{status: http.StatusOK, body: modelsReply},
 		board:  &reply{status: http.StatusOK, body: boardNow},
-		feed:   &reply{status: http.StatusOK, body: feedNow},
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.of(r.URL.Path).answer(w)
@@ -90,8 +86,6 @@ func (s *sources) of(path string) *reply {
 		return s.models
 	case "/leaderboard":
 		return s.board
-	case "/feed":
-		return s.feed
 	default:
 		return s.page
 	}
@@ -106,7 +100,6 @@ func (s *sources) refresher(t *testing.T, base string, on time.Time) Refresher {
 		Now:    func() time.Time { return on },
 	}
 	r.Board, r.BoardErr = Board{Endpoint: base + "/leaderboard", HTTP: http.DefaultClient}.Read(context.Background())
-	r.Feed, r.FeedErr = Feed{Endpoint: base + "/feed", HTTP: http.DefaultClient}.Read(context.Background())
 	return r
 }
 
@@ -136,14 +129,14 @@ func plan(base string) providers.Definition {
 
 // boardAt is the leaderboard's reply with its model's figure moved.
 func boardAt(score string) string {
-	return `{"benchmark":"Coding","date":"2026-10-12","models":[{"model":"glm-5","score":` + score +
-		`,"provenance":"independent","margin":"±1.8"}]}`
+	return `{"category_id":"code","method":"trueskill","methodology":{"version":"3.1"},"models":[{"model_id":"glm-5","conservative":` + score +
+		`,"sigma":1.8,"games_played":9,"games_available":70,"benchmark_results":{"b":{"source":"self_reported"}}}]}`
 }
 
 // TestRefreshReadsEachSourceIntoTheDocument asserts one read records the vendor's
-// own words, its model list, the leaderboard's reading of the model and the
-// feed's report, under a read date from the refresher's own clock, with the
-// plan's own price and limit behaviour and the flags plan-list shows.
+// own words, its model list and the leaderboard's reading of the model, under a
+// read date from the refresher's own clock, with the plan's own price and limit
+// behaviour and the flags plan-list shows.
 func TestRefreshReadsEachSourceIntoTheDocument(t *testing.T) {
 	s, base := newSources(t)
 	got := refresh(t, s.refresher(t, base, readOn), plan(base), providers.Facts{})
@@ -162,17 +155,13 @@ func TestRefreshReadsEachSourceIntoTheDocument(t *testing.T) {
 		t.Fatalf("models %+v, want the vendor's own list", got.Models.Models)
 	}
 	model := got.Models.Models[0]
-	want := providers.Score{Listed: true, Value: 61.2, Benchmark: "Coding", ScoredOn: "2026-10-12",
-		Provenance: providers.ProvenanceIndependently, Margin: "±1.8"}
-	if model.Model != "glm-5" || !model.Feed || model.Leaderboard != want {
+	want := providers.Score{Listed: true, Value: 61.2, Benchmark: benchmarkOfTheSample,
+		Provenance: providers.ProvenanceVendorReported, Margin: "sigma 1.8 over 9 of 70 benchmarks"}
+	if model.Model != "glm-5" || model.Leaderboard != want {
 		t.Fatalf("model %+v, want the vendor's model with the leaderboard's reading", model)
 	}
 	if got.Leaderboard.State != providers.ReadChanged || got.Leaderboard.LastGoodReadOn != "2026-10-14" {
 		t.Fatalf("leaderboard %+v, want it read on this read's own date", got.Leaderboard)
-	}
-	if got.Feed.Price != 15*money.Dollar || got.Feed.LimitBehaviour != providers.LimitHardStop ||
-		!slices.Equal(got.Feed.Perks, []string{"No training on your data"}) || len(got.Feed.Disagreements) != 0 {
-		t.Fatalf("feed %+v, want the feed's own report with nothing disagreeing", got.Feed)
 	}
 	if len(got.Flags) != 0 {
 		t.Fatalf("flags %v, want a plan inside the price band to carry none", got.Flags)
@@ -195,7 +184,6 @@ func TestRefreshDiffsEachSourceAgainstTheFactsBeforeIt(t *testing.T) {
 		{"the page", same.Pages[0].Source},
 		{"the model list", same.Models.Source},
 		{"the leaderboard", same.Leaderboard},
-		{"the feed", same.Feed.Source},
 	} {
 		if tt.source.State != providers.ReadUnchanged || len(tt.source.Changes) != 0 {
 			t.Errorf("%s is %+v, want it unchanged", tt.name, tt.source)
@@ -223,9 +211,6 @@ func TestRefreshDiffsEachSourceAgainstTheFactsBeforeIt(t *testing.T) {
 		!slices.Equal(board.Changes, []string{"glm-5 score 61.2 -> 64.9"}) {
 		t.Errorf("leaderboard is %+v, want its figure's move named", board)
 	}
-	if feed := moved.Feed.Source; feed.State != providers.ReadUnchanged {
-		t.Errorf("feed is %+v, want it unchanged on a read the feed answered as before", feed)
-	}
 }
 
 // TestRefreshCarriesTheLastGoodReadForward asserts a source that could not be
@@ -239,7 +224,6 @@ func TestRefreshCarriesTheLastGoodReadForward(t *testing.T) {
 	s.page.stop(http.StatusInternalServerError)
 	s.models.stop(http.StatusInternalServerError)
 	s.board.stop(http.StatusInternalServerError)
-	s.feed.stop(http.StatusInternalServerError)
 	next := refresh(t, s.refresher(t, base, readOn.AddDate(0, 0, 7)), def, first)
 
 	page := next.Pages[0]
@@ -257,9 +241,6 @@ func TestRefreshCarriesTheLastGoodReadForward(t *testing.T) {
 	}
 	if next.Leaderboard.State != providers.ReadCouldNotRead || next.Leaderboard.LastGoodReadOn != "2026-10-14" {
 		t.Fatalf("leaderboard is %+v, want could-not-read with its last good read date", next.Leaderboard)
-	}
-	if next.Feed.Source.State != providers.ReadCouldNotRead || !slices.Equal(next.Feed.Perks, first.Feed.Perks) {
-		t.Fatalf("feed is %+v, want could-not-read with the perks it last answered with", next.Feed)
 	}
 	if next.Price != 15*money.Dollar || next.ReadOn != "2026-10-21" {
 		t.Fatalf("price %v read on %q, want the vendor's own figure under this read's date", next.Price, next.ReadOn)
@@ -290,26 +271,6 @@ func TestRefreshDatesASourceNeverReadFromItsFirstFailure(t *testing.T) {
 	again := refresh(t, s.refresher(t, base, readOn.AddDate(0, 0, 21)), def, read)
 	if got := again.Pages[0].Source; got.FirstUnreadOn != "" || got.LastGoodReadOn != "2026-10-28" {
 		t.Fatalf("page source is %+v, want a source once read dated by that read alone", got)
-	}
-}
-
-// TestRefreshKeepsTheVendorsFigureWhereTheFeedDisagrees asserts the feed's own
-// figures are kept beside the recorded plan's, that the recorded plan's are the
-// ones the document records, and that each difference is named.
-func TestRefreshKeepsTheVendorsFigureWhereTheFeedDisagrees(t *testing.T) {
-	s, base := newSources(t)
-	s.feed.set(`{"plans":[{"provider":"command-code","price_usd":12,"limit_behaviour":"can-spend-past","models":["glm-5"],"perks":[]}]}`)
-	got := refresh(t, s.refresher(t, base, readOn), plan(base), providers.Facts{})
-
-	if got.Price != 15*money.Dollar || got.Limits != providers.LimitHardStop {
-		t.Fatalf("price %v limits %q, want the recorded plan's figures recorded", got.Price, got.Limits)
-	}
-	if got.Feed.Price != 12*money.Dollar || got.Feed.LimitBehaviour != providers.LimitCanSpendPast {
-		t.Fatalf("feed is %+v, want the feed's own figures kept beside the plan's", got.Feed)
-	}
-	noted := strings.Join(got.Feed.Disagreements, "; ")
-	if !strings.Contains(noted, "$12.00") || !strings.Contains(noted, "can-spend-past") {
-		t.Fatalf("disagreements are %q, want the feed's own price and limit named against the recorded plan's", noted)
 	}
 }
 
@@ -354,37 +315,17 @@ func TestRefreshStoresHostilePageTextAsData(t *testing.T) {
 	}
 }
 
-// TestRefreshCapsWhatASourceStates asserts the feed's lists and the strings the
-// sources state are stored capped, and a reason a read failed is stored capped
-// too. A model list over its cap is refused instead, which refreshPlans' own
-// tests assert.
+// TestRefreshCapsWhatASourceStates asserts the benchmark the leaderboard states
+// is stored capped, and a reason a read failed is stored capped too. A model list
+// over its cap is refused instead, which refreshPlans' own tests assert.
 func TestRefreshCapsWhatASourceStates(t *testing.T) {
 	long := strings.Repeat("x", 3*maxFieldBytes)
-	perks, models := make([]string, 2*maxPerks), make([]string, 2*maxModels)
-	for i := range perks {
-		perks[i] = long
-	}
-	for i := range models {
-		models[i] = strconv.Itoa(i)
-	}
-	feed, err := json.Marshal(map[string]any{"plans": []map[string]any{{
-		"provider": "command-code", "price_usd": 15, "limit_behaviour": "hard-stop", "models": models, "perks": perks}}})
-	if err != nil {
-		t.Fatal(err)
-	}
 	s, base := newSources(t)
-	s.feed.set(string(feed))
-	s.board.set(`{"benchmark":"` + long + `","date":"2026-10-12","models":[{"model":"glm-5","score":1,"margin":"` + long + `"}]}`)
+	s.board.set(`{"category_id":"` + long + `","models":[{"model_id":"glm-5","conservative":1}]}`)
 	got := refresh(t, s.refresher(t, base, readOn), plan(base), providers.Facts{})
 
-	if len(got.Feed.Models) != maxModels || len(got.Feed.Perks) != maxPerks {
-		t.Fatalf("feed models %d perks %d, want each list capped", len(got.Feed.Models), len(got.Feed.Perks))
-	}
-	if score := got.Models.Models[0].Leaderboard; len(score.Margin) != maxFieldBytes || len(score.Benchmark) != maxFieldBytes {
-		t.Fatalf("margin %d benchmark %d bytes, want each capped at %d", len(score.Margin), len(score.Benchmark), maxFieldBytes)
-	}
-	if len(got.Feed.Perks[0]) != maxFieldBytes {
-		t.Fatalf("a perk is %d bytes, want %d", len(got.Feed.Perks[0]), maxFieldBytes)
+	if score := got.Models.Models[0].Leaderboard; len(score.Benchmark) != maxFieldBytes {
+		t.Fatalf("benchmark %d bytes, want it capped at %d", len(score.Benchmark), maxFieldBytes)
 	}
 
 	s.page.stop(http.StatusInternalServerError)
@@ -466,5 +407,50 @@ func TestRefreshCapsARefusedIDInTheReason(t *testing.T) {
 	_, err := s.refresher(t, base, readOn).Refresh(context.Background(), "command-code", plan(base), providers.Facts{})
 	if err == nil || len(err.Error()) > 2*maxFieldBytes || !strings.Contains(err.Error(), strings.Repeat("X", 10)) {
 		t.Fatalf("err = %.300v, want the refused id named and capped near %d bytes", err, maxFieldBytes)
+	}
+}
+
+// TestRefreshReadsAModelFromTheLeaderboardByItsBareName asserts a vendor id found
+// on the leaderboard under its bare name is read from it, an exact id beats a
+// bare-name match, and a bare name two of the plan's models share is attributed
+// to neither of them.
+func TestRefreshReadsAModelFromTheLeaderboardByItsBareName(t *testing.T) {
+	board := map[string]providers.Score{
+		"glm-5":      {Listed: true, Value: 20},
+		"acme/glm-5": {Listed: true, Value: 10},
+		"glm-6":      {Listed: true, Value: 30},
+	}
+	for name, tt := range map[string]struct {
+		ids  []string
+		want map[string]float64
+	}{
+		"a namespaced id":        {[]string{"vendor/glm-6"}, map[string]float64{"vendor/glm-6": 30}},
+		"a free-tier suffix":     {[]string{"glm-6:free"}, map[string]float64{"glm-6:free": 30}},
+		"an exact id wins":       {[]string{"acme/glm-5"}, map[string]float64{"acme/glm-5": 10}},
+		"two models, one bare":   {[]string{"vendor/glm-5", "vendor/glm-6"}, map[string]float64{"vendor/glm-5": 20, "vendor/glm-6": 30}},
+		"a bare name shared":     {[]string{"a/glm-6", "b/glm-6"}, map[string]float64{"a/glm-6": 0, "b/glm-6": 0}},
+		"shared with an exact":   {[]string{"glm-6", "a/glm-6"}, map[string]float64{"glm-6": 30, "a/glm-6": 0}},
+		"a name the board lacks": {[]string{"vendor/glm-7"}, map[string]float64{"vendor/glm-7": 0}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, base := newSources(t)
+			var data []string
+			for _, id := range tt.ids {
+				data = append(data, `{"id":"`+id+`"}`)
+			}
+			s.models.set(`{"data":[` + strings.Join(data, ",") + `]}`)
+			r := s.refresher(t, base, readOn)
+			r.Board = BoardReport{Models: board}
+			r.RateCard = func(string) []string { return tt.ids }
+			got := refresh(t, r, plan(base), providers.Facts{})
+			if len(got.Models.Models) != len(tt.ids) {
+				t.Fatalf("models %+v, want one for each of %v", got.Models.Models, tt.ids)
+			}
+			for _, m := range got.Models.Models {
+				if score := m.Leaderboard; score.Value != tt.want[m.Model] || score.Listed != (tt.want[m.Model] != 0) {
+					t.Errorf("%s is %+v, want value %v", m.Model, score, tt.want[m.Model])
+				}
+			}
+		})
 	}
 }

@@ -79,8 +79,8 @@ func TestComparePlansReadsTheEmbeddedConfiguration(t *testing.T) {
 	if !slices.Equal(g.Features, wantFeatures) {
 		t.Errorf("features = %v, want %v", g.Features, wantFeatures)
 	}
-	if g.FeedPerks.Known || len(g.UnshownWindows) != 0 {
-		t.Errorf("perks = %+v, unshown windows = %v, want unconfirmed perks and no unshown window", g.FeedPerks, g.UnshownWindows)
+	if len(g.UnshownWindows) != 0 {
+		t.Errorf("unshown windows = %v, want none", g.UnshownWindows)
 	}
 	if len(g.Harnesses) != 1 || g.Harnesses[0] != (HarnessComparison{Harness: "omp"}) {
 		t.Errorf("harnesses = %+v, want omp with every fact unconfirmed", g.Harnesses)
@@ -385,31 +385,6 @@ func TestComparePlansTrustsTheLeaderboardOnlyWhenItsLastReadSucceeded(t *testing
 	}
 }
 
-func TestComparePlansTrustsTheFeedsPerksOnlyWhenItsLastReadSucceeded(t *testing.T) {
-	cfg := comparisonConfig(t, windows20h5+`,"rates":{"p/m":`+perMtok10+`}`)
-	perks := []string{"Prompt caching"}
-	for name, tt := range map[string]struct {
-		state ReadState
-		want  Field[[]string]
-	}{
-		"read":                      {ReadChanged, Known(perks)},
-		"could not read, carried":   {ReadCouldNotRead, Field[[]string]{}},
-		"no read recorded":          {"", Field[[]string]{}},
-		"read and listing no perks": {ReadUnchanged, Known([]string{})},
-	} {
-		in := perks
-		if name == "read and listing no perks" {
-			in = nil
-		}
-		got := comparisonByPlan(t, comparePlans(cfg, ComparisonInput{Facts: map[string]Facts{
-			"p": {Feed: FeedFacts{Source: Source{State: tt.state}, Perks: in}},
-		}}), "p")
-		if !reflect.DeepEqual(got.FeedPerks, tt.want) {
-			t.Errorf("%s: perks = %+v, want %+v", name, got.FeedPerks, tt.want)
-		}
-	}
-}
-
 func TestComparePlansListsOnlyFeaturesTheConfigurationShows(t *testing.T) {
 	cfg := comparisonConfig(t, windows20h5+`,"model_caps":{"p/m":90},"rates":{"p/m":`+perMtok10+`,"p/free":{}}`+
 		`,"last_resort":{"models":["p/free"],"measured_on":"2026-10-08","smoke_runs":{"p/free":7}}`)
@@ -442,7 +417,6 @@ func TestComparePlansWritesAnUnconfirmedFieldAsTheWordNeverAsAZeroValue(t *testi
 		"an unknown struct":    {ComparisonInput{}, []string{"strongest"}, "unconfirmed"},
 		"an unknown bool":      {ComparisonInput{}, []string{"harnesses", "0", "denies_planning_edits"}, "unconfirmed"},
 		"an unknown ceiling":   {ComparisonInput{}, []string{"monthly"}, "unconfirmed"},
-		"unknown perks":        {ComparisonInput{}, []string{"feed_perks"}, "unconfirmed"},
 		"a recorded $0 price":  {ComparisonInput{Plans: map[string]Plan{"p": {}}}, []string{"monthly_price_micros"}, float64(0)},
 		"a known bool":         {ComparisonInput{Harness: func(string, string) HarnessCapabilities { return HarnessCapabilities{Headless: Known(false)} }}, []string{"harnesses", "0", "headless"}, false},
 		"a known ceiling name": {ComparisonInput{}, []string{"five_hour", "name"}, "p-5h"},
@@ -488,7 +462,6 @@ func TestComparePlansFillsEveryFieldOfAFullyRecordedPlan(t *testing.T) {
 		Facts: map[string]Facts{"p": {
 			Leaderboard: Source{State: ReadChanged},
 			Models:      ModelsFacts{Models: []ModelFacts{{Model: "big", Leaderboard: Score{Listed: true, Value: 70}}}},
-			Feed:        FeedFacts{Source: Source{State: ReadUnchanged}, Perks: []string{"Prompt caching"}},
 		}},
 		Harness: func(harness, plan string) HarnessCapabilities {
 			if harness != "h" || plan != "p" {
@@ -500,7 +473,7 @@ func TestComparePlansFillsEveryFieldOfAFullyRecordedPlan(t *testing.T) {
 	}), "p")
 	for name, known := range map[string]bool{
 		"price": got.MonthlyPrice.Known, "verdict": got.Verdict.Known, "5-hour": got.FiveHour.Known, "weekly": got.Weekly.Known,
-		"monthly": got.Monthly.Known, "strongest": got.Strongest.Known, "cap": got.StrongestCap.Known, "perks": got.FeedPerks.Known,
+		"monthly": got.Monthly.Known, "strongest": got.Strongest.Known, "cap": got.StrongestCap.Known,
 	} {
 		if !known {
 			t.Errorf("%s is unconfirmed on a fully recorded plan", name)
@@ -510,8 +483,8 @@ func TestComparePlansFillsEveryFieldOfAFullyRecordedPlan(t *testing.T) {
 	if len(got.Harnesses) != 1 || got.Harnesses[0] != wantPair {
 		t.Errorf("harnesses = %+v, want %+v", got.Harnesses, wantPair)
 	}
-	if !slices.Equal(got.Features, []string{"Per-model dollar limits"}) || !slices.Equal(got.FeedPerks.Value, []string{"Prompt caching"}) {
-		t.Errorf("features = %v, perks = %v, want the configuration's and the feed's kept apart", got.Features, got.FeedPerks.Value)
+	if !slices.Equal(got.Features, []string{"Per-model dollar limits"}) {
+		t.Errorf("features = %v, want the configuration's own", got.Features)
 	}
 }
 
@@ -556,7 +529,7 @@ func TestPlanComparisonWritesEveryFieldUnderItsSnakeCaseKey(t *testing.T) {
 	plan, _ := doc[0].(map[string]any)
 	got := slices.Sorted(maps.Keys(plan))
 	want := []string{
-		"features", "feed_perks", "five_hour", "harnesses", "models", "monthly", "monthly_price_micros",
+		"features", "five_hour", "harnesses", "models", "monthly", "monthly_price_micros",
 		"plan", "requests_per_dollar", "strongest", "strongest_cap_micros", "unshown_windows", "verdict", "weekly",
 	}
 	if !slices.Equal(got, want) {
@@ -628,7 +601,6 @@ func TestPlanComparisonWritesEveryNestedKeyInSnakeCase(t *testing.T) {
 		Facts: map[string]Facts{"opencode-go": {
 			Leaderboard: Source{State: ReadChanged},
 			Models:      ModelsFacts{Models: []ModelFacts{{Model: "opencode-go/m", Leaderboard: Score{Listed: true, Value: 70, Benchmark: "coding", ScoredOn: "2026-11-01", Provenance: ProvenanceUnknown, Margin: "1"}}}},
-			Feed:        FeedFacts{Source: Source{State: ReadUnchanged}, Perks: []string{"Prompt caching"}},
 		}},
 		Harness: func(string, string) HarnessCapabilities {
 			return HarnessCapabilities{Headless: Known(true), StructuredOutput: Known(true), DeniesPlanningEdits: Known(false)}

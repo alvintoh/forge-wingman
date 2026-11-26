@@ -25,21 +25,3 @@ func TestNewPageFactsCapsTheTextOnACharacterBoundary(t *testing.T) {
 		t.Fatalf("stored %+v, want the page and region it was read from", got)
 	}
 }
-
-func TestParseProvenanceReadsTheLeaderboardsOwnWord(t *testing.T) {
-	for _, tt := range []struct {
-		word string
-		want Provenance
-	}{
-		{"independent", ProvenanceIndependently},
-		{"Independently-run", ProvenanceIndependently},
-		{"vendor-reported", ProvenanceVendorReported},
-		{"vendor", ProvenanceVendorReported},
-		{"", ProvenanceUnknown},
-		{"written by a human", ProvenanceUnknown},
-	} {
-		if got := ParseProvenance(tt.word); got != tt.want {
-			t.Errorf("ParseProvenance(%q) = %q, want %q", tt.word, got, tt.want)
-		}
-	}
-}

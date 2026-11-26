@@ -1,10 +1,6 @@
 package providers
 
-import (
-	"strings"
-
-	"github.com/alvintoh/forge-wingman/internal/money"
-)
+import "github.com/alvintoh/forge-wingman/internal/money"
 
 // ReadState is how one read of a source ended. A source that could not be
 // reached is CouldNotRead and never Unchanged, so a failed read can never be
@@ -60,22 +56,10 @@ const (
 	ProvenanceIndependently Provenance = "independently-run"
 	// ProvenanceVendorReported is a figure the model's own vendor reported.
 	ProvenanceVendorReported Provenance = "vendor-reported"
-	// ProvenanceUnknown is a figure whose provenance the leaderboard did not state.
+	// ProvenanceUnknown is a figure whose provenance the leaderboard did not state
+	// in terms this build can read.
 	ProvenanceUnknown Provenance = "unknown"
 )
-
-// ParseProvenance reads the word a leaderboard states for who ran a model. A word
-// this build has not seen is unknown rather than an error, so a value the
-// leaderboard adds is recorded rather than refusing the whole read.
-func ParseProvenance(word string) Provenance {
-	switch strings.ToUpper(strings.TrimSpace(word)) {
-	case "INDEPENDENT", "INDEPENDENTLY", "INDEPENDENTLY-RUN", "INDEPENDENTLY_RUN":
-		return ProvenanceIndependently
-	case "VENDOR", "VENDOR-REPORTED", "VENDOR_REPORTED":
-		return ProvenanceVendorReported
-	}
-	return ProvenanceUnknown
-}
 
 // Score is the Coding leaderboard's reading of one model: its figure, the
 // benchmark the figure is on, the date the leaderboard states for it, who ran it
@@ -95,8 +79,6 @@ type Score struct {
 // about it. Model is the id the vendor's own models endpoint states.
 type ModelFacts struct {
 	Model string `firestore:"model"`
-	// Feed reports the free feed lists it, a change signal only.
-	Feed bool `firestore:"feed"`
 	// Leaderboard is the Coding leaderboard's reading of it.
 	Leaderboard Score `firestore:"leaderboard"`
 }
@@ -166,31 +148,14 @@ type RankingFacts struct {
 	Sizes  []SizeRanking `firestore:"sizes"`
 }
 
-// FeedFacts is the free feed's own report of the plan, a change signal only: the
-// figures it states are never the ones recorded, and Disagreements names where
-// they differ from the recorded plan's.
-type FeedFacts struct {
-	Source         Source         `firestore:"source"`
-	Price          money.Micros   `firestore:"price_micros"`
-	LimitBehaviour LimitBehaviour `firestore:"limit_behaviour"`
-	// Disagreements names where the feed's own figures differ from the recorded
-	// plan's, which are the ones this document records.
-	Disagreements []string `firestore:"disagreements"`
-	// Models are the models the feed lists for the plan, a change signal only.
-	Models []string `firestore:"models"`
-	// Perks are what the feed lists the plan as including, as it states them.
-	Perks []string `firestore:"perks"`
-}
-
 // Facts is one dated read of a plan's sources: the vendor's own pages, quoted,
-// the vendor's own model list, the Coding leaderboard's reading of each model,
-// the free feed's report and the plan's models ranked from its settled runs. It
-// is written to provider_plans/<provider>/facts/<date>, one document per read
-// date.
+// the vendor's own model list, the Coding leaderboard's reading of each model
+// and the plan's models ranked from its settled runs. It is written to
+// provider_plans/<provider>/facts/<date>, one document per read date.
 //
 // Price and Limits are the figures in the recorded plan, which the owner took from
 // the vendor's own page; a refresh copies them from the plan and never reads them
-// off a page. The free feed is a change signal and never the figure recorded here.
+// off a page.
 //
 // The document records what was read and decides nothing, so
 // nothing in it changes which provider runs.
@@ -211,8 +176,6 @@ type Facts struct {
 	// Leaderboard is the leaderboard's own read: whether it answered at all, and
 	// when it last did.
 	Leaderboard Source `firestore:"leaderboard"`
-	// Feed is the free feed's own read of the plan.
-	Feed FeedFacts `firestore:"free_feed"`
 	// Ranking is the plan's models ranked from its settled runs, per ticket size.
 	Ranking RankingFacts `firestore:"ranking"`
 	// Flags is what about the plan the owner should look at, as plan-list shows it.

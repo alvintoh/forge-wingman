@@ -321,7 +321,7 @@ describe("the features cell", () => {
     expect(cell(plan, "Features")).toEqual([{ kind: "list", items: ["One", "Two"] }]);
   });
 
-  it("shows the configuration's features only, never the feed's perks the endpoint also serves", () => {
+  it("shows the configuration's features only, ignoring a perks list a plan record carries", () => {
     const plan = { ...planOf("a", { features: ["One"] }), feed_perks: ["Perk"] };
     expect(cell(plan, "Features")).toEqual([{ kind: "list", items: ["One"] }]);
   });

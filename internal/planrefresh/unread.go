@@ -69,7 +69,6 @@ func withLegacyUnreadDates(last providers.Facts) providers.Facts {
 	}
 	date(&last.Models.Source)
 	date(&last.Leaderboard)
-	date(&last.Feed.Source)
 	return last
 }
 

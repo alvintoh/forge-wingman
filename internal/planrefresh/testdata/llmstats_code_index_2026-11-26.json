@@ -1,0 +1,410 @@
+{
+ "category_id": "code",
+ "method": "trueskill",
+ "methodology": {
+  "method": "trueskill",
+  "version": "3.1",
+  "initial_mu": 25.0,
+  "initial_sigma": 8.33,
+  "prior_scale": 0.0,
+  "passes": 1,
+  "conservative_k": 3.0,
+  "min_models_per_benchmark": 3
+ },
+ "games": [
+  {
+   "benchmark_id": "swe-bench-verified",
+   "name": "SWE-Bench Verified",
+   "participants": 126,
+   "is_community": false,
+   "index_scope": "all"
+  },
+  {
+   "benchmark_id": "livecodebench",
+   "name": "LiveCodeBench",
+   "participants": 77,
+   "is_community": false,
+   "index_scope": "all"
+  },
+  {
+   "benchmark_id": "humaneval",
+   "name": "HumanEval",
+   "participants": 66,
+   "is_community": false,
+   "index_scope": "all"
+  }
+ ],
+ "models": [
+  {
+   "model_id": "deepseek-v4.1-flash",
+   "model_name": "DeepSeek-V4.1-Flash",
+   "organization_id": "deepseek",
+   "organization_name": "DeepSeek",
+   "mu": 43.02,
+   "sigma": 1.53,
+   "conservative": 38.44,
+   "ci_lower": 39.97,
+   "ci_upper": 46.08,
+   "games_played": 9,
+   "games_available": 70,
+   "coverage_ratio": 0.1286,
+   "global_prior": 0.0,
+   "benchmark_results": {
+    "sec-bench-pro": {
+     "score": 0.628,
+     "rank": 8,
+     "of": 11,
+     "source": "self_reported",
+     "name": "SEC-bench Pro"
+    },
+    "terminal-bench-2.1": {
+     "score": 0.9059999999999999,
+     "rank": 2,
+     "of": 57,
+     "source": "self_reported",
+     "name": "Terminal-Bench 2.1"
+    },
+    "terminal-bench-3.0": {
+     "score": 0.3,
+     "rank": 1,
+     "of": 4,
+     "source": "self_reported",
+     "name": "Terminal-Bench 3.0"
+    },
+    "terminal-bench-4.0": {
+     "score": 0.312,
+     "rank": 27,
+     "of": 40,
+     "source": "self_reported",
+     "name": "Terminal-Bench 4.0"
+    },
+    "exploitgym": {
+     "score": 0.153,
+     "rank": 8,
+     "of": 11,
+     "source": "self_reported",
+     "name": "ExploitGym"
+    },
+    "deepswe-1.1": {
+     "score": 0.742,
+     "rank": 12,
+     "of": 59,
+     "source": "self_reported",
+     "name": "DeepSWE 1.1"
+    },
+    "nl2repo": {
+     "score": 0.64,
+     "rank": 3,
+     "of": 27,
+     "source": "self_reported",
+     "name": "NL2Repo"
+    },
+    "program-bench": {
+     "score": 0.203,
+     "rank": 19,
+     "of": 22,
+     "source": "self_reported",
+     "name": "Program Bench"
+    },
+    "cybergym": {
+     "score": 0.8809999999999999,
+     "rank": 3,
+     "of": 21,
+     "source": "self_reported",
+     "name": "CyberGym"
+    }
+   },
+   "rank": 20
+  },
+  {
+   "model_id": "deepseek-v4.1-flash-1017",
+   "model_name": "DeepSeek-V4.1-Flash-1017",
+   "organization_id": "deepseek",
+   "organization_name": "DeepSeek",
+   "mu": 45.14,
+   "sigma": 2.2,
+   "conservative": 38.55,
+   "ci_lower": 40.75,
+   "ci_upper": 49.53,
+   "games_played": 4,
+   "games_available": 70,
+   "coverage_ratio": 0.0571,
+   "global_prior": 0.0,
+   "benchmark_results": {
+    "terminal-bench-4.0": {
+     "score": 0.423,
+     "rank": 17,
+     "of": 40,
+     "source": "self_reported",
+     "name": "Terminal-Bench 4.0"
+    },
+    "deepswe-1.1": {
+     "score": 0.77,
+     "rank": 6,
+     "of": 59,
+     "source": "self_reported",
+     "name": "DeepSWE 1.1"
+    },
+    "nl2repo": {
+     "score": 0.682,
+     "rank": 1,
+     "of": 27,
+     "source": "self_reported",
+     "name": "NL2Repo"
+    },
+    "program-bench": {
+     "score": 0.291,
+     "rank": 15,
+     "of": 22,
+     "source": "self_reported",
+     "name": "Program Bench"
+    }
+   },
+   "rank": 19
+  },
+  {
+   "model_id": "claude-haiku-5-5",
+   "model_name": "Claude Haiku 5.5",
+   "organization_id": "anthropic",
+   "organization_name": "Anthropic",
+   "mu": 41.5,
+   "sigma": 1.45,
+   "conservative": 37.15,
+   "ci_lower": 38.6,
+   "ci_upper": 44.4,
+   "games_played": 11,
+   "games_available": 70,
+   "coverage_ratio": 0.1571,
+   "global_prior": 0.0,
+   "benchmark_results": {
+    "swe-bench-multimodal": {
+     "score": 0.307,
+     "rank": 7,
+     "of": 8,
+     "source": "self_reported",
+     "name": "SWE-Bench Multimodal"
+    },
+    "swe-bench-pro": {
+     "score": 0.648,
+     "rank": 10,
+     "of": 64,
+     "source": "self_reported",
+     "name": "SWE-Bench Pro"
+    },
+    "swe-bench-multilingual": {
+     "score": 0.837,
+     "rank": 6,
+     "of": 53,
+     "source": "self_reported",
+     "name": "SWE-bench Multilingual"
+    },
+    "terminal-bench-4.0": {
+     "score": 0.392,
+     "rank": 21,
+     "of": 40,
+     "source": "self_reported",
+     "name": "Terminal-Bench 4.0"
+    },
+    "benchcad": {
+     "score": 0.67,
+     "rank": 5,
+     "of": 8,
+     "source": "self_reported",
+     "name": "BenchCAD"
+    },
+    "benchcad-with-python-tool": {
+     "score": 0.87,
+     "rank": 5,
+     "of": 8,
+     "source": "self_reported",
+     "name": "BenchCAD (with Python tool)"
+    },
+    "frontiercode-1.1": {
+     "score": 0.464,
+     "rank": 11,
+     "of": 25,
+     "source": "self_reported",
+     "name": "FrontierCode 1.1"
+    },
+    "frontiercode-1.1-extended": {
+     "score": 0.584,
+     "rank": 3,
+     "of": 3,
+     "source": "self_reported",
+     "name": "FrontierCode 1.1 (Extended)"
+    },
+    "frontierswe-v2": {
+     "score": 0.438,
+     "rank": 6,
+     "of": 7,
+     "source": "self_reported",
+     "name": "FrontierSWE V2"
+    },
+    "program-bench": {
+     "score": 0.82,
+     "rank": 3,
+     "of": 22,
+     "source": "self_reported",
+     "name": "Program Bench"
+    },
+    "terminal-bench-science-0.1": {
+     "score": 0.206,
+     "rank": 17,
+     "of": 17,
+     "source": "self_reported",
+     "name": "Terminal-Bench-Science 0.1"
+    }
+   },
+   "rank": 28
+  },
+  {
+   "model_id": "gemini-3.8-flash",
+   "model_name": "Gemini 3.8 Flash",
+   "organization_id": "google",
+   "organization_name": "Google",
+   "mu": 39.8,
+   "sigma": 2.41,
+   "conservative": 32.57,
+   "ci_lower": 34.98,
+   "ci_upper": 44.62,
+   "games_played": 3,
+   "games_available": 70,
+   "coverage_ratio": 0.0429,
+   "global_prior": 0.0,
+   "benchmark_results": {
+    "terminal-bench-2.1": {
+     "score": 0.894,
+     "rank": 4,
+     "of": 57,
+     "source": "self_reported",
+     "name": "Terminal-Bench 2.1"
+    },
+    "terminal-bench-4.0": {
+     "score": 0.191,
+     "rank": 35,
+     "of": 40,
+     "source": "self_reported",
+     "name": "Terminal-Bench 4.0"
+    },
+    "deepswe-1.1": {
+     "score": 0.737,
+     "rank": 15,
+     "of": 59,
+     "source": "self_reported",
+     "name": "DeepSWE 1.1"
+    }
+   },
+   "rank": 51
+  },
+  {
+   "model_id": "gemini-3.5-flash-lite",
+   "model_name": "Gemini 3.5 Flash-Lite",
+   "organization_id": "google",
+   "organization_name": "Google",
+   "mu": 23.75,
+   "sigma": 2.88,
+   "conservative": 15.1,
+   "ci_lower": 17.98,
+   "ci_upper": 29.51,
+   "games_played": 2,
+   "games_available": 70,
+   "coverage_ratio": 0.0286,
+   "global_prior": 0.0,
+   "benchmark_results": {
+    "swe-bench-pro": {
+     "score": 0.542,
+     "rank": 47,
+     "of": 64,
+     "source": "self_reported",
+     "name": "SWE-Bench Pro"
+    },
+    "terminal-bench-2.1": {
+     "score": 0.54,
+     "rank": 48,
+     "of": 57,
+     "source": "self_reported",
+     "name": "Terminal-Bench 2.1"
+    }
+   },
+   "rank": 170
+  },
+  {
+   "model_id": "muse-spark-1.3",
+   "model_name": "Muse Spark 1.3",
+   "organization_id": "meta",
+   "organization_name": "Meta",
+   "mu": 44.9,
+   "sigma": 2.52,
+   "conservative": 37.34,
+   "ci_lower": 39.86,
+   "ci_upper": 49.95,
+   "games_played": 3,
+   "games_available": 70,
+   "coverage_ratio": 0.0429,
+   "global_prior": 0.0,
+   "benchmark_results": {
+    "swe-atlas-codebase-qna": {
+     "score": 0.594,
+     "rank": 1,
+     "of": 9,
+     "source": "self_reported",
+     "name": "SWE Atlas - Codebase QnA"
+    },
+    "terminal-bench-2.1": {
+     "score": 0.888,
+     "rank": 6,
+     "of": 57,
+     "source": "self_reported",
+     "name": "Terminal-Bench 2.1"
+    },
+    "deepswe-1.1": {
+     "score": 0.754,
+     "rank": 8,
+     "of": 59,
+     "source": "self_reported",
+     "name": "DeepSWE 1.1"
+    }
+   },
+   "rank": 25
+  },
+  {
+   "model_id": "u2",
+   "model_name": "U2",
+   "organization_id": "unisound",
+   "organization_name": "Unisound",
+   "mu": 27.68,
+   "sigma": 2.39,
+   "conservative": 20.5,
+   "ci_lower": 22.89,
+   "ci_upper": 32.47,
+   "games_played": 3,
+   "games_available": 70,
+   "coverage_ratio": 0.0429,
+   "global_prior": 0.0,
+   "benchmark_results": {
+    "swe-bench-verified": {
+     "score": 0.722,
+     "rank": 63,
+     "of": 126,
+     "source": "verified",
+     "name": "SWE-Bench Verified"
+    },
+    "terminal-bench-2": {
+     "score": 0.43820224719101125,
+     "rank": 45,
+     "of": 54,
+     "source": "verified",
+     "name": "Terminal-Bench 2.0"
+    },
+    "livecodebench": {
+     "score": 84.55,
+     "rank": 6,
+     "of": 77,
+     "source": "verified",
+     "name": "LiveCodeBench"
+    }
+   },
+   "rank": 132
+  }
+ ]
+}
