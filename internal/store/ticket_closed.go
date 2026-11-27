@@ -14,7 +14,8 @@ import (
 
 const ticketClosedAtField = "ticket_closed_at"
 
-// RecordTicketsClosed writes at as the ticket-closed time on each run the inbox
+// RecordTicketsClosed writes at as the ticket-closed time, the time a poll found
+// its ticket closed or delivered by a merged pull request, on each run the inbox
 // window holds whose ticket is one of tickets, that stopped for the owner, and
 // that is neither cancelled nor marked already, and returns how many it marked.
 // The owner's cancel fields are left alone, so a run closed elsewhere stays told
@@ -53,8 +54,8 @@ func (q *Queue) RecordTicketsClosed(ctx context.Context, tickets []string, at ti
 	return marked, nil
 }
 
-// ticketClosedRow reports whether a poll found row's ticket closed while the run
-// was stopped.
+// ticketClosedRow reports whether a poll found row's ticket closed or delivered
+// by a merged pull request while the run was stopped.
 func ticketClosedRow(row map[string]any) bool {
 	at, _ := row[ticketClosedAtField].(time.Time)
 	return !at.IsZero()

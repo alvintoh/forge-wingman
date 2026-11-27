@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"slices"
 	"strings"
@@ -169,7 +170,8 @@ type ProjectIssues interface {
 }
 
 // TicketClosures marks, on each stopped run of the named tickets not marked
-// yet, when the poll found its ticket closed, and returns how many it marked.
+// yet, when the poll found its ticket closed or delivered by a merged pull
+// request, and returns how many it marked.
 type TicketClosures interface {
 	RecordTicketsClosed(ctx context.Context, tickets []string, at time.Time) (int, error)
 }
@@ -204,7 +206,7 @@ func pollProjects(ctx context.Context, d Deps, reaches []RepoReach) {
 		d.Logger.Warn("phaseIssuesUnread", "err", err.Error())
 	}
 	if err == nil {
-		recordClosed(ctx, d, issues, at)
+		recordClosed(ctx, d, projects, issues, at)
 	}
 	views := make([]phaseView, 0, len(projects))
 	for _, p := range projects {
@@ -237,9 +239,10 @@ func pollProjects(ctx context.Context, d Deps, reaches []RepoReach) {
 }
 
 // recordClosed marks the stopped runs of the tickets Linear holds completed or
-// canceled, so the inbox stops offering a retry of work closed elsewhere. A
-// failure is logged and leaves the poll running.
-func recordClosed(ctx context.Context, d Deps, issues []Issue, at time.Time) {
+// canceled, and of the open tickets a merged pull request names in its title,
+// so the inbox stops offering a retry of work closed elsewhere. A failure is
+// logged and leaves the poll running.
+func recordClosed(ctx context.Context, d Deps, projects []PhaseProject, issues []Issue, at time.Time) {
 	closures := d.ProjectPhases.Closures
 	if closures == nil {
 		return
@@ -250,6 +253,7 @@ func recordClosed(ctx context.Context, d Deps, issues []Issue, at time.Time) {
 			closed = append(closed, issue.ID)
 		}
 	}
+	closed = append(closed, mergedTickets(issues, projectPullRequests(ctx, d, projects))...)
 	if len(closed) == 0 {
 		return
 	}
@@ -261,6 +265,28 @@ func recordClosed(ctx context.Context, d Deps, issues []Issue, at time.Time) {
 	if marked > 0 {
 		d.Logger.Info("ticketsClosedRecorded", "runs", marked)
 	}
+}
+
+// projectPullRequests returns the closed pull requests of each distinct
+// repository the projects name. A truncated listing is used as read; a failed
+// one is logged and leaves that repository's pull requests out.
+func projectPullRequests(ctx context.Context, d Deps, projects []PhaseProject) []ClosedPR {
+	var repos []string
+	for _, p := range projects {
+		if !slices.ContainsFunc(repos, func(r string) bool { return strings.EqualFold(r, p.Repository) }) {
+			repos = append(repos, p.Repository)
+		}
+	}
+	var out []ClosedPR
+	for _, repo := range repos {
+		prs, err := d.PullRequests.Closed(ctx, repo)
+		if err != nil && !errors.Is(err, ErrClosedTruncated) {
+			d.Logger.Warn("mergedPullRequestsUnread", "repo", repo, "err", err.Error())
+			continue
+		}
+		out = append(out, prs...)
+	}
+	return out
 }
 
 // linearProjects is the distinct Linear project names the listed projects name.

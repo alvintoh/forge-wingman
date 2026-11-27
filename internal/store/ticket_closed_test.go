@@ -80,6 +80,39 @@ func TestRecordTicketsClosedMarksOnlyStoppedRunsOfClosedTicketsOnce(t *testing.T
 	}
 }
 
+func TestRecordTicketsClosedLeavesACancelledRunAndAMarkedRunAsTheyWere(t *testing.T) {
+	q, client := queue(t)
+	prefix := fresh(fmt.Sprintf("ticket-closed-skips-%d", time.Now().UnixNano()))
+	earlier := inboxBase.Add(-30 * time.Minute)
+	stopped := func(ticket string, extra map[string]any) map[string]any {
+		row := map[string]any{
+			ticketIDField: ticket, stateField: stateStopped, outcomeField: string(runner.OutcomeStopped),
+			stopReasonField: string(runner.StopWaitingOnOwner), updatedAtField: inboxBase.Add(-time.Hour),
+		}
+		for k, v := range extra {
+			row[k] = v
+		}
+		return row
+	}
+	cancelled, marked := prefix+"-cancelled", prefix+"-marked"
+	seedRow(t, client, cancelled, stopped(cancelled, map[string]any{cancelledByOwnerAtField: earlier, cancelledByField: "owner@example.com"}))
+	seedRow(t, client, marked, stopped(marked, map[string]any{ticketClosedAtField: earlier}))
+
+	if n, err := q.RecordTicketsClosed(context.Background(), []string{cancelled, marked}, inboxBase); err != nil || n != 0 {
+		t.Fatalf("marked = %d, %v, want nothing written", n, err)
+	}
+	row := readRow(t, client, cancelled)
+	if at, _ := row[cancelledByOwnerAtField].(time.Time); !at.Equal(earlier) || row[cancelledByField] != "owner@example.com" {
+		t.Fatalf("cancelled run = %v, want its cancel kept", row)
+	}
+	if v, ok := row[ticketClosedAtField]; ok {
+		t.Fatalf("cancelled run's ticket-closed time = %v, want none", v)
+	}
+	if at, _ := readRow(t, client, marked)[ticketClosedAtField].(time.Time); !at.Equal(earlier) {
+		t.Fatalf("marked run's ticket-closed time = %v, want the earlier %v", at, earlier)
+	}
+}
+
 func TestRequeueClearsTheTicketClosedTime(t *testing.T) {
 	q, client := queue(t)
 	id := fresh(fmt.Sprintf("ticket-closed-requeue-%d", time.Now().UnixNano()))

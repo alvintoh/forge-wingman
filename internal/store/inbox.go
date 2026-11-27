@@ -54,9 +54,11 @@ type InboxRun struct {
 }
 
 // Inbox returns the runs updated since that the owner has not cancelled, whose
-// ticket a poll has not found closed while they were stopped, and that either have an open, unmerged PR
-// or stopped with no automatic requeue due, newest first, up to limit. An open PR marked for auto-merge
-// that names no wait reason carries AutoMerged, for the reader to drop while auto-merge stands.
+// ticket a poll has not found closed or delivered by a merged PR while they were
+// stopped, and that either have an open, unmerged PR or stopped with no
+// automatic requeue due, newest first, up to limit. An open PR marked for
+// auto-merge that names no wait reason carries AutoMerged, for the reader to drop
+// while auto-merge stands.
 //
 // A PR closed unmerged on GitHub is not known here, so it stays listed until
 // the owner's merge attempt finds it closed.
