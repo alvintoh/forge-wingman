@@ -333,8 +333,10 @@ shows `planModelListRefused` and `runnerFailed` and a red run.
 
 ## Dispatcher
 
-`dispatcher.tf` is the poller: a Cloud Run job that Cloud Scheduler wakes every
-fifteen minutes. One execution is one poll — admit every ticket Linear has
+`dispatcher.tf` is the poller: a Cloud Run job that Cloud Scheduler wakes on eight
+ticks an hour (minutes 0, 10, 15, 20, 30, 40, 45 and 50), and the dispatcher polls
+every 15 minutes unless the owner saved 10 on the Configuration page; the webhook
+starts a poll at once. One execution is one poll — admit every ticket Linear has
 delegated, then walk the queue in priority order and start every run admission
 lets start: the discovered concurrency limit, the platform cap, the owner's
 runs-per-repo cap (default 5, kept in the owner database), the large-run cap, a planned

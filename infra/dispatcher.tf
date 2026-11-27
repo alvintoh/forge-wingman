@@ -68,7 +68,7 @@ resource "google_cloud_run_v2_job" "dispatcher" {
 
     template {
       # A retried poll would find the work the first one did, and the next
-      # schedule comes in fifteen minutes: one execution is one poll.
+      # tick polls again: one execution is one poll.
       max_retries     = 0
       timeout         = "600s"
       service_account = google_service_account.dispatcher.email
@@ -148,12 +148,13 @@ data "google_project" "this" {
   project_id = var.project_id
 }
 
-# pollInterval and noticeLease in internal/dispatcher/notice.go assume this
-# schedule and the job's timeout.
+# The poll gate in internal/dispatcher/poll_gate.go measures the saved poll
+# interval against this schedule's ticks; PollInterval and noticeLease in
+# internal/dispatcher/notice.go assume it and the job's timeout.
 resource "google_cloud_scheduler_job" "dispatcher" {
   name      = local.dispatcher
   region    = var.region
-  schedule  = "*/15 * * * *"
+  schedule  = "0,10,15,20,30,40,45,50 * * * *"
   time_zone = "Etc/UTC"
 
   description      = "Wakes the dispatcher to admit delegated tickets and start one run."

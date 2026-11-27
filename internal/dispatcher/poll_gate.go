@@ -16,10 +16,9 @@ func ValidPollMinutes(n int) bool {
 }
 
 // pollSlack is how far short of the interval a tick still polls: half the gap
-// between the two intervals. A job's start-up varies by a minute or two, so two
-// ticks of a schedule as long as the interval can read up to that much less
-// than it apart and still both poll, while a 15-minute setting never polls on
-// two ticks of a 10-minute schedule.
+// between the two intervals. A 15-minute setting never polls on the tick 10
+// minutes after a poll, and a start-up variance of a minute either way still
+// lands on the intended ticks.
 const pollSlack = (DefaultPollMinutes - FastPollMinutes) * time.Minute / 2
 
 // PollTimes is what an execution reads to tell a wake from a scheduled tick,

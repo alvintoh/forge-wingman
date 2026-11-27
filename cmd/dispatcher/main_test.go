@@ -439,10 +439,10 @@ func simulate(t *testing.T, minutes int, executions []execution) {
 	}
 }
 
-// TestAFifteenMinuteSettingPollsEveryTickOfAFifteenMinuteSchedule: a wake poll
+// TestAFifteenMinuteSettingPollsEveryTickFifteenMinutesApart: a wake poll
 // between ticks never delays the next tick, and a tick that starts up slowly
 // followed by one that starts up fast still both poll.
-func TestAFifteenMinuteSettingPollsEveryTickOfAFifteenMinuteSchedule(t *testing.T) {
+func TestAFifteenMinuteSettingPollsEveryTickFifteenMinutesApart(t *testing.T) {
 	simulate(t, 15, []execution{
 		{at: 0, want: true},
 		{at: 5, wake: true, want: true},
@@ -455,9 +455,9 @@ func TestAFifteenMinuteSettingPollsEveryTickOfAFifteenMinuteSchedule(t *testing.
 	})
 }
 
-// TestATenMinuteSettingPollsEveryTickOfATenMinuteSchedule keeps the behaviour
-// of a schedule as long as the interval, start-up jitter and a wake included.
-func TestATenMinuteSettingPollsEveryTickOfATenMinuteSchedule(t *testing.T) {
+// TestATenMinuteSettingPollsEveryTickTenMinutesApart keeps the behaviour of
+// ticks as far apart as the interval, start-up jitter and a wake included.
+func TestATenMinuteSettingPollsEveryTickTenMinutesApart(t *testing.T) {
 	simulate(t, 10, []execution{
 		{at: 0, want: true},
 		{at: 10.5, want: true},
@@ -469,9 +469,9 @@ func TestATenMinuteSettingPollsEveryTickOfATenMinuteSchedule(t *testing.T) {
 	})
 }
 
-// TestAFifteenMinuteSettingPollsEveryOtherTickOfATenMinuteSchedule: a wake in
+// TestAFifteenMinuteSettingPollsEveryOtherTickTenMinutesApart: a wake in
 // between polls at once and does not move which ticks poll.
-func TestAFifteenMinuteSettingPollsEveryOtherTickOfATenMinuteSchedule(t *testing.T) {
+func TestAFifteenMinuteSettingPollsEveryOtherTickTenMinutesApart(t *testing.T) {
 	simulate(t, 15, []execution{
 		{at: 0, want: true},
 		{at: 10.5, want: false},

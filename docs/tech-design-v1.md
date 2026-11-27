@@ -24,7 +24,7 @@ monolith either. Each deployable has a different *trigger* and a different
 
 | Container | Forced by | Trigger | Attendance |
 |---|---|---|---|
-| **dispatcher** | FR-1 poll, FR-15 sizing, FR-22 selection, FR-23 notice | the webhook, or Cloud Scheduler ≤15 min as backstop | unattended |
+| **dispatcher** | FR-1 poll, FR-15 sizing, FR-22 selection, FR-23 notice | the webhook, or Cloud Scheduler as backstop (eight ticks an hour; a poll every 15 min, or 10 when the owner saved it) | unattended |
 | **webhook** | `adr/0013` — enqueue in ~2 min (job start-up) | Linear `AgentSessionEvent`, public, signature-verified | unattended |
 | **runner** | FR-2 worktree-per-run, FR-3/4 phases | dispatched per run | unattended |
 | **surface** | FR-20 browse + statistics, FR-24 retry, FR-25 keyboard | HTTP, behind IAP | interactive |
