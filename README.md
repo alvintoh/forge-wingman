@@ -90,8 +90,9 @@ the run and the command that takes it further by hand.
 The dispatcher looks for new tickets as soon as one is delegated: Linear's webhook
 reaches `cmd/webhook`, which starts a poll at once; Cloud Run takes about 2 minutes to
 start the job's container, and the poll itself takes a few seconds. Cloud Scheduler also wakes
-the job **every 15 minutes**, so a delivery that never arrives costs one interval, not
-the ticket. One execution is one poll.
+the job on eight ticks an hour (minutes 0, 10, 15, 20, 30, 40, 45 and 50) and polls
+every 15 minutes unless the owner saved 10 on the Configuration page, so a delivery that
+never arrives costs one interval, not the ticket. One execution is one poll.
 
 A run is not started while its model's peak-price window is open or would be
 reached before the run finishes, so a run delegated in those hours waits out the
@@ -176,7 +177,7 @@ line, so there is no workspace and no `apps/` level:
 
 | Path | Deployable | Trigger |
 |---|---|---|
-| `cmd/dispatcher` | Cloud Run job | the webhook, and Cloud Scheduler every 15 min |
+| `cmd/dispatcher` | Cloud Run job | the webhook, and Cloud Scheduler (eight ticks an hour; polls every 15 min, or 10 when saved) |
 | `cmd/webhook` | public Cloud Run service; Linear's signature is the gate | Linear's agent-session webhook |
 | `cmd/runner` | Go binary in a per-repo GitHub Actions workflow | dispatched per run |
 | `cmd/surface` | Cloud Run service behind IAP, serving `web/` | HTTP |

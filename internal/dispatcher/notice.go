@@ -15,12 +15,10 @@ import (
 	"time"
 )
 
-// PollInterval is the default poll interval, and the latest the next poll comes
-// while the schedule in infra/dispatcher.tf ticks every 15 minutes, since every
-// tick then polls whichever interval the owner saved. A 15-minute setting on a
-// 10-minute schedule polls every other tick, 20 minutes apart, which this does
-// not cover. noticeLease must outlast the job's 600s timeout, so a live poll's
-// claim is never taken from it.
+// PollInterval is the default poll interval, 15 minutes, and the latest the next
+// scheduled poll comes on the schedule in infra/dispatcher.tf, which also lets
+// the owner save 10. noticeLease must outlast the job's 600s timeout, so a live
+// poll's claim is never taken from it.
 const (
 	PollInterval      = DefaultPollMinutes * time.Minute
 	noticeLease       = 15 * time.Minute

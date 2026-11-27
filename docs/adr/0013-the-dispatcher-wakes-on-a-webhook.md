@@ -5,6 +5,7 @@
 - *Updated (2026-10-08, FRG-22 planning): the webhook also acknowledges the agent session~~, so it holds `linear-token`~~; the row is a marker keyed on the agent SESSION id, so a redelivery is a no-op while a new session on the same issue is acknowledged and woken; one run per issue stays guaranteed by the poll's `runs/<identifier>` create.*
 - *Updated (2026-10-08, FRG-34): no Linear access token is stored. The webhook mints its own from the app's client credentials (`linear-client-id`, `linear-client-secret`), re-mints when Linear refuses it, and revokes it on shutdown; `linear-token` is deleted.*
 - *Updated (2026-10-13, forge-wingman #116): an Issue update whose priority rank changed also wakes the dispatcher. The webhook writes the new rank to the run row while the run is `queued` or `planned`, and wakes only if a run was changed. Only a `created` session event still enqueues; a priority edit is still not a delegation.*
+- *Updated (2026-11-27): the schedule ticks eight times an hour, at minutes 0, 10, 15, 20, 30, 40, 45 and 50, so a saved poll interval of 10 or 15 minutes takes effect; the default interval stays 15 minutes.*
 - **Supersedes:** `tech-design-v1.md` §Two containers that deliberately do NOT exist,
   *"No inbound webhook receiver"*
 
@@ -26,11 +27,11 @@ not a Linear event; and a priority edit is not a delegation.
 ```
 Linear: you delegate a ticket
    │
-   ▼  webhook (seconds)             poll every 15 min (backstop)
+   ▼  webhook (seconds)             8 ticks an hour (backstop)
 ┌─────────────────────────┐        ┌─────────────────────────┐
 │ webhook service         │        │ Cloud Scheduler         │
-│ verify Linear-Signature │        │                         │
-│ write a new-ticket row  │        │                         │
+│ verify Linear-Signature │        │ minutes 0,10,15,20,     │
+│ write a new-ticket row  │        │ 30,40,45,50             │
 │ (skip if already there) │        │                         │
 └────────────┬────────────┘        └────────────┬────────────┘
              │ wake                             │ wake
@@ -65,6 +66,9 @@ Linear: you delegate a ticket
    selection and the budget guard stay in the dispatcher (`adr/0003`).
 3. **The poll stays at 15 minutes.** FR-1's tolerance becomes the WORST case — a lost
    webhook — rather than the normal one.
+   *Updated (2026-11-27):* the schedule ticks eight times an hour, at minutes
+   0, 10, 15, 20, 30, 40, 45 and 50, so a saved 10 or 15 takes effect and the worst
+   case of a lost webhook is one poll interval; the default interval stays 15 minutes.
 
 *Established parts: events plus periodic reconciliation (a Kubernetes controller's
 watch plus resync is the familiar form), and idempotent consumers under at-least-once
