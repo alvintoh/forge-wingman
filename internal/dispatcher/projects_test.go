@@ -67,6 +67,16 @@ func (f *fakeClosures) RecordTicketsClosed(_ context.Context, tickets []string, 
 	return len(tickets), f.err
 }
 
+type countingPullRequests struct {
+	*fakePullRequests
+	listed []string
+}
+
+func (c *countingPullRequests) Closed(ctx context.Context, repo string) ([]ClosedPR, error) {
+	c.listed = append(c.listed, repo)
+	return c.fakePullRequests.Closed(ctx, repo)
+}
+
 func phaseIssue(id, state, milestone string, order float64, delegate string) Issue {
 	return Issue{
 		ID: id, UUID: "uuid-" + id, Title: "[BE] " + id, Labels: []string{"size:S", "repo:octo/widget"},
@@ -82,6 +92,7 @@ func phaseDeps(projects *fakePhaseProjects, snaps *fakeSnapshots, runs fakeRuns,
 		ProjectPhases: ProjectPhaseDeps{
 			Projects: projects, Snapshots: snaps, Runs: runs, Issues: issues,
 		},
+		PullRequests: &fakePullRequests{},
 	}
 }
 
@@ -212,6 +223,105 @@ func TestPollProjectsMarksTheRunsOfCompletedAndCanceledTickets(t *testing.T) {
 				t.Errorf("snapshots = %+v, want the project's snapshot recorded whatever the marking did", snaps.got)
 			}
 		})
+	}
+}
+
+func TestPollProjectsMarksTheRunOfATicketAMergedPullRequestNames(t *testing.T) {
+	merged := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name string
+		prs  []ClosedPR
+		want []string
+	}{
+		{"merged title with Linear's closed ticket", []ClosedPR{{Title: "feat: FRG-4 add y", MergedAt: merged}}, []string{"FRG-1", "FRG-4"}},
+		{"open ticket in an unmerged pull request", []ClosedPR{{Title: "feat: FRG-4 add y"}}, []string{"FRG-1"}},
+		{"open ticket inside a longer id", []ClosedPR{{Title: "feat: FRG-45 add y", MergedAt: merged}}, []string{"FRG-1"}},
+		{"open ticket absent from every title", []ClosedPR{{Title: "feat: add y", MergedAt: merged}}, []string{"FRG-1"}},
+		{"closed ticket also named by a merged title", []ClosedPR{{Title: "feat: FRG-1 add y", MergedAt: merged}}, []string{"FRG-1"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			issues := &fakeProjectIssues{issues: []Issue{
+				phaseIssue("FRG-1", "completed", "P1", 1, ""),
+				phaseIssue("FRG-4", "started", "P1", 1, ""),
+			}}
+			closures := &fakeClosures{}
+			d := phaseDeps(&fakePhaseProjects{listed: []PhaseProject{{Repository: "octo/widget", LinearProject: "Roadmap"}}}, &fakeSnapshots{}, fakeRuns{}, issues)
+			d.ProjectPhases.Closures = closures
+			d.PullRequests = &fakePullRequests{closed: map[string][]ClosedPR{"octo/widget": tt.prs}}
+			pollProjects(context.Background(), d, widgetReach)
+			if len(closures.tickets) != 1 || !slices.Equal(closures.tickets[0], tt.want) {
+				t.Fatalf("marked closed %v, want %v once", closures.tickets, tt.want)
+			}
+		})
+	}
+}
+
+func TestPollProjectsReadsEachRepositoryOnceAndUsesATruncatedListing(t *testing.T) {
+	merged := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	issues := &fakeProjectIssues{issues: []Issue{phaseIssue("FRG-4", "started", "P1", 1, "")}}
+	closures := &fakeClosures{}
+	projects := &fakePhaseProjects{listed: []PhaseProject{
+		{Repository: "octo/widget", LinearProject: "Roadmap"},
+		{Repository: "Octo/Widget", LinearProject: "Backlog"},
+	}}
+	d := phaseDeps(projects, &fakeSnapshots{}, fakeRuns{}, issues)
+	d.ProjectPhases.Closures = closures
+	prs := &countingPullRequests{fakePullRequests: &fakePullRequests{
+		closed:    map[string][]ClosedPR{"octo/widget": {{Title: "feat: FRG-4 add y", MergedAt: merged}}},
+		closedErr: ErrClosedTruncated, keepOnErr: true,
+	}}
+	d.PullRequests = prs
+	pollProjects(context.Background(), d, widgetReach)
+	if !slices.Equal(prs.listed, []string{"octo/widget"}) {
+		t.Fatalf("listed %v, want the repository once", prs.listed)
+	}
+	if len(closures.tickets) != 1 || !slices.Equal(closures.tickets[0], []string{"FRG-4"}) {
+		t.Fatalf("marked closed %v, want [FRG-4] once from the truncated listing", closures.tickets)
+	}
+}
+
+func TestPollProjectsReadsTheOtherRepositoriesWhenOneListingFails(t *testing.T) {
+	merged := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	issues := &fakeProjectIssues{issues: []Issue{phaseIssue("FRG-4", "started", "P1", 1, "")}}
+	closures := &fakeClosures{}
+	projects := &fakePhaseProjects{listed: []PhaseProject{
+		{Repository: "octo/widget", LinearProject: "Roadmap"},
+		{Repository: "octo/gadget", LinearProject: "Backlog"},
+	}}
+	d := phaseDeps(projects, &fakeSnapshots{}, fakeRuns{}, issues)
+	d.ProjectPhases.Closures = closures
+	d.PullRequests = &fakePullRequests{
+		closed:    map[string][]ClosedPR{"octo/gadget": {{Title: "feat: FRG-4 add y", MergedAt: merged}}},
+		closedErr: errors.New("github unavailable"), failClosed: "octo/widget",
+	}
+	pollProjects(context.Background(), d, widgetReach)
+	if len(closures.tickets) != 1 || !slices.Equal(closures.tickets[0], []string{"FRG-4"}) {
+		t.Fatalf("marked closed %v, want [FRG-4] once from the repository that listed", closures.tickets)
+	}
+}
+
+func TestPollProjectsKeepsMarkingLinearClosedTicketsWhenThePullRequestsCannotBeRead(t *testing.T) {
+	snaps := &fakeSnapshots{}
+	issues := &fakeProjectIssues{issues: []Issue{
+		phaseIssue("FRG-1", "completed", "P1", 1, ""),
+		phaseIssue("FRG-4", "started", "P1", 1, ""),
+	}}
+	closures := &fakeClosures{}
+	var logged strings.Builder
+	d := phaseDeps(&fakePhaseProjects{listed: []PhaseProject{{Repository: "octo/widget", LinearProject: "Roadmap"}}}, snaps, fakeRuns{}, issues)
+	d.Logger = slog.New(slog.NewTextHandler(&logged, nil))
+	d.ProjectPhases.Closures = closures
+	d.PullRequests = &fakePullRequests{closedErr: errors.New("github unavailable")}
+	pollProjects(context.Background(), d, widgetReach)
+	if len(closures.tickets) != 1 || !slices.Equal(closures.tickets[0], []string{"FRG-1"}) {
+		t.Fatalf("marked closed %v, want [FRG-1] once", closures.tickets)
+	}
+	if got := logged.String(); !strings.Contains(got, "mergedPullRequestsUnread") || !strings.Contains(got, "github unavailable") {
+		t.Errorf("log = %q, want a mergedPullRequestsUnread warning carrying the error", got)
+	}
+	if len(snaps.got) != 1 || snaps.got[0].Unreadable {
+		t.Errorf("snapshots = %+v, want the project's snapshot recorded", snaps.got)
 	}
 }
 
